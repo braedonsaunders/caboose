@@ -14,7 +14,8 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from migration_transaction import Transaction, identity, sync_dir, rollback, recover
+from migration_transaction import Transaction, atomic_json, identity, sync_dir, rollback, recover
+from migration_appliance_guard import members, references
 from migration_appliance import ApplianceError, matching_kernel, pack_system_image, prepare_system_disk, rebuild_initramfs, trusted_executable
 
 LOCK_FD = None
@@ -32,11 +33,11 @@ def run(*args, **kwargs):
 
 def clone_or_copy(source, destination):
     try:
-        run('/usr/bin/cp', '--reflink=always', '--sparse=auto', '--', str(source), str(destination))
+        run('/usr/bin/cp', '--archive', '--preserve=all', '--reflink=always', '--sparse=auto', '--', str(source), str(destination))
     except subprocess.CalledProcessError:
         # The destination is a newly created staging file, never a live disk.
         Path(destination).unlink(missing_ok=True)
-        run('/usr/bin/cp', '--reflink=never', '--sparse=always', '--', str(source), str(destination))
+        run('/usr/bin/cp', '--archive', '--preserve=all', '--reflink=never', '--sparse=always', '--', str(source), str(destination))
 
 
 def sha(path):
@@ -113,12 +114,12 @@ def assert_no_live_disk(tx):
             raise RuntimeError(f'Cannot inspect pid {entry.name}') from error
 
 
-def verify_backend(path):
+def verify_backend(path, root):
     expected = SUPPORTED_VMM.get(os.uname().machine)
     if not expected or not path.is_absolute():
         raise RuntimeError('Migration requires the pinned Cloud Hypervisor v54 backend')
-    binary = trusted_executable(path)
-    if sha(binary) != expected:
+    binary = trusted_executable(path, owners=(0, root.stat().st_uid))
+    if not os.access(binary, os.X_OK) or sha(binary) != expected:
         raise RuntimeError('Migration requires the pinned Cloud Hypervisor v54 backend')
 
 
@@ -151,6 +152,37 @@ def lock_disk(path):
         if fd is not None:
             os.close(fd)
 
+
+
+def prepare_quiescent(tx):
+    record = json.loads(tx.journal.read_text())
+    if (record.get('version') != 1 or record.get('operation') != 'prepare' or
+        record.get('computer') != tx.computer or record.get('phase') not in ('reserved', 'running', 'idle')):
+        raise RuntimeError('Invalid preparation journal')
+    if record['phase'] == 'running':
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        if record.get('boot_id') == boot:
+            if record.get('pid_namespace') != os.stat('/proc/self/ns/pid').st_ino:
+                raise RuntimeError('Cannot verify appliance in another PID namespace')
+            group = record.get('process_group')
+            if not isinstance(group, int) or group <= 1:
+                raise RuntimeError('Invalid appliance process group')
+            if members(group):
+                raise RuntimeError('The interrupted migration appliance is still running')
+            directory = record.get('appliance_dir')
+            disks = record.get('appliance_disks')
+            store = (tx.dir.parent / 'migration-images').resolve()
+            if not isinstance(directory, str) or not Path(directory).is_absolute() or not Path(directory).resolve().is_relative_to(store):
+                raise RuntimeError('Invalid appliance work directory')
+            if (not isinstance(disks, list) or not disks or
+                any(not isinstance(path, str) or not Path(path).is_absolute() or
+                    not (Path(path).resolve() == tx.staged or Path(path).resolve().is_relative_to(store))
+                    for path in disks)):
+                raise RuntimeError('Invalid appliance disk paths')
+            if references([directory, *disks], (os.getpid(),)):
+                raise RuntimeError('An unverified process still references the appliance')
+        elif not isinstance(record.get('boot_id'), str) or not record['boot_id']:
+            raise RuntimeError('Invalid appliance boot identity')
 
 
 def image_store(root):
@@ -216,22 +248,25 @@ def migrate(tx, root, mkfs, fsck):
     image = Path(tempfile.mkdtemp(prefix=f'{tx.computer}-', dir=images))
     sync_dir(images)
     clone_or_copy(tx.disk, tx.staged)
-    os.chown(tx.staged, owner.st_uid, owner.st_gid)
-    os.chmod(tx.staged, stat.S_IMODE(owner.st_mode))
+    staged_owner = os.stat(tx.staged, follow_symlinks=False)
+    if (staged_owner.st_uid, staged_owner.st_gid, stat.S_IMODE(staged_owner.st_mode)) != (owner.st_uid, owner.st_gid, stat.S_IMODE(owner.st_mode)):
+        raise RuntimeError('Disk clone ownership or mode was not preserved')
     here = Path(__file__).resolve().parent
     repo = here.parents[2]
     hook = repo / 'guest/image/initramfs/caboose-system'
-    version = matching_kernel(tx.staged, kernel, image)
-    pack_system_image(tx.staged, image / 'system.erofs', image, mkfs=mkfs, fsck=fsck)
+    atomic_json(tx.journal, {'version': 1, 'operation': 'prepare', 'computer': tx.computer, 'phase': 'reserved'})
+    guard = {'journal': tx.journal, 'computer': tx.computer, 'fds': (LOCK_FD, *DISK_LOCKS.values())}
+    version = matching_kernel(tx.staged, kernel, image, guard=guard)
+    pack_system_image(tx.staged, image / 'system.erofs', image, mkfs=mkfs, fsck=fsck, guard=guard)
     # Hooks can modify or escape their chroot, but they see only this isolated
     # disposable copy. The final staged disk is not attached to that VM.
     hook_clone = image / 'hook-clone.raw'
     clone_or_copy(tx.staged, hook_clone)
-    rebuild_initramfs(hook_clone, tx.staged, version, hook, image / 'initrd', image)
+    rebuild_initramfs(hook_clone, tx.staged, version, hook, image / 'initrd', image, guard=guard)
     hook_clone.unlink()
     sync_dir(image)
     # A fresh VM makes fixed filesystem edits without executing guest code.
-    prepare_system_disk(tx.staged, version, hook, image / 'initrd', image)
+    prepare_system_disk(tx.staged, version, hook, image / 'initrd', image, guard=guard)
     clone_or_copy(tx.staged, image / 'base.raw')
     shutil.copyfile(kernel, image / 'vmlinux')
     files = ('base.raw', 'vmlinux', 'initrd', 'system.erofs')
@@ -239,7 +274,9 @@ def migrate(tx, root, mkfs, fsck):
     for name in files:
         path = image / name
         hashes[name] = sha(path)
-        os.chown(path, owner.st_uid, owner.st_gid)
+        file_owner = path.stat()
+        if (file_owner.st_uid, file_owner.st_gid) != (owner.st_uid, owner.st_gid):
+            os.chown(path, owner.st_uid, owner.st_gid)
         with path.open('rb') as f:
             os.fsync(f.fileno())
     with tx.staged.open('rb') as f:
@@ -248,6 +285,9 @@ def migrate(tx, root, mkfs, fsck):
     sync_dir(image)
     sync_dir(tx.dir)
     binding = (json.dumps({'version': 1, 'directory': str(image), 'hashes': hashes}, sort_keys=True) + '\n').encode()
+    prepare_quiescent(tx)
+    tx.journal.unlink()
+    sync_dir(tx.dir)
     lock_disk(tx.staged)
     tx.publish(binding)
     print(f'Migrated {tx.computer}; original retained at {tx.original}')
@@ -265,7 +305,7 @@ def main():
     args = parser.parse_args()
     root = args.image_root
     ensure_environment(root)
-    verify_backend(args.vmm)
+    verify_backend(args.vmm, root)
     root = root.resolve(strict=True)
     global LOCK_FD
     fd = locked(root)
@@ -287,7 +327,13 @@ def main():
             migrate(tx, root, args.mkfs, args.fsck)
         elif args.command == 'recover':
             if tx.journal.exists():
-                recover(tx)
+                record = json.loads(tx.journal.read_text())
+                if record.get('operation') == 'prepare':
+                    prepare_quiescent(tx)
+                    tx.journal.unlink()
+                    sync_dir(tx.dir)
+                else:
+                    recover(tx)
                 if tx.staged.exists():
                     retain_unpublished_stage(tx, root)
             else:

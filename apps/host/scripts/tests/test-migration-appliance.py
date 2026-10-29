@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
-import subprocess
-import signal
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 path = Path(__file__).resolve().parents[2] / 'src/migration_appliance.py'
 spec = importlib.util.spec_from_file_location('migration_appliance', path)
@@ -23,20 +22,13 @@ class ApplianceTests(unittest.TestCase):
         self.clone.write_bytes(b'guest image')
         self.output = self.root / 'system.erofs'
 
-    def test_timeout_terminates_private_process_group(self):
-        process = Mock()
-        process.pid = 12345
-        process.wait.side_effect = [subprocess.TimeoutExpired('guestfish', 1), 0]
-        process.poll.return_value = None
-        with patch.object(m.subprocess, 'Popen', return_value=process), patch.object(m.os, 'killpg') as killpg:
-            with self.assertRaisesRegex(m.ApplianceError, 'timed out'):
-                m._guestfish(['/guestfish'], {}, self.root / 'log', 1, 1024)
-        killpg.assert_called_once_with(12345, signal.SIGTERM)
-        self.assertEqual(process.wait.call_count, 2)
+    def test_appliance_launch_requires_durable_guard(self):
+        with self.assertRaisesRegex(m.ApplianceError, 'durable preparation guard'):
+            m._guestfish(['/guestfish'], {}, self.root / 'log', 1, 1024, None)
 
     def test_pack_uses_readonly_clone_and_network_disabled_vm(self):
         calls = []
-        def guestfish(args, env, log, timeout, size_limit):
+        def guestfish(args, env, log, timeout, size_limit, guard):
             calls.append((args, env))
             self.output.write_bytes(b'image')
         with patch.object(m, 'trusted_executable', side_effect=lambda p: Path(p)), \
@@ -48,6 +40,7 @@ class ApplianceTests(unittest.TestCase):
         self.assertEqual(args[i + 1], 'false')
         self.assertEqual(env['LIBGUESTFS_BACKEND'], 'direct')
         self.assertIn('download', args)
+        self.assertTrue(any('/sysroot/var/lib/caboose/system-overlay' in arg for arg in args))
         self.assertEqual(self.output.read_bytes(), b'image')
 
     def test_failure_removes_only_partial_output(self):
@@ -60,6 +53,18 @@ class ApplianceTests(unittest.TestCase):
                 m.pack_system_image(self.clone, self.output, self.root)
         self.assertFalse(self.output.exists())
         self.assertEqual(self.clone.read_bytes(), b'guest image')
+
+    def test_unverified_appliance_files_are_retained(self):
+        journal = self.root / 'journal'
+        journal.write_text(json.dumps({'operation': 'prepare', 'computer': 'owner', 'phase': 'running'}))
+        guard = {'journal': journal, 'computer': 'owner'}
+        with m._appliance_directory(self.root, 'appliance-', guard) as work:
+            (work / 'scratch').write_bytes(b'held by appliance')
+        self.assertTrue((work / 'scratch').exists())
+        journal.write_text(json.dumps({'operation': 'prepare', 'computer': 'owner', 'phase': 'idle'}))
+        with m._appliance_directory(self.root, 'completed-', guard) as completed:
+            (completed / 'scratch').write_bytes(b'finished')
+        self.assertFalse(completed.exists())
 
     def test_rejects_nonprivate_work_directory(self):
         import os
@@ -82,7 +87,7 @@ class ApplianceTests(unittest.TestCase):
         kernel.write_bytes(b'legacy kernel')
         digest = hashlib.sha256(kernel.read_bytes()).hexdigest()
         calls = []
-        def guestfish(args, env, log, timeout, size_limit):
+        def guestfish(args, env, log, timeout, size_limit, guard):
             calls.append((args, env))
             return f'{digest}  /sysroot/boot/vmlinuz-6.12.0-test\n'
         with patch.object(m, 'trusted_executable', side_effect=lambda p: Path(p)), patch.object(m, '_guestfish', guestfish):
@@ -105,7 +110,7 @@ class ApplianceTests(unittest.TestCase):
         hook.write_bytes(b'hook')
         initrd.write_bytes(b'initrd')
         calls = []
-        def guestfish(args, env, log, timeout, size_limit):
+        def guestfish(args, env, log, timeout, size_limit, guard):
             calls.append(args)
             return ''
         with patch.object(m, 'trusted_executable', side_effect=lambda p: Path(p)), patch.object(m, '_guestfish', guestfish):
@@ -122,7 +127,7 @@ class ApplianceTests(unittest.TestCase):
         hook.write_bytes(b'hook')
         output = self.root / 'initrd'
         calls = []
-        def guestfish(args, env, log, timeout, size_limit):
+        def guestfish(args, env, log, timeout, size_limit, guard):
             calls.append((args, env))
             if 'download' in args:
                 output.write_bytes(b'initrd')

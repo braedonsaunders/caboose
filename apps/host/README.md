@@ -644,13 +644,15 @@ reflinks, packs its existing `/usr` and `/opt`, and rebuilds its initramfs with
 the matching installed kernel. Network-disabled libguestfs appliances parse the
 disk; guest-controlled hooks execute on a separate disposable clone. Migration
 rejects hard links crossing the system-image boundary. The original disk and
-the retained image remain in the image root. For the packing appliance, the image-root filesystem must have at least eight
-times the disk's logical size plus 5 GiB available; the tool refuses when this
+the retained image remain in the image root. For the packing appliance, the
+image-root filesystem must have at least eight times the disk's logical size plus 5 GiB available; the tool refuses when this
 space is unavailable.
 
 If interrupted, keep the host stopped and run `recover` with the same image
-root and computer ID. Recovery restores the retained original if publication
-was interrupted, or retains an unpublished staged disk for inspection. To revert
+root and computer ID. Recovery refuses while a preparation appliance is running
+or cannot be verified; run it in the same PID namespace that launched the
+appliance. It restores the retained original if publication was interrupted,
+or retains an unpublished staged disk for inspection. To revert
 a completed migration, run `rollback --discard-migrated-writes` with the same
 arguments. The original disk is restored and the migrated disk is retained;
 writes made after migration are absent from the restored original. A subsequent

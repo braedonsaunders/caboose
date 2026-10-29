@@ -35,23 +35,23 @@ class MigrationTests(unittest.TestCase):
         events = []
         def copy(source, dest):
             shutil.copyfile(source, dest)
-        def match(source, kernel, work):
+        def match(source, kernel, work, **kwargs):
             events.append('match')
             return '6.12-test'
         def pack(source, output, work, **kwargs):
             events.append('pack')
             output.write_bytes(b'erofs')
-        def rebuild(hook_clone, source, version, hook, output, work):
+        def rebuild(hook_clone, source, version, hook, output, work, **kwargs):
             events.append('hooks')
             self.assertNotEqual(hook_clone.stat().st_ino, source.stat().st_ino)
             hook_clone.write_bytes(b'untrusted hook mutated its copy')
             self.assertEqual(source.read_bytes(), b'split')
             output.write_bytes(b'initrd')
-        def prepare(source, version, hook, initrd, work):
+        def prepare(source, version, hook, initrd, work, **kwargs):
             events.append('layout')
             self.assertEqual(source.read_bytes(), b'split')
             source.write_bytes(b'prepared')
-        with patch.object(m, 'trusted_executable', side_effect=lambda p: Path(p)), patch.object(m, 'clone_or_copy', copy), \
+        with patch.object(m, 'trusted_executable', side_effect=lambda p, **kwargs: Path(p)), patch.object(m, 'clone_or_copy', copy), \
              patch.object(m, 'matching_kernel', match), patch.object(m, 'pack_system_image', pack), \
              patch.object(m, 'rebuild_initramfs', rebuild), patch.object(m, 'prepare_system_disk', prepare), \
              patch.object(m, 'lock_disk'):
@@ -98,15 +98,23 @@ class MigrationTests(unittest.TestCase):
         archive = next((self.tx.dir.parent / 'migration-images').iterdir())
         self.assertEqual((archive / 'staged.raw').read_bytes(), b'incomplete stage')
 
+    def test_preparation_journal_requires_valid_identity(self):
+        self.tx.journal.write_text(json.dumps({'version': 1, 'operation': 'prepare', 'computer': 'owner', 'phase': 'reserved'}))
+        m.prepare_quiescent(self.tx)
+        self.tx.journal.write_text(json.dumps({'version': 1, 'operation': 'prepare', 'computer': 'other', 'phase': 'idle'}))
+        with self.assertRaisesRegex(RuntimeError, 'Invalid preparation journal'):
+            m.prepare_quiescent(self.tx)
+
     def test_backend_digest_must_be_known(self):
         binary = self.tx.dir / 'cloud-hypervisor'
         binary.write_bytes(b'unknown')
+        binary.chmod(0o755)
         with patch.object(m, 'trusted_executable', return_value=binary):
             with self.assertRaisesRegex(RuntimeError, 'pinned Cloud Hypervisor'):
-                m.verify_backend(binary)
+                m.verify_backend(binary, self.tx.dir.parent)
             with patch.object(m, 'sha', return_value=m.SUPPORTED_VMM['x86_64']), patch.object(m.os, 'uname') as uname:
                 uname.return_value.machine = 'x86_64'
-                m.verify_backend(binary)
+                m.verify_backend(binary, self.tx.dir.parent)
 
     def test_new_host_lock_owned_by_image_root_owner(self):
         import os

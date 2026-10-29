@@ -3,7 +3,9 @@
 Only a disposable clone may be passed as input. The source image is added
 read-only; the appliance sees no host devices or host filesystem mounts.
 """
+import contextlib
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -11,6 +13,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 
 
@@ -18,11 +21,11 @@ class ApplianceError(RuntimeError):
     pass
 
 
-def trusted_executable(path):
+def trusted_executable(path, *, owners=(0,)):
     path = Path(path).resolve(strict=True)
     info = path.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise ApplianceError(f'Tool must be root-owned and not group/world writable: {path}')
+    if not stat.S_ISREG(info.st_mode) or info.st_uid not in owners or info.st_mode & 0o022:
+        raise ApplianceError(f'Tool has an untrusted owner or writable permissions: {path}')
     return path
 
 
@@ -45,44 +48,79 @@ def dependencies(path):
     return libraries
 
 
-def _guestfish(args, env, log_path, timeout, size_limit):
+def _guestfish(args, env, log_path, timeout, size_limit, guard):
+    if (not guard or not guard.get('fds') or not guard.get('journal') or not guard.get('computer') or
+        any(not isinstance(fd, int) or fd < 0 for fd in guard['fds'])):
+        raise ApplianceError('A durable preparation guard and inherited host lock are required')
+    supervisor = Path(__file__).with_name('migration_appliance_guard.py')
+    command = [sys.executable, str(supervisor), str(guard['journal']), guard['computer'],
+               str(timeout), str(size_limit), str(log_path.parent), *args]
     with open(log_path, 'wb') as log:
-        command = ['/usr/bin/prlimit', f'--fsize={size_limit}:{size_limit}', '--', *args]
         proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                                env=env, start_new_session=True)
+                                env=env, start_new_session=True, pass_fds=guard['fds'])
         try:
-            status = proc.wait(timeout=timeout)
+            status = proc.wait(timeout=timeout + 30)
         except subprocess.TimeoutExpired as error:
-            raise ApplianceError('Migration appliance timed out') from error
-        finally:
-            # guestfish normally reaps QEMU. Also terminate the private process
-            # group on an abnormal exit, when an appliance may outlive guestfish.
+            # Signal only our guard. It owns and drains its private process group.
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                proc.terminate()
             except ProcessLookupError:
                 pass
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            raise ApplianceError('Migration appliance guard timed out') from error
+        except BaseException:
             if proc.poll() is None:
+                proc.terminate()
                 try:
-                    proc.wait(timeout=10)
+                    proc.wait(timeout=30)
                 except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    proc.kill()
                     proc.wait()
+            raise
     if status:
         with open(log_path, 'rb') as log:
             log.seek(0, os.SEEK_END)
             log.seek(max(0, log.tell() - 16384))
             detail = log.read().decode('utf-8', errors='replace')
         raise ApplianceError(f'Migration appliance failed: {detail}')
+    record = json.loads(Path(guard['journal']).read_text())
+    if record.get('operation') != 'prepare' or record.get('computer') != guard['computer'] or record.get('phase') != 'idle':
+        raise ApplianceError('Appliance exit was not durably verified')
     if log_path.stat().st_size > 1024 * 1024:
         raise ApplianceError('Migration appliance returned excessive output')
     return log_path.read_text(encoding='utf-8', errors='replace')
 
 
+def _guard_quiescent(guard):
+    if guard is None:
+        return True  # _guestfish refuses to start without a guard.
+    try:
+        record = json.loads(Path(guard['journal']).read_text())
+        return (record.get('operation') == 'prepare' and
+                record.get('computer') == guard['computer'] and
+                record.get('phase') in ('reserved', 'idle'))
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+@contextlib.contextmanager
+def _appliance_directory(work, prefix, guard):
+    directory = Path(tempfile.mkdtemp(prefix=prefix, dir=work))
+    try:
+        yield directory
+    finally:
+        # A running or unverifiable appliance may still have these files open.
+        # Keep the directory and its journal until recovery proves it is gone.
+        if _guard_quiescent(guard):
+            shutil.rmtree(directory)
+
+
 def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
-                      mkfs='/usr/bin/mkfs.erofs', fsck='/usr/bin/fsck.erofs', awk='/usr/bin/awk', timeout=3600):
+                      mkfs='/usr/bin/mkfs.erofs', fsck='/usr/bin/fsck.erofs', awk='/usr/bin/awk', timeout=3600, guard=None):
     """Pack usr and opt from a read-only clone. This function never runs guest code."""
     clone = Path(clone)
     if clone.is_symlink():
@@ -119,7 +157,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('LIBGUESTFS_', 'LD_')) and k not in ('TMPDIR', 'TMP', 'TEMP')}
     env['LIBGUESTFS_BACKEND'] = 'direct'
-    with tempfile.TemporaryDirectory(prefix='.migration-appliance-', dir=work) as directory:
+    with _appliance_directory(work, '.migration-appliance-', guard) as directory:
         directory = Path(directory)
         env['LIBGUESTFS_CACHEDIR'] = str(directory)
         env['TMPDIR'] = str(directory)
@@ -130,7 +168,7 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
                     'add-drive', str(scratch), 'format:raw', ':',
                     'set-network', 'false', ':', 'set-memsize', '1024', ':', 'run', ':',
                     'mount-options', 'ro', '/dev/sda3', '/', ':',
-                    'debug', 'sh', 'for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done', ':',
+                    'debug', 'sh', 'set -eu; for p in usr opt tmp; do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done; for p in var var/lib var/lib/caboose; do test ! -L /sysroot/$p || exit 1; done; test ! -e /sysroot/var/lib/caboose/system-overlay; test ! -L /sysroot/var/lib/caboose/system-overlay', ':',
                     'mkfs', 'ext4', '/dev/sdb', ':', 'mount', '/dev/sdb', '/tmp', ':' , 'debug', 'sh', 'mkdir -p /tmp/caboose-libs', ':',
                     'debug-upload', str(mkfs), '/tmp/caboose-mkfs', '493', ':',
                     'debug-upload', str(fsck), '/tmp/caboose-fsck', '493', ':',
@@ -156,11 +194,12 @@ def pack_system_image(clone, output, work, *, guestfish='/usr/bin/guestfish',
                      'debug', 'sh', 'sh /tmp/caboose-pack.sh', ':',
                      'download', '/tmp/system.erofs', str(output), ':', 'shutdown']
         try:
-            _guestfish(commands, env, directory / 'appliance.log', timeout, scratch_size)
+            _guestfish(commands, env, directory / 'appliance.log', timeout, scratch_size, guard)
             with output.open('rb') as result:
                 os.fsync(result.fileno())
         except BaseException:
-            output.unlink(missing_ok=True)
+            if _guard_quiescent(guard):
+                output.unlink(missing_ok=True)
             raise
 
 
@@ -195,7 +234,7 @@ def _require_space(work, required):
         raise ApplianceError('Insufficient free space for bounded appliance execution')
 
 
-def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', timeout=600):
+def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', timeout=600, guard=None):
     """Find the installed kernel matching the legacy VMM kernel, without running guest code."""
     clone, kernel = Path(clone).resolve(strict=True), Path(kernel).resolve(strict=True)
     work = _private_work(work)
@@ -215,8 +254,15 @@ def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', time
     script = ('set -eu; test -d /sysroot/boot; test ! -L /sysroot/boot; '
               'set -- /sysroot/boot/vmlinuz-*; test "$#" -le 32; '
               'for f do test -f "$f" && test ! -L "$f" || continue; '
-              'test "$(stat -c %s "$f")" -le 268435456; sha256sum "$f"; done')
-    with tempfile.TemporaryDirectory(prefix='.migration-kernel-', dir=work) as directory:
+              'test "$(stat -c %s "$f")" -le 268435456; sha256sum "$f"; '
+              # Some ARM64 images store a gzip kernel in /boot while the VMM
+              # consumes its decompressed Image. Bound expansion inside the VM.
+              'gzip -dc "$f" 2>/dev/null | head -c 268435457 > /tmp/caboose-kernel-raw; '
+              'n=$(stat -c %s /tmp/caboose-kernel-raw); '
+              'if test "$n" -gt 0 && test "$n" -le 268435456; then '
+              'h=$(sha256sum /tmp/caboose-kernel-raw); printf "%s  %s\\n" "${h%% *}" "$f"; fi; '
+              'rm -f /tmp/caboose-kernel-raw; done')
+    with _appliance_directory(work, '.migration-kernel-', guard) as directory:
         directory = Path(directory)
         script_file = directory / 'kernel-check.sh'
         script_file.write_text('#!/bin/sh\n' + script + '\n')
@@ -225,7 +271,7 @@ def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', time
             'debug-upload', str(script_file), '/tmp/caboose-kernel.sh', '493', ':',
             'debug', 'sh', 'sh /tmp/caboose-kernel.sh', ':', 'shutdown']
         result = _guestfish(args, _environment(directory), directory / 'appliance.log', timeout,
-                            clone.stat().st_size + 1024 ** 3)
+                            clone.stat().st_size + 1024 ** 3, guard)
     matches = []
     for line in result.splitlines():
         match = re.fullmatch(r'([0-9a-f]{64})  /sysroot/boot/vmlinuz-([0-9][A-Za-z0-9._+~-]*)', line)
@@ -237,7 +283,7 @@ def matching_kernel(clone, kernel, work, *, guestfish='/usr/bin/guestfish', time
 
 
 def rebuild_initramfs(hook_clone, source_clone, kernel_version, hook, output, work, *,
-                      guestfish='/usr/bin/guestfish', timeout=3600):
+                      guestfish='/usr/bin/guestfish', timeout=3600, guard=None):
     """Execute guest initramfs hooks only on an independent disposable clone in a VM.
 
     The VM is stopped before another read-only appliance downloads the resulting
@@ -279,7 +325,7 @@ def rebuild_initramfs(hook_clone, source_clone, kernel_version, hook, output, wo
                  'test ! -L /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
                  f'for p in usr usr/lib usr/lib/modules usr/lib/modules/{kernel_version}; '
                  'do test -d /sysroot/$p && test ! -L /sysroot/$p || exit 1; done')
-    with tempfile.TemporaryDirectory(prefix='.migration-hook-', dir=work) as directory:
+    with _appliance_directory(work, '.migration-hook-', guard) as directory:
         directory = Path(directory)
         env = _environment(directory)
         args = _disk_commands(fish, hook_clone, False) + [
@@ -289,7 +335,7 @@ def rebuild_initramfs(hook_clone, source_clone, kernel_version, hook, output, wo
             'chmod', '0755', '/etc/initramfs-tools/scripts/local-bottom/caboose-system', ':',
             'write-append', '/etc/initramfs-tools/modules', '\nerofs\noverlay\n', ':',
             'sh', f'/usr/sbin/update-initramfs -u -k {kernel_version}', ':', 'shutdown']
-        _guestfish(args, env, directory / 'hook.log', timeout, size_limit)
+        _guestfish(args, env, directory / 'hook.log', timeout, size_limit, guard)
         # The untrusted guest and every hook process are now gone. A fresh,
         # read-only appliance validates and streams the bounded result.
         initrd = f'/boot/initrd.img-{kernel_version}'
@@ -299,18 +345,19 @@ def rebuild_initramfs(hook_clone, source_clone, kernel_version, hook, output, wo
         args = _disk_commands(fish, hook_clone, True) + [
             'debug', 'sh', validate, ':', 'download', initrd, str(output), ':', 'shutdown']
         try:
-            _guestfish(args, env, directory / 'download.log', timeout, size_limit)
+            _guestfish(args, env, directory / 'download.log', timeout, size_limit, guard)
             with output.open('rb') as result:
                 if os.fstat(result.fileno()).st_size > 256 * 1024 ** 2:
                     raise ApplianceError('Initramfs exceeds the size limit')
                 os.fsync(result.fileno())
         except BaseException:
-            output.unlink(missing_ok=True)
+            if _guard_quiescent(guard):
+                output.unlink(missing_ok=True)
             raise
 
 
 def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
-                        guestfish='/usr/bin/guestfish', timeout=3600):
+                        guestfish='/usr/bin/guestfish', timeout=3600, guard=None):
     """Apply the split layout through appliance filesystem APIs, without guest execution."""
     staged_clone = Path(staged_clone)
     if staged_clone.is_symlink():
@@ -333,14 +380,16 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
     # Each path to be changed must be an ordinary directory or file, not a
     # guest-controlled symlink. Do not overwrite an existing split hook.
     check = ('set -eu; for p in usr opt etc etc/initramfs-tools etc/initramfs-tools/scripts '
-             'etc/initramfs-tools/scripts/local-bottom etc/initramfs-tools/modules boot; '
+             'etc/initramfs-tools/scripts/local-bottom etc/initramfs-tools/modules boot var var/lib var/lib/caboose; '
              'do test ! -L /sysroot/$p || exit 1; done; '
+             'test ! -e /sysroot/var/lib/caboose/system-overlay; '
+             'test ! -L /sysroot/var/lib/caboose/system-overlay; '
              'test -d /sysroot/usr; test -d /sysroot/opt; '
              'test ! -e /sysroot/etc/caboose-split-system; test ! -L /sysroot/etc/caboose-split-system; '
              'test ! -e /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
              'test ! -L /sysroot/etc/initramfs-tools/scripts/local-bottom/caboose-system; '
              f'test -f /sysroot{initrd_path}; test ! -L /sysroot{initrd_path}')
-    with tempfile.TemporaryDirectory(prefix='.migration-layout-', dir=work) as directory:
+    with _appliance_directory(work, '.migration-layout-', guard) as directory:
         directory = Path(directory)
         args = _disk_commands(fish, staged_clone, False) + [
             'debug', 'sh', check, ':', 'mkdir-p', '/etc/initramfs-tools/scripts/local-bottom', ':',
@@ -351,4 +400,4 @@ def prepare_system_disk(staged_clone, kernel_version, hook, initrd, work, *,
             'touch', '/etc/caboose-split-system', ':',
             'rm-r', '/usr', ':', 'rm-r', '/opt', ':', 'mkdir', '/usr', ':', 'mkdir', '/opt', ':',
             'sync', ':', 'shutdown']
-        _guestfish(args, _environment(directory), directory / 'appliance.log', timeout, size + 1024 ** 3)
+        _guestfish(args, _environment(directory), directory / 'appliance.log', timeout, size + 1024 ** 3, guard)

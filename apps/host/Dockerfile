@@ -66,7 +66,7 @@ COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
 COPY --from=web-build /src/apps/web/dist ./apps/web/dist
 COPY apps/host/scripts/migrate-disk.py ./apps/host/scripts/
-COPY apps/host/src/migration_transaction.py apps/host/src/migration_appliance.py ./apps/host/src/
+COPY apps/host/src/migration_transaction.py apps/host/src/migration_appliance.py apps/host/src/migration_appliance_guard.py ./apps/host/src/
 COPY guest/image/initramfs/caboose-system ./guest/image/initramfs/
 COPY apps/host/scripts/setup-disks.sh /usr/local/bin/setup-disks
 COPY apps/host/scripts/container-entrypoint.sh /usr/local/bin/caboose-entrypoint
