@@ -58,3 +58,25 @@ it('reuses only unchanged verified network state and invalidates after errors an
   await cache.ensure(0)
   expect(calls).toBe(4)
 })
+
+it('ignores snapshot timestamps, counters and elapsed lifetimes but detects firewall and TAP changes', async () => {
+  const { networkStateFingerprint } = await import('./network.js')
+  let packets = 1, lifetime = 300, address = '192.0.2.1', target = 'DROP', setups = 0
+  const fingerprint = async () => networkStateFingerprint(
+    JSON.stringify([{ ifname: 'caboose0', flags: ['UP'], stats64: { rx: { packets } }, addr_info: [{ local: address, prefixlen: 30, valid_life_time: lifetime, preferred_life_time: lifetime }] }]),
+    `# Generated on ${packets}\n*filter\n:INPUT ACCEPT [${packets}:999]\n[${packets}:500] -A INPUT -j ${target}\nCOMMIT\n# Completed on ${packets}\n\n`, '1\n')
+  const cache = createNetworkCache(async () => { setups++ }, fingerprint)
+  await cache.ensure(0)
+  packets = 200; lifetime = 150
+  await cache.ensure(0)
+  expect(setups).toBe(1)
+  target = 'ACCEPT'
+  await cache.ensure(0)
+  expect(setups).toBe(2)
+  address = '192.0.2.5'
+  await cache.ensure(0)
+  expect(setups).toBe(3)
+  lifetime = 0
+  await cache.ensure(0)
+  expect(setups).toBe(4)
+})

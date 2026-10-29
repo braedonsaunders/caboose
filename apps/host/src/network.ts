@@ -164,6 +164,37 @@ export function createNetworkCache(setup: (slot: number) => Promise<void>, finge
   }
 }
 
+/** Ignore presentation timestamps and counters while retaining every rule and its order. */
+export function normalizeFirewallSnapshot(snapshot: string): string {
+  return snapshot.split(/\r?\n/).map(line => line.trim())
+    .filter(line => line && !line.startsWith('#'))
+    .map(line => line.replace(/^\[\d+:\d+\]\s+/, '').replace(/\s+\[\d+:\d+\]$/, ' [0:0]'))
+    .join('\n')
+}
+
+/** Drop link statistics, and compare address lifetimes by state rather than elapsed seconds. */
+export function normalizeLinkSnapshot(snapshot: string): string {
+  const links: unknown = JSON.parse(snapshot)
+  if (!Array.isArray(links) || links.length !== 1 || !links[0] || typeof links[0] !== 'object') throw new Error('Invalid TAP state')
+  const transient = new Set(['stats', 'stats64', 'cacheinfo', 'carrier_changes', 'carrier_up_count', 'carrier_down_count'])
+  function normalize(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(normalize)
+    if (!value || typeof value !== 'object') return value
+    return Object.fromEntries(Object.entries(value).filter(([key]) => !transient.has(key)).map(([key, item]) => {
+      if ((key === 'valid_life_time' || key === 'preferred_life_time') && typeof item === 'number') {
+        return [key, item === 0 ? 'expired' : 'finite']
+      }
+      return [key, normalize(item)]
+    }))
+  }
+  return JSON.stringify(normalize(links))
+}
+
+export function networkStateFingerprint(link: string, rules: string, forwarding: string): string {
+  if (forwarding.trim() !== '1') throw new Error('IPv4 forwarding is disabled')
+  return JSON.stringify([normalizeLinkSnapshot(link), normalizeFirewallSnapshot(rules), '1'])
+}
+
 async function networkFingerprint(slot: number): Promise<string> {
   const { tap } = networkSlot(slot)
   const [link, rules, forwarding] = await Promise.all([
@@ -171,8 +202,7 @@ async function networkFingerprint(slot: number): Promise<string> {
     privilegedOutput('iptables-save', []),
     readFile('/proc/sys/net/ipv4/ip_forward', 'utf8'),
   ])
-  if (forwarding.trim() !== '1') throw new Error('IPv4 forwarding is disabled')
-  return JSON.stringify([link, rules, forwarding])
+  return networkStateFingerprint(link, rules, forwarding)
 }
 
 const networkCache = createNetworkCache(setupNetwork, networkFingerprint)
