@@ -156,11 +156,15 @@ impl Hello {
     }
 }
 
-/// `mode` with its header.
-pub fn mode_message(mode: Mode, window: Option<u64>) -> Vec<u8> {
+/// `mode` with its header. `declined` (sent only true) says the client could not run the game
+/// it was given, so a launcher with a native build runs it now.
+pub fn mode_message(mode: Mode, window: Option<u64>, declined: bool) -> Vec<u8> {
     let mut map = vec![("mode".to_owned(), Value::Text(mode.as_str().into()))];
     if let Some(w) = window {
         map.push(("window".into(), Value::Int(w as i128)));
+    }
+    if declined {
+        map.push(("declined".into(), Value::Bool(true)));
     }
     let payload = cbor::encode(&Value::Map(map));
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
@@ -216,6 +220,8 @@ struct Launcher {
     waiting: bool,
     token: Option<RegistrationToken>,
     gpu: Option<GpuStream>,
+    /// The client declined the game: it stays with the computer from now on.
+    declined: bool,
 }
 
 #[derive(Default)]
@@ -279,8 +285,9 @@ impl State {
 
     /// Whether the connected client takes over this launcher's window.
     fn client_takes(&self, conn: u64) -> bool {
-        match self.games.launchers.get(&conn).and_then(|l| l.hello.as_ref()).map(|h| &h.kind) {
-            Some(Kind::Game { .. }) => self.client_runs_games(),
+        let Some(l) = self.games.launchers.get(&conn) else { return false };
+        match l.hello.as_ref().map(|h| &h.kind) {
+            Some(Kind::Game { .. }) => !l.declined && self.client_runs_games(),
             Some(Kind::Gpu { .. }) => self.client_renders_gpu(),
             None => false,
         }
@@ -314,6 +321,7 @@ impl State {
                 waiting: false,
                 token: None,
                 gpu: None,
+                declined: false,
             },
         );
         let token = self.handle.insert_source(
@@ -597,7 +605,8 @@ impl State {
             return;
         }
         l.sent = Some(now);
-        l.pending.extend_from_slice(&mode_message(now.0, now.1));
+        let declined = l.declined;
+        l.pending.extend_from_slice(&mode_message(now.0, now.1, declined));
         self.flush_launcher(conn);
         // A window whose game the client stopped running sends its picture again.
         if let (Mode::Local, Some(window)) = now {
@@ -772,6 +781,28 @@ impl State {
         gpu && matches!(self.windows.get(window).map(|w| &w.surface), Some(crate::windows::Surface::X11(x)) if x.is_mapped())
     }
 
+    /// The client cannot run game `id`: it is withdrawn from the client, and its launcher hears
+    /// `local` with `declined`, which runs the bundle's native build in the window's place.
+    /// Only the connected client's own announced game counts; a repeated or late decline, or
+    /// one for a game this client was never given, changes nothing.
+    pub fn decline_game(&mut self, id: u64, reason: &str) {
+        let conn = self
+            .games
+            .launchers
+            .iter()
+            .find(|(_, l)| l.gpu.is_none() && l.announced && !l.declined && l.bound.is_some_and(|(g, _)| g == id))
+            .map(|(c, _)| *c);
+        let Some(conn) = conn else { return };
+        let mut shown = reason.chars().take(200).collect::<String>();
+        shown.retain(|c| !c.is_control());
+        tracing::info!("game {id} declined by the client: {shown}");
+        self.withdraw_game(conn);
+        if let Some(l) = self.games.launchers.get_mut(&conn) {
+            l.declined = true;
+        }
+        self.update_game_mode(conn);
+    }
+
     /// The client consumed a stream up to `offset`.
     pub fn gpu_ack(&mut self, id: u64, offset: u64) {
         let conn = self
@@ -893,7 +924,7 @@ mod tests {
 
     #[test]
     fn mode_is_a_framed_canonical_map() {
-        let bytes = mode_message(Mode::Handoff, Some(7));
+        let bytes = mode_message(Mode::Handoff, Some(7), false);
         assert_eq!(bytes[0], MODE);
         let len = u32::from_le_bytes(bytes[1..5].try_into().unwrap()) as usize;
         assert_eq!(len, bytes.len() - HEADER_LEN);
@@ -906,9 +937,24 @@ mod tests {
     }
 
     #[test]
+    fn a_declined_mode_says_so_and_nothing_else_does() {
+        let declined = mode_message(Mode::Local, Some(3), true);
+        assert_eq!(
+            cbor::decode(&declined[HEADER_LEN..]).unwrap(),
+            Value::Map(vec![
+                ("mode".into(), Value::Text("local".into())),
+                ("window".into(), Value::Int(3)),
+                ("declined".into(), Value::Bool(true)),
+            ])
+        );
+        let plain = mode_message(Mode::Local, Some(3), false);
+        assert!(!plain.windows(8).any(|w| w == b"declined"));
+    }
+
+    #[test]
     fn the_framer_splits_skips_and_limits() {
         let mut f = Framer::default();
-        let one = mode_message(Mode::Local, None);
+        let one = mode_message(Mode::Local, None, false);
         f.push(&one[..3]);
         assert_eq!(f.next_message(), Ok(None));
         f.push(&one[3..]);

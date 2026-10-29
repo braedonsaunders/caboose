@@ -554,6 +554,12 @@ pub enum Message {
         id: u64,
         offset: u64,
     },
+    /// The client cannot run game `id` (docs/game-handoff.md, "Declining"); `reason` says
+    /// why, for the computer's log.
+    GameDecline {
+        id: u64,
+        reason: String,
+    },
     Ping {
         t_us: u64,
     },
@@ -599,6 +605,7 @@ pub mod type_id {
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
     pub const GPU_ACK: u8 = 0x96;
+    pub const GAME_DECLINE: u8 = 0x97;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const PING: u8 = 0xFE;
 }
@@ -680,6 +687,7 @@ impl Message {
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
             Message::GpuAck { .. } => GPU_ACK,
+            Message::GameDecline { .. } => GAME_DECLINE,
             Message::Ping { .. } => PING,
         }
     }
@@ -740,6 +748,7 @@ impl Message {
                 MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
             }
             Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
+            Message::GameDecline { id, reason } => MapBuilder::new().put("id", *id).put("reason", reason.as_str()).build(),
             Message::GameCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -1076,6 +1085,7 @@ impl Message {
             }
             GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
             GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
+            GAME_DECLINE => Message::GameDecline { id: f.u64("id")?, reason: f.string("reason")? },
             VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
             VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
@@ -1190,6 +1200,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         GPU_DATA => "gpu.data",
         GPU_DESTROY => "gpu.destroy",
         GPU_ACK => "gpu.ack",
+        GAME_DECLINE => "game.decline",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",

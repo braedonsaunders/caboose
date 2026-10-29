@@ -53,6 +53,7 @@ public enum DisplayProtocol {
         case key = 0x93
         case text = 0x94
         case gpuAck = 0x96
+        case gameDecline = 0x97
         case clipboard = 0xA0
         case ping = 0xFE
     }
@@ -583,6 +584,9 @@ public enum ClientMessage: Sendable {
     case videoKeyframe(video: Int)
     /// The client has consumed GPU stream `id` up to `offset`.
     case gpuAck(id: Int, offset: UInt64)
+    /// Game `id` cannot run on this device, and why (docs/game-handoff.md, "Declining"). The
+    /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
+    case gameDecline(id: Int, reason: String)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -608,6 +612,8 @@ public enum ClientMessage: Sendable {
             return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
         case .gpuAck(let id, let offset):
             return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
+        case .gameDecline(let id, let reason):
+            return DisplayFrame(type: T.gameDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .vsync(let display, let micros):
             return DisplayFrame(type: T.vsync.rawValue, body: map([("display", CBOR(display)), ("t_us", CBOR(micros))]))
         case .ack(let window, let pts, let decoded):

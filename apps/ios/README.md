@@ -7,7 +7,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame`, the `caboose-game://` scheme handler and its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures and touch slots. `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
@@ -77,9 +77,13 @@ sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
 and reconnecting: epoch-checked window resume, the post-hello announcement marker, stale
 streams and pipelines, the watchdog, the retry policy and the measured metrics, and game
 handoff: `game.create` and `game.destroy`, games kept across a resume, saves flushed before
-`close`, and no input to a game window reaching the computer), check the game rules (path
-resolution, ranges, content types, the cache and its eviction, conflict names, the save
-planner and save sync against an in-memory file service), run the game page's IndexedDB and
+`close` and before `game.decline`, declines sent once and only for the current game, and no
+input to a game window reaching the computer), check the game rules (path resolution,
+ranges, content types, the cache and its eviction, conflict names, the save planner and
+save sync against an in-memory file service), check the game's loopback origin (request
+parsing and its bounds, the token, `Host` and method checks, response headers, and
+`GameServer` fetched over 127.0.0.1 with URLSession, closing its connections when it stops
+or when a request does not arrive), run the game page's IndexedDB and
 gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
 them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
@@ -522,7 +526,11 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   the game again: the device's version arrives beside it as `<name> (iPhone).<ext>`. Leave the
   window for Home: its picture is the game's last frame. Lose the network mid-game and come
   back: the same game is still running. A debug build lets Safari's Web Inspector attach to
-  the game's page.
+  the game's page: `crossOriginIsolated` is `true` there, and its address is
+  `http://127.0.0.1:<port>/<token>/`. Background the app for several minutes mid-game and
+  return: the game still loads files. On a device whose WebKit cannot isolate the page, or
+  with a game that crashes its page twice in a minute, the window says "Running this game on
+  the computer instead…" and then shows the computer's native build.
 - **Library.** Open Library from the Apps tab, install PhotoCraft, follow its progress, open
   it, and remove it.
 - **Tabs and the vertical bar.** On iPhone Duo, closed and open in landscape, every tab's

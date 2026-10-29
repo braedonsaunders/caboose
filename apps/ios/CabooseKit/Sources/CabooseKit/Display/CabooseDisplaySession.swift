@@ -585,9 +585,28 @@ public final class CabooseDisplaySession: DisplaySession {
     private func createGame(_ descriptor: GameDescriptor) {
         guard runsGames, let window = windows[descriptor.window] else { return }
         announcedGames.insert(descriptor.id)
-        if window.game?.id == descriptor.id { return }
+        if let game = window.game, game.id == descriptor.id {
+            // Declined while no connection could say so: this one does.
+            if let reason = game.declineReason { declineGame(game, reason: reason) }
+            return
+        }
         endGame(of: window)
-        window.game = RemoteGame(descriptor, host: gameHost, picture: window.surface)
+        let game = RemoteGame(descriptor, host: gameHost, picture: window.surface)
+        game.onDecline = { [weak self, weak game] reason in
+            guard let self, let game else { return }
+            self.declineGame(game, reason: reason)
+        }
+        window.game = game
+    }
+
+    /// Asks the computer to run `game` itself (`game.decline`): only while it is its window's
+    /// game on the current, ready connection, and once per game. A game declined while the
+    /// connection is down says so when the same server announces it again.
+    func declineGame(_ game: RemoteGame, reason: String) {
+        guard !game.isDeclineSent, !game.isEnded, stream != nil, case .ready = state,
+              let window = windows[game.descriptor.window], window.game === game else { return }
+        game.isDeclineSent = true
+        send(.gameDecline(id: game.id, reason: reason))
     }
 
     private func endGame(of window: RemoteWindow?) {

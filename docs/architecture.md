@@ -1899,8 +1899,12 @@ reached at the display URL's origin with the host bearer token. `RemoteWindowVie
 interactive view lays the game's one `GameSurfaceView` (a `WKWebView` with a non-persistent
 data store) over the window and turns off its own gestures and key forwarding; when the view
 leaves the screen or the app stops being active, a snapshot becomes the window's picture.
-`CabooseGameSchemeHandler` serves `caboose-game://<id>/<path>` from a least-recently-used cache
-in `Caches/CabooseGames`, bounded at 1 GiB and keyed by computer, path and etag. Save sync
+Each game's `GameServer` serves `http://127.0.0.1:<port>/<token>/<path>` on the loopback
+interface (WebKit isolates only http(s) origins, and threaded WebAssembly needs isolation)
+through `GameFileResponder`, from a least-recently-used cache in `Caches/CabooseGames`,
+bounded at 1 GiB and keyed by computer, path and etag. A page that cannot run on the device
+declines its game: `RemoteGame.decline` writes the saves still on their way, and the session
+sends `game.decline` for the window's current game on the current connection, once. Save sync
 writes IDBFS changes within two seconds and retries every five seconds while the game runs.
 An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
 

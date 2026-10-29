@@ -199,6 +199,7 @@ impl State {
             Message::Configure(c) => self.configure_window(&c),
             Message::Close { id } => self.close_window(id),
             Message::GpuAck { id, offset } => self.gpu_ack(id, offset),
+            Message::GameDecline { id, reason } => self.decline_game(id, &reason),
             Message::Displays { displays } => self.set_displays(&displays),
             Message::Touch(t) => self.touch(&t),
             Message::Pointer(p) => self.pointer(&p),

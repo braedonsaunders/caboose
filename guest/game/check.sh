@@ -22,7 +22,9 @@
 #      destroyed;
 #   2. with a probe that does not play games, native_fallback replaces the launcher (same
 #      process id);
-#   3. without CABOOSE_GAME_SOCKET, native_fallback replaces the launcher at once.
+#   3. when a probe that plays games declines the game (game.decline), the game is withdrawn
+#      and native_fallback replaces the launcher;
+#   4. without CABOOSE_GAME_SOCKET, native_fallback replaces the launcher at once.
 #
 # CABOOSE_CHECK_PORT picks the private display's port (default 14690). Exits non-zero on the
 # first failure, with the launcher's output and the display's log.
@@ -174,7 +176,23 @@ python3 -I -c 'import json, sys; r = json.loads(open(sys.argv[1]).read().strip()
 rm -f "$work/fallback.pid"
 echo 'local: native_fallback replaced the launcher'
 
-# 3. No game socket.
+# 3. A device that cannot run the game it was given declines it: the game goes, and
+# native_fallback replaces the launcher in its place.
+rm -f "$work/fallback.pid"
+probe --wasm --json --duration 8 --actions 'wait:1500;decline' > "$work/decline.json" 2> "$work/decline.err" &
+probe_pid=$!
+pids+=("$probe_pid")
+sleep 1
+launch decline
+fallback 100 || fail "decline: native_fallback did not run: $(cat "$work/decline.log")"
+[[ $(cat "$work/fallback.pid") == $(cat "$work/decline.pid") ]] || fail 'decline: native_fallback did not replace the launcher'
+wait "$probe_pid" || true
+python3 -I -c 'import json, sys; r = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1]); g = r["games"]; assert len(g) == 1 and g[0]["destroyed"], g' \
+  "$work/decline.json" || fail "decline: the declined game was not withdrawn: $(cat "$work/decline.json")"
+rm -f "$work/fallback.pid"
+echo 'decline: the game was withdrawn and native_fallback replaced the launcher'
+
+# 4. No game socket.
 launch nosocket env -u CABOOSE_GAME_SOCKET
 fallback 50 || fail "no socket: native_fallback did not run: $(cat "$work/nosocket.log")"
 [[ $(cat "$work/fallback.pid") == $(cat "$work/nosocket.pid") ]] || fail 'no socket: native_fallback did not replace the launcher'

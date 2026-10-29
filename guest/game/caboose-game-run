@@ -29,6 +29,7 @@ STARTING = 'Starting…'
 PLAYING = 'Playing on your device'
 ASK = 'Open Caboose on your iPhone or iPad to play'
 NOT_STARTED = 'Could not start the game on this computer'
+DECLINED = 'Your device could not run this game, and it has no build for this computer'
 
 
 class ManifestError(ValueError):
@@ -175,7 +176,10 @@ def modes(frames, data):
             continue
         message = decode(payload)
         mode = message.get('mode') if isinstance(message, dict) else None
-        if mode in ('handoff', 'local'):
+        if mode == 'local' and message.get('declined') is True:
+            # The device could not run the game it was given (game.decline).
+            found.append('declined')
+        elif mode in ('handoff', 'local'):
             found.append(mode)
     return found
 
@@ -381,6 +385,9 @@ class Answers:
         self.answered = True
         if mode == 'handoff':
             return 'status', PLAYING
+        if mode == 'declined':
+            # The device tried and could not: the computer runs the game if it can.
+            return ('native', None) if self.native else ('status', DECLINED)
         if first and self.native:
             return 'native', None
         return 'status', ASK
