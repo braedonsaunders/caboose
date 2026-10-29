@@ -1700,11 +1700,15 @@ the app card, and a detached view releases its layers.
   is cached with the server's `epoch`, and shown on reopening only when the new hello has
   the same epoch.
 - **Connection recovery.** While the app is in use, one display connection is open at a
-  time, and one wake (`POST /v1/session`) runs at a time; other callers wait for it. A
+  time, and one wake (`POST /v1/session`) runs at a time; other callers for the same
+  computer wait for it. Pairing with another computer, signing out, parking, restarting or
+  going to the background fences the running wake: the address it reaches, the session
+  it gets and the failure it meets are all dropped rather than applied. A
   connection is given up when the socket closes, when nothing arrives for 15 s (the client
   pings every 5 s and the server answers each), when the hello does not come within 15 s of
-  opening, or, after a network path change (`NWPathMonitor`: Wi-Fi to cellular, a tunnel
-  coming or going), when a probe ping gets no answer within 5 s. The app then tries again
+  opening, or, after the path's route changes (`NWPathMonitor`: the interface kinds the
+  path uses, by `usesInterfaceType`, or its gateways — Wi-Fi to cellular, another network,
+  a tunnel coming or going), when a probe ping gets no answer within 5 s. The app then tries again
   after 0.5, 1, 2, 4, 8, 15, 15 and 15 s, each time choosing among the saved addresses
   and waking with a 30 s timeout. A connection that stays up for 10 s starts the count
   again; one that drops at once does not. A new network path, the app returning to the
@@ -1727,7 +1731,8 @@ the app card, and a detached view releases its layers.
   5 s, decode time and the wait before decoding (the client's own queue), failed decodes,
   messages waiting to be sent and the oldest one's age, the typing echo (key to next
   picture of that window), and the presented window's last-picture age. It also shows the
-  network path, the address in use, reconnects and recent losses with their reasons. The
+  interface kinds the network path uses (all of them, with no guess at which carries the
+  display), the address in use, reconnects and recent losses with their reasons. The
   computer's encode time and the one-way network delay are not measured, because the
   phone and the computer share no clock.
 
