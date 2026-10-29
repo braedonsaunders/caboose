@@ -76,6 +76,8 @@ final class SoundPlayer: @unchecked Sendable {
     private var frameMax = 0
     private var arrivalAt: TimeInterval?
     private var arrivalMax: TimeInterval = 0
+    private var lastServerPTS: Int64?
+    private var timestampRegressions = 0
     private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
@@ -135,9 +137,19 @@ final class SoundPlayer: @unchecked Sendable {
                     renderer.flush()
                     clock.stop()
                 }
-                let pts = timeline.place(server: Int64(packet.ptsMicros), frames: Int(pcm.frameLength))
+                let rawPTS = Int64(packet.ptsMicros)
+                if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
+                lastServerPTS = rawPTS
+                let pts = timeline.place(server: rawPTS, frames: Int(pcm.frameLength))
                 let placement = clock.place(audio: pts)
-                if case .restart = placement { restarts += 1; renderer.flush() }
+                if case .restart = placement {
+                    restarts += 1
+                    if restarts <= 10 || restarts % 50 == 0 {
+                        let rendered = CMTimeConvertScale(clock.synchronizer.currentTime(), timescale: 1_000_000, method: .default).value
+                        log.notice("display audio restart n=\(self.restarts) raw=\(rawPTS) pts=\(pts) projected=\(self.clock.now ?? -1) rendered=\(rendered) delay=\(self.clock.delay) regressions=\(self.timestampRegressions)")
+                    }
+                    renderer.flush()
+                }
                 renderer.enqueue(try sample(pcm, decoder: decoder, pts: pts))
                 switch placement {
                 case .play: break
@@ -145,7 +157,7 @@ final class SoundPlayer: @unchecked Sendable {
                 }
                 played += 1
                 if arrived - reportsAt >= 5 {
-                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue)")
+                    log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) regressions=\(self.timestampRegressions)")
                     reportsAt = arrived
                     frameMin = Int.max; frameMax = 0; arrivalMax = 0
                 }
