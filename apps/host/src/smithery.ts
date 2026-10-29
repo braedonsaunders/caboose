@@ -94,6 +94,10 @@ export class SmitheryCatalog {
   private rows: { at: number; groups: Array<{ id: string; title: string; note: string | null; servers: McpServer[] }>; popular: McpServer[] } | null = null
   private loading: Promise<void> | undefined
   private icons = new Map<string, string>()
+  /** Icons being fetched, so two requests for one icon share a fetch. */
+  private fetching = new Map<string, Promise<Buffer | null>>()
+  /** Cache writes and trims, one at a time, so the budget holds. */
+  private admitting: Promise<unknown> = Promise.resolve()
   private rasterize: Promise<Rasterize> | undefined
   constructor(private readonly root: string, private readonly request: Requester = fetchSafe, private readonly now: () => number = Date.now, rasterize?: Rasterize) {
     if (rasterize) this.rasterize = Promise.resolve(rasterize)
@@ -223,6 +227,14 @@ export class SmitheryCatalog {
     if (existsSync(file)) return readFile(file)
     const url = this.icons.get(id)
     if (!url) return null
+    let pending = this.fetching.get(id)
+    if (!pending) {
+      pending = this.fetchIcon(id, url, file).finally(() => this.fetching.delete(id))
+      this.fetching.set(id, pending)
+    }
+    return pending
+  }
+  private async fetchIcon(id: string, url: string, file: string): Promise<Buffer | null> {
     let png: Buffer | null = null
     try {
       const response = await this.request(url, ICON_BYTES, { timeoutMs: 10_000 })
@@ -235,11 +247,16 @@ export class SmitheryCatalog {
       else if (type === 'image/svg+xml' || response.body.subarray(0, 512).toString('utf8').includes('<svg')) png = (await (this.rasterize ??= defaultRasterize()))(response.body.toString('utf8'))
     } catch { return null }
     if (!png) return null
-    await mkdir(join(this.root, 'icons'), { recursive: true })
-    await this.trimIcons(png.length)
-    await writeFile(file + '.tmp', png)
-    await rename(file + '.tmp', file)
-    return png
+    const image = png
+    const admit = this.admitting.then(async () => {
+      await mkdir(join(this.root, 'icons'), { recursive: true })
+      await this.trimIcons(image.length)
+      await writeFile(`${file}.${id}.tmp`, image)
+      await rename(`${file}.${id}.tmp`, file)
+    })
+    this.admitting = admit.catch(() => {})
+    await admit
+    return image
   }
   /** Keeps the icon cache within its budget, oldest first. */
   private async trimIcons(adding: number): Promise<void> {

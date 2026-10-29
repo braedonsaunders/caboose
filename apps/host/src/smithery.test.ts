@@ -77,7 +77,7 @@ describe('the MCP Library catalog', () => {
   })
   it('serves icons it handed out, refusing oversized images and rasterizing SVG', async () => {
     const dir = root()
-    const icons = {
+    const icons: Record<string, ReturnType<typeof answer>> = {
       'https://icons.example/ok.png': answer(png(128, 128), 200, 'image/png'),
       'https://icons.example/huge.png': answer(png(20000, 20000), 200, 'image/png'),
       'https://icons.example/logo.svg': answer('<svg xmlns="http://www.w3.org/2000/svg"/>', 200, 'image/svg+xml'),
@@ -93,6 +93,13 @@ describe('the MCP Library catalog', () => {
     expect(rasterize).toHaveBeenCalledOnce()
     expect(await catalog.icon(id('https://icons.example/page.html'))).toBeNull()
     expect(await catalog.icon('0'.repeat(32))).toBeNull()
+    // Two requests for an icon not yet cached share one fetch and one write.
+    const twin = id('https://icons.example/twin.png')
+    icons['https://icons.example/twin.png'] = answer(png(64, 64), 200, 'image/png')
+    const before = (request as unknown as { mock: { calls: unknown[] } }).mock.calls.length
+    const [a, b] = await Promise.all([catalog.icon(twin), catalog.icon(twin)])
+    expect(a).toEqual(png(64, 64)); expect(b).toEqual(png(64, 64))
+    expect((request as unknown as { mock: { calls: unknown[] } }).mock.calls.length - before).toBe(1)
     expect(await catalog.icon('../../etc/passwd')).toBeNull()
   })
 })
