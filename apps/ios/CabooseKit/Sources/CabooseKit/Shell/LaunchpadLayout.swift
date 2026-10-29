@@ -21,16 +21,21 @@ public struct LaunchpadLayout: Equatable, Sendable {
         icon = min(84 * ui, column * 0.78)
         top = 60 * ui
         let rowHeight = icon + 8 * ui + 20 * ui + spacing
-        rows = max(1, Int((size.height - top - dockHeight - 40 * ui) / rowHeight))
+        rows = max(1, Int((size.height - top - dockHeight - 84 * ui) / rowHeight))
     }
 
     /// The grid's width, spacing included.
     public var width: CGFloat { CGFloat(columns) * column + CGFloat(columns - 1) * spacing }
 
-    public func pageRange(_ page: Int, count: Int) -> Range<Int> {
+    public func clampedPage(_ page: Int, count: Int) -> Int {
         let capacity = max(1, columns * rows)
         let last = max(0, (max(0, count) - 1) / capacity)
-        let start = min(max(0, page), last) * capacity
+        return min(max(0, page), last)
+    }
+
+    public func pageRange(_ page: Int, count: Int) -> Range<Int> {
+        let capacity = max(1, columns * rows)
+        let start = clampedPage(page, count: count) * capacity
         return start..<min(max(0, count), start + capacity)
     }
 }

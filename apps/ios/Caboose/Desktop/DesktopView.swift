@@ -249,7 +249,7 @@ struct Launchpad: View {
                 }
             }
             .padding(.top, layout.top)
-            .id(desktop.launcherPage)
+            .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
             if apps.count > layout.columns * layout.rows {
                 HStack(spacing: 24 * ui) {
                     if range.lowerBound > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) }
@@ -257,14 +257,22 @@ struct Launchpad: View {
                         .foregroundStyle(.white).font(.system(size: 14 * ui, weight: .semibold))
                     if range.upperBound < apps.count { pageArrow(1, symbol: "chevron.right", ui: ui) }
                 }
-                .id(desktop.launcherPage)
+                .id("\(desktop.launcherPage)-\(apps.count)-\(desktop.size.width)-\(desktop.size.height)")
                 .frame(maxHeight: .infinity, alignment: .bottom)
                 .padding(.bottom, desktop.dockHeight + 12 * ui)
             }
         }
         .frame(width: desktop.size.width, height: desktop.size.height)
         .clipped()
+        .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
+        .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }
+    }
+
+    private func resetFrames(layout: LaunchpadLayout, count: Int) {
+        desktop.launcherFrames = [:]
+        desktop.launcherPageFrames = [:]
+        desktop.launcherPage = layout.clampedPage(desktop.launcherPage, count: count)
     }
 
     private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat) -> some View {

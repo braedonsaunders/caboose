@@ -106,7 +106,12 @@ final class LaunchpadLayoutTests: XCTestCase {
         XCTAssertEqual(layout.pageRange(0, count: capacity + 3), 0..<capacity)
         XCTAssertEqual(layout.pageRange(1, count: capacity + 3), capacity..<(capacity + 3))
         XCTAssertEqual(layout.pageRange(99, count: capacity + 3), capacity..<(capacity + 3))
+        XCTAssertEqual(layout.clampedPage(99, count: capacity + 3), 1)
+        XCTAssertEqual(layout.clampedPage(-1, count: capacity + 3), 0)
+        XCTAssertEqual(layout.clampedPage(9, count: 0), 0)
         XCTAssertEqual(layout.pageRange(0, count: 0), 0..<0)
+        let rowHeight = layout.icon + 8 + 20 + layout.spacing
+        XCTAssertLessThanOrEqual(layout.top + CGFloat(layout.rows) * rowHeight, 600 - 76 - 44)
     }
     func testABigScreenGetsSevenFullColumns() {
         let layout = LaunchpadLayout(size: CGSize(width: 1920, height: 1080), ui: 1.2, dockHeight: 76 * 1.2)
