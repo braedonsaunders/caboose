@@ -95,6 +95,17 @@ them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
 decoder (M3 and later).
 
+The native agent-app handoff has a focused simulator check using a local fake host:
+
+```sh
+SIMULATOR_ID=<available-ios-simulator-udid> sh scripts/check-agent-app-webview.sh
+```
+
+It exercises the real WKWebView, injected API, idle event polling, reload and takeover.
+The check uses port 18765 on loopback and a temporary package copy; the simulator SDK lacks
+MetalFX, so that copy substitutes the unrelated motion upscaler. The product sources are
+not changed. Select the full Xcode developer directory before running it.
+
 Against a real computer with a window open:
 
 ```sh
