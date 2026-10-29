@@ -56,21 +56,6 @@ struct WindowScreen: View {
             .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
         }
         .tint(Brand.amber)
-        .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
-            ForEach(cardOrder) { other in
-                Button { model.presentedWindowID = other.id } label: {
-                    Label(other.title.isEmpty ? "Window" : other.title,
-                          systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
-                }
-            }
-        } message: {
-            Text(model.window(model.presentedWindowID)?.title ?? "Window")
-        }
-        .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
-            if let window = model.window(model.presentedWindowID) { windowActions(for: window) }
-        } message: {
-            Text(model.connectionSummary)
-        }
         .fullScreenCover(item: Binding(
             get: { model.media.handedOff },
             set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
@@ -255,6 +240,16 @@ struct WindowScreen: View {
                 .labelStyle(.iconOnly)
                 .accessibilityValue(window.title.isEmpty ? "Window" : window.title)
                 .simultaneousGesture(toolbarDismissSwipe)
+                .confirmationDialog("Switch App", isPresented: $showingApps, titleVisibility: .visible) {
+                    ForEach(cardOrder) { other in
+                        Button { model.presentedWindowID = other.id } label: {
+                            Label(other.title.isEmpty ? "Window" : other.title,
+                                  systemImage: other.id == model.presentedWindowID ? "checkmark" : "macwindow")
+                        }
+                    }
+                } message: {
+                    Text(window.title.isEmpty ? "Window" : window.title)
+                }
 
             if !model.keyboardVisible {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
@@ -265,6 +260,11 @@ struct WindowScreen: View {
             Button("Window Options", systemImage: "ellipsis") { showingOptions = true }
                 .labelStyle(.iconOnly)
                 .simultaneousGesture(toolbarDismissSwipe)
+                .confirmationDialog("Window Options", isPresented: $showingOptions, titleVisibility: .visible) {
+                    windowActions(for: window)
+                } message: {
+                    Text(model.connectionSummary)
+                }
         }
     }
 
@@ -279,7 +279,7 @@ struct WindowScreen: View {
         }
     }
 
-    /// Present actions outside the toolbar so a vertical overflow group cannot clip them.
+    /// The presenting toolbar button anchors these system actions beside the controls.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
         Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
