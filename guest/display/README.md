@@ -30,7 +30,14 @@ This directory is a Cargo workspace:
 - **One stream per window.** Every toplevel, dialog, popup and X11 window is announced
   with `window.create` and streamed on its own. The compositor composes nothing across
   windows: each window's surface tree (with its subsurfaces) is rendered alone, cropped to
-  its window geometry, at the buffer's own density.
+  its window geometry, at the buffer's own density. `window.create` carries no `icon`
+  (Smithay 0.7 supports neither xdg-toplevel-icon-v1 nor `_NET_WM_ICON`); the phone takes
+  a window's icon from the computer's app list by its `app_id` or class.
+- **Popups keep their alpha.** A popup (an xdg popup, or an X11 override-redirect menu or
+  tooltip) is announced with `alpha: true`, composed on a transparent canvas (never read
+  in place from its buffer) and sent only as lossless RGBA PNG tiles from its own tiler
+  (`src/encode/alpha.rs`): the whole picture first and on `request_keyframe`, the changed
+  16×16 blocks after that, never a frame, sharpening, motion stream or marker detection.
 - **Cheap when nothing changes, and when little does.** A window that is one surface with
   one wl_shm buffer (most windows: terminals, Chromium, X11 apps) is not composed at all:
   the encoder reads the client's buffer in place, holding it until it is done, and only the
@@ -110,8 +117,9 @@ This directory is a Cargo workspace:
   in `video_decoders`; `--no-motion` turns it off.
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
-memory and the compositor offers no YUV formats; tiles come only from the software
-encoders; the clipboard carries text only; cursors are sent by name, not as images;
+memory and the compositor offers no YUV formats; tiles of opaque windows come only from
+the software encoders; the clipboard carries text only; cursors are sent by name, not as
+images; window icons are not sent;
 Pencil input is ignored (`pencil` is not in `hello.features`); notifications are not sent
 on the display protocol; and characters that are not on the keymap cannot be typed into
 X11 applications.

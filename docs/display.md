@@ -39,6 +39,10 @@ wire contract, the Caboose Display Protocol.
 - **Text stays sharp and cheap.** Small changes (typing, a caret) go as lossless PNG tiles
   instead of pictures. Areas that have been quiet for 300 ms are coded once more at a low
   QP and then cost nothing until they change.
+- **Popups keep their shape.** A popup (an xdg popup, an X11 override-redirect menu or
+  tooltip) has its rounded corners and shadow inside its window geometry, so it is sent
+  with `alpha: true`, composed on a transparent canvas and coded only as PNG tiles with
+  alpha, never as frames; the client shows it on a transparent surface.
 
 The renderer is pixman, on the CPU. Applications render themselves (with Mesa's D3D12
 driver on WSL2 hosts, for example), and their buffers reach the encoder through system
@@ -281,7 +285,11 @@ Client → server (`0x81`–`0xFF`):
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
 
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
-  one temporal unit of low-overhead OBUs with the sequence header on keyframes.
+  one temporal unit of low-overhead OBUs with the sequence header on keyframes. A frame
+  carries no alpha. A window with `alpha: true` gets no frames: every picture of it, the
+  first and the answer to `request_keyframe` included, is `tile` messages of 8-bit RGBA
+  PNG (straight alpha) over a transparent surface; the tiles of other windows are 8-bit
+  RGB.
 - `text` is text-input-v3. Deletions (`delete_before`, `delete_after`, in grapheme
   clusters) are sent to every surface as BackSpace and Delete presses, one per cluster,
   before the commit; that removes one grapheme cluster in every toolkit, where
@@ -299,7 +307,10 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   apps turn a touch drag into a selection.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
-and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
+and no `cursor` images; tiles only as `png`; `alpha: true` for windows of kind `popup` and
+`alpha: false` for every other; no `icon`, because Smithay 0.7 supports neither
+xdg-toplevel-icon-v1 nor `_NET_WM_ICON`, so the phone resolves a window's icon from the
+computer's app list by its `app_id` or class; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
 the app through the host, from [guest/notifications](../guest/notifications)). It ignores
 `pencil`. The clipboard carries text (`text/plain;charset=utf-8`).
@@ -331,9 +342,9 @@ A video stream is layered into a window (`window`) by the client: it decodes it 
 own decoder and draws it at `rect` (window-local display pixels, the whole picture,
 scaled to fit), showing only `clip` when present (a scrolled or cropped player, or an
 H.264 1088-line picture whose 1080 lines are visible). Every video stream is drawn above
-the window's own picture, ordered by `z` (higher on top); window pictures carry no alpha,
-so the server sends the visible region as `clip` instead of relying on a hole in the
-window. Video ids are their own namespace, unique for the server's lifetime.
+the window's own picture, ordered by `z` (higher on top); frames carry no alpha (only a
+popup's picture does, as PNG tiles with alpha, and a popup has no video streams), so the
+server sends the visible region as `clip` instead of relying on a hole in the window. Video ids are their own namespace, unique for the server's lifetime.
 The client intersects `clip` (or `rect` when absent) with the window's bounds and `rect`;
 clipping preserves the scale and origin of the complete decoded picture. The window's
 picture and video layers share one window-pixel-to-view transform, including while the

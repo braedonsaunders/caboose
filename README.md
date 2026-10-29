@@ -40,9 +40,9 @@ The machine belongs to the agent, and you watch.
 Caboose starts from the other end:
 
 - **Linux apps as native surfaces.** Every window streams on its own, with its title,
-  icon, menus and dialogs. On iPhone it behaves like an app; on iPad or a TV it behaves
-  like a window. Menus and dialogs sit next to the window they belong to, not in a
-  separate frame.
+  menus and dialogs, and the icon of the app it belongs to. On iPhone it behaves like an
+  app; on iPad or a TV it behaves like a window. Menus and dialogs sit next to the window
+  they belong to, not in a separate frame.
 - **Resumable, not rebooted.** Your computer parks with its memory. Reopen the app and
   every program is exactly where you left it.
 - **Shared with agents, without fighting them.** Any agent from the Agent Client
@@ -102,8 +102,9 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 ```
 
 - **Per-window, not per-desktop.** Every window is its own stream with its own title,
-  icon, size hints and parent, and only what changed is re-encoded. That's what lets the
-  phone show a Linux app as an app.
+  size hints and parent, and only what changed is re-encoded; the phone takes the icon
+  from the app the window belongs to. That's what lets the phone show a Linux app as an
+  app.
 - **Relay, don't transcode.** The host passes the stream through untouched, so latency
   is guest-to-phone and the host spends nothing on pixels.
 - **Park with memory.** Cloud Hypervisor snapshots (via
