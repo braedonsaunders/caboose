@@ -76,8 +76,9 @@ class Staging(unittest.TestCase):
         # build-inside.sh moves whole /builder directories to /tmp, where the installer runs.
         paths = {path for path in builder if path.split('/')[0] in moved}
         self.assert_staged('guest/image/Dockerfile with build-inside.sh', paths)
-        removed = set(re.findall(r'"\$work/root/tmp/([a-z0-9-]+)"', script.split('rm -rf "$work/root/tmp/components"')[1].split('\n')[0]))
-        self.assertEqual(moved - {'components'} - removed, set(), 'build-inside.sh leaves these in the image /tmp')
+        cleanup = '\n'.join(line for line in script.splitlines() if line.startswith('rm -rf '))
+        removed = set(re.findall(r'"\$work/root/tmp/([a-z0-9-]+)"', cleanup))
+        self.assertEqual(moved - removed, set(), 'build-inside.sh leaves these in the image /tmp')
 
 
 if __name__ == '__main__':

@@ -49,6 +49,7 @@ if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then
 fi
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm755 "$root/components/check-steam-bootstrap.sh" /usr/local/libexec/caboose-check-steam-bootstrap
+install -Dm755 "$root/files/parked_quiesce.py" /opt/caboose/files/parked_quiesce.py
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
 install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
@@ -72,6 +73,10 @@ if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
 else
+  install -Dm644 "$root/components/caboose-workloads.slice" /etc/systemd/system/caboose-workloads.slice
+  install -Dm755 "$root/components/caboose-owner-run" /usr/local/libexec/caboose-owner-run
+  install -Dm755 "$root/template/caboose-template.py" /usr/local/libexec/caboose-template
+  install -Dm644 "$root/template/caboose-template.target" /etc/systemd/system/caboose-template.target
   install -Dm755 "$root/components/caboose-vsock-services.py" /opt/caboose/vsock/caboose-vsock-services.py
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger

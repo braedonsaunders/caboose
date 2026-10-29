@@ -6,6 +6,38 @@ import { config } from './config.js'
 afterEach(() => vi.useRealTimers())
 
 describe('computer lifecycle', () => {
+  it('invalidates a park publication guard as soon as wake is admitted', async () => {
+    let release!: () => void
+    let guard!: () => boolean
+    let computer!: ComputerLifecycle<string>
+    computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {
+      guard = computer.parkingGenerationGuard()
+      await new Promise<void>(resolve => { release = resolve })
+    } }, 10000)
+    await computer.wake()
+    const parking = computer.park()
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(guard()).toBe(true)
+    const waking = computer.wake('headless')
+    expect(guard()).toBe(false)
+    release()
+    await parking
+    await waking
+  })
+  it('calls every added parked work canceller, and stops calling a removed one', async () => {
+    const computer = new ComputerLifecycle({ wake: async () => 'desk', park: async () => {} }, 10000)
+    const first = vi.fn(), second = vi.fn(), single = vi.fn()
+    computer.setParkedWorkCanceller(single)
+    const removeFirst = computer.addParkedWorkCanceller(first)
+    computer.addParkedWorkCanceller(second)
+    await computer.wake()
+    expect([single, first, second].map(cancel => cancel.mock.calls.length)).toEqual([1, 1, 1])
+    removeFirst()
+    await computer.park()
+    await computer.wake()
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(second).toHaveBeenCalledTimes(2)
+  })
   it('invalidates parked work synchronously and serializes wake behind it', async () => {
     let release!: () => void
     const cancel = vi.fn()

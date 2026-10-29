@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
+import type { ParkedFilesView } from './parked-files-store.js'
+import { serveParkedFiles } from './parked-files-reader.js'
 import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { rm } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -40,6 +42,9 @@ import type { DisplayProtocol } from './config.js'
 import { DisplayNotReadyError } from './display.js'
 import type { ComputerResources } from './driver.js'
 import { serveWeb } from './static.js'
+import type { ComputerStorage } from './storage.js'
+import type { SharedStorageStatus } from './shared-storage.js'
+import type { RestoredDisk } from './restore-journal.js'
 import { ReachUnavailableError, type ReachService } from './reach.js'
 import { DesktopNotifications } from './desktop-notifications.js'
 import type { PushService } from './push.js'
@@ -55,6 +60,9 @@ import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUr
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
+  /** Install the lifecycle fence used for optional parked Files publication. */
+  bindParkedFilesGuard?(guard: () => () => boolean): void
+  parkedFilesView?(): Promise<ParkedFilesView | undefined>
   componentsMode?: ComponentsMode
   componentsWarning?(): string | undefined
   stats(): unknown
@@ -76,6 +84,10 @@ export interface Controller extends ComputerDriver<Session> {
   lastError?(): string | null
   /** Deletes the computer and its disk; only when the computer itself is deleted. */
   destroy?(): Promise<void>
+  /** Refuse a restored disk this computer cannot boot, before anything changes. */
+  checkDiskReplacement?(replacement: RestoredDisk): Promise<void>
+  /** Install a restored disk (and its image binding), journaled, during the next restart. */
+  replaceDiskOnRestart?(replacement: RestoredDisk): void
 }
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
@@ -90,7 +102,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -120,7 +132,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const tiered = tiering?.controller ?? pieces.controller
   const controller = admit ? withAdmission(tiered, () => admit(id)) : tiered
   const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
+  controller.bindParkedFilesGuard?.(() => computer.parkingGenerationGuard())
   tiering?.attach(computer)
+  pieces.storage?.attach(computer)
   const sockets = new Set<WebSocket>()
   const controls = new Set<WebSocket>()
   const foregroundClients = new Set<WebSocket>()
@@ -401,6 +415,20 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   /** Phones' sockets by phone, so signing a phone out closes what it has open. */
   const phoneSockets = new Map<WebSocket, string>()
 
+  /** A confirmed restart; `stage` runs inside it, after sockets close and before the computer stops. */
+  async function confirmedRestart(stage?: () => Promise<void>): Promise<void> {
+    if (upgrading) throw new ComputerConflictError('Caboose components are updating')
+    if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
+    await computer.restart(async () => {
+      closeSockets()
+      // The cold boot stops every task. Do not wait for per-task cancellation:
+      // an unresponsive guest must not prevent its own restart.
+      await stage?.()
+    })
+    agents.computerRestarted()
+    broadcastSettings()
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
     if (path === '/v1/agent/routines' || path.startsWith('/v1/agent/routines/')) {
       const routines = await routinesReady
@@ -482,6 +510,18 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       })
     }
     if (path.startsWith('/v1/fs/')) {
+      if (request.method === 'GET' && controller.parkedFilesView && computer.state === 'parked') {
+        try {
+          const served = await computer.parkedExclusive(async generation => {
+            const view = await controller.parkedFilesView!()
+            if (!view || !computer.isParkedGenerationCurrent(generation)) return false
+            return serveParkedFiles(view, request, response, () => computer.isParkedGenerationCurrent(generation))
+          })
+          if (served) return
+        } catch (error) {
+          if (response.headersSent) { response.destroy(error instanceof Error ? error : undefined); return }
+        }
+      }
       return computer.wakeAndRun(async () => {
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
@@ -555,18 +595,21 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       return json(response, 200, managementStatus())
     }
     if (request.method === 'POST' && path === '/v1/computer/restart') {
-      if (upgrading) throw new ComputerConflictError('Caboose components are updating')
-      if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
       const body = await readJson(request)
       if (body.confirm !== true) throw new SettingsInputError('Restart closes apps and discards unsaved work; confirm must be true')
-      await computer.restart(async () => {
-        closeSockets()
-        // The cold boot stops every task. Do not wait for per-task cancellation:
-        // an unresponsive guest must not prevent its own restart.
-      })
-      agents.computerRestarted()
-      broadcastSettings()
+      await confirmedRestart()
       return json(response, 200, managementStatus())
+    }
+    if (path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+      if (!pieces.storage) return json(response, 404, { error: 'This computer cannot be backed up to a phone' })
+      return pieces.storage.backups(request, response, path, principal, {
+        restart: confirmedRestart,
+        checkDisk: async replacement => {
+          if (!controller.checkDiskReplacement || !controller.replaceDiskOnRestart) throw new ComputerConflictError('This computer cannot be restored')
+          await controller.checkDiskReplacement(replacement).catch(error => { throw new ComputerConflictError(error instanceof Error ? error.message : String(error)) })
+        },
+        replaceDisk: replacement => controller.replaceDiskOnRestart!(replacement),
+      })
     }
     if (request.method === 'POST' && path === '/v1/session') {
       const session = await computer.wake()
@@ -972,6 +1015,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
 
   async function shutdown(): Promise<void> {
     await tiering?.close()
+    pieces.storage?.close()
     clearInterval(autoUpdates)
     await (await routinesReady)?.close()
     agents.pause()
@@ -997,6 +1041,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       agents.computerRestarted()
       if (!controller.destroy) throw new ComputerConflictError('This runtime cannot delete a computer')
       await controller.destroy()
+      await pieces.storage?.destroy()
     })
   }
 
@@ -1040,6 +1085,8 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** Shared storage's totals, for `GET /v1/health`; null when it is off. */
+  sharedStorage?: () => SharedStorageStatus | null
   /** How phones find and reach this host, for `/v1/host/reach`. */
   reach?: ReachService
   fleet?: Fleet
@@ -1238,7 +1285,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (principal.kind === 'phone' && (fleetRoute || path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/'))) return json(response, 403, { error: 'forbidden' })
       if ((path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/')) && !administers(principal, null)) return json(response, 403, { error: 'Only the operator sees the host' })
       if (request.method === 'GET' && path === '/v1/health') {
-        return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}) })
+        return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}), ...(options.sharedStorage ? { sharedStorage: options.sharedStorage() } : {}) })
       }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
       if (path === '/v1/host/reach' && request.method === 'GET' && options.reach) return json(response, 200, await options.reach.status())
@@ -1312,6 +1359,9 @@ export function createCabooseServer(options: ComputerPieces & {
       const routed = target(path, principal)
       if (routed === 'forbidden') return json(response, 403, { error: 'forbidden' })
       if (!routed) return json(response, 404, { error: 'computer not found' })
+      // Handlers that read the request's own URL (the files relay, parked Files) see the
+      // computer's path, as a phone's request would carry it.
+      if (routed.path !== path) request.url = routed.path + new URL(request.url ?? '/', 'http://localhost').search
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })

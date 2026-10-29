@@ -18,8 +18,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
       '@braedonsaunders/appkit-desk':
-        specifier: 0.10.0
-        version: 0.10.0
+        specifier: 0.11.0
+        version: 0.11.0
       '@braedonsaunders/appkit-jobs':
         specifier: 0.3.0
         version: 0.3.0(@noble/hashes@2.4.0)
@@ -433,8 +433,8 @@ packages:
     resolution: {integrity: sha512-1oOjAFHSyWMF947dqzHeIorLh49nHhzFuMfP0LVlYcUys4RqOMT8XVKH8c8yrzpdB0cdhLjOvTpSTKJ40q8TBw==}
     engines: {node: '>=22'}
 
-  '@braedonsaunders/appkit-desk@0.10.0':
-    resolution: {integrity: sha512-BjL40vuNeU5y5pDFzgWuPyr8bcFyJ+33f+ZI6+gsJeNnUk+Ir8WrzpYvN7/susTvOhSVtzx3JnJ5dv28HH4Niw==}
+  '@braedonsaunders/appkit-desk@0.11.0':
+    resolution: {integrity: sha512-i7TspBcLAzUOvy9ao0A3nmNvQ6gubJXuZoOcyf3AqZ2pHgpSBwMyGWL8vmSIMySN8dcEo7X6RYjNZSDvVSKg2Q==}
     engines: {node: '>=22'}
 
   '@braedonsaunders/appkit-egress-proxy@0.2.1':
@@ -2816,7 +2816,7 @@ snapshots:
       - sql.js
       - sqlite3
 
-  '@braedonsaunders/appkit-desk@0.10.0': {}
+  '@braedonsaunders/appkit-desk@0.11.0': {}
 
   '@braedonsaunders/appkit-egress-proxy@0.2.1': {}
 

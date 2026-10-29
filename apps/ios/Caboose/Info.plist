@@ -48,5 +48,9 @@
 	<array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array><string>com.braedonsaunders.caboose.backup</string></array>
+	<key>UIBackgroundModes</key>
+	<array><string>processing</string></array>
 </dict>
 </plist>

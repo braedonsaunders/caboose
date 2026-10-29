@@ -130,6 +130,8 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect((await post('/v1/fs/open', { path: 'Documents/a.psd', app: 'ai.storyteller.photocraft.desktop' })).status).toBe(200)
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
+  // The operator's computer-scoped route reaches the same files relay.
+  expect((await fetch(base + '/v1/computers/owner/fs/content?path=a.txt', { method: 'PUT', headers: { authorization: 'Bearer owner', 'if-none-match': '*' }, body: 'hi' })).status).toBe(201)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
   expect((await fetch(base + '/v1/apps/firefox.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
   const shortcut = await post('/v1/apps/firefox.desktop/desktop-shortcut', {})

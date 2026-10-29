@@ -38,7 +38,9 @@ case $bundle in
     codesign --verify --strict "$host/bin/appkit-desk-vz"
     codesign --verify --strict "$host/Caboose.app"
     ;;
-  *linux-*) [[ -x $host/bin/cloud-hypervisor ]] || { echo 'FAIL: a Linux bundle lacks Cloud Hypervisor' >&2; exit 1; } ;;
+  *linux-*)
+    [[ -x $host/bin/cloud-hypervisor ]] || { echo 'FAIL: a Linux bundle lacks Cloud Hypervisor' >&2; exit 1; }
+    "$host/bin/caboose-disk" --version >/dev/null || { echo 'FAIL: a Linux bundle lacks a working caboose-disk' >&2; exit 1; } ;;
 esac
 
 port=$("$host/node/bin/node" -e "const s=require('net').createServer().listen(0,'127.0.0.1',()=>{console.log(s.address().port);s.close()})")

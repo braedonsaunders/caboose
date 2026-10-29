@@ -42,7 +42,10 @@ Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The 
 bundle ids are the app's plus a suffix (`.share`, `.files`, `.widgets`). All of them sign
 with the keychain group `<team>.com.braedonsaunders.caboose.shared`, through which they
 share the host address and token; the app, Files and Share extensions also share the
-application group `group.com.braedonsaunders.caboose`.
+application group `group.com.braedonsaunders.caboose`. The app also uses the iCloud Drive
+container `iCloud.com.braedonsaunders.caboose` (backups kept in iCloud Drive) and the
+background task `com.braedonsaunders.caboose.backup`; with automatic signing Xcode adds the
+iCloud capability to the app id on the first device build.
 
 ## Sign in
 
@@ -608,6 +611,15 @@ relaunch and confirm it remains.
 Restore Rotating from a generated scene and confirm a photograph replaces it when online.
 Check the picker credits and confirm the wallpaper stays aligned behind the shell capsules
 in portrait, landscape and on an external display.
+
+**Backup** keeps copies of the computer's disk on this phone or in iCloud Drive and restores
+them (`Backup/`, with the sealed vault in CabooseKit's `Backup/`; see Backups and Phone backups
+in `docs/architecture.md`). It needs a Linux host with parked Files on; otherwise it says why.
+Backup check on a device: turn Backup on, park the computer, wait for the capture (Newest on
+the computer), tap Back Up Now and confirm Last backup and Space used; change a file on the
+computer, park, back up again and confirm only a little more is stored. Restore the older
+backup, confirm the computer restarts with the old file, and that a second phone listing the
+same iCloud Drive vault can restore it too.
 
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be

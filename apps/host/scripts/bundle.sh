@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds a self-contained caboose-host for a native install: the host, its production
 # dependencies, the web console, the guest assets it installs, a pinned Node 22 and, on
-# Linux, a pinned Cloud Hypervisor. Nothing on the target machine is needed but a shell.
+# Linux, a pinned Cloud Hypervisor and caboose-disk (built with cargo and rustup). Nothing
+# on the target machine is needed but a shell.
 #
 #   apps/host/scripts/bundle.sh <linux|darwin> <amd64|arm64> <outdir>
 #
@@ -26,12 +27,12 @@ node_sha() {
     *) return 1 ;;
   esac
 }
-CH_VERSION=v54.0
-# The static Cloud Hypervisor releases; amd64 matches apps/host/Dockerfile.
+CH_VERSION=desk-vmm-v54.0-incremental.1
+# Pinned AppKit native VMM archives; these match apps/host/Dockerfile.
 ch_asset() {
   case "$1" in
-    amd64) echo "cloud-hypervisor-static 4f4f98a3d661a40f3e5272627cc895a1b2e525f2f6bedf5f895f9cd21ba5c65b" ;;
-    arm64) echo "cloud-hypervisor-static-aarch64 e8a6d9786ea678e739f1a386682846e93742dcb9c7b6e3e0c62e3bda6cff0ef3" ;;
+    amd64) echo "desk-vmm-amd64.tar.gz f93fd7128779b57ac6fecb4e42e7d9a2e6ae5a3e88caea84a6c86879b08e6818" ;;
+    arm64) echo "desk-vmm-arm64.tar.gz 9fdce8ded9dff25c8c35183995fd979ca509878862d421adc60232b5f7cfd1f7" ;;
   esac
 }
 
@@ -78,6 +79,10 @@ mkdir -p "$root/app/apps/host" "$root/app/apps/web" "$root/app/guest/catalog" "$
 cp -R "$work/host/node_modules" "$work/host/package.json" "$root/app/apps/host/"
 cp -R "$repo/apps/host/dist" "$root/app/apps/host/dist"
 cp -R "$repo/apps/host/migrations" "$root/app/apps/host/migrations"
+mkdir -p "$root/app/apps/host/scripts" "$root/app/apps/host/src" "$root/app/guest/image/initramfs"
+cp "$repo/apps/host/scripts/migrate-disk.py" "$root/app/apps/host/scripts/"
+cp "$repo/apps/host/src/migration_transaction.py" "$repo/apps/host/src/migration_appliance.py" "$repo/apps/host/src/migration_appliance_guard.py" "$root/app/apps/host/src/"
+cp "$repo/guest/image/initramfs/caboose-system" "$root/app/guest/image/initramfs/"
 cp -R "$repo/apps/web/dist" "$root/app/apps/web/dist"
 # The guest components the host installs: exactly the files their manifest lists.
 ( cd "$repo/guest" && node -e '
@@ -91,6 +96,7 @@ cp -R "$repo/guest/catalog/icons" "$root/app/guest/catalog/icons"
 # The seccomp profile the host gives containers (guest/container/README.md).
 cp "$repo/guest/container/caboose-seccomp.json" "$root/app/guest/container/"
 cp "$repo/apps/host/scripts/setup-disks.sh" "$root/bin/caboose-setup-disks"
+cp "$repo/apps/host/scripts/recover-template-source.sh" "$root/bin/caboose-recover-template-source"
 
 echo "Adding Node $NODE_VERSION ($os-$node_arch)"
 node_tar=$(fetch "https://nodejs.org/dist/$NODE_VERSION/node-$NODE_VERSION-$os-$node_arch.tar.xz" "$(node_sha "$os-$node_arch")")
@@ -102,8 +108,20 @@ mv "$work/node-$NODE_VERSION-$os-$node_arch/LICENSE" "$root/node/LICENSE"
 if [[ $os == linux ]]; then
   read -r ch_name ch_digest <<<"$(ch_asset "$arch")"
   echo "Adding Cloud Hypervisor $CH_VERSION"
-  cp "$(fetch "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/$CH_VERSION/$ch_name" "$ch_digest")" "$root/bin/cloud-hypervisor"
-  chmod 0755 "$root/bin/cloud-hypervisor"
+  mkdir -p "$root/lib/desk-vmm"
+  tar -xzf "$(fetch "https://github.com/braedonsaunders/appkit/releases/download/$CH_VERSION/$ch_name" "$ch_digest")" -C "$root/lib/desk-vmm"
+  (cd "$root/lib/desk-vmm" && while read -r digest name; do [[ $(sha256 "$name") == "$digest" ]] || exit 1; done < SHA256SUMS)
+  chmod 0755 "$root/lib/desk-vmm/cloud-hypervisor" "$root/lib/desk-vmm/ch-remote"
+  ln -s ../lib/desk-vmm/cloud-hypervisor "$root/bin/cloud-hypervisor"
+fi
+
+if [[ $os == linux ]]; then
+  # A static build, so the bundle runs on any glibc.
+  target=$([[ $arch == amd64 ]] && echo x86_64-unknown-linux-musl || echo aarch64-unknown-linux-musl)
+  echo "Building caboose-disk ($target)"
+  rustup target add "$target" >/dev/null
+  cargo build --quiet --release --locked --manifest-path "$repo/apps/host/disk/Cargo.toml" --target "$target" --target-dir "$work/disk"
+  cp "$work/disk/$target/release/caboose-disk" "$root/bin/caboose-disk"
 fi
 
 if [[ $os == darwin ]]; then
@@ -137,6 +155,9 @@ if [ -f "$here/VERSION" ] && [ -z "${CABOOSE_VERSION-}" ]; then
 fi
 if [ -x "$here/bin/cloud-hypervisor" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/cloud-hypervisor"
+fi
+if [ -x "$here/bin/caboose-disk" ] && [ -z "${CABOOSE_DISK_HELPER-}" ]; then
+  export CABOOSE_DISK_HELPER="$here/bin/caboose-disk"
 fi
 if [ -x "$here/bin/appkit-desk-vz" ] && [ -z "${CABOOSE_VMM_PATH-}" ]; then
   export CABOOSE_VMM_PATH="$here/bin/appkit-desk-vz"

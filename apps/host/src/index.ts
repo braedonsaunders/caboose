@@ -1,3 +1,4 @@
+import { vmPaths } from './vm-paths.js'
 import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
@@ -16,6 +17,7 @@ import { FlathubIndex } from './flathub.js'
 import { SmitheryCatalog } from './smithery.js'
 import { CraftReleases } from './releases.js'
 import { createController, createDeskPool } from './driver.js'
+import { openStorage } from './storage.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
 import type { Architecture } from './app-catalog-data.js'
 import { describeHost, machineResources } from './host-info.js'
@@ -31,8 +33,36 @@ import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawn, spawnSync } from 'node:child_process'
+import { fstatSync, statSync } from 'node:fs'
 
 const deployment = config(process.env)
+if (process.platform === 'linux' && deployment.runtime === 'microvm') {
+  if (!process.env.CABOOSE_HOST_LOCK_FD) {
+    const helper = fileURLToPath(new URL('./host-lock.py', import.meta.url))
+    const child = spawn('python3', [helper, deployment.imageRoot, process.execPath, ...process.execArgv, ...process.argv.slice(1)], { stdio: 'inherit' })
+    for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => child.kill(signal))
+    const status = await new Promise<number>((resolveStatus, reject) => {
+      child.once('error', reject)
+      child.once('exit', (code, signal) => resolveStatus(code ?? (signal ? 1 : 0)))
+    })
+    process.exit(status)
+  }
+  const fd = Number(process.env.CABOOSE_HOST_LOCK_FD)
+  if (fd !== 3) throw new Error('Invalid host lock descriptor')
+  const held = fstatSync(fd)
+  const path = statSync(join(deployment.imageRoot, '.host.lock'))
+  if (!held.isFile() || held.dev !== path.dev || held.ino !== path.ino) throw new Error('Host lock descriptor does not match image root')
+  // Reassert the lock on the same open file description, including on a direct exec.
+  const verified = spawnSync('python3', ['-c', 'import fcntl; fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)'], { stdio: ['ignore', 'ignore', 'pipe', fd] })
+  if (verified.status !== 0) throw new Error('Could not verify exclusive host lock')
+  const overlays = join(deployment.imageRoot, 'overlays')
+  const entries = await readdir(overlays).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  })
+  if (entries.some(name => name.endsWith('.migration.json'))) throw new Error('An unfinished disk migration must be recovered before starting the host')
+}
 const tierKey = await snapshotTierKey(process.env, deployment.runtime)
 const tierStore = tierKey ? createStorageFromEnv(process.env) : undefined
 const snapshotGc = tierStore && tierKey ? startSnapshotGc(join(deployment.imageRoot, 'overlays'), tierStore, tierKey) : undefined
@@ -67,6 +97,8 @@ if (vmDepot && /[:\n\r]/.test(vmDepot)) throw new Error('CABOOSE_VM_DEPOT cannot
 if (vmDepot && process.platform !== 'linux') throw new Error('CABOOSE_VM_DEPOT requires a Linux microVM host')
 if (vmDepot) await mkdir(vmDepot, { recursive: true, mode: 0o755 })
 const defaults = { memoryMb: deployment.memoryMb, vcpus: deployment.vcpus, idleMs: deployment.idleMs }
+// Shared storage and phone backups for microVM computers.
+const storage = await openStorage(deployment, process.env)
 
 /** A computer's settings, runtime and notifications, from its own directory. */
 async function open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces> {
@@ -79,10 +111,12 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
-    : createController(deployment, { identity, splitImage, depotPath: vmDepot, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(deployment, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  const snapshotPath = join(deployment.imageRoot, 'overlays', `${record.id}.snapshot`)
-  return { ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), join(deployment.imageRoot, 'overlays', `${record.id}.raw`), snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
+  const snapshotPath = paths.snapshot
+  const computerStorage = storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -121,7 +155,7 @@ void library.flathub.ready().catch(error => console.error('Flathub index unavail
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
-  machine: () => machineResources(deployment.imageRoot), reach,
+  machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,
 })
@@ -139,7 +173,7 @@ app.server.listen(deployment.port, deployment.host, () => {
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => storage.close()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 
@@ -174,8 +208,8 @@ function missingImage(): string {
 /** The disk a microVM computer uses on the host: its overlay and any parked memory. Unknown for a container. */
 async function diskBytes(record: ComputerRecord): Promise<number | null> {
   if (deployment.runtime !== 'microvm') return null
-  const overlays = join(deployment.imageRoot, 'overlays')
-  return await allocated(join(overlays, `${record.id}.raw`)) + await allocated(join(overlays, `${record.id}.snapshot`))
+  const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
+  return await allocated(paths.disk) + await allocated(paths.snapshot)
 }
 
 /** Bytes allocated to a file or directory tree (sparse files count only what they hold). */

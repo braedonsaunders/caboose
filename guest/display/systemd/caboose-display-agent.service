@@ -6,6 +6,7 @@ After=network.target user@1000.service caboose-agent-bus.service caboose-agent-n
 
 [Service]
 Type=simple
+Slice=caboose-workloads.slice
 User=caboose
 Group=caboose
 Environment=XDG_RUNTIME_DIR=/run/user/1000

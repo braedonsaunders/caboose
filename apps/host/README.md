@@ -27,6 +27,8 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
 | `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
+| `src/shared-storage.ts`, `src/backup.ts`, `src/restore-journal.ts`, `src/storage.ts` | Shared storage across parked microVM disks, phone backups and journaled restores, through `disk/`. |
+| `disk/` | `caboose-disk`, the Rust helper that shares blocks between disks, describes backups and deallocates zeros ([its README](disk/README.md)). |
 | `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs. |
 | `scripts/` | Real-host checks, the Docker entrypoint and `setup-disks.sh`. |
 | `systemd/caboose-host.service` | A user-service unit for running from a checkout. |
@@ -100,7 +102,7 @@ holds one directory, `caboose-host/`:
 | Path | What |
 | --- | --- |
 | `bin/caboose-host` | The launcher: the bundled Node runs `app/apps/host/dist/index.js`. It follows symlinks, so `/usr/local/bin/caboose-host` can point at it. |
-| `bin/cloud-hypervisor` | Linux only: Cloud Hypervisor v54.0 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
+| `bin/cloud-hypervisor` | Linux only: AppKit incremental.1 Cloud Hypervisor v54 (static, checked by SHA-256), used unless `CABOOSE_VMM_PATH` is set. |
 | `bin/appkit-desk-vz`, `Caboose.app` | macOS only: the signed Virtualization.framework helper and menu bar application. |
 | `bin/caboose-setup-disks` | `scripts/setup-disks.sh`, which prepares a reflink-capable disk root. |
 | `node/` | Node v22.23.4 for the target, checked against nodejs.org's SHA-256. |
@@ -127,8 +129,8 @@ docker compose -f deploy/compose.yaml exec caboose-host cat /data/caboose/disks/
 ```
 
 The image builds `caboose-host` and `caboose-web` from the workspace lockfile, serves the
-console at `/` on the same port as the API, and pins Cloud Hypervisor to the matching architecture’s v54.0
-static release (checked by SHA-256). Open `http://localhost:7310` on the server, or your
+console at `/` on the same port as the API, and pins Cloud Hypervisor to the matching architecture’s AppKit incremental.1
+release (archive and binary checked by SHA-256; licenses and source manifest included). Open `http://localhost:7310` on the server, or your
 HTTPS proxy, and enter the owner token; the console keeps it in the tab's session storage.
 To choose the token yourself, put `CABOOSE_OWNER_TOKEN` in `deploy/.env` (mode 0600); it is
 supplied only at runtime, never during the build.
@@ -206,12 +208,18 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_PORT` | `7310` | Listen port. |
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_SPLIT_IMAGE` | unset | Directory containing a separately built split microVM image. New Linux computers bind to its immutable version; existing disks remain unchanged. Keep all four version files for those computers. |
-| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with `CABOOSE_VM_COW=on`. |
+| `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with template cloning or a non-copy restore mode. |
 | `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
-| `CABOOSE_VM_COW` | `off` | `on` enables Cloud Hypervisor copy-on-write snapshot restore. |
+| `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a golden image with the current complete guest component bundle; cannot be combined with the microVM depot. |
+| `CABOOSE_VM_RESTORE_MODE` | `copy` | Linux Cloud Hypervisor snapshot restore: `copy`, `copyonwrite`, or `ondemand`. On-demand requires access to Linux userfaultfd and fails rather than falling back if unavailable. It cannot be combined with templates or the microVM depot. |
+| `CABOOSE_VM_COW` | `off` | `on` selects copy-on-write restore; conflicts with a different explicit restore mode. |
 | `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks (Linux, image root on XFS with reflink or Btrfs, `caboose-disk` installed); startup fails if either is missing. Totals appear in `/v1/health` as `sharedStorage`. |
+| `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before its disk is passed. |
+| `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` | The helper for shared storage and phone backups. The image and Linux bundles include it. Phone backups are offered when the helper is present and `CABOOSE_PARKED_FILES=on`. |
+| `CABOOSE_PARKED_FILES` | `off` | `on` opts Linux microVMs into parked read-only Files views when the guest, AppKit backend, reflink filesystem and libguestfs appliance support them; unsupported requests wake the computer. |
 | `CABOOSE_SNAPSHOT_TIER` | `off` | `on` archives parked Linux microVM memory to the configured private S3-compatible store after four hours. |
 | `CABOOSE_SNAPSHOT_KEY_FILE` | unset | Absolute path to a host-owned mode 0600 file containing a 32-byte encryption key as lowercase hex. Required when tiering is on. |
 | `APPKIT_STORAGE_ENDPOINT`, `APPKIT_STORAGE_BUCKET`, `APPKIT_STORAGE_ACCESS_KEY_ID`, `APPKIT_STORAGE_SECRET_ACCESS_KEY` | unset | S3-compatible storage connection used for cold snapshots. Required when tiering is on. |
@@ -241,8 +249,7 @@ upload, restore and object cleanup using a disposable snapshot. The check
 retains local receipts and reports their path if cleanup fails.
 
 Copy-on-write restore cannot be combined with virtio-fs shares, including shares
-recorded in a parked snapshot. Cloud Hypervisor v54 writes complete snapshots; it does
-not provide dirty-page-only snapshot deltas. Free-page reporting requires the guest balloon driver.
+recorded in a parked snapshot. The bundled AppKit incremental.1 VMM can reflink a copy-on-write restore source and write its private pages when parking again. It falls back to a full snapshot when incremental writing is unavailable; snapshots remain self-contained files, not a delta chain. Free-page reporting requires the guest balloon driver.
 
 Cold snapshot storage also accepts `APPKIT_STORAGE_REGION` and
 `APPKIT_STORAGE_FORCE_PATH_STYLE` (`true` or `false`). Back up the snapshot key
@@ -556,9 +563,22 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
+| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using a disposable ext4 image; it does not exercise parked Files access. |
+| `node apps/host/scripts/check-storage.mjs` | On a disposable Linux microVM host started with `CABOOSE_SHARED_STORAGE=on`, `CABOOSE_SHARED_STORAGE_DELAY_MS=5000` and `CABOOSE_PARKED_FILES=on` (`CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, `CABOOSE_OWNER_TOKEN`): makes two throwaway computers, checks the same data in both becomes shared storage and reads back unchanged, wakes one during a pass, then backs one up as a phone does (every chunk checked against its hash), changes it and restores it by uploading every chunk, and deletes both. |
+| `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
 | `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
 | `apps/host/scripts/check-open-app.sh` | With `CABOOSE_CHECK_FILE` (a local document) and `CABOOSE_CHECK_APP` (an installed desktop entry id): uploads the file and opens it with that app. Check the owner's display; the test copy stays in a uniquely named folder in the home. |
+
+For `check-parked-files.mjs`, use a dedicated disposable Linux microVM with a
+legacy ext4 image, updated guest components, `CABOOSE_PARKED_FILES=on`, a
+reflink-capable image filesystem, and a working libguestfs appliance. Disconnect
+other clients and allow component updates to finish before running it. The check
+parks and wakes the computer, creates a unique home directory and moves that
+directory to Trash afterward. A failed cleanup is reported. A fallback wake
+during a read fails the check; it does not prove the source of a failure. Run
+`pnpm --filter caboose-host exec vitest run scripts/check-parked-files.test.mjs` for the local harness
+without a VM. `CABOOSE_CHECK_TIMEOUT_MS` sets the request bound (10–600 seconds).
 | `node apps/host/scripts/check-push.mjs [device-index]` | Run on the host with its `CABOOSE_APNS_*` variables and `CABOOSE_IMAGE_ROOT`: sends a test alert to a device from `push-devices.json` (default index 0) without printing tokens. APNs acceptance is not proof of delivery; check the device. |
 | `apps/host/scripts/check-container.sh` | Against the running Compose service on Linux: the container's own network namespace, TAP and NAT, KVM access, the reflink disk root, authenticated health, and the bundled console (HTML, compiled assets, SPA fallback, API authentication). |
 
@@ -618,3 +638,66 @@ pnpm --filter caboose-host exec tsx -e "import {writeFileSync} from 'node:fs'; i
 docker run --rm --init --network none --memory 128m --cpus 1 -v "$PWD/apps/host/scripts/check-agent-delete.mjs:/check.mjs:ro" -v /tmp/caboose-delete-task-code.js:/delete-task.js:ro node:22-bookworm-slim node /check.mjs /delete-task.js
 rm /tmp/caboose-delete-task-code.js
 ```
+
+Parked Files requires Linux `python3-guestfs`, a libguestfs appliance kernel readable by the host user, and KVM access. Each supported request starts one network-disabled, read-only appliance; all metadata and bounded content chunks share that appliance. Names outside the supported ASCII subset, non-owner paths, ancestor ACLs, unsupported MIME tables and oversized directories fall back to wake. Guest MIME tables are parsed as literal data; no program from the computer executes in the reader.
+On Linux, microVM hosts require Python 3 to acquire the image-root lock before
+starting. The VMM and virtio-fs daemons retain the lock if the host exits. A host
+refuses to start while an `overlays/*.migration.json` journal exists. Run
+`python3 apps/host/scripts/tests/check-host-lock.py` to check lock inheritance
+with disposable processes. The lock cannot fence VMMs started by older hosts.
+
+### Migrate a legacy microVM disk
+
+On the Linux machine that owns the image root, stop the host and make sure the
+computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
+snapshot staging block migration; parked memory is never discarded. The tool
+requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, and
+the pinned Cloud Hypervisor v54 binary. Set `CABOOSE_VMM_PATH` or pass `--vmm`
+if it is not `/usr/local/bin/cloud-hypervisor`. Use `--mkfs` and `--fsck`
+for nonstandard `erofs-utils` paths. The appliance kernel must be installed and readable by root. The host must provide local OFD locking and
+process visibility; other backends and noncooperating writers are unsupported.
+
+From the checkout or the native bundle's `app` directory, use the computer ID
+(`owner` or `c-` followed by ten hexadecimal digits):
+
+```sh
+sudo python3 apps/host/scripts/migrate-disk.py --image-root /var/lib/caboose --computer owner inspect
+sudo python3 apps/host/scripts/migrate-disk.py --image-root /var/lib/caboose --computer owner migrate
+```
+
+Inspect reports the saved disk, binding, staged disk, retained original and
+journal without changing the computer. Migration copies the disk, preferring
+reflinks, packs its existing `/usr` and `/opt`, and rebuilds its initramfs with
+the matching installed kernel. Network-disabled libguestfs appliances parse the
+disk; guest-controlled hooks execute on a separate disposable clone. Migration
+rejects hard links crossing the system-image boundary. The original disk and
+the retained image remain in the image root. For the packing appliance, the
+image-root filesystem must have at least eight times the disk's logical size plus 5 GiB available; the tool refuses when this
+space is unavailable.
+
+If interrupted, keep the host stopped and run `recover` with the same image
+root and computer ID. Recovery refuses while a preparation appliance is running
+or cannot be verified; run it in the same PID namespace that launched the
+appliance. It restores the retained original if publication was interrupted,
+or retains an unpublished staged disk for inspection. To revert
+a completed migration, run `rollback --discard-migrated-writes` with the same
+arguments. The original disk is restored and the migrated disk is retained;
+writes made after migration are absent from the restored original. A subsequent
+migration archives the rollback artifacts in `migration-images`.
+
+The transaction and appliance checks run with `python3` on the corresponding
+`apps/host/scripts/tests/test-migration-*.py` files. Real-device checks require
+a disposable Linux microVM; never run them on a production computer.
+### Recovering an interrupted template source build
+
+An incomplete source build is never silently reused. Stop the Caboose host and
+verify that no other host instance is using the same image root. Run as root
+`apps/host/scripts/recover-template-source.sh IMAGE_ROOT SOURCE_ID` (the native
+bundle includes `bin/caboose-recover-template-source`). The command takes the image-root host lock and checks the
+recorded private VMM socket and the TAP ownership alias and interface index
+before removing the temporary network fence. An uncommitted TAP ownership
+receipt is ambiguous and requires manual inspection.
+It preserves any memory inode pinned by a descendant. For an incomplete source
+with no pins, it reports the directory to move aside before retrying. A source
+without a valid build receipt requires manual inspection. Never remove a source
+or child memory inode while a VMM may still map it.

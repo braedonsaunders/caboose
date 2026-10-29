@@ -210,6 +210,14 @@ struct ComputerSettingsView: View {
 
             Section {
                 NavigationLink {
+                    BackupSettingsView()
+                } label: {
+                    Label("Backup", systemImage: "externaldrive.badge.icloud")
+                }
+            }
+
+            Section {
+                NavigationLink {
                     AgentsView()
                 } label: {
                     LabeledContent("Agents", value: model.agents.defaultAgent.flatMap { model.agents.listing($0)?.name } ?? "Choose")

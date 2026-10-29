@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         AirPlayCenter.configureDefault()
         PushCoordinator.shared.configure()
         LiveActivityCoordinator.shared.configure()
+        BackupScheduler.register()
+        BackupScheduler.schedule()
         return true
     }
 
