@@ -160,7 +160,9 @@ final class YardModel {
         }
     }
 
-    private func send(_ window: RemoteWindow, _ target: CGRect, _ session: any DisplaySession) {
+    private func send(_ window: RemoteWindow, _ proposed: CGRect, _ session: any DisplaySession) {
+        guard let target = WindowSizePolicy.request(proposed, minimum: window.minimumSize,
+            maximum: window.maximumSize, fullscreen: window.isFullscreen) else { return }
         guard sent[window.id] != target else { return }
         sent[window.id] = target
         guard window.frame != target else { return }

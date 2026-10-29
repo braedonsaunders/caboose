@@ -275,20 +275,22 @@ final class TrackpadSurface: RemoteTextInputView {
             guard let session else { return }
             let window: RemoteWindow
             let anchor: CGPoint
-            let scale: CGFloat
+            let mapping: DesktopGeometry.SurfaceMapping?
             if let target {
                 window = target
                 anchor = CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height)
-                scale = 1 // TrackpadGestures supplies the existing target pixel gain.
+                mapping = nil // TrackpadGestures supplies the existing target pixel gain.
             } else {
                 guard let desktop, case .content(let id, let local) = desktop.hitTest(desktop.cursor, windows: session.windows),
                       let found = session.windows[id] else { return }
                 window = found
                 anchor = local
-                scale = desktop.pixelsPerPoint
+                guard let selected = desktop.inputMapping(for: found, windows: session.windows) else { return }
+                mapping = selected
             }
             let directTarget = target
             let originalDesktop = desktop
+            let originalFrame = window.frame
             scrolling = true
             session.resetScroll()
             scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta in
@@ -296,12 +298,14 @@ final class TrackpadSurface: RemoteTextInputView {
                       self.inputEnabled, self.pointerEnabled, self.session === session,
                       session.state == .ready, session.windows[window.id] === window else { return false }
                 if let directTarget {
-                    guard self.target === directTarget else { return false }
+                    guard self.target === directTarget, window.frame == originalFrame else { return false }
                 } else {
                     guard self.target == nil, let desktop = originalDesktop, self.desktop === desktop,
+                          desktop.inputMapping(for: window, windows: session.windows) == mapping,
                           case .content(let id, _) = desktop.hitTest(desktop.cursor, windows: session.windows), id == window.id else { return false }
                 }
-                session.scroll(in: window, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                let mapped = mapping?.delta(delta) ?? delta
+                session.scroll(in: window, dx: mapped.x, dy: mapped.y, at: anchor)
                 return true
             }
         }

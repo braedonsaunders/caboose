@@ -297,6 +297,7 @@ final class AppModel {
         selectedTab = .home
         deviceDesktopActive = false
         deviceViewport = DeviceViewport()
+        monitorPolicy = MonitorPolicy()
         desktop = DesktopModel(pixelsPerPoint: 1)
         yard.invalidate()
         filesRegistrationRevision += 1
@@ -579,26 +580,25 @@ final class AppModel {
         return parts.isEmpty ? "Connected" : parts.joined(separator: " · ")
     }
 
-    /// The screen the computer lays windows out for: the big screen at its own pixels when
-    /// one is connected, else the phone.
+    /// Monitor geometry is independent of the viewport presenting its windows. Keep
+    /// the device's first full-screen mode/DPI; external monitors own their own mode.
     private func displayCapabilities() -> ClientCapabilities {
-        if deviceViewport.owner == .card, deviceViewport.cardSize != .zero {
-            let frame = DeviceViewport.guestFrame(size: deviceViewport.cardSize, pixelsPerPoint: pixelsPerPoint)
-            return ClientCapabilities(desktopWidth: Int(frame.width), desktopHeight: Int(frame.height),
-                                      dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
-        }
-        if desktopActive {
+        var external: ClientCapabilities?
+        if externalDisplayActive {
             // The big screen at its own pixels: a real desktop, not a scaled phone.
             let scale = desktop.pixelsPerPoint
             // Linux text grows with the desktop's size factor, through the DPI it is told.
-            return ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
-                                      dpi: Int((96 * scale * desktop.ui).rounded()), refreshRate: 60)
+            external = ClientCapabilities(desktopWidth: Int(externalSize.width * scale), desktopHeight: Int(externalSize.height * scale),
+                                          dpi: Int((96 * scale * desktop.ui).rounded()), refreshRate: 60)
         }
         let bounds = UIScreen.main.bounds
-        let longSide = max(bounds.width, bounds.height)
-        // A square desktop that fits either orientation, so rotating never strands a window offscreen.
-        return ClientCapabilities(desktopWidth: Int(longSide * pixelsPerPoint), desktopHeight: Int(longSide * pixelsPerPoint),
-                                  dpi: Int(96 * pixelsPerPoint), refreshRate: UIScreen.main.maximumFramesPerSecond)
+        // Preserve the actual DPI chosen at attachment, including a device desktop's
+        // existing UI scale. Later stage widths do not silently change Linux text size.
+        let scale = deviceDesktopActive ? desktop.pixelsPerPoint : pixelsPerPoint
+        let dpi = deviceDesktopActive ? Int((96 * scale * desktop.ui).rounded()) : Int(96 * scale)
+        let device = MonitorPolicy.fullDevice(screen: bounds.size, pixelsPerPoint: scale,
+            dpi: dpi, refreshRate: UIScreen.main.maximumFramesPerSecond)
+        return monitorPolicy.resolve(device: device, external: external)
     }
 
     /// Follows the session's state and its windows: new windows from a launch open full screen.
@@ -757,6 +757,7 @@ final class AppModel {
 
     /// The space each presentation receives after layout, with one geometry owner at a time.
     private var deviceViewport = DeviceViewport()
+    private var monitorPolicy = MonitorPolicy()
     var windowCardOwnsGeometry: Bool { deviceViewport.owner == .card }
 
     /// The Desktop tab reports the space it has for the desktop.
@@ -900,9 +901,11 @@ final class AppModel {
     func adjustDesktopZoom(by factor: CGFloat) {
         let zoom = min(2.5, max(0.6, desktopZoom * factor))
         guard zoom != desktopZoom else { return }
+        let ratio = zoom / desktopZoom
         desktopZoom = zoom
         UserDefaults.standard.set(Double(zoom), forKey: "desktopZoom")
         desktop.ui = desktopUI(forWidth: externalSize.width)
+        if !externalDisplayActive { monitorPolicy.zoomDevice(by: Double(ratio)) }
         // Linux learns its new DPI from the next hello; the apps keep running.
         reconnectForDisplayChange()
     }
@@ -1304,8 +1307,7 @@ final class AppModel {
 
     /// The card's actual content viewport changes with folding, rotation and its controls.
     func windowCardResized(to size: CGSize) {
-        guard deviceViewport.updateCard(size), !externalDisplayActive else { return }
-        session?.reconfigure(displayCapabilities())
+        deviceViewport.updateCard(size)
     }
 
     /// Follows a `caboose://` shell link.

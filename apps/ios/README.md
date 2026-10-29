@@ -868,6 +868,20 @@ return-from-tab checks on a device. Pure orientation policy is covered by
 `swift test --filter DesktopChromeTests`; measurement-to-guest and dock geometry by
 `swift test --filter DeviceViewportTests`, both in CabooseKit.
 
+The device monitor retains its full-screen square dimensions and the DPI selected at
+attachment, including an active desktop's existing UI scale. Cards, keyboard, folding and
+stage layout update window viewports without changing that monitor. External modes and
+explicit owner zoom remain monitor changes. Ordinary card/dialog requests honor per-axis
+size hints; app fullscreen retains compositor geometry and uses the existing aspect-fit
+presentation/input transform. No fixed minimum desktop resolution is imposed.
+
+`swift test --jobs 1 --filter 'MonitorPolicyTests|WindowSizePolicyTests|FullscreenGeometryTests|CardWindowFitTests|DeviceViewportTests|DesktopGeometryTests|CabooseDisplaySessionTests'`
+checks monitor retention/external precedence, initial DPI/render-scale preservation,
+minimum/maximum hints at the shared configure boundary, fullscreen restoration and fitted
+position/delta geometry. Desktop trackpad scrolling snapshots the shown rectangle and
+committed remote size and cancels when either changes, including during inertia. These pure
+checks do not validate Wine's live DPI transitions or actual-device fullscreen input.
+
 Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
 Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.
 

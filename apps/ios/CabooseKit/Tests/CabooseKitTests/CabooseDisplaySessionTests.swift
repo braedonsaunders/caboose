@@ -213,6 +213,45 @@ final class FakeDecoder: PictureDecoder {
         try await until("accepted size") { remote.frame == requested }
     }
 
+    @Test func everyLayoutHonorsLateSizeHintsAtTheConfigureBoundary() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 752, 556]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        stream.server([(.windowUpdate, ["id": 7, "min": [1000, 700], "max": [1200, 700]])])
+        try await until("hints") { remote.maximumSize == CGSize(width: 1200, height: 700) }
+        _ = stream.take()
+        session.configure(remote, frame: CGRect(x: 20, y: 30, width: 500, height: 900))
+        #expect(stream.take().last?.body["geometry"] == [20, 30, 1000, 700])
+        #expect(remote.frame.size == CGSize(width: 752, height: 556))
+        stream.server([(.windowUpdate, ["id": 7, "geometry": [20, 30, 1000, 700]])])
+        try await until("committed") { remote.frame.size == CGSize(width: 1000, height: 700) }
+    }
+
+    @Test func fullscreenIgnoresViewportGeometryUntilExplicitExit() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 1800, 1600]))])
+        try await until("window") { session.windows[7] != nil }
+        let remote = try #require(session.windows[7])
+        stream.server([(.windowUpdate, ["id": 7, "fullscreen": true])])
+        try await until("fullscreen") { remote.isFullscreen }
+        _ = stream.take()
+        for viewport in [CGRect(x: 0, y: 0, width: 1062, height: 1886),
+                         CGRect(x: 0, y: 0, width: 1062, height: 900),
+                         CGRect(x: 0, y: 0, width: 2204, height: 1702)] {
+            session.configure(remote, frame: viewport, state: ["maximized": false])
+        }
+        #expect(stream.take().isEmpty)
+        #expect(remote.frame.size == CGSize(width: 1800, height: 1600))
+        let restored = CGRect(x: 20, y: 30, width: 800, height: 600)
+        session.configure(remote, frame: restored, state: ["fullscreen": false])
+        #expect(stream.take().last?.body["geometry"] == [20, 30, 800, 600])
+        #expect(!remote.isFullscreen)
+        #expect(remote.frame.size == CGSize(width: 1800, height: 1600))
+    }
+
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])),
@@ -318,6 +357,8 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.type == DisplayProtocol.ClientType.displays.rawValue)
         #expect(sent.body["displays"]?.array?.first?["width"]?.int == 3840)
         #expect(sent.body["displays"]?.array?.first?["scale"] == .double(2))
+        session.reconfigure(ClientCapabilities(desktopWidth: 3840, desktopHeight: 2160, dpi: 192, refreshRate: 60))
+        #expect(stream.take().isEmpty)
     }
 
     // MARK: Input

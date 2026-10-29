@@ -29,8 +29,14 @@ struct DesktopView: View {
                         .transition(.opacity)
                 }
                 if let session = model.session {
+                    if desktop.fullscreenWindow(in: session.windows) != nil {
+                        Color.black.frame(width: proxy.size.width, height: proxy.size.height).allowsHitTesting(false)
+                    }
+                    let surfaces = desktop.surfaceFrames(in: session.windows)
                     ForEach(desktop.shownWindows.compactMap { session.windows[$0] }) { window in
-                        DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
+                        if let surface = surfaces[window.id] {
+                            DesktopWindow(window: window, desktop: desktop, surface: surface, icon: model.icon(for: window))
+                        }
                     }
                 }
                 if desktop.launchpadOpen {
@@ -81,7 +87,9 @@ struct DesktopWindow: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let desktop: DesktopModel
+    let surface: CGRect
     let icon: UIImage?
+    @State private var fullscreenGeometry = FullscreenGeometry()
 
     private var hoveredControl: WindowTitleBar.Control? {
         switch desktop.hovered {
@@ -93,7 +101,7 @@ struct DesktopWindow: View {
     }
 
     var body: some View {
-        let chrome = desktop.chromeRect(window)
+        let chrome = desktop.presentedChrome(window, surface: surface)
         VStack(spacing: 0) {
             if !desktop.detachedChrome && !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
@@ -120,13 +128,10 @@ struct DesktopWindow: View {
         .clipShape(RoundedRectangle(cornerRadius: window.isFullscreen ? 0 : (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)
-        .onChange(of: window.isFullscreen) { _, _ in
-            if !model.windowCardOwnsGeometry {
-                withAnimation(.snappy) { desktop.applyFullscreen(window, session: model.session) }
-            }
-        }
-        .onAppear {
-            if window.isFullscreen && !model.windowCardOwnsGeometry { desktop.applyFullscreen(window, session: model.session) }
+        .onChange(of: WindowGeometryState(frame: window.frame, fullscreen: window.isFullscreen), initial: true) { _, state in
+            guard !model.windowCardOwnsGeometry else { return }
+            let restore = fullscreenGeometry.observe(state)
+            desktop.applyFullscreen(window, entered: fullscreenGeometry.entered, restore: restore, session: model.session)
         }
     }
 }
@@ -137,20 +142,23 @@ struct RemoteWindowSurface: UIViewRepresentable {
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
 
-    func makeUIView(context: Context) -> RemoteWindowView {
-        let view = RemoteWindowView(session: nil, window: window)
-        view.isInteractive = false
-        view.hostsGame = true
-        view.pixelsPerPoint = pixelsPerPoint
-        view.pacer = model.session
-        view.showsVideo = model.desktopActive && !model.yardActive
+    func makeUIView(context: Context) -> YardSurfaceView {
+        let view = YardSurfaceView(content: RemoteWindowView(session: nil, window: window))
+        view.content.isInteractive = false
+        view.content.hostsGame = true
+        view.content.pixelsPerPoint = pixelsPerPoint
+        view.content.pacer = model.session
+        view.content.showsVideo = model.desktopActive && !model.yardActive
         return view
     }
 
-    func updateUIView(_ view: RemoteWindowView, context: Context) {
-        view.pacer = model.session
-        view.showsVideo = model.desktopActive && !model.yardActive
-        if view.remoteWindow?.id != window.id { view.attach(window) }
+    func updateUIView(_ view: YardSurfaceView, context: Context) {
+        view.content.pacer = model.session
+        view.content.pixelsPerPoint = pixelsPerPoint
+        view.content.showsVideo = model.desktopActive && !model.yardActive
+        view.locallyRendered = window.game != nil
+        view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
+        if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
     }
 }
 

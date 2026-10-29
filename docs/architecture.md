@@ -2066,7 +2066,8 @@ the app card, and a detached view releases its layers.
   Screen control, the tile's menu and accessibility action, and ⌘⌥F open the same card. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
-  rotation and folding, replaces the guest display size; the complete picture fits while
+  rotation and folding, requests the window size within its hints without replacing the
+  retained monitor; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
   actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
@@ -2712,7 +2713,21 @@ resumes its conversation with the new runner and applies the choice before promp
 
 Synthetic mouse clicks from app cards, the desktop and its trackpad retain a 100 ms button-down interval and a 20 ms up interval between queued clicks. This lets frame-sampled desktop interfaces observe both edges. A drag or detached input view cancels pending clicks and releases the active button; queued input is fenced to the original session connection and window. Native touch sequences retain their original phases.
 
-An app card reasserts its measured viewport when the guest resizes the window after opening, including onboarding transitions. Corrections are limited to two per one-second burst so an app enforcing a minimum size does not cause a configure loop; a later app resize or viewport change starts a new burst.
+An ordinary app card requests its measured viewport within the app's positive per-axis
+minimum and maximum size hints, including hints received after opening. A minimum wins
+over an inconsistent maximum. Dialogs follow the same size rule and fit their reported
+picture when they cannot shrink to the viewport. Corrections are limited to two per
+one-second burst so a refused size does not cause a configure loop; a later app resize or
+viewport change starts a new burst. App-requested fullscreen retains compositor-owned
+monitor geometry and aspect-fit presentation/input until an explicit exit.
+
+The device's virtual monitor retains its full-screen square dimensions and the DPI
+chosen at attachment (the active device desktop's scale/UI, otherwise the phone scale).
+Card, keyboard, fold, orientation and desktop-stage measurements do not replace it.
+External monitors retain their own selected mode and DPI; explicit owner zoom can change
+DPI. Window viewports and visual render scale remain separate from monitor selection.
+This stabilizes output announcements; it does not guarantee a desktop application's
+minimum resolution or establish Wine compatibility with explicit live DPI changes.
 
 Window content and input retain the server-reported size while a resize is pending.
 Apps can constrain or decline a requested size without answering again; such windows
