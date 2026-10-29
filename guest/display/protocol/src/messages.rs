@@ -489,9 +489,10 @@ pub enum Message {
         seq: u64,
         pts_us: u64,
     },
-    /// Whether the application under a drop from the client accepts it.
+    /// Whether the application under a drop from the client accepts it; absent when it
+    /// answers only once it has the content, on the drop.
     DropStatus {
-        accepted: bool,
+        accepted: Option<bool>,
     },
     /// A drop from the client finished: the application took it, or why not.
     DropResult {
@@ -829,7 +830,7 @@ impl Message {
             | Message::ClientClipboard(c)
             | Message::DragData(c)
             | Message::DropPerform(c) => clipboard_value(c),
-            Message::DropStatus { accepted } => MapBuilder::new().put("accepted", *accepted).build(),
+            Message::DropStatus { accepted } => MapBuilder::new().opt("accepted", *accepted).build(),
             Message::DropResult { ok, reason } => MapBuilder::new().put("ok", *ok).opt("reason", *reason).build(),
             Message::DragStart { mimes } => MapBuilder::new().put("mimes", mimes.clone()).build(),
             Message::DragEnd { taken } => MapBuilder::new().put("taken", *taken).build(),
@@ -1003,7 +1004,7 @@ impl Message {
                 purpose: f.opt_string("purpose")?,
             }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
-            DROP_STATUS => Message::DropStatus { accepted: f.bool("accepted")? },
+            DROP_STATUS => Message::DropStatus { accepted: f.opt_bool("accepted")? },
             DROP_RESULT => Message::DropResult {
                 ok: f.bool("ok")?,
                 reason: f.opt("reason", |v| match v {

@@ -1924,7 +1924,9 @@ app group and a Keychain access group.
   the computer), or a new agent task with them attached.
 - **Drop.** Text, an image or files dragged over a window are dragged over the Linux
   application under the finger too ([display.md § Drag and drop](display.md#drag-and-drop)):
-  iOS shows the drop as allowed until that application refuses it. On drop the app uploads
+  iOS shows the drop as allowed unless that application refuses it (X11 applications
+  answer as the drag hovers; Wayland applications only once they have the content, on
+  the drop). On drop the app uploads
   the files (an image also as its file) to the transfer area, at most 512 MB each and 1 GB
   together, showing progress with Cancel, and then releases the drag on the application,
   which receives text, a PNG or JPEG, and the files as `file://` URIs. A refused,

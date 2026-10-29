@@ -25,7 +25,8 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// The computer's clipboard changed: the representations this client takes, checked.
     public var onClipboard: ((ClipboardContent) -> Void)?
-    /// Whether the application under the phone's drop accepts it; nil until it says.
+    /// Whether the application under the phone's drop accepts it; nil when it has not
+    /// said, or answers only on the drop.
     public private(set) var dropAccepted: Bool?
     /// A drop from the phone ended: whether the application took it, else why not.
     public var onDropResult: ((Bool, String?) -> Void)?

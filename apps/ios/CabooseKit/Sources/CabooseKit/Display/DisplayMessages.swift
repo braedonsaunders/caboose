@@ -312,8 +312,9 @@ public enum ServerMessage: Sendable {
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?)
     case clipboard(ClipboardContent)
-    /// Whether the application under a drop from the phone accepts it.
-    case dropStatus(accepted: Bool)
+    /// Whether the application under a drop from the phone accepts it; nil when it answers
+    /// only once it has the content, on the drop.
+    case dropStatus(accepted: Bool?)
     /// A drop from the phone ended: taken, or why not.
     case dropResult(ok: Bool, reason: String?)
     /// An application on the computer started dragging these types.
@@ -357,7 +358,7 @@ public enum ServerMessage: Sendable {
         case .textInput:
             parsed = body["id"]?.int.map { .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string) }
         case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
-        case .dropStatus: parsed = body["accepted"]?.bool.map { .dropStatus(accepted: $0) }
+        case .dropStatus: parsed = .dropStatus(accepted: body["accepted"]?.bool)
         case .dropResult: parsed = body["ok"]?.bool.map { .dropResult(ok: $0, reason: body["reason"]?.string) }
         case .dragStart: parsed = body["mimes"]?.array.map { .dragStart(types: $0.compactMap(\.string)) }
         case .dragEnd: parsed = body["taken"]?.bool.map { .dragEnd(taken: $0) }

@@ -568,8 +568,10 @@ def drop_into(x11):
         title, events = files["windows"][0]["title"], files["dnd"]
         if not (title.startswith("drop:") and "Files" in title.split(":")[1] and title.endswith(":report.txt=8")):
             raise Failed(f"the page shows {title!r} after the file drop (events {events})\n{log_tail(80, 'dnd') or log_tail(40)}")
-        if "status:true" not in events or events[-1] != "result:ok":
-            raise Failed(f"the drop was not accepted while hovering and finished: {events}")
+        # A Wayland application answers only once it has the content; an X11 one as the
+        # drag hovers.
+        if (x11 and "status:true" not in events) or events[-1] != "result:ok":
+            raise Failed(f"the drop was not accepted and finished: {events}")
         text = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--actions",
                       "drop-enter:text@100,300;wait:400;drop-move:120,310;wait:1000;"
                       "drop-text:dropped ✓;wait:3000"])
@@ -582,8 +584,9 @@ def drop_into(x11):
             raise Failed(f"a drop on the refusing part was {refused['dnd']}")
         if refused["windows"][0]["title"] != "drop:text/plain:dropped ✓":
             raise Failed(f"the refused drop reached the page: {refused['windows'][0]['title']!r}")
-        return ("a file and text from the phone drop into the page under the finger, accepted as they hover; "
-                "a drop where the page refuses is rejected")
+        return ("a file and text from the phone drop into the page under the finger"
+                + (", accepted as they hover" if x11 else ", entered once uploaded")
+                + "; a drop where the page refuses is rejected")
     try:
         return with_server(dnd_page(x11), run)
     finally:

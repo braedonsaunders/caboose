@@ -49,8 +49,6 @@ const READ_SETTLE: Duration = Duration::from_millis(600);
 const REENTER_TIMEOUT: Duration = Duration::from_secs(3);
 /// A drop the phone neither performs nor leaves ends after this long.
 const HOVER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-/// The most requests for a drop's data held before the phone has sent it.
-const MAX_WAITING: usize = 16;
 /// The most input messages held back while a drag's content is read.
 const MAX_DEFERRED: usize = 256;
 
@@ -73,13 +71,11 @@ struct Drop {
     target: Target,
     location: Point<f64, Logical>,
     /// The last `drop.status` sent.
-    status: Option<bool>,
+    status: Option<Option<bool>>,
     /// What the Wayland application under the drop said: the type it takes and the action.
     accepted_mime: Option<String>,
     action: DndAction,
     content: Option<Arc<Offer>>,
-    /// Requests for data that came before the content.
-    waiting: Vec<(String, OwnedFd)>,
     performed: Option<Instant>,
     /// The Wayland surface under the drop, with its origin.
     focus: Option<crate::input::Focus>,
@@ -165,7 +161,7 @@ impl State {
             }
         }
         let Some((location, _)) = self.locate(m.id, m.x, m.y) else {
-            self.send_to_client(&Message::DropStatus { accepted: false });
+            self.send_to_client(&Message::DropStatus { accepted: Some(false) });
             return;
         };
         let app_types = Offer::app_types(&types);
@@ -179,7 +175,6 @@ impl State {
             accepted_mime: None,
             action: DndAction::empty(),
             content: None,
-            waiting: Vec::new(),
             performed: None,
             focus: None,
             reentered: None,
@@ -241,14 +236,21 @@ impl State {
             drop.target = target;
             drop.accepted_mime = None;
             drop.action = DndAction::empty();
-            self.drop_status(false);
+            // A Wayland application is entered only with the content (see `drop_perform`),
+            // so it answers on the drop; an X11 window answers by XDND as the drag moves.
+            let wayland = matches!(drop.target, Target::Wayland(_));
+            self.drop_status(if wayland { None } else { Some(false) });
         }
         let drop = self.dnd.drop.as_mut().unwrap();
-        let wayland_focus = match &drop.target {
+        // Over a Wayland surface the drag only follows the finger: the surface is not
+        // entered until the content is here (`drop_perform`), because applications read
+        // what they are offered as it enters, and the phone has nothing to give before the
+        // drop.
+        drop.focus = match &drop.target {
             Target::Wayland(_) => under,
             _ => None,
         };
-        drop.focus = wayland_focus.clone();
+        let wayland_focus: Option<crate::input::Focus> = None;
         if let Target::X11 { session, .. } = &drop.target {
             session.send(xdnd::Command::Position(location.x.round() as i16, location.y.round() as i16));
         }
@@ -308,10 +310,6 @@ impl State {
         let drop = self.dnd.drop.as_mut().unwrap();
         drop.performed = Some(Instant::now());
         drop.content = Some(offer.clone());
-        // Reads made while hovering get the content too, though the drag enters again.
-        for (mime, fd) in drop.waiting.drain(..) {
-            offer.send(&mime, fd);
-        }
         match &drop.target {
             Target::X11 { session, .. } => {
                 session.send(xdnd::Command::Drop(offer));
@@ -319,11 +317,9 @@ impl State {
                 self.end_drop_grab(false);
             }
             Target::Wayland(_) => {
-                // Applications read a drag's data as it enters, and many (Chromium) decide
-                // from it whether to accept; the phone could only send it now. The drag
-                // leaves and enters the surface again with the content ready, and once the
-                // application accepts that offer it is released on it (`drop_answered`).
-                tracing::debug!("dnd: entering again with the content");
+                // The surface is entered now, with the content ready to read, and once the
+                // application accepts the offer it is released on it (`drop_answered`).
+                tracing::debug!("dnd: entering with the content");
                 drop.reentered = Some(Instant::now());
                 drop.accepted_mime = None;
                 drop.action = DndAction::empty();
@@ -353,7 +349,9 @@ impl State {
         self.send_to_client(&Message::DropResult { ok, reason: (!ok).then_some(failure) });
     }
 
-    fn drop_status(&mut self, accepted: bool) {
+    /// Tells the phone whether the application under the drop accepts it; `None` when
+    /// it answers only on the drop.
+    fn drop_status(&mut self, accepted: Option<bool>) {
         let Some(drop) = self.dnd.drop.as_mut() else { return };
         if drop.status != Some(accepted) {
             drop.status = Some(accepted);
@@ -377,13 +375,12 @@ impl State {
         self.drop_answered();
     }
 
-    /// The Wayland application answered: tell the phone while hovering, and release the
-    /// drag once it accepts the offer made with the content.
+    /// The Wayland application answered: release the drag once it accepts the offer
+    /// made with the content.
     fn drop_answered(&mut self) {
         let Some(drop) = self.dnd.drop.as_mut() else { return };
         let accepted = matches!(drop.target, Target::Wayland(_)) && wayland_accepts(&drop.accepted_mime, drop.action);
         if drop.reentered.is_none() {
-            self.drop_status(accepted);
             return;
         }
         let read = matches!(*drop.writes.lock().unwrap(), (0, t) if t.is_none_or(|t| t.elapsed() >= READ_SETTLE));
@@ -461,8 +458,8 @@ impl State {
                     *w = (w.0 - 1, Some(Instant::now()));
                 });
             }
-            None if drop.waiting.len() < MAX_WAITING => drop.waiting.push((mime, fd)),
-            None => {}
+            // Only an offer made with the content is read.
+            None => std::mem::drop(fd),
         }
     }
 
@@ -496,7 +493,7 @@ impl State {
             return;
         }
         match report {
-            xdnd::Report::Status(accepted) => self.drop_status(accepted),
+            xdnd::Report::Status(accepted) => self.drop_status(Some(accepted)),
             xdnd::Report::Finished(true) => self.drop_finish(true, DropFailure::Rejected),
             xdnd::Report::Finished(false) => self.drop_finish(false, DropFailure::Rejected),
             xdnd::Report::Failed { timeout } => {
@@ -507,7 +504,7 @@ impl State {
                     if let Some(drop) = self.dnd.drop.as_mut() {
                         drop.target = Target::None;
                     }
-                    self.drop_status(false);
+                    self.drop_status(Some(false));
                 }
             }
         }

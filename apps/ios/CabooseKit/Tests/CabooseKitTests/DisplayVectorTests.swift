@@ -228,6 +228,7 @@ import Testing
         #expect(copy.filePaths == ["/home/caboose/Pictures/a b.png"])
         #expect(ClipboardPolicy.validate(copy) == nil)
         guard case .dropStatus(true) = try server("drop-status").first,
+              case .dropStatus(nil) = try server("drop-status-unknown").first,
               case .dropResult(false, "rejected") = try server("drop-result-rejected").first,
               case .dropResult(true, nil) = try server("drop-result-ok").first,
               case .dragStart(let types) = try server("drag-start").first,

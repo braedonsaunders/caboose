@@ -254,7 +254,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
-| `0x32` | `drop.status` | `accepted: bool` (see "Drag and drop") |
+| `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
 | `0x33` | `drop.result` | `ok: bool`, `reason?: "rejected"\|"cancelled"\|"timeout"\|"invalid"` |
 | `0x34` | `drag.start` | `mimes: [mime]` |
 | `0x35` | `drag.end` | `taken: bool` |
@@ -357,32 +357,31 @@ drop's or a drag's content has the shape of a `clipboard` message.
 
 **A drop from the client** (`drop`). While the client drags something over a window,
 it sends `drop.enter` with the window, the window-local position and the types it can
-deliver, then `drop.motion` as it moves, over the same window or another. The server
-drags the same types over the application at that point: a Wayland window gets a
-compositor-owned Wayland drag, an X11 window an XDND (version 3 to 5) drag from the
-server's own X client, with the copy action only. `drop.status` reports whether the
-application under the point accepts it, whenever that changes and after every change of
-window (as not accepted until the application says otherwise). When the user lets go,
-the client prepares the content (it uploads files to the transfer area first) and sends
-`drop.perform` with it: the types are a subset of those it entered with, and its files
-must be in the transfer area. Only then is the drag released, on the application under
-the last position, which then reads the content. `drop.result` ends the drop: `ok`, or
-`rejected` (nothing there accepted it), `cancelled` (no drop was in progress), `timeout`
-(the application did not finish within 30 s, or the drop hovered 15 minutes without a
-`drop.motion`) or `invalid` (the content failed the checks). `drop.leave` ends a drop
-without a result.
+deliver, then `drop.motion` as it moves, over the same window or another. Applications
+read what a drag offers as it enters, and many decide from it whether to accept, but the
+client can deliver the content only once the user has let go. So the server follows the
+finger and enters the application under it as each kind of window allows:
 
-Applications read a drag's data as it enters, and many decide from it whether to
-accept, but the client can deliver the content only once the user has let go. So
-`drop.status` while hovering reflects what the application says without the content, and
-on `drop.perform` the server enters the application again with the content ready: a
-Wayland drag leaves and re-enters the surface, an XDND drag re-enters if the window asked
-for data early. The server releases the drag once the application accepts, has been sent
-all it asked for, and has had 0.6 s to read it, moving the drag over it meanwhile; an
-application that does not accept within 3 s (XDND: 2 s of renewed positions) rejects the
-drop. Chromium on Wayland sometimes hands a dropped text to its page empty (one drop in
-five in the `drop-wayland` check); files and X11 targets do not show this. While a drop is in progress the server ignores the client's `pointer`
-messages, which would move the drag.
+- **X11 windows** get an XDND (version 3 to 5) drag from the server's own X client, with
+  the copy action only, as the finger moves. `drop.status { accepted }` reports the
+  window's answer whenever it changes. A window that asked for the data before it was
+  there is entered again once it is.
+- **Wayland windows** are entered only on the drop, with the content ready: a
+  compositor-owned Wayland drag follows the finger without entering any surface, and
+  `drop.status` is sent without `accepted`.
+
+When the user lets go, the client prepares the content (it uploads files to the transfer
+area first) and sends `drop.perform` with it: the types are a subset of those it entered
+with, and its files must be in the transfer area. The server then drops on the
+application under the last position. A Wayland application is entered and the drag
+released once it accepts the offer, has been sent everything it asked for and has had
+0.6 s to read it, the drag moving over it meanwhile; an XDND window is dropped on once it
+accepts, its position renewed for up to 2 s. `drop.result` ends the drop: `ok`, or
+`rejected` (the application did not accept it; a Wayland application has 3 s), `cancelled`
+(no drop was in progress), `timeout` (the application did not finish within 30 s, or the
+drop hovered 15 minutes without a `drop.motion`) or `invalid` (the content failed the
+checks). `drop.leave` ends a drop without a result. While a drop is in progress the server
+ignores the client's `pointer` messages, which would move the drag.
 
 **A drag to the client** (`drag`). When a Wayland application starts dragging something
 in a type the client takes (text, or one its hello lists in `clipboard_types`), the

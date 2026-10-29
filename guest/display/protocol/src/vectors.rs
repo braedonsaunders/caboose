@@ -309,7 +309,12 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "drop-status",
             "The application under the client's drop accepts it.",
-            Message::DropStatus { accepted: true },
+            Message::DropStatus { accepted: Some(true) },
+        ),
+        one(
+            "drop-status-unknown",
+            "Over an application that decides only once it has the content: no answer until the drop.",
+            Message::DropStatus { accepted: None },
         ),
         one(
             "drop-result-rejected",

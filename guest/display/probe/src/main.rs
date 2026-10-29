@@ -822,7 +822,9 @@ fn run(args: Args) -> Result<bool, String> {
                         .map(|(_, d)| String::from_utf8_lossy(d).into_owned());
                     clipboard_entries = c.entries().map(|(m, d)| (m.to_owned(), d.len(), fnv1a(d))).collect();
                 }
-                Message::DropStatus { accepted } => dnd_events.push(format!("status:{accepted}")),
+                Message::DropStatus { accepted } => {
+                    dnd_events.push(format!("status:{}", accepted.map(|a| a.to_string()).unwrap_or("unknown".into())))
+                }
                 Message::DropResult { ok, reason } => dnd_events
                     .push(format!("result:{}", if ok { "ok" } else { reason.map(|r| r.as_str()).unwrap_or("failed") })),
                 Message::DragStart { mimes } => dnd_events.push(format!("start:{}", mimes.join("|"))),
