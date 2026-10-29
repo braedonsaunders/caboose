@@ -38,9 +38,7 @@ impl AlphaTiler {
         }
         let full = Rect::new(0, 0, self.width as i32, self.height as i32);
         let changed = match damage.filter(|_| self.shadow.len() == row * h) {
-            Some(d) => {
-                convert::changed_blocks(src.data, src.stride, &mut self.shadow, row, self.width, self.height, d)
-            }
+            Some(d) => convert::changed_blocks(src.data, src.stride, &mut self.shadow, row, self.width, self.height, d),
             None => {
                 self.shadow.clear();
                 for y in 0..h {
