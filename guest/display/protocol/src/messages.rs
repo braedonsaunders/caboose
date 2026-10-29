@@ -285,6 +285,8 @@ pub struct ClientHello {
     pub wasm: bool,
     /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
     pub gpu: bool,
+    /// The client accepts half-resolution motion streams.
+    pub scaled_motion: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -313,6 +315,8 @@ pub struct VideoCreate {
     /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
     /// in band.
     pub extradata: Option<Vec<u8>>,
+    /// This motion stream is encoded at half the region's width and height.
+    pub scaled: bool,
 }
 
 /// `video.frame` (0x13): one access unit, in decode order.
@@ -791,6 +795,7 @@ impl Message {
                     }),
                 )
                 .opt("extradata", m.extradata.clone())
+                .opt("scaled", m.scaled.then_some(true))
                 .build(),
             Message::VideoFrame(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -859,6 +864,7 @@ impl Message {
                 .opt("audio_decoders", m.audio_decoders.clone())
                 .opt("wasm", m.wasm.then_some(true))
                 .opt("gpu", m.gpu.then_some(true))
+                .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1044,6 +1050,7 @@ impl Message {
                     }
                 },
                 extradata: f.opt_bytes("extradata")?,
+                scaled: f.opt_bool("scaled")?.unwrap_or(false),
             }),
             VIDEO_FRAME => Message::VideoFrame(VideoFrame {
                 id: f.u64("id")?,
@@ -1105,6 +1112,7 @@ impl Message {
                 },
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
+                scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },

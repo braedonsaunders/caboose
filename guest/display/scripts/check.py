@@ -515,6 +515,20 @@ def check_motion():
             f"the final pictures match at {match:.1f} dB")
 
 
+def check_scaled_motion():
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "13", "--windows", "1", "--decoders", "h264", "--scaled-motion"])
+        if len(r["videos"]) != 1:
+            raise Failed(f"expected one motion stream: {r['videos']}")
+        v = r["videos"][0]
+        if not v["scaled"] or v["source"] != "motion" or v["size"] != [v["rect"][2] // 2, v["rect"][3] // 2]:
+            raise Failed(f"scaled motion dimensions or placement are wrong: {v}")
+        if v["frames"] < 120 or v["decoded"] != v["frames"] or v["decode_errors"] or not v["destroyed"]:
+            raise Failed(f"scaled motion did not decode and end cleanly: {v}")
+        return f"{v['frames']} decoded motion frames at {v['size']}, placed at {v['rect']}"
+    return with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/movie.html#240"], run)
+
+
 def server_status(pid):
     fields = dict(line.split(":", 1) for line in open(f"/proc/{pid}/status") if ":" in line)
     return int(fields["Threads"]), int(fields["VmRSS"].split()[0]) // 1024
@@ -743,6 +757,7 @@ CHECKS = [
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("encoder-eviction", check_encoder_eviction),
+    ("scaled-motion", check_scaled_motion),
     ("replace", check_replace),
     ("storm", check_storm),
     ("takeover", check_takeover),

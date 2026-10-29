@@ -1845,10 +1845,10 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
-computer encodes video into the same window picture as its controls and returns unsupported
-passthrough streams to server decoding. The layered-video client remains explicitly
-negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+requests half-resolution software-encoded motion streams and upscales them with MetalFX,
+or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
+decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
 then adjusts playback continuously with pitch preservation. This accommodates virtual

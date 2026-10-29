@@ -45,6 +45,8 @@ public final class RemoteVideo: @unchecked Sendable {
     private var pictureFormat: CMVideoFormatDescription?
     private var awaitingKeyframe = false
     private var lastKeyframeRequest: UInt64 = 0
+    private let scaledMotion: Bool
+    private var upscaler: MotionUpscaler?
 
     init?(_ fields: VideoStreamFields, clock: MediaClock? = nil, send: @escaping @Sendable (ClientMessage) -> Void) {
         guard let window = fields.window, let rect = fields.rect, let codec = fields.codec else { return nil }
@@ -52,6 +54,7 @@ public final class RemoteVideo: @unchecked Sendable {
         self.window = window
         self.codec = codec
         source = fields.source ?? .passthrough
+        scaledMotion = fields.scaled && fields.source == .motion
         color = fields.color
         self.send = send
         self.clock = clock
@@ -123,7 +126,7 @@ public final class RemoteVideo: @unchecked Sendable {
         guard let format = bitstream.format else { throw H264DecoderError.noParameterSets }
         if changed || session == nil {
             if let session { VTDecompressionSessionInvalidate(session) }
-            session = try VideoToolboxSession.make(format, pixelFormat: nil)
+            session = try VideoToolboxSession.make(format, pixelFormat: scaledMotion ? kCVPixelFormatType_32BGRA : nil)
             if color == nil, Self.isHDR(format) { showHDR() }
         }
         guard let bytes, let session else { return nil }
@@ -136,7 +139,14 @@ public final class RemoteVideo: @unchecked Sendable {
 
     /// Live motion follows the immediately presented base picture. Only passthrough
     /// pictures use the audio clock; a live layer must not gate audio clock startup.
-    private func show(_ picture: CVPixelBuffer, at pts: UInt64?) {
+    private func show(_ rawPicture: CVPixelBuffer, at pts: UInt64?) {
+        let picture: CVPixelBuffer
+        if scaledMotion {
+            if upscaler == nil { upscaler = MotionUpscaler() }
+            picture = upscaler?.upscale(rawPicture) ?? rawPicture
+        } else {
+            picture = rawPicture
+        }
         let renderer = layer.sampleBufferRenderer
         if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
         if pictureFormat.map({ !CMVideoFormatDescriptionMatchesImageBuffer($0, imageBuffer: picture) }) ?? true {

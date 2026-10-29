@@ -261,7 +261,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
-| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes` |
+| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
 | `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
 | `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
 | `0x15` | `video.destroy` | `id` |
@@ -284,7 +284,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool` (each present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -353,10 +353,8 @@ shared audio timeline, and an idle live video renderer cannot hold audio preroll
 
 ### Video streams
 
-The iOS app negotiates whole-window video by default: it omits `video_decoders`, so the
-computer encodes video into the same window picture as its controls and returns unsupported
-passthrough streams to server decoding. The layered-video client remains explicitly
-negotiated for protocol checks. PCM playback uses decoded sample durations to join adjacent
+The iOS app omits `video_decoders`, so passthrough streams return to server decoding. It
+advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
 then adjusts playback continuously with pitch preservation. This accommodates virtual
@@ -394,8 +392,13 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   rates. A region qualifies once it has been a dense rectangle of at least 192×112
   picture pixels for a second, with most of its macroblocks changing in most pictures at
   15 or more pictures a second. It is sent in the window stream's codec at the window
-  picture's pixel scale, and only to a client that lists that codec in `video_decoders`;
-  a window with a passthrough stream bound gets none. While the stream exists, the
+  picture's pixel scale by default, to a client that lists that codec in `video_decoders` or advertises
+  `scaled_motion`. With `scaled_motion`, a software-encoded region divisible by four is box-filtered to
+  half width and height and `video.create.scaled` is true; `rect` and `clip` still use
+  window coordinates. The client upscales the decoded picture with MetalFX where available,
+  falling back to vImage on the CPU if the scaler cannot be made or fails; if that fails,
+  the video layer scales the decoded picture.
+  A window with a passthrough stream bound gets none. While the stream exists, the
   window's `frame`s keep the region frozen, including keyframes, replacement codec buffers
   and refinement passes; the client shows the stream over it. Refining the base does not
   recreate the motion encoder or lose its reference frames. Once the
