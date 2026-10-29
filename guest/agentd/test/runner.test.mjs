@@ -181,6 +181,31 @@ describe('a turn', () => {
     expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-photocraft; blocks: text,text; recap: no; display: :101')
   })
 
+  it('offers the computer\'s MCP Library to a chat started with it, while the Library is there', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, mcpLibrary: true }))
+    const descriptor = join(t.root, 'mcp-library.json')
+    t.env.CABOOSE_MCP_LIBRARY = descriptor
+    await writeFile(descriptor, JSON.stringify({ url: 'https://mcp.smithery.run/space', token: 'svc-scoped-token' }))
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop,caboose-library; blocks: text,text; recap: no; display: :101')
+  })
+
+  it('says so when the MCP Library a chat started with is gone', async () => {
+    const t = await task()
+    const config = JSON.parse(await readFile(join(t.dir, 'task.json'), 'utf8'))
+    await writeFile(join(t.dir, 'task.json'), JSON.stringify({ ...config, mcpLibrary: true }))
+    t.env.CABOOSE_MCP_LIBRARY = join(t.root, 'absent.json')
+    await t.prompt(1, 'hello')
+    t.start()
+    await t.turnEnd(1)
+    expect(await t.texts(1)).toContain('turns in session: 1; mcp: caboose-desktop; blocks: text,text; recap: no; display: :101')
+    expect((await t.events()).some(event => event.type === 'notice' && event.text.includes("MCP Library isn't available"))).toBe(true)
+  })
+
   it('streams an agent-neutral transcript', async () => {
     const t = await task()
     await t.prompt(1, 'hello tool plan')
