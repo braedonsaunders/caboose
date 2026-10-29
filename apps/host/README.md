@@ -688,8 +688,10 @@ a disposable Linux microVM; never run them on a production computer.
 An incomplete source build is never silently reused. Stop the Caboose host and
 verify that no other host instance is using the same image root. Run as root
 `apps/host/scripts/recover-template-source.sh IMAGE_ROOT SOURCE_ID` (the native
-bundle includes `bin/caboose-recover-template-source`). The command checks the
-recorded private VMM socket and TAP before removing the temporary network fence.
+bundle includes `bin/caboose-recover-template-source`). The command takes the image-root host lock and checks the
+recorded private VMM socket and the TAP ownership alias and interface index
+before removing the temporary network fence. An uncommitted TAP ownership
+receipt is ambiguous and requires manual inspection.
 It preserves any memory inode pinned by a descendant. For an incomplete source
 with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
