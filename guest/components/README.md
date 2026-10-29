@@ -44,3 +44,8 @@ docker run --rm --memory 512m --cpus 2 -v "$PWD/guest/components:/checks:ro" deb
 
 They check replacement of loaded code with a lost pid file, preservation on an ordinary
 start, and refusal to accept an unrelated listener as the replacement.
+
+The bundle includes the owner keyring helper and its GNOME Keyring dependency. It installs
+`caboose-session` only in container modes, including updates to existing containers; VM
+lifecycle units remain managed by their image. Keyring initialization/unlock occurs through
+the host after the Files service is ready, never inside the installer.

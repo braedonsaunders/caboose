@@ -88,7 +88,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -129,6 +129,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }
+  let keyringGeneration = 0
+  let keyring: { state: 'preparing' | 'ready' | 'failed'; message?: string } | null = null
   let upgrade: UpgradeStatus | null = null
   let upgrading = false
   let upgradeWork: Promise<void> | undefined
@@ -297,6 +299,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const warning = controller.componentsWarning?.()
     if (warning) throw new ComputerConflictError(warning)
   }
+  async function ensureKeyringReady(): Promise<void> {
+    await upgradeWork
+    // An existing/custom store may require an interactive unlock or recovery tool.
+    // Keep that route available; the persistent status carries the preparation error.
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -307,7 +314,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       clients: { display: sockets.size - controls.size - terminals.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!push },
-      upgrade,
+      upgrade, keyring,
       routines: { error: routineError },
       agentTools: { error: toolsError },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
@@ -326,12 +333,25 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   function closeSockets(): void { for (const socket of sockets) socket.terminate() }
   computer.subscribe(state => {
     broadcast({ type: 'computer.state', state })
+    if (state !== 'running') { keyringGeneration++; keyring = null }
     if (state === 'running' && controller.componentsMode && !upgrading) {
       const guest = controller.guest()
       if (guest) {
         upgrading = true
         const release = computer.acquire()
-        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade).finally(() => { upgrading = false; release() })
+        const generation = ++keyringGeneration
+        keyring = pieces.prepareKeyring ? { state: 'preparing' } : null
+        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade).then(async () => {
+          if (!pieces.prepareKeyring) return
+          try {
+            if (upgrade?.state === 'failed') throw new Error('Update guest components before preparing the keyring')
+            await pieces.prepareKeyring()
+            if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'ready' }
+          } catch (error) {
+            if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'failed', message: error instanceof Error ? error.message : 'The computer keyring is unavailable' }
+          }
+          if (generation === keyringGeneration && computer.state === 'running') broadcastSettings()
+        }).finally(() => { upgrading = false; release() })
       }
     }
     if (state === 'running') { agents.resume(); bridgeWake() }
@@ -410,6 +430,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         url.searchParams.set('path', relative)
         const checked = await fetch(url, { headers: { authorization: `Bearer ${service.token}` } })
         if (!checked.ok) return json(response, checked.status, { error: 'file unavailable' })
+        await ensureKeyringReady()
         if (typeof input.app === 'string') await controller.launch(input.app, relative)
         else await openOnDisplay(controller.guest()!, `/home/caboose/${relative}`)
         return json(response, 200, { opened: true })
@@ -619,7 +640,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
     if (request.method === 'POST' && match?.[1]) {
       const { action } = parseAppLaunch(await readJson(request))
-      await computer.run(() => controller.launch(decodeURIComponent(match[1]!), undefined, action))
+      await computer.run(async () => { await ensureKeyringReady(); await controller.launch(decodeURIComponent(match[1]!), undefined, action) })
       return json(response, 200, { launched: true })
     }
     if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())
@@ -761,7 +782,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     if (request.method === 'POST' && path === '/v1/open') {
       const input = await readJson(request)
-      return json(response, 200, await computer.run(() => openUrl(controller.guest(), input)))
+      return json(response, 200, await computer.run(async () => { await ensureKeyringReady(); return openUrl(controller.guest(), input) }))
     }
     return NOT_FOUND
   }

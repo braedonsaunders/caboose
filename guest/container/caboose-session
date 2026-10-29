@@ -14,7 +14,45 @@ esac
 export XDG_RUNTIME_DIR=/run/user/1000
 install -d -o caboose -g caboose -m 0700 "$XDG_RUNTIME_DIR"
 install -d -m 0755 /run/dbus
-if [ ! -S /run/dbus/system_bus_socket ]; then dbus-daemon --system --fork; fi
+# /run survives a container stop. Only a failed connection with a known stale-socket
+# error permits removing the socket; a live pid or any other failure stops recovery.
+if python3 - <<'SYSTEM_BUS'
+import errno, os, pathlib, socket, stat
+path = pathlib.Path('/run/dbus/system_bus_socket')
+with socket.socket(socket.AF_UNIX) as connection:
+    connection.settimeout(2)
+    try:
+        connection.connect(str(path))
+    except OSError as error:
+        if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+            raise SystemExit(2)
+    else:
+        raise SystemExit(0)
+pidfile = pathlib.Path('/run/dbus/pid')
+if pidfile.exists():
+    value = pidfile.read_text().strip()
+    if not value.isdecimal() or int(value) <= 1:
+        raise SystemExit(2)
+    try:
+        os.kill(int(value), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise SystemExit(2)
+try:
+    if not stat.S_ISSOCK(path.lstat().st_mode):
+        raise SystemExit(2)
+    path.unlink()
+except FileNotFoundError:
+    pass
+pidfile.unlink(missing_ok=True)
+raise SystemExit(1)
+SYSTEM_BUS
+then :; else
+  status=$?
+  [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
+  dbus-daemon --system --fork
+fi
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
 
 # Each seat has its own session bus, so the agents' notifications never reach the owner.

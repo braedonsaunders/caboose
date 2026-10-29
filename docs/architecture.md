@@ -156,6 +156,29 @@ replaces its script atomically and reuses dependencies whose exact versions alre
 An active runner finishes with the code it loaded; the next runner uses the installed code.
 The bundle does not include Caboose Display or its units, which come with the image.
 
+### Owner credential store
+
+The host holds a random nonempty per-computer keyring password in `keyring-secret` in that
+computer's state directory, mode 0600 and owned by the host user. Preserve this file with
+the computer's protected backups. After components and the private Files service are ready
+at each wake, the host supplies the password to the guest's private `POST /keyring` endpoint.
+The password travels in a bounded request body and helper stdin, never in command arguments,
+environment variables or logs. The public filesystem proxy permits only file operations.
+
+The helper activates or adopts the owner's GNOME Secret Service on `/run/user/1000/bus`.
+It unlocks through the daemon's control socket, checking the peer PID against the D-Bus
+service owner. Only an empty credential store is initialized; existing keyrings and browser
+profiles are preserved. An existing locked keyring that does not accept the managed password
+requires its original password and an explicit operator migration. No reset, empty password
+or plaintext browser password store is selected. The host waits for this bounded preparation
+before owner app, file and URL launches. `GET /v1/computer` and `computer.settings` expose
+`keyring: null | { state: preparing | ready | failed, message? }`; a failure remains visible while ordinary launches and interactive keyring recovery stay
+available.
+Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
+
+The agent seat still has separate Secret Service activation against the shared home;
+concurrent credential-store access from both seats is unresolved.
+
 ### Runtimes
 
 The computer runs as a **microVM** by default: Cloud Hypervisor on Linux or

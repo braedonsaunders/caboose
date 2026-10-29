@@ -47,6 +47,8 @@ COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 COPY apps/host/migrations ./apps/host/migrations
 COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/library-mcp.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
 COPY guest/components ./guest/components
+COPY guest/keyring ./guest/keyring
+COPY guest/container/caboose-session ./guest/container/
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
 COPY guest/notifications ./guest/notifications

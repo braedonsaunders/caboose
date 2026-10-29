@@ -27,3 +27,27 @@ secret; repeat the helper and browser launch; freeze/resume; cold restart with t
 credential; verify the original secret and an unlocked default collection each time. A wrong
 credential after cold boot must return `migration-required` and leave stored files intact.
 The helper addresses the owner bus only; the agent seat has a separate session bus.
+
+Both image builders and existing-computer updates install the helper through
+`guest/components/install.sh`. After each wake the host provisions through the private Files
+service and checks readiness before launching owner applications. The host's saved
+`keyring-secret` is reused unchanged; a missing credential cannot recover an existing locked
+store. GNOME Keyring remains attached to the persistent owner bus through repeated launches
+and memory park. No daemon restart occurs during component upgrades.
+
+For the real-service scripted check, copy `check.py` into the guest and run it as `caboose`,
+piping the host's private credential through stdin exactly as for the helper. Supply a
+unique random 32-character lowercase hex check ID (a test label, not a credential):
+
+```
+python3 /tmp/keyring-check.py seed CHECK_ID
+python3 /tmp/keyring-check.py verify CHECK_ID
+python3 /tmp/keyring-check.py cleanup CHECK_ID
+```
+
+Run `verify` after repeated owner browser launches, after park/wake, and after a cold boot.
+It verifies the same synthetic secret and checks two provisioning calls retain the daemon
+and produce no Secret Service prompt. `cleanup` deletes only the item tagged with that
+unique check ID. Inspect the actual browser windows as well: a loaded page and no GCR dialog
+are separate checks from secret storage. Do not lock or reset a live user's collections as
+a test; wrong-password checks belong in a disposable computer.

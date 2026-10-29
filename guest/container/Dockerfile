@@ -56,6 +56,8 @@ COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs age
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
+COPY keyring /tmp/bundle/keyring
+COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications

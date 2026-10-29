@@ -189,3 +189,9 @@ match that architecture. The release tag selects the matching image automaticall
 The session bus is probed before reuse. A socket left behind by a stopped container is
 replaced only when connecting reports missing or refused; other errors stop startup.
 Run `python3 guest/container/test-session-bus.py` from the repository root to check the probe.
+
+The system bus is probed before reuse, because `/run` survives a container stop. Only a
+missing or refused socket with no live recorded PID permits removing the stale socket and
+pidfile. Other failures require operator attention. Existing-computer component updates
+install the current `caboose-session` script for container computers. Run
+`python3 guest/container/test-system-bus.py` to check the recovery policy.
