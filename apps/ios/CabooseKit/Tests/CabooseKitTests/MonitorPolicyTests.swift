@@ -137,7 +137,9 @@ struct MonitorPolicyTests {
         let external = ClientCapabilities(desktopWidth: 3840, desktopHeight: 2160, dpi: 192)
         #expect(policy.resolve(external: external) == external)
         #expect(policy.resolve()?.desktopHeight == 616)
-        #expect(policy.saved() == saved)
+        let before = try JSONSerialization.jsonObject(with: saved) as? NSDictionary
+        let after = try JSONSerialization.jsonObject(with: #require(policy.saved()))
+        #expect(before?.isEqual(after) == true)
         var restored = MonitorPolicy()
         restored.bind(computer: "computer-a", saved: saved)
         #expect(restored.laptopPanel == nil)
