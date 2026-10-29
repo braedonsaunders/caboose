@@ -42,8 +42,20 @@ export async function verifyTemplateGuestComponents(source: Pick<DeskHandle, 'ex
   if (required.exitCode !== 0 || required.truncated) throw new Error('Golden image is missing a required template service or helper')
 }
 
+const sourceBuilds = new Map<string, Promise<void>>()
+
 /** Build only from the golden image into a new private, non-user VM directory. */
-export async function buildTemplateSource(options: TemplateBuildOptions): Promise<void> {
+export function buildTemplateSource(options: TemplateBuildOptions): Promise<void> {
+  const pending = sourceBuilds.get(options.directory)
+  if (pending) return pending
+  const work = buildTemplateSourceOnce(options)
+  sourceBuilds.set(options.directory, work)
+  const clear = () => { if (sourceBuilds.get(options.directory) === work) sourceBuilds.delete(options.directory) }
+  void work.then(clear, clear)
+  return work
+}
+
+async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<void> {
   for (const path of [options.directory, options.baseImage, options.kernel, options.initramfs, options.vmmPath]) {
     if (!isAbsolute(path)) throw new Error('Template builder requires absolute paths')
   }
