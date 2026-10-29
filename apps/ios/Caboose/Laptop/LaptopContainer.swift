@@ -54,10 +54,7 @@ struct LaptopContainer<Content: View>: View {
             } : nil
             ZStack(alignment: .topLeading) {
                 LaptopUpperPanel(screen: frames.screen, division: geometry.division,
-                                 active: active, size: proxy.size,
-                                 fullscreen: !isCard && !model.externalDisplayActive && model.session.map {
-                                     model.desktop.fullscreenWindow(in: $0.windows) != nil
-                                 } == true) {
+                                 active: active, size: proxy.size) {
                     content(active)
                         .environment(\.laptopInputOwned, active)
                 }
@@ -294,13 +291,13 @@ struct LaptopKeyHeader: UIViewRepresentable {
 }
 
 /// Content ends at the upper edge of the physical division. Only that reserved
-/// division gets a fullscreen matte; keyboard occlusion never becomes hinge padding.
+/// division stays black throughout Laptop mode, independently of app window state.
+/// Keyboard occlusion never becomes hinge padding.
 struct LaptopUpperPanel<Content: View>: View {
     let screen: CGRect
     let division: CGRect?
     let active: Bool
     let size: CGSize
-    let fullscreen: Bool
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -309,7 +306,7 @@ struct LaptopUpperPanel<Content: View>: View {
             content()
                 .frame(width: size.width, height: active ? screen.height : size.height)
                 .clipped()
-            if active, fullscreen, let division,
+            if active, let division,
                division.width > division.height, division.minY > 0, division.maxY < size.height {
                 Color.black
                     .frame(width: size.width, height: division.height)

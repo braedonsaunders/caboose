@@ -71,7 +71,7 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
         XCTAssertEqual(probe.physicalGeometry(division: measured.division).hostSize, measured.hostSize)
     }
 
-    func testHostedUpperPanelCoversOnlyMeasuredHingeWithFullscreenMatte() throws {
+    func testHostedUpperPanelKeepsMeasuredHingeBlackAcrossContentTransitions() throws {
         let size = CGSize(width: 656, height: 932)
         let division = CGRect(x: 0, y: 446, width: 656, height: 40)
         let host = UIHostingController(rootView: AnyView(EmptyView()))
@@ -81,12 +81,15 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
         window.isHidden = false
         defer { window.isHidden = true; window.rootViewController = nil }
         for keyboard in [CGFloat(0), 600] {
-            for fullscreen in [true, false] {
+            for hasWindow in [true, false, true] {
                 let frames = LaptopLayout.frames(size: size, division: division, keyboard: keyboard)
                 host.rootView = AnyView(ZStack(alignment: .topLeading) {
                     Color(red: 0, green: 1, blue: 0)
                     LaptopUpperPanel(screen: frames.screen, division: division, active: true,
-                                     size: size, fullscreen: fullscreen) { Color(red: 1, green: 0, blue: 0) }
+                                     size: size) {
+                        if hasWindow { Color(red: 1, green: 0, blue: 0) }
+                        else { Color.clear }
+                    }
                 }.frame(width: size.width, height: size.height).ignoresSafeArea())
                 window.layoutIfNeeded()
                 host.view.layoutIfNeeded()
@@ -109,9 +112,9 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
                     let offset = (y * Int(size.width) + 100) * 4
                     return bytes[offset..<(offset + 3)]
                 }
-                XCTAssertEqual(Array(pixel(Int(frames.screen.maxY) - 1)), [255, 0, 0])
-                XCTAssertEqual(Array(pixel(446)), fullscreen ? [0, 0, 0] : [0, 255, 0])
-                XCTAssertEqual(Array(pixel(485)), fullscreen ? [0, 0, 0] : [0, 255, 0])
+                XCTAssertEqual(Array(pixel(Int(frames.screen.maxY) - 1)), hasWindow ? [255, 0, 0] : [0, 255, 0])
+                XCTAssertEqual(Array(pixel(446)), [0, 0, 0])
+                XCTAssertEqual(Array(pixel(485)), [0, 0, 0])
                 XCTAssertEqual(Array(pixel(486)), [0, 255, 0]) // controls begin here
                 if keyboard > 0 {
                     XCTAssertEqual(Array(pixel(400)), [0, 255, 0]) // keyboard gap is not a hinge

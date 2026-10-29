@@ -957,7 +957,9 @@ order, restoration and external precedence. `DesktopSurfaceLayoutTests` hosts th
 representable, changes the committed remote size before the parent bounds catch up, and
 asserts one full-rectangle Metal view with an identity transform and no inner fit. It also
 hosts the production Laptop upper panel and checks the content/hinge boundaries in rendered
-pixels, including a keyboard-shortened viewport that must not expand the hinge matte.
+pixels across content appearing and disappearing. The measured hinge stays black throughout
+Laptop mode regardless of app fullscreen state; a keyboard-shortened viewport does not
+expand that matte.
 Attached-window conversion is checked with an offset probe and a changing probe viewport. The
 compositor regression `cargo test -p caboose-display empty_client_announcement_retains_default_and_previous_output`
 in `guest/display` checks both default and retained output identity for empty announcements.

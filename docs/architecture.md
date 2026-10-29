@@ -2141,8 +2141,9 @@ the app card, and a detached view releases its layers.
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
   upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
-  During app fullscreen the measured reserved division between the upper panel and controls
-  has a black matte. Keyboard occlusion does not enlarge that division.
+  The measured reserved division between the upper panel and controls stays black throughout
+  Laptop mode, including window, fullscreen and loading transitions. Keyboard occlusion does
+  not enlarge that division.
   Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
