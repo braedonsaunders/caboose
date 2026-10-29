@@ -298,11 +298,12 @@ Each instance serves one client at a time; a new authenticated client replaces t
 previous one. Its readiness probe is:
 
 ```
-caboose-display-ready [TIMEOUT] [PORT]   # default 60 s, port 14600
+caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]   # default 60 s, port 14600
 ```
 
 It exits 0 once the instance on `PORT` answers a hello made with the current display
-token. The host starts the owner's display with
+token and has written its launch environment (`/run/caboose/display.env`, or
+`agent-display.env` for port 14601). The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
 `caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
 wake fails if the display writes no launch environment.

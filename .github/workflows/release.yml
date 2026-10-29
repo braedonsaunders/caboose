@@ -138,7 +138,7 @@ jobs:
         include:
           - { os: linux, arch: amd64, runner: ubuntu-24.04 }
           - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
-          - { os: darwin, arch: arm64, runner: macos-14 }
+          - { os: darwin, arch: arm64, runner: macos-15 }
     runs-on: ${{ matrix.runner }}
     env:
       CABOOSE_VERSION: ${{ inputs.tag || github.ref_name }}
@@ -174,8 +174,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Hosts, installers and Docker pull the images anonymously. GHCR makes a new package
-      # private, so a first release stops here until each package is set to public.
+      # Hosts, installers and Docker pull the images anonymously; stop before publishing
+      # bundles that could not fetch them.
       - name: Check the images are public
         run: |
           owner=${REGISTRY#ghcr.io/}
