@@ -171,11 +171,17 @@ struct Credentials: Equatable {
     }
 
     /// A developer's own host, injected at build time from the untracked Local.xcconfig.
+    /// Debug builds only: a Release archive from the same machine must never sign in to the
+    /// developer's computer, and the build settings leave the keys empty there as well.
     private static func developmentDefaults() -> Credentials? {
+        #if DEBUG
         guard let host = Bundle.main.object(forInfoDictionaryKey: "CabooseDevelopmentHost") as? String, !host.isEmpty,
               let token = Bundle.main.object(forInfoDictionaryKey: "CabooseDevelopmentToken") as? String, !token.isEmpty,
               let url = URL(string: host) else { return nil }
         return Credentials(hostURL: url, token: token)
+        #else
+        return nil
+        #endif
     }
 }
 

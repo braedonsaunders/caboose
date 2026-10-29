@@ -1,5 +1,9 @@
 // Shared build settings. A developer's own host and token go in Local.xcconfig
-// (untracked), which pre-fills the setup screen of their personal builds only.
+// (untracked), which pre-fills the setup screen of their personal Debug builds only.
 CABOOSE_DEVELOPMENT_HOST =
 CABOOSE_DEVELOPMENT_TOKEN =
 #include? "Local.xcconfig"
+// A Release build never carries them, whatever Local.xcconfig says: a conditional
+// setting wins over an unconditional one for the configurations it names.
+CABOOSE_DEVELOPMENT_HOST[config=Release] =
+CABOOSE_DEVELOPMENT_TOKEN[config=Release] =
