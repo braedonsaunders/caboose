@@ -24,6 +24,13 @@ struct HostClient: Sendable {
         var icon: String
         var categories: [String]
         var exec: String
+        /// The entry's desktop actions (`New Private Window`); absent from hosts that predate them.
+        var actions: [Action]?
+
+        struct Action: Decodable, Hashable, Sendable {
+            var id: String
+            var name: String
+        }
 
         /// The PNG behind the icon's data URL.
         var iconData: Data? {
@@ -107,9 +114,11 @@ struct HostClient: Sendable {
     func wake(timeout: TimeInterval = 300) async throws -> Session { try await request("POST", "/v1/session", timeout: timeout) }
     func apps() async throws -> [App] { try await request("GET", "/v1/apps", timeout: 60) }
 
-    func launch(_ app: App) async throws {
+    /// Starts an app, or one of its desktop actions.
+    func launch(_ app: App, action: App.Action? = nil) async throws {
         let id = app.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? app.id
-        let _: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", timeout: 30)
+        let body: [String: JSONValue]? = action.map { ["action": .string($0.id)] }
+        let _: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", body: body, timeout: 30)
     }
 
     func park() async throws {
