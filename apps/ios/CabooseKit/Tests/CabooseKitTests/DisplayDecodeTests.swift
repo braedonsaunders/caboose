@@ -1,3 +1,4 @@
+import CoreMedia
 import CoreGraphics
 import CoreVideo
 import Foundation
@@ -101,11 +102,22 @@ import VideoToolbox
     }
 
     @Test(.enabled(if: AV1Decoder.isSupported)) func av1DecodesInHardware() throws {
-        // Decode directly first so a failure reports the VideoToolbox status rather
-        // than only the pipeline's failed acknowledgement.
-        let decoder = AV1Decoder()
-        for unit in try Self.av1TemporalUnits() { _ = try decoder.decode(unit) }
-        decoder.invalidate()
+        // Bounded baseline diagnostic: compare output attributes without changing
+        // the production decoder or its actual picture/ack assertions below.
+        let formatter = OBUFormatter()
+        _ = try formatter.sample(from: Self.av1TemporalUnits()[0])
+        let format = try #require(formatter.format)
+        print("AV1 capability \(AV1Decoder.isSupported), sequence \(String(describing: formatter.sequence)), extensions \(String(describing: CMFormatDescriptionGetExtensions(format)))")
+        for (name, pixelFormat) in [("BGRA", Optional(kCVPixelFormatType_32BGRA)), ("native", nil)] {
+            do {
+                let session = try VideoToolboxSession.make(format, pixelFormat: pixelFormat)
+                defer { VTDecompressionSessionInvalidate(session) }
+                var hardware: CFTypeRef?
+                let status = VTSessionCopyProperty(session, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder,
+                                                  allocator: kCFAllocatorDefault, valueOut: &hardware)
+                print("AV1 \(name): created, hardware status \(status), value \(String(describing: hardware))")
+            } catch { print("AV1 \(name): \(error)") }
+        }
         let sent = Sent()
         let pipeline = FramePipeline(windowID: 1, width: 64, height: 64) { sent.append($0) }
         for (index, unit) in try Self.av1TemporalUnits().enumerated() {

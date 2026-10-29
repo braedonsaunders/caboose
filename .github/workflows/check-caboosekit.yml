@@ -23,9 +23,14 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_26.0.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
-      - run: swift --version
+      - run: |
+          swift --version
+          sw_vers
+          xcodebuild -version
+          sysctl hw.model hw.machine hw.ncpu
+          system_profiler SPHardwareDataType
       - name: Check protocol, session and Metal surface behavior
-        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2 --filter 'CabooseDisplaySessionTests|DisplayVectorTests|DisplayDecodeTests|TileTests|WindowSurfaceTests'
+        run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2 --filter 'CabooseDisplaySessionTests|DisplayVectorTests|h264KeyframeDecodesIntoTheWindow|hevcKeyframeIsCroppedAndScaled|TileTests|WindowSurfaceTests'
       - name: Check the complete kit
         run: swift test --package-path apps/ios/CabooseKit --disable-sandbox -j 2
       - name: Collect crash diagnostics

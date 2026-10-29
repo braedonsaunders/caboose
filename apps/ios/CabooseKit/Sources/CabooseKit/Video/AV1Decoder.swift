@@ -249,20 +249,9 @@ public final class AV1Decoder: PictureDecoder {
     private let bitstream = OBUFormatter()
 
     /// Whether this device decodes AV1 in hardware; the client offers AV1 only then.
-    public static var isSupported: Bool {
-        _ = registered
-        return VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)
-    }
+    public static var isSupported: Bool { VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) }
 
-    // macOS exposes AV1 as a supplemental decoder. A capability query alone does
-    // not register it for VTDecompressionSessionCreate.
-    private static let registered: Void = {
-        #if os(macOS)
-        VTRegisterSupplementalVideoDecoderIfAvailable(kCMVideoCodecType_AV1)
-        #endif
-    }()
-
-    public init() { _ = Self.registered }
+    public init() {}
 
     deinit { invalidate() }
 
