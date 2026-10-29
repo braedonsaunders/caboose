@@ -106,6 +106,15 @@ pub fn plan(
     if let Some(dy) = vote(&shown_rows[first..=last], &new_rows[first..=last], band_h / 2) {
         add((0, dy));
     }
+    // Fixed sidebars and scrollbars can make every complete row different even
+    // when the document between them moved exactly. Vote on its middle half too;
+    // the complete damaged region still has to pass the exact block comparison.
+    let inset = region_w / 4;
+    let middle_shown: Vec<_> = (band.0..band.1).map(|y| hash(shown.row(y, x0 + inset, x1 - inset))).collect();
+    let middle_new: Vec<_> = (band.0..band.1).map(|y| hash(new.row(y, x0 + inset, x1 - inset))).collect();
+    if let Some(dy) = vote(&middle_shown, &middle_new, band_h / 2) {
+        add((0, dy));
+    }
     if hints.iter().any(|&(dx, _)| dx != 0) {
         let shown_columns = column_hashes(shown, x0, x1, band.0, band.1);
         let new_columns = column_hashes(new, x0, x1, band.0, band.1);
@@ -122,6 +131,7 @@ pub fn plan(
     // More differing blocks than this, and the copy is not worth it: the share the copy
     // must reproduce, and at most half of the blocks that changed.
     let allowed = (blocks * (100 - MIN_MATCH_PERCENT) / 100).min(band_blocks / 2);
+    tracing::debug!("copy search: region {region:?}, band {band:?}, candidates {candidates:?}, allowed {allowed}");
     candidates.into_iter().find_map(|shift| {
         let copy = Shift::new(region, band, shift)?;
         let missed = copy.misses(shown, new, allowed, region)?;
@@ -488,6 +498,23 @@ mod tests {
         assert!(attempt(plane(&shown), plane(&new), &all(), &[]).is_none());
         let plan = exact(&shown, &new, &all(), &[(0, -32)]);
         assert_eq!(plan.dst.1 - plan.src.y, -32);
+    }
+
+    #[test]
+    fn fixed_side_pixels_do_not_hide_the_documents_scroll() {
+        let (mut shown, mut new) = (page(0, 0), page(0, 18));
+        // A narrow fixed sidebar with distinct pixels on every row prevents full
+        // rows from voting. Input deltas are only hints, not the actual scroll.
+        for y in 0..H {
+            for x in 0..8 {
+                let at = (y * W + x) * 4;
+                let pixel = doc(x, y + 900);
+                shown[at..at + 4].copy_from_slice(&pixel);
+                new[at..at + 4].copy_from_slice(&pixel);
+            }
+        }
+        let plan = exact(&shown, &new, &all(), &[(0, -20)]);
+        assert_eq!(plan.dst.1 - plan.src.y, -18);
     }
 
     #[test]
