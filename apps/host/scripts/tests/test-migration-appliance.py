@@ -132,7 +132,7 @@ class ApplianceTests(unittest.TestCase):
                        'CABOOSE_TREE_V1 1 1 0\n', 'CABOOSE_TREE_V1 1 1000001 0\n',
                        'CABOOSE_TREE_V1 1099511627777 2 0\n',
                        'CABOOSE_TREE_V1 1099511627776 2 0\n',
-                       'CABOOSE_TREE_V1 1 2 16777217\n',
+                       'CABOOSE_TREE_V1 1 2 16777216\n', 'CABOOSE_TREE_V1 1 2 16777217\n',
                        'CABOOSE_TREE_V1 1 2 0\nnoise\n'):
             with self.subTest(result=result), self.assertRaises(m.ApplianceError):
                 m._measured_scratch(result)
@@ -213,10 +213,10 @@ class ApplianceTests(unittest.TestCase):
         attrs = self.root / 'attrs'
         attrs.write_bytes(xattrs)
         find = bindir / 'find'
-        find.write_text('#!/bin/sh\n/bin/cat "' + str(source) + '"\nexit ' + str(find_status) + '\n')
+        find.write_text('#!/bin/sh\nset -e\n/bin/cat "' + str(source) + '"\nexit ' + str(find_status) + '\n')
         find.chmod(0o700)
         getter = self.root / 'getter'
-        getter.write_text('#!/bin/sh\n/bin/cat "' + str(attrs) + '"\nexit ' + str(xattr_status) + '\n')
+        getter.write_text('#!/bin/sh\nset -e\n/bin/cat "' + str(attrs) + '"\nexit ' + str(xattr_status) + '\n')
         getter.chmod(0o700)
         script = m._measurement_script().replace(m._pack_preflight(), 'set -eu')
         script = script.replace('/tmp/caboose-awk', '/usr/bin/awk')

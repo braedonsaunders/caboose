@@ -84,7 +84,7 @@ def main():
                             'mount-ro', '/dev/sda', '/', ':',
                             'checksum', 'sha256', '/usr/probe', ':',
                             'checksum', 'sha256', '/opt/hardlink', ':',
-                            'getxattr', '/usr/probe', 'user.caboose-test', ':',
+                            'getxattr', '/usr/probe', 'user.caboose-test', ':', 'echo', '', ':',
                             'filesize', '/usr/sparse', ':',
                             'readlink', '/usr/symlink', ':', 'shutdown']
                 result = m._guestfish(commands, m._environment(directory), directory / 'verify.log',

@@ -681,7 +681,7 @@ inside a bounded read-only appliance, counting hardlinks per pathname and sparse
 files at their full logical size. It also measures serialized extended attributes
 and allows 16 KiB per entry for metadata, plus fixed tool/filesystem headroom.
 The measurement rejects more than one million entries, 1 TiB of logical content,
-or 16 MiB of serialized extended attributes. Read-only scans reserve 16 GiB;
+or 16 MiB or more of serialized extended attributes. Read-only scans reserve 16 GiB;
 packing reserves four times its computed scratch size plus 4 GiB. These limits
 include simultaneous output, cache, COW and log artifacts; unavailable space fails
 before that phase starts.

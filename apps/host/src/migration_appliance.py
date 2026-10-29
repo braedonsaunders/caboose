@@ -161,7 +161,7 @@ def _measurement_script():
             'export LD_LIBRARY_PATH=/tmp/caboose-libs; '
             '(ulimit -f 32768; /tmp/caboose-getfattr --absolute-names -R -P -h -d -m - -e hex '
             '/sysroot/usr /sysroot/opt > /tmp/caboose-xattrs); '
-            'xattrs=$(wc -c < /tmp/caboose-xattrs); test "$xattrs" -le 16777216; '
+            'xattrs=$(wc -c < /tmp/caboose-xattrs); test "$xattrs" -lt 16777216; '
             "/tmp/caboose-awk -v xattrs=\"$xattrs\" 'BEGIN { total=0; count=0; bad=0 } "
             '$0 !~ /^[0-9]+$/ { bad=1; exit 1 } '
             '{ total += $1; count++; if (total > 1099511627776 || count > 1000000) { bad=1; exit 1 } } '
@@ -176,7 +176,7 @@ def _measured_scratch(result):
         raise ApplianceError('Invalid appliance tree measurement')
     logical, entries, xattrs = map(int, match.groups())
     if (logical > _MAX_TREE_BYTES or not 2 <= entries <= _MAX_TREE_ENTRIES
-            or xattrs > _MAX_XATTR_DUMP):
+            or xattrs >= _MAX_XATTR_DUMP):
         raise ApplianceError('Appliance tree measurement exceeds limits')
     # One expanded staging tree plus an uncompressed-sized EROFS image, with
     # generous per-entry metadata in both and fixed filesystem/tool headroom.
