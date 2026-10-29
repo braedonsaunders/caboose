@@ -139,6 +139,7 @@ accounts, separate computers and phone pairing.
 | --- | --- |
 | Apple Silicon Mac, macOS 14+ | [Native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
 | Linux PC, amd64 or arm64 | [Native Linux installer](deploy/linux/README.md): a systemd service, with `/dev/kvm` for microVMs or Docker for the GPU container runtime. |
+| Windows 11 PC | [WSL2](deploy/windows/README.md): the Linux installer in WSL with the GPU container runtime, and `setup-wsl.ps1` for mirrored networking so phones connect to it directly. |
 | Linux server with a domain | [Server installer](deploy/server/README.md): the host behind Caddy with automatic HTTPS, for households or teams. |
 
 Release installers download verified bundles and the matching computer image. To build
@@ -197,7 +198,7 @@ WSL2 and NVIDIA, are in [apps/host](apps/host/README.md) and
 | [`guest/phone`](guest/phone) | Opening, sharing and printing from the computer to the phone |
 | [`guest/media-handoff`](guest/media-handoff) | Play on iPhone / Apple TV for video playing in the computer's Chromium |
 | [`docs`](docs) | The architecture, and the Caboose Display design and protocol |
-| [`deploy`](deploy) | Native Mac and Linux installers, and the HTTPS server deployment |
+| [`deploy`](deploy) | Native Mac and Linux installers, Windows networking for WSL, and the HTTPS server deployment |
 
 Each component's README covers how to build, run and test it. Pure logic is unit-tested
 (`swift test` in `apps/ios/CabooseKit`, `cargo test` in `guest/display`, and `pnpm test`
