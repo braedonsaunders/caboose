@@ -76,7 +76,10 @@ window.
 - **Programs.** `exec` and `spawn` take an argv list (at most 256 arguments, 128 KiB each,
   1 MiB in all), an environment of at most 64 variables, and a working directory under the
   home; there is no shell unless the app runs one. `exec` keeps at most 16 MiB of each
-  output stream and kills the program at `timeoutMs` (default 60 s, at most 10 min). At
+  output stream and kills the program at `timeoutMs` (default 60 s, at most 10 min); its
+  `stdin` is written without blocking under the same deadline, so a program that never
+  reads its input still times out. `process.write` gives a spawned program 30 s to take
+  its input, and writes to one program never interleave. At
   most 16 programs run per app. Each starts its own process group; only those groups are
   ever signalled. When a new document commits, the old document's programs get SIGTERM,
   then SIGKILL after 2 s; when the app quits, all of them do. Nothing is re-run.
@@ -134,10 +137,12 @@ guest/apps/check-runtime.sh                                 # the runtime, in Do
 computer, on its own display `:150`, session bus and throwaway home. Its probe app
 (`check/probe`) asserts that publish writes the entry and refuses inline script; that
 inline, `data:`, `blob:`, `eval` and `Function` script and remote frames are blocked by the
-policy; that `exec` returns code and output, times out and refuses a non-list argv; that an
+policy; that `exec` returns code and output, times out (also while a program leaves a
+large input unread) and refuses a non-list argv; that an
 undeclared capability and a path outside the home are refused; that `spawn` streams; that
 script navigation away is refused and a frame's forged request is ignored; that a classic
 script runs and a page without `<meta charset>` decodes as UTF-8; that an edit
-reloads the page, ending the old page's programs and keeping its storage; that a second
+reloads the page, ending the old page's programs (including an exec whose input is
+blocked) and keeping its storage; that a second
 launch raises the first; that quitting ends every program; and that storage survives a
 restart.

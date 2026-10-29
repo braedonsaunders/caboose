@@ -158,6 +158,7 @@ def run(ident):
     WORLD = 'caboose'
 
     children = Children()
+    writers = {}  # spawn key -> the lock that serializes its input
     state = {'generation': 0, 'document': None, 'view': None, 'window': None, 'reload': None, 'monitors': {}}
 
     def event(payload):
@@ -214,6 +215,7 @@ def run(ident):
             raise apps.AppError('encoding must be "utf8" or "base64"')
         timeout = apps.check_timeout(params.get('timeoutMs')) / 1000
         proc = start(params.get('argv'), params, stdin is not None)
+        deadline = time.monotonic() + timeout
         key = f'exec:{proc.pid}'
         children.add(key, proc, state['generation'])
 
@@ -226,21 +228,15 @@ def run(ident):
                        threading.Thread(target=read, args=(1, proc.stderr, err))]
             for reader in readers:
                 reader.start()
-            if stdin is not None:
+            # Input and the program share one deadline: a program that never reads a
+            # large input times out like any other.
+            timed_out = stdin is not None and apps.feed(proc.stdin, stdin.encode(), deadline) == 'timeout'
+            if not timed_out:
                 try:
-                    proc.stdin.write(stdin.encode())
-                except BrokenPipeError:
-                    pass
-                finally:
-                    try:
-                        proc.stdin.close()
-                    except BrokenPipeError:
-                        pass
-            timed_out = False
-            try:
-                proc.wait(timeout)
-            except subprocess.TimeoutExpired:
-                timed_out = True
+                    proc.wait(max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+            if timed_out:
                 Children.signal(proc, signal.SIGKILL)
                 proc.wait()
             # A background grandchild may hold the pipes; it is part of the group.
@@ -289,6 +285,7 @@ def run(ident):
             for thread in pumps:
                 thread.join(5)
             children.forget(f'spawn:{key}')
+            writers.pop(key, None)
             if state['generation'] == generation:
                 in_main(event, {'key': key, 'type': 'exit', 'code': code if code >= 0 else None,
                                 'signal': signal.Signals(-code).name[3:] if code < 0 else None})
@@ -307,13 +304,19 @@ def run(ident):
         if not isinstance(data, str) or len(data) > apps.MAX_STDIN:
             raise apps.AppError('data must be a string')
         proc = process(params)
+        lock = writers.setdefault(params['key'], threading.Lock())
 
         def work():
-            try:
-                proc.stdin.write(data.encode())
-                proc.stdin.flush()
-            except (BrokenPipeError, ValueError):
-                raise apps.AppError('The process no longer reads its input') from None
+            # One write at a time per process, so concurrent writes never interleave.
+            with lock:
+                try:
+                    outcome = apps.feed(proc.stdin, data.encode(), time.monotonic() + apps.WRITE_TIMEOUT_S, close=False)
+                except ValueError:
+                    outcome = 'closed'
+            if outcome == 'closed':
+                raise apps.AppError('The process no longer reads its input')
+            if outcome == 'timeout':
+                raise apps.AppError(f'The process did not read its input within {apps.WRITE_TIMEOUT_S} seconds')
             return True
         return work
 

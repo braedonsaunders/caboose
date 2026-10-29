@@ -30,6 +30,13 @@ results.ran = { inline: !!window.__inline, data: !!window.__data, blob: !!window
 // The bridge.
 results.exec = await caboose.exec(['sh', '-c', 'printf "%s" "$X"; printf err >&2; exit 3'], { env: { X: 'hello' } })
 results.timeout = await caboose.exec(['sleep', '5'], { timeoutMs: 300 })
+// Input far larger than a pipe, to a program that never reads it: the deadline still holds.
+const big = 'x'.repeat(4 * 1024 * 1024)
+const fed = performance.now()
+results.stdinTimeout = await caboose.exec(['bash', '-c', 'exec -a caboose-check-feeder sleep 600'], { stdin: big, timeoutMs: 500 })
+results.stdinTimeoutMs = Math.round(performance.now() - fed)
+// The same, with a long deadline and never awaited: replacing the page must end it.
+caboose.exec(['bash', '-c', `exec -a caboose-check-stuck-${load} sleep 600`], { stdin: big, timeoutMs: 600000 }).catch(() => {})
 results.badArgv = await caboose.exec('ls').then(() => 'allowed', error => error.message)
 results.undeclared = await caboose.notify('x').then(() => 'allowed', error => error.message)
 await caboose.files.writeJSON('nested/value.json', { a: 1 })

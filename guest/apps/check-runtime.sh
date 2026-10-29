@@ -17,5 +17,5 @@ cleanup() {
   if [[ ${1:-} == --rmi ]]; then docker rmi "$image" >/dev/null 2>&1 || true; fi
 }
 trap 'cleanup "${1:-}"' EXIT
-docker run -d --name "$container" --memory 1500m --shm-size 256m -v "$here:/src:ro" "$image" >/dev/null
+docker run -d --name "$container" --cpus 2 --memory 1500m --shm-size 256m -v "$here:/src:ro" "$image" >/dev/null
 docker exec "$container" bash /src/check/run.sh

@@ -6,8 +6,11 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -314,6 +317,41 @@ class Bounds(unittest.TestCase):
         for bad in (0, 600_001, 1.5, True, '10'):
             with self.assertRaises(apps.AppError):
                 apps.check_timeout(bad)
+
+    def test_feed_times_out_on_a_program_that_never_reads(self):
+        proc = subprocess.Popen(['sleep', '30'], stdin=subprocess.PIPE)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        started = time.monotonic()
+        # Far more than a pipe holds, so a blocking write would never return.
+        self.assertEqual(apps.feed(proc.stdin, b'x' * (4 * 1024 * 1024), started + 0.4), 'timeout')
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertTrue(proc.stdin.closed)
+
+    def test_feed_delivers_everything_to_a_reader(self):
+        proc = subprocess.Popen(['wc', '-c'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        data = b'y' * (3 * 1024 * 1024 + 7)
+        reader = threading.Thread(target=lambda: setattr(self, 'out', proc.stdout.read()))
+        reader.start()
+        self.assertEqual(apps.feed(proc.stdin, data, time.monotonic() + 30), 'written')
+        reader.join(30)
+        proc.wait(30)
+        self.assertEqual(int(self.out), len(data))
+
+    def test_feed_reports_a_closed_input(self):
+        proc = subprocess.Popen(['sh', '-c', 'exec 0<&-; sleep 30'], stdin=subprocess.PIPE)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        time.sleep(0.3)
+        self.assertEqual(apps.feed(proc.stdin, b'z' * (1024 * 1024), time.monotonic() + 5), 'closed')
+
+    def test_feed_can_keep_the_pipe_open(self):
+        proc = subprocess.Popen(['cat'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.assertEqual(apps.feed(proc.stdin, b'one\n', time.monotonic() + 5, close=False), 'written')
+        self.assertFalse(proc.stdin.closed)
+        self.assertEqual(apps.feed(proc.stdin, b'two\n', time.monotonic() + 5), 'written')
+        self.assertEqual(proc.stdout.read(), b'one\ntwo\n')
+        proc.wait(5)
 
     def test_capped(self):
         self.assertEqual(apps.capped([b'ab', b'cd'], 3), (b'abc', True))

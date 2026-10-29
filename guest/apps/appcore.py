@@ -14,8 +14,10 @@ import mimetypes
 import os
 import re
 import secrets
+import select
 import shutil
 import stat
+import time
 import urllib.parse
 
 SCHEME = 'caboose-app'
@@ -64,6 +66,8 @@ MAX_OUTPUT = 16 * 1024 * 1024
 DEFAULT_TIMEOUT_MS = 60_000
 MAX_TIMEOUT_MS = 600_000
 MAX_RUNNING = 16
+# How long process.write waits for a spawned program to take its input.
+WRITE_TIMEOUT_S = 30
 MAX_FILE = 64 * 1024 * 1024
 MAX_LIST = 10_000
 EXTERNAL_SCHEMES = ('http', 'https', 'mailto', 'tel', 'sms')
@@ -561,6 +565,39 @@ def capped(chunks, limit=MAX_OUTPUT):
     """Joins output chunks, keeping at most limit bytes. Returns (bytes, truncated)."""
     data = b''.join(chunks)
     return (data[:limit], True) if len(data) > limit else (data, False)
+
+
+def feed(pipe, data, deadline, close=True):
+    """Writes data to a program's input pipe without ever blocking past deadline (a
+    time.monotonic() value), so a program that does not read cannot hold its caller.
+    Returns 'written', 'closed' (the program stopped reading its input) or 'timeout'.
+    With close, the pipe is closed whatever the outcome."""
+    fd = pipe.fileno()
+    os.set_blocking(fd, False)
+    view = memoryview(data)
+    sent = 0
+    try:
+        while sent < len(view):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return 'timeout'
+            if not select.select([], [fd], [], remaining)[1]:
+                continue
+            try:
+                sent += os.write(fd, view[sent:sent + 65536])
+            except BlockingIOError:
+                continue
+            except (BrokenPipeError, ConnectionResetError):
+                return 'closed'
+        return 'written'
+    finally:
+        if close:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+        else:
+            os.set_blocking(fd, True)
 
 
 # The bridge's file operations. A path is absolute under the home, or relative to the

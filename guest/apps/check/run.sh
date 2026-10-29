@@ -27,7 +27,7 @@ app_pid=
 cleanup() {
   [[ -n $app_pid ]] && kill "$app_pid" 2>/dev/null
   kill "$(cat "$home/dbus.pid")" "$xvfb" 2>/dev/null
-  pkill -f 'caboose-check-sleeper' 2>/dev/null
+  pkill -f '^caboose-check-' 2>/dev/null
   rm -rf "$home"
 }
 trap cleanup EXIT
@@ -63,7 +63,7 @@ files="$home/.local/share/caboose/apps/runtime-check/files"
 as_user python3 "$runtime" run runtime-check >"$home/run.log" 2>&1 &
 app_pid=$!
 if ! wait_file "$files/probe-1.json"; then
-  fail 'probe ran' "no probe-1.json after 30 s; $(tail -5 "$home/run.log" "$home/.local/share/caboose/apps/runtime-check/console.log" 2>&1)"
+  fail 'probe ran' "no probe-1.json after 30 s; $(tail -n 5 "$home/run.log" "$home/.local/share/caboose/apps/runtime-check/console.log" 2>&1)"
   exit 1
 fi
 probe="$files/probe-1.json"
@@ -76,6 +76,8 @@ check 'remote frame blocked' yes "$(py "'frame-src' in d['violations']" "$probe"
 detail="$(py "d['exec']" "$probe")"
 check 'exec returns code, stdout, stderr' yes "$(py "d['exec']['code'] == 3 and d['exec']['stdout'] == 'hello' and d['exec']['stderr'] == 'err'" "$probe")"
 check 'exec timeout kills' yes "$(py "d['timeout']['timedOut'] and d['timeout']['signal'] == 'KILL'" "$probe")"
+check 'blocked input times out' yes "$(py "d['stdinTimeout']['timedOut'] and d['stdinTimeoutMs'] < 3000" "$probe")"
+check 'no program left from the timed-out input' bash -c '! pgrep -f "^caboose-check-feeder" >/dev/null'
 check 'argv must be a list' yes "$(py "'argv must be a list' in d['badArgv']" "$probe")"
 check 'undeclared capability refused' yes "$(py "'does not declare the \"notify\" capability' in d['undeclared']" "$probe")"
 check 'files round trip' yes "$(py "d['files'] == {'a': 1}" "$probe")"
@@ -86,12 +88,14 @@ check 'classic script and UTF-8 in a page without meta charset' yes "$(py "d['fr
 check 'frame request ignored' test ! -e "$files/frame-mark"
 check 'console log written' test -f "$home/.local/share/caboose/apps/runtime-check/console.log"
 check 'sleeper of load 1 running' running 1
+check 'exec with blocked input of load 1 running' pgrep -f '^caboose-check-stuck-1' >/dev/null
 
 echo '== live reload'
 printf "\n" >>"$home/Apps/runtime-check/index.html"
 check 'reloads after an edit' wait_file "$files/probe-2.json"
 check 'storage survives a reload' yes "$(py "d['load'] == 2" "$files/probe-2.json")"
 check 'old page program ended' gone 1
+check 'old page exec with blocked input ended' bash -c 'for _ in $(seq 1 60); do pgrep -f "^caboose-check-stuck-1" >/dev/null || exit 0; sleep 0.1; done; exit 1'
 check 'new page program running' running 2
 
 echo '== single instance, shutdown, restart'
@@ -102,6 +106,7 @@ pkill -TERM -f '^python3 [^ ]*caboose-app run runtime-check'
 check 'quits on SIGTERM' wait_exit "$app_pid"
 app_pid=
 check 'programs end with the app' gone 2
+check 'exec with blocked input ends with the app' bash -c '! pgrep -f "^caboose-check-stuck" >/dev/null'
 as_user python3 "$runtime" run runtime-check >>"$home/run.log" 2>&1 &
 app_pid=$!
 check 'restarts' wait_file "$files/probe-3.json"

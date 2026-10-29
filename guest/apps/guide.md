@@ -93,7 +93,8 @@ const { code, stdout, stderr, timedOut, truncated } =
 
 `argv` is the program and its arguments; no shell is involved, so use
 `['sh', '-c', '…']` when you want one. `cwd` defaults to `caboose.app.dataDir`. `timeoutMs`
-defaults to 60000 and is at most 600000; on timeout the program is killed. Output is text,
+defaults to 60000 and is at most 600000; on timeout the program is killed, including while
+it leaves `stdin` unread. Output is text,
 or base64 with `encoding: 'base64'`, and at most 16 MB of each stream is kept.
 
 ```js
@@ -109,7 +110,8 @@ await server.kill()        // 'TERM' by default; 'INT', 'HUP' or 'KILL'
 await server.exited        // { code, signal }
 ```
 
-At most 16 programs run at once per app. Programs end when the page reloads or navigates,
+`write` fails if the program has not taken the input within 30 seconds. At most 16
+programs run at once per app. Programs end when the page reloads or navigates,
 and when the app closes; nothing is ever re-run by a reload.
 
 **`files`** — read and write files. A relative path is inside `caboose.app.dataDir`, the
