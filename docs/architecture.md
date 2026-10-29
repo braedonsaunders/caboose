@@ -2341,14 +2341,15 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   Use in Composer prefills the chat draft; it never sends a message or executes tools.
   A running chat shows a live preview when the shared agent
   seat has an application window; Watch opens that real surface. A working agent can be stopped. Pending approvals show in the chat, on Home and as a banner over every screen, with the agent's always-allow option when it
-  has one. A task whose agent was signed out offers Sign In and Ask Another (another agent
-  the same thing in a new chat, or Connect a Model). Sign In, there and in Settings › Agents,
+  has one. A task whose agent was signed out offers Sign In and Switch Agent. Switching
+  selects a new-chat recipient locally; it sends nothing, leaves the previous conversation
+  and its draft intact, and waits for an explicit Send. Sign In, there and in Agent Settings,
   opens a sheet that signs in on the phone: the sign-in page in a private in-app browser,
   whose return to the computer's localhost goes to the agent, and a terminal sign-in's
   terminal, with Sign In on Computer's Screen as the other way. A window's menu hands the window
   (screenshot, title, app) to an agent as an attachment.
   The sign-in sheet uses translucent material over the presenting screen.
-- **Connect a Model.** An API key instead of an account: OpenRouter (through the registry's
+- **Connect a Model.** Inside Agent Settings, an API key instead of an account: OpenRouter (through the registry's
   `goose`, with `GOOSE_PROVIDER=openrouter`, `GOOSE_MODEL` from OpenRouter's public model
   list of tool-using models, and `OPENROUTER_API_KEY`), Anthropic (`claude-acp`,
   `ANTHROPIC_API_KEY`) or OpenAI (`codex-acp`, `OPENAI_API_KEY`). The app installs the

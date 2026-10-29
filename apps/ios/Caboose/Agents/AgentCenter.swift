@@ -262,11 +262,15 @@ final class AgentCenter {
         catch { lastError = error.localizedDescription }
     }
 
-    /// Asks another agent the chat's last request, in a new chat, and shows it.
-    func retry(_ task: Task, with agent: String?) async {
-        let last = threads[task.id]?.lastTurn?.prompt ?? ""
-        let prompt = last.isEmpty ? task.prompt : last
-        if let id = await start(prompt, agent: agent, askFirst: task.approvals == "ask") { currentChat = id }
+    /// Selection is local: the next explicit Send starts the new agent's chat.
+    /// Existing conversations and their unsent drafts remain available in Chats.
+    func selectAgent(_ id: String) {
+        guard installedAgents.contains(where: { $0.id == id }) else { return }
+        UserDefaults.standard.set(id, forKey: AskTarget.key)
+        library.selectedProfileId = nil
+        focusedTask = nil
+        draft = nil
+        currentChat = nil
     }
 
     /// What to call a chat in the list.

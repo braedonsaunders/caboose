@@ -9,7 +9,6 @@ import SwiftUI
 struct AgentsScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.shellTabPlacement) private var placement
-    @State private var connectingModel = false
     @State private var showingChats = false
     @State private var showingLibrary = false
     @State private var showingModels = false
@@ -30,10 +29,10 @@ struct AgentsScreen: View {
                     AgentThreadView(taskID: chat.id)
                         .id(chat.id)
                 } else {
-                    NewChat(connectModel: { connectingModel = true })
+                    NewChat()
                         .background { AgentReadingBackground() }
                         .safeAreaBar(edge: .bottom) {
-                            ChatComposer(task: nil) { connectingModel = true }
+                            ChatComposer(task: nil)
                                 .padding(.top, 12)
                         }
                         .navigationTitle("Agents")
@@ -81,7 +80,6 @@ struct AgentsScreen: View {
                     Button("Copy Answer", systemImage: "doc.on.doc") { UIPasteboard.general.string = summary }
                 }
             }
-            Button("Connect a Model…", systemImage: "key") { connectingModel = true }
             Button("Chats", systemImage: "list.bullet") { showingChats = true }
             Button("New Chat", systemImage: "square.and.pencil") { agents.currentChat = nil }
             Button("Teammates and Routines", systemImage: "person.2") { showingLibrary = true }
@@ -92,7 +90,6 @@ struct AgentsScreen: View {
         .alert("Agent Action Failed", isPresented: Binding(get: { agents.lastError != nil }, set: { if !$0 { agents.lastError = nil } })) {
             Button("OK") { agents.lastError = nil }
         } message: { Text(agents.lastError ?? "") }
-        .sheet(isPresented: $connectingModel) { ConnectModelView().environment(model) }
         .sheet(isPresented: $showingChats) { ChatList().environment(model) }
         .sheet(isPresented: $showingModels) {
             AgentModelPicker(agentID: chat?.agent ?? (agents.listing(target)?.isInstalled == true ? target : agents.defaultAgent ?? ""), taskID: chat?.id).environment(model)
@@ -235,7 +232,6 @@ private struct LiveStrip: View {
 private struct NewChat: View {
     @Environment(AppModel.self) private var model
     @AppStorage(AskTarget.key) private var target = ""
-    let connectModel: () -> Void
 
     var body: some View {
         let agents = model.agents
@@ -244,7 +240,7 @@ private struct NewChat: View {
         ScrollView {
             VStack(spacing: 18) {
                 if profile == nil && (agents.defaultAgent == nil || agents.installedAgents.isEmpty) {
-                    SetupCard(connectModel: connectModel)
+                    SetupCard()
                 }
                 Group {
                     if let profile { AgentAvatar(name: profile.name, size: 72) } else if let agent { AgentAvatar(name: agent.name, size: 72) } else { CabooseAvatar(size: 72) }
@@ -303,7 +299,6 @@ private struct NewChat: View {
 /// Shown until a computer agent can take work: connect a model with a key, or sign in to one.
 private struct SetupCard: View {
     @Environment(AppModel.self) private var model
-    let connectModel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -312,12 +307,10 @@ private struct SetupCard: View {
             Text("Agents run inside your computer with your own model. Paste an OpenRouter key to use any model — Claude, GPT, Gemini, Grok, Llama — or an Anthropic or OpenAI key. Or sign in to Claude, Codex or another agent with your account.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-            HStack {
-                Button(action: connectModel) { Label("Connect a Model", systemImage: "key") }
-                    .buttonStyle(.glassProminent)
-                Button { model.showAgentSettings = true } label: { Text("Sign In Instead") }
-                    .buttonStyle(.glass)
+            Button { model.showAgentSettings = true } label: {
+                Label("Set Up an Agent", systemImage: "slider.horizontal.3")
             }
+            .buttonStyle(.glassProminent)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
