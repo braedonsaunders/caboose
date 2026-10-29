@@ -1297,16 +1297,19 @@ final class AppModel {
         launching = app
         launchStartedAt = Date()
         let revision = connectionRevision
-        dockLaunchTimeouts[app.id] = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(30)) } catch { return }
-            guard let self, revision == self.connectionRevision, self.dockLaunches.pending[app.id]?.token == token else { return }
-            self.finishDockLaunch(app.id, token: token)
-            if self.launching?.id == app.id { self.launching = nil }
-            self.launchFailure = "\(app.name) has not shown a window yet. It may still be opening. You can wait or try again."
-        }
         Task {
             do {
                 try await host.launch(app)
+                // Wake and guest preparation precede the window wait. Never expire an
+                // attempt while its launch request can still dispatch the application.
+                guard revision == connectionRevision, dockLaunches.acknowledge(app.id, token: token) else { return }
+                dockLaunchTimeouts[app.id] = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                    guard let self, revision == self.connectionRevision, self.dockLaunches.pending[app.id]?.token == token else { return }
+                    self.finishDockLaunch(app.id, token: token)
+                    if self.launching?.id == app.id { self.launching = nil }
+                    self.launchFailure = "\(app.name) has not shown a window yet. It may still be opening. Check the computer’s open windows before trying again."
+                }
             } catch {
                 guard revision == connectionRevision, dockLaunches.pending[app.id]?.token == token else { return }
                 finishDockLaunch(app.id, token: token)
@@ -1325,8 +1328,8 @@ final class AppModel {
 
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
-        let id = app.id.replacingOccurrences(of: ".desktop", with: "").lowercased()
-        return !id.isEmpty && [appClass.instance.lowercased(), appClass.name.lowercased()].contains { !$0.isEmpty && ($0 == id || id.hasSuffix($0) || $0.hasSuffix(id)) }
+        return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass,
+                                         instance: appClass.instance, name: appClass.name)
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {

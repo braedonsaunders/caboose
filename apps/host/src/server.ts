@@ -52,7 +52,7 @@ import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './age
 import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 
-export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[] }
+export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
   componentsMode?: ComponentsMode
@@ -690,7 +690,27 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const match = /^\/v1\/apps\/([^/]+)\/launch$/.exec(path)
     if (request.method === 'POST' && match?.[1]) {
       const { action } = parseAppLaunch(await readJson(request))
-      await computer.wakeAndRun(async () => { await ensureKeyringReady(); await controller.launch(decodeURIComponent(match[1]!), undefined, action) })
+      // Phase timings contain no IDs, command arguments, tokens or guest error text.
+      // Wake includes time queued behind other lifecycle operations.
+      const started = performance.now()
+      const initialState = computer.state
+      let phase = 'wake', wakeMs: number | undefined, prepareMs: number | undefined
+      let outcome = 'failed'
+      try {
+        await computer.wakeAndRun(async () => {
+          wakeMs = Math.round(performance.now() - started)
+          phase = 'prepare'
+          const preparing = performance.now()
+          await ensureKeyringReady()
+          prepareMs = Math.round(performance.now() - preparing)
+          phase = 'dispatch'
+          await controller.launch(decodeURIComponent(match[1]!), undefined, action)
+        })
+        outcome = 'acknowledged'
+      } finally {
+        console.info('App launch timing', { initialState, phase, outcome, wakeMs, prepareMs,
+          totalMs: Math.round(performance.now() - started) })
+      }
       return json(response, 200, { launched: true })
     }
     if (request.method === 'GET' && path === '/v1/agents') return json(response, 200, await catalog.list())

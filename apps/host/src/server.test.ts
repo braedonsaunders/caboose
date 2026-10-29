@@ -55,6 +55,8 @@ it('authenticates routes and relays binary websocket messages while holding a le
 })
 
 it('routes agent replies, approvals, files and links with the right status codes', async () => {
+  const timing = vi.spyOn(console, 'info').mockImplementation(() => {})
+  close.push(async () => { timing.mockRestore() })
   const display = new WebSocketServer({ port: 0 })
   await once(display, 'listening')
   close.push(() => new Promise(resolve => display.close(() => resolve())))
@@ -112,6 +114,11 @@ it('routes agent replies, approvals, files and links with the right status codes
   ])
   expect(opened.status).toBe(200)
   expect(launched.status).toBe(200)
+  expect(await launched.json()).toEqual({ launched: true })
+  expect(timing).toHaveBeenCalledWith('App launch timing', {
+    initialState: expect.any(String), phase: 'dispatch', outcome: 'acknowledged',
+    wakeMs: expect.any(Number), prepareMs: expect.any(Number), totalMs: expect.any(Number),
+  })
   expect(uploaded.status).toBe(200)
   expect(screen.status).toBe(200)
   expect(promote).toHaveBeenCalledOnce()
@@ -141,6 +148,10 @@ it('routes agent replies, approvals, files and links with the right status codes
   const unknown = await post('/v1/apps/firefox.desktop/launch', { action: 'missing' })
   expect(unknown.status).toBe(404)
   expect(await unknown.json()).toEqual({ error: 'Application action not found' })
+  expect(timing).toHaveBeenLastCalledWith('App launch timing', {
+    initialState: 'running', phase: 'dispatch', outcome: 'failed',
+    wakeMs: expect.any(Number), prepareMs: expect.any(Number), totalMs: expect.any(Number),
+  })
   expect((await post(`/v1/agent/tasks/${missing}/reply`, { prompt: 'x' })).status).toBe(404)
   expect((await post(`/v1/agent/tasks/${missing}/approvals/${missing}`, { allow: true })).status).toBe(404)
   const { id } = await (await post('/v1/agent/tasks', { prompt: 'hi' })).json() as { id: string }

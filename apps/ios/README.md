@@ -852,7 +852,13 @@ its marker with an unknown ID: iOS reports it unavailable without executing its 
 Tap a closed app repeatedly: feedback starts immediately and only one launch is sent; a real
 matching window stops it. Launch two apps: feedback is independent. Simulate a host launch
 error and a launch with no window: feedback stops with the corresponding error or delayed
-opening message. Repeat with Reduce Motion, reconnect, and a running minimized app.
+opening message. The window deadline starts after HTTP acknowledgement; request errors
+must remain visible instead of being replaced by that deadline. Verify a window that arrives
+before the acknowledgement stops feedback and is not resurrected by the late response.
+Use a desktop entry whose `StartupWMClass` differs from its ID to check declared-class
+matching. Repeat with Reduce Motion, reconnect, and a running minimized app.
+Pure identity and acknowledgement fencing checks: `swift test --filter
+'AppWindowIdentityTests|DesktopItemPolicyTests'` in CabooseKit.
 
 Desktop imports copy one file at a time; they do not establish Open in Place synchronization.
 Items use file-type icons and name ordering; manual placement and file previews are absent.

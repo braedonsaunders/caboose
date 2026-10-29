@@ -203,5 +203,6 @@ else:
             icon_url = 'data:image/png;base64,' + base64.b64encode(png).decode('ascii')
         apps.append({'id': ident, 'name': section['Name'], 'icon': icon_url,
                      'categories': [s for s in section.get('Categories', '').split(';') if s], 'exec': section['Exec'],
-                     'actions': actions(section)})
+                     'actions': actions(section),
+                     'startupWMClass': section.get('StartupWMClass', '').strip()[:256] or None})
     print(json.dumps(apps))

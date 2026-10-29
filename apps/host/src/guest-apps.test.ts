@@ -67,6 +67,7 @@ const FIREFOX = `[Desktop Entry]
 Type=Application
 Name=Firefox
 Exec=firefox %u
+StartupWMClass=FirefoxWindow
 Actions=new-window;new-private-window;bad id;new-window;no-exec;nameless;undeclared;
 
 [Desktop Action new-window]
@@ -110,6 +111,8 @@ describe('guest-apps.py', () => {
     const result = run('list', '0')
     expect(result.stderr).toBe('')
     const apps = JSON.parse(result.stdout) as { id: string; actions: { id: string; name: string }[] }[]
+    expect(apps.find(app => app.id === 'firefox.desktop')).toHaveProperty('startupWMClass', 'FirefoxWindow')
+    expect(apps.find(app => app.id === 'plain.desktop')).toHaveProperty('startupWMClass', null)
     const byId = Object.fromEntries(apps.map(app => [app.id, app.actions]))
     expect(Object.keys(byId).sort()).toEqual(['firefox.desktop', 'many.desktop', 'plain.desktop', 'portal.desktop'])
     expect(byId['firefox.desktop']).toEqual([{ id: 'new-window', name: 'New Window' }, { id: 'new-private-window', name: 'New Private Window' }])

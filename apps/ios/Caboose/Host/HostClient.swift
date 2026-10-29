@@ -26,6 +26,7 @@ struct HostClient: Sendable {
         var exec: String
         /// The entry's desktop actions (`New Private Window`); absent from hosts that predate them.
         var actions: [Action]?
+        var startupWMClass: String?
 
         struct Action: Decodable, Hashable, Sendable {
             var id: String
@@ -126,7 +127,10 @@ struct HostClient: Sendable {
     func launch(_ app: App, action: App.Action? = nil) async throws {
         let id = app.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? app.id
         let body: [String: JSONValue]? = action.map { ["action": .string($0.id)] }
-        let _: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", body: body, timeout: 30)
+        let reply: [String: Bool] = try await request("POST", "/v1/apps/\(id)/launch", body: body, timeout: 30)
+        guard reply["launched"] == true else {
+            throw Failure.server(200, "The computer did not acknowledge the application launch.")
+        }
     }
 
     func createDesktopShortcut(_ appID: String) async throws {

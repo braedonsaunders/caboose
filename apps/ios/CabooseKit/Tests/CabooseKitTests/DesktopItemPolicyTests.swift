@@ -32,6 +32,27 @@ struct DesktopItemPolicyTests {
             Issue.record("Oversized metadata was accepted")
         } catch { #expect((error as NSError).code == CocoaError.fileReadTooLarge.rawValue) }
     }
+    @Test func acknowledgementCannotResurrectAWindowCompletedOrResetAttempt() {
+        var state = DockLaunchState()
+        let token = state.begin("editor")!
+        #expect(state.pending["editor"]?.acknowledged == false)
+        let acknowledged = state.acknowledge("editor", token: token)
+        #expect(acknowledged)
+        let rejected1 = state.acknowledge("editor", token: token)
+        #expect(!rejected1)
+        let duplicate = state.begin("editor")
+        #expect(duplicate == nil)
+        let finished = state.finish("editor", token: token)
+        #expect(finished)
+        let rejected2 = state.acknowledge("editor", token: token)
+        #expect(!rejected2)
+        let next = state.begin("editor")!
+        let rejected3 = state.acknowledge("editor", token: token)
+        #expect(!rejected3)
+        state.reset()
+        let rejected4 = state.acknowledge("editor", token: next)
+        #expect(!rejected4)
+    }
     @Test func launchesCoalesceAndOldCompletionsCannotClearRetries() {
         var state = DockLaunchState()
         let first = state.begin("browser")!

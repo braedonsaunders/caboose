@@ -530,6 +530,12 @@ failure is retried on the next wake. A container created without the port 14700 
 be recreated to enable Files; keep its home volume. `guest/components/README.md` has the
 disposable-guest check, and `check-upgrade.mjs` (below) the real-host one.
 
+App launches log `App launch timing` with the initial lifecycle state, last phase,
+`acknowledged` or `failed`, and milliseconds for queued wake, preparation and total.
+Subtract wake and preparation from total to measure dispatch. These records omit
+app IDs, arguments, tokens and guest error text. They measure dispatch, not first window
+appearance. A request timeout on the phone does not cancel work already admitted by the host.
+
 ## Real-host checks
 
 These run against a deployed host with a built guest, are separate from the unit tests, and

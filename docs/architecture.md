@@ -918,7 +918,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
 | `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events |
-| `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions }]`. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
+| `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
 | `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from |
@@ -1014,6 +1014,15 @@ Desktop supports opening files and folders, creating folders, importing files fr
 renaming, moving to a home-relative folder, and moving items to the home Trash. Imports
 refuse replacement; moves and Trash carry the listed ETag. Hidden files are omitted.
 Items sort by name; icon positions are not user-arrangeable. Files use type icons, not previews.
+
+The phone coalesces repeated app taps while a launch is pending. Its 30-second window
+wait starts after the host acknowledges launch; wake and guest preparation do not consume
+that window wait. A matching window can complete the attempt before the HTTP response.
+Request errors remain distinct from an acknowledged launch that has not shown a window.
+The host logs launch phase durations (queued wake, preparation, and total), initial
+lifecycle state, and acknowledgement or failure without app IDs or guest error text.
+Acknowledgement confirms dispatch, not a visible window.
+
 
 The dock offers Add Shortcut to Desktop. `POST /v1/apps/:id/desktop-shortcut` resolves a
 visible installed desktop entry through the guest's normal application search path, copies
