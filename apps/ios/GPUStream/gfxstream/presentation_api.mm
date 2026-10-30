@@ -126,6 +126,15 @@ VkResult allocateFrame(caboose_gpu_surface& s, Frame& f) {
 // Caller is the frame worker or a serialized retire worker. Callbacks are not
 // made while the surface mutex is held. An uncertain frame is never destroyed.
 int advanceFrame(caboose_gpu_surface& s, Frame& f) {
+    if (!s.device || !s.device->vk || !s.device->vk->vkWaitForFences || !s.device->device ||
+        (f.submitted && !f.copyFence) || (f.presentQueued && !f.presentFence)) {
+        if (!f.failureReported && f.callback) {
+            f.failureReported = true;
+            f.callback(f.context, f.serial, CABOOSE_GPU_FAILED_UNRETIRED,
+                       {CABOOSE_GPU_SUBMIT_UNCERTAIN, EIO, 0, 0});
+        }
+        return EIO;
+    }
     if ((!f.submitted || !f.presentQueued) && !f.failureReported && f.callback) {
         f.failureReported = true;
         f.callback(f.context, f.serial, CABOOSE_GPU_FAILED_UNRETIRED,
@@ -206,24 +215,35 @@ extern "C" int caboose_gpu_surface_attach(caboose_gpu_surface* surface, CAMetalL
     return 0;
 }
 extern "C" int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t boxedPhysical,
-                                           caboose_gpu_surface_capabilities** out) {
-    if (!out) return EINVAL;
+                                           caboose_gpu_surface_capabilities** out,
+                                           caboose_gpu_query_status* status) {
+    if (!status) return EINVAL;
+    *status = {};
+    if (!out) { status->native_error = EINVAL; return EINVAL; }
     *out = nullptr;
-    if (!surface || !boxedPhysical) return EINVAL;
+    auto fail = [status](int error) { status->native_error = error; return error; };
+    if (!surface || !boxedPhysical) return fail(EINVAL);
     std::lock_guard<std::mutex> operation(surface->operations);
     auto* registry = virtualWsiRegistry();
-    if (!registry) return ENODEV;
+    if (!registry) return fail(ENODEV);
     try {
         std::lock_guard<std::mutex> lock(surface->mutex);
         if (!surface->attached || surface->revoked || surface->swapchain ||
-            (surface->physicalBox && surface->physicalBox != boxedPhysical)) return EBUSY;
+            (surface->physicalBox && surface->physicalBox != boxedPhysical)) return fail(EBUSY);
         std::unique_ptr<gfxstream::host::vk::CaboosePresentationPhysicalDevice> physical;
         VkResult r = acquirePresentationPhysicalDevice(registry, surface->bind.identity.process_token,
             surface->bind.boxed_instance, boxedPhysical, &physical);
-        if (r != VK_SUCCESS) return errorFor(r);
+        if (r != VK_SUCCESS) return fail(errorFor(r));
         PresentationSurfaceCapabilities raw{};
-        r = queryPresentationSurface(*physical, metalSurfaceHandle(surface->metal), &raw);
-        if (r != VK_SUCCESS) return errorFor(r);
+        PresentationQueryStatus queryStatus{};
+        r = queryPresentationSurface(*physical, metalSurfaceHandle(surface->metal), &raw, &queryStatus);
+        if (r != VK_SUCCESS) {
+            if (queryStatus.hasDriverResult) {
+                status->has_vulkan_result = 1;
+                status->vulkan_result = static_cast<int32_t>(queryStatus.driverResult);
+            }
+            return fail(errorFor(r));
+        }
         auto result = std::make_unique<caboose_gpu_surface_capabilities>();
         auto& v = result->view; auto& c = raw.capabilities;
         v.min_image_count = c.minImageCount; v.max_image_count = c.maxImageCount;
@@ -250,8 +270,10 @@ extern "C" int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t 
         surface->physicalBox = boxedPhysical;
         surface->physical = physical->physicalDevice;
         *out = result.release();
+        status->has_vulkan_result = 1;
+        status->vulkan_result = static_cast<int32_t>(queryStatus.driverResult);
         return 0;
-    } catch (const std::bad_alloc&) { return ENOMEM; }
+    } catch (const std::bad_alloc&) { return fail(ENOMEM); }
 }
 extern "C" const caboose_gpu_surface_capabilities_view* caboose_gpu_surface_capabilities_get(
     const caboose_gpu_surface_capabilities* capabilities) { return capabilities ? &capabilities->view : nullptr; }

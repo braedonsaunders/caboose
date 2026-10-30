@@ -53,6 +53,11 @@ int caboose_gpu_surface_prepare(const caboose_gpu_surface_bind_info* bind,
 // all lists are immutable until caller releases this snapshot. Actual provider
 // properties and the product's supported subset must be kept distinct.
 typedef struct caboose_gpu_surface_capabilities caboose_gpu_surface_capabilities;
+typedef struct caboose_gpu_query_status {
+    int32_t native_error; // nonnegative errno; mirrors function return
+    uint32_t has_vulkan_result; // 1 only for an actual provider result
+    int32_t vulkan_result;
+} caboose_gpu_query_status;
 typedef struct caboose_gpu_surface_format {
     uint32_t format, color_space;
     uint32_t linear_features, optimal_features, buffer_features;
@@ -75,8 +80,11 @@ typedef struct caboose_gpu_surface_capabilities_view {
     const uint32_t* present_modes;
     const caboose_gpu_surface_queue_family* queue_families;
 } caboose_gpu_surface_capabilities_view;
+// Successful full queries have native_error=0 and the actual provider result
+// VK_SUCCESS. A failed or incomplete provider query reports its actual result;
+// local failures have has_vulkan_result=0 and vulkan_result=0.
 int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t boxed_physical_device,
-                              caboose_gpu_surface_capabilities** out);
+                              caboose_gpu_surface_capabilities** out, caboose_gpu_query_status* status);
 // Pointers in this view remain valid until capabilities_release; no partial
 // view is returned on provider error or an oversized result.
 const caboose_gpu_surface_capabilities_view* caboose_gpu_surface_capabilities_get(

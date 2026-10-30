@@ -26,9 +26,13 @@ struct PresentationSurfaceCapabilities {
     std::vector<VkPresentModeKHR> modes;
     std::vector<PresentationQueueFamily> queueFamilies;
 };
+struct PresentationQueryStatus {
+    bool hasDriverResult = false;
+    VkResult driverResult = VK_SUCCESS;
+};
 // Caller retains a context-validated physical-device/instance lease and the
 // matching live surface throughout this call. Output is committed only after
 // all actual provider queries succeed, without truncating returned lists.
 VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysicalDevice& physical,
-    VkSurfaceKHR surface, PresentationSurfaceCapabilities* out);
+    VkSurfaceKHR surface, PresentationSurfaceCapabilities* out, PresentationQueryStatus* status);
 }

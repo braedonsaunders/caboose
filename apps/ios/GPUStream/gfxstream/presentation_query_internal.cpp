@@ -7,7 +7,12 @@
 
 namespace caboose::gpuv2 {
 VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysicalDevice& physical,
-    VkSurfaceKHR surface, PresentationSurfaceCapabilities* out) {
+    VkSurfaceKHR surface, PresentationSurfaceCapabilities* out, PresentationQueryStatus* driverStatus) {
+    if (driverStatus) *driverStatus = {};
+    auto providerFailure = [driverStatus](VkResult r) {
+        if (driverStatus) { driverStatus->hasDriverResult = true; driverStatus->driverResult = r; }
+        return r;
+    };
     auto get = runtimeInstanceProcAddr();
     if (!out || !get || !physical.instance || !physical.physicalDevice || !surface)
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -28,14 +33,14 @@ VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysic
     try {
         PresentationSurfaceCapabilities result{};
         VkResult status = capabilities(physical.physicalDevice, surface, &result.capabilities);
-        if (status != VK_SUCCESS) return status;
+        if (status != VK_SUCCESS) return providerFailure(status);
         uint32_t count = 0;
         status = formats(physical.physicalDevice, surface, &count, nullptr);
-        if (status != VK_SUCCESS) return status;
+        if (status != VK_SUCCESS) return providerFailure(status);
         if (!count || count > 4096) return VK_ERROR_FEATURE_NOT_PRESENT;
         std::vector<VkSurfaceFormatKHR> rawFormats(count);
         status = formats(physical.physicalDevice, surface, &count, rawFormats.data());
-        if (status != VK_SUCCESS) return status;
+        if (status != VK_SUCCESS) return providerFailure(status);
         rawFormats.resize(count);
         result.formats.reserve(count);
         for (auto format : rawFormats) {
@@ -60,11 +65,11 @@ VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysic
         }
         count = 0;
         status = modes(physical.physicalDevice, surface, &count, nullptr);
-        if (status != VK_SUCCESS) return status;
+        if (status != VK_SUCCESS) return providerFailure(status);
         if (!count || count > 4096) return VK_ERROR_FEATURE_NOT_PRESENT;
         result.modes.resize(count);
         status = modes(physical.physicalDevice, surface, &count, result.modes.data());
-        if (status != VK_SUCCESS) return status;
+        if (status != VK_SUCCESS) return providerFailure(status);
         result.modes.resize(count);
         count = 0;
         queueProperties(physical.physicalDevice, &count, nullptr);
@@ -77,10 +82,11 @@ VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysic
             PresentationQueueFamily entry{};
             entry.properties = rawQueues[i];
             status = queueSupport(physical.physicalDevice, i, surface, &entry.presentSupported);
-            if (status != VK_SUCCESS) return status;
+            if (status != VK_SUCCESS) return providerFailure(status);
             result.queueFamilies.push_back(entry);
         }
         *out = std::move(result);
+        if (driverStatus) { driverStatus->hasDriverResult = true; driverStatus->driverResult = VK_SUCCESS; }
         return VK_SUCCESS;
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
 }
