@@ -70,8 +70,11 @@ Halo shader compatibility, or Vulkan conformance. Those require their own checks
 ## GPU feedback boundary
 
 The repository-owned `feedback.comp` shader uses the repository's AGPL-3.0 license.
-It takes seed 19 and writes five 32-bit words:
-indirect draw arguments `[6,1,0,0]` and cookie `19 ^ 0x6d2b79f5`. The output buffer starts
+It takes a 32-bit seed and writes five words: indirect draw arguments `[6,1,0,0]`
+and cookie `seed ^ 0x6d2b79f5`. The runner chooses a fresh random seed whose low
+two bits are 3 for each compute invocation, and checks the returned cookie against
+that independently held challenge. Direct renderer invocations default to seed 19;
+an optional final decimal argument supplies another seed. The output buffer starts
 with zero draw arguments and a different cookie. `compute_indirect` uses a compute-write
 to indirect-read barrier, then draws directly from that buffer in the same submission.
 It requires no geometry shader, cull distance or GPU-to-CPU roundtrip before drawing.
@@ -96,7 +99,7 @@ The acceptance oracle has pure negative tests (no driver, compiler or applicatio
 python3 -m unittest discover -s guest/gpu/emulation-check -p test_verify.py -v
 ```
 
-They reject zero results, a stale cookie, absent feedback, the unchanged two-triangle
+They reject zero results, a stale cookie (including a prior invocation's response), absent feedback, the unchanged two-triangle
 image, an empty draw and a truncated readback. Their generated test bytes are never
 used by the native runner and are not rendering evidence. Both compute cases are
 selectable using `--case`; they do not modify the relay/player's separate vkcube fixture.

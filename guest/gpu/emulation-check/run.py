@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import subprocess
 import sys
 import time
@@ -82,6 +83,10 @@ def main():
         name = case['name']
         pixels_file = out / (name + '.rgba')
         argv = [str(binary), str(out), name, str(pixels_file)]
+        seed = None
+        if name.startswith('compute_'):
+            seed = (secrets.randbits(30) << 2) | 3
+            argv.append(str(seed))
         commands.append(argv)
         case_start = time.monotonic()
         try:
@@ -100,7 +105,7 @@ def main():
             pass
         elif code == 0 and result.get('status') == 'RENDERED':
             pixels = pixels_file.read_bytes()
-            result.update(verify_pixels(pixels, case, result))
+            result.update(verify_pixels(pixels, case, result, expected_seed=seed))
             if len(pixels) == 128 * 64 * 4:
                 # PPM is the actual readback, with alpha omitted; no synthetic image path.
                 rgb = b''.join(pixels[i:i + 3] for i in range(0, len(pixels), 4))

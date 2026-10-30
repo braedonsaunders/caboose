@@ -34,6 +34,16 @@ class AcceptanceTests(unittest.TestCase):
         self.metadata['gpu_feedback_words'][-1] = 0xdeadbeef
         self.assertEqual(verify_pixels(self.pixels, self.case, self.metadata)['status'], 'FAIL')
 
+    def test_prior_run_feedback_fails_new_challenge(self):
+        self.metadata['feedback_seed'] = 23
+        self.assertEqual(verify_pixels(self.pixels, self.case, self.metadata, expected_seed=23)['status'], 'FAIL')
+
+    def test_new_challenge_requires_matching_gpu_cookie(self):
+        self.metadata['feedback_seed'] = 23
+        self.metadata['gpu_feedback_words'][-1] = 23 ^ 0x6d2b79f5
+        self.assertEqual(verify_pixels(self.pixels, self.case, self.metadata, expected_seed=23)['status'], 'PASS')
+        self.assertEqual(verify_pixels(self.pixels, self.case, self.metadata, expected_seed=27)['status'], 'FAIL')
+
     def test_no_cpu_feedback_fails(self):
         self.assertEqual(verify_pixels(self.pixels, self.case, {})['status'], 'FAIL')
 

@@ -5,13 +5,13 @@ struct ComputeFixture {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkDescriptorSet descriptor = VK_NULL_HANDLE;
-    static constexpr uint32_t Seed = 19;
-    static constexpr uint32_t Cookie = Seed ^ 0x6d2b79f5u;
+    uint32_t seed = 19;
 };
 
-ComputeFixture computeFixture(Cleanup& cleanup, VkPhysicalDevice physical, const std::string& directory) {
+ComputeFixture computeFixture(Cleanup& cleanup, VkPhysicalDevice physical, const std::string& directory, uint32_t seed) {
     VkDevice device = cleanup.device;
     ComputeFixture fixture;
+    fixture.seed = seed;
     fixture.output = buffer(cleanup, physical, 20,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, {0,0,0,0,0xdeadbeef});
     VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
@@ -59,7 +59,7 @@ void dispatchCompute(VkCommandBuffer command, const ComputeFixture& fixture, boo
                          0, 1, &upload, 0, nullptr, 0, nullptr);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, fixture.pipeline);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, fixture.layout, 0, 1, &fixture.descriptor, 0, nullptr);
-    vkCmdPushConstants(command, fixture.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fixture.Seed), &fixture.Seed);
+    vkCmdPushConstants(command, fixture.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fixture.seed), &fixture.seed);
     vkCmdDispatch(command, 1, 1, 1);
     VkMemoryBarrier ready{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     ready.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -86,7 +86,7 @@ std::vector<uint32_t> finishComputeFeedback(Cleanup& cleanup, VkQueue queue, VkC
     uint32_t words[5]{};
     if (result == VK_SUCCESS) std::memcpy(words, mapped, sizeof(words));
     const std::vector<uint32_t> observed(words, words + 5);
-    bool correct = words[0] == 6 && words[1] == 1 && words[2] == 0 && words[3] == 0 && words[4] == fixture.Cookie;
+    bool correct = words[0] == 6 && words[1] == 1 && words[2] == 0 && words[3] == 0 && words[4] == (fixture.seed ^ 0x6d2b79f5u);
     if (result == VK_SUCCESS && correct) {
         // The second submission renders only the right triangle. Its command depends
         // on the actual GPU result observed by the CPU, not a canned success value.

@@ -78,7 +78,7 @@ VkShaderModule shader(Cleanup& c, const std::string& file) {
 }
 #include "compute_fixture.h"
 
-int render(const std::string& directory, const std::string& name, const std::string& output) {
+int render(const std::string& directory, const std::string& name, const std::string& output, uint32_t seed) {
     const bool geometry = name == "geometry_direct" || name == "geometry_indirect" || name == "geometry_indexed_indirect";
     const bool cull = name == "cull_mixed_sign";
     const bool feedback = name == "compute_cpu_feedback";
@@ -176,7 +176,11 @@ int render(const std::string& directory, const std::string& name, const std::str
     Buffer readback = buffer(cleanup, physical, Width*Height*4, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     Buffer arguments{}, indices{};
     ComputeFixture computeProbe{};
-    if (compute) { computeProbe = computeFixture(cleanup, physical, directory); arguments = computeProbe.output; }
+    if (compute) {
+        computeProbe = computeFixture(cleanup, physical, directory, seed);
+        arguments = computeProbe.output;
+        metadata += ",\"feedback_seed\":" + std::to_string(seed);
+    }
     else if (indirect) arguments = buffer(cleanup, physical, indexed ? 20 : 16, VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, indexed ? std::vector<uint32_t>{1,1,0,0,0} : std::vector<uint32_t>{1,1,0,0});
     if (indexed) indices = buffer(cleanup, physical, 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, {0});
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; poolInfo.queueFamilyIndex = family;
@@ -226,7 +230,20 @@ int render(const std::string& directory, const std::string& name, const std::str
     return 0;
 }
 int main(int argc, char** argv) {
-    if (argc != 4) { std::cerr << "usage: render SHADER_DIRECTORY CASE OUTPUT.rgba\n"; return 2; }
-    try { return render(argv[1], argv[2], argv[3]); }
+    if (argc != 4 && argc != 5) { std::cerr << "usage: render SHADER_DIRECTORY CASE OUTPUT.rgba [SEED]\n"; return 2; }
+    try {
+        uint32_t seed = 19;
+        if (argc == 5) {
+            const std::string input(argv[4]);
+            if (input.empty() || input.find_first_not_of("0123456789") != std::string::npos)
+                throw std::runtime_error("Seed must be an unsigned decimal integer");
+            size_t used = 0;
+            const auto parsed = std::stoull(input, &used, 10);
+            if (used != input.size() || parsed > UINT32_MAX || parsed % 4 != 3)
+                throw std::runtime_error("Seed must fit uint32 and have low bits 3");
+            seed = static_cast<uint32_t>(parsed);
+        }
+        return render(argv[1], argv[2], argv[3], seed);
+    }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
