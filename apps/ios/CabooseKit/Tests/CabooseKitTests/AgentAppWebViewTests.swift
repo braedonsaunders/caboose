@@ -77,7 +77,7 @@ import XCTest
 
     /// `net` through the device's network origin to a server without CORS consent.
     private func checkNet(_ webView: WKWebView) async throws {
-        let net = try XCTUnwrap(try await webView.callAsyncJavaScript("""
+        let result = try await webView.callAsyncJavaScript("""
             const direct = await fetch('http://127.0.0.1:18765/upstream/echo').then(() => 'read', error => error.name)
             const response = await caboose.fetch('http://127.0.0.1:18765/upstream/echo', {
               method: 'POST', body: 'hi', headers: { 'X-Probe': '1', 'User-Agent': 'probe-agent' } })
@@ -85,7 +85,8 @@ import XCTest
             return { direct, status: response.status, method: echoed.method, body: echoed.body,
                      probe: echoed.headers['x-probe'], agent: echoed.headers['user-agent'],
                      url: response.headers.get('X-Caboose-Url') }
-            """, arguments: [:], in: nil, contentWorld: .page) as? [String: Any])
+            """, arguments: [:], in: nil, contentWorld: .page) as? [String: Any]
+        let net = try XCTUnwrap(result)
         XCTAssertEqual(net["direct"] as? String, "TypeError")
         XCTAssertEqual(net["status"] as? Int, 200)
         XCTAssertEqual(net["method"] as? String, "POST")
