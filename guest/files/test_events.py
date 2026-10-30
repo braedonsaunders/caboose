@@ -128,6 +128,13 @@ class Tests(unittest.TestCase):
             seen.update(r['record']['id'] for r in rows)
             if not more: break
         self.assertFalse(more); self.assertEqual(len(seen),256)
+    def test_task_retirement_during_pagination(self):
+        tasks=[{'id':'%08x-1234-1234-1234-123456789abc'%i,'offset':0} for i in range(256)]
+        rows,more=self.store.snapshot(body(channels=['agent.tick'],tasks=tasks),'')
+        retired={r['record']['id'] for r in rows}
+        remaining=[t for t in tasks if t['id'] not in retired]
+        rows,more=self.store.snapshot(body(channels=['agent.tick'],tasks=remaining),'')
+        self.assertEqual(rows[0]['record']['id'],remaining[0]['id'])
     def test_presence_stale_generation_and_session(self):
         self.put('.cache/caboose/bridge/a',b'')
         events=Events(self.directory); events.session=ID; events.generation=1

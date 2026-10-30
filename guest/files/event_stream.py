@@ -74,6 +74,7 @@ class Store:
         self.visited = set()
         self.transcripts = {}
         self.task_page = 0
+        self.task_scope = ()
 
     def read(self, path, limit, offset=None, tail=False):
         d, name = path.rsplit('/', 1)
@@ -199,6 +200,9 @@ class Store:
             emit(channel, {'state': state, 'guestClockMs': int(time.time()*1000)})
         budget = min(65536, 262144 // max(1, len(value.get('tasks', []))))
         tasks = value.get('tasks', [])
+        task_scope = tuple(task['id'] for task in tasks)
+        if task_scope != self.task_scope: self.task_page = 0
+        self.task_scope = task_scope
         task_start = min(self.task_page, max(0, len(tasks)-1))
         self.task_page = 0
         for task_index in range(task_start, len(tasks)):
