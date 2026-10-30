@@ -108,7 +108,8 @@ selectable using `--case`; they do not modify the relay/player's separate vkcube
 
 `CMakeLists.txt` defines a portable real-loader Vulkan executable and SPIR-V build
 commands. It requires a Vulkan SDK, `glslangValidator`, `spirv-val`, CMake and a
-C++20 compiler. This target has not yet been built or exercised on Linux.
+C++20 compiler. It supports Linux Vulkan loaders, including Mesa lavapipe as a
+software control.
 
 ```sh
 cmake -S guest/gpu/emulation-check -B /absolute/private/acceptance-build -G Ninja
@@ -125,6 +126,10 @@ driver manifest for that process; it does not change global registration. The
 default case requires CPU feedback and a subsequent draw. The output records
 binary and SPIR-V hashes, the issued challenge, returned words, image samples and
 exit status. Capability-simulation and capture overrides are rejected.
+For a Linux software control, pass `--icd /path/to/lvp_icd.json` and select
+`--case control --case compute_indirect --case compute_cpu_feedback`. The ICD
+manifest path depends on the Mesa installation. A software control does not
+establish phone execution.
 
 A client pass alone does not prove where its GPU work executed. Physical-phone
 acceptance also requires independently matched executor/device evidence. The
