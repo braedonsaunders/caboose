@@ -1,0 +1,10 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -31,0 +32,7 @@
++
++#if !GFXSTREAM_ENABLE_HOST_GLES
++// The format conversion code also runs for Vulkan-only color buffers. Reuse
++// the vendored GLES3 format constants and ANGLE value from color_buffer_gl.h.
++#include <GLES3/gl3.h>
++#define GL_BGR10_A2_ANGLEX 0x6AF9
++#endif
