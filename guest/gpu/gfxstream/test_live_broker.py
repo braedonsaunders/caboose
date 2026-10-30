@@ -58,7 +58,10 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         state.reply(28, vectors['mapped'])
         state.send(29, vectors['acquire'][40:])
         with self.assertRaises(ValueError): state.send(29, vectors['acquire'][40:])
+        state.send(31, vectors['cancel-acquire'][40:])  # cancellation can race actual acquisition
         state.reply(30, vectors['acquired'])
+        index = struct.unpack_from('<I', vectors['acquired'], 76)[0]
+        self.assertIn(index, state.swaps[5]['acquired'])  # never erase a successful native result
         state.send(31, vectors['cancel-acquire'][40:])  # completed acquire cancellation is a no-op
         state.send(34, vectors['indexed-present'][40:])
         with self.assertRaises(ValueError): state.send(34, vectors['indexed-present'][40:])
