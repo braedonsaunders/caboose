@@ -270,6 +270,12 @@ int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame) {
             return EBUSY;
         }
     }
+    // Publish capacity before the final callback. A concurrent present joins
+    // this worker before reusing the frame, so no callback can outlive it.
+    {
+        std::lock_guard<std::mutex> lock(surface.mutex);
+        surface.frameDone = true;
+    }
     if (frame.callback) frame.callback(frame.context, frame.serial, CABOOSE_GPU_PRESENT_RETIRED,
                                        driverResult(CABOOSE_GPU_SUBMIT_QUEUED, VK_SUCCESS));
     return 0;
