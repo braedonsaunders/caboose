@@ -753,23 +753,6 @@ VkResult ResourceTracker::on_vkResetCommandBuffer(void* context, VkResult input_
 }'''
     tracker = replace_once(tracker, old_exec_cmds, new_exec_cmds)
 
-    old_alloc_cbs = '''    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; ++i) {
-        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
-        cb->isSecondary = pAllocateInfo->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-        cb->device = device;
-    }'''
-    new_alloc_cbs = '''    {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
-        addToCommandPool(pAllocateInfo->commandPool, pAllocateInfo->commandBufferCount,
-                         pCommandBuffers);
-    }
-    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; ++i) {
-        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
-        cb->isSecondary = pAllocateInfo->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-        cb->device = device;
-    }'''
-    tracker = replace_once(tracker, old_alloc_cbs, new_alloc_cbs)
-
     old_reset_pool = '''VkResult VkEncoder::vkResetCommandPool(VkDevice device, VkCommandPool commandPool,
                                        VkCommandPoolResetFlags flags, uint32_t doLock) {
     (void)doLock;
