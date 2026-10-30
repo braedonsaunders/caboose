@@ -113,6 +113,17 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await session.message(Envelope(Kind.DATA, b'a' * 16, 1, 1, 2, 7, b'late'))
         session.bindings.finish(session.binding_generation)
 
+    async def test_revoke_waits_for_matching_native_receipt(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        task = asyncio.create_task(session.revoke())
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.assertTrue(session.revoking)
+        await session.message(Envelope(Kind.REVOKED, b'a' * 16, 1, 0, 0, 1))
+        await asyncio.wait_for(task, 1)
+        session.bindings.finish(session.binding_generation)
+
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()

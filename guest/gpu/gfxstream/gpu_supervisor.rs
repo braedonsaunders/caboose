@@ -72,7 +72,7 @@ impl GpuSupervisor {
 impl Drop for GpuSupervisor {
     fn drop(&mut self) {
         self.ipc.take(); // EOF requests the owned child to stop.
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(12);
         loop {
             match self.child.try_wait() {
                 Ok(Some(_)) => return,

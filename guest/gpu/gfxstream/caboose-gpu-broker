@@ -102,7 +102,7 @@ class Session:
             raise RuntimeError('cannot revoke with live resources')
         self.revoking = True
         self.send(Kind.REVOKE)
-        await asyncio.wait_for(self.revoked.wait(), 10)
+        await asyncio.wait_for(self.revoked.wait(), 4)
 
     async def read_loop(self):
         while True:
@@ -216,13 +216,15 @@ class Broker:
         try: await self.closing.wait()
         finally:
             loop.remove_reader(self.control.fileno()); self.control.close()
-            for task in tuple(self.tasks): task.cancel()
-            if self.tasks: await asyncio.gather(*self.tasks, return_exceptions=True)
+            if self.tasks:
+                _done, pending = await asyncio.wait(tuple(self.tasks), timeout=10)
+                for task in pending: task.cancel()
+                if pending: await asyncio.gather(*pending, return_exceptions=True)
 
     async def remote(self, stream):
         writer = server = None
         session = executor = generation = None
-        sender = receiver = None
+        sender = receiver = stop_wait = None
         owned_socket = None
         try:
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
@@ -250,8 +252,22 @@ class Broker:
             server = await asyncio.start_unix_server(start_local, path=str(self.socket_path))
             os.chmod(self.socket_path, 0o600)
             owned_socket = self.socket_path.lstat().st_ino
-            done, _ = await asyncio.wait((sender, receiver), return_when=asyncio.FIRST_COMPLETED)
-            for task in done: task.result()
+            stop_wait = asyncio.create_task(self.closing.wait())
+            done, _ = await asyncio.wait((sender, receiver, stop_wait), return_when=asyncio.FIRST_COMPLETED)
+            if stop_wait in done:
+                server.close(); await server.wait_closed(); server = None
+                # Stop accepting app bytes; drain and retire every real stream
+                # before asking the executor to finish its generation.
+                for local in tuple(session.streams.values()): local['writer'].close()
+                if session.local_tasks:
+                    _finished, pending = await asyncio.wait(tuple(session.local_tasks), timeout=4)
+                    if pending: raise TimeoutError('local streams did not retire')
+                if session.failed: raise ConnectionError('local stream teardown failed')
+                self.lease.revoke(executor.bytes, generation)
+                await session.revoke()
+                self.lease.finished(executor.bytes, generation)
+            else:
+                for task in done: task.result()
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
             pass
         finally:
@@ -264,13 +280,14 @@ class Broker:
                 session.failed = True
                 for task in tuple(session.local_tasks): task.cancel()
                 if session.local_tasks: await asyncio.gather(*tuple(session.local_tasks), return_exceptions=True)
-                self.lease.revoke(executor.bytes, generation)
-                # Socket loss alone is not native finish; leave lease draining.
-                if session.revoked.is_set(): self.lease.finished(executor.bytes, generation)
+                if not session.revoked.is_set():
+                    # Socket loss alone is not native finish; leave lease draining.
+                    self.lease.revoke(executor.bytes, generation)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
-            for task in (sender, receiver):
+            for task in (sender, receiver, stop_wait):
                 if task and not task.done(): task.cancel()
-            if sender or receiver: await asyncio.gather(*(t for t in (sender, receiver) if t), return_exceptions=True)
+            if sender or receiver or stop_wait:
+                await asyncio.gather(*(t for t in (sender, receiver, stop_wait) if t), return_exceptions=True)
             if writer:
                 writer.close()
                 with contextlib.suppress(OSError): await writer.wait_closed()
