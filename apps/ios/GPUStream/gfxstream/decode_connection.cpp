@@ -48,7 +48,12 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             if (frame.status == FrameStatus::unsupported) return ENOTSUP;
             if (frame.status == FrameStatus::need_more) {
                 if (frame.size <= pending.size() || frame.size > max_packet) return EPROTO;
-                if (!readMore(frame.size - pending.size())) return stop ? 0 : stream.error();
+                if (!readMore(frame.size - pending.size())) {
+                    if (stop) return 0;
+                    if (stream.error()) return stream.error();
+                    if (stream.eof()) return pending.empty() ? 0 : EPROTO;
+                    return EIO;
+                }
                 continue;
             }
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(

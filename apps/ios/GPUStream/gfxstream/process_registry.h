@@ -14,6 +14,8 @@ int caboose_gfx_registry_destroy(caboose_gfx_registry* registry);
 // External PUID is an opaque broker identity, never truncated to the upstream ID.
 int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t puid);
 // Blocks on the calling thread. The caller owns fd and keeps it open until return.
+// Orderly input EOF at a complete command boundary succeeds after replies are
+// flushed. Truncated input or a socket error returns a nonzero errno.
 // All connections of a process share the real upstream ProcessResources.
 int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t puid, int fd,
                             size_t max_packet, size_t max_reply_buffer);

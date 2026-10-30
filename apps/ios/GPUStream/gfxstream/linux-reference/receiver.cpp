@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
     if (ok) {
         int result = caboose_gfx_process_run(registry, process, client, 65536, 65536);
         std::printf("decoder returned %d\n", result);
-        ok = result == ECONNRESET;
+        ok = result == 0;
     } else std::fprintf(stderr, "connection or private handshake rejected\n");
     if (client >= 0) close(client);
     if (server >= 0) close(server);

@@ -19,6 +19,7 @@ public:
     void* getDmaForReading(uint64_t) override;
     void unlockDma(uint64_t) override;
     int error() const { return error_.load(); }
+    bool eof() const { return eof_; }
 protected:
     const unsigned char* readRaw(void* data, size_t* size) override;
     void onSave(gfxstream::Stream*) override;
@@ -29,5 +30,6 @@ private:
     size_t max_buffer_;
     std::vector<unsigned char> buffer_;
     std::atomic<int> error_{0};
+    bool eof_ = false;
 };
 }

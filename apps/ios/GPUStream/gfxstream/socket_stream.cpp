@@ -44,9 +44,15 @@ int SocketStream::writeFully(const void* data, size_t size) {
 const unsigned char* SocketStream::readRaw(void* data, size_t* size) {
     if (error()) return nullptr;
     if (!*size) return static_cast<unsigned char*>(data);
+    if (eof_) { *size = 0; return nullptr; }
     ssize_t n;
     do { n = recv(fd_, data, *size, 0); } while (n < 0 && errno == EINTR);
-    if (n <= 0) { fail(n == 0 ? ECONNRESET : errno); *size = 0; return nullptr; }
+    if (n <= 0) {
+        if (n == 0) eof_ = true;
+        else fail(errno);
+        *size = 0;
+        return nullptr;
+    }
     *size = static_cast<size_t>(n);
     return static_cast<unsigned char*>(data);
 }
@@ -55,7 +61,10 @@ const unsigned char* SocketStream::readFully(void* data, size_t size) {
     auto* start = p;
     while (size) {
         size_t n = size;
-        if (!readRaw(p, &n)) return nullptr;
+        if (!readRaw(p, &n)) {
+            if (eof_) fail(EPROTO);
+            return nullptr;
+        }
         p += n; size -= n;
     }
     return start;

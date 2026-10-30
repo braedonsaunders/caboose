@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         const ssize_t sent = write(sockets[0], &flags, sizeof(flags));
         if (sent != sizeof(flags)) { std::perror("write flags"); ok = false; }
         shutdown(sockets[0], SHUT_WR);
-        ok &= expect("decode EOF", caboose_gfx_process_run(registry, first, sockets[1], 65536, 65536), ECONNRESET);
+        ok &= expect("decode EOF", caboose_gfx_process_run(registry, first, sockets[1], 65536, 65536), 0);
         close(sockets[0]); close(sockets[1]);
     }
     ok &= expect("stop first", caboose_gfx_process_stop(registry, first), 0);
