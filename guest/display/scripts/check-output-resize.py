@@ -109,14 +109,21 @@ def gtk_client(path):
             counts[kind] += 1
             return False
         window.connect('configure-event', configured)
-        if kind == 'fullscreen':
-            window.fullscreen()
-        elif kind == 'maximized':
-            window.maximize()
         publish('mapping-' + kind)
         window.show_all()
         publish('mapped-' + kind)
-    GLib.timeout_add(25, lambda: publish('running'))
+    requested = False
+    def tick():
+        nonlocal requested
+        # The supervisor signals only after this backend's three windows are
+        # managed. Exercise normal app requests, not pre-map X11 property hints.
+        if not requested and Path(path + '.request-states').exists():
+            requested = True
+            publish('requesting-states')
+            windows['fullscreen'].fullscreen()
+            windows['maximized'].maximize()
+        return publish('running')
+    GLib.timeout_add(25, tick)
     # The supervisor has a tighter deadline; this also bounds an orphan after failure.
     GLib.timeout_add_seconds(20, lambda: (Gtk.main_quit(), False)[1])
     Gtk.main()
@@ -249,6 +256,7 @@ def main():
                         and all(w['mapped'] for w in state['windows'].values())
                         and sum(w['pid'] == process.pid for w in windows) == 3):
                     print(json.dumps(dict(stage=backend + '-ready', **last)), flush=True)
+                    Path(str(path) + '.request-states').write_text('request')
                     break
                 time.sleep(.025)
             else:
