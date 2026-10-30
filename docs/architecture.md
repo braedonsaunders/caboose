@@ -1563,8 +1563,9 @@ there; the route wakes it without starting the owner's display, which a memory r
 if it was running. A notification lives only as long as the owner's endpoint: after a
 restart, a cold boot or a guest component update, or when the owner's display is not
 running, its id answers 404. Linux notifications name their application, not a window: the
-phone opens the application `desktopEntry` names, which focuses its existing window, and
-answers `default` so the application shows what the notification is about.
+phone opens the application `desktopEntry` names, showing its existing window, and answers
+`default` so the application shows what the notification is about ([iOS
+notifications](#notifications)).
 
 ### Push notifications
 
@@ -2730,6 +2731,19 @@ approvals, task results and desktop notifications. Enabling them requests permis
 registers the device's APNs token (`POST /v1/devices/push`). Approval notifications carry
 actions that call the approval route; task notifications open the task. Signing out
 unregisters the device.
+
+A notification's buttons come from a category iOS must already have when it is shown. For
+a Linux notification it posts itself, the app registers a category for the notification's
+own buttons (`ACTION:<key>`) and reply (a text input titled with the application's label,
+else Reply, with its placeholder), named by a digest of them, before posting; it keeps the
+32 most recently used, with `AGENT_APPROVAL` and `DESKTOP_REPLY`, across launches. A push
+arrives without the app running, so it uses the fixed `DESKTOP_REPLY` (Reply) and shows no
+application buttons. A button or a reply calls `POST /v1/notifications/:id/respond` in the
+background; if that fails, a notification says why and repeats the reply's text. Opening a
+Linux notification answers `default` when the application offered it, and opens the
+application whose desktop ID matches `desktopEntry` (ignoring case and `.desktop`) like
+opening it from Home: its existing window is shown, else it is launched. Without a match the
+app opens as it is.
 
 ### Live Activities and widgets
 

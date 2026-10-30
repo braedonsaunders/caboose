@@ -516,7 +516,10 @@ its tools; remove a server; disconnect and see the servers go.
   button, presses the computer's Action key.
 - **Notifications and Live Activities.** With APNs configured on the host, the device can
   receive approval, finished-task and desktop alerts (approvals can be answered from the
-  notification), and running agent tasks show on the Lock Screen and Dynamic Island.
+  notification), and running agent tasks show on the Lock Screen and Dynamic Island. A Linux
+  notification shows the application's buttons and reply field when the app posts it while
+  running, a Reply field on a push when the application accepts replies, and opens the
+  application's window when tapped.
 
 ## Home and the tabs
 
@@ -657,7 +660,13 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Notifications and Live Activities.** Enable each kind, background the app, trigger an
   approval and a task completion, and use Allow and Deny from the notification; start a task
   and watch the Lock Screen and Dynamic Island update and end; start one from another client
-  to check push-to-start.
+  to check push-to-start. With Signal, Element or Thunderbird on the computer and the app
+  running in the background, receive a message: use one of its buttons from Notification
+  Center and check the computer acts on it; reply from the Lock Screen and check the reply
+  arrives; tap one and check the phone shows that application's window, at the conversation.
+  Close the app and repeat with a push: Reply delivers, a tap opens the application. Park the
+  computer and reply to an earlier push: it wakes and delivers. Reply to a notification from
+  before the computer restarted: the phone says it is no longer on the computer.
 - **Shortcuts, widgets and Spotlight.** Run each shortcut and check its input and output
   files; configure and tap the widgets and controls; create, rename and delete a nested file
   and check Spotlight; sign out and verify the entries disappear.
