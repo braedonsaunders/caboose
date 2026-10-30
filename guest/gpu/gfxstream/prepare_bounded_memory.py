@@ -65,7 +65,7 @@ def transform(encoder, encoder_h, tracker, tracker_h):
     wrappers = (HERE / 'bounded-memory/encoder_wrappers.inc').read_text()
     encoder = replace_once(encoder, 'VkResult VkEncoder::cabooseFlushMemoryChunk(',
                            wrappers + '\nVkResult VkEncoder::cabooseFlushMemoryChunk(')
-    encoder = '#include "caboose-bounded-memory/ranges.h"\n#include "caboose-bounded-memory/flush_window.h"\n' + encoder
+    encoder = '#include "caboose-bounded-memory/ranges.h"\n#include "caboose-bounded-memory/flush_window.h"\n#include "caboose-bounded-memory/flush_timing.h"\n' + encoder
     declaration = '''    VkResult cabooseFlushMemoryChunk(VkDevice device, uint32_t memoryRangeCount,
         const VkMappedMemoryRange* pMemoryRanges, uint32_t doLock, bool deferReply = false);
     VkResult cabooseInvalidateMemoryChunk(VkDevice device, uint32_t memoryRangeCount,
@@ -116,7 +116,7 @@ def apply(root, check=False):
     if target.exists(): raise ValueError('bounded memory include directory already exists')
     if check: return
     target.mkdir()
-    for header in ('ranges.h', 'flush_window.h'):
+    for header in ('ranges.h', 'flush_window.h', 'flush_timing.h'):
         shutil.copyfile(HERE / 'bounded-memory' / header, target / header)
     for name, text in zip(FILES, output):
         (root / PREFIX / name).write_text(text)

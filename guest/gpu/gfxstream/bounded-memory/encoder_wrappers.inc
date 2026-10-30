@@ -11,18 +11,26 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
         struct Unlock { VkEncoder* encoder; bool held; ~Unlock() { if (held) encoder->unlock(); } };
         if (doLock) this->lock();
         Unlock unlock{this, doLock != 0};
+        caboose::memory::FlushCallScope timing{count};
         auto stream = mImpl->stream();
         caboose::memory::FlushWindow window{
             [&](unsigned i, unsigned long long offset, unsigned long long size) {
                 VkMappedMemoryRange part = ranges[i]; part.offset = offset; part.size = size;
-                return int(cabooseFlushMemoryChunk(device, 1, &part, 0, true));
+                return timing.send(size, [&] {
+                    return int(cabooseFlushMemoryChunk(device, 1, &part, 0, true));
+                });
             }, [&](int& result) {
-                VkResult actual = VK_SUCCESS;
-                if (!stream->tryRead(&actual, sizeof(actual))) return false;
-                result = int(actual); return true;
-            }, [&] { stream->invalidate(); }};
+                return timing.receive(result, [&] {
+                    VkResult actual = VK_SUCCESS;
+                    if (!stream->tryRead(&actual, sizeof(actual))) return false;
+                    result = int(actual); return true;
+                });
+            }, [&] {
+                timing.invalidate();
+                stream->invalidate();
+            }};
         caboose::memory::Reservation metadata{caboose::memory::processBudget};
-        if (!metadata.add(sizeof(window))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        if (!metadata.add(sizeof(window))) return static_cast<VkResult>(timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
         const int result = caboose::memory::transact(false, count,
             [&](uint32_t i, caboose::memory::Range& out) {
                 if (!sResourceTracker->cabooseMappedRange(device, ranges[i].memory, out)) return false;
@@ -32,8 +40,8 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
             }, [&](uint32_t i, uint64_t offset, uint64_t size, uint8_t*) {
                 return window.push(i, offset, size);
             });
-        if (result != caboose::memory::success) return static_cast<VkResult>(result);
-        return static_cast<VkResult>(window.finish());
+        if (result != caboose::memory::success) return static_cast<VkResult>(timing.finish(result));
+        return static_cast<VkResult>(timing.finish(window.finish()));
     }
 #endif
     return cabooseFlushMemoryChunk(device, count, ranges, doLock);
