@@ -285,6 +285,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
+        // Observing the purpose alone; the focused window is read only when it changes.
+        if model.session?.textPurpose != view.fieldPurpose { view.followFocusedField() }
         if keyboardVisible && !model.windowCardOwnsGeometry && !laptopInputOwned, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
         if (!keyboardVisible || model.windowCardOwnsGeometry || laptopInputOwned), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
@@ -569,7 +571,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             lastTap = (now, desktop.cursor)
         }
         resetTyping()
-        prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow)
+        followFocusedField()
         haptics.impactOccurred()
     }
 
@@ -611,6 +613,11 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private var focusedWindow: RemoteWindow? {
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
+    }
+
+    /// The keyboard follows the focused field's purpose, live while it is up.
+    func followFocusedField() {
+        followField(purpose: session?.textPurpose, isCode: RemoteWindowView.isCodeApp(focusedWindow))
     }
 
     override func insertText(_ text: String) {

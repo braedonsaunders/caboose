@@ -107,7 +107,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             laidOutVideos = nil
         }
         remoteWindow = window
-        prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
+        followField(purpose: session?.textPurpose, isCode: Self.isCodeApp(window))
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
         layoutGame()
@@ -450,7 +450,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     private func tapped() {
-        prefersProse = autocorrectChoice ?? !Self.isCodeApp(remoteWindow)
+        followField(purpose: session?.textPurpose, isCode: Self.isCodeApp(remoteWindow))
         guard onKeyboardWanted != nil, let session else {
             if !isFirstResponder { becomeFirstResponder() }
             return
@@ -465,13 +465,17 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
         guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
                                                isText: session.cursorIsText, keyboardVisible: isFirstResponder) else { return }
-        // The app says what the field takes: no autocorrect in a terminal or a password.
-        if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
-            prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
-                .contains(purpose)
-        }
+        // The app says what the field takes: its keyboard, AutoFill and whether it is prose.
+        if isText { followField(purpose: session.textPurpose, isCode: Self.isCodeApp(remoteWindow)) }
         onKeyboardWanted(isText)
         focusCheck = nil
+    }
+
+    /// Focus moving between fields with the keyboard up (Tab from a username to its
+    /// password) changes the keyboard with it.
+    fileprivate func followFieldPurpose() {
+        guard isFirstResponder, let session, session.textPurpose != fieldPurpose else { return }
+        followField(purpose: session.textPurpose, isCode: Self.isCodeApp(remoteWindow))
     }
 
     private var adoptedSurrounding = 0
@@ -931,6 +935,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.followFieldPurpose()
         view.adoptSurroundingText()
         view.layoutGame()
         view.layoutGPUStream()

@@ -482,8 +482,14 @@ and `CabooseKit/Input/TypingBuffer.swift` turns its edits into text-input commit
 deletions, unit-tested for autocorrect, swipe words, marked text and deletes. The keyboard
 opens from the app's own text-input state or text cursor. An unclassified Xwayland bitmap
 cursor does not establish text focus; use the keyboard control when no text-focus report is available. Tapping again does not dismiss an
-already-open keyboard; use its dismiss control. The field's purpose turns autocorrect off in
-terminals and password fields. Where the app supports text input, marked text (Chinese,
+already-open keyboard; use its dismiss control. the field's purpose
+(`CabooseKit/Input/TextPurposeTraits.swift`, unit-tested) picks the keyboard, iOS AutoFill
+and secure entry: saved passwords in password fields, which are secure entry, and as the
+username in email fields; one-time codes from Messages and Mail on the number pad in PIN
+and digits fields; the phone pad, URL keyboard and name AutoFill for phone, URL and name
+fields. Autocorrect is off in terminals and every field but plain text and names. AutoFill
+fills one field at a time and cannot see the remote site, so the person picks the login
+from their passwords. Where the app supports text input, marked text (Chinese,
 Japanese, Korean) is a real preedit. Hardware keys are sent as keys, with ⌘ mapped to
 Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 

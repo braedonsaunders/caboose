@@ -2682,8 +2682,20 @@ and restores its dock.
   key. A tap opens the keyboard from text-input-v3 or a named text cursor. An Xwayland
   bitmap cursor reported as the compositor's generic arrow has unknown editing state and
   does not open the keyboard automatically; the explicit keyboard control remains available. Tap focus checks preserve an already-open
-  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, its content purpose
-  turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, the keyboard follows its state and marked text is a
+  preedit. The field's content purpose picks the keyboard, iOS AutoFill and secure entry
+  (`CabooseKit/Input/TextPurposeTraits.swift`), and changes them as focus moves between
+  fields: a password field is secure entry offering saved passwords; an email field is the
+  email keyboard offering them as a username, since an email field is almost always a
+  login's account name; PIN and digits fields are the number pad offering one-time codes
+  from Messages and Mail (Firefox reports a web page's `inputmode="numeric"` code field as
+  digits; Chromium reports it as plain text); phone, URL and name fields offer the person's
+  number, URLs and name on the phone pad, URL keyboard (Return labelled Go) and word
+  capitals; number and date/time fields use numbers and punctuation. Autocorrect is off for
+  terminals and every purpose but normal, alpha and name. A filled password or code
+  replaces what was typed into the field. AutoFill sees one field at a time and never the
+  remote site, so it fills one field per pick and does not pre-suggest the site's login;
+  its suggestions are on the iOS keyboard, not Laptop's own. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
