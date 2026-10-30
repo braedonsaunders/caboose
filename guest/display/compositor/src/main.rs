@@ -10,6 +10,7 @@ mod encode;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
+mod gpu_peer;
 mod input;
 mod keymap;
 mod motion;
@@ -367,7 +368,9 @@ fn run(config: Config) -> Result<(), String> {
         ListeningSocketSource::with_name(&config.socket).map_err(|e| format!("socket {}: {e}", config.socket))?;
     handle
         .insert_source(socket, |stream, _, state: &mut State| {
-            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
+            let gpu_peer = if state.net.gpu_enabled() { gpu_peer::GpuPeer::capture(&stream).ok() } else { None };
+            let client = ClientState { gpu_peer, ..ClientState::default() };
+            if let Err(e) = state.dh.insert_client(stream, Arc::new(client)) {
                 tracing::warn!("cannot add a Wayland client: {e}");
             }
         })

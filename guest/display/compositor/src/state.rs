@@ -112,6 +112,7 @@ impl KeyboardTarget<State> for KeyboardFocus {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor: CompositorClientState,
+    pub gpu_peer: Option<crate::gpu_peer::GpuPeer>,
 }
 
 impl ClientData for ClientState {
@@ -232,6 +233,21 @@ impl HasNet for State {
 }
 
 impl State {
+    /// Native Wayland toplevel identity from its accepted peer, never X11 PID
+    /// properties. This does not mint or authorize a surface grant by itself.
+    #[allow(dead_code)]
+    pub fn native_gpu_surface_identity(&self, window: u64) -> Option<(u32, u32, u64, u32)> {
+        use smithay::reexports::wayland_server::Resource;
+        let window = self.windows.get(window)?;
+        let Surface::Toplevel(toplevel) = &window.surface else { return None };
+        let surface = toplevel.wl_surface();
+        let object = surface.id();
+        let client = self.dh.get_client(object.clone()).ok()?;
+        let peer = client.get_data::<ClientState>()?.gpu_peer.as_ref()?;
+        if !peer.alive() { return None; }
+        Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
+    }
+
     pub fn now_us(&self) -> u64 {
         Duration::from(self.clock.now()).as_micros() as u64
     }

@@ -119,6 +119,8 @@ impl Net {
         Ok(Self { conns: HashMap::new(), next_id: 1, local, gpu_router: None })
     }
 
+    pub fn gpu_enabled(&self) -> bool { self.gpu_router.is_some() }
+
     /// Install only for the authenticated owner seat after the private broker
     /// has been installed and its complete bridge has passed integration.
     /// Until a caller explicitly invokes this, /gpu remains unavailable.
