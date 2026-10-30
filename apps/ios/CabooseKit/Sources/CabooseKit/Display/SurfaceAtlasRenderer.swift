@@ -470,16 +470,22 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         if surfaceNeedsResize {
             surface.resize(width: w, height: h)
         }
-        buf.bgraBytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+        let uploaded = buf.bgraBytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             surface.applyAtlasBatch(
                 copies: batch.copies,
                 dirtyRect: dirty.width > 0 && dirty.height > 0 ? dirty : nil,
                 bgraBase: raw.baseAddress,
                 rowBytes: w * 4,
+                expectedSize: CGSize(width: w, height: h),
                 fullReplacement: fullReplacement
             )
         }
 
+        guard uploaded else {
+            if let existing { windows[batch.window] = existing }
+            lock.unlock()
+            return false
+        }
         windows[batch.window] = buf
         lock.unlock()
         return true

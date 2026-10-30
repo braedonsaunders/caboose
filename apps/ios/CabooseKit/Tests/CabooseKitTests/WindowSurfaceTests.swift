@@ -120,7 +120,7 @@ import Testing
         #expect(pixel(image, 0, 0) == [0, 0, 0, 0])
     }
 
-    @Test func atlasGpuCopyRectAndLocalScrollOffsetAreConsumedAtomically() throws {
+    @Test func atlasGpuCopyRectPreservesChromeAndUploadsExposedPixels() throws {
         let cache = TileAtlasCache(capacity: 16)
         let renderer = SurfaceAtlasRenderer()
         let surface = WindowSurface()
@@ -140,8 +140,6 @@ import Testing
             ]
         )
         #expect(renderer.applyAndUpload(batch1, cache: cache, to: surface))
-        surface.addLocalScroll(dx: 0, dy: -24, at: 10.0)
-        #expect(surface.scrollOffset == CGPoint(x: 0, y: -24))
 
         // Batch 2: scroll content viewport (y: 32..<128) up by 16 px (dy = -16) and fill exposed bottom strip (y: 112..<128)
         let batch2 = SurfaceBatch(
@@ -155,11 +153,6 @@ import Testing
             fills: [SurfaceFill(rect: CGRect(x: 0, y: 112, width: 128, height: 16), rgba: 0xFFFF_00FF)]
         )
         #expect(renderer.applyAndUpload(batch2, cache: cache, to: surface))
-        let state = try #require(surface.presentationState())
-        // Local scroll offset (-24) atomically absorbed the -16 CopyRect delta -> -8 remaining
-        #expect(state.scrollOffset == CGPoint(x: 0, y: -8))
-        #expect(state.scrollViewport == CGRect(x: 0, y: 32, width: 128, height: 96))
-
         let img = try #require(surface.snapshot())
         // Top header chrome (y=10) stayed red (BGRA: [0, 0, 255, 255])
         #expect(pixel(img, 10, 10) == [0, 0, 255, 255])
@@ -168,4 +161,35 @@ import Testing
         // Newly exposed bottom strip y=112..<128 is yellow (RGBA 0xFFFF00FF -> BGRA [0, 255, 255, 255])
         #expect(pixel(img, 10, 120) == [0, 255, 255, 255])
     }
+    @Test func atlasAllocationFailureRejectsWholeBatchWithoutAdvancingPixelsOrHistory() throws {
+        for resource in [WindowSurface.AtlasResource.scratch, .staging, .commandBuffer, .blitEncoder, .backing] {
+            var denied: WindowSurface.AtlasResource?
+            let surface = WindowSurface(allowsResource: { $0 != denied })
+            let cache = TileAtlasCache(capacity: 16)
+            let renderer = SurfaceAtlasRenderer()
+            let initial = SurfaceBatch(window: 1, seq: 1, ptsMicros: 1,
+                size: CGSize(width: 16, height: 16), rect: CGRect(x: 0, y: 0, width: 16, height: 16),
+                keyframe: true, fills: [SurfaceFill(rect: CGRect(x: 0, y: 0, width: 16, height: 16), rgba: 0xFF00_00FF)])
+            #expect(renderer.applyAndUpload(initial, cache: cache, to: surface))
+            let oldGeneration = surface.generation
+            let oldBytes = renderer.rgbaBytes(forWindow: 1)
+            denied = resource
+            let side = resource == .backing ? 32 : 16
+            let delta = SurfaceBatch(window: 1, seq: 2, ptsMicros: 2,
+                size: CGSize(width: side, height: side), rect: CGRect(x: 0, y: 0, width: side, height: side),
+                keyframe: resource == .backing,
+                copies: [SurfaceCopy(dx: 0, dy: -4, rect: CGRect(x: 0, y: 0, width: 16, height: 12))],
+                fills: [SurfaceFill(rect: CGRect(x: 0, y: 12, width: 16, height: 4), rgba: 0x0000_FFFF)])
+            #expect(!renderer.applyAndUpload(delta, cache: cache, to: surface))
+            #expect(surface.generation == oldGeneration)
+            #expect(renderer.rgbaBytes(forWindow: 1) == oldBytes)
+            let image = try #require(surface.snapshot())
+            #expect(pixel(image, 4, 14) == [0, 0, 255, 255])
+            denied = nil
+            #expect(renderer.applyAndUpload(delta, cache: cache, to: surface))
+            let recovered = try #require(surface.snapshot())
+            #expect(pixel(recovered, 4, 14) == [255, 0, 0, 255])
+        }
+    }
+
 }

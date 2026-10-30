@@ -479,7 +479,11 @@ acknowledging `pts_us` via `ack` (`0x83`):
 1. **`copies` (`CopyRect`)**: Each `[dx, dy, x, y, w, h]` copies the rectangle from source
    `[x - dx, y - dy, w, h]` of the window's existing retained texture into destination
    `[x, y, w, h]` (using an intermediate scratch blit so overlapping scroll regions never
-   alias). The server's scroll detector (`detect_scroll_copy`) hashes rows inside damaged
+   alias). The phone queues the GPU copies and dirty pixel uploads together; failure to
+   allocate a required resource rejects the batch and requests a keyframe instead of
+   acknowledging a partial picture. Ordinary touch/wheel input remains server-authoritative;
+   pixel copies do not establish a semantic scroll target for local prediction.
+   The server's scroll detector (`detect_scroll_copy`) hashes rows inside damaged
    regions (`w >= 64 && h >= 64`) with `XXH64` and emits a `SurfaceCopy` whenever at least
    60% of overlapping rows match a vertical displacement `dy`, reducing scroll bandwidth to
    only the newly exposed strip.
