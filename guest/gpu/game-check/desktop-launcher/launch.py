@@ -19,7 +19,7 @@ COMPOSITOR = Path('/opt/caboose-private-gpu-v4/bin/caboose-display')
 CONFIG = Path('/opt/caboose-gpu-acceptance/runtime.json')
 GAME_SHA = '8785da3046d4a03d69d014baf17e258de5180698bc303389784ef138a9066fe9'
 LAUNCH_SHA = '90a644c02fd85874169d9ec215000f7de6ec186db68184d3fb53b63989a5f838'
-DRIVER_SHA = '17f439c618e65cda6a0e6f88cc3581b6543403a1693db5c699c7479e63e9e998'
+DRIVER_SHA = '34164777870dfed7d9b73076d5db6cc2dc2b83707eb05822fb96a38b8c888f9c'
 
 
 def require(condition, message):
