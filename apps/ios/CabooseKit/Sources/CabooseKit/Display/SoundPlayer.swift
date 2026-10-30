@@ -71,6 +71,7 @@ final class SoundPlayer: @unchecked Sendable {
     private var sessionActive = false
     private var interrupted = false
     private var timeline = AudioPacketTimeline()
+    private var startup = AudioStartupAccumulator()
     private let log = Logger(subsystem: "com.braedonsaunders.caboose", category: "display-audio")
     private var reportsAt: TimeInterval = 0
     private var errorsAt: TimeInterval = 0
@@ -168,6 +169,7 @@ final class SoundPlayer: @unchecked Sendable {
             cancelAutomaticFlushObservation()
             interrupted = value
             sessionActive = false
+            recordStartup(startup.reset())
             timeline.reset()
             timing.update { $0.reset() }
             arrivalAt = nil
@@ -186,6 +188,9 @@ final class SoundPlayer: @unchecked Sendable {
             var decodedAt: TimeInterval?
             var enqueueStartedAt: TimeInterval?
             var enqueuedAt: TimeInterval?
+            let traceStartup = AudioDiagnostics.enabled
+            var startupRaw: Int64?, startupPlaced: Int64?, startupLead: Int64?
+            var startupFrames: Int?, startupDeclared: Int?, startupCopied: Int?
             var restartNotice: String?
             var restartRecord: AudioDiagnosticRecord?
             defer {
@@ -208,6 +213,14 @@ final class SoundPlayer: @unchecked Sendable {
                         AudioDiagnostics.record(record)
                     }
                 }
+                if traceStartup {
+                    let completed = startup.observe(.init(received: receivedAt, dispatched: dispatchedAt,
+                        entered: enteredAt, decoded: decodedAt, enqueueStarted: enqueueStartedAt,
+                        enqueued: enqueuedAt, finished: finishedAt, finishedWall: Date().timeIntervalSince1970,
+                        rawPTS: startupRaw, placedPTS: startupPlaced, frames: startupFrames,
+                        declaredBytes: startupDeclared, copiedBytes: startupCopied, leadMicros: startupLead))
+                    recordStartup(completed)
+                } else { _ = startup.reset() }
                 report(at: finishedAt)
             }
             do {
@@ -219,6 +232,11 @@ final class SoundPlayer: @unchecked Sendable {
                 let pcm = try decoder.decode(packet.data)
                 let arrived = now()
                 decodedAt = arrived
+                if traceStartup {
+                    startupRaw = Int64(packet.ptsMicros)
+                    startupFrames = Int(pcm.frameLength)
+                    startupDeclared = Int(pcm.audioBufferList.pointee.mBuffers.mDataByteSize)
+                }
                 guard pcm.frameLength > 0 else { return }
                 if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
                 arrivalAt = arrived
@@ -233,7 +251,9 @@ final class SoundPlayer: @unchecked Sendable {
                 if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
                 lastServerPTS = rawPTS
                 let pts = timeline.place(server: rawPTS, frames: Int(pcm.frameLength))
-                let placement = clock.place(audio: pts)
+                let decision = clock.placement(audio: pts)
+                let placement = decision.decision
+                if traceStartup { startupPlaced = pts; startupLead = decision.leadMicros }
                 if case .restart = placement {
                     restarts += 1
                     if restarts <= 10 || restarts % 50 == 0 {
@@ -263,7 +283,8 @@ final class SoundPlayer: @unchecked Sendable {
                     renderer.flush()
                 }
                 let buffer = try sample(pcm, decoder: decoder, pts: pts)
-                // A rate change during placement may itself post a flush notification.
+                if traceStartup { startupCopied = CMSampleBufferGetTotalSampleSize(buffer) }
+                // Automatic route/lifecycle flushes may occur during preparation.
                 // Check again after preparation, immediately before the next enqueue.
                 if let generation = automaticFlushGeneration { recoverAutomaticFlush(generation: generation) }
                 enqueueStartedAt = now()
@@ -282,6 +303,17 @@ final class SoundPlayer: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    private func recordStartup(_ bucket: AudioStartupBucket?) {
+        guard AudioDiagnostics.enabled, let bucket else { return }
+        AudioDiagnostics.record(AudioDiagnosticRecord(kind: .startup,
+            monotonicSeconds: bucket.firstReceiptMonotonicSeconds,
+            wallUnixSeconds: bucket.firstReceiptWallUnixSeconds,
+            packets: played, failures: failed, restarts: restarts, delayMicros: clock.delay,
+            requestedRate: clock.rate, observedRate: nil, projectedMicros: nil, renderedMicros: nil,
+            timestampRegressions: timestampRegressions, startup: bucket,
+            clockGeneration: clock.diagnosticGeneration))
     }
 
     private func milliseconds(_ end: TimeInterval, since start: TimeInterval) -> Int {
@@ -321,6 +353,7 @@ final class SoundPlayer: @unchecked Sendable {
     func stop() {
         queue.async { [self] in
             cancelAutomaticFlushObservation()
+            recordStartup(startup.reset())
             timeline.reset()
             timing.update { $0.reset() }
             arrivalAt = nil

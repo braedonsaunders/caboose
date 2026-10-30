@@ -13,7 +13,7 @@ public enum AudioDiagnostics {
 }
 
 struct AudioDiagnosticRecord: Encodable {
-    enum Kind: String, Encodable { case interval, restart }
+    enum Kind: String, Encodable { case interval, restart, startup }
     var kind: Kind
     var monotonicSeconds: Double
     var wallUnixSeconds: Double
@@ -22,9 +22,9 @@ struct AudioDiagnosticRecord: Encodable {
     var restarts: Int
     var delayMicros: Int64
     var requestedRate: Double
-    var observedRate: Double
-    var projectedMicros: Int64
-    var renderedMicros: Int64
+    var observedRate: Double?
+    var projectedMicros: Int64?
+    var renderedMicros: Int64?
     var timestampRegressions: Int
     var rendererStatus: Int? = nil
     var frameMin: Int? = nil
@@ -41,6 +41,8 @@ struct AudioDiagnosticRecord: Encodable {
     var totalMS: Int? = nil
     var finishedMonotonicSeconds: Double? = nil
     var automaticFlush: AudioAutomaticFlushState.Summary? = nil
+    var startup: AudioStartupBucket? = nil
+    var clockGeneration: UInt64? = nil
     var rateProvenance: AudioRateProvenanceState.Snapshot? = nil
 }
 
@@ -55,6 +57,10 @@ struct AudioDiagnosticBuffer {
 
     mutating func append(_ record: AudioDiagnosticRecord) -> Bool {
         records.append(record)
+        if records.lazy.filter({ $0.kind == .startup }).count > AudioStartupAccumulator.maximumBuckets,
+           let oldest = records.firstIndex(where: { $0.kind == .startup }) {
+            records.remove(at: oldest)
+        }
         if records.count > Self.maximumRecords { records.removeFirst(records.count - Self.maximumRecords) }
         revision &+= 1
         guard !scheduled else { return false }
@@ -75,7 +81,12 @@ struct AudioDiagnosticBuffer {
         guard maximumBytes >= 2 else { return nil }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        var encoded = records.suffix(maximumRecords).compactMap { try? encoder.encode($0) }
+        var bounded = Array(records.suffix(maximumRecords))
+        while bounded.lazy.filter({ $0.kind == .startup }).count > AudioStartupAccumulator.maximumBuckets,
+              let oldest = bounded.firstIndex(where: { $0.kind == .startup }) {
+            bounded.remove(at: oldest)
+        }
+        var encoded = bounded.compactMap { try? encoder.encode($0) }
         var size = 2 + encoded.reduce(0) { $0 + $1.count } + max(0, encoded.count - 1)
         while size > maximumBytes, !encoded.isEmpty {
             let removed = encoded.removeFirst()

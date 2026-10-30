@@ -1234,6 +1234,34 @@ Steady and batched packet placement, explicit lifecycle writes, and the finite-b
 clock-mismatch limitation are covered without renderer playback by
 `swift test --jobs 1 --filter UnityRatePlaybackTests`.
 
+With the same diagnostic opt-in, `startup` records summarize the first twelve seconds
+of incoming audio and restart that observation window after an ingress gap of at least
+one second. Nonempty 250 ms buckets close on the next packet or stop/interruption;
+a final partial bucket waits for one of those events. The recorder retains at most
+48 startup buckets across window generations within the existing total 64-record,
+128-KiB cap. Byte limits can shorten history further. There is one pending accumulator
+on the playback queue, no timer or additional queue. Disabled diagnostics collect none
+of this metadata.
+
+Each bucket identifies its clock and window generation, ingress/wall boundaries,
+raw-minus-placed PTS and consecutive PTS step ranges, decoded frame count, declared PCM
+buffer bytes and copied sample bytes, byte-count mismatches, min/max placement lead,
+late-placement count and stage timing maxima. Lead uses the placement's existing host
+sample; a stopped clock has no lead. Startup records omit observed rate and renderer
+position rather than sampling them per packet. Their outer cumulative counters are
+sampled when the bucket closes. These records retain no waveform, encoded data, PCM
+summary, text or URL and do not change playback.
+
+`OpusStartupContinuityTests` uses generated stereo tone through Apple's Opus encoder
+and the product decoder, retaining both codec states over the server's silence
+suppression contract: fifty encoded silent packets, then no codec input until resume.
+It checks finite values, stereo agreement, amplitude, phase-independent tone residual
+and sample/buffer-boundary steps starting with the first output sample. It does not
+sleep through the skipped silence, use libopus as its encoder, or establish phone output
+quality. Run it with `swift test --jobs 1 --filter OpusStartupContinuityTests`.
+`AudioStartupDiagnosticsTests` covers window/generation boundaries, timestamp ordering,
+metadata schema, single-read placement and shared writer caps without playing audio.
+
 ### Standalone muted audio rate control
 
 `scripts/audio-rate-control.swift` is an opt-in macOS mechanism probe outside the

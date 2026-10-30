@@ -55,6 +55,8 @@ public final class MediaClock: @unchecked Sendable {
         if let rateObserver { NotificationCenter.default.removeObserver(rateObserver) }
     }
 
+    var diagnosticGeneration: UInt64 { rateTrace.generation }
+
     var rateProvenanceSnapshot: AudioRateProvenanceState.Snapshot? {
         guard AudioDiagnostics.enabled else { return nil }
         return rateTrace.update { $0.snapshot }
@@ -124,7 +126,11 @@ public final class MediaClock: @unchecked Sendable {
     /// Where a sound packet goes: the clock is to be started, started again, or left running.
     /// The caller enqueues the packet first and then calls `start(at:)`, so a renderer's slow
     /// first enqueue does not eat into the delay.
-    func place(audio pts: Int64) -> PlayoutDelay.Placement {
+    func place(audio pts: Int64) -> PlayoutDelay.Placement { placement(audio: pts).decision }
+
+    /// Returns the placement's already-sampled lead for opt-in metadata, without another
+    /// host or renderer read. A stopped clock has no lead until its explicit start.
+    func placement(audio pts: Int64) -> (decision: PlayoutDelay.Placement, leadMicros: Int64?) {
         lock.lock()
         defer { lock.unlock() }
         let host = hostTime()
@@ -132,7 +138,7 @@ public final class MediaClock: @unchecked Sendable {
         // Placement uses one host sample. Ordinary packets never change AVFoundation's
         // rate: a positive-to-positive write can temporarily stop the renderer.
         let now = projectedTime(at: micros)
-        return playout.place(pts: pts, now: now)
+        return (playout.place(pts: pts, now: now), now.map { pts - $0 })
     }
 
     /// Runs the clock from `time` (server microseconds) on.

@@ -2097,7 +2097,11 @@ clock mismatch can require rebuffering, and hardware/host clock drift can accumu
 between explicit rebufferings.
 Opt-in audio diagnostics retain the existing five-second timing reports and bounded
 restart summaries in an asynchronous app-cache snapshot, limited to 64 fixed-schema
-records and 128 KiB. Each interval can include the latest 16 rate-write traces plus
+records and 128 KiB. With the same opt-in, the first twelve seconds of audio after
+start or an ingress gap of at least one second also produce nonempty 250 ms startup
+metadata buckets, limited to 48 within that shared cap. They reuse placement's host
+sample and retain numeric timing/format metadata, never PCM or encoded payloads.
+Each interval can include the latest 16 rate-write traces plus
 bounded rate-change and interruption metadata; these observations never drive recovery. Recording defaults off and changes neither playback nor the wire protocol;
 [the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
 and collection path.
