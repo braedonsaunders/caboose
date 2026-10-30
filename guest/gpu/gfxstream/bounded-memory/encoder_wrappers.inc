@@ -30,7 +30,7 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
                 stream->invalidate();
             }};
         caboose::memory::Reservation metadata{caboose::memory::processBudget};
-        if (!metadata.add(sizeof(window))) return static_cast<VkResult>(timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+        if (!metadata.add(sizeof(window) + sizeof(timing))) return static_cast<VkResult>(timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
         const int result = caboose::memory::transact(false, count,
             [&](uint32_t i, caboose::memory::Range& out) {
                 if (!sResourceTracker->cabooseMappedRange(device, ranges[i].memory, out)) return false;

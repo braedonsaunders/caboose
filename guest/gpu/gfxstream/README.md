@@ -292,3 +292,10 @@ from indexed-present admission to result, source release and retirement, the
 interval between admissions, and queued DATA bytes. They contain no payloads or
 identities. Retirement receipt rate is not displayed FPS; intervals include relay
 and executor scheduling, and do not isolate GPU execution time.
+
+The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
+flush diagnostics. Up to 128 numeric call records and one limit marker report
+serialization time, first-reply buffered-write/wait time, remaining-reply wait
+time, byte counts and results. The first reply includes the IOStream buffer
+commit; it is not a pure network round-trip measurement. Diagnostics preserve
+the eight-packet window and do not log handles, addresses or memory contents.

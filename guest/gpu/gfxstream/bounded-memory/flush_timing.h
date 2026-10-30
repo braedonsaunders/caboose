@@ -306,10 +306,7 @@ private:
 class FlushCallScope {
 public:
     explicit FlushCallScope(uint32_t range_count) noexcept
-        : inner_(range_count, flushTimingEnabled(), &steadyFlushMicros,
-                 [](const FlushCallRecord& rec) noexcept {
-                     processFlushTimingCollector().record(rec);
-                 }) {}
+        : inner_(range_count, flushTimingEnabled(), &steadyFlushMicros, DefaultSink{}) {}
 
     FlushCallScope(const FlushCallScope&) = delete;
     FlushCallScope& operator=(const FlushCallScope&) = delete;
