@@ -4,7 +4,8 @@ import UIKit
 /// A view the iOS text system can type into on behalf of a remote app: the software
 /// keyboard with autocorrect and QuickPath, dictation, emoji, and marked-text input for
 /// Chinese, Japanese and Korean. `UITextInput` edits a `TypingBuffer`, and the buffer's
-/// differences reach the subclass as backspaces and text through `send(_:)`.
+/// differences reach the subclass as backspaces and text through `send(_:)`. The remote
+/// field's purpose picks the keyboard, its AutoFill and secure entry (`TextPurposeTraits`).
 @MainActor
 open class RemoteTextInputView: UIView, UITextInput {
     public private(set) var buffer = TypingBuffer()
@@ -21,6 +22,25 @@ open class RemoteTextInputView: UIView, UITextInput {
             keyBar.show(autocorrect: prefersProse)
             if prefersProse != oldValue, isFirstResponder { reloadInputViews() }
         }
+    }
+
+    /// The remote field's content purpose as last followed (nil: none reported), and what it
+    /// asks of the keyboard.
+    public private(set) var fieldPurpose: String?
+    public private(set) var purposeTraits = TextPurposeTraits(purpose: nil)
+
+    /// Follows the focused remote field: its keyboard, AutoFill and secure entry come from its
+    /// purpose, and so does prose, else from whether the app is a terminal or code editor. The
+    /// person's Autocorrect choice outlasts both. A change reloads the keyboard while it is up.
+    public func followField(purpose: String?, isCode: Bool) {
+        let traits = TextPurposeTraits(purpose: purpose)
+        let traitsChanged = traits != purposeTraits
+        fieldPurpose = purpose
+        purposeTraits = traits
+        let prose = autocorrectChoice ?? traits.prose ?? !isCode
+        let proseChanged = prose != prefersProse
+        prefersProse = prose
+        if !proseChanged, traitsChanged, isFirstResponder { reloadInputViews() }
     }
 
     private var stickyModifiers = Set<String>()
@@ -80,14 +100,22 @@ open class RemoteTextInputView: UIView, UITextInput {
             releaseSticky()
         case .text(let text):
             if stickyModifiers == ["control"], text.lowercased() == "v" { paste(nil) }
-            else { insertText(text) }
+            else { insertLiterally(text) }
         }
     }
 
     /// Read the system clipboard only in response to the user's Paste action.
     open override func paste(_ sender: Any?) {
         releaseSticky()
-        if let text = UIPasteboard.general.string { insertText(text) }
+        if let text = UIPasteboard.general.string { insertLiterally(text) }
+    }
+
+    /// Paste and the key bar type their text as it is, never as AutoFill.
+    private var insertingLiterally = false
+    private func insertLiterally(_ text: String) {
+        insertingLiterally = true
+        defer { insertingLiterally = false }
+        insertText(text)
     }
 
     private func releaseSticky() {
@@ -164,6 +192,14 @@ open class RemoteTextInputView: UIView, UITextInput {
             return
         }
         if text == "\n" || text == "\r" || text == "\r\n" { unmarkText() }
+        // AutoFill hands a custom text view the whole password or code through insertText,
+        // and it replaces what was typed into the field, as it does in a UIKit field. Keys in
+        // these fields arrive one character at a time (there is no swipe typing or prediction
+        // there), and paste and the key bar insert literally.
+        if purposeTraits.fillsWholeValue, !insertingLiterally, text.count > 1 {
+            perform { $0.fill(text) }
+            return
+        }
         perform { $0.insert(text) }
     }
     open func deleteBackward() {
@@ -179,7 +215,7 @@ open class RemoteTextInputView: UIView, UITextInput {
         get { prefersProse ? .default : .no } set {}
     }
     public var autocapitalizationType: UITextAutocapitalizationType {
-        get { prefersProse ? .sentences : .none } set {}
+        get { prefersProse ? (purposeTraits.capitalization == .words ? .words : .sentences) : .none } set {}
     }
     public var spellCheckingType: UITextSpellCheckingType {
         get { prefersProse ? .default : .no } set {}
@@ -190,9 +226,25 @@ open class RemoteTextInputView: UIView, UITextInput {
     public var smartQuotesType: UITextSmartQuotesType = .no
     public var smartDashesType: UITextSmartDashesType = .no
     public var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
-    public var keyboardType: UIKeyboardType = .default
+    public var keyboardType: UIKeyboardType {
+        get { purposeTraits.keyboardType } set {}
+    }
     public var keyboardAppearance: UIKeyboardAppearance = .dark
-    public var returnKeyType: UIReturnKeyType = .default
+    public var returnKeyType: UIReturnKeyType {
+        get { purposeTraits.returnKeyType } set {}
+    }
+    /// What iOS AutoFill offers here: passwords, one-time codes from Messages and Mail, the
+    /// person's own phone number, name and URLs.
+    public var textContentType: UITextContentType! {
+        get { purposeTraits.textContentType } set {}
+    }
+    /// Password fields. Secure entry suits this view: iOS still types through `insertText`
+    /// and `deleteBackward`, which is all the `TypingBuffer` needs, and what it turns off
+    /// (predictions, autocorrect, dictation, marked text, third-party keyboards, learning
+    /// the typed words) has no place in a password.
+    public var isSecureTextEntry: Bool {
+        get { purposeTraits.secure } set {}
+    }
 
     // MARK: UITextInput — text and ranges
 
