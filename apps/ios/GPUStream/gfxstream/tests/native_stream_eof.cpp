@@ -86,10 +86,21 @@ bool runCase(const char* label, size_t flagsBytes, size_t packetBytes,
         flagsBytes < 4 ? diagnostic.stage == DecodeStage::flags && diagnostic.eof :
         diagnostic.stage == DecodeStage::eof && diagnostic.eof &&
         diagnostic.headerPresent == (packetBytes >= 8 && packetBytes < 12);
+#ifdef __APPLE__
+    // The peer is closed before SocketStream construction in this case. Darwin
+    // rejects SO_NOSIGPIPE with EINVAL, before flags or a command can be read.
+    if (rejectReply && result == EINVAL) {
+        metadata = diagnostic.stage == DecodeStage::flags && !diagnostic.headerPresent &&
+            diagnostic.socketError == EINVAL && diagnostic.completed == 0;
+    }
+#endif
     if (expectReply) metadata = metadata && diagnostic.lastOpcode == 20137 && diagnostic.completed == 1;
     if (!ok || !matched || finish || !metadata) {
         std::fprintf(stderr, "%s result=%d expected=%d cleanup=%d io=%d\n",
                      label, result, expected, finish, ok);
+        std::fprintf(stderr, "metadata stage=%u header=%u opcode=%u socket_errno=%d completed=%llu\n",
+            static_cast<unsigned>(diagnostic.stage), diagnostic.headerPresent, diagnostic.opcode,
+            diagnostic.socketError, static_cast<unsigned long long>(diagnostic.completed));
         return false;
     }
     std::printf("%s passed (result=%d)\n", label, result);
