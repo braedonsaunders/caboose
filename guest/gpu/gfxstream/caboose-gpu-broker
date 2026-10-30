@@ -256,9 +256,8 @@ class Broker:
             done, _ = await asyncio.wait((sender, receiver, stop_wait), return_when=asyncio.FIRST_COMPLETED)
             if stop_wait in done:
                 server.close(); await server.wait_closed(); server = None
-                # Stop accepting app bytes; drain and retire every real stream
-                # before asking the executor to finish its generation.
-                for local in tuple(session.streams.values()): local['writer'].close()
+                # Existing streams must finish naturally; discarding app bytes
+                # would make a later native retirement receipt misleading.
                 if session.local_tasks:
                     _finished, pending = await asyncio.wait(tuple(session.local_tasks), timeout=4)
                     if pending: raise TimeoutError('local streams did not retire')
