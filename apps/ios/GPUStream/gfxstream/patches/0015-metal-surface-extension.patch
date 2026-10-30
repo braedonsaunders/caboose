@@ -1,0 +1,15 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -10861,0 +10862,12 @@
++#if defined(__APPLE__) && defined(VK_USE_PLATFORM_METAL_EXT)
++            // Enable the native surface extension only if the actual provider
++            // reports it. This does not advertise it to the guest.
++            std::vector<VkExtensionProperties> hostExtensions;
++            if (enumerateInstanceExtensionProperties(m_vk, nullptr, hostExtensions) == VK_SUCCESS &&
++                hasDeviceExtension(hostExtensions, VK_EXT_METAL_SURFACE_EXTENSION_NAME) &&
++                std::none_of(res.begin(), res.end(), [](const char* name) {
++                    return name && strcmp(name, VK_EXT_METAL_SURFACE_EXTENSION_NAME) == 0;
++                })) {
++                res.push_back(VK_EXT_METAL_SURFACE_EXTENSION_NAME);
++            }
++#endif
