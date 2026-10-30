@@ -1,3 +1,4 @@
+import { stageCommandReceipts, installCommandReceipts } from '../portable-storage/command-receipts.js'
 import { copyFile, mkdir, mkdtemp, readFile, rm, rename, access, link, open } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { join } from 'node:path'
@@ -27,6 +28,7 @@ export class Recovery {
         for (const name of ['vmlinux', 'initrd']) await copyFile(join(sourceRoot, name), join(stage, name))
         await copyFile(join(dataDir, 'keyring-secret'), join(stage, 'keyring-secret'))
         for (const name of stateFiles) await copyFile(join(dataDir, name), join(stage, name)).catch(error => { if (error.code !== 'ENOENT') throw error })
+        await stageCommandReceipts(dataDir, stage)
         await writePrivateJson(join(stage, 'computer.json'), { version: 1, record, settings })
         const ref = await this.archives.capture({ withCapture: work => work({ directory: stage, metadata: { ...this.compatibility, computerId: row.id, imageFormat: 'monolithic', createdAt: new Date().toISOString() } }) }, join(parent, `${randomUUID()}.json`))
         if (!lifecycle.isParkedGenerationCurrent(generation)) throw new OwnershipError('Capture cancelled by lifecycle transition')
@@ -55,10 +57,15 @@ export class Recovery {
       await link(join(this.root, 'base.raw'), join(stage, 'base.raw'))
       await mkdir(join(stage, 'overlays'), { mode: 0o700 })
       await rename(join(stage, 'disk.raw'), join(stage, 'overlays', `${id}.raw`))
+      await installCommandReceipts(stage)
       // Per-generation directory is the activation transaction. Partial directories never boot.
       await writePrivateJson(join(stage, 'activation.json'), { computerId: id, generation: row.generation, checkpoint: row.checkpoint })
       const activation = await open(join(stage, 'activation.json'), 'r')
       try { await activation.sync() } finally { await activation.close() }
+      for (const path of [join(stage, 'overlays'), stage]) {
+        const changed = await open(path, 'r')
+        try { await changed.sync() } finally { await changed.close() }
+      }
       await rename(stage, directory)
       const parent = await open(join(this.root, 'cluster', id), 'r')
       try { await parent.sync() } finally { await parent.close() }

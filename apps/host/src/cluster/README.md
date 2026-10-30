@@ -131,3 +131,27 @@ marker through B after the generation advances. Service unit names must match th
 installation. Inspect the stored resource/generation-bound fence receipt and Azure
 state as part of the test record. This script is supplied but has not been run
 against Azure or a real microVM in the local validation environment.
+
+### Command receipts at checkpoint
+
+The runtime checks active operations before checkpoint shutdown. Running or starting
+commands refuse checkpoint without pausing their completion polling. After request
+admission drains, `ComputerCommands.quiesceForCheckpoint(timeoutMs = 5000)` freezes
+new command work and awaits the current poll/collection and `CommandStore.drain()`.
+It returns an idempotent release function, held until shutdown/capture finishes and
+called in `finally`. On timeout, capture fails and the command subsystem stays frozen
+until the actual drain settles. This API does not replace per-computer request
+admission or lifecycle exclusion.
+
+`CommandStore.persistenceStatus` exposes pending write count and the retained error.
+A failed write or delete remains visible to drain even if a caller logged its error;
+a subsequent successful write/delete of that receipt clears its fault. Directory
+entries are synced with command writes/deletes. An unreadable local record also
+blocks checkpoint rather than being omitted from durable recovery.
+
+Capture stages completed command receipts as validated flat archive files. Recovery
+reinstalls the original IDs/results under `commands/`, syncs that directory, the
+modified disk `overlays/` directory and the staging directory, then publishes the
+new generation. Receipt persistence or validation failure refuses capture/activation.
+The disk still holds command output files; RAM and active command execution are not
+preserved by cold recovery.

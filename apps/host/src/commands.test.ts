@@ -292,3 +292,82 @@ it('runs the guest runner against real files, a login shell and real processes',
   const output = execFileSync('python3', [fileURLToPath(new URL('./guest-command-check.py', import.meta.url))], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   expect(output).toBe('')
 }, 60_000)
+
+function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
+
+it('refuses active checkpoint work without pausing command completion or replaying it', async () => {
+  const h = harness()
+  const running = await h.commands.start(parseCommandRequest({ id: ID, script: 'echo completed' }))
+  await expect(h.commands.quiesceForCheckpoint()).rejects.toThrow('running')
+  expect(h.leases()).toBe(1)
+  h.fake.finish(running.id, { status: 'succeeded' }, { stdout: 'completed' })
+  await vi.waitFor(() => expect(h.commands.get(ID).status).toBe('succeeded'))
+  const release = await h.commands.quiesceForCheckpoint()
+  await expect(h.commands.start(parseCommandRequest({ script: 'blocked' }))).rejects.toThrow('checkpoint')
+  h.commands.resume(); await h.commands.poll()
+  release(); release()
+  await expect(h.commands.start(parseCommandRequest({ id: ID, script: 'must not replay' }))).rejects.toThrow('already exists')
+  expect(h.fake.calls.filter(call => call.mode === 'start')).toHaveLength(1)
+})
+
+it('waits for in-flight poll persistence even after the in-memory result becomes finished', async () => {
+  const settings = await import('./settings.js')
+  const dir = await mkdtemp(join(tmpdir(), 'command-drain-'))
+  cleanup.push(() => rm(dir, { recursive:true,force:true }))
+  const store = await CommandStore.open(dir), h = harness(store)
+  await h.commands.start(parseCommandRequest({ id: ID, script: 'echo receipt' })); h.commands.pause()
+  const entered = deferred(), write = deferred()
+  const original = settings.writePrivateJson
+  const spy = vi.spyOn(settings,'writePrivateJson').mockImplementationOnce(async (...args) => { entered.resolve(); await write.promise; await original(...args) })
+  let release: (() => void) | undefined
+  const poll = (async () => { h.fake.finish(ID, {status:'succeeded'},{stdout:'receipt'}); await h.commands.poll() })()
+  try {
+    await entered.promise
+    expect(h.commands.busy).toBe(0)
+    expect(store.persistenceStatus).toMatchObject({pendingWrites:1,error:null})
+    let drained = false
+    const hold = h.commands.quiesceForCheckpoint().then(value => { drained = true; return value })
+    await Promise.resolve(); expect(drained).toBe(false)
+    write.resolve(); await poll; release = await hold
+    expect(store.persistenceStatus).toEqual({pendingWrites:0,error:null})
+    expect((await CommandStore.open(dir)).get(ID)?.stdout).toBe('receipt')
+  } finally { write.resolve(); await poll; release?.(); spy.mockRestore() }
+})
+
+it('keeps failed receipt persistence observable and refuses checkpoint after poll logs the error', async () => {
+  const settings = await import('./settings.js')
+  const dir = await mkdtemp(join(tmpdir(), 'command-write-failure-'))
+  cleanup.push(() => rm(dir, {recursive:true,force:true}))
+  const store = await CommandStore.open(dir), h = harness(store)
+  await h.commands.start(parseCommandRequest({id:ID,script:'echo result'})); h.commands.pause()
+  const failure = new Error('disk write refused')
+  const spy = vi.spyOn(settings,'writePrivateJson').mockRejectedValueOnce(failure)
+  const log = vi.spyOn(console,'error').mockImplementation(()=>{})
+  try {
+    h.fake.finish(ID,{status:'succeeded'},{stdout:'result'}); await h.commands.poll()
+    expect(h.commands.busy).toBe(0)
+    expect(store.persistenceStatus).toEqual({pendingWrites:0,error:failure})
+    await expect(store.drain()).rejects.toThrow('durably persisted')
+    await expect(h.commands.quiesceForCheckpoint()).rejects.toThrow('durably persisted')
+    // A later successful write of this exact receipt repairs its persistence fault.
+    await store.save(h.commands.get(ID)); await store.drain()
+    const release = await h.commands.quiesceForCheckpoint(); release()
+  } finally { spy.mockRestore(); log.mockRestore() }
+})
+
+it('retains the command freeze after a drain deadline until the real write settles', async () => {
+  const settings = await import('./settings.js')
+  const dir = await mkdtemp(join(tmpdir(),'command-drain-timeout-'))
+  cleanup.push(()=>rm(dir,{recursive:true,force:true}))
+  const store = await CommandStore.open(dir), h = harness(store), gate = deferred(), entered = deferred()
+  const original = settings.writePrivateJson
+  const spy = vi.spyOn(settings,'writePrivateJson').mockImplementationOnce(async (...args)=>{entered.resolve();await gate.promise;await original(...args)})
+  const pending = store.save(finished({createdAt:new Date().toISOString(),finishedAt:new Date().toISOString()}))
+  try {
+    await entered.promise
+    await expect(h.commands.quiesceForCheckpoint(10)).rejects.toThrow('deadline')
+    await expect(h.commands.start(parseCommandRequest({script:'blocked'}))).rejects.toThrow('checkpoint')
+    gate.resolve(); await pending; await store.drain()
+    await vi.waitFor(async()=> { const release=await h.commands.quiesceForCheckpoint();release() })
+  } finally {gate.resolve();await pending;spy.mockRestore()}
+})
