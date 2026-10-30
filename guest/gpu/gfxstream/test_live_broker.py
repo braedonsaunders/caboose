@@ -179,6 +179,32 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.streams or session.processes)
         session.bindings.finish(session.binding_generation)
 
+    async def test_cancelled_local_writer_is_aborted_before_close_wait(self):
+        class HeldWriter(Writer):
+            def __init__(self):
+                super().__init__()
+                self.unblocked = asyncio.Event()
+                self.aborted = False
+                self.transport = self
+            def abort(self):
+                self.aborted = True
+                self.unblocked.set()
+            async def wait_closed(self):
+                await self.unblocked.wait()
+        class Peer:
+            def close(self): pass
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        reader, writer = asyncio.StreamReader(), HeldWriter()
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
+            task = asyncio.create_task(session.local(reader, writer))
+            await asyncio.sleep(0)
+            session.draining = True
+            task.cancel()
+            await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 1)
+        self.assertTrue(writer.aborted)
+        self.assertFalse(session.failed)
+        session.bindings.finish(session.binding_generation)
+
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()

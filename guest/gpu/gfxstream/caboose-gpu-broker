@@ -128,7 +128,9 @@ class Session:
         # Native process-stop is now ordered after all previously queued data.
         for task in tuple(self.local_tasks): task.cancel()
         if self.local_tasks:
-            await asyncio.gather(*tuple(self.local_tasks), return_exceptions=True)
+            await asyncio.wait_for(asyncio.gather(*tuple(self.local_tasks), return_exceptions=True), 2)
+        if self.failed:
+            raise ConnectionError('local transport cleanup failed')
         for process_id, process in tuple(self.processes.items()):
             await asyncio.wait_for(process['retired'].wait(), 4)
             for stream_id in tuple(process['streams']):
@@ -213,8 +215,14 @@ class Session:
             self.writer.close()
         finally:
             if peer is not None: peer.close()
+            if self.draining or self.failed:
+                writer.transport.abort()
             writer.close()
-            with contextlib.suppress(OSError): await writer.wait_closed()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), 1)
+            except (OSError, asyncio.TimeoutError):
+                writer.transport.abort()
+                self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
                 with contextlib.suppress(RuntimeError, KeyError): self.bindings.unbind_stream(self.binding_generation, stream_id)
@@ -312,18 +320,25 @@ class Broker:
             pass
         finally:
             if server:
-                server.close(); await server.wait_closed()
+                server.close()
             if owned_socket is not None:
                 with contextlib.suppress(OSError):
                     if self.socket_path.lstat().st_ino == owned_socket: self.socket_path.unlink()
             if session:
                 session.failed = True
                 for task in tuple(session.local_tasks): task.cancel()
-                if session.local_tasks: await asyncio.gather(*tuple(session.local_tasks), return_exceptions=True)
+                if session.local_tasks:
+                    try:
+                        await asyncio.wait_for(asyncio.gather(*tuple(session.local_tasks), return_exceptions=True), 2)
+                    except asyncio.TimeoutError:
+                        session.failed = True
                 if not session.revoked.is_set():
                     # Socket loss alone is not native finish; leave lease draining.
                     self.lease.revoke(executor.bytes, generation)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
+            if server:
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await asyncio.wait_for(server.wait_closed(), 1)
             for task in (sender, receiver, stop_wait, drain_wait):
                 if task and not task.done(): task.cancel()
             if sender or receiver or stop_wait or drain_wait:
