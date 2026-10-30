@@ -25,6 +25,7 @@ HEADERS = (
     'rpc_timing.h',
     'cb_staging.h',
     'flush_shadow.h',
+    'deferred_replies.h',
 )
 TIMED_RPCS = (
     'vkQueueSubmit',
@@ -1018,6 +1019,47 @@ void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t
     return encoder, encoder_h, tracker, tracker_h
 
 
+def transform_deferred_replies(encoder):
+    """Defer results nobody waits for; drain them at the start of every other call."""
+    take = '\n    auto stream = mImpl->stream();\n'
+    drain = take + '    caboose::memory::deferredReplies.drain(this, stream);\n'
+    if encoder.count(take) < 300: raise ValueError('unexpected encoder stream accessors')
+    encoder = encoder.replace(take, drain)
+
+    def body(name):
+        begin = encoder.index('\nVkResult VkEncoder::' + name + '(') + 1
+        return begin, encoder.index('\n}\n', begin) + 3
+
+    # Queue submits stay synchronous: the surface stream presents what they render,
+    # and the device must have decoded a submit before its present arrives.
+    for name in ('vkResetFences', 'cabooseFlushMemoryChunk'):
+        begin, end = body(name)
+        part = encoder[begin:end]
+        if part.count(drain) != 1: raise ValueError('unexpected stream accessor in ' + name)
+        replacement = {
+            'vkResetFences': take,
+            'cabooseFlushMemoryChunk':
+                take + '    if (!deferReply) caboose::memory::deferredReplies.drain(this, stream);\n',
+        }[name]
+        encoder = encoder[:begin] + part.replace(drain, replacement) + encoder[end:]
+
+    begin, end = body('vkResetFences')
+    part = replace_once(encoder[begin:end],
+        '    VkResult vkResetFences_VkResult_return = (VkResult)0;\n'
+        '    stream->read(&vkResetFences_VkResult_return, sizeof(VkResult));\n',
+        '    VkResult vkResetFences_VkResult_return = VK_SUCCESS;\n'
+        '    stream->flush();\n'
+        '    caboose::memory::deferredReplies.add(this, 1, packetSize_vkResetFences);\n')
+    # The reset's bytes are known only after counting; reserve before reserving stream space.
+    begin, end = body('vkResetFences')
+    part = replace_once(encoder[begin:end],
+        '    uint8_t* streamPtr = stream->reserve(packetSize_vkResetFences);\n',
+        '    caboose::memory::deferredReplies.reserve(this, stream, packetSize_vkResetFences);\n'
+        '    uint8_t* streamPtr = stream->reserve(packetSize_vkResetFences);\n')
+    encoder = encoder[:begin] + part + encoder[end:]
+    return encoder
+
+
 def transform(encoder, encoder_h, tracker, tracker_h):
     if 'cabooseFlushMemoryChunk' in encoder or 'cabooseMappedRange' in tracker:
         raise ValueError('bounded memory patch already applied')
@@ -1117,6 +1159,7 @@ def transform(encoder, encoder_h, tracker, tracker_h):
     encoder, encoder_h, tracker, tracker_h = transform_cb_batching(
         encoder, encoder_h, tracker, tracker_h
     )
+    encoder = transform_deferred_replies(encoder)
     return encoder, encoder_h, tracker, tracker_h
 
 

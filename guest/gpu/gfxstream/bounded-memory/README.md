@@ -58,11 +58,16 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_rpc_timing.cpp -o /t
 /tmp/test_rpc_timing
 c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_cb_staging.cpp -o /tmp/test_cb_staging
 /tmp/test_cb_staging
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_flush_shadow.cpp -o /tmp/test_flush_shadow
+/tmp/test_flush_shadow
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_deferred_replies.cpp -o /tmp/test_deferred_replies
+/tmp/test_deferred_replies
 ```
 
 The fixture covers 32 MiB transfers, failure without publication, original
 range overlaps, partial maps, allocation tails, atom limits, metadata reservation,
-command buffer local staging, and concurrent budget pressure. It does not prove
+command buffer local staging, changed-page flush shadows, deferred flush and
+fence-reset replies, and concurrent budget pressure. It does not prove
 the generated encoder or GPU transport. Actual acceptance requires the
 transformed objects, matching broker credit implementation, exact linked ICD, and
 the ordinary Vulkan memory probe with real flush/copy/fence/invalidate byte

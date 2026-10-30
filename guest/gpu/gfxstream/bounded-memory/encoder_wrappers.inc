@@ -15,8 +15,11 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
         if (doLock) timing.lock([&] { this->lock(); });
         Unlock unlock{this, doLock != 0};
         auto stream = mImpl->stream();
+        uint64_t packetBytes = 0;
         caboose::memory::FlushPacket packet{
-            [&](const caboose::memory::FlushFragment* fragments, size_t size, uint64_t) {
+            [&](const caboose::memory::FlushFragment* fragments, size_t size, uint64_t wire) {
+                if (!caboose::memory::deferredReplies.reserve(this, stream, wire)) return -1;
+                packetBytes = wire;
                 std::array<VkMappedMemoryRange, caboose::memory::flushFragmentCapacity> parts{};
                 uint64_t payload = 0;
                 for (size_t i = 0; i < size; ++i) {
@@ -30,9 +33,8 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
                 });
             }, [&](int& result) {
                 return timing.receive(result, [&] {
-                    VkResult actual = VK_SUCCESS;
-                    if (!stream->tryRead(&actual, sizeof(actual))) return false;
-                    result = int(actual); return true;
+                    caboose::memory::deferredReplies.add(this, 1, packetBytes);
+                    result = VK_SUCCESS; return true;
                 });
             }, [&] {
                 timing.invalidate();
