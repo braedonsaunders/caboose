@@ -67,7 +67,7 @@ enum AgentAppNet {
         var overrides: [(String, String)] = []
         for (name, value) in fields {
             let lower = name.lowercased()
-            guard !value.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "\0" }) else { continue }
+            guard !value.unicodeScalars.contains(where: { ($0.value < 0x20 && $0 != "\t") || $0.value == 0x7f }) else { continue }
             if lower.hasPrefix(override) {
                 let real = String(name.dropFirst(override.count))
                 if !real.isEmpty, !["host", "content-length", "transfer-encoding", "connection"].contains(real.lowercased()) {

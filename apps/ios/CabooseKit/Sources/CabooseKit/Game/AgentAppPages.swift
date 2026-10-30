@@ -50,7 +50,7 @@ public final class AgentAppPages {
 
     /// Keeps `page`, which `adopt` gives to the app's next announcement and `end` stops.
     func keep(_ key: Key, page: AnyObject, adopt: @escaping (RemoteGame) -> Bool, end: @escaping () -> Void) {
-        end(key: key)
+        self.end(key: key)
         kept.append(Kept(key: key, page: page, adopt: adopt, end: end))
         while kept.count > Self.limit { kept.removeFirst().end() }
     }
