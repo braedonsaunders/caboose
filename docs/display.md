@@ -406,7 +406,9 @@ shared audio timeline, and an idle live video renderer cannot hold audio preroll
 
 ### Video streams
 
-The iOS app omits `video_decoders`, so passthrough streams return to server decoding. It
+The iOS app omits `video_decoders`. Independently, the compositor requests server
+decode for all marker streams: codec support alone does not prove correct foreground
+composition (see [composition admission](codec-passthrough.md#composition-admission)). It
 advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary

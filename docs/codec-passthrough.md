@@ -1,16 +1,33 @@
 # Codec passthrough
 
-Codec passthrough is how [video reaches the client](display.md#video-for-every-app) at
-its original quality. The computer ships a VA-API driver, `caboose_drv_video.so`, that
-players decode through as through any hardware decoder. It does not decode. It rebuilds
+Codec passthrough is experimental machinery for forwarding original compressed video.
+Current composition admission requests local server decode for all marker streams. The computer ships a VA-API driver, `caboose_drv_video.so`, that
+players decode through as through any hardware decoder. In capture mode it rebuilds
 each picture's compressed bitstream from the VA buffers and sends it to caboose-display,
-which forwards it to the client as a `passthrough` video stream (the `video.*` messages in
-[display.md, "Video streams"](display.md#video-streams)). The client decodes in hardware
-and layers the video into the window at the moment the app presents each frame. The code,
+which contains the machinery to forward it as a `passthrough` video stream (the `video.*` messages in
+[display.md, "Video streams"](display.md#video-streams)). The experimental client path decodes in hardware and layers the video into the window
+at the moment the app presents each frame. The code,
 its build and its tests are in [guest/vaapi](../guest/vaapi/README.md).
 
 This document is the contract between the driver and caboose-display: the socket, the
 placeholder marker, how a stream is bound to a window, and how a stream falls back.
+
+## Composition admission
+
+The compositor currently answers every driver `OPEN` with `ACCEPT` mode 1 (local
+server decode), including headless sessions and clients advertising `video_decoders`.
+The marker protocol carries identity and approximate geometry, not a lossless
+foreground plane, alpha, occlusion ordering or an atomic composition generation.
+A flattened pixel `C = alpha * foreground + (1 - alpha) * marker` cannot recover
+both foreground and alpha. Exact marker-colored controls are indistinguishable
+from uncovered video; tolerance-based gray matching also loses translucent edges,
+color conversions and scaled/cropped samples. Recognition is not a composition mask.
+
+Local decode gives the application real video pixels before it draws controls,
+subtitles and menus. The ordinary window/motion paths carry that complete composition;
+the iOS window texture stays opaque and does not punch holes based on gray pixels.
+There is no marker-mask wire message or enabled phone passthrough path. The socket
+and experimental rebuilder/capture machinery below remain available for isolated tests.
 
 ## The driver
 
@@ -91,9 +108,8 @@ decoded video.
 The driver waits up to one second for `ACCEPT` when the app creates a decoder. With no
 answer it decodes that stream locally and sends `CLOSE` with reason 4. A write that blocks
 for two seconds, or a closed socket, switches every stream to local decoding.
-caboose-display answers `OPEN` with `ACCEPT` mode 1 when the connected client does not
-list the codec in `video_decoders`, with `DECODE` reason 1 when all 64 tags are in use,
-and otherwise with `ACCEPT` mode 0 and a free tag.
+caboose-display answers `OPEN` with `ACCEPT` mode 1 under the composition admission
+rule above. The capture tool can accept mode 0 for isolated bitstream testing.
 
 ## The marker
 
@@ -193,9 +209,11 @@ debugging.
   elsewhere.
 - **AV1 latency.** Each AV1 picture is sent when the next one is decoded, one picture late
   (VA does not carry `refresh_frame_flags`; the next picture's references reveal them).
-  Players decode ahead, so this costs nothing in playback; real-time AV1 (WebRTC) gains one
-  frame interval of delay, and a paused AV1 video shows the client the previous picture
-  until playback resumes.
+  This can leave experimental passthrough one picture behind at pause. Local decode
+  supplies a held picture on sync/export/readback with a provisional shown unit that
+  refreshes no reference slots, then commits the actual refresh mask when known. A
+  request for another sequence does not consume that unit. Context destruction flushes
+  once; no inactivity timer invents refresh flags or a show-existing reference.
 - **Apps that render through `vaPutSurface`** (mpv `--vo=vaapi`, old VLC outputs) get
   `VA_STATUS_ERROR_UNIMPLEMENTED` and use their GL paths instead. No video processing
   entry point (`VAEntrypointVideoProc`) is offered.

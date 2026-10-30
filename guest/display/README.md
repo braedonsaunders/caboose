@@ -101,15 +101,12 @@ property updates are reconciled on notifications, without a polling timer.
 - **Video passthrough** ([docs/codec-passthrough.md](../../docs/codec-passthrough.md)). The
   compositor listens on the video socket (`$CABOOSE_VIDEO_SOCKET`, default
   `$XDG_RUNTIME_DIR/caboose-video.sock`) for the Caboose VA-API driver
-  ([guest/vaapi](../vaapi/README.md)), which hands it each player's bitstream instead of
-  decoding it. It accepts streams the client can play (`hello.video_decoders`), marks each
-  with a tag, finds the driver's marker in the windows of the player's process family
-  (half resolution, refined at full resolution, only while a stream is open), and sends
-  `video.create`/`video.update` for where the video is and `video.frame` for every access
-  unit, replaying from the last keyframe when a client connects or its decoder fails, and
-  `video.present` when the application shows each frame. A client that keeps failing to
-  decode a stream gets it decoded on the server. Launched applications get
-  `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+  ([guest/vaapi](../vaapi/README.md)), which offers each player's reconstructed bitstream. Every `OPEN` receives local-decode mode, including when no client is
+  connected or the client advertises the codec: flattened marker pixels cannot prove
+  foreground alpha or occlusion. Applications compose controls and subtitles over real
+  decoded pixels, carried by the ordinary window/motion paths. Marker recognition and
+  stream machinery remain available as experimental source; no alpha mask is inferred.
+  Launched applications get `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
 - **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
   compositor listens on the game socket (`$CABOOSE_GAME_SOCKET`, default
   `$XDG_RUNTIME_DIR/caboose-game.sock`) for `caboose-game-run`
@@ -190,7 +187,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
 | `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
-| `passthrough` | a stand-in VA-API driver (`scripts/fake-video-driver.py`, the real socket protocol, real H.264) streams while Chromium shows its marker: the stream is bound to the right window and rectangle, every frame decodes on the client, presents name frames the client has, and the driver's own detector agrees on the rectangle |
+| `passthrough` | `video-admission.py` opens all four driver codecs before/during an advertising probe session and requires local-decode mode; no owner windows or media |
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
@@ -200,14 +197,6 @@ probe. Every check asserts on what arrived, not on a picture:
 | `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
-
-For the `passthrough` check's cross-check against the driver's reference detector, mount
-the driver's source with `CABOOSE_DISPLAY_DOCKER_ARGS="-v $PWD/guest/vaapi:/vaapi:ro"` and
-build `cbva-detect` first (`make -C /vaapi BUILD=/tmp/vaapi`). To run the real driver
-against the real socket, build it the same way and run a VA player with
-`LIBVA_DRIVERS_PATH=/tmp/vaapi LIBVA_DRIVER_NAME=caboose` under the compositor, with
-`CABOOSE_DISPLAY_DRI=1` and `/dev/udmabuf`; a readback closes the stream as the contract
-says.
 
 `scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
 the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's

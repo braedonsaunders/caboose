@@ -1560,9 +1560,9 @@ Xwayland. It composites nothing: each toplevel and popup is its own stream, and 
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
 with lossless PNG tiles for small changes and a sharpening pass once content is still),
 paces frames on the client's vsync, carries clipboard text, named cursors, touch,
-text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. Video an
-application decodes through the Caboose VA-API driver reaches the client as its own
-compressed stream, layered into the window when the application presents each frame.
+text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
+composition; marker-based passthrough is fenced because it cannot preserve arbitrary
+foreground alpha and occlusion.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
   little-endian length and one canonical CBOR map), the hello and display token, pacing and
@@ -2074,7 +2074,10 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+The iOS app omits `video_decoders`. The compositor also requests local decode for
+every marker stream, including headless sessions, because the marker has no independent
+foreground alpha or occlusion provenance. Controls and subtitles are composed by the
+application over decoded pixels before the ordinary window/motion paths encode them. The iOS app
 requests half-resolution software-encoded motion streams and upscales them with MetalFX,
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
