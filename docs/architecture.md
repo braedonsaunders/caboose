@@ -2069,9 +2069,10 @@ notifications and flushes surviving buffers on its playback queue before subsequ
 enqueues, without resetting the running clock or rate. Stop and interruption invalidate
 that observer generation. Discarded packets are not replayed; this recovery does not
 acknowledge asynchronous clock changes or correct renderer-clock divergence.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator.
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Silence resets rate
+measurement; stopping playback resets the clock and estimator.
 Opt-in audio diagnostics retain the existing five-second timing reports and bounded
 restart summaries in an asynchronous app-cache snapshot, limited to 64 numeric records
 and 128 KiB. Recording defaults off and changes neither playback nor the wire protocol;

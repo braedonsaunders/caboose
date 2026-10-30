@@ -117,7 +117,9 @@ final class SoundPlayer: @unchecked Sendable {
         clock.remove(renderer)
     }
 
-    private func observeAutomaticFlush() {
+    // Playback-queue confined. Internal so wiring tests can exercise this lifecycle
+    // without decoding media or changing the clock rate.
+    func observeAutomaticFlush() {
         guard automaticFlushObserver == nil else { return }
         let generation = automaticFlush.update { $0.begin() }
         automaticFlushGeneration = generation
@@ -136,7 +138,7 @@ final class SoundPlayer: @unchecked Sendable {
         }
     }
 
-    private func cancelAutomaticFlushObservation() {
+    func cancelAutomaticFlushObservation() {
         automaticFlush.update { $0.cancel() }
         automaticFlushGeneration = nil
         if let automaticFlushObserver { NotificationCenter.default.removeObserver(automaticFlushObserver) }
@@ -326,8 +328,13 @@ final class SoundPlayer: @unchecked Sendable {
         }
     }
 
-    /// Waits for everything queued so far; for tests.
-    func flush() { queue.sync {} }
+    /// Waits for everything queued so far; for tests. The optional body runs on the
+    /// playback queue to exercise observer lifecycle ordering without playing media.
+    func flush(_ body: () -> Void = {}) { queue.sync(execute: body) }
+
+    var automaticFlushSummary: AudioAutomaticFlushState.Summary {
+        automaticFlush.update { $0.summary }
+    }
 
     private func sample(_ pcm: AVAudioPCMBuffer, decoder: OpusDecoder, pts: Int64) throws -> CMSampleBuffer {
         if format == nil {

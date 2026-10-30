@@ -407,9 +407,10 @@ then requests rate adjustments with pitch preservation. AVFoundation may automat
 flush queued audio on a rate or route change. The phone serializes cleanup of surviving
 buffers with enqueue, without resetting the clock or rate; discarded audio is not replayed.
 Renderer-specific notification generations are invalidated on stop and interruption.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator. Rate corrections change only the rendering
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Silence resets rate
+measurement; stopping playback resets the clock and estimator. Rate corrections change only the rendering
 rate, without resetting the timebase position; explicit time/host anchors are used only
 when playback starts or restarts.
 

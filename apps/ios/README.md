@@ -251,8 +251,8 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   rate changes can automatically discard queued sound in AVFoundation. Caboose observes
   renderer-specific automatic-flush notifications and serializes cleanup with enqueue on
   the playback queue. Cleanup leaves the clock and rate running; it does not replay lost
-  packets or establish that a requested clock mapping has taken effect. A backlog beyond
-  another 300 ms is dropped. Interruptions reset the anchor. The display closes
+  packets or establish that a requested clock mapping has taken effect. Separately, the
+  explicit playout policy restarts for backlog beyond another 300 ms. Interruptions reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
   The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
   `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
@@ -1182,3 +1182,8 @@ can finish before cleanup; surviving buffers are flushed serially before subsequ
 enqueues. Explicit cleanup does not reset the rate or clock. These counts do not measure
 clock drift. Test event ordering without a renderer with
 `swift test --jobs 1 --filter AudioAutomaticFlushTests` in `apps/ios/CabooseKit`.
+
+`AudioAutomaticFlushWiringTests` also posts the real automatic-flush notification to an
+empty renderer and checks object filtering, observer removal and queued-drain fencing
+on the player's serialization queue. It enqueues no media, activates no audio session,
+and uses the observer lifecycle portion of stop/restart without writing the clock rate.
