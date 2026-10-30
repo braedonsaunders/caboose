@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import socket
 import struct
+import tempfile
 import unittest
 from unittest import mock
 
@@ -23,11 +24,12 @@ import control_protocol
 
 
 class Writer:
-    def __init__(self): self.data = bytearray(); self.eof = False
+    def __init__(self): self.data = bytearray(); self.eof = False; self.transport = self
     def write(self, data): self.data.extend(data)
     async def drain(self): pass
     def write_eof(self): self.eof = True
     def close(self): pass
+    def abort(self): pass
     def get_extra_info(self, _name): return object()
     async def wait_closed(self): pass
 
@@ -169,6 +171,104 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(writer.data, broker.HELLO + b'reply')
         self.assertTrue(writer.eof)
         self.assertFalse(session.processes)
+        session.bindings.finish(session.binding_generation)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux peer pidfd')
+    async def test_creator_exit_drains_fin_then_admits_fresh_process(self):
+        # A genuine connected creator exits before the broker gets EOF/native FIN.
+        # Kernel pidfd death must not poison the retained retirement-only binding.
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        decoder = Decoder(b'a' * 16, 1)
+        async def next_frame(kind):
+            wire = await asyncio.wait_for(session.pending.get(), 2)
+            offset = 4 if wire[1] == 126 else 10 if wire[1] == 127 else 2
+            got = []; decoder.feed(wire[offset:], got.append)
+            self.assertEqual(got[0].kind, kind)
+            return got[0]
+        previous = 0
+        try:
+            for _ in range(2):
+                with tempfile.TemporaryDirectory() as directory:
+                    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    path = directory + '/stream'
+                    listener.bind(path); listener.listen(1)
+                    control_r, control_w = os.pipe()
+                    ready_r, ready_w = os.pipe()
+                    pid = os.fork()
+                    if pid == 0:
+                        try:
+                            listener.close(); os.close(control_w); os.close(ready_r)
+                            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                            client.connect(path); client.sendall(broker.HELLO)
+                            echo = b''
+                            while len(echo) < 48: echo += client.recv(48 - len(echo))
+                            os.write(ready_w, b'r'); os.close(ready_w)
+                            os.read(control_r, 1)
+                            client.close()
+                        finally: os._exit(0)
+                    os.close(control_r); os.close(ready_w)
+                    accepted, _ = listener.accept(); listener.close()
+                    accepted.setblocking(False)
+                    reader, writer = await asyncio.open_connection(sock=accepted)
+                    task = asyncio.create_task(session.local(reader, writer))
+                    reaped = False
+                    try:
+                        opened = await next_frame(Kind.PROCESS_OPEN)
+                        self.assertGreater(opened.process, previous); previous = opened.process
+                        await session.message(Envelope(Kind.PROCESS_READY, b'a'*16, 1, opened.process, 0, 1))
+                        stream = await next_frame(Kind.STREAM_OPEN)
+                        await session.message(Envelope(Kind.STREAM_READY, b'a'*16, 1, opened.process, stream.stream, 2))
+                        readable = asyncio.get_running_loop().create_future()
+                        loop = asyncio.get_running_loop()
+                        loop.add_reader(ready_r, lambda: readable.done() or readable.set_result(True))
+                        try:
+                            await asyncio.wait_for(readable, 2)
+                            self.assertEqual(os.read(ready_r, 1), b'r')
+                        finally: loop.remove_reader(ready_r)
+                        os.close(ready_r); ready_r = -1
+                        # Force creator death before the event loop can deliver EOF.
+                        os.write(control_w, b'x'); os.close(control_w); control_w = -1
+                        os.waitpid(pid, 0); reaped = True
+                        await next_frame(Kind.FIN)
+                        self.assertIn(opened.process, session.processes)
+                        # Discard reverse data for the exited peer, but require real FIN.
+                        await session.message(Envelope(Kind.DATA, b'a'*16, 1, opened.process, stream.stream, 3, b'late reply'))
+                        self.assertFalse(session.streams[stream.stream]['remote_fin'].is_set())
+                        await session.message(Envelope(Kind.FIN, b'a'*16, 1, opened.process, stream.stream, 4))
+                        stopped = await next_frame(Kind.PROCESS_STOP)
+                        self.assertIn(opened.process, session.processes)
+                        await session.message(Envelope(Kind.PROCESS_RETIRED, b'a'*16, 1, stopped.process, 0, 5))
+                        await asyncio.wait_for(task, 2)
+                        if session.lifecycle_tasks:
+                            await asyncio.wait_for(asyncio.gather(*tuple(session.lifecycle_tasks)), 2)
+                        self.assertFalse(session.failed)
+                        self.assertFalse(session.processes)
+                    finally:
+                        if ready_r >= 0: os.close(ready_r)
+                        if control_w >= 0: os.close(control_w)
+                        if not reaped: os.waitpid(pid, 0)
+                        if not task.done(): task.cancel()
+                        await asyncio.gather(task, return_exceptions=True)
+                        writer.close(); await writer.wait_closed()
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_dead_peer_without_local_eof_cannot_receive_native_fin(self):
+        from test_process_binding import FakePeer
+        session = broker.Session(None, b'a'*16, 1, None, Writer())
+        session.session_ready.set()
+        peer = FakePeer(42, 1)
+        process, stream = session.bindings.bind(session.binding_generation, peer)
+        ready = asyncio.Event(); ready.set()
+        session.processes[process] = {'streams': {stream}, 'surfaces': set()}
+        session.streams[stream] = {'process': process, 'writer': Writer(), 'ready': ready,
+                                  'remote_fin': asyncio.Event(), 'local_eof': False}
+        peer.close()
+        with self.assertRaises(RuntimeError):
+            await session.message(Envelope(Kind.FIN, b'a'*16, 1, process, stream, 1))
+        self.assertFalse(session.streams[stream]['remote_fin'].is_set())
+        with self.assertRaises(RuntimeError): session.bindings.bind(session.binding_generation, peer)
         session.bindings.finish(session.binding_generation)
 
     async def test_unsolicited_revocation_cannot_release_lease(self):

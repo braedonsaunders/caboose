@@ -311,13 +311,23 @@ class Session:
             return
         stream = self.streams.get(frame.stream)
         if stream is None or stream['process'] != frame.process: raise ValueError('unknown stream')
-        bound_process, _identity = self.bindings.identity(self.binding_generation, frame.stream)
+        discard_reply = False
+        try:
+            bound_process, _identity = self.bindings.identity(self.binding_generation, frame.stream)
+        except RuntimeError:
+            # Only an already half-closed stream can drain after its creator exits.
+            # Still validate the retained generation/stream binding; never admit work.
+            if not stream.get('local_eof'): raise
+            bound_process, _identity = self.bindings.identity(
+                self.binding_generation, frame.stream, require_alive=False)
+            discard_reply = True
+            stream['discard_reply'] = True
         if bound_process != frame.process: raise ValueError('stream identity mismatch')
         if frame.kind == Kind.STREAM_READY:
             if stream['ready'].is_set(): raise ValueError('duplicate stream receipt')
             stream['ready'].set(); return
         if not stream['ready'].is_set() or stream['remote_fin'].is_set(): raise ValueError('stream not ready')
-        if self.draining:
+        if self.draining or discard_reply:
             # The local client has been cancelled; drain native output until
             # real process retirement without publishing a successful reply.
             if frame.kind == Kind.DATA: return
@@ -441,19 +451,24 @@ class Session:
             if process['stopping']: raise ValueError('process retiring')
             process['streams'].add(stream_id)
             await asyncio.wait_for(process['ready'].wait(), 10)
-            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(), 'remote_fin': asyncio.Event()}
+            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(), 'remote_fin': asyncio.Event(), 'local_eof': False}
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
             await asyncio.wait_for(stream['ready'].wait(), 10)
             writer.write(self.hello); await writer.drain()
             while True:
-                self.bindings.identity(self.binding_generation, stream_id)
                 try:
                     payload = await asyncio.wait_for(reader.read(65536), 1)
                 except asyncio.TimeoutError:
+                    self.bindings.identity(self.binding_generation, stream_id)
                     continue
+                if not payload:
+                    # EOF authorizes no new bytes. Retain binding until native FIN
+                    # and actual process retirement, even if the creator has exited.
+                    self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                    stream['local_eof'] = True
+                    break
                 self.bindings.identity(self.binding_generation, stream_id)
-                if not payload: break
                 self.send(Kind.DATA, process_id, stream_id, payload)
             self.send(Kind.FIN, process_id, stream_id)
             await asyncio.wait_for(stream['remote_fin'].wait(), 10)
@@ -466,7 +481,7 @@ class Session:
             self.writer.close()
         finally:
             if peer is not None: peer.close()
-            if not await close_owned_writer(writer, abort=self.draining or self.failed):
+            if not await close_owned_writer(writer, abort=self.draining or self.failed or (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False))):
                 self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)

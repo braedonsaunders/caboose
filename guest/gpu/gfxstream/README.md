@@ -246,3 +246,9 @@ installed by the component build, and the public ICD remains gated.
 Run source-only checks with `python3 -m unittest discover -s
 guest/gpu/gfxstream -p 'test_*.py'`. These do not establish phone execution,
 coherent mapped memory, WSI presentation, or compositor integration.
+
+A local stream EOF stops work admission for that stream. The broker retains its
+process binding while draining native replies and FIN, including when the original
+creator has exited; replies to an exited creator are discarded. Only the actual
+PROCESS_RETIRED receipt releases the process identity. New bytes, sockets and
+surface requests still require the original live peer identity.

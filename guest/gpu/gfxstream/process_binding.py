@@ -150,7 +150,12 @@ class ProcessBindings:
             self._streams[self._next_stream] = key
             return process_id, self._next_stream
 
-    def identity(self, generation, stream_id):
+    def identity(self, generation, stream_id, *, require_alive=True):
+        """Resolve a retained binding; require_alive=False is retirement-only.
+
+        Callers must never use an exited binding to admit or forward new work.
+        Generation and stream membership remain mandatory during EOF draining.
+        """
         with self._lock:
             if not self._active or generation != self._generation:
                 raise RuntimeError('stale generation')
@@ -158,7 +163,7 @@ class ProcessBindings:
             if key is None:
                 raise KeyError('unknown stream')
             peer, process_id = self._peers[key]
-            if not peer.alive():
+            if require_alive and not peer.alive():
                 raise RuntimeError('bound process exited')
             return process_id, key
 
