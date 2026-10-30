@@ -299,6 +299,7 @@ struct LiveWindowTile: View {
     static let cornerRadius: CGFloat = 18
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.openWindow) private var openSceneWindow
     @State private var dismissal = UpwardDismissal()
     @State private var dragTarget: CloseTarget?
     @State private var progress: CGFloat = 0
@@ -364,8 +365,15 @@ struct LiveWindowTile: View {
         })
         .onChange(of: closeTarget) { _, _ in cancelDrag() }
         .onDisappear { cancelDrag(endTouch: true) }
+        // On iPad, dragging the tile out of the app gives the window an iPadOS window of its own.
+        .linuxWindowDrag(window, model: model)
         .contextMenu {
             Button("Open", systemImage: "arrow.up.left.and.arrow.down.right") { openWindow() }
+            if model.detachedWindowIDs.contains(window.id) {
+                Button("Move to Desktop", systemImage: "rectangle.on.rectangle") { model.moveToDesktop(window.id) }
+            } else if let ref = model.windowRef(for: window) {
+                Button("Open in New Window", systemImage: "macwindow.badge.plus") { openSceneWindow(value: ref) }
+            }
             Button("Close", systemImage: "xmark", role: .destructive) { closeWindow() }
         }
         .accessibilityLabel("\(model.appName(for: window)), \(window.title)")

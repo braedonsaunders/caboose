@@ -11,6 +11,7 @@ import { computerSizes, expandSize } from './sizes.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
+import { COMMAND_LIMITS, CommandStore, ComputerCommands, commandJob, commandSummary, commandView, parseCommandRequest, parseWait } from './commands.js'
 import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
 import type { ParkedFilesView } from './parked-files-store.js'
 import { serveParkedFiles } from './parked-files-reader.js'
@@ -57,7 +58,7 @@ import type { ComputerStorage } from './storage.js'
 import type { SharedStorageStatus } from './shared-storage.js'
 import type { RestoredDisk } from './restore-journal.js'
 import { ReachUnavailableError, type ReachService } from './reach.js'
-import { DesktopNotifications } from './desktop-notifications.js'
+import { DesktopNotifications, NOTIFICATION_ID, parseNotificationResponse, respondToNotification } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
@@ -120,7 +121,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -171,6 +172,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const foregroundClients = new Set<WebSocket>()
   const backgroundControls = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
+  /** Phone sockets whose app answers scan requests (`?scan=1`). */
+  const scanControls = new Set<WebSocket>()
   /** Open terminals by who opened them (a phone, or the owner), for the per-client cap. */
   const terminals = new Map<WebSocket, string>()
   /** Terminal upgrades waiting for a wake, counted against the same cap. */
@@ -310,14 +313,19 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const message = JSON.stringify(event)
     for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   }, 1000, guestEvents.subscribe)
-  /** File chooser requests go to phone sockets only; an answered one is withdrawn from the other phones. */
-  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string) => {
+  /**
+   * File chooser requests go to phone sockets only, scan requests only to those that scan; an
+   * answered one is withdrawn from the other phones.
+   */
+  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string, scanners?: boolean) => {
     const message = JSON.stringify(event)
     for (const socket of phoneControls) {
       if (exceptPhone !== undefined && phoneSockets.get(socket) === exceptPhone) continue
+      if (scanners && !scanControls.has(socket)) continue
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
   }, 1000, Date.now, guestEvents.subscribe)
+  bridge.canScan = () => [...scanControls].some(socket => phoneControls.has(socket) && !backgroundControls.has(socket) && socket.readyState === WebSocket.OPEN)
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
   const nowPlaying = new NowPlaying(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
@@ -399,6 +407,30 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     for (const socket of sockets) socket.terminate()
     for (const socket of pendingGPUSockets.keys()) socket.destroy()
   }
+  const commands = new ComputerCommands(pieces.commands ?? CommandStore.memory(), {
+    guest: () => controller.guest(),
+    writeFile: async (relative, data) => {
+      const service = controller.fileService?.()
+      if (!service) throw new AgentUnavailableError()
+      await replaceGuestFile(service, relative, data)
+    },
+    acquire: () => computer.acquire(),
+    wake: () => computer.wakeAndRun(() => ensureFilesReady(), 'headless'),
+    progress: (record, phase, { waited, long }) => {
+      const job = commandJob(record)
+      broadcast({ type: 'job.progress', job })
+      const foreground = foregroundClients.size > 0
+      // A Live Activity only for a long run; a notification only when nobody waits for the result.
+      if (activities && (phase === 'long' || (phase === 'finished' && long))) void activities.job(job, phase === 'long', foreground).catch(error => console.error('Command activity failed:', error))
+      if (push && phase === 'finished' && !waited) void push.command(record, foreground).catch(error => console.error('Command push failed:', error))
+    },
+  })
+  /** Aborts when the client goes away, so a long-polling request stops counting as waiting. */
+  function closed(response: ServerResponse): AbortSignal {
+    const abort = new AbortController()
+    response.once('close', () => abort.abort())
+    return abort.signal
+  }
   let previousState = computer.state
   computer.subscribe(state => {
     const resumed = state === 'running' && previousState === 'frozen'
@@ -427,9 +459,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       }
     }
     guestEvents.setRunning(state === 'running')
-    if (state === 'running') { agents.resume(); if (!resumed) bridgeWake() }
-    else if (state === 'frozen') agents.pause()
-    else { agents.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
+    if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
+    else if (state === 'frozen') { agents.pause(); commands.pause() }
+    else { agents.pause(); commands.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
     syncMedia()
     syncFiles()
     desktopNotifications.setActive(state === 'running')
@@ -449,8 +481,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await stage?.()
     })
     agents.computerRestarted()
+    await commands.computerRestarted()
     broadcastSettings()
   }
+  // Commands a previous host process left running are finished on a woken computer.
+  commands.recover()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
     if (path === '/v1/agent/routines' || path.startsWith('/v1/agent/routines/')) {
@@ -585,6 +620,27 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await activities.job(job, body.start, foregroundClients.size > 0)
       return json(response, 200, { sent: true })
     }
+    if (path === '/v1/commands' && request.method === 'GET') return json(response, 200, { commands: commands.list().map(commandSummary) })
+    if (path === '/v1/commands' && request.method === 'POST') {
+      const input = parseCommandRequest(await readJson(request, COMMAND_LIMITS.bodyBytes))
+      const started = await computer.wakeAndRun(async () => {
+        await ensureFilesReady()
+        if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+        return commands.start(input)
+      }, 'headless')
+      return json(response, 201, commandView(await commands.wait(started.id, input.wait, closed(response))))
+    }
+    const commandRoute = /^\/v1\/commands\/([^/]+)(\/cancel)?$/.exec(path)
+    if (commandRoute?.[1] && !commandRoute[2] && request.method === 'GET') {
+      const wait = parseWait(new URL(request.url ?? '/', 'http://localhost').searchParams.get('wait'))
+      return json(response, 200, commandView(await commands.wait(commandRoute[1], wait, closed(response))))
+    }
+    if (commandRoute?.[1] && commandRoute[2] && request.method === 'POST') {
+      const id = commandRoute[1]
+      if (commands.get(id).status !== 'running') throw new AgentConflictError('the command has already finished')
+      await computer.wakeAndRun(() => commands.cancel(id), 'headless')
+      return json(response, 200, commandView(await commands.wait(id, 10, closed(response))))
+    }
     if (path === '/v1/devices/push' && request.method === 'POST') {
       if (!push) return json(response, 503, { error: 'push unavailable' })
       await push.devices.register(await readJson(request), principal.phoneId)
@@ -643,6 +699,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'POST' && path === '/v1/session/park') {
       if (upgrading) throw new ComputerConflictError('Caboose components are updating')
       if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
+      if (commands.busy) throw new ComputerConflictError('A command is running; cancel it or wait for it to finish')
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
     }
@@ -924,6 +981,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         }
       }))
     }
+    const notificationAnswer = /^\/v1\/notifications\/([^/]+)\/respond$/.exec(path)
+    if (request.method === 'POST' && notificationAnswer?.[1]) {
+      const id = notificationAnswer[1]
+      if (!NOTIFICATION_ID.test(id)) throw new AgentInputError('Invalid notification id')
+      const answer = parseNotificationResponse(await readJson(request))
+      // A parked computer resumes with its applications, whose notifications are still live.
+      return json(response, 200, await computer.wakeAndRun(() => respondToNotification(controller.guest(), id, answer), 'headless'))
+    }
     if (request.method === 'POST' && path === '/v1/open') {
       const input = await readJson(request)
       return json(response, 200, await computer.wakeAndRun(async () => { await ensureKeyringReady(); return openUrl(controller.guest(), input) }))
@@ -1049,12 +1114,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           if (url.searchParams.get('foreground') === '0') backgroundControls.add(client)
           if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
           if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+          if (url.searchParams.get('phone') === '1' && url.searchParams.get('scan') === '1') scanControls.add(client)
           if (background) release()
         }
         syncMedia()
         syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
+        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); scanControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
@@ -1090,6 +1156,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
+    commands.pause()
     await agents.drainToolWork()
     await (await toolJournalReady)?.drain()
     await upgradeWork
@@ -1111,6 +1178,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await computer.retire(async () => {
       closeSockets()
       agents.computerRestarted()
+      await commands.computerRestarted()
       if (!controller.destroy) throw new ComputerConflictError('This runtime cannot delete a computer')
       await controller.destroy()
       await pieces.storage?.destroy()
@@ -1119,7 +1187,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
 
   return { disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /** What someone started on the computer that deleting it would cut short, if anything. */
-    operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : null,
+    operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : commands.busy > 0 ? 'A command is running on this computer' : null,
   }
 }
 

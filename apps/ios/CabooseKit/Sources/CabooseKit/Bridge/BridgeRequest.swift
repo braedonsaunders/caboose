@@ -2,9 +2,10 @@ import Foundation
 import UniformTypeIdentifiers
 
 /// A Linux application asking the phone to choose a file (docs/native-bridge.md § File
-/// chooser), validated as strictly as the host does: the guest is not trusted.
+/// chooser), or `caboose-scan` asking it to scan a document (§ Scan), validated as strictly
+/// as the host does: the guest is not trusted.
 public struct BridgeRequest: Equatable, Decodable, Sendable, Identifiable {
-    public enum Kind: String, Decodable, Sendable { case open = "file.open", save = "file.save" }
+    public enum Kind: String, Decodable, Sendable { case open = "file.open", save = "file.save", scan }
 
     public struct Filter: Equatable, Decodable, Sendable {
         public let name: String
@@ -93,16 +94,27 @@ public struct BridgeRequest: Equatable, Decodable, Sendable, Identifiable {
         let hex = r.id.utf8.count == 32 && r.id.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         guard hex, plain(r.app, 200), plain(r.title, 200), plain(r.acceptLabel, 64) else { return false }
         if r.type == .save && (r.multiple || r.directory) { return false }
+        // A scan names its format as its one filter, and nothing about a folder.
+        if r.type == .scan {
+            guard !r.directory, r.currentFolder.isEmpty, r.currentFilter == 0, r.filters.count == 1,
+                  scanFormats.contains(where: { $0.filter == r.filters[0] && $0.multiple == r.multiple }) else { return false }
+        }
         guard r.filters.count <= 32, r.filters.allSatisfy({ f in
             plain(f.name, 100) && f.patterns.count <= 32 && f.mimeTypes.count <= 32
                 && f.patterns.allSatisfy { !$0.isEmpty && plain($0, 255) } && f.mimeTypes.allSatisfy { plain($0, 255) && $0.contains("/") }
         }) else { return false }
         if let index = r.currentFilter, !r.filters.indices.contains(index) { return false }
         guard plain(r.currentName, 255), r.currentName.utf8.count <= 255 else { return false }
-        if r.type == .open ? !r.currentName.isEmpty : (r.currentName.contains("/") || r.currentName == "." || r.currentName == "..") { return false }
+        if r.type == .save ? (r.currentName.contains("/") || r.currentName == "." || r.currentName == "..") : !r.currentName.isEmpty { return false }
         guard r.currentFolder.isEmpty || ComputerPath(absolute: r.currentFolder) != nil else { return false }
         return r.created >= 0
     }
+
+    /// The formats a scan request may ask for, each as its only filter: one PDF, or JPEG pages.
+    public static let scanFormats: [(filter: Filter, multiple: Bool)] = [
+        (Filter(name: "PDF", patterns: ["*.pdf"], mimeTypes: ["application/pdf"]), false),
+        (Filter(name: "JPEG", patterns: ["*.jpg", "*.jpeg"], mimeTypes: ["image/jpeg"]), true),
+    ]
 
     /// The application's name for people: its id's last component ("org.libreoffice.LibreOffice" → "LibreOffice").
     public var appName: String? {
