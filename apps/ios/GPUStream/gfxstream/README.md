@@ -132,3 +132,14 @@ until EOF, cancellation, or the cap; it does not yet reject unknown commands pro
 The upstream decoder may touch mapped memory during an incomplete flush before
 returning zero, and retries need actual encoder/decoder integration testing. No
 claim is made that packet bounds secure generated field unmarshalling.
+
+`headless_framebuffer.*` prepares a direct call to the real upstream framebuffer
+initializer with Vulkan-only features and no native subwindow. Upstream selects a
+real Vulkan compositor for `GuestVulkanOnly`, starts its synchronization and vsync
+threads, and initializes decoder global state; this is offscreen, not compositor-free.
+The caller must supply the real feature set, install the shared loader first, serialize
+initialization and teardown, stop and join all decoder threads, signal process death,
+and wait for upstream cleanup before finalization. The optional CMake target retains
+`gfxstream_backend_static` in full; that upstream target currently depends on desktop
+GL and native-window code, so this source is uncompiled and cannot yet build for iOS.
+It does not enable the unimplemented coherent socket memory model.
