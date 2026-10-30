@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
-#pragma once
+#ifndef CABOOSE_GPU_MEMORY_AUDIT_H
+#define CABOOSE_GPU_MEMORY_AUDIT_H
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -72,3 +73,4 @@ private:
 };
 }
 #endif
+#endif // CABOOSE_GPU_MEMORY_AUDIT_H

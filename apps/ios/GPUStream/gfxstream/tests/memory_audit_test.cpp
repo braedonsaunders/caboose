@@ -1,5 +1,8 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "memory_audit.h"
+#ifdef CABOOSE_TEST_UPSTREAM_AUDIT_HEADER
+#include "caboose_memory_audit.h"
+#endif
 #include <cassert>
 using caboose::gpuv2::MemoryAuditRing;
 int main() {
