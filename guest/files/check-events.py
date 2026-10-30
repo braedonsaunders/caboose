@@ -63,6 +63,12 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
     # CPython audit events count fork/spawn/exec attempts, including short-lived children
     # that a /proc children snapshot misses. Native extension syscalls are outside this metric.
     wrapper = """import os,runpy,sys
+from http.server import ThreadingHTTPServer
+original_bind=ThreadingHTTPServer.server_bind
+def loopback_bind(server):
+    server.server_address=('127.0.0.1',server.server_address[1])
+    original_bind(server)
+ThreadingHTTPServer.server_bind=loopback_bind
 fd=os.open(sys.argv[2],os.O_WRONLY|os.O_APPEND)
 def audit(event,args):
     if event in ('os.fork','os.forkpty','os.posix_spawn','os.exec','subprocess.Popen'):
