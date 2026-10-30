@@ -53,6 +53,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
     case retired(swapchain: UInt64, status: LiveGPUSurfaceStatus)
     case present(LiveGPUIndexedPresent)
     case revokeSurface
+    case presentRetired(swapchain: UInt64, serial: UInt64)
 
     var kind: LiveGPUEnvelope.Kind {
         switch self {
@@ -67,6 +68,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .retired: return .swapchainRetired
         case .present: return .swapchainPresent
         case .revokeSurface: return .surfaceRevokeRequest
+        case .presentRetired: return .presentRetired
         }
     }
     /// Length includes the common 40-byte identity. Reject overlarge arrays before buffering.
@@ -78,7 +80,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .swapchainMap: valid = n >= 64 && n <= 2104 && (n - 56) % 8 == 0
         case .swapchainMapped, .swapchainRetired: valid = n == 64
         case .swapchainAcquire, .swapchainAcquired: valid = n == 88
-        case .swapchainCancelAcquire: valid = n == 56
+        case .swapchainCancelAcquire, .presentRetired: valid = n == 56
         case .swapchainRetire: valid = n == 48
         case .swapchainPresent: valid = n >= 80 && n <= 592 && (n - 80) % 8 == 0
         case .surfaceRevokeRequest: valid = n == 40
@@ -160,6 +162,10 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             try check(waits.allSatisfy { $0 > 0 } && Set(waits).count == waits.count, "indexed waits")
             value = .present(.init(swapchain: swapchain, serial: serial, queue: queue, index: index,
                                   family: family, layout: layout, waits: waits))
+        case .presentRetired:
+            let swapchain = try r.u64(), serial = try r.u64()
+            try check(swapchain > 0 && serial > 0, "retired frame identity")
+            value = .presentRetired(swapchain: swapchain, serial: serial)
         case .surfaceRevokeRequest: value = .revokeSurface
         default: throw invalid("not an indexed control")
         }
@@ -196,6 +202,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             for v in [p.swapchain, p.serial, p.queue] { w.u64(v) }
             for v in [p.index, p.family, p.layout, UInt32(p.waits.count)] { w.u32(v) }
             for v in p.waits { w.u64(v) }
+        case .presentRetired(let swapchain, let serial): w.u64(swapchain); w.u64(serial)
         case .revokeSurface: break
         }
         try Self.check(try Self.decode(kind: kind, fields: w.data) == self, "noncanonical indexed control")

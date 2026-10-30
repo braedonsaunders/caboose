@@ -9,9 +9,9 @@ struct LiveGPUEnvelope: Equatable {
         case session = 1, sessionReady, processOpen, processReady, streamOpen, streamReady
         case data, fin, processStop, processRetired, revoke, revoked, executorDrain
         case surfaceBind = 16, surfaceBound, surfaceQuery, surfaceCaps, present, presentResult, sourceReleased, surfaceRetire, surfaceRetired
-        case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest
-        var isSurface: Bool { rawValue >= 16 && rawValue <= 35 }
-        var isIndexed: Bool { rawValue >= 25 && rawValue <= 35 }
+        case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest, presentRetired
+        var isSurface: Bool { rawValue >= 16 && rawValue <= 36 }
+        var isIndexed: Bool { rawValue >= 25 && rawValue <= 36 }
     }
     let kind: Kind
     let executor: Data
