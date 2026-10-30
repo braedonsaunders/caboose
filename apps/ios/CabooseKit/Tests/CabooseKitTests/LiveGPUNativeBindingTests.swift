@@ -65,6 +65,17 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertThrowsError(try LiveGPUNativeBinding()) { XCTAssertEqual($0 as? LiveGPUError, .missingNativeBinding) }
         #endif
     }
+    func testPriorDiagnosticModeCannotInitializeLiveVirtualWSI() throws {
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        try binding.start(output: { _ in true }, failed: { _ in })
+        var diagnostic = LiveGPUEnvelope.hello
+        diagnostic[8] = 2; diagnostic[12] = 0x10
+        XCTAssertThrowsError(try binding.consume(wire(.session, sequence: 1, payload: diagnostic)))
+        XCTAssertEqual(runtime.starts, 0)
+        try binding.finish()
+    }
+
     func testHelloMismatchNeverInitializesRuntime() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)

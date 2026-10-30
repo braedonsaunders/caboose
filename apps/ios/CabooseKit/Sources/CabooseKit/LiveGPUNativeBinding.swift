@@ -25,7 +25,7 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     // initialization remains failed for process lifetime; reconnect never retries it.
     private static let startResult: Int32 = {
         #if canImport(CabooseGPULive)
-        return caboose_gpu_live_start()
+        return caboose_gpu_live_start_v3()
         #else
         return ENODEV
         #endif

@@ -8,7 +8,9 @@ extern "C" {
 
 // Initializes the single statically linked Vulkan provider. Call off the main
 // thread. A failed first initialization is terminal until the app restarts.
-int caboose_gpu_live_start(void);
+// Versioned symbol prevents an older package from negotiating live v3 while
+// initializing the incompatible non-WSI provider mode. Requires exact v3/0x30.
+int caboose_gpu_live_start_v3(void);
 int caboose_gpu_runtime_open(uint64_t* token);
 // Blocking, ordered raw decoder connection. The caller retains the descriptor.
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);

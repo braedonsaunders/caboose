@@ -84,8 +84,8 @@ void* resolve(const char* name) {
     return nullptr;
 }
 }
-extern "C" int caboose_gpu_live_start(void) {
-    return caboose_gpu_runtime_start(&vkGetInstanceProcAddr, resolve);
+extern "C" int caboose_gpu_live_start_v3(void) {
+    return caboose_gpu_runtime_start_virtual_wsi(&vkGetInstanceProcAddr, resolve);
 }
 '''
 
@@ -127,6 +127,9 @@ def main():
         archs = run(["xcrun", "lipo", "-archs", str(archive)], capture_output=True, text=True).stdout.strip()
         if archs != "arm64":
             parser.error(f"expected one arm64 slice: {archive}")
+    native_symbols = run(["xcrun", "nm", "-gjU", str(archives[0])], capture_output=True, text=True).stdout.splitlines()
+    if "_caboose_gpu_runtime_start_virtual_wsi" not in native_symbols:
+        parser.error("native runtime lacks the real virtual-WSI initializer required by live protocol v3")
     registry = args.vulkan_headers / "registry/vk.xml"
     symbols = run(["xcrun", "nm", "-gjU", str(args.provider)], capture_output=True, text=True).stdout
     names = provider_commands(symbols, registry)
@@ -143,7 +146,7 @@ def main():
         sdk = run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], capture_output=True, text=True).stdout.strip()
         obj = work / "provider.o"
         run(["xcrun", "--sdk", "iphoneos", "clang++", "-std=c++17", "-target", "arm64-apple-ios26.0",
-             "-isysroot", sdk, "-O2", "-DVK_USE_PLATFORM_METAL_EXT", "-DVK_USE_PLATFORM_IOS_MVK",
+             "-isysroot", sdk, "-O2", "-DCABOOSE_GPU_PRESENTATION_LEASE=1", "-DVK_USE_PLATFORM_METAL_EXT", "-DVK_USE_PLATFORM_IOS_MVK",
              "-DVK_USE_PLATFORM_MACOS_MVK", "-I", str(args.vulkan_headers / "include"),
              "-I", str(adapter), "-I", str(headers), "-c", str(source), "-o", str(obj)])
         merged = work / "libCabooseGPULive.a"
@@ -154,7 +157,7 @@ def main():
         # executable. Never run this executable or install it on a device.
         probe = work / "LinkProbe.swift"
         probe.write_text('import CabooseGPULive\n@main struct LinkProbe { '
-                         'static func main() { _ = caboose_gpu_live_start() } }\n')
+                         'static func main() { _ = caboose_gpu_live_start_v3() } }\n')
         run(["xcrun", "--sdk", "iphoneos", "swiftc", "-parse-as-library",
              "-target", "arm64-apple-ios26.0", "-sdk", sdk,
              "-I", str(headers), "-L", str(work), "-lCabooseGPULive", "-lc++", "-lz",
@@ -168,6 +171,7 @@ def main():
         if input_hashes != {str(path): digest(path) for path in archives}:
             raise RuntimeError("Native build inputs changed during packaging")
         receipt = {"format": 1, "platform": "ios-arm64", "deploymentTarget": "26.0",
+                   "liveHelloVersion": 3, "liveHelloFeatureMask": 0x30, "virtualWSI": True,
                    "inputs": input_hashes, "swiftImportAndLink": "passed",
                    "linkProbeSHA256": digest(work / "LinkProbe"),
                    "registrySHA256": digest(registry), "headerSHA256": digest(public_header),

@@ -37,7 +37,9 @@ class ProviderExportsTests(unittest.TestCase):
     def test_source_retains_real_addresses_not_dynamic_loader(self):
         source = package.provider_source(["vkCreateDevice", "vkGetInstanceProcAddr"])
         self.assertIn('reinterpret_cast<void*>(&vkCreateDevice)', source)
-        self.assertIn('caboose_gpu_runtime_start(&vkGetInstanceProcAddr, resolve)', source)
+        self.assertIn('caboose_gpu_runtime_start_virtual_wsi(&vkGetInstanceProcAddr, resolve)', source)
+        self.assertIn('int caboose_gpu_live_start_v3(void)', source)
+        self.assertNotIn('caboose_gpu_runtime_start(', source)
         self.assertNotIn('dlsym', source)
 
 

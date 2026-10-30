@@ -33,7 +33,10 @@ installs that executable. Input hashes are rechecked before publication. The
 generated provider address table retains only real exports with Vulkan registry
 declarations. It resolves dispatch to this statically linked provider without a
 process-wide dynamic-symbol search; it does not advertise Vulkan capabilities.
-`caboose_gpu_live_start()` initializes that provider once, off the main thread.
+`caboose_gpu_live_start_v3()` initializes that provider once in virtual-WSI mode,
+off the main thread. The versioned symbol rejects older native packages at link
+time; packaging requires the real virtual-WSI initializer and records the exact
+v3/0x30 hello contract. It does not enable an unsupported device feature.
 The public header also exposes process open, run, stop and finish. `run` blocks;
 `finish` waits for upstream process cleanup after every stream returns.
 
