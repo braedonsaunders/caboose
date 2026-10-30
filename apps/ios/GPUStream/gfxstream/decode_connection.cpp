@@ -31,20 +31,41 @@ int decodeConnection(int fd, uint32_t context_id, size_t max_packet, size_t max_
     thread_info.ctx_id = context_id;
     thread_info.m_processResources = resources;
     try {
+        std::vector<unsigned char> pending;
+        auto readMore = [&](size_t request) -> bool {
+            const size_t old = pending.size();
+            pending.resize(old + request);
+            const size_t got = stream.read(pending.data() + old, request);
+            pending.resize(old + got);
+            return got != 0;
+        };
         while (!stop.load()) {
-            uint32_t header[2];
-            if (!stream.readFully(header, sizeof(header))) return stop ? 0 : stream.error();
-            const size_t length = header[1];
-            if (length < sizeof(header) || length > max_packet) return EMSGSIZE;
-            std::vector<unsigned char> packet(length);
-            std::memcpy(packet.data(), header, sizeof(header));
-            if (!stream.readFully(packet.data() + sizeof(header), length - sizeof(header)))
-                return stop ? 0 : stream.error();
-            const size_t consumed = thread_info.m_vkDec.decode(packet.data(), packet.size(), &stream,
-                                                   resources.get(), context);
+            if (pending.size() < 8) {
+                if (!readMore(8 - pending.size())) return stop ? 0 : stream.error();
+                continue;
+            }
+            uint32_t length;
+            std::memcpy(&length, pending.data() + 4, sizeof(length));
+            if (length < 8 || length > max_packet) return EMSGSIZE;
+            if (pending.size() < length) {
+                if (!readMore(length - pending.size())) return stop ? 0 : stream.error();
+                continue;
+            }
+            const size_t consumed = thread_info.m_vkDec.decode(
+                pending.data(), pending.size(), &stream, resources.get(), context);
             if (stream.error()) return stream.error();
-            if (consumed != packet.size()) return EPROTO;
-            if (stream.flush() < 0) return stream.error() ? stream.error() : EIO;
+            if (consumed > pending.size()) return EPROTO;
+            if (consumed) {
+                pending.erase(pending.begin(), pending.begin() + consumed);
+                if (stream.flush() < 0) return stream.error() ? stream.error() : EIO;
+                continue;
+            }
+            // The pinned decoder's non-direct mapped-memory flush can append
+            // bytes beyond its advertised length. Zero progress may also mean
+            // an unknown opcode; cap retained data and let EOF/cancellation end it.
+            if (pending.size() == max_packet) return EPROTO;
+            const size_t room = max_packet - pending.size();
+            if (!readMore(room < 65536 ? room : 65536)) return stop ? 0 : stream.error();
         }
     } catch (const std::bad_alloc&) { return ENOMEM; }
     return 0;

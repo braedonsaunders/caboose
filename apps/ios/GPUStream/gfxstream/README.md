@@ -110,3 +110,25 @@ clang++ -std=c++17 -fsyntax-only \
 The pinned repository tree contains 1,938 tracked blobs totaling 61,415,876
 uncompressed bytes (GitHub tree metadata); archive transfer size, external
 dependency sizes, compiler memory and build output are not yet measured.
+
+## Mapped memory and packet boundary
+
+In the pinned decoder, when `GlDirectMem` and `VirtioGpuNext` are both disabled,
+`vkFlushMappedMemoryRanges` reads a uint64 byte count and guest bytes per range
+and copies them into the real mapped host allocation before calling Vulkan flush.
+`vkInvalidateMappedMemoryRanges` calls Vulkan invalidate and writes the actual result,
+then a uint64 length and mapped bytes for each range. Mesa's pinned encoder contains
+matching wire paths, but its `ResourceTracker::usingDirectMapping()` is hardcoded
+true and host-visible allocations use shared VirtGpu/Goldfish mappings. A socket
+therefore does not enable those paths without guest work. Coherent memory also
+requires visibility at legal implicit synchronization boundaries; upstream guest
+fence-status and fence-wait paths do not synchronize socket shadow memory. The
+Mesa `VK_WHOLE_SIZE` sender calculation needs review with nonzero range offsets.
+
+The flush payload may extend beyond its advertised packet length. The connection
+loop retains additional bytes on decoder zero progress up to the configured limit.
+An unknown opcode also gives zero progress, so this loop can wait for more bytes
+until EOF, cancellation, or the cap; it does not yet reject unknown commands promptly.
+The upstream decoder may touch mapped memory during an incomplete flush before
+returning zero, and retries need actual encoder/decoder integration testing. No
+claim is made that packet bounds secure generated field unmarshalling.
