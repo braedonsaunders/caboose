@@ -170,7 +170,7 @@ def inside(phase, check_id):
         # including any browser descendants, display daemons and timeout failures.
 
 
-def host(image, seccomp):
+def host(image, seccomp, overlay_source=None):
     image_id = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], text=True).strip()
     assert image.startswith('sha256:') and image == image_id, 'Supply the full immutable local image ID; no pull/build occurs'
     seccomp = Path(seccomp).resolve(strict=True)
@@ -182,6 +182,15 @@ def host(image, seccomp):
         for phase in ('seed', 'verify'):
             name = volume + '-' + phase
             try:
+                overlay_args = []
+                entrypoint = ['/usr/bin/python3', image, '/acceptance/check-dual-seat.py', '--inside', phase, check_id]
+                if overlay_source:
+                    source = Path(overlay_source).resolve(strict=True)
+                    overlay_args = ['--mount', 'type=bind,source=' + str(source) + ',target=/seat-src,readonly',
+                                    '--env', 'CABOOSE_ACCEPTANCE_OVERLAY=1']
+                    entrypoint = ['/bin/sh', image, '-c',
+                        'sh /acceptance/install-acceptance-overlay.sh /seat-src && exec /usr/bin/python3 /acceptance/check-dual-seat.py "$@"',
+                        'acceptance-overlay', '--inside', phase, check_id]
                 subprocess.run(['docker', 'run', '--name', name, '--init', '-i', '--network', 'none',
                     '--memory', '2g', '--cpus', '2', '--pids-limit', '256', '--shm-size', '256m',
                     '--security-opt', 'seccomp=' + str(seccomp), '--tmpfs', '/tmp:rw,nosuid,size=256m',
@@ -189,7 +198,7 @@ def host(image, seccomp):
                     '--env', 'CABOOSE_DISPOSABLE_ACCEPTANCE=' + check_id,
                     '--mount', 'type=volume,source=' + volume + ',target=/home/caboose,volume-nocopy',
                     '--mount', 'type=bind,source=' + str(Path(__file__).resolve().parent) + ',target=/acceptance,readonly',
-                    '--entrypoint', '/usr/bin/python3', image, '/acceptance/check-dual-seat.py', '--inside', phase, check_id],
+                    *overlay_args, '--entrypoint', *entrypoint],
                     input=password, check=True, timeout=180)
             finally:
                 checked(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL)
@@ -208,5 +217,6 @@ if __name__ == '__main__':
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument('--image', required=True)
         parser.add_argument('--seccomp', required=True)
+        parser.add_argument('--overlay-source', help='Read-only source export plus out/ binaries; install the narrow overlay inside each test container')
         args = parser.parse_args()
-        host(args.image, args.seccomp)
+        host(args.image, args.seccomp, args.overlay_source)

@@ -128,3 +128,10 @@ the same synthetic credential, and exactly one GNOME keyring writer must exist. 
 removes each container and checks its absence on success, failure or timeout, then removes
 the synthetic volume. This is a scripted acceptance check, not an executed-result claim;
 Firefox/Code-specific GUI checks and real account sign-in are outside this script.
+
+The driver also accepts `--overlay-source PATH` with a read-only source export and newly
+compiled binaries under `out/`. In that mode `install-acceptance-overlay.sh` installs only
+the seat/keyring components inside each bounded test container before acceptance starts.
+This avoids a Docker image commit and retains the same 180-second per-container cap.
+The source commit, source manifest, artifact hashes and base image ID identify the tested
+combination. It does not run the full component installer or stamp `components.version`.
