@@ -19,3 +19,8 @@ target_include_directories(caboose_gfxstream_lifecycle PRIVATE
     "${CABOOSE_GFXSTREAM_SOURCE}/host/vulkan/cereal/common")
 target_link_libraries(caboose_gfxstream_lifecycle PRIVATE
     caboose_gfxstream_framebuffer caboose_gfxstream_connection gfxstream_backend_static)
+
+# The retained macOS EGL backend calls CGL and desktop GL directly.
+if(APPLE)
+    target_link_libraries(caboose_gfxstream_lifecycle PRIVATE "-framework OpenGL")
+endif()
