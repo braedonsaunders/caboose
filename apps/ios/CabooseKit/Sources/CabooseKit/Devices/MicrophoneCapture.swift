@@ -11,9 +11,14 @@ final class MicrophoneCapture {
     private var engine: AVAudioEngine?
     private var device: String?
     private var failed: (@MainActor (String) -> Void)?
-    private var previous: (category: AVAudioSession.Category, mode: AVAudioSession.Mode, options: AVAudioSession.CategoryOptions)?
+    private var lease: UUID?
     private var pipeline: MicrophonePipeline?
-    private var interruption: NSObjectProtocol?
+    private var observers: [NSObjectProtocol] = []
+    private var interrupted = false
+    private var rebuilding = false
+    private var rebuildScheduled = false
+    private var lastRebuild = Date.distantPast
+    private var rapidRebuilds = 0
     private var attempt = 0
 
     func open(_ descriptor: DeviceDescriptor, failed: @escaping @MainActor (String) -> Void) {
@@ -38,8 +43,18 @@ final class MicrophoneCapture {
 
     func close() {
         attempt += 1
-        if let interruption { NotificationCenter.default.removeObserver(interruption) }
-        interruption = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers = []
+        interrupted = false
+        rapidRebuilds = 0
+        rebuildScheduled = false
+        stopEngine()
+        device = nil
+        failed = nil
+        restoreSession()
+    }
+
+    private func stopEngine() {
         if let engine {
             engine.stop()
             engine.inputNode.removeTap(onBus: 0)
@@ -47,9 +62,6 @@ final class MicrophoneCapture {
         engine = nil
         pipeline?.stop()
         pipeline = nil
-        device = nil
-        failed = nil
-        restoreSession()
     }
 
     private func fail(_ reason: String) {
@@ -62,42 +74,96 @@ final class MicrophoneCapture {
         guard let device, let output else { return }
         let audio = AVAudioSession.sharedInstance()
         do {
-            if previous == nil { previous = (audio.category, audio.mode, audio.categoryOptions) }
-            try audio.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+            if lease == nil {
+                lease = try CabooseAudioSession.acquire(.init(.playAndRecord, mode: .voiceChat,
+                    options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]))
+            }
+            guard let lease, CabooseAudioSession.owns(lease) else {
+                return fail("Another audio activity is using the microphone session.")
+            }
             try audio.setActive(true)
             let engine = AVAudioEngine()
             let input = engine.inputNode
             try input.setVoiceProcessingEnabled(true)
+            input.voiceProcessingOtherAudioDuckingConfiguration = .init(enableAdvancedDucking: false, duckingLevel: .min)
             let format = input.outputFormat(forBus: 0)
             guard format.sampleRate > 0, format.channelCount > 0 else { return fail("No microphone is available.") }
             guard let pipeline = MicrophonePipeline(input: format, device: device, output: output) else {
                 return fail("The microphone's sound cannot be encoded on this iPhone.")
             }
             input.installTap(onBus: 0, bufferSize: 960, format: format) { buffer, time in pipeline.append(buffer, at: time) }
-            engine.prepare()
-            try engine.start()
             self.engine = engine
             self.pipeline = pipeline
-            interruption = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-                let type = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt).flatMap(AVAudioSession.InterruptionType.init)
-                MainActor.assumeIsolated {
-                    guard let self, let engine = self.engine, type == .ended else { return }
-                    // A call or Siri took the microphone; it comes back when they end.
-                    try? AVAudioSession.sharedInstance().setActive(true)
-                    if !engine.isRunning { try? engine.start() }
-                }
-            }
+            engine.prepare()
+            try engine.start()
+            if observers.isEmpty { observe() }
         } catch {
             fail(error.localizedDescription)
         }
     }
 
+    private func observe() {
+        let current = attempt
+        for name in [AVAudioSession.interruptionNotification, AVAudioSession.routeChangeNotification,
+                     AVAudioSession.mediaServicesWereResetNotification, .AVAudioEngineConfigurationChange] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+                let notifiedEngine = note.object as? AVAudioEngine
+                Task { @MainActor [weak self] in
+                    guard let self, self.attempt == current, self.device != nil else { return }
+                    if name == AVAudioSession.interruptionNotification {
+                        if type == AVAudioSession.InterruptionType.began.rawValue {
+                            self.interrupted = true
+                            self.stopEngine()
+                        } else if type == AVAudioSession.InterruptionType.ended.rawValue {
+                            guard AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) else {
+                                return self.fail("Microphone capture was interrupted. Reopen it to resume.")
+                            }
+                            self.interrupted = false
+                            self.scheduleRebuild()
+                        }
+                    } else if name != .AVAudioEngineConfigurationChange || (notifiedEngine != nil && notifiedEngine === self.engine) {
+                        if name == AVAudioSession.mediaServicesWereResetNotification, let lease = self.lease {
+                            do { try CabooseAudioSession.reapply(lease) }
+                            catch { return self.fail(error.localizedDescription) }
+                        }
+                        self.scheduleRebuild()
+                    }
+                }
+            })
+        }
+    }
+
+    private func scheduleRebuild() {
+        guard !rebuildScheduled else { return }
+        rebuildScheduled = true
+        let current = attempt
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, self.attempt == current else { return }
+            self.rebuildScheduled = false
+            self.rebuild()
+        }
+    }
+
+    private func rebuild() {
+        guard !interrupted, !rebuilding, device != nil else { return }
+        let now = Date()
+        rapidRebuilds = now.timeIntervalSince(lastRebuild) < 1 ? rapidRebuilds + 1 : 0
+        lastRebuild = now
+        guard rapidRebuilds < 3 else { return fail("The microphone audio route is unstable. Reopen it to retry.") }
+        rebuilding = true
+        defer { rebuilding = false }
+        stopEngine()
+        start()
+    }
+
     private func restoreSession() {
-        guard let previous else { return }
-        self.previous = nil
-        let audio = AVAudioSession.sharedInstance()
-        try? audio.setCategory(previous.category, mode: previous.mode, options: previous.options)
-        try? audio.setActive(true)
+        guard let lease else { return }
+        self.lease = nil
+        do { try CabooseAudioSession.release(lease) }
+        catch { NSLog("Caboose microphone could not restore audio session: %@", error.localizedDescription) }
     }
 }
 
@@ -112,11 +178,12 @@ final class MicrophonePipeline: @unchecked Sendable {
     private let output: DeviceOutput
     private var framer = PCMFramer()
     private let admission = NSLock()
+    private let sending = NSLock()
     private var pending = 0
     private var stopped = false
 
     func stop() {
-        admission.withLock { stopped = true }
+        sending.withLock { admission.withLock { stopped = true } }
     }
 
     init?(input: AVAudioFormat, device: String, output: DeviceOutput) {
@@ -165,8 +232,8 @@ final class MicrophonePipeline: @unchecked Sendable {
         for frame in framer.append(samples, at: micros) {
             guard let packet = (try? encoder.encode(frame.samples)) ?? nil else { continue }
             // Closing waits for any send already underway, and fences queued work.
-            admission.withLock {
-                guard !stopped else { return }
+            sending.withLock {
+                guard admission.withLock({ !stopped }) else { return }
                 output.send(.deviceAudio(device: device, micros: frame.micros, data: packet))
             }
         }
