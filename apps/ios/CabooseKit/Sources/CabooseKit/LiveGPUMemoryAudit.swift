@@ -58,6 +58,10 @@ enum LiveGPUMemoryAudit {
     static func ownerInvalidated(_ reason: OwnerInvalidation) {
         terminal(["kind": "ownerInvalidated", "reason": reason.rawValue])
     }
+    static func ownerExtent(server: CGSize, view: CGSize) {
+        terminal(["kind": "ownerExtent", "drawableWidth": server.width,
+                  "drawableHeight": server.height, "viewWidth": view.width, "viewHeight": view.height])
+    }
     static func surfaceBind(_ status: LiveGPUSurfaceStatus) {
         var fields: [String: Any] = ["kind": "surfaceBind", "errno": status.nativeErrno]
         if let result = status.vkResult { fields["vkResult"] = result }

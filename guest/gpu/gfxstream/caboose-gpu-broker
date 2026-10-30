@@ -182,7 +182,7 @@ class Session:
         self.progress_enabled = os.environ.get('CABOOSE_PRIVATE_GPU_PROGRESS') == '1'
         self.progress_count = 0
 
-    def surface_progress(self, direction, kind):
+    def surface_progress(self, direction, kind, extent=None):
         # Diagnostic metadata only: no payloads, handles, identities or credentials.
         if not self.progress_enabled or not 16 <= int(kind) <= 36: return
         ordinal = self.progress_count
@@ -192,7 +192,8 @@ class Session:
             if ordinal == 128:
                 print('CABOOSE_GPU_SURFACE_PROGRESS limit=128', file=sys.stderr, flush=True)
             else:
-                print(f'CABOOSE_GPU_SURFACE_PROGRESS ordinal={ordinal} direction={direction} kind={int(kind)} monotonic_ns={time.monotonic_ns()}', file=sys.stderr, flush=True)
+                dimensions = '' if extent is None else f' width={extent[0]} height={extent[1]}'
+                print(f'CABOOSE_GPU_SURFACE_PROGRESS ordinal={ordinal} direction={direction} kind={int(kind)} monotonic_ns={time.monotonic_ns()}{dimensions}', file=sys.stderr, flush=True)
 
     async def reserve_data(self):
         # Reserve before reading a local payload: waiting readers cannot retain
@@ -253,7 +254,11 @@ class Session:
             self.capacity_changed.set()
 
     async def message(self, frame):
-        self.surface_progress("received_from_phone", frame.kind)
+        extent = None
+        if frame.kind == Kind.SURFACE_CAPS and len(frame.payload) >= 128:
+            if struct.unpack_from('<iIiI', frame.payload, 48) == (0, 1, 0, 0):
+                extent = struct.unpack_from('<II', frame.payload, 72)
+        self.surface_progress("received_from_phone", frame.kind, extent)
         if frame.kind == Kind.SESSION_READY:
             if self.session_ready.is_set() or frame.payload != self.hello: raise ValueError('bad session receipt')
             self.session_ready.set(); return

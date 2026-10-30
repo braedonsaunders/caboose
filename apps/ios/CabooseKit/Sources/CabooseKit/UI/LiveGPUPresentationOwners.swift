@@ -85,6 +85,8 @@ public final class LiveGPUPresentationOwners {
             }
             return
         }
+        // Fitting the same server pixels to a new UIKit slot does not resize Vulkan.
+        if let view = lease.view { lease.content?.frame = view.bounds }
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
         guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
@@ -99,11 +101,9 @@ public final class LiveGPUPresentationOwners {
         return !view.convert(view.bounds, to: window).intersection(window.bounds).isEmpty
     }
     private func extent(_ view: RemoteWindowView) -> CGSize? {
-        let scale = view.window?.windowScene?.screen.scale ?? view.contentScaleFactor
-        let width = (view.bounds.width * scale).rounded(), height = (view.bounds.height * scale).rounded()
-        guard width.isFinite, height.isFinite, width >= 1, height >= 1,
-              width <= CGFloat(UInt32.max), height <= CGFloat(UInt32.max) else { return nil }
-        return CGSize(width: width, height: height)
+        guard let window = view.remoteWindow else { return nil }
+        return LiveGPUDrawableGeometry.extent(serverPixels: window.frame.size,
+                                             visibleBounds: view.bounds.size)
     }
 
     func requestClaim(identity: LiveGPUSurfaceIdentity, windowID: UInt64,
@@ -125,6 +125,9 @@ public final class LiveGPUPresentationOwners {
         guard let view = candidates.first, let size = extent(view) else {
             throw unavailable(EAGAIN)
         }
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.ownerExtent(server: size, view: view.bounds.size)
+        #endif
         let content = LiveGPULayerView(frame: view.bounds)
         content.isUserInteractionEnabled = false
         content.isOpaque = true

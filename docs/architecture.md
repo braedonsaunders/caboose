@@ -3215,3 +3215,8 @@ dedicated-home allocated file blocks and
 Docker logical layer sizes separately; shared/reflink bytes are never attributed as
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.
+
+The private GPU owner layer uses the authenticated display window’s server pixel
+size for its actual Metal drawable. UIKit fitting and phone screen scale do not
+change that Vulkan extent. A server pixel-size change revokes the generation and
+requires native retirement before rebinding; fitting unchanged pixels does not.
