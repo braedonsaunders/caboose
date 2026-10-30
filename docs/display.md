@@ -197,15 +197,18 @@ for byte.
   windows may decline a request without sending another geometry update. Placement can
   move immediately, but an in-flight placement never suppresses a reported size change.
 - Monitor dimensions are independent of a window's presentation viewport. The iOS client
-  retains its full-device square output and the DPI chosen on device attachment, including
+  saves its initial full-device output and the DPI chosen on device attachment, including
   an active desktop's UI scale. A validated per-computer local preference restores the
   device mode/DPI/render scale before start or resume. Without one, Home announces an
   empty display set, retaining the server's current/default output until a real measured
   device attachment. A view with no assigned output paces the retained hello's primary
   ID during that bootstrap; explicit pacing IDs are never redirected. Pictures and
   acknowledgements do not depend on the client selecting a replacement output.
-  Card, keyboard, fold and stage changes resize ordinary
-  window requests without changing that output. External monitors use their own mode and
+  Card, keyboard and stage changes resize ordinary window requests without changing that
+  output. Physical scene-window measurements update monitor dimensions at the retained
+  DPI/render scale: full bounds in Tablet mode and the upper panel in Laptop mode. Rotation
+  and leaving Laptop use the current scene bounds, independently of keyboard avoidance.
+  External monitors use their own mode and
   DPI without overwriting the device preference; explicit owner zoom can change DPI.
   An unchanged monitor sends no `displays` message. Desktop content uses the model's
   shown rectangle directly for rendering and input, without a second inner fit.

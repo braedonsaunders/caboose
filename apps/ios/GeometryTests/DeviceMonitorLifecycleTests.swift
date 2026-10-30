@@ -95,7 +95,8 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let app = AppModel(collection: collection(), monitorDefaults: defaults, startsConnections: false)
         app.setLaptopDesktop(true)
-        app.laptopPhysicalPanelChanged(to: CGSize(width: 656, height: 446))
+        app.devicePhysicalDisplayChanged(screen: CGSize(width: 656, height: 932),
+                                         laptopPanel: CGSize(width: 656, height: 446))
         XCTAssertNil(app.displayCapabilities())
         app.openDeviceDesktop(size: CGSize(width: 656, height: 446))
         let laptop = try XCTUnwrap(app.displayCapabilities())
@@ -112,8 +113,16 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         XCTAssertEqual(app.displayCapabilities(), laptop)
         app.setLaptopDesktop(false)
         let base = try XCTUnwrap(app.displayCapabilities())
-        XCTAssertEqual(base.desktopWidth, base.desktopHeight)
+        XCTAssertEqual(base.desktopWidth, Int(656 * app.pixelsPerPoint))
+        XCTAssertEqual(base.desktopHeight, Int(932 * app.pixelsPerPoint))
         XCTAssertEqual(base.dpi, laptop.dpi)
+        app.devicePhysicalDisplayChanged(screen: CGSize(width: 932, height: 656), laptopPanel: nil)
+        let rotated = try XCTUnwrap(app.displayCapabilities())
+        XCTAssertEqual(rotated.desktopWidth, Int(932 * app.pixelsPerPoint))
+        XCTAssertEqual(rotated.desktopHeight, Int(656 * app.pixelsPerPoint))
+        XCTAssertEqual(rotated.dpi, laptop.dpi)
+        app.deviceDesktopResized(to: CGSize(width: 800, height: 300)) // keyboard/sidebar proposal
+        XCTAssertEqual(app.displayCapabilities(), rotated)
     }
 
     /// Retain the same hosted Laptop and panel size while the bound computer changes.

@@ -619,6 +619,14 @@ final class AppModel {
         if monitorPolicy.presentLaptop(panel: panel) { reconnectForDisplayChange() }
     }
 
+    func devicePhysicalDisplayChanged(screen: CGSize?, laptopPanel: CGSize?) {
+        guard let screen else { return }
+        restoreDeviceMonitor()
+        if monitorPolicy.presentDevice(screen: screen, laptopPanel: laptopPanel) {
+            reconnectForDisplayChange()
+        }
+    }
+
     private func attachDeviceMonitor(scale: CGFloat, dpi: Int) {
         restoreDeviceMonitor()
         guard !externalDisplayActive,

@@ -33,14 +33,17 @@ Floating desktop snap chooser (iPad Free/Tablet and external display):
 
 Monitor/window/presentation contract (record results; this script does not claim a pass):
 1. Record xrandr --current and xdpyinfo for the owner display. Show/hide the keyboard,
-   open/close app cards, fold and rotate. Monitor dimensions/DPI stay unchanged while
-   ordinary resizable windows reflow. Initial Linux text size and render scale stay as
-   selected at attachment. External monitor attach/detach and explicit zoom are separate.
+   open/close app cards: monitor dimensions/DPI stay unchanged while ordinary windows
+   reflow. Rotate Tablet portrait -> landscape -> Laptop -> Tablet: monitor dimensions
+   follow the physical window or upper panel, never an old square or keyboard-shortened
+   viewport. DPI and render scale stay as selected. Repeat with a saved old square mode,
+   and while connecting/disconnecting an external display (external dimensions win).
 2. Use a fixed-size dialog and a window with declared minimum/maximum hints; check
    xprop WM_NORMAL_HINTS on X11. Narrow the viewport: requests respect the hints, the
    committed picture fits without cropping, and menu/submenu targets stay aligned.
-3. Enter application fullscreen. Repeat keyboard/fold/rotation; output and fullscreen
-   surface size stay stable. Check center/corners by touch and desktop trackpad, including
+3. Enter application fullscreen. Keyboard changes leave its monitor size stable;
+   fold/rotation transitions reconfigure the output and fullscreen surface to the measured
+   physical mode. Check center/corners by touch and desktop trackpad, including
    a nested menu. Letterboxing does not activate the app or hidden desktop items.
    A scroll fling stops when the shown/committed geometry changes. A captured drag
    still releases on its original target. Exit explicitly and verify ordinary fitting.

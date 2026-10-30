@@ -33,6 +33,7 @@ public struct MonitorPolicy {
 
     public private(set) var computer: String?
     public private(set) var selection: Selection?
+    public private(set) var physicalScreen: CGSize?
     public private(set) var laptopPanel: CGSize?
     public var device: ClientCapabilities? { selection?.capabilities }
     public init() {}
@@ -43,6 +44,7 @@ public struct MonitorPolicy {
         guard self.computer != computer else { return }
         self.computer = computer
         selection = nil
+        physicalScreen = nil
         laptopPanel = nil
         guard let computer, !computer.isEmpty, let saved, saved.count <= 4096,
               let record = try? JSONDecoder().decode(Saved.self, from: saved),
@@ -65,7 +67,7 @@ public struct MonitorPolicy {
 
     public func resolve(external: ClientCapabilities? = nil) -> ClientCapabilities? {
         if let external { return external }
-        guard var device, let panel = laptopPanel, let selection else { return device }
+        guard var device, let panel = laptopPanel ?? physicalScreen, let selection else { return device }
         let width = Double(panel.width) * selection.renderScale
         let height = Double(panel.height) * selection.renderScale
         guard width.isFinite, height.isFinite, (1...32768).contains(width),
@@ -75,13 +77,28 @@ public struct MonitorPolicy {
         return device
     }
 
+    /// A scene-window measurement and its optional upper panel are one physical
+    /// transition. Neither keyboard avoidance nor a card's proposed size belongs here.
+    /// Saved density remains authoritative, including for older square saved modes.
+    @discardableResult public mutating func presentDevice(screen: CGSize, laptopPanel: CGSize?) -> Bool {
+        guard computer != nil, Self.validPhysicalSize(screen),
+              laptopPanel.map(Self.validPhysicalSize) ?? true else { return false }
+        guard physicalScreen != screen || self.laptopPanel != laptopPanel else { return false }
+        physicalScreen = screen
+        self.laptopPanel = laptopPanel
+        return true
+    }
+
+    private static func validPhysicalSize(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite && size.width > 0 && size.height > 0
+            && size.width <= 32768 && size.height <= 32768
+    }
+
     /// Only the attached physical Laptop panel supplies this transient mode. Keyboard,
     /// cards and ordinary viewport layout never feed it. The saved selection is untouched.
     @discardableResult public mutating func presentLaptop(panel: CGSize?) -> Bool {
         if let panel {
-            guard computer != nil, panel.width.isFinite, panel.height.isFinite,
-                  panel.width > 0, panel.height > 0,
-                  panel.width <= 32768, panel.height <= 32768 else { return false }
+            guard computer != nil, Self.validPhysicalSize(panel) else { return false }
         }
         guard laptopPanel != panel else { return false }
         laptopPanel = panel
@@ -90,9 +107,8 @@ public struct MonitorPolicy {
 
     public static func fullDevice(screen: CGSize, pixelsPerPoint: CGFloat, dpi: Int,
                                   refreshRate: Int) -> ClientCapabilities {
-        let side = max(screen.width, screen.height)
-        return ClientCapabilities(desktopWidth: Int(side * pixelsPerPoint),
-                                  desktopHeight: Int(side * pixelsPerPoint),
+        return ClientCapabilities(desktopWidth: Int(screen.width * pixelsPerPoint),
+                                  desktopHeight: Int(screen.height * pixelsPerPoint),
                                   dpi: dpi, refreshRate: refreshRate)
     }
 

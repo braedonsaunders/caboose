@@ -923,16 +923,18 @@ return-from-tab checks on a device. Pure orientation policy is covered by
 `swift test --filter DesktopChromeTests`; measurement-to-guest and dock geometry by
 `swift test --filter DeviceViewportTests`, both in CabooseKit.
 
-The device monitor retains its full-screen square dimensions and the DPI selected at
+The device monitor saves its initial full-screen mode and the DPI selected at
 attachment, including an active desktop's existing UI scale. Its validated mode, DPI and
 render scale persist locally under the computer's identity and restore before start/resume.
 Uncached Home announces no replacement output; hello, pictures and vsync use the server's
 retained/default display until the first measured card/desktop selects a mode. External
 monitors never overwrite that device preference. Cards, keyboard and stage layout update
-window viewports without changing that monitor. Laptop measures its physical upper panel
-from the attached window and converted reserved division, excluding keyboard overlap. It
-announces that panel at the retained render scale and DPI; posture and physical rotation
-update dimensions only. Leaving Laptop restores the saved base mode. External modes take
+window viewports without changing that monitor. The attached scene window measures the
+physical monitor independently: its full bounds in Tablet mode, its upper panel in Laptop
+mode, excluding keyboard overlap and converting the reserved division into window coordinates.
+Posture and physical rotation update dimensions at the retained render scale and DPI.
+Leaving Laptop restores the current full scene-window bounds; an old square saved mode
+does not override that measurement. External modes take
 precedence, and explicit owner zoom changes the selected DPI. Ordinary card/dialog requests honor per-axis
 size hints; app fullscreen retains compositor geometry and uses the existing aspect-fit
 presentation/input transform. No fixed minimum desktop resolution is imposed.

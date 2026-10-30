@@ -2914,16 +2914,18 @@ one-second burst so a refused size does not cause a configure loop; a later app 
 viewport change starts a new burst. App-requested fullscreen retains compositor-owned
 monitor geometry and aspect-fit presentation/input until an explicit exit.
 
-The device's virtual monitor retains its base full-screen square dimensions, chosen DPI and
+The device's virtual monitor retains its initial full-screen mode, chosen DPI and
 render scale in a validated local preference keyed by the existing computer identity.
 Start/resume restores that selection before announcing outputs. Uncached Home sends an
 empty display set, retaining the server's existing/default output; it does not choose a
 fallback DPI. The first measured device desktop or card selects the mode once, using its
 existing render scale and text DPI. Card, keyboard and desktop-stage measurements do not
-replace it. Laptop supplies a transient physical upper-panel mode measured from its attached
-UIWindow, with the reserved division converted into window coordinates and keyboard overlap
-excluded. Its dimensions use the retained render scale; DPI and the saved base mode remain
-unchanged through posture and rotation. Leaving Laptop restores the base mode. External
+replace it. The attached UIWindow supplies transient physical dimensions: the full window
+in Tablet mode and its upper panel in Laptop mode, with the reserved division converted
+into window coordinates and keyboard overlap excluded. Rotation and posture change those
+dimensions at the retained render scale and DPI. Leaving Laptop restores the current full
+window dimensions, including when the saved preference predates that measurement. The
+transient dimensions do not overwrite the saved selection. External
 monitors take precedence without overwriting the device preference; explicit owner zoom
 updates the device DPI. Window viewports and visual render scale remain separate from monitor selection. Desktop surfaces occupy the model's
 shown rectangle directly; there is no second inner aspect-fit transform.

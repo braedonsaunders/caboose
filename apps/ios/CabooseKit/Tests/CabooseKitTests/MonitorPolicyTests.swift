@@ -169,4 +169,70 @@ struct MonitorPolicyTests {
         #expect(policy.selection?.renderScale == 2)
     }
 
+    @Test func tabletLaptopRotationAndExternalRestoreMeasuredAspectAtTheSameDensity() throws {
+        var policy = MonitorPolicy()
+        policy.bind(computer: "computer-a", saved: nil)
+        policy.attach(desktop) // An existing installation can still have a square saved mode.
+        let saved = try #require(policy.saved())
+        let portrait = CGSize(width: 851, height: 1102)
+        let landscape = CGSize(width: 1102, height: 851)
+        policy.presentDevice(screen: portrait, laptopPanel: nil)
+        #expect(policy.resolve()?.desktopWidth == 1702)
+        #expect(policy.resolve()?.desktopHeight == 2204)
+        policy.presentDevice(screen: portrait, laptopPanel: CGSize(width: 851, height: 455))
+        #expect(policy.resolve()?.desktopHeight == 910)
+        // Exiting Laptop uses the current scene window, never the old square preference.
+        policy.presentDevice(screen: landscape, laptopPanel: nil)
+        #expect(policy.resolve()?.desktopWidth == 2204)
+        #expect(policy.resolve()?.desktopHeight == 1702)
+        #expect(policy.resolve()?.dpi == 151)
+        #expect(policy.resolve()?.refreshRate == 120)
+        #expect(policy.selection?.renderScale == 2)
+        let repeated = policy.presentDevice(screen: landscape, laptopPanel: nil)
+        #expect(!repeated)
+        let external = ClientCapabilities(desktopWidth: 3840, desktopHeight: 2160, dpi: 192)
+        #expect(policy.resolve(external: external) == external)
+        policy.presentDevice(screen: portrait, laptopPanel: nil)
+        #expect(policy.resolve(external: external) == external)
+        #expect(policy.resolve()?.desktopHeight == 2204)
+        let before = try JSONSerialization.jsonObject(with: saved) as? NSDictionary
+        let after = try JSONSerialization.jsonObject(with: #require(policy.saved()))
+        #expect(before?.isEqual(after) == true)
+        policy.bind(computer: "computer-b", saved: nil)
+        #expect(policy.physicalScreen == nil)
+        #expect(policy.laptopPanel == nil)
+        #expect(policy.resolve() == nil)
+    }
+
+    @Test func physicalMeasurementBeforeAttachmentAndInvalidUpdatesAreAtomic() {
+        var policy = MonitorPolicy()
+        policy.bind(computer: "computer-a", saved: nil)
+        let screen = CGSize(width: 851, height: 1102)
+        let panel = CGSize(width: 851, height: 455)
+        policy.presentDevice(screen: screen, laptopPanel: panel)
+        #expect(policy.resolve() == nil)
+        policy.attach(desktop)
+        let selected = policy.resolve()
+        for invalid in [CGSize.zero, CGSize(width: CGFloat.nan, height: 10),
+                        CGSize(width: 10, height: CGFloat.infinity), CGSize(width: -1, height: 10)] {
+            let changedScreen = policy.presentDevice(screen: invalid, laptopPanel: nil)
+            let changedPanel = policy.presentDevice(screen: CGSize(width: 1102, height: 851), laptopPanel: invalid)
+            #expect(!changedScreen && !changedPanel)
+            #expect(policy.physicalScreen == screen)
+            #expect(policy.laptopPanel == panel)
+            #expect(policy.resolve() == selected)
+        }
+        policy.presentLaptop(panel: nil) // Desktop detachment also restores measured Tablet.
+        #expect(policy.resolve()?.desktopHeight == 2204)
+        #expect(policy.resolve()?.desktopWidth == 1702)
+    }
+
+    @Test func initialFullDeviceSelectionPreservesScreenAspect() {
+        let mode = MonitorPolicy.fullDevice(screen: CGSize(width: 1102, height: 851),
+            pixelsPerPoint: 2, dpi: 151, refreshRate: 120)
+        #expect(mode.desktopWidth == 2204)
+        #expect(mode.desktopHeight == 1702)
+        #expect(mode.dpi == 151)
+    }
+
 }
