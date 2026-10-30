@@ -6,7 +6,8 @@ namespace caboose::gpuv2 {
 PFN_vkGetInstanceProcAddr runtimeInstanceProcAddr();
 struct MetalSurface;
 // Internal only: the caller must retain the decoder-owned instance and ensure
-// it belongs to the process-wide installed provider. Call on the main thread.
+// it belongs to the process-wide installed provider, with VK_KHR_surface and
+// VK_EXT_metal_surface enabled at creation. Call on the main thread.
 // A successful return is surface creation only, not presentation or completion.
 int createMetalSurface(VkInstance instance, void* metalLayer, MetalSurface** out,
                        VkResult* vulkanResult);
