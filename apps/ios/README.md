@@ -566,9 +566,11 @@ its tools; remove a server; disconnect and see the servers go.
   both as one event. The **Press Computer Action Key** shortcut, assigned to the Action
   button, presses the computer's Action key.
 - **Notifications and Live Activities.** With APNs configured on the host, the device can
-  receive approval, finished-task (and finished-command) and desktop alerts (approvals can be
-  answered from the notification), and running agent tasks and commands that run longer than
-  10 seconds show on the Lock Screen and Dynamic Island.
+  receive approval, finished-task (and finished-command) and desktop alerts. Approvals and
+  supported Linux replies can be answered from the notification; tapping a desktop alert
+  opens its application's window. Foreground Linux notifications show the application's
+  buttons and reply field. Running agent tasks and commands longer than 10 seconds show
+  on the Lock Screen and Dynamic Island.
 
 ## Home and the tabs
 
@@ -719,7 +721,13 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Notifications and Live Activities.** Enable each kind, background the app, trigger an
   approval and a task completion, and use Allow and Deny from the notification; start a task
   and watch the Lock Screen and Dynamic Island update and end; start one from another client
-  to check push-to-start.
+  to check push-to-start. With Signal, Element or Thunderbird on the computer and the app
+  running in the background, receive a message: use one of its buttons from Notification
+  Center and check the computer acts on it; reply from the Lock Screen and check the reply
+  arrives; tap one and check the phone shows that application's window, at the conversation.
+  Close the app and repeat with a push: Reply delivers, a tap opens the application. Park the
+  computer and reply to an earlier push: it wakes and delivers. Reply to a notification from
+  before the computer restarted: the phone says it is no longer on the computer.
 - **Shortcuts, widgets and Spotlight.** Run each shortcut and check its input and output
   files; configure and tap the widgets and controls; create, rename and delete a nested file
   and check Spotlight; sign out and verify the entries disappear.

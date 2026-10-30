@@ -52,7 +52,7 @@ import type { ComputerStorage } from './storage.js'
 import type { SharedStorageStatus } from './shared-storage.js'
 import type { RestoredDisk } from './restore-journal.js'
 import { ReachUnavailableError, type ReachService } from './reach.js'
-import { DesktopNotifications } from './desktop-notifications.js'
+import { DesktopNotifications, NOTIFICATION_ID, parseNotificationResponse, respondToNotification } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
@@ -973,6 +973,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           return { path }
         }
       }))
+    }
+    const notificationAnswer = /^\/v1\/notifications\/([^/]+)\/respond$/.exec(path)
+    if (request.method === 'POST' && notificationAnswer?.[1]) {
+      const id = notificationAnswer[1]
+      if (!NOTIFICATION_ID.test(id)) throw new AgentInputError('Invalid notification id')
+      const answer = parseNotificationResponse(await readJson(request))
+      // A parked computer resumes with its applications, whose notifications are still live.
+      return json(response, 200, await computer.wakeAndRun(() => respondToNotification(controller.guest(), id, answer), 'headless'))
     }
     if (request.method === 'POST' && path === '/v1/open') {
       const input = await readJson(request)

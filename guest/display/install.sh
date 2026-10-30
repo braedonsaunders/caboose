@@ -18,11 +18,10 @@ apt-get install -y --no-install-recommends xwayland libegl1 libgl1-mesa-dri libp
 install -m 0755 "$bin/caboose-display" "$bin/caboose-display-probe" /usr/local/bin/
 install -m 0755 "$here/caboose-display-ready" /usr/local/bin/
 install -m 0644 "$here/systemd/caboose-display.service" "$here/systemd/caboose-display-agent.service" /etc/systemd/system/
-# The display's D-Bus notification endpoint and monitor share the owner session bus.
+# Each display's D-Bus notification endpoint, on its seat's session bus.
 sh "$here/../notifications/install.sh"
 if id caboose >/dev/null 2>&1; then
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-notifications.service
 fi
 if [ -d /run/systemd/system ]; then systemctl daemon-reload; fi

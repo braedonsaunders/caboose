@@ -125,7 +125,7 @@ The image contains:
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
-- **Services.** The file service, the notification monitor and endpoints, phone handoff
+- **Services.** The file service, the notification endpoints, phone handoff
   (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
@@ -162,8 +162,8 @@ to build it or which variable names a published one.
 
 ### Guest components
 
-Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+Caboose's own guest plumbing (the file and terminal services, the notification endpoints,
+phone handoff, `caboose-game-run` with the game bundles Caboose ships in
 `/usr/local/share/caboose/games`, the agent runner and the agent app runtime) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
@@ -302,7 +302,7 @@ and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
-                             # notification monitor and endpoint, and the owner's display
+                             # notification endpoint, and the owner's display
 caboose-session ready        # wait for the owner's display, then its accessibility bus
 caboose-session start-agent  # the agent seat: its bus, endpoint, display and accessibility bus
 caboose-session start-files  # the file service on 14700
@@ -472,13 +472,27 @@ environment, and answers `{ session }` for a client to attach to; the agent runn
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
 
-**Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
-`org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
-private record in `/home/caboose/.cache/caboose/notifications/<uuid>.json`:
-`{ id, app, summary, body, created }`, with `app` at most 200 characters, `summary` 500,
-`body` 1000 and `created` in Unix seconds. It keeps the newest 100 records. `daemon.py`
-owns the notification name on each seat's bus. The agent seat has its own bus, so its
-notifications never enter the owner's queue.
+**Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
+owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
+display) supports `actions`, `body` and `inline-reply`, keeps its live notifications in
+memory (at most 256), and writes each as a private record in
+`/home/caboose/.cache/caboose/notifications/<id>.json`:
+`{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }`. `id` is a
+UUID; a notification that replaces a live one keeps its `id`, and its record overwrites one
+not yet read. `app` is at most 200 characters, `summary` 500, `body` 1000; `created` is in
+Unix seconds; `desktopEntry` is the `desktop-entry` hint as a desktop file ID without
+`.desktop` (`[A-Za-z0-9][A-Za-z0-9._+-]{0,254}`) or null; `actions` is at most 4
+`{ key, label }` buttons (keys 1–64 characters without control characters, labels one line of
+1–64), without `default` and `inline-reply`; `defaultAction` is whether the application
+offered `default`; `reply` is `{ label, placeholder }` (at most 64 and 100 characters) when it
+offered `inline-reply`, else null. It keeps the newest 100 records.
+`caboose-notify respond <id> --action=KEY | --reply=TEXT`, run as `caboose`, asks the owner's
+endpoint to emit `ActionInvoked` or `NotificationReplied` (TEXT 1–2000 characters) and then
+`NotificationClosed` (reason 2) unless the notification is `resident`; it prints
+`{"result": "responded" | "unknown-action" | "unknown-notification"}`. Live notifications
+end when the owner's display or endpoint stops. The agent seat has its own bus and an
+endpoint that supports nothing and records nothing, so its notifications never enter the
+owner's queue. See [guest/notifications](../guest/notifications/README.md).
 
 **Phone handoff.** `guest/phone` installs `caboose-open URL` and `caboose-share FILE...`,
 registers `caboose-phone.desktop` as the handler for the `mailto`, `tel`, `sms`, `facetime`,
@@ -1044,7 +1058,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.state` | `{ state }` | Every lifecycle transition |
 | `computer.settings` | `{ computer: <management status> }` | Settings or their applied state change |
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
-| `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
+| `notification` | `{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }` | A desktop notification on the owner's display (see [Desktop notifications](#desktop-notifications)) |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
 | `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
@@ -1609,8 +1623,26 @@ While the computer runs, the host drains the owner's notification queue every se
 `caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
-`desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
-opens the app.
+`desktop` alert. The event carries the record's fields ([Guest services](#guest-services)):
+`id` (a UUID that stays the same when the application replaces the notification),
+`desktopEntry` (a desktop file ID without `.desktop`, or null), `actions` (at most 4
+`{ key, label }`), `defaultAction` (boolean) and `reply` (`{ label, placeholder }` or null).
+Records from guests without these fields arrive with null, `[]` and `false`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/notifications/:id/respond` | **Wakes** (headless). `{ action }` or `{ reply }`, exactly one → `{ responded: true }`. `action` is one of the notification's action keys, or `default` when `defaultAction` is true (1–64 characters, no control characters); `reply` is 1–2000 characters of text without NUL, for a notification with `reply`. 400 for an invalid id or body; 404 when the notification is closed, answered or gone, or does not offer that answer |
+
+The host runs `caboose-notify respond` as `caboose` with the id and the answer as arguments;
+the owner's endpoint delivers it to the application and closes the notification. A parked
+computer resumes with its memory, so its applications and their notifications are still
+there; the route wakes it without starting the owner's display, which a memory restore keeps
+if it was running. A notification lives only as long as the owner's endpoint: after a
+restart, a cold boot or a guest component update, or when the owner's display is not
+running, its id answers 404. Linux notifications name their application, not a window: the
+phone opens the application `desktopEntry` names, showing its existing window, and answers
+`default` so the application shows what the notification is about ([iOS
+notifications](#notifications)).
 
 ### Push notifications
 
@@ -1635,10 +1667,13 @@ background; other control clients do not suppress alerts.
 | `approval` | `agent.task.approval` | "Approval requested", the request summary; category `AGENT_APPROVAL` | `taskId`, `approvalId` |
 | `task` | `agent.task.finished` with `succeeded` or `failed` | "Task finished" or "Task failed", the summary | `taskId` |
 | `task` | A command ends, other than by cancelling, while no request waits for it | "Command finished", "Command failed" or "Command timed out", its title and how it ended | `commandId` |
-| `desktop` | a desktop notification | its summary (or app), its body | none |
+| `desktop` | a desktop notification | its summary (or app), its body; category `DESKTOP_REPLY` when it has `reply` | `notificationId`, `desktopEntry` when present, `defaultAction` when true |
 
-Alert bodies are at most 700 characters. Alerts for a task share the thread
-`task-<id>`, and a command's alert has the thread `command-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
+Alert bodies are at most 700 characters. Task alerts share `task-<id>` and command alerts
+share `command-<id>`. The phone registers notification categories before a push arrives,
+so desktop pushes offer Reply when supported, while application-specific buttons appear
+in the foreground app. A tap opens the application. An APNs 410 `Unregistered` response
+removes the registration unless it was
 registered again while the request was in flight. Provider tokens are refreshed after 50
 minutes, and each request times out after 15 s. Delivery is best effort.
 
@@ -2821,6 +2856,19 @@ registers the device's APNs token (`POST /v1/devices/push`). Approval notificati
 actions that call the approval route; task notifications open the task, and command
 notifications the command. Signing out
 unregisters the device.
+
+A notification's buttons come from a category iOS must already have when it is shown. For
+a Linux notification it posts itself, the app registers a category for the notification's
+own buttons (`ACTION:<key>`) and reply (a text input titled with the application's label,
+else Reply, with its placeholder), named by a digest of them, before posting; it keeps the
+32 most recently used, with `AGENT_APPROVAL` and `DESKTOP_REPLY`, across launches. A push
+arrives without the app running, so it uses the fixed `DESKTOP_REPLY` (Reply) and shows no
+application buttons. A button or a reply calls `POST /v1/notifications/:id/respond` in the
+background; if that fails, a notification says why and repeats the reply's text. Opening a
+Linux notification answers `default` when the application offered it, and opens the
+application whose desktop ID matches `desktopEntry` (ignoring case and `.desktop`) like
+opening it from Home: its existing window is shown, else it is launched. Without a match the
+app opens as it is.
 
 ### Live Activities and widgets
 

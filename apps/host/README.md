@@ -486,6 +486,9 @@ returns `{ "sent": true }`, or 409 while the computer is not running. The contra
 Desktop notifications from the owner's session (see
 [`guest/notifications`](../../guest/notifications/README.md)) are drained from the guest
 while it runs and sent as `notification` events and, with APNs configured, as pushes.
+`POST /v1/notifications/:id/respond` answers one with an action or a reply through the
+guest's `caboose-notify`, waking a parked computer headless (`docs/architecture.md` §
+Desktop notifications).
 
 Set all four `CABOOSE_APNS_*` variables (the key is a private P-256 `.p8` file) to enable
 APNs. Devices are stored in `push-devices.json` and Live Activity registrations in

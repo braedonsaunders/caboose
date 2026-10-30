@@ -169,7 +169,11 @@ final class AppModel {
             self.phone.handle(type, event)
             self.bridge.handle(type, event)
             if type == "fs.changed" { self.refreshFileSearch(); Task { await self.desktopFiles.refresh(model: self) } }
-            if type == "notification", self.session is CabooseDisplaySession { Self.postDesktop(event) }
+            if type == "notification", self.session is CabooseDisplaySession,
+               JSONSerialization.isValidJSONObject(event), let data = try? JSONSerialization.data(withJSONObject: event),
+               let notice = try? DesktopNotice(event: data) {
+                Task { await PushCoordinator.shared.postDesktop(notice) }
+            }
             if type == "fs.changed", let credentials = self.credentials { FileDomains.signal(credentials); self.documents.requestSync(model: self) }
         }
         catalog.onChange = { [weak self] in
@@ -1395,6 +1399,16 @@ final class AppModel {
         else { launching = target; launchStartedAt = Date() }
     }
 
+    /// Opens the application a Linux notification came from (its `desktop-entry`), showing
+    /// its window when it has one. A notification from an app the computer does not list
+    /// leaves Caboose as it is.
+    func openDesktopEntry(_ entry: String) async {
+        if apps.isEmpty { await refreshApps() }
+        guard let id = DesktopEntryMatch.appID(for: entry, among: apps.map(\.id)),
+              let app = apps.first(where: { $0.id == id }) else { return }
+        open(app)
+    }
+
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
         guard let appClass = window.appClass else { return false }
         return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass,
@@ -1520,15 +1534,6 @@ final class AppModel {
 
     static func requestNotificationPermission() {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
-    }
-
-    private static func postDesktop(_ event: [String: Any]) {
-        requestNotificationPermission()
-        let content = UNMutableNotificationContent()
-        content.title = (event["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (event["app"] as? String ?? "Caboose")
-        content.body = event["body"] as? String ?? ""
-        content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "linux.\(event["id"] as? String ?? UUID().uuidString)", content: content, trigger: nil))
     }
 
     private static func post(_ note: RemoteNotification) {

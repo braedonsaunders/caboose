@@ -525,3 +525,32 @@ it('serves the MCP Library to an authorized client without ever returning its ke
   expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
   expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
 })
+
+it('answers desktop notifications through the guest, waking a parked computer without its display', async () => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const answers: string[] = []
+  const run = vi.fn(async (_command: string, _args: string[]) => `{"result": "${answers.shift() ?? 'responded'}"}\n`)
+  const session = { state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const wake = vi.fn(async () => session)
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => ({ run }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const post = (path: string, body: unknown, token = 'owner') => fetch(base + path, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+  expect((await post(`/v1/notifications/${id}/respond`, { action: 'default' }, 'wrong')).status).toBe(401)
+  expect((await post('/v1/notifications/not-an-id/respond', { action: 'default' })).status).toBe(400)
+  expect((await post(`/v1/notifications/${id}/respond`, { action: 'default', reply: 'x' })).status).toBe(400)
+  expect(wake).not.toHaveBeenCalled()
+  const answered = await post(`/v1/notifications/${id}/respond`, { reply: 'On my way' })
+  expect(answered.status).toBe(200)
+  expect(await answered.json()).toEqual({ responded: true })
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(run.mock.calls.at(-1)?.[1].slice(-3)).toEqual(['respond', id, '--reply=On my way'])
+  answers.push('unknown-notification')
+  const stale = await post(`/v1/notifications/${id}/respond`, { action: 'read' })
+  expect(stale.status).toBe(404)
+  expect(await stale.json()).toEqual({ error: 'The notification is no longer on the computer' })
+})
