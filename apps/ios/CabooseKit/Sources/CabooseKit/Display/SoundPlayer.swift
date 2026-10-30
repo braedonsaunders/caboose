@@ -81,6 +81,10 @@ final class SoundPlayer: @unchecked Sendable {
     private var arrivalMax: TimeInterval = 0
     private var lastServerPTS: Int64?
     private var timestampRegressions = 0
+    private let automaticFlush = AudioAutomaticFlushLatch()
+    // Observer registration/lifetime and recovery run on the existing playback queue.
+    private var automaticFlushObserver: NSObjectProtocol?
+    private var automaticFlushGeneration: UInt64?
     private var interruptionObserver: NSObjectProtocol?
     private(set) var played = 0
     private(set) var failed = 0
@@ -108,11 +112,57 @@ final class SoundPlayer: @unchecked Sendable {
 
     deinit {
         if let interruptionObserver { NotificationCenter.default.removeObserver(interruptionObserver) }
+        if let automaticFlushObserver { NotificationCenter.default.removeObserver(automaticFlushObserver) }
+        automaticFlush.update { $0.cancel() }
         clock.remove(renderer)
+    }
+
+    private func observeAutomaticFlush() {
+        guard automaticFlushObserver == nil else { return }
+        let generation = automaticFlush.update { $0.begin() }
+        automaticFlushGeneration = generation
+        automaticFlushObserver = NotificationCenter.default.addObserver(
+            forName: .AVSampleBufferAudioRendererWasFlushedAutomatically, object: renderer, queue: nil
+        ) { [weak self] notification in
+            guard let self else { return }
+            let time = (notification.userInfo?[AVSampleBufferAudioRendererFlushTimeKey] as? NSValue)?.timeValue
+            let micros = time.flatMap { $0.isNumeric ? CMTimeConvertScale($0, timescale: 1_000_000, method: .default).value : nil }
+            let monotonic = self.now()
+            let wall = Date().timeIntervalSince1970
+            let schedule = self.automaticFlush.update {
+                $0.notify(generation: generation, monotonic: monotonic, wall: wall, flushMicros: micros)
+            }
+            if schedule { self.scheduleAutomaticFlush(generation: generation) }
+        }
+    }
+
+    private func cancelAutomaticFlushObservation() {
+        automaticFlush.update { $0.cancel() }
+        automaticFlushGeneration = nil
+        if let automaticFlushObserver { NotificationCenter.default.removeObserver(automaticFlushObserver) }
+        automaticFlushObserver = nil
+    }
+
+    private func scheduleAutomaticFlush(generation: UInt64) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.recoverAutomaticFlush(generation: generation)
+            let again = self.automaticFlush.update { $0.finish(generation: generation) }
+            if again { self.scheduleAutomaticFlush(generation: generation) }
+        }
+    }
+
+    private func recoverAutomaticFlush(generation: UInt64) {
+        let flush = automaticFlush.update { $0.take(generation: generation) }
+        // Apple recommends this serialized flush to discard buffers surviving a concurrent
+        // automatic flush. Explicit flush does not post the automatic-flush notification.
+        // Keep the running clock/rate: resetting them can provoke another automatic flush.
+        if flush { renderer.flush() }
     }
 
     private func setInterrupted(_ value: Bool) {
         queue.async { [self] in
+            cancelAutomaticFlushObservation()
             interrupted = value
             sessionActive = false
             timeline.reset()
@@ -129,6 +179,7 @@ final class SoundPlayer: @unchecked Sendable {
         queue.async { [self] in
             let enteredAt = now()
             guard packet.codec == "opus", !interrupted else { return }
+            observeAutomaticFlush()
             var decodedAt: TimeInterval?
             var enqueueStartedAt: TimeInterval?
             var enqueuedAt: TimeInterval?
@@ -209,6 +260,9 @@ final class SoundPlayer: @unchecked Sendable {
                     renderer.flush()
                 }
                 let buffer = try sample(pcm, decoder: decoder, pts: pts)
+                // A rate change during placement may itself post a flush notification.
+                // Check again after preparation, immediately before the next enqueue.
+                if let generation = automaticFlushGeneration { recoverAutomaticFlush(generation: generation) }
                 enqueueStartedAt = now()
                 renderer.enqueue(buffer)
                 enqueuedAt = now()
@@ -255,13 +309,15 @@ final class SoundPlayer: @unchecked Sendable {
             packets: played, failures: failed, restarts: restarts, delayMicros: delay,
             requestedRate: rate, observedRate: Double(observedRate), projectedMicros: projected,
             renderedMicros: rendered, timestampRegressions: timestampRegressions, rendererStatus: status,
-            frameMin: minimum, frameMax: frameMax, arrivalMaxSeconds: arrivalMax, interval: interval))
+            frameMin: minimum, frameMax: frameMax, arrivalMaxSeconds: arrivalMax, interval: interval,
+            automaticFlush: automaticFlush.update { $0.summary }))
         reportsAt = time
         frameMin = Int.max; frameMax = 0; arrivalMax = 0
     }
 
     func stop() {
         queue.async { [self] in
+            cancelAutomaticFlushObservation()
             timeline.reset()
             timing.update { $0.reset() }
             arrivalAt = nil

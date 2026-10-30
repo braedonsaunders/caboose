@@ -78,13 +78,11 @@ public final class MediaClock: @unchecked Sendable {
         let now = projectedTime(at: micros)
         if let now, let rate = recovery.observe(pts: pts, host: micros, ahead: pts - now, target: playout.delay),
            abs(rate - playbackRate) >= 0.001 {
-            // Change speed continuously, keeping the current media position. Flushing to
-            // chase clock drift loses real sound on every correction.
+            // Request a rate change without seeking. AVFoundation may still flush audio
+            // automatically; SoundPlayer handles that notification on its playback queue.
             anchor = (media: now, host: micros)
             playbackRate = rate
-            // A rate correction must not seek the timebase. Repeated explicit time/host
-            // anchors make the audio renderer restart its processing, producing a gap
-            // at every adjustment even though no buffer was flushed.
+            // Do not add an explicit time/host seek to a rate correction.
             synchronizer.setRate(Float(rate), time: .invalid)
         } else if now == nil {
             _ = recovery.observe(pts: pts, host: micros, ahead: playout.delay, target: playout.delay)

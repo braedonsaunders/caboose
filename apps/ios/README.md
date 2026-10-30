@@ -248,7 +248,11 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   keep nearby packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
   server. Playback starts 120 ms behind the first packet; a late packet adds 20 ms (up to
   240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
-  drift does not flush queued sound. A backlog beyond another 300 ms is dropped. Interruptions reset the anchor. The display closes
+  rate changes can automatically discard queued sound in AVFoundation. Caboose observes
+  renderer-specific automatic-flush notifications and serializes cleanup with enqueue on
+  the playback queue. Cleanup leaves the clock and rate running; it does not replay lost
+  packets or establish that a requested clock mapping has taken effect. A backlog beyond
+  another 300 ms is dropped. Interruptions reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
   The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
   `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
@@ -1166,3 +1170,15 @@ above. The artifact requires the preference to have been enabled during playback
 older retained file does not establish a current capture. Run the deterministic mailbox,
 byte-bound and schema tests with `swift test --jobs 1 --filter AudioDiagnosticsTests`
 in `apps/ios/CabooseKit`. These tests do not use a renderer or write the app cache.
+
+The five-second flight record also includes `automaticFlush`: cumulative accepted
+notification and cleanup counts, plus the latest event's observer generation, monotonic
+and wall timestamps, and available first-discarded-sample timestamp. The fixed reason
+`rendererNotification` identifies the event, not its cause: AVFoundation does not say
+whether a route or rate change triggered it. Notifications coalesce behind one bounded
+latch; stop/interruption removes the observer and invalidates its pending callbacks.
+The next active playback registers a new generation. An enqueue already in progress
+can finish before cleanup; surviving buffers are flushed serially before subsequent
+enqueues. Explicit cleanup does not reset the rate or clock. These counts do not measure
+clock drift. Test event ordering without a renderer with
+`swift test --jobs 1 --filter AudioAutomaticFlushTests` in `apps/ios/CabooseKit`.

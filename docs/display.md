@@ -403,8 +403,10 @@ The iOS app omits `video_decoders`, so passthrough streams return to server deco
 advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
+then requests rate adjustments with pitch preservation. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone serializes cleanup of surviving
+buffers with enqueue, without resetting the clock or rate; discarded audio is not replayed.
+Renderer-specific notification generations are invalidated on stop and interruption.
 The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
 only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
 playback resets the clock and estimator. Rate corrections change only the rendering

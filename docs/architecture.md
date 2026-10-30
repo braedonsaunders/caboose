@@ -2063,8 +2063,12 @@ or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer 
 decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
+then requests rate adjustments with pitch preservation. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone coalesces renderer-specific
+notifications and flushes surviving buffers on its playback queue before subsequent
+enqueues, without resetting the running clock or rate. Stop and interruption invalidate
+that observer generation. Discarded packets are not replayed; this recovery does not
+acknowledge asynchronous clock changes or correct renderer-clock divergence.
 The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
 only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
 playback resets the clock and estimator.
