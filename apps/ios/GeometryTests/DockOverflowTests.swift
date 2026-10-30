@@ -8,6 +8,7 @@ final class DockOverflowTests: XCTestCase {
     /// Render the actual dock, including its glass and scroll viewport. A solid icon
     /// makes missing rows measurable without depending on a particular application's art.
     func testLaunchingIconsRemainWholeInTiledFloatingAndCompactDocks() throws {
+        try XCTSkipIf(UIAccessibility.isReduceMotionEnabled, "Bounce measurement requires Reduce Motion to be off")
         let model = AppModel(collection: .init(), startsConnections: false)
         func icon(_ color: UIColor) -> String {
             let image = UIGraphicsImageRenderer(size: CGSize(width: 52, height: 52)).image { context in
@@ -74,7 +75,6 @@ final class DockOverflowTests: XCTestCase {
                     .frame(width: 400, height: 44).clipped())
             }
             host.rootView = AnyView(dock.environment(model)
-                .environment(\.accessibilityReduceMotion, false)
                 .frame(width: 400, height: 200).background(.black).ignoresSafeArea())
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
             let rest = try snapshot().red
