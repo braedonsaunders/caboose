@@ -104,10 +104,28 @@ def transform_cb_batching(encoder, encoder_h, tracker, tracker_h):
         '    VkResult cabooseBeginCommandBufferDeferred(VkCommandBuffer commandBuffer,\n'
         '                                               const VkCommandBufferBeginInfo* pBeginInfo,\n'
         '                                               uint32_t doLock);\n'
+        '    VkResult cabooseEndCommandBufferDeferred(VkCommandBuffer commandBuffer,\n'
+        '                                             caboose::memory::CabooseCommandBufferStream* cbStream);\n'
         '    VkResult cabooseEndCommandBufferBatched(VkCommandBuffer commandBuffer,\n'
         '                                            const uint8_t* stagedBytes,\n'
         '                                            size_t stagedSize,\n'
         '                                            uint32_t doLock);\n'
+        '    VkResult cabooseQueueSubmitWithStagedCommands(VkQueue queue,\n'
+        '                                                  uint32_t submitCount,\n'
+        '                                                  const VkSubmitInfo* pSubmits,\n'
+        '                                                  VkFence fence,\n'
+        '                                                  const uint8_t* stagedBytes,\n'
+        '                                                  size_t stagedSize,\n'
+        '                                                  size_t stagedCommandBufferCount,\n'
+        '                                                  uint32_t doLock);\n'
+        '    VkResult cabooseQueueSubmit2WithStagedCommands(VkQueue queue,\n'
+        '                                                   uint32_t submitCount,\n'
+        '                                                   const VkSubmitInfo2* pSubmits,\n'
+        '                                                   VkFence fence,\n'
+        '                                                   const uint8_t* stagedBytes,\n'
+        '                                                   size_t stagedSize,\n'
+        '                                                   size_t stagedCommandBufferCount,\n'
+        '                                                   uint32_t doLock);\n'
         '    VkResult vkBeginCommandBuffer(VkCommandBuffer commandBuffer,\n'
         '                                  const VkCommandBufferBeginInfo* pBeginInfo, uint32_t doLock);\n'
         '    VkResult vkEndCommandBuffer(VkCommandBuffer commandBuffer, uint32_t doLock);',
@@ -170,6 +188,20 @@ def transform_cb_batching(encoder, encoder_h, tracker, tracker_h):
     return VK_SUCCESS;
 }
 
+VkResult VkEncoder::cabooseEndCommandBufferDeferred(
+    VkCommandBuffer commandBuffer, caboose::memory::CabooseCommandBufferStream* cbStream) {
+    static_assert(caboose::memory::timedRpcIndex(OP_vkEndCommandBuffer) >= 0, "untimed RPC opcode");
+    caboose::memory::RpcCallScope caboose_rpc_timing{OP_vkEndCommandBuffer};
+    if (!cbStream || cbStream->hasOverflowed()) {
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+    }
+    const uint64_t hostCb = get_host_u64_VkCommandBuffer(commandBuffer);
+    if (!cbStream->stageEndPacket(OP_vkEndCommandBuffer, hostCb)) {
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+    }
+    return static_cast<VkResult>(caboose_rpc_timing.finish(VK_SUCCESS));
+}
+
 VkResult VkEncoder::cabooseEndCommandBufferBatched(VkCommandBuffer commandBuffer,
                                                    const uint8_t* stagedBytes,
                                                    size_t stagedSize,
@@ -218,6 +250,252 @@ VkResult VkEncoder::cabooseEndCommandBufferBatched(VkCommandBuffer commandBuffer
     }
     const VkResult finalResult = (replies[0] != VK_SUCCESS) ? replies[0] : replies[1];
     return static_cast<VkResult>(caboose_rpc_timing.finish(finalResult));
+}
+
+VkResult VkEncoder::cabooseQueueSubmitWithStagedCommands(VkQueue queue,
+                                                         uint32_t submitCount,
+                                                         const VkSubmitInfo* pSubmits,
+                                                         VkFence fence,
+                                                         const uint8_t* stagedBytes,
+                                                         size_t stagedSize,
+                                                         size_t stagedCommandBufferCount,
+                                                         uint32_t doLock) {
+    (void)doLock;
+    if (stagedCommandBufferCount == 0 || stagedSize == 0) {
+        return this->vkQueueSubmit(queue, submitCount, pSubmits, fence, doLock);
+    }
+    static_assert(caboose::memory::timedRpcIndex(OP_vkQueueSubmit) >= 0, "untimed RPC opcode");
+    caboose::memory::RpcCallScope caboose_rpc_timing{OP_vkQueueSubmit};
+    bool queueSubmitWithCommandsEnabled =
+        sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+    if (queueSubmitWithCommandsEnabled || !stagedBytes || stagedCommandBufferCount > 65536) {
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_DEVICE_LOST));
+    }
+    if (doLock) caboose_rpc_timing.lock([&] { this->lock(); });
+    struct Unlock { VkEncoder* encoder; bool held; ~Unlock() { if (held) encoder->unlock(); } };
+    Unlock unlock{this, doLock != 0};
+    auto stream = mImpl->stream();
+    auto pool = mImpl->pool();
+    VkQueue local_queue = queue;
+    uint32_t local_submitCount = submitCount;
+    VkSubmitInfo* local_pSubmits = nullptr;
+    if (pSubmits) {
+        local_pSubmits = (VkSubmitInfo*)pool->alloc(submitCount * sizeof(const VkSubmitInfo));
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            deepcopy_VkSubmitInfo(pool, VK_STRUCTURE_TYPE_MAX_ENUM, pSubmits + i,
+                                  (VkSubmitInfo*)(local_pSubmits + i));
+        }
+    }
+    VkFence local_fence = fence;
+    if (local_pSubmits) {
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            transform_tohost_VkSubmitInfo(sResourceTracker, (VkSubmitInfo*)(local_pSubmits + i));
+        }
+    }
+    size_t count = 0;
+    size_t* countPtr = &count;
+    {
+        *countPtr += 1 * 8;
+        *countPtr += sizeof(uint32_t);
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            count_VkSubmitInfo(sFeatureBits, VK_STRUCTURE_TYPE_MAX_ENUM,
+                               (VkSubmitInfo*)(local_pSubmits + i), countPtr);
+        }
+        *countPtr += 1 * 8;
+    }
+    uint32_t packetSize_vkQueueSubmit = 4 + 4 + count;
+    if (stagedSize > SIZE_MAX - packetSize_vkQueueSubmit) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+    }
+    uint8_t* streamPtr = stream->reserve(stagedSize + packetSize_vkQueueSubmit);
+    if (!streamPtr) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+    }
+    memcpy(streamPtr, stagedBytes, stagedSize);
+    streamPtr += stagedSize;
+    uint8_t** streamPtrPtr = &streamPtr;
+    uint32_t opcode_vkQueueSubmit = OP_vkQueueSubmit;
+    memcpy(streamPtr, &opcode_vkQueueSubmit, sizeof(uint32_t));
+    streamPtr += sizeof(uint32_t);
+    memcpy(streamPtr, &packetSize_vkQueueSubmit, sizeof(uint32_t));
+    streamPtr += sizeof(uint32_t);
+    uint64_t cgen_var_0 = get_host_u64_VkQueue((*&local_queue));
+    memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_0, 1 * 8);
+    *streamPtrPtr += 1 * 8;
+    memcpy(*streamPtrPtr, (uint32_t*)&local_submitCount, sizeof(uint32_t));
+    *streamPtrPtr += sizeof(uint32_t);
+    for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+        reservedmarshal_VkSubmitInfo(stream, VK_STRUCTURE_TYPE_MAX_ENUM,
+                                     (VkSubmitInfo*)(local_pSubmits + i), streamPtrPtr);
+    }
+    uint64_t cgen_var_1 = get_host_u64_VkFence((*&local_fence));
+    memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_1, 1 * 8);
+    *streamPtrPtr += 1 * 8;
+
+    const size_t totalReplies = 2 * stagedCommandBufferCount + 1;
+    VkResult stackReplies[129];
+    std::vector<VkResult> heapReplies;
+    VkResult* replies = stackReplies;
+    if (totalReplies > 129) {
+        try {
+            heapReplies.resize(totalReplies, VK_SUCCESS);
+            replies = heapReplies.data();
+        } catch (...) {
+            pool->freeAll();
+            stream->clearPool();
+            stream->invalidate();
+            return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+        }
+    }
+    if (!stream->tryRead(replies, totalReplies * sizeof(VkResult))) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_DEVICE_LOST));
+    }
+    ++encodeCount;
+    if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+        pool->freeAll();
+        stream->clearPool();
+    }
+    VkResult finalResult = replies[totalReplies - 1];
+    if (finalResult == VK_SUCCESS) {
+        for (size_t i = 0; i < totalReplies - 1; ++i) {
+            if (replies[i] != VK_SUCCESS) {
+                finalResult = replies[i];
+                break;
+            }
+        }
+    }
+    return static_cast<VkResult>(caboose_rpc_timing.finish(finalResult));
+}
+
+VkResult VkEncoder::cabooseQueueSubmit2WithStagedCommands(VkQueue queue,
+                                                          uint32_t submitCount,
+                                                          const VkSubmitInfo2* pSubmits,
+                                                          VkFence fence,
+                                                          const uint8_t* stagedBytes,
+                                                          size_t stagedSize,
+                                                          size_t stagedCommandBufferCount,
+                                                          uint32_t doLock) {
+    (void)doLock;
+    if (stagedCommandBufferCount == 0 || stagedSize == 0) {
+        return this->vkQueueSubmit2(queue, submitCount, pSubmits, fence, doLock);
+    }
+    bool queueSubmitWithCommandsEnabled =
+        sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+    if (queueSubmitWithCommandsEnabled || !stagedBytes || stagedCommandBufferCount > 65536) {
+        return VK_ERROR_DEVICE_LOST;
+    }
+    if (doLock) this->lock();
+    struct Unlock { VkEncoder* encoder; bool held; ~Unlock() { if (held) encoder->unlock(); } };
+    Unlock unlock{this, doLock != 0};
+    auto stream = mImpl->stream();
+    auto pool = mImpl->pool();
+    VkQueue local_queue = queue;
+    uint32_t local_submitCount = submitCount;
+    VkSubmitInfo2* local_pSubmits = nullptr;
+    if (pSubmits) {
+        local_pSubmits = (VkSubmitInfo2*)pool->alloc(submitCount * sizeof(const VkSubmitInfo2));
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            deepcopy_VkSubmitInfo2(pool, VK_STRUCTURE_TYPE_MAX_ENUM, pSubmits + i,
+                                   (VkSubmitInfo2*)(local_pSubmits + i));
+        }
+    }
+    VkFence local_fence = fence;
+    if (local_pSubmits) {
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            transform_tohost_VkSubmitInfo2(sResourceTracker, (VkSubmitInfo2*)(local_pSubmits + i));
+        }
+    }
+    size_t count = 0;
+    size_t* countPtr = &count;
+    {
+        *countPtr += 1 * 8;
+        *countPtr += sizeof(uint32_t);
+        for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+            count_VkSubmitInfo2(sFeatureBits, VK_STRUCTURE_TYPE_MAX_ENUM,
+                                (VkSubmitInfo2*)(local_pSubmits + i), countPtr);
+        }
+        *countPtr += 1 * 8;
+    }
+    uint32_t packetSize_vkQueueSubmit2 = 4 + 4 + count;
+    if (stagedSize > SIZE_MAX - packetSize_vkQueueSubmit2) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    uint8_t* streamPtr = stream->reserve(stagedSize + packetSize_vkQueueSubmit2);
+    if (!streamPtr) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+    memcpy(streamPtr, stagedBytes, stagedSize);
+    streamPtr += stagedSize;
+    uint8_t** streamPtrPtr = &streamPtr;
+    uint32_t opcode_vkQueueSubmit2 = OP_vkQueueSubmit2;
+    memcpy(streamPtr, &opcode_vkQueueSubmit2, sizeof(uint32_t));
+    streamPtr += sizeof(uint32_t);
+    memcpy(streamPtr, &packetSize_vkQueueSubmit2, sizeof(uint32_t));
+    streamPtr += sizeof(uint32_t);
+    uint64_t cgen_var_0 = get_host_u64_VkQueue((*&local_queue));
+    memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_0, 1 * 8);
+    *streamPtrPtr += 1 * 8;
+    memcpy(*streamPtrPtr, (uint32_t*)&local_submitCount, sizeof(uint32_t));
+    *streamPtrPtr += sizeof(uint32_t);
+    for (uint32_t i = 0; i < (uint32_t)submitCount; ++i) {
+        reservedmarshal_VkSubmitInfo2(stream, VK_STRUCTURE_TYPE_MAX_ENUM,
+                                      (VkSubmitInfo2*)(local_pSubmits + i), streamPtrPtr);
+    }
+    uint64_t cgen_var_1 = get_host_u64_VkFence((*&local_fence));
+    memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_1, 1 * 8);
+    *streamPtrPtr += 1 * 8;
+
+    const size_t totalReplies = 2 * stagedCommandBufferCount + 1;
+    VkResult stackReplies[129];
+    std::vector<VkResult> heapReplies;
+    VkResult* replies = stackReplies;
+    if (totalReplies > 129) {
+        try {
+            heapReplies.resize(totalReplies, VK_SUCCESS);
+            replies = heapReplies.data();
+        } catch (...) {
+            pool->freeAll();
+            stream->clearPool();
+            stream->invalidate();
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+    }
+    if (!stream->tryRead(replies, totalReplies * sizeof(VkResult))) {
+        pool->freeAll();
+        stream->clearPool();
+        stream->invalidate();
+        return VK_ERROR_DEVICE_LOST;
+    }
+    ++encodeCount;
+    if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+        pool->freeAll();
+        stream->clearPool();
+    }
+    VkResult finalResult = replies[totalReplies - 1];
+    if (finalResult == VK_SUCCESS) {
+        for (size_t i = 0; i < totalReplies - 1; ++i) {
+            if (replies[i] != VK_SUCCESS) {
+                finalResult = replies[i];
+                break;
+            }
+        }
+    }
+    return finalResult;
 }
 
 '''
@@ -368,23 +646,20 @@ VkResult ResourceTracker::on_vkEndCommandBuffer(void* context, VkResult input_re
             auto* privateStream =
                 static_cast<caboose::memory::CabooseCommandBufferStream*>(cb->privateStream);
             auto* privateEncoder = cb->privateEncoder;
-            cb->privateStream = nullptr;
             cb->privateEncoder = nullptr;
             if (cb->lastUsedEncoder) {
                 cb->lastUsedEncoder->decRef();
                 cb->lastUsedEncoder = nullptr;
             }
-            caboose::memory::Reservation stagedReservation{caboose::memory::processBudget};
-            std::vector<uint8_t> stagedBytes;
-            const bool detachedOk = privateStream->detachWritten(stagedBytes, stagedReservation);
+            VkResult res = privateEncoder->cabooseEndCommandBufferDeferred(
+                commandBuffer, privateStream);
             delete privateEncoder;
-            delete privateStream;
-            if (!detachedOk || stagedBytes.empty()) {
-                return VK_ERROR_OUT_OF_HOST_MEMORY;
+            if (res != VK_SUCCESS) {
+                cb->privateStream = nullptr;
+                delete privateStream;
+                return res;
             }
-            VkEncoder* threadLocalEncoder = ResourceTracker::getThreadLocalEncoder();
-            return threadLocalEncoder->cabooseEndCommandBufferBatched(
-                commandBuffer, stagedBytes.data(), stagedBytes.size(), true /* do lock */);
+            return VK_SUCCESS;
         }
     }
 #endif
@@ -419,19 +694,126 @@ VkResult ResourceTracker::on_vkResetCommandBuffer(void* context, VkResult input_
 }'''
     tracker = replace_once(tracker, old_begin_end_reset, new_begin_end_reset)
 
-    old_reset_staging = '''    if (cb->privateEncoder) {
+    old_exec_cmds = '''void ResourceTracker::on_vkCmdExecuteCommands(void* context, VkCommandBuffer commandBuffer,
+                                              uint32_t commandBufferCount,
+                                              const VkCommandBuffer* pCommandBuffers) {
+    VkEncoder* enc = (VkEncoder*)context;
+
+    if (!mFeatureInfo.hasVulkanQueueSubmitWithCommands) {
+        enc->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers,
+                                  true /* do lock */);
+        return;
+    }
+
+    struct goldfish_VkCommandBuffer* primary = as_goldfish_VkCommandBuffer(commandBuffer);
+    for (uint32_t i = 0; i < commandBufferCount; ++i) {
+        struct goldfish_VkCommandBuffer* secondary =
+            as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
+        appendObject(&secondary->superObjects, primary);
+        appendObject(&primary->subObjects, secondary);
+    }
+
+    enc->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers,
+                              true /* do lock */);
+}'''
+    new_exec_cmds = '''void ResourceTracker::on_vkCmdExecuteCommands(void* context, VkCommandBuffer commandBuffer,
+                                              uint32_t commandBufferCount,
+                                              const VkCommandBuffer* pCommandBuffers) {
+    VkEncoder* enc = (VkEncoder*)context;
+
+    bool trackTopology = mFeatureInfo.hasVulkanQueueSubmitWithCommands;
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    if (!trackTopology && cabooseSynchronousProfile() && !usingDirectMapping()) {
+        trackTopology = true;
+    }
+#endif
+    if (!trackTopology) {
+        enc->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers,
+                                  true /* do lock */);
+        return;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        struct goldfish_VkCommandBuffer* primary = as_goldfish_VkCommandBuffer(commandBuffer);
+        if (primary) {
+            for (uint32_t i = 0; i < commandBufferCount; ++i) {
+                struct goldfish_VkCommandBuffer* secondary =
+                    as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
+                if (secondary) {
+                    appendObject(&secondary->superObjects, primary);
+                    appendObject(&primary->subObjects, secondary);
+                }
+            }
+        }
+    }
+
+    enc->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers,
+                              true /* do lock */);
+}'''
+    tracker = replace_once(tracker, old_exec_cmds, new_exec_cmds)
+
+    old_alloc_cbs = '''    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; ++i) {
+        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
+        cb->isSecondary = pAllocateInfo->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+        cb->device = device;
+    }'''
+    new_alloc_cbs = '''    {
+        std::lock_guard<std::recursive_mutex> lock(mLock);
+        addToCommandPool(pAllocateInfo->commandPool, pAllocateInfo->commandBufferCount,
+                         pCommandBuffers);
+    }
+    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; ++i) {
+        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(pCommandBuffers[i]);
+        cb->isSecondary = pAllocateInfo->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+        cb->device = device;
+    }'''
+    tracker = replace_once(tracker, old_alloc_cbs, new_alloc_cbs)
+
+    old_reset_pool = '''VkResult VkEncoder::vkResetCommandPool(VkDevice device, VkCommandPool commandPool,
+                                       VkCommandPoolResetFlags flags, uint32_t doLock) {
+    (void)doLock;
+    bool queueSubmitWithCommandsEnabled =
+        sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+    if (!queueSubmitWithCommandsEnabled && doLock) this->lock();'''
+    new_reset_pool = '''VkResult VkEncoder::vkResetCommandPool(VkDevice device, VkCommandPool commandPool,
+                                       VkCommandPoolResetFlags flags, uint32_t doLock) {
+    (void)doLock;
+    sResourceTracker->resetCommandPoolStagingInfo(commandPool);
+    bool queueSubmitWithCommandsEnabled =
+        sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+    if (!queueSubmitWithCommandsEnabled && doLock) this->lock();'''
+    encoder = replace_once(encoder, old_reset_pool, new_reset_pool)
+
+    old_reset_staging = '''void ResourceTracker::resetCommandBufferStagingInfo(VkCommandBuffer commandBuffer,
+                                                    bool alsoResetPrimaries,
+                                                    bool alsoClearPendingDescriptorSets) {
+    struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(commandBuffer);
+    if (!cb) {
+        return;
+    }
+
+    if (cb->privateEncoder) {
         sStaging.pushStaging((CommandBufferStagingStream*)cb->privateStream, cb->privateEncoder);
         cb->privateEncoder = nullptr;
         cb->privateStream = nullptr;
     }'''
-    new_reset_staging = '''    if (!supportsDeferredCommands() && cb->lastUsedEncoder) {
+    new_reset_staging = '''void ResourceTracker::resetCommandBufferStagingInfo(VkCommandBuffer commandBuffer,
+                                                    bool alsoResetPrimaries,
+                                                    bool alsoClearPendingDescriptorSets) {
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+    struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(commandBuffer);
+    if (!cb) {
+        return;
+    }
+    if (!supportsDeferredCommands() && cb->lastUsedEncoder) {
         cb->lastUsedEncoder->decRef();
         cb->lastUsedEncoder = nullptr;
     }
-    if (cb->privateEncoder) {
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-        if (!(ResourceTracker::streamFeatureBits &
-              VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT)) {
+    if (!(ResourceTracker::streamFeatureBits &
+          VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT)) {
+        if (cb->privateEncoder || cb->privateStream) {
             auto* privateStream =
                 static_cast<caboose::memory::CabooseCommandBufferStream*>(cb->privateStream);
             auto* privateEncoder = cb->privateEncoder;
@@ -439,15 +821,188 @@ VkResult ResourceTracker::on_vkResetCommandBuffer(void* context, VkResult input_
             cb->privateStream = nullptr;
             delete privateEncoder;
             delete privateStream;
-        } else
-#endif
-        {
-            sStaging.pushStaging((CommandBufferStagingStream*)cb->privateStream, cb->privateEncoder);
-            cb->privateEncoder = nullptr;
-            cb->privateStream = nullptr;
         }
+    } else
+#endif
+    if (cb->privateEncoder) {
+        sStaging.pushStaging((CommandBufferStagingStream*)cb->privateStream, cb->privateEncoder);
+        cb->privateEncoder = nullptr;
+        cb->privateStream = nullptr;
     }'''
     tracker = replace_once(tracker, old_reset_staging, new_reset_staging)
+
+    old_queue_submit_enc = '''VkResult ResourceTracker::vkQueueSubmitEnc(VkEncoder* enc, VkQueue queue, uint32_t submitCount,
+                                           const VkSubmitInfo* pSubmits, VkFence fence) {
+    if (supportsAsyncQueueSubmit()) {
+        enc->vkQueueSubmitAsyncGOOGLE(queue, submitCount, pSubmits, fence, true /* do lock */);
+        return VK_SUCCESS;
+    } else {
+        return enc->vkQueueSubmit(queue, submitCount, pSubmits, fence, true /* do lock */);
+    }
+}
+
+VkResult ResourceTracker::vkQueueSubmitEnc(VkEncoder* enc, VkQueue queue, uint32_t submitCount,
+                                           const VkSubmitInfo2* pSubmits, VkFence fence) {
+    if (supportsAsyncQueueSubmit()) {
+        enc->vkQueueSubmitAsync2GOOGLE(queue, submitCount, pSubmits, fence, true /* do lock */);
+        return VK_SUCCESS;
+    } else {
+        return enc->vkQueueSubmit2(queue, submitCount, pSubmits, fence, true /* do lock */);
+    }
+}'''
+    new_queue_submit_enc = '''#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+namespace {
+
+static bool cabooseCollectStagedCommandBuffersLevelOrder(
+    const std::vector<VkCommandBuffer>& currentLevel,
+    std::vector<VkCommandBuffer>& orderedUniqueOut) {
+    if (currentLevel.empty()) return true;
+    std::vector<VkCommandBuffer> nextLevel;
+    for (VkCommandBuffer cmdbuf : currentLevel) {
+        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(cmdbuf);
+        if (!cb) continue;
+        forAllObjects(cb->subObjects, [&nextLevel](void* secondary) {
+            nextLevel.push_back((VkCommandBuffer)secondary);
+        });
+    }
+    if (!cabooseCollectStagedCommandBuffersLevelOrder(nextLevel, orderedUniqueOut)) {
+        return false;
+    }
+    for (VkCommandBuffer cmdbuf : currentLevel) {
+        if (std::find(orderedUniqueOut.begin(), orderedUniqueOut.end(), cmdbuf) ==
+            orderedUniqueOut.end()) {
+            orderedUniqueOut.push_back(cmdbuf);
+        }
+    }
+    return true;
+}
+
+template <typename VkSubmitInfoType>
+static bool cabooseDetachSubmitStagedCommands(
+    uint32_t submitCount,
+    const VkSubmitInfoType* pSubmits,
+    std::vector<uint8_t>& stagedBatchOut,
+    caboose::memory::Reservation& stagedReservationOut,
+    size_t& stagedCbCountOut,
+    std::vector<VkCommandBuffer>& rootCbsOut) {
+    stagedBatchOut.clear();
+    stagedCbCountOut = 0;
+    rootCbsOut.clear();
+    for (uint32_t i = 0; i < submitCount; ++i) {
+        for (uint32_t j = 0; j < getCommandBufferCount(pSubmits[i]); ++j) {
+            rootCbsOut.push_back(getCommandBuffer(pSubmits[i], j));
+        }
+    }
+    if (rootCbsOut.empty()) return true;
+    std::vector<VkCommandBuffer> orderedCbs;
+    if (!cabooseCollectStagedCommandBuffersLevelOrder(rootCbsOut, orderedCbs)) {
+        return false;
+    }
+    for (VkCommandBuffer cmdbuf : orderedCbs) {
+        struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(cmdbuf);
+        if (!cb || !cb->privateStream) continue;
+        auto* privateStream =
+            static_cast<caboose::memory::CabooseCommandBufferStream*>(cb->privateStream);
+        auto* privateEncoder = cb->privateEncoder;
+        cb->privateStream = nullptr;
+        cb->privateEncoder = nullptr;
+        if (privateEncoder) {
+            delete privateEncoder;
+        }
+        const bool ok = privateStream->appendDetachedTo(stagedBatchOut, stagedReservationOut);
+        delete privateStream;
+        if (!ok) {
+            return false;
+        }
+        ++stagedCbCountOut;
+    }
+    return true;
+}
+
+} // namespace
+#endif
+
+VkResult ResourceTracker::vkQueueSubmitEnc(VkEncoder* enc, VkQueue queue, uint32_t submitCount,
+                                           const VkSubmitInfo* pSubmits, VkFence fence) {
+    if (supportsAsyncQueueSubmit()) {
+        enc->vkQueueSubmitAsyncGOOGLE(queue, submitCount, pSubmits, fence, true /* do lock */);
+        return VK_SUCCESS;
+    } else {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+        if (cabooseSynchronousProfile() && !usingDirectMapping()) {
+            caboose::memory::Reservation stagedReservation{caboose::memory::processBudget};
+            std::vector<uint8_t> stagedBatch;
+            size_t stagedCbCount = 0;
+            std::vector<VkCommandBuffer> rootCbs;
+            bool detachOk = true;
+            {
+                std::lock_guard<std::recursive_mutex> lock(mLock);
+                detachOk = cabooseDetachSubmitStagedCommands(
+                    submitCount, pSubmits, stagedBatch, stagedReservation, stagedCbCount, rootCbs);
+                for (VkCommandBuffer cb : rootCbs) {
+                    resetCommandBufferPendingTopology(cb);
+                }
+            }
+            if (!detachOk) {
+                return VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
+            return enc->cabooseQueueSubmitWithStagedCommands(
+                queue, submitCount, pSubmits, fence, stagedBatch.data(), stagedBatch.size(),
+                stagedCbCount, true /* do lock */);
+        }
+#endif
+        return enc->vkQueueSubmit(queue, submitCount, pSubmits, fence, true /* do lock */);
+    }
+}
+
+VkResult ResourceTracker::vkQueueSubmitEnc(VkEncoder* enc, VkQueue queue, uint32_t submitCount,
+                                           const VkSubmitInfo2* pSubmits, VkFence fence) {
+    if (supportsAsyncQueueSubmit()) {
+        enc->vkQueueSubmitAsync2GOOGLE(queue, submitCount, pSubmits, fence, true /* do lock */);
+        return VK_SUCCESS;
+    } else {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+        if (cabooseSynchronousProfile() && !usingDirectMapping()) {
+            caboose::memory::Reservation stagedReservation{caboose::memory::processBudget};
+            std::vector<uint8_t> stagedBatch;
+            size_t stagedCbCount = 0;
+            std::vector<VkCommandBuffer> rootCbs;
+            bool detachOk = true;
+            {
+                std::lock_guard<std::recursive_mutex> lock(mLock);
+                detachOk = cabooseDetachSubmitStagedCommands(
+                    submitCount, pSubmits, stagedBatch, stagedReservation, stagedCbCount, rootCbs);
+                for (VkCommandBuffer cb : rootCbs) {
+                    resetCommandBufferPendingTopology(cb);
+                }
+            }
+            if (!detachOk) {
+                return VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
+            return enc->cabooseQueueSubmit2WithStagedCommands(
+                queue, submitCount, pSubmits, fence, stagedBatch.data(), stagedBatch.size(),
+                stagedCbCount, true /* do lock */);
+        }
+#endif
+        return enc->vkQueueSubmit2(queue, submitCount, pSubmits, fence, true /* do lock */);
+    }
+}'''
+    tracker = replace_once(tracker, old_queue_submit_enc, new_queue_submit_enc)
+
+    old_flush_staging = '''template <class VkSubmitInfoType>
+void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t submitCount,
+                                          const VkSubmitInfoType* pSubmits) {
+    std::vector<VkCommandBuffer> toFlush;'''
+    new_flush_staging = '''template <class VkSubmitInfoType>
+void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t submitCount,
+                                          const VkSubmitInfoType* pSubmits) {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    if (cabooseSynchronousProfile() && !usingDirectMapping()) {
+        return;
+    }
+#endif
+    std::vector<VkCommandBuffer> toFlush;'''
+    tracker = replace_once(tracker, old_flush_staging, new_flush_staging)
 
     old_get_cb_enc = '''ALWAYS_INLINE_GFXSTREAM VkEncoder* ResourceTracker::getCommandBufferEncoder(
     VkCommandBuffer commandBuffer) {
@@ -548,7 +1103,8 @@ def transform(encoder, encoder_h, tracker, tracker_h):
     uint32_t getStreamFeatures() const;''')
     method = '''bool ResourceTracker::cabooseMappedRange(VkDevice device, VkDeviceMemory memory,
                                          caboose::memory::Range& out) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);\n    auto found = info_VkDeviceMemory.find(memory);
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+    auto found = info_VkDeviceMemory.find(memory);
     auto owner = info_VkDevice.find(device);
     if (found == info_VkDeviceMemory.end() || owner == info_VkDevice.end()) return false;
     const auto& info = found->second;
@@ -578,7 +1134,8 @@ def apply(root, check=False):
         raise ValueError('unexpected Mesa revision')
     hashes = dict(SOURCES)
     hashes[PREFIX + FILES[1]] = 'b09806e94640108fa8efa7b300cf16712cff81c10499d9fb40942dae7cbe691d'
-    for name in FILES:\n        original = subprocess.check_output(['git', '-C', str(root), 'show', 'HEAD:' + PREFIX + name])
+    for name in FILES:
+        original = subprocess.check_output(['git', '-C', str(root), 'show', 'HEAD:' + PREFIX + name])
         if hashlib.sha256(original).hexdigest() != hashes[PREFIX + name]:
             raise ValueError('unexpected upstream file: ' + name)
     output = transform(*[(root / PREFIX / name).read_text() for name in FILES])

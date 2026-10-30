@@ -19,8 +19,9 @@ inline constexpr size_t cbMaxStagingBytes = 4 * 1024 * 1024;
 
 // Bounded per-command-buffer local recording stream backed by processBudget.
 // Never performs network I/O; stores unsequenced v4 packets (OP_vkBeginCommandBuffer
-// + OP_vkCmd*) in contiguous process-budgeted memory until on_vkEndCommandBuffer
-// flushes and drains replies in a single round-trip.
+// + OP_vkCmd* + OP_vkEndCommandBuffer) in contiguous process-budgeted memory until
+// vkQueueSubmit coalesces all staged command buffers and OP_vkQueueSubmit into a
+// single network round-trip.
 class CabooseCommandBufferStream final : public gfxstream::guest::IOStream {
 public:
     explicit CabooseCommandBufferStream(
@@ -40,11 +41,46 @@ public:
     CabooseCommandBufferStream& operator=(const CabooseCommandBufferStream&) = delete;
 
     bool hasOverflowed() const noexcept { return overflowed_; }
+    bool isEnded() const noexcept { return ended_; }
 
     void markOverflowed() noexcept {
         overflowed_ = true;
+        ended_ = false;
         releaseStorage();
         rewind();
+    }
+
+    // Appends the 16-byte OP_vkEndCommandBuffer packet, shrinks capacity down to
+    // the exact recorded byte count (releasing slack back to budget_), and marks
+    // the stream ended and ready for vkQueueSubmit coalescing.
+    bool stageEndPacket(uint32_t opcode, uint64_t hostCommandBuffer) noexcept {
+        if (overflowed_ || ended_) {
+            markOverflowed();
+            return false;
+        }
+        const uint32_t packetSize = 16;
+        uint8_t* ptr = static_cast<uint8_t*>(alloc(packetSize));
+        if (!ptr) {
+            markOverflowed();
+            return false;
+        }
+        std::memcpy(ptr, &opcode, sizeof(uint32_t));
+        std::memcpy(ptr + 4, &packetSize, sizeof(uint32_t));
+        std::memcpy(ptr + 8, &hostCommandBuffer, sizeof(uint64_t));
+        if (flush() < 0 || overflowed_ || !data_ || written_ < 16) {
+            markOverflowed();
+            return false;
+        }
+        if (capacity_ > written_) {
+            const size_t slack = capacity_ - written_;
+            if (auto* shrunk = static_cast<uint8_t*>(std::realloc(data_, written_))) {
+                data_ = shrunk;
+            }
+            capacity_ = written_;
+            budget_.release(slack);
+        }
+        ended_ = true;
+        return true;
     }
 
     size_t capacityBytes() const noexcept { return capacity_; }
@@ -86,6 +122,7 @@ public:
             data_ = nullptr;
             written_ = 0;
             overflowed_ = true;
+            ended_ = false;
             rewind();
             return false;
         }
@@ -96,25 +133,68 @@ public:
             data_ = nullptr;
             written_ = 0;
             overflowed_ = true;
+            ended_ = false;
             rewind();
             return false;
         }
         std::free(data_);
         data_ = nullptr;
         written_ = 0;
+        ended_ = false;
+        rewind();
+        return true;
+    }
+
+    // Append staged bytes onto `out` (extending `outReservation` by `written_`)
+    // and immediately release the stream's own storage and budget reservation.
+    bool appendDetachedTo(std::vector<uint8_t>& out, Reservation& outReservation) noexcept {
+        (void)flush();
+        if (overflowed_ || !ended_ || !data_ || written_ == 0) {
+            reset();
+            return false;
+        }
+        const size_t bytes = written_;
+        const size_t oldCap = capacity_;
+        capacity_ = 0;
+        budget_.release(oldCap);
+        if (!outReservation.add(bytes)) {
+            std::free(data_);
+            data_ = nullptr;
+            written_ = 0;
+            overflowed_ = true;
+            ended_ = false;
+            rewind();
+            return false;
+        }
+        try {
+            out.insert(out.end(), data_, data_ + bytes);
+        } catch (...) {
+            std::free(data_);
+            data_ = nullptr;
+            written_ = 0;
+            overflowed_ = true;
+            ended_ = false;
+            rewind();
+            return false;
+        }
+        std::free(data_);
+        data_ = nullptr;
+        written_ = 0;
+        ended_ = false;
         rewind();
         return true;
     }
 
     void reset() noexcept {
         overflowed_ = false;
+        ended_ = false;
         written_ = 0;
         releaseStorage();
         rewind();
     }
 
     void* allocBuffer(size_t minSize) override {
-        if (overflowed_) return nullptr;
+        if (overflowed_ || ended_) return nullptr;
         if (minSize > maxBytes_ || written_ > maxBytes_ - minSize) {
             markOverflowed();
             return nullptr;
@@ -151,14 +231,14 @@ public:
     }
 
     size_t idealAllocSize(size_t len) override {
-        if (overflowed_ || len > maxBytes_ - written_) return len;
+        if (overflowed_ || ended_ || len > maxBytes_ - written_) return len;
         const size_t remainingMax = maxBytes_ - written_;
         const size_t target = std::max(len, initialBytes_);
         return std::min(target, remainingMax);
     }
 
     int commitBuffer(size_t size) override {
-        if (overflowed_ || size > capacity_ - written_) {
+        if (overflowed_ || ended_ || size > capacity_ - written_) {
             markOverflowed();
             return -1;
         }
@@ -182,7 +262,7 @@ public:
     }
 
     int writeFully(const void* buf, size_t len) override {
-        if (overflowed_) return -1;
+        if (overflowed_ || ended_) return -1;
         if (len == 0) return 0;
         if (!buf) {
             markOverflowed();
@@ -215,6 +295,7 @@ private:
     size_t capacity_ = 0;
     size_t written_ = 0;
     bool overflowed_ = false;
+    bool ended_ = false;
 };
 
 } // namespace caboose::memory

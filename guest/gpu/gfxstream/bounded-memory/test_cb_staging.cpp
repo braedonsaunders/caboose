@@ -190,10 +190,9 @@ private:
 } // namespace
 
 int main() {
-    // 1. Happy path: Stage OP_vkBeginCommandBuffer + OP_vkCmd* locally in CabooseCommandBufferStream,
-    // verify an interleaved synchronous RPC on the thread-local socket stream does not collide with
-    // deferred Begin, then flush [OP_vkBeginCommandBuffer + OP_vkCmd* + OP_vkEndCommandBuffer] and
-    // read both 4-byte replies in one single readback round-trip.
+    // 1. Happy path: Stage OP_vkBeginCommandBuffer + OP_vkCmd* + OP_vkEndCommandBuffer locally in
+    // CabooseCommandBufferStream, verify an interleaved synchronous RPC on the thread-local socket
+    // stream does not collide, and verify stageEndPacket shrinks slack capacity back to budget.
     {
         Budget localBudget(stagingBytes);
         CabooseCommandBufferStream cbStream(localBudget);
@@ -232,31 +231,40 @@ int main() {
         writePacketHeader(drawPtr, kOpCmdDraw, 32, cbHandle);
         std::memset(drawPtr + 16, 0x77, 16);
 
-        // Detach staged bytes on vkEndCommandBuffer
-        Reservation endReservation{localBudget};
+        // Stage OP_vkEndCommandBuffer (16 bytes) locally with zero network I/O!
+        assert(cbStream.stageEndPacket(kOpEndCommandBuffer, cbHandle));
+        assert(cbStream.isEnded());
+        assert(!cbStream.hasOverflowed());
+        // Capacity shrinks from 64 KiB down to exact 96 bytes (24 + 24 + 32 + 16)!
+        assert(cbStream.capacityBytes() == 96);
+        assert(localBudget.used() == 96);
+        // No additional socket flushes occurred on EndCommandBuffer!
+        assert(tlsSocket.flushes() == 1 && tlsSocket.reads() == 1);
+
+        // Detach staged bytes into coalesced QueueSubmit buffer
+        Reservation submitReservation{localBudget};
         std::vector<uint8_t> staged;
-        assert(cbStream.detachWritten(staged, endReservation));
-        assert(staged.size() == 24 + 24 + 32);
+        assert(cbStream.appendDetachedTo(staged, submitReservation));
+        assert(staged.size() == 96);
         assert(cbStream.capacityBytes() == 0);
-        // Only the exact detached bytes (80 bytes) are held during the End RPC
-        assert(localBudget.used() == staged.size());
+        assert(localBudget.used() == 96);
 
-        // Queue Begin reply (VK_SUCCESS = 0) and End reply (VK_SUCCESS = 0)
+        // Queue Begin reply (VK_SUCCESS = 0), End reply (VK_SUCCESS = 0), and QueueSubmit reply (0)
         tlsSocket.queueReply(0);
         tlsSocket.queueReply(0);
+        tlsSocket.queueReply(0);
 
-        // Write staged bytes + OP_vkEndCommandBuffer (16 bytes) and read both 4-byte replies in one readback
-        const uint32_t endPktSize = 16;
-        uint8_t* outPtr = tlsSocket.alloc(staged.size() + endPktSize);
+        const uint32_t submitPktSize = 24;
+        uint8_t* outPtr = tlsSocket.alloc(staged.size() + submitPktSize);
         assert(outPtr != nullptr);
         std::memcpy(outPtr, staged.data(), staged.size());
-        writePacketHeader(outPtr + staged.size(), kOpEndCommandBuffer, endPktSize, cbHandle);
+        writePacketHeader(outPtr + staged.size(), 20018u /* OP_vkQueueSubmit */, submitPktSize, 0x9999ULL);
 
-        int32_t replies[2] = {-1, -1};
+        int32_t replies[3] = {-1, -1, -1};
         assert(tlsSocket.readback(replies, sizeof(replies)) != nullptr);
-        assert(replies[0] == 0 && replies[1] == 0);
+        assert(replies[0] == 0 && replies[1] == 0 && replies[2] == 0);
         assert(tlsSocket.flushes() == 2 && tlsSocket.reads() == 2);
-        assert(tlsSocket.wire().size() == 16 + staged.size() + endPktSize);
+        assert(tlsSocket.wire().size() == 16 + staged.size() + submitPktSize);
     }
     assert(processBudget.used() == 0);
 
@@ -274,18 +282,17 @@ int main() {
         assert(!cbStream.hasOverflowed());
         assert(localBudget.used() == cbMaxStagingBytes);
 
-        // 1 additional byte exceeds cbMaxStagingBytes (4 MiB) -> returns nullptr, marks overflow,
+        // 1 additional byte (or stageEndPacket) exceeds cbMaxStagingBytes (4 MiB) -> fails closed
         // and immediately releases all staged memory back to localBudget!
-        uint8_t* overflowPtr = cbStream.alloc(1);
-        assert(overflowPtr == nullptr);
+        assert(!cbStream.stageEndPacket(kOpEndCommandBuffer, 0x1234ULL));
         assert(cbStream.hasOverflowed());
+        assert(!cbStream.isEnded());
         assert(localBudget.used() == 0);
 
-        // Subsequent detachWritten fails closed so on_vkEndCommandBuffer returns VK_ERROR_OUT_OF_HOST_MEMORY
-        // without sending partial commands.
+        // Subsequent appendDetachedTo fails closed
         Reservation endReservation{localBudget};
         std::vector<uint8_t> staged;
-        assert(!cbStream.detachWritten(staged, endReservation));
+        assert(!cbStream.appendDetachedTo(staged, endReservation));
         assert(staged.empty());
         assert(localBudget.used() == 0);
     }
@@ -305,16 +312,18 @@ int main() {
         assert(cb1.hasOverflowed());
         assert(tightBudget.used() == 64 * 1024);
 
-        // cb2 is unaffected and can still detach and complete!
+        // cb2 is unaffected and can still stage End and detach!
+        assert(cb2.stageEndPacket(kOpEndCommandBuffer, 0x55ULL));
         Reservation res2{tightBudget};
         std::vector<uint8_t> staged2;
-        assert(cb2.detachWritten(staged2, res2));
-        assert(staged2.size() == 64 * 1024);
-        assert(tightBudget.used() == 64 * 1024);
+        assert(cb2.appendDetachedTo(staged2, res2));
+        assert(staged2.size() == 64 * 1024 + 16);
+        assert(tightBudget.used() == 64 * 1024 + 16);
     }
 
-    // 4. Multi-threaded worker pool simulation (31 command buffers across 4 worker threads, reassigned across frames):
-    // Verifies zero cross-thread lock contention during recording and full budget reclamation.
+    // 4. Multi-threaded worker pool simulation (31 command buffers across 4 worker threads, coalesced at QueueSubmit):
+    // Verifies zero cross-thread lock contention during Begin/Cmd*/End recording, exact slack shrinkage on End,
+    // and single-batch coalescing into 1 QueueSubmit payload!
     {
         Budget poolBudget(stagingBytes);
         constexpr size_t kNumCbs = 31;
@@ -338,20 +347,27 @@ int main() {
                             assert(p != nullptr);
                             writePacketHeader(p, kOpCmdDraw, 32, cbIdx + 1);
                         }
-                        Reservation r{poolBudget};
-                        std::vector<uint8_t> out;
-                        assert(s.detachWritten(out, r));
-                        assert(out.size() == 24 + 25 * 32);
+                        assert(s.stageEndPacket(kOpEndCommandBuffer, cbIdx + 1));
                     }
                 });
             }
             for (auto& w : workers) w.join();
-            assert(poolBudget.used() == 0);
+
+            // Coalesce all 31 ended command buffers into one single QueueSubmit buffer
+            const size_t expectedPerCb = 24 + 25 * 32 + 16;
+            assert(poolBudget.used() == kNumCbs * expectedPerCb);
+            Reservation submitRes{poolBudget};
+            std::vector<uint8_t> batch;
+            for (size_t i = 0; i < kNumCbs; ++i) {
+                assert(streams[i]->appendDetachedTo(batch, submitRes));
+            }
+            assert(batch.size() == kNumCbs * expectedPerCb);
+            assert(poolBudget.used() == batch.size());
         }
         streams.clear();
         assert(poolBudget.used() == 0);
     }
 
-    std::puts("PASS cb_staging: deferred Begin + vkCmd* local staging, interleaved sync RPC safety, 4MiB cap & budget fail-closed, 31-CB worker pool");
+    std::puts("PASS cb_staging: deferred Begin + vkCmd* + End local staging, slack shrink, 31-CB QueueSubmit coalescing");
     return 0;
 }
