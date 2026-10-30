@@ -166,9 +166,10 @@ public final class CabooseDisplaySession: DisplaySession {
             case .opened:
                 Task { @MainActor in if self?.stream === stream { self?.sendHello() } }
             case .data(let data):
+                let receivedAt = ProcessInfo.processInfo.systemUptime
                 meter.receive(bytes: data.count, at: CACurrentMediaTime())
                 do {
-                    let others = try incoming.receive(data)
+                    let others = try incoming.receive(data, receivedAt: receivedAt)
                     if !others.isEmpty { Task { @MainActor in if self?.stream === stream { self?.handle(others) } } }
                 } catch {
                     stream.fail(error)
@@ -1025,7 +1026,13 @@ private final class Incoming: @unchecked Sendable {
     }
 
     /// Everything that is not a picture, for the main actor.
-    func receive(_ data: Data) throws -> [ServerMessage] {
+    func receive(_ data: Data, receivedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) throws -> [ServerMessage] {
+        let incomingAt = ProcessInfo.processInfo.systemUptime
+        sound?.timing.update { $0.receive(at: receivedAt, incoming: incomingAt) }
+        defer {
+            let finishedAt = ProcessInfo.processInfo.systemUptime
+            sound?.timing.update { $0.finishIncoming(start: incomingAt, end: finishedAt) }
+        }
         var others: [ServerMessage] = []
         for frame in try parser.append(data) {
             let message = ServerMessage(frame)
@@ -1041,7 +1048,7 @@ private final class Incoming: @unchecked Sendable {
             case .videoPresent(let id, let seq, let pts):
                 videos[id]?.present(seq: seq, at: pts)
             case .audio(let packet):
-                sound?.play(packet)
+                sound?.play(packet, receivedAt: receivedAt)
             case .videoDestroy(let id):
                 // The server repainted the region into the window just before; the video goes once
                 // that picture is applied (and the view has shown it), never before.

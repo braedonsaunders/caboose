@@ -365,14 +365,26 @@ shared audio timeline, and an idle live video renderer cannot hold audio preroll
 The iOS app omits `video_decoders`, so passthrough streams return to server decoding. It
 advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
-The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator. Rate corrections change only the rendering
-rate, without resetting the timebase position; explicit time/host anchors are used only
-when playback starts or restarts.
+Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
+payload. Excess or empty packets are rejected before dispatch, counted as
+`ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
+After rejection, the next admitted packet retains its server timestamp instead of joining
+across the missing duration; the Opus decoder remains alive, with no synthetic concealment
+packet or replay. Packet loss can therefore be audible. Existing playout thresholds govern
+any rebuffer. Stop and interruption invalidate old jobs without releasing their memory
+budget until those jobs exit.
+Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
+packets do not write the synchronizer rate. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone serializes cleanup of surviving
+buffers with enqueue, without resetting the clock or rate; discarded audio is not replayed.
+Renderer-specific notification generations are invalidated on stop and interruption.
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Stopping playback clears
+the clock anchor; explicit time/host anchors are used only when playback starts or
+restarts. There is no continuous sample-clock correction: sustained source/host clock
+mismatch can require rebuffering, and hardware/host clock drift can accumulate between
+explicit rebufferings.
 
 
 A video stream is layered into a window (`window`) by the client: it decodes it with its
