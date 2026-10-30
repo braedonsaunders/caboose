@@ -403,7 +403,7 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         match enc.copy(input, d, &copy.hints) {
             Ok(Some(c)) => {
                 let tiles: Result<Vec<_>, String> =
-                    c.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb).map(|p| (*r, p))).collect();
+                    c.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb, false).map(|p| (*r, p))).collect();
                 match tiles {
                     Ok(tiles) => {
                         done.changed = c.changed;
