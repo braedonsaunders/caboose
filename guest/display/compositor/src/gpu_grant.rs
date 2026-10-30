@@ -26,6 +26,9 @@ pub struct Grant {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase { Idle, Ready, Lost }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GrantPhase { Active, RevokeQueued, AwaitingRetirement }
+
 pub struct Grants {
     epoch: [u8; 16],
     phase: Phase,
@@ -33,7 +36,7 @@ pub struct Grants {
     executor_generation: u64,
     next_surface_generation: u64,
     retirement_received: bool,
-    windows: HashMap<u64, (Grant, bool)>, // bool = revoke queued but not committed
+    windows: HashMap<u64, (Grant, GrantPhase)>,
 }
 
 impl Grants {
@@ -63,21 +66,34 @@ impl Grants {
         }
         self.phase = Phase::Lost;
         let mut grants = Vec::with_capacity(self.windows.len());
-        for (grant, pending) in self.windows.values_mut() {
-            *pending = true;
-            grants.push(*grant);
+        for (grant, phase) in self.windows.values_mut() {
+            if *phase == GrantPhase::Active {
+                *phase = GrantPhase::RevokeQueued;
+                grants.push(*grant);
+            }
         }
         Ok(grants)
     }
 
-    /// Called only after the corresponding REVOKE_GRANT record has been sent.
+    /// Sending a revoke does not retire the native surface or free its identity.
     pub fn revoke_sent(&mut self, grant: Grant) -> io::Result<()> {
+        match self.windows.get_mut(&grant.window) {
+            Some((current, phase)) if *current == grant && *phase == GrantPhase::RevokeQueued => {
+                *phase = GrantPhase::AwaitingRetirement;
+                Ok(())
+            }
+            _ => Err(io::Error::other("stale grant revoke")),
+        }
+    }
+
+    /// Called only after the corresponding actual native SURFACE_RETIRED receipt.
+    pub fn surface_retired(&mut self, grant: Grant) -> io::Result<()> {
         match self.windows.get(&grant.window) {
-            Some((current, true)) if *current == grant => {
+            Some((current, GrantPhase::AwaitingRetirement)) if *current == grant => {
                 self.windows.remove(&grant.window);
                 self.finish_retirement()
             }
-            _ => Err(io::Error::other("stale grant revoke")),
+            _ => Err(io::Error::other("stale surface retirement")),
         }
     }
 
@@ -103,7 +119,9 @@ impl Grants {
     /// IPC failure cannot prove native retirement, so remain latched unavailable.
     pub fn fail(&mut self) {
         if self.phase == Phase::Ready { self.phase = Phase::Lost; }
-        for (_, pending) in self.windows.values_mut() { *pending = true; }
+        for (_, phase) in self.windows.values_mut() {
+            if *phase == GrantPhase::Active { *phase = GrantPhase::RevokeQueued; }
+        }
     }
 
     /// `matches` must be the complete compositor-derived set after pidfd and
@@ -119,15 +137,15 @@ impl Grants {
             return Err(io::Error::other("GPU grant repeated"));
         }
         let grant = Grant { epoch: self.epoch, token, window: matches[0], process, peer, generation: self.next_surface_generation };
-        self.windows.insert(grant.window, (grant, false));
+        self.windows.insert(grant.window, (grant, GrantPhase::Active));
         Ok(grant)
     }
 
     /// Mark a destroyed/unmapped surface as unavailable before sending revoke.
     pub fn begin_revoke(&mut self, window: u64) -> Option<Grant> {
-        let (grant, pending) = self.windows.get_mut(&window)?;
-        if *pending { return None; }
-        *pending = true;
+        let (grant, phase) = self.windows.get_mut(&window)?;
+        if *phase != GrantPhase::Active { return None; }
+        *phase = GrantPhase::RevokeQueued;
         Some(*grant)
     }
 }
@@ -146,6 +164,8 @@ mod tests {
         assert_eq!(grants.begin_revoke(7), Some(grant));
         assert!(grants.bind(1, (1000, 42, 123, 17), &[7]).is_err());
         grants.revoke_sent(grant).unwrap();
+        assert!(grants.bind(1, (1000, 42, 123, 17), &[7]).is_err());
+        grants.surface_retired(grant).unwrap();
         let next = grants.bind(1, (1000, 42, 123, 17), &[7]).unwrap();
         assert!(next.generation > grant.generation);
     }
@@ -185,6 +205,8 @@ mod tests {
         assert!(grants.epoch_if_ready().is_none());
         assert!(grants.ready([2; 16], 2).is_err());
         grants.revoke_sent(grant).unwrap();
+        assert!(grants.ready([2; 16], 2).is_err());
+        grants.surface_retired(grant).unwrap();
         assert!(grants.ready([2; 16], 1).is_err());
         grants.ready([2; 16], 2).unwrap();
         assert_ne!(grants.epoch_if_ready(), Some(old));
