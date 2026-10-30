@@ -784,6 +784,10 @@ Duo and iPad; the keys do not scroll. Remote inputs share `RemoteTextInputView` 
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
+App-owned keys use shared light UIKit haptics: the accessory row, Laptop letters,
+modifiers, Return, symbols and each held-arrow/Delete repeat. Feedback follows key
+activation, so cancellation stops repeats. System-keyboard feedback follows the iOS
+Keyboard Feedback setting; text delivery and hardware typing do not add another pulse.
 
 Check native text entry with `scripts/check-agents.sh`; this includes keyboard focus,
 IME and selection, native form traits and the sign-in sheet material.

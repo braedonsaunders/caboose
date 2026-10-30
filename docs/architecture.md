@@ -2536,6 +2536,9 @@ and restores its dock.
   Switching groups preserves active modifiers, also indicated on the controls menu.
   The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
+  Shared light UIKit haptics accompany accessory actions and Laptop custom-key activation,
+  including held-arrow/Delete repeats. Feedback belongs to the key controls, independent
+  of text transport; the system keyboard retains its own iOS feedback setting.
   Remote inputs share the same text/composition and modifier handling, with a menu toggle
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
   Native fields use UIKit text editing, selection and IME; navigation moves native text
