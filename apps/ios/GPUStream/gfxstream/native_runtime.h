@@ -11,6 +11,12 @@ typedef void* (*caboose_gpu_resolve_export)(const char* name);
 // Process-wide initialization. A failed first attempt is terminal until app restart.
 // The loader, resolver and their backing library must remain valid for process life.
 int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_export resolve);
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+// Only use when every guest swapchain in this process is the private virtual
+// WSI. Guest PRESENT_SRC transitions are mapped to GENERAL on the host.
+int caboose_gpu_runtime_start_virtual_wsi(PFN_vkGetInstanceProcAddr get,
+                                           caboose_gpu_resolve_export resolve);
+#endif
 // Creates an independent upstream process; token is nonzero and never reused.
 int caboose_gpu_runtime_open(uint64_t* token);
 // Caller authenticates, binds the session and verifies the negotiated stream

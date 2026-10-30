@@ -1,0 +1,20 @@
+// Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
+#pragma once
+#include <vulkan/vulkan.h>
+namespace gfxstream::host::vk { struct CaboosePresentationObjects; }
+namespace caboose::gpuv2 {
+// Internal GPU operations. Caller owns all swapchain and synchronization objects,
+// verifies destination format/extent, queue family and surface ownership, and
+// holds the decoder object lease until the copy fence is actually signaled.
+// Guest source must have been transitioned to GENERAL before its original wait
+// semaphores were signaled. The acquired destination is fully overwritten.
+// A success means submission only; it is not an image-release receipt.
+VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
+    VkImage destination, VkSemaphore acquired, VkSemaphore ready,
+    VkFence copyFence, VkCommandBuffer commandBuffer);
+// A successful return means queued presentation, not displayed-vsync completion.
+// The ready semaphore and swapchain must stay alive until the presentation
+// engine has finished using them (e.g. a proven reacquisition or present fence).
+VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
+    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready);
+}

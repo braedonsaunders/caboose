@@ -13,14 +13,15 @@
 namespace {
 std::mutex mutex;
 bool attempted = false;
+bool installedVirtualWsi = false;
 int startResult = EAGAIN;
 PFN_vkGetInstanceProcAddr installedGet = nullptr;
 caboose_gpu_resolve_export installedResolve = nullptr;
 caboose_gfx_registry* registry = nullptr;
 uint64_t nextToken = 1;
 }
-extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
-                                           caboose_gpu_resolve_export resolve) {
+static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_export resolve,
+                        bool virtualWsi) {
     if (!get || !resolve) return EINVAL;
     // The global entrypoint and exported trampolines must come from the same
     // caller-owned provider; do not silently mix two Vulkan loaders.
@@ -28,12 +29,14 @@ extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
         !resolve("vkCreateInstance") || !resolve("vkDestroyInstance")) return EINVAL;
     std::lock_guard<std::mutex> lock(mutex);
     if (attempted) {
-        if (get != installedGet || resolve != installedResolve) return EBUSY;
+        if (get != installedGet || resolve != installedResolve || virtualWsi != installedVirtualWsi)
+            return EBUSY;
         return startResult;
     }
     attempted = true;
     installedGet = get;
     installedResolve = resolve;
+    installedVirtualWsi = virtualWsi;
     if (!gfxstream::host::vk::installVulkanLoader(get, resolve)) return startResult = EBUSY;
     gfxstream::host::FeatureSet features;
     features.Vulkan.setEnabled(true);
@@ -45,11 +48,18 @@ extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
     features.VulkanNativeSwapchain.setEnabled(false);
     features.VulkanQueueSubmitWithCommands.setEnabled(false);
     features.VulkanNullOptionalStrings.setEnabled(true);
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+    features.CabooseVirtualWsi.setEnabled(virtualWsi);
+#endif
     if (!caboose::gpuv2::initializeHeadlessFramebuffer(features)) return startResult = EIO;
     const auto& actual = gfxstream::host::FrameBuffer::getFB()->getFeatures();
     if (actual.GlDirectMem.enabled() || actual.VirtioGpuNext.enabled() ||
         actual.ExternalBlob.enabled() || actual.VulkanQueueSubmitWithCommands.enabled() ||
-        !actual.VulkanNullOptionalStrings.enabled()) {
+        !actual.VulkanNullOptionalStrings.enabled()
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+        || actual.CabooseVirtualWsi.enabled() != virtualWsi
+#endif
+        ) {
         caboose::gpuv2::finalizeHeadlessFramebuffer();
         return startResult = EPROTO;
     }
@@ -60,6 +70,16 @@ extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
     }
     return startResult = 0;
 }
+extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
+                                           caboose_gpu_resolve_export resolve) {
+    return startRuntime(get, resolve, false);
+}
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+extern "C" int caboose_gpu_runtime_start_virtual_wsi(PFN_vkGetInstanceProcAddr get,
+                                                       caboose_gpu_resolve_export resolve) {
+    return startRuntime(get, resolve, true);
+}
+#endif
 extern "C" int caboose_gpu_runtime_open(uint64_t* token) {
     if (!token) return EINVAL;
     *token = 0;
