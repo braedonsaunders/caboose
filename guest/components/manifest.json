@@ -16,6 +16,7 @@
   "desktop-mcp/caboose-agent-seat",
   "container/caboose-session",
   "keyring/install.sh",
+  "keyring/install-services.py",
   "keyring/caboose-keyring",
   "keyring/secret-forwarder.py",
   "keyring/agent-bus.conf",
