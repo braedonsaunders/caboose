@@ -1056,7 +1056,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.state` | `{ state }` | Every lifecycle transition |
 | `computer.settings` | `{ computer: <management status> }` | Settings or their applied state change |
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
-| `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
+| `notification` | `{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }` | A desktop notification on the owner's display (see [Desktop notifications](#desktop-notifications)) |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
 | `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
@@ -1546,8 +1546,25 @@ While the computer runs, the host drains the owner's notification queue every se
 `caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
-`desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
-opens the app.
+`desktop` alert. The event carries the record's fields ([Guest services](#guest-services)):
+`id` (a UUID that stays the same when the application replaces the notification),
+`desktopEntry` (a desktop file ID without `.desktop`, or null), `actions` (at most 4
+`{ key, label }`), `defaultAction` (boolean) and `reply` (`{ label, placeholder }` or null).
+Records from guests without these fields arrive with null, `[]` and `false`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/notifications/:id/respond` | **Wakes** (headless). `{ action }` or `{ reply }`, exactly one → `{ responded: true }`. `action` is one of the notification's action keys, or `default` when `defaultAction` is true (1–64 characters, no control characters); `reply` is 1–2000 characters of text without NUL, for a notification with `reply`. 400 for an invalid id or body; 404 when the notification is closed, answered or gone, or does not offer that answer |
+
+The host runs `caboose-notify respond` as `caboose` with the id and the answer as arguments;
+the owner's endpoint delivers it to the application and closes the notification. A parked
+computer resumes with its memory, so its applications and their notifications are still
+there; the route wakes it without starting the owner's display, which a memory restore keeps
+if it was running. A notification lives only as long as the owner's endpoint: after a
+restart, a cold boot or a guest component update, or when the owner's display is not
+running, its id answers 404. Linux notifications name their application, not a window: the
+phone opens the application `desktopEntry` names, which focuses its existing window, and
+answers `default` so the application shows what the notification is about.
 
 ### Push notifications
 
@@ -1571,10 +1588,12 @@ background; other control clients do not suppress alerts.
 | --- | --- | --- | --- |
 | `approval` | `agent.task.approval` | "Approval requested", the request summary; category `AGENT_APPROVAL` | `taskId`, `approvalId` |
 | `task` | `agent.task.finished` with `succeeded` or `failed` | "Task finished" or "Task failed", the summary | `taskId` |
-| `desktop` | a desktop notification | its summary (or app), its body | none |
+| `desktop` | a desktop notification | its summary (or app), its body; category `DESKTOP_REPLY` when it has `reply` | `notificationId`, `desktopEntry` when present, `defaultAction` when true |
 
 Alert bodies are at most 700 characters. Alerts for a task share the thread
-`task-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
+`task-<id>`. The phone registers notification categories before a push arrives, so a
+`desktop` alert cannot carry the application's own buttons: it offers Reply when the
+application accepts replies, and a tap opens it. An APNs 410 `Unregistered` response removes the registration unless it was
 registered again while the request was in flight. Provider tokens are refreshed after 50
 minutes, and each request times out after 15 s. Delivery is best effort.
 
