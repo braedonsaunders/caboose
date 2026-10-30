@@ -1,4 +1,4 @@
-import { containerUsage } from './container-usage.js'
+import { containerUsage, dockerEndpointSelection } from './container-usage.js'
 import { execFile } from 'node:child_process'
 import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
@@ -267,7 +267,8 @@ export function createContainerController(config: Config, dependencies: { docker
 
   let socketPromise: Promise<string> | undefined
   const usage = containerUsage(name, place.home, () => socketPromise ??= (async () => {
-    const endpoint = process.env.DOCKER_HOST ?? (await docker(['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'], 4000)).trim()
+    const selected = dockerEndpointSelection(process.env)
+    const endpoint = selected.endpoint ?? (await docker(selected.args, 4000)).trim()
     if (!endpoint.startsWith('unix://')) throw new Error('Usage requires a local Docker socket')
     return endpoint.slice(7)
   })().catch(error => { socketPromise = undefined; throw error }))

@@ -61,23 +61,51 @@ export function containerUsage(name: string, home: string, socket: () => Promise
   }
 }
 
+/** Descriptor-relative metadata traversal: a renamed directory cannot redirect a child lookup. */
+export const VOLUME_SCAN_SCRIPT = `
+import os, stat, sys, json
+left = int(sys.argv[2]); logical = 0; allocated = 0; seen = set()
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+root = os.open(sys.argv[1], flags)
+root_device = os.fstat(root).st_dev
+
+def walk(fd, depth=0):
+    global left, logical, allocated
+    if depth > 32: raise RuntimeError('Depth limit')
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            left -= 1
+            if left < 0: raise RuntimeError('Entry limit')
+            s = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
+            if s.st_dev != root_device: raise RuntimeError('Mount boundary')
+            key = (s.st_dev, s.st_ino)
+            if key in seen: continue
+            seen.add(key)
+            if stat.S_ISDIR(s.st_mode):
+                child = os.open(entry.name, flags, dir_fd=fd)
+                try:
+                    opened = os.fstat(child)
+                    if (opened.st_dev, opened.st_ino) != key: raise RuntimeError('Directory changed')
+                    walk(child, depth + 1)
+                finally: os.close(child)
+            elif stat.S_ISREG(s.st_mode) or stat.S_ISLNK(s.st_mode):
+                logical += s.st_size; allocated += s.st_blocks * 512
+            else: raise RuntimeError('Unsupported entry')
+try:
+    walk(root)
+    print(json.dumps(dict(logical=logical, allocated=allocated)))
+finally: os.close(root)
+`
 /** A killable worker makes the deadline apply even during a slow filesystem call. */
 export async function allocatedVolume(path: string, entryLimit = 100_000): Promise<ComputerStorage['home']> {
-  const script = `
-    const fs = await import('node:fs/promises');
-    const root = process.argv[1], seen = new Set(); let left = Number(process.argv[2]), logical = 0, allocated = 0;
-    if (!(await fs.lstat(root)).isDirectory()) throw Error('Not a directory');
-    async function walk(path, depth = 0) {
-      if (--left < 0 || depth > 32) throw Error('Scan limit');
-      const s = await fs.lstat(path), key = s.dev + ':' + s.ino;
-      if (seen.has(key)) return; seen.add(key);
-      if (s.isDirectory()) { const dir = await fs.opendir(path); for await (const item of dir) await walk(path + '/' + item.name, depth + 1); }
-      else if (s.isFile() || s.isSymbolicLink()) { logical += s.size; allocated += s.blocks * 512; }
-      else throw Error('Unsupported entry');
-    }
-    await walk(root); process.stdout.write(JSON.stringify({logical, allocated}));
-  `
-  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script, path, String(entryLimit)], { timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 4096 })
+  const { stdout } = await promisify(execFile)('python3', ['-I', '-c', VOLUME_SCAN_SCRIPT, path, String(entryLimit)], { timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 4096 })
   const result = JSON.parse(stdout)
   return { logicalBytes: measured(result.logical), allocatedBytes: measured(result.allocated) }
+}
+
+/** Docker CLI environment precedence, shared with the telemetry endpoint selection. */
+export function dockerEndpointSelection(env: NodeJS.ProcessEnv): { endpoint?: string; args: string[] } {
+  if (env.DOCKER_CONTEXT) return { args: ['context', 'inspect', env.DOCKER_CONTEXT, '--format', '{{.Endpoints.docker.Host}}'] }
+  if (env.DOCKER_HOST) return { endpoint: env.DOCKER_HOST, args: [] }
+  return { args: ['context', 'inspect', '--format', '{{.Endpoints.docker.Host}}'] }
 }
