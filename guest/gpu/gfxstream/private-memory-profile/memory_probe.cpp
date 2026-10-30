@@ -62,7 +62,13 @@ int main(int argc, char** argv) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size=unit; bi.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         VK_OK(vkCreateBuffer(device,&bi,nullptr,&buffers[i])); vkGetBufferMemoryRequirements(device,buffers[i],&reqs[i]);
         VkBufferMemoryRequirementsInfo2 ri{VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2}; ri.buffer=buffers[i];
-        VkMemoryRequirements2 r2{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2}; vkGetBufferMemoryRequirements2(device,&ri,&r2);
+        VkMemoryDedicatedRequirements dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 r2{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2}; r2.pNext=&dedicated;
+        vkGetBufferMemoryRequirements2(device,&ri,&r2);
+        if (dedicated.requiresDedicatedAllocation) {
+            std::fprintf(stderr,"unsupported probe case: buffer %d requires dedicated allocation; alias test refused\n",i);
+            return 77;
+        }
         REQUIRE(reqs[i].size==r2.memoryRequirements.size && reqs[i].alignment==r2.memoryRequirements.alignment && reqs[i].memoryTypeBits==r2.memoryRequirements.memoryTypeBits);
         REQUIRE(reqs[i].alignment && !(reqs[i].alignment&(reqs[i].alignment-1)) && reqs[i].alignment<=65536);
     }
@@ -140,7 +146,8 @@ int main(int argc, char** argv) {
     VK_OK(vkInvalidateMappedMemoryRanges(device,1,&dest)); for(VkDeviceSize i=0;i<atom;++i) REQUIRE(mapped[1][i]==0x35);
     vkUnmapMemory(device,memory[0]); vkUnmapMemory(device,memory[1]);
     vkDestroyFence(device,fence,nullptr); vkDestroyCommandPool(device,pool,nullptr);
-    for(auto b:buffers) vkDestroyBuffer(device,b,nullptr); for(auto m:memory) vkFreeMemory(device,m,nullptr);
+    for(auto b:buffers) vkDestroyBuffer(device,b,nullptr);
+    for(auto m:memory) vkFreeMemory(device,m,nullptr);
     vkDestroyDevice(device,nullptr); vkDestroyInstance(instance,nullptr);
     std::puts("PASS query-aliases same-index allocation alias-copy flush invalidate partial-map allocation-end zero-offset");
 }

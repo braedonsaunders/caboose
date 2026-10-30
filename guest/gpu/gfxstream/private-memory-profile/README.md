@@ -89,13 +89,16 @@ c++ -std=c++17 -O1 -Wall -Wextra memory_probe.cpp -lvulkan -o memory_probe
 VK_DRIVER_FILES=/isolated/private-icd.json CABOOSE_GFXSTREAM_SOCKET=/isolated/decoder.sock timeout 30s ./memory_probe 1985229328
 ```
 
-Use the retained v2 diagnostic first to measure existing semantics. Repeat on
-v4 only with the parent's matching v4 guest/decoder artifacts and exact handshake;
+Execution requires the parent's matching v4 guest/decoder artifacts, captured
+immutable feature/backing-index receipts, and the exact v4 handshake;
 this probe neither selects nor relaxes their protocol. Never point it at an
 owner listener, phone, or system ICD. The probe requires Vulkan 1.1 and the
 advertised KHR properties2 extension so that no skipped query alias can count as
 success. It selects a guest-advertised HOST_VISIBLE noncoherent type compatible
 with all three buffers; inability to select one is failure, not a fallback.
+It queries `VkMemoryDedicatedRequirements` and refuses any buffer requiring a
+dedicated allocation (exit 77), so an unsupported alias case cannot count as a
+transport failure or acceptance.
 
 The probe compares legacy/core/KHR memory types and heaps, legacy/core buffer
 requirements, then prints the selected index, mask, allocation size and offsets.
