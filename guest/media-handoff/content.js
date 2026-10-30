@@ -82,13 +82,7 @@
     const video = event.target
     if (!(video instanceof HTMLVideoElement)) return
     switch (event.type) {
-      case 'play':
-        if (video.dataset && video.dataset.cabooseHandedOff === '1') {
-          delete video.dataset.cabooseHandedOff
-          video.style.visibility = ''
-        }
-        report(video, true)
-        break
+      case 'play': report(video, true); break
       // A video can start being offerable mid-play (its source changes, say).
       case 'playing': report(video, !tracked.has(video)); break
       case 'pause': case 'seeked': report(video, false); break
@@ -111,17 +105,8 @@
     if (!message || message.type !== 'caboose-media.command') return
     const video = [...tracked].find(([, entry]) => entry.key === message.key)?.[0]
     if (!video) return
-    if (message.action === 'pause') {
-      // iPhone is now the master truth of playback; suppress Linux video painting
-      // while keeping the element and DOM layout in Chromium's memory.
-      if (video.dataset) video.dataset.cabooseHandedOff = '1'
-      if (video.style) video.style.visibility = 'hidden'
-      video.pause()
-      return
-    }
+    if (message.action === 'pause') { video.pause(); return }
     if (message.action !== 'play') return
-    if (video.dataset) delete video.dataset.cabooseHandedOff
-    if (video.style) video.style.visibility = ''
     if (typeof message.position === 'number' && Number.isFinite(message.position)) {
       const end = Number.isFinite(video.duration) ? video.duration : Infinity
       video.currentTime = Math.min(Math.max(0, message.position), end)

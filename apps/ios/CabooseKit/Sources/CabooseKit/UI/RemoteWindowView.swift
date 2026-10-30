@@ -274,8 +274,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     fileprivate func present() {
         followAlpha()
-        remoteWindow?.surface.decayLocalScrollIfIdle()
-        guard let picture = remoteWindow?.surface.presentationState() else { return }
+        guard let picture = remoteWindow?.surface.presentation() else { return }
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
         let size = CGSize(width: texture.width, height: texture.height)
@@ -289,37 +288,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
                   sourceSize: MTLSize(width: width, height: height, depth: 1),
                   to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
-        let dx = Int(picture.scrollOffset.x.rounded())
-        let dy = Int(picture.scrollOffset.y.rounded())
-        if dx != 0 || dy != 0 {
-            let vp = picture.scrollViewport?.intersection(CGRect(x: 0, y: 0, width: width, height: height))
-                ?? CGRect(x: 0, y: 0, width: width, height: height)
-            let vx0 = max(0, Int(vp.minX))
-            let vy0 = max(0, Int(vp.minY))
-            let vx1 = min(width, Int(vp.maxX))
-            let vy1 = min(height, Int(vp.maxY))
-            let vw = vx1 - vx0
-            let vh = vy1 - vy0
-            if vw > 0 && vh > 0 {
-                let colStart = max(0, max(-vx0, dx))
-                let colEnd = min(vw, vw + dx)
-                let rowStart = max(0, max(-vy0, dy))
-                let rowEnd = min(vh, vh + dy)
-                if colStart < colEnd && rowStart < rowEnd {
-                    let dstX = vx0 + colStart
-                    let dstY = vy0 + rowStart
-                    let srcX = dstX - dx
-                    let srcY = dstY - dy
-                    blit.copy(
-                        from: texture, sourceSlice: 0, sourceLevel: 0,
-                        sourceOrigin: MTLOrigin(x: srcX, y: srcY, z: 0),
-                        sourceSize: MTLSize(width: colEnd - colStart, height: rowEnd - rowStart, depth: 1),
-                        to: target, destinationSlice: 0, destinationLevel: 0,
-                        destinationOrigin: MTLOrigin(x: dstX, y: dstY, z: 0)
-                    )
-                }
-            }
-        }
         blit.endEncoding()
         commands.present(drawable)
         commands.commit()
@@ -737,18 +705,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let key = ObjectIdentifier(touch)
             let slot = touchSlots.slot(for: key)
             let point = pixelPoint(touch.location(in: self))
-            if phase == .motion, touches.count == 1, activeTouches.count == 1,
-               tapCandidate == nil, !holdingDirectDrag, let prev = activeTouches[key]?.point {
-                let scaleX = window.surface.pixelSize.width > 0 && window.frame.width > 0
-                    ? window.surface.pixelSize.width / window.frame.width : 1
-                let scaleY = window.surface.pixelSize.height > 0 && window.frame.height > 0
-                    ? window.surface.pixelSize.height / window.frame.height : 1
-                window.surface.addLocalScroll(
-                    dx: (point.x - prev.x) * scaleX,
-                    dy: (point.y - prev.y) * scaleY,
-                    at: touch.timestamp
-                )
-            }
             let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
             points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
                                      radius: Double(touch.majorRadius * window.frame.width / max(1, bounds.width))))
@@ -840,14 +796,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                 let mapped = CGPoint(x: delta.x * size.width / max(1, geometry.width),
                                      y: delta.y * size.height / max(1, geometry.height))
                 let precise = DirectScrollCalibration.preciseDelta(mapped, directContent: directContent)
-                let scaleX = remoteWindow.surface.pixelSize.width > 0 && size.width > 0
-                    ? remoteWindow.surface.pixelSize.width / size.width : 1
-                let scaleY = remoteWindow.surface.pixelSize.height > 0 && size.height > 0
-                    ? remoteWindow.surface.pixelSize.height / size.height : 1
-                remoteWindow.surface.addLocalScroll(
-                    dx: -precise.x * scaleX,
-                    dy: -precise.y * scaleY
-                )
                 session.scroll(in: remoteWindow, dx: precise.x, dy: precise.y, at: anchor)
                 return true
             }
