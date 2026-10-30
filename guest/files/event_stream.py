@@ -55,6 +55,16 @@ def request(value):
     return value
 
 
+def process_running(pid):
+    if not pid.isdigit() or not 0 < int(pid) < 2**31: return False
+    try:
+        with open('/proc/%d/stat' % int(pid), 'rb') as f:
+            # comm can contain spaces and parentheses; state follows the final ')'.
+            state = f.read(65536).rsplit(b')', 1)[1].split()[0]
+        return state not in (b'Z', b'X')
+    except (OSError, IndexError): return False
+
+
 class Store:
     def __init__(self, directory):
         self.directory = directory
@@ -212,8 +222,7 @@ class Store:
                 if not exitcode:
                     pid = self.optional(base + '/pid', 32).strip()
                     try:
-                        if not pid.isdigit() or not 0 < int(pid) < 2**31: raise ProcessLookupError()
-                        os.kill(int(pid), 0)
+                        if not process_running(pid): raise ProcessLookupError()
                     except OSError: exitcode = 'interrupted'
                 stderr = self.optional(base + '/stderr.log', 400, tail=True)
                 b64 = lambda x: base64.b64encode(x).decode()
@@ -281,10 +290,20 @@ class Watch:
                 pidpaths += ['.cache/caboose/bridge/daemon.pid', '.cache/caboose/media-host.pid']
                 for path in pidpaths:
                     pid = store.optional(path, 32).strip()
-                    if pid.isdigit() and 0 < int(pid) < 2**31:
+                    if process_running(pid):
                         try: self.processes.append(os.pidfd_open(int(pid)))
                         except OSError: pass
         except BaseException: self.close(); raise
+
+    @staticmethod
+    def changed(data):
+        pos = 0
+        while pos + 16 <= len(data):
+            wd, mask, cookie, length = struct.unpack_from('iIII', data, pos)
+            name = data[pos+16:pos+16+length].split(b'\0', 1)[0]
+            pos += 16 + length
+            if name != b'present': return True  # Includes overflow and self/rename events.
+        return False
 
     def close(self):
         for fd in self.processes: os.close(fd)
@@ -356,13 +375,7 @@ class Events:
                     os.read(changes.wake_read, 65536)
                     if changes.anchor() != self.last_anchor: dirty = True
                 if watch.fd in ready:
-                    data = os.read(watch.fd, 65536)
-                    pos = 0
-                    while pos + 16 <= len(data):
-                        wd, mask, cookie, length = struct.unpack_from('iIII', data, pos)
-                        name = data[pos+16:pos+16+length].split(b'\0', 1)[0]
-                        pos += 16 + length
-                        if name != b'present': dirty = True  # Includes overflow and rename.
+                    dirty = dirty or Watch.changed(os.read(watch.fd, 65536))
                 if 'fs' in value['channels'] and changes.anchor() != anchor: dirty = True
             if not authorized(): raise ValueError('expired service generation')
             self.last_anchor = changes.anchor()

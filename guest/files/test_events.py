@@ -4,7 +4,7 @@ import os
 import pathlib
 import tempfile
 import unittest
-from event_stream import Events, Store, request
+from event_stream import Events, Store, Watch, request
 
 TASK = '12345678-1234-1234-1234-123456789abc'
 ID = 'a' * 32
@@ -91,6 +91,11 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.snapshot(channels=['agent.mailbox'],tasks=[{'id':TASK,'offset':0,'turn':2}]),[])
         p.write_text(json.dumps({'id':'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa','turn':1,'tool':'x','arguments':{}}))
         self.assertEqual(self.snapshot(channels=['agent.mailbox'],tasks=[{'id':TASK,'offset':0,'turn':1}]),[])
+    def test_overflow_rename_and_presence_filter(self):
+        import struct
+        self.assertTrue(Watch.changed(struct.pack('iIII',-1,0x4000,0,0)))
+        self.assertTrue(Watch.changed(struct.pack('iIII',1,0x80,7,4)+b'x\0\0\0'))
+        self.assertFalse(Watch.changed(struct.pack('iIII',1,0x8,0,8)+b'present\0'))
     def test_presence_mtime(self):
         self.put('.cache/caboose/bridge/a', b'')
         events = Events(self.directory); events.presence(True)

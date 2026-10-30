@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+from event_stream import Watch
+
 HERE = pathlib.Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
     home = pathlib.Path(temp)/'home'; home.mkdir()
@@ -22,8 +24,23 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
     token = pathlib.Path(temp)/'token'; token.write_text(secrets.token_hex(32))
     with socket.socket() as s: s.bind(('127.0.0.1',0)); port=s.getsockname()[1]
     env = dict(os.environ, CABOOSE_FILES_ROOT=str(home), CABOOSE_FILES_TOKEN_FILE=str(token), CABOOSE_FILES_PORT=str(port))
-    process = subprocess.Popen([sys.executable,str(HERE/'caboose-files.py')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     session = secrets.token_hex(16)
+    def directory(parts):
+        fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            for part in parts:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd); fd=child
+            return fd
+        except BaseException: os.close(fd); raise
+    task_id='12345678-1234-1234-1234-123456789abc'
+    (home/'Agents'/task_id/'approvals').mkdir(parents=True)
+    baseline_fds=len(list(pathlib.Path('/proc/self/fd').iterdir()))
+    for _ in range(32):
+        watch=Watch(directory,[{'id':task_id,'offset':0}]); watch.close()
+        watch=Watch(directory,[]); watch.close()
+    assert len(list(pathlib.Path('/proc/self/fd').iterdir()))==baseline_fds, 'watch descriptor leak'
+
     def call(path, data, auth=True):
         connection = http.client.HTTPConnection('127.0.0.1',port,timeout=25)
         try:
@@ -40,6 +57,7 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
                 if 'ctxt_switches:' in line: switches+=int(line.split(':')[1])
         children=(pathlib.Path('/proc')/str(process.pid)/'task'/str(process.pid)/'children').read_text().strip()
         return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children}
+    process = subprocess.Popen([sys.executable,str(HERE/'caboose-files.py')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
