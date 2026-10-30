@@ -22,6 +22,10 @@ uint64_t nextToken = 1;
 extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
                                            caboose_gpu_resolve_export resolve) {
     if (!get || !resolve) return EINVAL;
+    // The global entrypoint and exported trampolines must come from the same
+    // caller-owned provider; do not silently mix two Vulkan loaders.
+    if (reinterpret_cast<PFN_vkGetInstanceProcAddr>(resolve("vkGetInstanceProcAddr")) != get ||
+        !resolve("vkCreateInstance") || !resolve("vkDestroyInstance")) return EINVAL;
     std::lock_guard<std::mutex> lock(mutex);
     if (attempted) {
         if (get != installedGet || resolve != installedResolve) return EBUSY;
