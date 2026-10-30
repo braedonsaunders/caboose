@@ -52,7 +52,7 @@ export async function readPhoneFile(guest: AgentGuest | undefined, id: string): 
   return { data: Buffer.concat(parts).toString('base64') }
 }
 
-/** At-most-once delivery while an authenticated control client is connected. */
+/** Validated delivery while an authenticated control client is connected; transport retries may replay. */
 export class PhoneHandoff {
   private timer?: () => void
   private polling = false

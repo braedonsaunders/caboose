@@ -57,8 +57,21 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
         for line in (pathlib.Path('/proc')/str(process.pid)/'status').read_text().splitlines():
             if 'ctxt_switches:' in line: switches+=int(line.split(':')[1])
         children=(pathlib.Path('/proc')/str(process.pid)/'task'/str(process.pid)/'children').read_text().strip()
-        return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children}
-    process = subprocess.Popen([sys.executable,str(HERE/'caboose-files.py')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children,'python_process_creation_events':len(audit.read_text().splitlines())}
+    audit = pathlib.Path(temp)/'process-events'
+    audit.write_text('')
+    # CPython audit events count fork/spawn/exec attempts, including short-lived children
+    # that a /proc children snapshot misses. Native extension syscalls are outside this metric.
+    wrapper = """import os,runpy,sys
+fd=os.open(sys.argv[2],os.O_WRONLY|os.O_APPEND)
+def audit(event,args):
+    if event in ('os.fork','os.forkpty','os.posix_spawn','os.exec','subprocess.Popen'):
+        os.write(fd,(event+'\\n').encode())
+sys.addaudithook(audit)
+sys.path.insert(0,os.path.dirname(sys.argv[1]))
+runpy.run_path(sys.argv[1],run_name='__main__')
+"""
+    process = subprocess.Popen([sys.executable,'-c',wrapper,str(HERE/'caboose-files.py'),str(audit)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
@@ -103,11 +116,12 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
                 # Wake only the synthetic queue, then ACK it.
                 queue=home/'.cache/caboose/phone/queue'; path=queue/'wake.json'; path.write_text('{"type":"phone.open","url":"https://example.com"}')
                 status,result=pending.result(); assert status==200,result
-                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'main_thread_context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children']}))
+                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'main_thread_context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children'],'python_process_creation_events':after['python_process_creation_events']-before['python_process_creation_events']}))
                 status,result=call('/events',req('',acks=[r['receipt'] for r in result['records'] if 'receipt' in r])); cursor=result['cursor']
             assert call('/events/presence',{'session':session,'generation':2,'phone':False})[0]==200
             assert call('/events/presence',{'session':session,'generation':1,'phone':True})[0]==409
             assert not (bridge/'present').exists()
+        assert not audit.read_text(), 'event path forked or executed a Python subprocess'
         print(json.dumps({'publish_to_response_ms':samples,'max_ms':max(samples),'checks':'passed'}))
     finally:
         process.terminate()
