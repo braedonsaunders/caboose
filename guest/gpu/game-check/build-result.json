@@ -4,6 +4,7 @@
   "clean_builds_identical": 2,
   "upstream_files_unchanged": true,
   "architecture": "linux-amd64",
-  "runtime_executed": false,
-  "phone_gpu_proven": false
+  "runtime_executed": true,
+  "phone_gpu_proven": false,
+  "runtime_kind": "separate native-Wayland lavapipe software reference"
 }

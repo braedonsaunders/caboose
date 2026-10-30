@@ -91,3 +91,34 @@ ICD. The launcher does not fall back to X11, select a fake ICD, modify memory
 properties, or install anything. Keep writable game data/config in the private
 fixture directory. Live phone presentation, shader/feature compatibility, and
 host-visible memory synchronization are separate integration checks.
+
+## Software reference
+
+[evidence/software-last-frame.png](evidence/software-last-frame.png) shows the
+LibreQuake Episode 0 start room, weapon and HUD, decoded from the thirtieth captured
+H.264 frame. The run uses the same binary hash as both clean builds. Its
+[receipt](evidence/software-receipt.json) and [game log](evidence/software-game.log)
+record a native SDL Wayland window and Mesa llvmpipe (LLVM 19.1.7), Mesa
+25.0.7-2+deb13u1. This is software-reference gameplay rendering, not phone GPU proof.
+The original run ACKed frame timestamps but did not retain their array. The fixture
+now retains `frames.json`; that persistence addition has no second game run.
+
+`run-software-reference.py` uses the existing immutable runtime image
+`sha256:9533a07319ad0d36f47b72d85658495693d54999ffca13187ff9abefa5820361`
+and a compositor whose exact SHA-256 is checked by both scripts. It requires an
+already prepared private bundle and existing compositor artifact; it downloads
+nothing. After coordinating the remote runtime slot, run on that Linux host:
+
+```sh
+sudo python3 run-software-reference.py \
+  --task /absolute/private/game-task --compositor-dir /absolute/private/compositor
+```
+
+The supervisor creates a new evidence directory for UID 1000, mounts only private
+fixture artifacts, and runs a network-isolated, read-only container with two CPUs,
+3 GiB, 256 PIDs, a 55-second internal timeout and a 60-second outer bound. It removes
+and independently checks absence of its exact container. The fixture verifies the
+private Wayland/control socket peer and empty seat before starting the game, selects
+`lvp_icd.json`, acknowledges encoded frames only, and decodes the last frame with
+FFmpeg. Review the resulting PNG and actual device log before interpreting success.
+No owner display, phone, GPU device, or production service is involved.
