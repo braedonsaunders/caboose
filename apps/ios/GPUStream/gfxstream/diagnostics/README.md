@@ -88,3 +88,12 @@ After compiling the probe separately against the original and patched translator
 libraries, run `check-spirv-multiplane.sh BASELINE PATCHED` to check the expected
 successes and failures in both registration orders, descriptor counts and decoy
 stage/set cases.
+
+`layer-query.cpp` calls one explicitly loaded provider directly, without a Vulkan
+loader that could normalize layer names. Run `null`, `empty`, `unknown`, and
+`known` in separate processes; append `device` to enumerate a real physical device
+and test its extension query. `known` comes from actual provider layer enumeration.
+Missing layers must return `VK_ERROR_LAYER_NOT_PRESENT`; the patch's error path
+also leaves count and property sentinels untouched. Null and known-layer controls
+check actual count/property consistency. A process crash is a failed case, not an
+unsupported result. This source fixture is not yet compiled or executed.
