@@ -50,7 +50,7 @@
 +        std::unique_ptr<CaboosePresentationObjects>* out);
 --- a/host/vulkan/vk_decoder_global_state.cpp
 +++ b/host/vulkan/vk_decoder_global_state.cpp
-@@ -320,0 +321,83 @@
+@@ -320,0 +321,87 @@
 +
 +    VkResult acquireCaboosePresentationObjects(uint32_t contextId, VkInstance boxedInstance,
 +        VkDevice boxedDevice, VkQueue boxedQueue, VkImage boxedImage, VkFormat format,
@@ -100,6 +100,10 @@
 +            if (otherImage != image && otherInfo.memory == imageInfo->memory)
 +                return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
++        for (const auto& [buffer, bufferInfo] : mBufferInfo) {
++            (void)buffer;
++            if (bufferInfo.memory == imageInfo->memory) return VK_ERROR_FEATURE_NOT_PRESENT;
++        }
 +        std::vector<SemaphoreInfo*> semInfos;
 +        semInfos.reserve(waitCount);
 +        result->waitSemaphores.reserve(waitCount);
@@ -134,7 +138,7 @@
 +        *out = std::move(result);
 +        return VK_SUCCESS;
 +    }
-@@ -1533,0 +1617,9 @@
+@@ -1533,0 +1621,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -144,7 +148,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3251 +3343,9 @@
+@@ -3251 +3347,9 @@
 -
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
@@ -155,9 +159,9 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3253 +3352,0 @@
+@@ -3253 +3356,0 @@
 -
-@@ -3645,0 +3745,9 @@
+@@ -3645,0 +3749,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -167,7 +171,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -4562,0 +4671,9 @@
+@@ -4562,0 +4675,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -177,7 +181,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -7527,0 +7645,9 @@
+@@ -7527,0 +7649,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -187,7 +191,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -11928,0 +12055,14 @@
+@@ -11928,0 +12059,14 @@
 +VkResult VkDecoderGlobalState::acquireCaboosePresentationObjects(
 +    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkQueue boxedQueue,
 +    VkImage boxedImage, VkFormat format, uint32_t width, uint32_t height, uint32_t queueFamily,
