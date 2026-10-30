@@ -76,7 +76,9 @@ This directory is a Cargo workspace:
   through text-input-v3, whose enable/disable is reported with `text_input` (also to a
   client that connects after a field was focused); deletions are BackSpace/Delete
   presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
-  terminals) get the commit as key presses.
+  terminals) get the commit as key presses. The virtual pointer publishes paired absolute
+  and relative motion in one frame, retaining one Xwayland source device for XI2 scrolling.
+  Relative deltas use logical coordinates and receive no additional acceleration.
 - **Reconnecting.** Every hello carries the process's random `epoch` (16 hex characters,
   from `/dev/urandom` at start), so a client can tell that window ids still name the same
   windows. A hello's `window.create` messages are all written before the next client
@@ -414,10 +416,15 @@ owned child. RECORD does not contain the full valuator payload; the owned XI2 cl
 supplies that independent oracle. No other application's XI selection is changed.
 
 The fixture also models a consumer that discards the first sample after a source-device
-switch, as Chromium's X11 event handling does. `--xi2-oracle switching` requires repeated
+switch, as Chromium's X11 event handling does. `--xi2-consumption switching` requires repeated
 source switches and zero consumed deltas despite an advancing valuator;
-`--xi2-oracle stable` requires no switch during the second wheel and one consumed
-increment. These are explicit negative/positive assertions, not automatic workarounds.
+`--xi2-consumption stable` requires no switch during the second wheel and one consumed
+increment. `--moving-anchor` also moves the second wheel's position within the owned
+child and verifies its root and local coordinates. These product assertions use the
+owned client's events independently of RECORD. The separate `--xi2-oracle` modes require
+the same assertions plus successful recording; they fail when RECORD misses delivery.
+XI2 RECORD observation is unavailable in the pinned 24.1.6 private fixture despite
+verified owned-client delivery; an empty observer result does not mean no delivery.
 `python3 scripts/test_x11_scroll_xi2.py` checks the LP64 Xlib/XInput2 layouts, packed
 valuator masks, scroll-class increments and both baseline-consumption sequences without
 opening a display. Bound the runtime fixture with `timeout --kill-after=2 20` on a
@@ -433,6 +440,19 @@ scrolling; `dix/getevents.c::UpdateFromMaster` emits the source-switch notificat
 The official `xwayland-24.1.6.tar.xz` SHA-256 is
 `737e612ca36bbdf415a911644eb7592cf9389846847b47fa46dc705bd754d2d7`.
 This consumer fixture does not establish which Chromium revision an application embeds.
+
+`scripts/check-pointer-scroll-clients.py --control /path/to/private/control.sock
+--compositor-pid PID --token-file /private/runtime/token --port 15499` validates real
+Chromium content scrolling under X11 and native Wayland. It requires the existing
+Chromium binary and Python websockets, verifies private socket/process/authority pairing
+before launching either client, and refuses a nonempty seat. It uses separate temporary
+profiles and the local `pages/pointer-scroll.html`, with no external content or CDP input.
+At display scale 1.5, protocol pointer messages must move the page's pointer, deliver a
+button drag and release, and scroll actual content with both ordinary wheels and precise
+deltas while the anchor moves. Fixture-generated event counts and `scrollY` are the
+oracle; the page does not implement scrolling itself. Run in the private networkless
+container under a 20-second process deadline. The script closes its session and browser
+process groups, and the harness reaps its compositor and entire container.
 
 ### Fullscreen output resize regression
 

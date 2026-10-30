@@ -826,6 +826,7 @@ smithay::delegate_xdg_shell!(State);
 smithay::delegate_xdg_decoration!(State);
 smithay::delegate_kde_decoration!(State);
 smithay::delegate_seat!(State);
+smithay::delegate_relative_pointer!(State);
 smithay::delegate_data_device!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_output!(State);

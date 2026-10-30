@@ -356,6 +356,13 @@ Client → server (`0x81`–`0xFF`):
 
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
 
+Each pointer message positions the virtual pointer, pairs that absolute motion with
+`relative-pointer-v1` motion for clients that bind it, then delivers buttons and scroll
+axes in the same frame. The relative vector is the change in logical pointer position;
+the guest applies no acceleration. The two motion timestamps share one monotonic sample
+(milliseconds for `wl_pointer`, microseconds for relative motion). This does not change
+the pointer message's pixel coordinates or its precise-pixel versus wheel-click units.
+
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
   one temporal unit of low-overhead OBUs with the sequence header on keyframes.
 - `text` is text-input-v3. Deletions (`delete_before`, `delete_after`, in grapheme

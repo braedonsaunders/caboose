@@ -35,8 +35,13 @@ def main():
     ap.add_argument('--control', required=True)
     ap.add_argument('--compositor-pid', required=True, type=int)
     ap.add_argument('--record-oracle', action='store_true')
-    ap.add_argument('--xi2-oracle', choices=('observe', 'switching', 'stable'),
-                    help='Add XI2/class/RECORD checks and optionally require baseline loss or consumption')
+    xi_options = ap.add_mutually_exclusive_group()
+    xi_options.add_argument('--xi2-oracle', choices=('observe', 'switching', 'stable'),
+                           help='Require XI2 RECORD observation as well as owned-client delivery')
+    xi_options.add_argument('--xi2-consumption', choices=('switching', 'stable'),
+                           help='Test owned-client delivery and baseline consumption independently of RECORD')
+    ap.add_argument('--moving-anchor', action='store_true',
+                    help='Move the second XI2 wheel anchor inside the owned child')
     args = ap.parse_args()
 
     def seat(command):
@@ -155,14 +160,16 @@ def main():
                 assert len(events) <= 256, 'Fixture event limit exceeded'
             return events
 
-        def pointer_position():
+        def pointer_position(expected=None):
+            expected = expected or [x, y]
             root, under = U(), U()
             rx, ry, lx, ly, buttons = I(), I(), I(), I(), C.c_uint()
             assert X.XQueryPointer(display, child, C.byref(root), C.byref(under), C.byref(rx),
                                    C.byref(ry), C.byref(lx), C.byref(ly), C.byref(buttons))
             row = dict(root_xy=[rx.value, ry.value], local_xy=[lx.value, ly.value],
                        child=under.value, buttons=buttons.value)
-            assert row['root_xy'] == [x, y] and row['local_xy'] == [48, 48], row
+            local = [48 + expected[0] - x, 48 + expected[1] - y]
+            assert row['root_xy'] == list(expected) and row['local_xy'] == local, row
             assert not buttons.value and not under.value, row
             return row
 
@@ -199,7 +206,7 @@ def main():
             assert not recorder.errors, 'RECORD callback errors'
             assert recorded == expected_events, f'RECORD oracle differs: {recorded} != {expected_events}'
             print('PASS: RECORD sees every core wheel pair received by the owned X client')
-        if args.xi2_oracle:
+        if args.xi2_oracle or args.xi2_consumption:
             from x11_record import Recorder
             from x11_scroll_xi2 import XI2, BaselineConsumer, wheel_sample, assert_wheel_delta
             xi = XI2(X, display, child)
@@ -207,48 +214,54 @@ def main():
             collect()  # Finish selection before starting the oracle.
             devices = xi.devices()
             consumer = BaselineConsumer(devices)
-            recorder = Recorder(3, recipients={child})  # AllClients, as in the live reader.
+            recorder = Recorder(3, recipients={child}) if args.xi2_oracle else None
             print(json.dumps({'xi_version': xi.version, 'devices': devices,
                               'pointer_before': pointer_position(),
-                              'record_registered': recorder.registered}), flush=True)
+                              'record_registered': recorder.registered if recorder else None}), flush=True)
             xi_results = []
             for number in range(2):
-                response = seat(f'scroll {x} {y} 0 1')
+                anchor = [x + 24 * number, y + 16 * number] if args.moving_anchor else [x, y]
+                response = seat(f'scroll {anchor[0]} {anchor[1]} 0 1')
                 assert response['window'] == target['id']
                 events = collect()
                 current_devices = xi.devices()
                 row = dict(path=f'xi-wayland-wheel-{number + 1}', events=events,
                            sample=wheel_sample(events, current_devices),
                            consumer_offsets=consumer.consume(events),
-                           pointer_after=pointer_position(), devices_after=current_devices)
+                           pointer_after=pointer_position(anchor), devices_after=current_devices)
                 xi_results.append(row)
                 print(json.dumps(row), flush=True)
-            recorder.close()
-            print(json.dumps({'xi_record_events': recorder.events,
-                              'xi_record_categories': recorder.categories,
-                              'xi_record_errors': recorder.errors}), flush=True)
             delta = assert_wheel_delta(xi_results[0]['sample'], xi_results[1]['sample'])
             expected_xi = [(e['type'], e['button'], e['time'], e['recipient'])
                            for r in xi_results for e in r['events'] if e['kind'] == 'XI']
-            actual_xi = [(e['type'], e['button'], e['time'], e['recipient'])
-                         for e in recorder.events if e['kind'] == 'XI']
             assert expected_xi, 'Owned XI2 client received nothing'
-            assert not recorder.errors and actual_xi == expected_xi, (actual_xi, expected_xi)
             assert all(not any(e['kind'] == 'core' for e in r['events']) for r in xi_results), \
                 'Unexpected duplicate core delivery while XI2 selection is active'
-            print('PASS: XI2 values advance one class increment and RECORD matches received pointer headers')
+            print('PASS: owned XI2 values advance one class increment at the requested coordinates')
             offsets = [r['consumer_offsets'] for r in xi_results]
-            if args.xi2_oracle == 'switching':
+            mode = args.xi2_consumption or args.xi2_oracle
+            if mode == 'switching':
                 assert offsets == [[0.0], [0.0]], offsets
                 for r in xi_results:
                     switches = [e['source'] for e in r['events'] if e['kind'] == 'changed' and e['reason'] == 1]
                     assert len(set(switches)) >= 2, switches
                 print('PASS: current-path negative control loses both deltas after source switches')
-            elif args.xi2_oracle == 'stable':
+            elif mode == 'stable':
                 assert offsets == [[0.0], [-1.0]], offsets
                 assert not any(e['kind'] == 'changed' and e['reason'] == 1 for e in xi_results[1]['events'])
                 print('PASS: stable source preserves baseline and consumes the second wheel increment')
             print(json.dumps({'smooth_delta': delta, 'consumer_offsets': offsets}), flush=True)
+            if recorder:
+                recorder.close()
+                print(json.dumps({'xi_record_events': recorder.events,
+                                  'xi_record_categories': recorder.categories,
+                                  'xi_record_errors': recorder.errors}), flush=True)
+                actual_xi = [(e['type'], e['button'], e['time'], e['recipient'])
+                             for e in recorder.events if e['kind'] == 'XI']
+                assert not recorder.errors and actual_xi == expected_xi, (actual_xi, expected_xi)
+                print('PASS: RECORD matches owned-client XI2 pointer headers')
+            else:
+                print('NOT RUN: XI2 RECORD diagnostic oracle; product assertions use owned-client events')
     finally:
         if recorder:
             recorder.close()

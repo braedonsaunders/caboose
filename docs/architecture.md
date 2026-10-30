@@ -2638,7 +2638,11 @@ and restores its dock.
   and suppresses leftover touches. A gesture guide is available in both control surfaces.
   System-reserved/accessibility gestures, Force Touch and app-specific rotation are not emulated.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
-  `GCMouse`.
+  `GCMouse`. The guest's virtual pointer pairs absolute positioning with relative
+  motion in the same Wayland frame, followed by buttons and scroll axes. This keeps
+  Xwayland motion and scrolling on one source device so XI2 clients retain their
+  scroll baselines. Positions and deltas use logical coordinates after display-scale
+  conversion; the guest adds no pointer acceleration.
 - **Keyboard.** The iOS keyboard works through `UITextInput`, so autocorrect, QuickPath,
   dictation, emoji and marked-text input (Chinese, Japanese, Korean) work. The client keeps
   a `TypingBuffer` of the field's text before the remote caret and turns each edit iOS makes
