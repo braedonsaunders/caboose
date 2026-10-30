@@ -453,7 +453,8 @@ fn run(config: Config) -> Result<(), String> {
     if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
         let grants = gpu_grant::Grants::new().map_err(|e| format!("private GPU entropy: {e}"))?;
         let token = state.config.token_file.as_ref().ok_or("private GPU requires authentication")?;
-        state.net.enable_private_gpu(token, stream, surface, &handle).map_err(|e| format!("private GPU supervisor: {e}"))?;
+        state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, &handle)
+            .map_err(|e| format!("private GPU supervisor: {e}"))?;
         state.gpu_grants = Some(grants);
     }
 

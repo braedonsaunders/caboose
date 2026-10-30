@@ -21,7 +21,7 @@ pub struct GpuSupervisor {
 impl GpuSupervisor {
     /// Starts exactly one child at owner-compositor startup, not on an incoming
     /// HTTP request. `token_file` is a path, never a bearer token in argv.
-    pub fn start(token_file: &Path, local_socket: &Path, surface_socket: &Path) -> io::Result<Self> {
+    pub fn start(token_file: &Path, local_socket: &Path, surface_socket: &Path, indexed: bool) -> io::Result<Self> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let parent = local_socket.parent().ok_or_else(|| io::Error::other("missing GPU socket directory"))?;
         if surface_socket.parent() != Some(parent) || local_socket == surface_socket {
@@ -49,16 +49,11 @@ impl GpuSupervisor {
         // SAFETY: into_raw_fd transfers sole ownership into Stdio. The descriptor
         // becomes fd 0 in the child and is closed in this process after spawn.
         let input = unsafe { Stdio::from_raw_fd(child_ipc.into_raw_fd()) };
-        let child = Command::new(BROKER)
-            .arg("--control-fd=0")
-            .arg("--token-file")
-            .arg(token_file)
-            .arg("--socket")
-            .arg(local_socket)
-            .arg("--surface-socket")
-            .arg(surface_socket)
-            .stdin(input)
-            .spawn()?;
+        let mut command = Command::new(BROKER);
+        command.arg("--control-fd=0").arg("--token-file").arg(token_file)
+            .arg("--socket").arg(local_socket).arg("--surface-socket").arg(surface_socket).stdin(input);
+        if indexed { command.arg("--private-indexed"); }
+        let child = command.spawn()?;
         Ok(Self { ipc: Some(parent), child })
     }
 
@@ -308,9 +303,10 @@ impl GpuRouter {
         token_file: &Path,
         local_socket: &Path,
         surface_socket: &Path,
+        indexed: bool,
         deliver: impl Fn(RouteEvent) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let mut supervisor = GpuSupervisor::start(token_file, local_socket, surface_socket)?;
+        let mut supervisor = GpuSupervisor::start(token_file, local_socket, surface_socket, indexed)?;
         let ipc = supervisor.clone_ipc()?;
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let deliver: std::sync::Arc<dyn Fn(RouteEvent) + Send + Sync> = std::sync::Arc::new(deliver);

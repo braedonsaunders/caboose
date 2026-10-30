@@ -116,6 +116,7 @@ The image contains:
   with both private Unix socket paths configured; the paths share an owner-only
   directory. The broker uses the per-wake display token and is stopped with its
   compositor. The private transport does not enable a public GPU ICD.
+  Its indexed v4 handshake is selected only with `--private-gpu-indexed`.
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
