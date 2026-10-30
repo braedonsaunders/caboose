@@ -122,7 +122,10 @@ public final class LiveGPUPresentationOwners {
         }
         // A duplicated visible owner is not resolved by picking an arbitrary view.
         guard candidates.count < 2 else { throw unavailable(EBUSY) }
-        guard let view = candidates.first, let size = extent(view) else {
+        guard let view = candidates.first, let window = view.remoteWindow else { throw unavailable(EAGAIN) }
+        let display = (view.session ?? view.pacer) as? CabooseDisplaySession
+        guard let size = LiveGPUDrawableGeometry.extent(serverPixels: window.frame.size,
+            visibleBounds: view.bounds.size, requestedPixels: display?.pendingPresentationSize(window)) else {
             throw unavailable(EAGAIN)
         }
         #if DEBUG && canImport(CabooseGPUMemoryAudit)

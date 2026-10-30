@@ -8,6 +8,12 @@ final class LiveGPUDrawableGeometryTests: XCTestCase {
             XCTAssertEqual(LiveGPUDrawableGeometry.extent(serverPixels: CGSize(width: 640, height: 480), visibleBounds: bounds), CGSize(width: 640, height: 480))
         }
     }
+    func testKnownResizeMustBeConfirmedBeforeBinding() {
+        let old = CGSize(width: 932, height: 1356), requested = CGSize(width: 763, height: 1116)
+        let view = CGSize(width: 381.5, height: 558)
+        XCTAssertNil(LiveGPUDrawableGeometry.extent(serverPixels: old, visibleBounds: view, requestedPixels: requested))
+        XCTAssertEqual(LiveGPUDrawableGeometry.extent(serverPixels: requested, visibleBounds: view, requestedPixels: requested), requested)
+    }
     func testNewServerPixelSizeChangesDrawable() {
         XCTAssertEqual(LiveGPUDrawableGeometry.extent(serverPixels: CGSize(width: 1280, height: 960), visibleBounds: CGSize(width: 320, height: 240)), CGSize(width: 1280, height: 960))
     }

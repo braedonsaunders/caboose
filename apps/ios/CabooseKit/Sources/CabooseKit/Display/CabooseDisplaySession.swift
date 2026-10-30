@@ -722,6 +722,12 @@ public final class CabooseDisplaySession: DisplaySession {
         }
     }
 
+    // A GPU owner must not bind the old extent while a known resize is in flight.
+    // This is a request, not fabricated server geometry; only matching metadata confirms it.
+    func pendingPresentationSize(_ window: RemoteWindow) -> CGSize? {
+        pendingGeometry[window.id]?.geometry.size
+    }
+
     // MARK: Windows
 
     public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {

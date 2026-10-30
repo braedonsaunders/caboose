@@ -200,7 +200,8 @@ does not multiply the drawable size. A mixed
 zero pair is invalid. A positive pair asserts equality with the actual owner
 extent; it cannot set UIKit geometry. Missing, ambiguous or unlaid-out ownership
 can wait up to three seconds for real display metadata and view layout to arrive
-on the separate channel. State changes retry resolution; there is no polling or
+on the separate channel. A known outstanding window resize must match server
+metadata before initial attachment. State changes retry resolution; there is no polling or
 synthetic geometry. Expiry returns `EAGAIN`, and executor cancellation returns
 `ECANCELED`. Known wrong epochs and ambiguous owners reject immediately. Only
 the consumer worker waits; main continues processing display and layout events.
