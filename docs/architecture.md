@@ -2622,7 +2622,7 @@ foreground. Desktop Full Screen opens a borderless window card with a return han
 The desktop app launcher accepts horizontal swipes as well as its page arrows.
 
 The name on Home opens a menu of explicitly paired computers, with the active computer
-checked. The same switcher remains available while connecting, parked, reconnecting or
+checked. Desktop controls and the tab toolbar also offer this menu, including when a desktop file request fails. The same switcher remains available while connecting, parked, reconnecting or
 out of reach, without signing out or discarding a pairing. Add Computer uses the existing pairing flow and retains the other pairings.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing

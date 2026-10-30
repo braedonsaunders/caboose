@@ -122,7 +122,7 @@ struct ComputerStateView: View {
     }
 }
 
-/// Every tab's trailing pair: the Computer settings, and the lifecycle menu below it.
+/// Every tab offers saved computers, settings and the lifecycle menu.
 /// They overflow last when the vertical bar runs short of room.
 struct ComputerToolbar: ToolbarContent {
     var body: some ToolbarContent {
@@ -135,6 +135,7 @@ struct ComputerToolbar: ToolbarContent {
 
     private var items: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            ComputerSwitcher { Image(systemName: "desktopcomputer") }
             ComputerSettingsButton()
             LifecycleMenu()
         }
