@@ -79,6 +79,10 @@ def main():
     if len(sys.argv) not in (5, 6) or (len(sys.argv) == 6 and sys.argv[5] != '--plan'):
         raise SystemExit('usage: relink_private.py DATABASE LINK_ARGV_JSON SOURCE OUT [--plan]')
     database, link_file, source, output = map(Path, sys.argv[1:5])
+    # Quoted includes search the translation unit's own directory first. Both
+    # rebuilt socket users must see the same canonical class layout as the WSI.
+    if digest(source / 'SocketStream.h') != digest(source / 'caboose-wsi/SocketStream.h'):
+        raise ValueError('canonical socket headers differ')
     commands = plan(database, link_file, source, output)
     manifest = {'cwd': '/work/build-private', 'commands': commands,
                 'database_sha256': digest(database), 'link_argv_sha256': digest(link_file),

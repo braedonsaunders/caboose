@@ -28,7 +28,7 @@
     "../prepare_virtual_wsi_surface.py": "9ca0911608acbe5405ce1ebe194c6e0a792d404f88f3f2447fb8e13e1b2666eb",
     "test_indexed.cpp": "4bd83cf66870b47aec510a4602066d7fdf0f9c38d440ade81e302e5fdce919b2",
     "mesa_swapchain.inc": "032a78b4842dd390046d5fc6e63c9d36ea992b74db8ced60f1e1eff206d69f95",
-    "relink_private.py": "e99e632524bc2d03b0767e2f4a214b53e9be822158a63ff4b03440670f9ec808"
+    "relink_private.py": "9e65605c9ebeb2e9855b1bab979a9e4587bcd4dfddd4aebac0f07e1aa43050b9"
   },
   "mesaSurfaceSyntax": {
     "scope": "one device translation unit, syntax only, no link or runtime evidence",
