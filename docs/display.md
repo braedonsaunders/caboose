@@ -803,4 +803,4 @@ reusing an inherited editor instance. The guest agent-profile launcher supplies 
 values; the owner compositor's environment contract is unchanged. This changes no display
 wire messages. See [persistent agent profiles](../guest/desktop-mcp/README.md#persistent-agent-gui-profiles).
 
-The isolated phone acceptance profile sets `CABOOSE_ATLAS_NO_REFS=1` on the compositor. It sends full lossless tiles instead of cache references while cache publication ordering is under validation. Copies and fills remain available; this profile does not establish cache-reference correctness.
+`CABOOSE_ATLAS_NO_REFS=1` disables cache references for isolated diagnostics and sends full lossless tiles instead. Copies and fills remain available. With this option unset, atlas sessions use references only to published cache entries; publication revalidates entries against eviction.
