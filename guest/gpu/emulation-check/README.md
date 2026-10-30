@@ -103,3 +103,29 @@ They reject zero results, a stale cookie (including a prior invocation's respons
 image, an empty draw and a truncated readback. Their generated test bytes are never
 used by the native runner and are not rendering evidence. Both compute cases are
 selectable using `--case`; they do not modify the relay/player's separate vkcube fixture.
+
+## Live client entry point
+
+`CMakeLists.txt` defines a portable real-loader Vulkan executable and SPIR-V build
+commands. It requires a Vulkan SDK, `glslangValidator`, `spirv-val`, CMake and a
+C++20 compiler. This target has not yet been built or exercised on Linux.
+
+```sh
+cmake -S guest/gpu/emulation-check -B /absolute/private/acceptance-build -G Ninja
+cmake --build /absolute/private/acceptance-build --parallel 1
+python3 guest/gpu/emulation-check/run_live.py \
+  --renderer /absolute/private/acceptance-build/caboose_vulkan_acceptance \
+  --shaders /absolute/private/acceptance-build/shaders \
+  --output /absolute/private/new-results
+```
+
+The live runner does not build or install anything. It runs the prebuilt client
+with a fresh challenge and a 15-second bound per case. `--icd` selects an actual
+driver manifest for that process; it does not change global registration. The
+default case requires CPU feedback and a subsequent draw. The output records
+binary and SPIR-V hashes, the issued challenge, returned words, image samples and
+exit status. Capability-simulation and capture overrides are rejected.
+
+A client pass alone does not prove where its GPU work executed. Physical-phone
+acceptance also requires independently matched executor/device evidence. The
+experimental socket driver remains gated; this entry point does not enable it.
