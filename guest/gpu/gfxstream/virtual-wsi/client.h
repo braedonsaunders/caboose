@@ -18,6 +18,7 @@ public:
     Record query(uint64_t request, uint64_t physical, Deadline deadline);
     Record present(const Bytes& suffix, Deadline deadline);
     void waitReleased(uint64_t serial, Deadline deadline);
+    uint64_t waitAnyReleased(Deadline deadline);
     void consumeRelease(uint64_t serial);
     Record retire(Deadline deadline);
     bool retired() const { return retired_; }
@@ -30,6 +31,7 @@ private:
     [[noreturn]] void fail(int error);
     int fd_ = -1;
     bool bound_ = false, retiring_ = false, retired_ = false;
+    bool releaseWait_ = false;
     Identity identity_{};
     struct Source { bool released = false; bool result = false; };
     std::map<uint64_t, Source> sources_;

@@ -18,12 +18,15 @@ Client::~Client() { if (fd_>=0) close(fd_); }
 void Client::ready(short events, Deadline deadline) {
     for (;;) {
         auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
-        if (left<=0) fail(ETIMEDOUT);
+        if (left<=0 && !releaseWait_) fail(ETIMEDOUT);
         pollfd p{fd_,events,0};
-        int result=poll(&p,1,int(std::min<int64_t>(left,INT_MAX)));
+        int result=poll(&p,1,int(std::max<int64_t>(0,std::min<int64_t>(left,INT_MAX))));
         if (result<0 && errno==EINTR) continue;
         if (result<0) fail(errno);
-        if (!result) fail(ETIMEDOUT);
+        if (!result) {
+            if (releaseWait_) throw std::system_error(ETIMEDOUT, std::generic_category());
+            fail(ETIMEDOUT);
+        }
         if (p.revents & events) return;
         fail(ECONNRESET);
     }
@@ -82,7 +85,7 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
             auto it=sources_.find(u64(r.body,40));
             if (it==sources_.end() || it->second.released) fail(EPROTO);
             it->second.released=true;
-            if (kind==22 && u64(r.body,40)==serial) return r;
+            if (kind==22 && (!serial || u64(r.body,40)==serial)) return r;
             continue;
         }
         if (r.kind!=kind || (serial && u64(r.body,40)!=serial)) fail(EPROTO);
@@ -90,7 +93,7 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
     }
 }
 Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline) {
-    require(!bound_ && instance && object);
+    require(!bound_ && instance && object && bool(width)==bool(height));
     Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,0);
     send(16,p,deadline); auto r=await(17,0,deadline);
     if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
@@ -126,7 +129,18 @@ bool Client::released(uint64_t serial) const {
 }
 void Client::waitReleased(uint64_t serial, Deadline deadline) {
     require(bound_ && sources_.count(serial));
-    if (!released(serial)) await(22,serial,deadline);
+    releaseWait_=true;
+    try { if (!released(serial)) await(22,serial,deadline); }
+    catch (...) { releaseWait_=false; throw; }
+    releaseWait_=false;
+}
+uint64_t Client::waitAnyReleased(Deadline deadline) {
+    require(bound_ && !sources_.empty());
+    for (const auto& item:sources_) if (item.second.released) return item.first;
+    releaseWait_=true;
+    try {
+        auto result=await(22,0,deadline); releaseWait_=false; return u64(result.body,40);
+    } catch (...) { releaseWait_=false; throw; }
 }
 void Client::consumeRelease(uint64_t serial) {
     require(released(serial) && sources_.at(serial).result);

@@ -31,6 +31,7 @@ static void exercise(int scenario) {
     if (!child) {
         int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
         auto bind=recvPacket(fd,16); assert(bind.size()==40 && u64(bind,16)==7 && u32(bind,24)==13);
+        assert(u32(bind,28)==0 && u32(bind,32)==0);
         Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
         sendPacket(fd,17,bound);
         recvPacket(fd,18);
@@ -48,14 +49,19 @@ static void exercise(int scenario) {
         else {
             sendPacket(fd,21,result);
             if (scenario==0) sendPacket(fd,22,release);
-            recvPacket(fd,23); auto retired=id(); appendStatus(retired); sendPacket(fd,24,retired);
+            recvPacket(fd,23);
+            if (scenario==5) sendPacket(fd,22,release);
+            auto retired=id(); appendStatus(retired); sendPacket(fd,24,retired);
         }
         close(fd); _exit(0);
     }
     close(listener);
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
     Client client; client.connect(path.c_str(),deadline);
-    assert(status(client.bind(7,13,640,480,deadline).body,48).success());
+    bool mixedRejected=false;
+    try { client.bind(7,13,0,480,deadline); } catch (const ProtocolError&) { mixedRejected=true; }
+    assert(mixedRejected);
+    assert(status(client.bind(7,13,0,0,deadline).body,48).success());
     assert(client.query(1,11,deadline).body.size()==156);
     Bytes present; for (auto v:{4,11,13,15}) put64(present,v);
     for (auto v:{44,640,480,1,0,2}) put32(present,v);
@@ -64,11 +70,21 @@ static void exercise(int scenario) {
     try {
         auto result=client.present(present,deadline); assert(status(result.body,48).success());
         if (scenario==0) assert(!client.released(4)); // RESULT is not release
-        client.waitReleased(4,deadline); assert(client.released(4));
-        client.consumeRelease(4); assert(!client.released(4));
-        assert(!client.retired()); client.retire(deadline); assert(client.retired());
+        if (scenario==5) {
+            bool timedOut=false;
+            try { client.waitAnyReleased(std::chrono::steady_clock::now()); }
+            catch (const std::system_error& e) { assert(e.code().value()==ETIMEDOUT); timedOut=true; }
+            assert(timedOut && !client.released(4) && !client.retired());
+            client.retire(deadline); // timeout did not destroy the connection
+            assert(client.released(4) && client.retired());
+            client.consumeRelease(4);
+        } else {
+            client.waitReleased(4,deadline); assert(client.released(4));
+            client.consumeRelease(4); assert(!client.released(4));
+            assert(!client.retired()); client.retire(deadline); assert(client.retired());
+        }
     } catch (const std::system_error&) { failed=true; }
-    assert(failed==(scenario>=2));
+    assert(failed==(scenario>=2 && scenario<=4));
     if (failed) assert(!client.retired());
     int result; assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
     assert(unlink(path.c_str())==0); assert(rmdir(dir)==0);
@@ -84,6 +100,6 @@ int main(int argc, char**) {
         }
         return 0;
     }
-    for (int scenario=0;scenario<5;++scenario) exercise(scenario);
-    std::cout<<"5 seqpacket lifecycle scenarios passed\n";
+    for (int scenario=0;scenario<6;++scenario) exercise(scenario);
+    std::cout<<"6 seqpacket lifecycle scenarios passed\n";
 }

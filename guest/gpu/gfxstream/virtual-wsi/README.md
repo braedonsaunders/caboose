@@ -6,6 +6,8 @@ explicit socket path and serializes access to each client. There is one connecti
 per native Wayland surface. Binding sends only the boxed instance, Wayland object
 ID and dimensions; the broker authenticates the connecting process and obtains
 the window and grant from the compositor. The client sends no PID or grant.
+A zero width/height pair requests the trusted visible owner layer extent. A
+positive pair asserts equality with that extent. Mixed zero pairs are rejected.
 
 The client retains the native capability response verbatim. It does not turn it
 into Vulkan advertisements. Local transport errors are `std::system_error` values;
@@ -29,12 +31,17 @@ image. `retired()` becomes true only after successful native `SURFACE_RETIRED`;
 closing a client, EOF and deadline expiry never establish retirement. The caller
 must retain native allocations on uncertain completion and cooperate with broker
 process draining.
+Release-only waits can expire without closing the connection; they send no
+request and create no uncertain submission. `waitAnyReleased` can poll with an
+already expired deadline. Other operation deadlines terminate the transport.
 
 This directory is not connected to Mesa entrypoints. It provides no swapchain,
 capability advertisement, acquire synchronization, coherent memory support or
-game presentation. Initial Wayland surface extent is unresolved at the broker
-boundary: `VkWaylandSurfaceCreateInfoKHR` supplies no size, and compositor buffer
-bounds can be absent until after swapchain creation. No provisional size is used.
+game presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
+Vulkan swapchain acquisition or semaphore/fence signaling. The current record set
+has no native swapchain create/acquire operation. An empty submit on an application
+queue cannot implement acquisition because an earlier same-queue wait on that
+acquire semaphore can block it indefinitely.
 
 ## Focused Linux verification
 
