@@ -20,7 +20,7 @@ pub struct GpuSupervisor {
 impl GpuSupervisor {
     /// Starts exactly one child at owner-compositor startup, not on an incoming
     /// HTTP request. `token_file` is a path, never a bearer token in argv.
-    pub fn start(token_file: &Path) -> io::Result<Self> {
+    pub fn start(token_file: &Path, local_socket: &Path) -> io::Result<Self> {
         let (parent, child_ipc) = UnixStream::pair()?;
         parent.set_nonblocking(true)?;
         // SAFETY: into_raw_fd transfers sole ownership into Stdio. The descriptor
@@ -30,6 +30,8 @@ impl GpuSupervisor {
             .arg("--control-fd=0")
             .arg("--token-file")
             .arg(token_file)
+            .arg("--socket")
+            .arg(local_socket)
             .stdin(input)
             .spawn()?;
         Ok(Self { ipc: Some(parent), child })

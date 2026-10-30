@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Private live GPU broker, supervised by the owner compositor.
+
+No public ICD is enabled here. The inherited AF_UNIX control socket receives
+TCP connections from the compositor; local Vulkan streams use the supplied
+owner-only socket path. Receipts must come from the real executor.
+"""
+import argparse
+import asyncio
+import contextlib
+import os
+from pathlib import Path
+import socket
+import stat
+import sys
+
+from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
+from gpu_admission import MAX_REQUEST, admit
+from gpu_websocket import Decoder as WebSocketDecoder, server_frame
+from ipc_handoff import receive_socket
+from process_binding import PeerIdentity, ProcessBindings, process_start_ticks
+from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
+
+HELLO = (b'CBGLREF1' + bytes((2, 0, 0, 0, 16, 0, 0, 0)) + bytes.fromhex(
+    '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
+
+
+class Session:
+    def __init__(self, broker, executor, generation, reader, writer):
+        self.broker, self.executor, self.generation = broker, executor, generation
+        self.reader, self.writer = reader, writer
+        self.decoder = EnvelopeDecoder(executor, generation)
+        self.ws = WebSocketDecoder()
+        self.bindings = ProcessBindings()
+        self.binding_generation = self.bindings.begin()
+        self.sequence = 1
+        self.pending = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
+        self.pending_bytes = 0
+        self.pending_count = 0
+        self.processes, self.streams = {}, {}
+        self.session_ready = asyncio.Event()
+        self.revoked = asyncio.Event()
+        self.revoking = False
+        self.local_tasks = set()
+        self.failed = False
+
+    def send(self, kind, process=0, stream=0, payload=b''):
+        if self.failed: raise ConnectionError('session failed')
+        data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
+        frame = server_frame(2, data)
+        if self.pending_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes:
+            raise BufferError('executor queue full')
+        self.pending.put_nowait(frame)
+        self.pending_bytes += len(frame)
+        self.pending_count += 1
+        self.sequence += 1
+
+    async def send_loop(self):
+        while True:
+            data = await self.pending.get()
+            self.writer.write(data)
+            await self.writer.drain()
+            self.pending_bytes -= len(data)
+            self.pending_count -= 1
+            self.pending.task_done()
+
+    async def message(self, frame):
+        if frame.kind == Kind.SESSION_READY:
+            if self.session_ready.is_set() or frame.payload != HELLO: raise ValueError('bad session receipt')
+            self.session_ready.set(); return
+        if not self.session_ready.is_set(): raise ValueError('session not ready')
+        if frame.kind == Kind.REVOKED:
+            if not self.revoking or self.revoked.is_set(): raise ValueError('unexpected revoked')
+            self.revoked.set(); return
+        process = self.processes.get(frame.process)
+        if process is None: raise ValueError('unknown process')
+        if frame.kind == Kind.PROCESS_READY:
+            if process['ready'].is_set() or process['stopping']: raise ValueError('bad process receipt')
+            process['ready'].set(); return
+        if frame.kind == Kind.PROCESS_RETIRED:
+            if not process['stopping'] or process['retired'].is_set(): raise ValueError('bad process retirement')
+            process['retired'].set(); return
+        stream = self.streams.get(frame.stream)
+        if stream is None or stream['process'] != frame.process: raise ValueError('unknown stream')
+        if frame.kind == Kind.STREAM_READY:
+            if stream['ready'].is_set(): raise ValueError('duplicate stream receipt')
+            stream['ready'].set(); return
+        if not stream['ready'].is_set() or stream['remote_fin'].is_set(): raise ValueError('stream not ready')
+        if frame.kind == Kind.DATA:
+            stream['writer'].write(frame.payload)
+            await stream['writer'].drain(); return
+        if frame.kind == Kind.FIN:
+            stream['writer'].write_eof()
+            await stream['writer'].drain()
+            stream['remote_fin'].set(); return
+        raise ValueError('unexpected executor message')
+
+    async def revoke(self):
+        if self.processes or self.streams or self.revoking:
+            raise RuntimeError('cannot revoke with live resources')
+        self.revoking = True
+        self.send(Kind.REVOKE)
+        await asyncio.wait_for(self.revoked.wait(), 10)
+
+    async def read_loop(self):
+        while True:
+            data = await self.reader.read(65536)
+            if not data:
+                self.ws.eof(); self.decoder.finish(); raise ConnectionError('executor disconnected')
+            events = []
+            def collect_event(kind, payload):
+                if len(events) >= MAX_QUEUED_MESSAGES:
+                    raise BufferError('incoming WebSocket event limit')
+                events.append((kind, payload))
+            self.ws.feed(data, collect_event)
+            for kind, payload in events:
+                if kind == 'close': raise ConnectionError('executor closed')
+                if kind == 'ping':
+                    frame = server_frame(10, payload)
+                    if self.pending_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes: raise BufferError('queue full')
+                    self.pending.put_nowait(frame); self.pending_bytes += len(frame); self.pending_count += 1
+                if kind != 'binary': continue
+                messages = []
+                def collect(message):
+                    if len(messages) >= MAX_QUEUED_MESSAGES: raise BufferError('incoming queue full')
+                    messages.append(message)
+                self.decoder.feed(payload, collect)
+                for message in messages: await self.message(message)
+
+    async def local(self, reader, writer):
+        peer = None
+        process_id = stream_id = None
+        try:
+            sock = writer.get_extra_info('socket')
+            peer = PeerIdentity.from_socket(sock, os.getuid())
+            offered = await asyncio.wait_for(reader.readexactly(48), 5)
+            if offered != HELLO: raise ValueError('local hello mismatch')
+            process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
+            peer = None  # bindings owns it
+            process = self.processes.get(process_id)
+            if process is None:
+                process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set()}
+                self.processes[process_id] = process
+                self.send(Kind.PROCESS_OPEN, process_id)
+            if process['stopping']: raise ValueError('process retiring')
+            process['streams'].add(stream_id)
+            await asyncio.wait_for(process['ready'].wait(), 10)
+            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(), 'remote_fin': asyncio.Event()}
+            self.streams[stream_id] = stream
+            self.send(Kind.STREAM_OPEN, process_id, stream_id)
+            await asyncio.wait_for(stream['ready'].wait(), 10)
+            writer.write(HELLO); await writer.drain()
+            while True:
+                payload = await reader.read(65536)
+                if not payload: break
+                self.send(Kind.DATA, process_id, stream_id, payload)
+            self.send(Kind.FIN, process_id, stream_id)
+            await asyncio.wait_for(stream['remote_fin'].wait(), 10)
+        except OverflowError:
+            # Reject an excess local stream without taking ownership or poisoning
+            # already admitted processes.
+            pass
+        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError):
+            self.failed = True
+            self.writer.close()
+        finally:
+            if peer is not None: peer.close()
+            writer.close()
+            with contextlib.suppress(OSError): await writer.wait_closed()
+            if stream_id is not None:
+                self.streams.pop(stream_id, None)
+                with contextlib.suppress(RuntimeError, KeyError): self.bindings.unbind_stream(self.binding_generation, stream_id)
+                process = self.processes.get(process_id)
+                if process:
+                    process['streams'].discard(stream_id)
+                    if not process['streams'] and not self.failed:
+                        process['stopping'] = True
+                        try:
+                            self.send(Kind.PROCESS_STOP, process_id)
+                            await asyncio.wait_for(process['retired'].wait(), 10)
+                            self.bindings.retire_process(self.binding_generation, process_id)
+                            self.processes.pop(process_id, None)
+                        except (OSError, RuntimeError, BufferError, asyncio.TimeoutError):
+                            self.failed = True; self.writer.close()
+
+
+class Broker:
+    def __init__(self, control, token_file, socket_path):
+        self.control, self.token_file, self.socket_path = control, token_file, socket_path
+        self.compositor_pid = os.getppid()
+        self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
+        self.lease = ExecutorLease()
+        self.tasks = set(); self.closing = asyncio.Event()
+
+    async def run(self):
+        loop = asyncio.get_running_loop()
+        self.control.setblocking(False)
+        def ready():
+            try:
+                stream = receive_socket(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
+            except BlockingIOError: return
+            except (OSError, ValueError, PermissionError): self.closing.set(); return
+            if len(self.tasks) >= MAX_QUEUED_MESSAGES:
+                stream.close(); return
+            stream.setblocking(False)
+            task = asyncio.create_task(self.remote(stream))
+            self.tasks.add(task); task.add_done_callback(self.tasks.discard)
+        loop.add_reader(self.control.fileno(), ready)
+        try: await self.closing.wait()
+        finally:
+            loop.remove_reader(self.control.fileno()); self.control.close()
+            for task in tuple(self.tasks): task.cancel()
+            if self.tasks: await asyncio.gather(*self.tasks, return_exceptions=True)
+
+    async def remote(self, stream):
+        writer = server = None
+        session = executor = generation = None
+        sender = receiver = None
+        owned_socket = None
+        try:
+            reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
+            raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 5)
+            _computer, executor, response = admit(raw, self.token_file.read_bytes().strip())
+            generation = self.lease.admit(executor.bytes)
+            session = Session(self, executor.bytes, generation, reader, writer)
+            writer.write(response); await writer.drain()
+            sender = asyncio.create_task(session.send_loop())
+            receiver = asyncio.create_task(session.read_loop())
+            session.send(Kind.SESSION, payload=HELLO)
+            await asyncio.wait_for(session.session_ready.wait(), 10)
+            self.lease.ready(executor.bytes, generation)
+            directory = self.socket_path.parent
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                stat.S_IMODE(info.st_mode) != 0o700 or os.path.lexists(self.socket_path)):
+                raise PermissionError('unsafe local socket directory or existing path')
+            def start_local(local_reader, local_writer):
+                if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
+                    local_writer.close(); return
+                task = asyncio.create_task(session.local(local_reader, local_writer))
+                session.local_tasks.add(task)
+                task.add_done_callback(session.local_tasks.discard)
+            server = await asyncio.start_unix_server(start_local, path=str(self.socket_path))
+            os.chmod(self.socket_path, 0o600)
+            owned_socket = self.socket_path.lstat().st_ino
+            done, _ = await asyncio.wait((sender, receiver), return_when=asyncio.FIRST_COMPLETED)
+            for task in done: task.result()
+        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
+            pass
+        finally:
+            if server:
+                server.close(); await server.wait_closed()
+            if owned_socket is not None:
+                with contextlib.suppress(OSError):
+                    if self.socket_path.lstat().st_ino == owned_socket: self.socket_path.unlink()
+            if session:
+                session.failed = True
+                for task in tuple(session.local_tasks): task.cancel()
+                if session.local_tasks: await asyncio.gather(*tuple(session.local_tasks), return_exceptions=True)
+                self.lease.revoke(executor.bytes, generation)
+                # Socket loss alone is not native finish; leave lease draining.
+                if session.revoked.is_set(): self.lease.finished(executor.bytes, generation)
+                with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
+            for task in (sender, receiver):
+                if task and not task.done(): task.cancel()
+            if sender or receiver: await asyncio.gather(*(t for t in (sender, receiver) if t), return_exceptions=True)
+            if writer:
+                writer.close()
+                with contextlib.suppress(OSError): await writer.wait_closed()
+            else: stream.close()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--control-fd', type=int, required=True)
+    parser.add_argument('--token-file', type=Path, required=True)
+    parser.add_argument('--socket', type=Path, required=True)
+    args = parser.parse_args()
+    control = socket.socket(fileno=args.control_fd)
+    if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM:
+        raise SystemExit('private Unix control stream required')
+    asyncio.run(Broker(control, args.token_file, args.socket).run())
+
+
+if __name__ == '__main__': main()
