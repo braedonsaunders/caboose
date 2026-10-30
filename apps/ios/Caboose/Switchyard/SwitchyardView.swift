@@ -7,7 +7,8 @@ import SwiftUI
 /// The windows keep every touch on them. The yard's own gestures live where the apps have
 /// nothing: the gaps between tiles resize them, the title bar at the top of a tile carries it,
 /// the screen's side edges and the dock's column cars move along the track, and ⌘⌥ with the
-/// arrows, R, F, W, O, A and Return does all of it from a keyboard. The dock is always there.
+/// arrows, R, F, W, O, A and Return does all of it from a keyboard. The software keyboard
+/// hides the dock and gives its space to the windows.
 struct SwitchyardView: View {
     static let space = "switchyard"
 
@@ -22,19 +23,22 @@ struct SwitchyardView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
+            // While typing, tiles use all of the already keyboard-adjusted viewport.
             let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
                                                           windowInset: shellBottomInset,
                                                           verticalBar: verticalBar,
                                                           keyboardVisible: keyboard.visible)
-            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
+            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height,
+                                                  bottomInset: bottom, keyboardVisible: keyboard.visible)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
-                    YardDock(yard: yard, width: proxy.size.width - 16)
-                        .padding(.top, 6)
-                        .padding(.bottom, bottom)
-                        .frame(maxWidth: .infinity)
+                    if !keyboard.visible {
+                        YardDock(yard: yard, width: proxy.size.width - 16)
+                            .padding(.top, 6)
+                            .padding(.bottom, bottom)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
                     cover(window, screen: area)
@@ -124,7 +128,7 @@ struct SwitchyardView: View {
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()
-        // A fullscreen app covers only this workspace. The dock and shell remain usable;
+        // A fullscreen app covers only this workspace. The shell remains usable;
         // the tiles keep their layout behind the covering window.
         .onAppear { yard.resize(to: size) }
         .onChange(of: size) { _, size in yard.resize(to: size) }
