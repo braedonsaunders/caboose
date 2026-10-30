@@ -96,7 +96,7 @@ struct SwitchyardView: View {
                 if let window = windows[id], let rect = tiles[id] {
                     let carried = yard.carry?.window == id
                     YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
-                             keyboard: model.keyboardVisible && keyTarget == id, onAsk: { askingAbout = $0 })
+                             keyboard: model.keyboardVisible && keyTarget == id, keyboardResize: keyboard.visible, onAsk: { askingAbout = $0 })
                         .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
                         // Scaled about its top centre, so the centre follows the finger.
                         .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
@@ -288,7 +288,7 @@ struct SwitchyardView: View {
                                  height: window.presentationSize.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
                                                        resizing: yard.stretches(window.id) || (covering && (yard.coverProgress > 0 || yard.carry != nil)),
-                                                       fullscreen: window.isFullscreen)
+                                                       fullscreen: window.isFullscreen, keyboardResize: keyboard.visible && !covering)
             var shown = surface.offsetBy(dx: container.minX, dy: container.minY)
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)
