@@ -276,11 +276,13 @@ it('closes a live administrator control socket when its session is revoked', asy
 
 it('fences the former tenant socket on a move and admits the destination administrator', async () => {
   const ownerHeaders = { authorization: 'Bearer owner-token-for-tests', origin: base, 'content-type': 'application/json' }
-  const tenants = (await (await fetch(`${base}/v1/tenants`, { headers: ownerHeaders })).json()).tenants as Array<{ id: string; name: string }>
-  const family = tenants.find(tenant => tenant.name === 'Family')!
-  const home = tenants.find(tenant => tenant.name === 'Home')!
   const records = (await (await fetch(`${base}/v1/computers`, { headers: ownerHeaders })).json()).computers as Array<{ id: string; tenantId: string; personId: string }>
-  const target = records.find(record => record.tenantId === family.id)!
+  // Earlier tests rename the tenant. Ownership IDs remain the fixture identity.
+  const owned = records.filter(record => record.id !== OWNER_COMPUTER)
+  expect(owned).toHaveLength(1)
+  const target = owned[0]!
+  const family = { id: target.tenantId }
+  const home = { id: records.find(record => record.id === OWNER_COMPUTER)!.tenantId }
   const homePerson = (await (await fetch(`${base}/v1/tenants/${home.id}/people`, { headers: ownerHeaders })).json()).people[0]
   const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ email: 'parent@example.com', password: 'parent password' }) })
   expect(signedIn.status).toBe(200)
