@@ -2,7 +2,8 @@
 
 The live GPU source is separate from the GFXReconstruct capture protocol in
 [gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
-`guest/gpu/broker/live_protocol.py`, with byte-exact vectors in `live-vectors.json`.
+`guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
+vectors in `live-vectors.json` and `live-surface-vectors.json`.
 It does not activate a general Vulkan driver or provide window presentation.
 
 ## Connection and authority
@@ -70,6 +71,17 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 11 | REVOKE | Session | Empty |
 | 12 | REVOKED | Session | Empty |
 | 13 | EXECUTOR_DRAIN | Session | Empty |
+| 16 | SURFACE_BIND | Process | 64 bytes |
+| 17 | SURFACE_BOUND | Process | 56 bytes |
+| 18 | SURFACE_QUERY | Process | 56 bytes |
+| 19 | SURFACE_CAPS | Process | 64-byte failure or bounded capability lists |
+| 20 | PRESENT | Process | 96 bytes plus at most 64 eight-byte waits |
+| 21 | PRESENT_RESULT | Process | 72 bytes |
+| 22 | SOURCE_RELEASED | Process | 48 bytes |
+| 23 | SURFACE_RETIRE | Process | 40 bytes |
+| 24 | SURFACE_RETIRED | Process | 56 bytes |
+
+Kinds 14 and 15 are reserved and rejected.
 
 Session scope has zero process and stream IDs. Process scope has a nonzero
 process and zero stream ID; stream scope has both nonzero. Process and stream IDs
@@ -121,6 +133,64 @@ The first presentation implementation is restricted to native Wayland surfaces.
 Only the compositor can bind an actual client/surface to a current owner window;
 an application-provided window number or X11 `_NET_WM_PID` is not authority.
 The app's visible interactive owner view supplies the native layer; thumbnails
-cannot acquire it. The surface and presentation control path is incomplete and
-is not advertised by the envelope codec. Neither a WebSocket send, a queue-submit
-return nor a local cleanup callback means an image was displayed.
+cannot acquire it. The surface records are structurally validated by both codecs; the current Swift
+runtime binding rejects them because native surface execution is not connected.
+Neither a WebSocket send, a queue-submit return nor a local cleanup callback means
+an image was displayed.
+
+
+## Surface records
+
+Every surface payload starts with the same 40-byte identity: 16 nonzero compositor
+epoch bytes, 16 nonzero grant bytes, and a nonzero little-endian uint64 surface
+generation. These fields are distinct from the envelope’s executor generation.
+The authenticated process-scoped envelope supplies the process identity. The
+compositor derives grants from the native Wayland peer and surface, not a claimed
+window number. A revoke being sent does not retire a grant: the compositor retains
+its identity until the matching native retirement receipt and send completion have
+both arrived, in either event-loop order.
+
+A 16-byte status is `native_errno` (int32), `has_vk_result` (uint32), `vk_result`
+(int32), and reserved uint32 zero. Native errors are nonnegative errno values.
+`has_vk_result` is zero or one; an absent Vulkan result requires `vk_result=0`.
+An errno-only failure never becomes a fictional Vulkan error. Bound/retired success
+is errno zero and either no Vulkan result or actual `VK_SUCCESS`. Capability
+success requires an actual `VK_SUCCESS`; a partial `VK_INCOMPLETE` list is rejected.
+
+The remaining fields follow the common identity, without padding:
+
+| Record | Fields |
+| --- | --- |
+| BIND | Nonzero window uint64, boxed instance uint64, width and height uint32 |
+| BOUND | Status |
+| QUERY | Nonzero request ID uint64 and boxed physical-device uint64 |
+| CAPS | Request ID uint64, status, then capability data only on actual success |
+| PRESENT | Serial, boxed device, queue and image (four uint64); format, width, height, actual layout, queue family and wait count (six uint32); boxed binary waits uint64 |
+| PRESENT_RESULT | Nonzero serial uint64, status, disposition uint32, event uint32 |
+| SOURCE_RELEASED | Nonzero serial uint64 |
+| RETIRE | No further fields |
+| RETIRED | Status |
+
+Capability success contains the thirteen uint32 members of
+`VkSurfaceCapabilitiesKHR` in specification order, followed by three uint32 counts
+for formats, present modes and queue entries. Each count is at most 4096. Format
+entries are `(format, colorSpace)` uint32 pairs; modes are uint32; queue entries
+are `(family, flags, count, supported)` uint32 tuples. Families are unique, queue
+counts are positive and supported is zero or one. These are provider properties;
+validation does not turn them into advertised support for an unimplemented path.
+Failure ends after the 64-byte identity/request/status prefix. Both success and
+failure reject trailing bytes.
+
+PRESENT requires nonzero serial/object handles/format/extents, actual `GENERAL`
+layout (1), and at most 64 distinct nonzero binary waits. Decoder ownership and
+synchronization checks remain necessary after structural parsing. Disposition is
+0 rejected, 1 queued, or 2 uncertain. Event is 0 submission, 1 device lost, or 2
+failed-unretired. Device lost requires an actual `VK_ERROR_DEVICE_LOST` (-4);
+network errors cannot produce it. Actual positive driver status such as
+`VK_SUBOPTIMAL_KHR` remains distinct from the disposition.
+
+SOURCE_RELEASED refers only to completed GPU source reads, not displayed-vsync.
+SURFACE_RETIRED success requires GPU/presentation-resource retirement followed by
+main-thread layer detachment. Process cleanup must follow that detachment because
+the native surface retains a decoder-instance lease. Unknown completion keeps the
+reservation and forbids replacement.

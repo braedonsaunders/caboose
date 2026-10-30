@@ -8,6 +8,8 @@ struct LiveGPUEnvelope: Equatable {
     enum Kind: UInt16, CaseIterable {
         case session = 1, sessionReady, processOpen, processReady, streamOpen, streamReady
         case data, fin, processStop, processRetired, revoke, revoked, executorDrain
+        case surfaceBind = 16, surfaceBound, surfaceQuery, surfaceCaps, present, presentResult, sourceReleased, surfaceRetire, surfaceRetired
+        var isSurface: Bool { rawValue >= 16 && rawValue <= 24 }
     }
     let kind: Kind
     let executor: Data
@@ -28,9 +30,10 @@ struct LiveGPUEnvelope: Equatable {
         try require(length <= Self.maxPayload && length >= 0)
         switch kind {
         case .session, .sessionReady, .revoke, .revoked, .executorDrain: try require(process == 0 && stream == 0)
-        case .processOpen, .processReady, .processStop, .processRetired: try require(process > 0 && stream == 0)
+        case .processOpen, .processReady, .processStop, .processRetired, .surfaceBind, .surfaceBound, .surfaceQuery, .surfaceCaps, .present, .presentResult, .sourceReleased, .surfaceRetire, .surfaceRetired: try require(process > 0 && stream == 0)
         default: try require(process > 0 && stream > 0)
         }
+        if kind.isSurface { try LiveGPUSurfaceMessage.validateLength(length, kind: kind); return }
         switch kind {
         case .session, .sessionReady: try require(length == 48)
         case .data: try require(length > 0)
@@ -39,6 +42,7 @@ struct LiveGPUEnvelope: Equatable {
     }
     func encoded() throws -> Data {
         try validate(length: payload.count)
+        if kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: kind, payload: payload) }
         var result = Data([0x43, 0x47, 0x4c, 0x56])
         func append<T: FixedWidthInteger>(_ value: T) {
             var little = value.littleEndian
@@ -103,6 +107,7 @@ final class LiveGPUEnvelopeDecoder {
                     process: h.process, stream: h.stream, sequence: h.sequence, payload: buffer)
                 buffer = Data(); header = nil
                 if sequence == UInt64.max { exhausted = true } else { sequence += 1 }
+                if frame.kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload) }
                 try deliver(frame)
             }
         } catch { ended = true; buffer = Data(); header = nil; throw error }
