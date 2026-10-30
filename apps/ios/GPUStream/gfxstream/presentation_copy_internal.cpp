@@ -10,7 +10,8 @@
 namespace caboose::gpuv2 {
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
-    VkFence copyFence, VkCommandBuffer commandBuffer) {
+    VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider) {
+    if (provider) *provider = {};
     auto* vk = objects.vk;
     if (!vk || !objects.device || !objects.queue || !objects.image || !objects.queueMutex ||
         !destination || destination == objects.image || !acquired || !ready || acquired == ready ||
@@ -28,7 +29,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VkResult result = vk->vkBeginCommandBuffer(commandBuffer, &begin);
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return provider ? provider->record(result) : result;
         VkImageSubresourceRange range{};
         range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         range.levelCount = 1; range.layerCount = 1;
@@ -67,7 +68,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
         result = vk->vkEndCommandBuffer(commandBuffer);
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return provider ? provider->record(result) : result;
         VkSubmitInfo submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
@@ -76,11 +77,14 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         submit.commandBufferCount = 1; submit.pCommandBuffers = &commandBuffer;
         submit.signalSemaphoreCount = 1; submit.pSignalSemaphores = &ready;
         std::lock_guard<std::mutex> lock(*objects.queueMutex);
-        return vk->vkQueueSubmit(objects.queue, 1, &submit, copyFence);
+        VkResult submitted = vk->vkQueueSubmit(objects.queue, 1, &submit, copyFence);
+        return provider ? provider->record(submitted) : submitted;
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
 }
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
-    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence) {
+    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence,
+    PresentationProviderResult* provider) {
+    if (provider) *provider = {};
     if (!objects.vk || !objects.vk->vkQueuePresentKHR || !objects.queue ||
         !objects.queueMutex || !swapchain || !ready || !presentFence) return VK_ERROR_INITIALIZATION_FAILED;
     VkSwapchainPresentFenceInfoKHR fenceInfo{};
@@ -92,6 +96,7 @@ VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& obje
     info.waitSemaphoreCount = 1; info.pWaitSemaphores = &ready;
     info.swapchainCount = 1; info.pSwapchains = &swapchain; info.pImageIndices = &imageIndex;
     std::lock_guard<std::mutex> lock(*objects.queueMutex);
-    return objects.vk->vkQueuePresentKHR(objects.queue, &info);
+    VkResult result = objects.vk->vkQueuePresentKHR(objects.queue, &info);
+    return provider ? provider->record(result) : result;
 }
 }

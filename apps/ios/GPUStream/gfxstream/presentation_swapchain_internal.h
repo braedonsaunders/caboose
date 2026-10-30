@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include <vulkan/vulkan.h>
+#include "presentation_provider_result.h"
 #include <vector>
 namespace gfxstream::host::vk { struct CaboosePresentationDevice; }
 namespace caboose::gpuv2 {
@@ -9,11 +10,12 @@ namespace caboose::gpuv2 {
 // Only exact extent and identity transform are accepted; no scaling is implied.
 VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDevice& device,
     VkSurfaceKHR surface, VkFormat format, uint32_t width, uint32_t height,
-    VkSwapchainKHR* swapchain, std::vector<VkImage>* images);
+    VkSwapchainKHR* swapchain, std::vector<VkImage>* images, PresentationProviderResult* provider);
 // Caller serializes swapchain operations. A timeout or other error does not
 // authorize use of an image or imply that any guest wait was consumed.
 VkResult acquirePresentationImage(gfxstream::host::vk::CaboosePresentationDevice& device,
-    VkSwapchainKHR swapchain, uint64_t timeoutNs, VkSemaphore acquired, uint32_t* imageIndex);
+    VkSwapchainKHR swapchain, uint64_t timeoutNs, VkSemaphore acquired, uint32_t* imageIndex,
+    PresentationProviderResult* provider);
 // A timeout/error is not retirement. The caller retains all protected objects.
 VkResult waitPresentationFence(gfxstream::host::vk::CaboosePresentationDevice& device,
     VkFence fence, uint64_t timeoutNs);

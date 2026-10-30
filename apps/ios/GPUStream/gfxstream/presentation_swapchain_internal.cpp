@@ -10,7 +10,9 @@
 namespace caboose::gpuv2 {
 VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDevice& device,
     VkSurfaceKHR surface, VkFormat format, uint32_t width, uint32_t height,
-    VkSwapchainKHR* swapchain, std::vector<VkImage>* images) {
+    VkSwapchainKHR* swapchain, std::vector<VkImage>* images, PresentationProviderResult* provider) {
+    if (provider) *provider = {};
+    auto driverFailure = [provider](VkResult result) { return provider ? provider->record(result) : result; };
     if (!swapchain || !images) return VK_ERROR_INITIALIZATION_FAILED;
     *swapchain = VK_NULL_HANDLE; images->clear();
     auto get = runtimeInstanceProcAddr();
@@ -51,11 +53,11 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
             return VK_ERROR_FEATURE_NOT_PRESENT;
         VkBool32 supported = VK_FALSE;
         VkResult result = support(device.physicalDevice, device.queueFamily, surface, &supported);
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return driverFailure(result);
         if (!supported) return VK_ERROR_FEATURE_NOT_PRESENT;
         VkSurfaceCapabilitiesKHR caps{};
         result = capabilities(device.physicalDevice, surface, &caps);
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return driverFailure(result);
         if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ||
             !(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ||
             caps.currentTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ||
@@ -66,10 +68,10 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
             return VK_ERROR_FEATURE_NOT_PRESENT;
         uint32_t count = 0;
         result = formats(device.physicalDevice, surface, &count, nullptr);
-        if (result != VK_SUCCESS || count == 0 || count > 4096) return result == VK_SUCCESS ? VK_ERROR_FORMAT_NOT_SUPPORTED : result;
+        if (result != VK_SUCCESS || count == 0 || count > 4096) return result == VK_SUCCESS ? VK_ERROR_FORMAT_NOT_SUPPORTED : driverFailure(result);
         std::vector<VkSurfaceFormatKHR> available(count);
         result = formats(device.physicalDevice, surface, &count, available.data());
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return driverFailure(result);
         available.resize(count);
         bool found = false;
         for (const auto& f : available)
@@ -78,10 +80,10 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
         if (!found) return VK_ERROR_FORMAT_NOT_SUPPORTED;
         count = 0;
         result = modes(device.physicalDevice, surface, &count, nullptr);
-        if (result != VK_SUCCESS || count == 0 || count > 4096) return result == VK_SUCCESS ? VK_ERROR_FEATURE_NOT_PRESENT : result;
+        if (result != VK_SUCCESS || count == 0 || count > 4096) return result == VK_SUCCESS ? VK_ERROR_FEATURE_NOT_PRESENT : driverFailure(result);
         std::vector<VkPresentModeKHR> availableModes(count);
         result = modes(device.physicalDevice, surface, &count, availableModes.data());
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return driverFailure(result);
         availableModes.resize(count);
         if (std::find(availableModes.begin(), availableModes.end(), VK_PRESENT_MODE_FIFO_KHR) == availableModes.end())
             return VK_ERROR_FEATURE_NOT_PRESENT;
@@ -100,13 +102,15 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
         create.presentMode = VK_PRESENT_MODE_FIFO_KHR; create.clipped = VK_TRUE;
         VkSwapchainKHR created = VK_NULL_HANDLE;
         result = vk->vkCreateSwapchainKHR(device.device, &create, nullptr, &created);
-        if (result != VK_SUCCESS) return result;
+        if (result != VK_SUCCESS) return driverFailure(result);
         count = 0;
         result = vk->vkGetSwapchainImagesKHR(device.device, created, &count, nullptr);
+        if (result != VK_SUCCESS && provider) provider->record(result);
         if (result == VK_SUCCESS && count && count <= 4096) {
             try {
                 images->resize(count);
                 result = vk->vkGetSwapchainImagesKHR(device.device, created, &count, images->data());
+                if (result != VK_SUCCESS && provider) provider->record(result);
             } catch (const std::bad_alloc&) { result = VK_ERROR_OUT_OF_HOST_MEMORY; }
         } else if (result == VK_SUCCESS) result = VK_ERROR_INITIALIZATION_FAILED;
         if (result != VK_SUCCESS) {
@@ -114,15 +118,19 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
         }
         images->resize(count);
         *swapchain = created;
+        if (provider) provider->record(VK_SUCCESS);
         return VK_SUCCESS;
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
 }
 VkResult acquirePresentationImage(gfxstream::host::vk::CaboosePresentationDevice& device,
-    VkSwapchainKHR swapchain, uint64_t timeoutNs, VkSemaphore acquired, uint32_t* imageIndex) {
+    VkSwapchainKHR swapchain, uint64_t timeoutNs, VkSemaphore acquired, uint32_t* imageIndex,
+    PresentationProviderResult* provider) {
+    if (provider) *provider = {};
     if (!device.vk || !device.vk->vkAcquireNextImageKHR || !device.device || !swapchain ||
         !acquired || !imageIndex) return VK_ERROR_INITIALIZATION_FAILED;
-    return device.vk->vkAcquireNextImageKHR(device.device, swapchain, timeoutNs, acquired,
-                                              VK_NULL_HANDLE, imageIndex);
+    VkResult result = device.vk->vkAcquireNextImageKHR(device.device, swapchain, timeoutNs, acquired,
+                                                        VK_NULL_HANDLE, imageIndex);
+    return provider ? provider->record(result) : result;
 }
 VkResult waitPresentationFence(gfxstream::host::vk::CaboosePresentationDevice& device,
     VkFence fence, uint64_t timeoutNs) {

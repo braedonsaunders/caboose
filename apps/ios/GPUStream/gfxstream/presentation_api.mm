@@ -55,7 +55,12 @@ caboose_gpu_submit_result rejected(int error) {
     return {CABOOSE_GPU_SUBMIT_REJECTED, error, 0, 0};
 }
 caboose_gpu_submit_result driverResult(caboose_gpu_submit_disposition disposition, VkResult result) {
-    return {disposition, result == VK_SUCCESS ? 0 : errorFor(result), 1, static_cast<int32_t>(result)};
+    return {disposition, (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) ? 0 : errorFor(result), 1, static_cast<int32_t>(result)};
+}
+caboose_gpu_submit_result operationResult(caboose_gpu_submit_disposition disposition, VkResult result,
+                                           const PresentationProviderResult& provider) {
+    if (provider.present) return driverResult(disposition, provider.value);
+    return {disposition, disposition == CABOOSE_GPU_SUBMIT_QUEUED ? 0 : errorFor(result), 0, 0};
 }
 struct Frame {
     std::unique_ptr<CaboosePresentationObjects> source;
@@ -66,6 +71,7 @@ struct Frame {
     bool gotImage = false, submitted = false, presentQueued = false;
     bool sourceReleased = false, presentRetired = false, deviceLost = false;
     bool failureReported = false;
+    bool reportedDeviceLoss = false;
     uint64_t serial = 0;
     caboose_gpu_present_callback callback = nullptr;
     void* context = nullptr;
@@ -100,7 +106,9 @@ void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
     if (f.pool) vk->vkDestroyCommandPool(s.device->device, f.pool, nullptr);
     f.source.reset();
 }
-VkResult allocateFrame(caboose_gpu_surface& s, Frame& f) {
+VkResult allocateFrame(caboose_gpu_surface& s, Frame& f, PresentationProviderResult* provider) {
+    *provider = {};
+    auto driverFailure = [provider](VkResult result) { return provider->record(result); };
     auto* vk = s.device->vk;
     if (!vk || !vk->vkCreateCommandPool || !vk->vkDestroyCommandPool || !vk->vkAllocateCommandBuffers ||
         !vk->vkCreateSemaphore || !vk->vkDestroySemaphore || !vk->vkCreateFence || !vk->vkDestroyFence)
@@ -108,24 +116,32 @@ VkResult allocateFrame(caboose_gpu_surface& s, Frame& f) {
     VkCommandPoolCreateInfo pi{}; pi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pi.queueFamilyIndex = s.queueFamily; pi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     VkResult r = vk->vkCreateCommandPool(s.device->device, &pi, nullptr, &f.pool);
-    if (r != VK_SUCCESS) return r;
+    if (r != VK_SUCCESS) return driverFailure(r);
     VkCommandBufferAllocateInfo ai{}; ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     ai.commandPool = f.pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
     r = vk->vkAllocateCommandBuffers(s.device->device, &ai, &f.command);
-    if (r != VK_SUCCESS) return r;
+    if (r != VK_SUCCESS) return driverFailure(r);
     VkSemaphoreCreateInfo si{}; si.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     r = vk->vkCreateSemaphore(s.device->device, &si, nullptr, &f.acquired);
-    if (r != VK_SUCCESS) return r;
+    if (r != VK_SUCCESS) return driverFailure(r);
     r = vk->vkCreateSemaphore(s.device->device, &si, nullptr, &f.ready);
-    if (r != VK_SUCCESS) return r;
+    if (r != VK_SUCCESS) return driverFailure(r);
     VkFenceCreateInfo fi{}; fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     r = vk->vkCreateFence(s.device->device, &fi, nullptr, &f.copyFence);
-    if (r != VK_SUCCESS) return r;
-    return vk->vkCreateFence(s.device->device, &fi, nullptr, &f.presentFence);
+    if (r != VK_SUCCESS) return driverFailure(r);
+    return provider->record(vk->vkCreateFence(s.device->device, &fi, nullptr, &f.presentFence));
 }
 // Caller is the frame worker or a serialized retire worker. Callbacks are not
 // made while the surface mutex is held. An uncertain frame is never destroyed.
 int advanceFrame(caboose_gpu_surface& s, Frame& f) {
+    if (f.deviceLost) {
+        if (!f.reportedDeviceLoss && f.callback) {
+            f.reportedDeviceLoss = true;
+            f.callback(f.context, f.serial, CABOOSE_GPU_DEVICE_LOST,
+                       driverResult(CABOOSE_GPU_SUBMIT_UNCERTAIN, VK_ERROR_DEVICE_LOST));
+        }
+        return 0;
+    }
     if (!s.device || !s.device->vk || !s.device->vk->vkWaitForFences || !s.device->device ||
         (f.submitted && !f.copyFence) || (f.presentQueued && !f.presentFence)) {
         if (!f.failureReported && f.callback) {
@@ -306,6 +322,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
                           s->queueFamily != p->queue_family || s->format != static_cast<VkFormat>(p->vk_format)))
             return rejected(ENOTSUP);
         std::unique_ptr<CaboosePresentationObjects> source;
+        PresentationProviderResult provider{};
         VkResult r = acquirePresentationObjects(registry, s->bind.boxed_instance, *p, &source);
         if (r != VK_SUCCESS) return rejected(errorFor(r));
         if (!s->device) {
@@ -318,32 +335,33 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
             s->boxedDevice = p->boxed_device; s->boxedQueue = p->boxed_queue;
             s->queueFamily = p->queue_family; s->format = static_cast<VkFormat>(p->vk_format);
             r = createPresentationSwapchain(*s->device, metalSurfaceHandle(s->metal), s->format,
-                                            s->bind.width, s->bind.height, &s->swapchain, &s->images);
-            if (r != VK_SUCCESS) { s->device.reset(); return rejected(errorFor(r)); }
+                                            s->bind.width, s->bind.height, &s->swapchain, &s->images, &provider);
+            if (r != VK_SUCCESS) { s->device.reset(); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         }
         if (source->device != s->device->device || source->queue != s->device->queue ||
             source->physicalDevice != s->physical) return rejected(EINVAL);
         auto frame = std::make_unique<Frame>();
         frame->source = std::move(source); frame->serial = p->present_serial;
         frame->callback = callback; frame->context = context;
-        r = allocateFrame(*s, *frame);
-        if (r != VK_SUCCESS) { destroyFrameResources(*s, *frame); return rejected(errorFor(r)); }
+        r = allocateFrame(*s, *frame, &provider);
+        if (r != VK_SUCCESS) { destroyFrameResources(*s, *frame); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         uint32_t index = 0;
-        r = acquirePresentationImage(*s->device, s->swapchain, 0, frame->acquired, &index);
+        r = acquirePresentationImage(*s->device, s->swapchain, 0, frame->acquired, &index, &provider);
         if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
-            destroyFrameResources(*s, *frame); return rejected(errorFor(r));
+            destroyFrameResources(*s, *frame); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider);
         }
         frame->gotImage = true;
         s->lastSerial = p->present_serial;
         if (index < s->images.size()) {
             r = submitPresentationCopy(*frame->source, s->images[index], frame->acquired,
-                                       frame->ready, frame->copyFence, frame->command);
+                                       frame->ready, frame->copyFence, frame->command, &provider);
             frame->submitted = r == VK_SUCCESS;
             if (frame->submitted) {
-                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence);
+                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence, &provider);
                 frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             }
-        } else r = VK_ERROR_INITIALIZATION_FAILED;
+        } else { r = VK_ERROR_INITIALIZATION_FAILED; provider = {}; }
+        frame->deviceLost = provider.present && provider.value == VK_ERROR_DEVICE_LOST;
         const bool accepted = frame->submitted && frame->presentQueued;
         s->frame = std::move(frame);
         try {
@@ -353,10 +371,10 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
                 s->frameDone = result == 0;
             });
         } catch (const std::system_error&) {
-            return {CABOOSE_GPU_SUBMIT_UNCERTAIN, EAGAIN, 0, 0};
+            return {CABOOSE_GPU_SUBMIT_UNCERTAIN, EAGAIN, provider.present ? 1u : 0u,
+                    provider.present ? static_cast<int32_t>(provider.value) : 0};
         }
-        return accepted ? caboose_gpu_submit_result{CABOOSE_GPU_SUBMIT_QUEUED, 0, 0, 0}
-                        : caboose_gpu_submit_result{CABOOSE_GPU_SUBMIT_UNCERTAIN, errorFor(r), 0, 0};
+        return operationResult(accepted ? CABOOSE_GPU_SUBMIT_QUEUED : CABOOSE_GPU_SUBMIT_UNCERTAIN, r, provider);
     } catch (const std::bad_alloc&) { return rejected(ENOMEM); }
 }
 
