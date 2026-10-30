@@ -42,9 +42,9 @@ written by the host.
 
 ## What follows the phone
 
-- **File choosing** for applications that use the FileChooser portal: GTK 4, GTK 3
-  applications that use `GtkFileChooserNative`, Chromium and Electron applications such as
-  VS Code, and Firefox. Applications that draw their own dialog (GTK 3's
+- **File choosing** for applications that use the FileChooser portal, from the phone's
+  Files, Photos, camera or document scanner: GTK 4, GTK 3 applications that use
+  `GtkFileChooserNative`, Chromium and Electron applications such as VS Code, and Firefox. Applications that draw their own dialog (GTK 3's
   `GtkFileChooserDialog`, Qt through its GTK platform theme, LibreOffice's GTK 3 dialogs)
   keep it.
 - **Appearance** live for Wayland GTK and libadwaita applications and for applications

@@ -489,6 +489,14 @@ its tools; remove a server; disconnect and see the servers go.
   kept in sync with the original; if both copies changed, you choose which to keep. After
   changing catalog file types, run `python3 apps/ios/scripts/document-types.py --write` and
   `python3 apps/ios/scripts/test-document-types.py`.
+- **Linux file dialogs.** A Linux application's Open dialog asks where the file comes
+  from: Files, Photos, the camera or the document scanner, whichever the application's
+  filters accept, or the computer's own dialog. Photos, captures and scans are uploaded to
+  `Caboose Documents` as new files, converted when the application does not take their
+  format (a HEIC photo becomes JPEG, a scan a PDF or one image per page); photos keep their
+  metadata, which can include where they were taken. Save and Choose Folder browse the computer in a native sheet.
+  `caboose-scan` in a Linux terminal opens the scanner and prints where the scan was saved.
+  The contract is [docs/native-bridge.md](../../docs/native-bridge.md).
 - **Drop into Linux.** Dropped text is typed at the drop point; a dropped file or image (up
   to 50 MiB) is saved in `~/Downloads` and opened with Linux's default handler.
 - **Open, share and print from Linux.** `caboose-open URL` opens a supported link on the
@@ -650,6 +658,16 @@ by a simulator build. On a signed device paired to a deployed computer, check:
   Computer Action Key shortcut; check `upower -d` shows the phone's battery. Turn Cameras off
   while a call runs: the camera stops at once. Deny camera access in iOS Settings and open the
   camera on the computer: iPhone Hardware shows why.
+- **Linux file dialogs.** Use applications that open files through the portal
+  (guest/bridge/README.md lists them), such as Chromium uploading a file. With
+  `accept="image/*" multiple`: Photos, pick a HEIC photo and a Live Photo, and see two
+  images arrive (JPEG, unless Chromium's filter lists HEIC); Camera, take a photo. With `accept=".pdf"`: only Files and Scan Document
+  are offered, and a two-page scan arrives as one PDF. With `accept="video/*"`: record a
+  video. Cancel a source and see the source sheet again; Use Computer Dialog shows the
+  computer's. Run `caboose-scan` and `caboose-scan --format jpeg --output ~/Scans` in
+  Terminal and see the printed paths. Background Caboose and run `caboose-scan`: it fails
+  at once (status 3), and an Open dialog shows the computer's own. Deny Camera in iOS
+  Settings and choose Camera: the alert says how to allow it.
 - **Open, share and print.** Run `caboose-open 'mailto:person@example.com'` in a terminal
   and confirm only after checking the URL; share a photo from Thunar; print to iPhone. Repeat
   with the phone backgrounded: nothing happens without a tap, and queued requests arrive when

@@ -113,6 +113,22 @@ final class OpenDocumentCenter {
         let bookmark = try copyOnly ? nil : url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         let (snapshot, hash) = try CoordinatedDocument.snapshot(url)
         defer { try? FileManager.default.removeItem(at: snapshot) }
+        let (id, clean, path, remote) = try await upload(snapshot, name: name, host: host)
+        if let bookmark {
+            try OpenDocumentStore.save(OpenDocumentRecord(id: id, domain: domain, name: clean,
+                                                          path: path, bookmark: bookmark, localHash: hash, remoteETag: remote.etag))
+        }
+        return path
+    }
+
+    /// Where a file made on the phone (a photo, a scan) is on the computer once uploaded to
+    /// `Caboose Documents/<uuid>/<name>`. It has no original to keep in sync with.
+    func newDocumentPath(for file: URL, name: String, host: HostClient) async throws -> String {
+        try await upload(file, name: name, host: host).path
+    }
+
+    /// Uploads `file` to a new folder of `Caboose Documents` as `name`.
+    private func upload(_ file: URL, name: String, host: HostClient) async throws -> (id: String, name: String, path: String, remote: OpenRemoteItem) {
         let id = UUID().uuidString
         let folder = "Caboose Documents/" + id
         let clean = (name as NSString).lastPathComponent
@@ -120,12 +136,8 @@ final class OpenDocumentCenter {
         let path = folder + "/" + clean
         try await host.openDocumentMkdir("Caboose Documents", allowExisting: true)
         try await host.openDocumentMkdir(folder)
-        let remote = try await host.openDocumentUpload(snapshot, path: path)
-        if let bookmark {
-            try OpenDocumentStore.save(OpenDocumentRecord(id: id, domain: domain, name: clean,
-                                                          path: path, bookmark: bookmark, localHash: hash, remoteETag: remote.etag))
-        }
-        return path
+        let remote = try await host.openDocumentUpload(file, path: path)
+        return (id, clean, path, remote)
     }
 
     /// Control events can arrive in bursts; reconcile again if a change arrives mid-transfer.

@@ -254,18 +254,56 @@ pending dialogs and invalidates their callbacks. Native media handoff suspends t
 Now Playing metadata and commands until playback returns to the computer.
 
 
-- **Open** presents the system document picker for the filter's types (any item when no
-  type resolves), with multiple selection when asked. A file from Caboose's own File
-  Provider answers with its computer path; any other file is copied to
-  `Caboose Documents/<uuid>/<name>` and kept in sync with its original as
-  [open in place](architecture.md#open-in-place) does, so saving in the Linux application
-  writes back to iCloud Drive or wherever it came from.
+- **Open** (files, not a folder) first asks where the file comes from, in a sheet that
+  lists only the sources whose files the request accepts (judged by the current filter, else
+  by all of them), and **Use Computer Dialog**. With Files the only source, the document
+  picker opens directly. Closing a source without choosing returns to the sheet.
+  - **Files**: the system document picker for the filter's types (any item when no type
+    resolves), with multiple selection when asked. A file from Caboose's own File Provider
+    answers with its computer path; any other file is copied to
+    `Caboose Documents/<uuid>/<name>` and kept in sync with its original as
+    [open in place](architecture.md#open-in-place) does, so saving in the Linux
+    application writes back to iCloud Drive or wherever it came from.
+  - **Photos**: the system photo picker, showing photos, videos or both as accepted, with
+    multiple selection (up to 64) when asked. A Live Photo is sent as its still.
+  - **Camera**: a new photo or video, on a phone with a camera.
+  - **Scan Document**: the document scanner, where VisionKit supports it.
+- Photos, captures and scans are new files: each is uploaded to
+  `Caboose Documents/<uuid>/<name>` and answered with that path, with nothing to keep in
+  sync. A picked photo keeps the name Photos gives it; the others are named when they were
+  made (`Photo 2026-10-30 14.05.jpg`, `Video 2026-10-30 14.05.mov`,
+  `Scan 2026-10-30 14.05.pdf`, `Scan 2026-10-30 14.05 Page 2.jpg`).
+- Formats. A request accepts a type *by name* when a filter lists it, and *as anything* when
+  a filter is a wildcard, there are no filters, or a filter gives only its family
+  (`image/*`, `video/*`) or a broad type (`application/octet-stream`). A photo or video is
+  sent as it is when its type is accepted by name, or accepted as anything and widely
+  readable (JPEG, PNG, GIF, TIFF, BMP; QuickTime, MPEG-4). Otherwise it is converted to the
+  first format accepted by name, else the first accepted at all, in the order JPEG, PNG,
+  HEIC, TIFF for images (an iPhone's HEIC photo for an application that takes any image
+  becomes JPEG) and MPEG-4, QuickTime for videos. A camera photo is written the same way.
+  A scan is one PDF when PDF is accepted by name, else one image per page when an image
+  format is, else a PDF, else JPEG pages. When a request takes one file and an image scan
+  has several pages, the app offers to send the first page.
+- Metadata is kept: an original is sent byte for byte, and a conversion keeps the photo's
+  metadata (drawn upright). A photo from the library can carry where it was taken; Caboose
+  does not remove it.
 - **Choose folder** and **Save** present a native sheet browsing the computer's home:
   folders, the file name (its extension kept when a filter applies), the format from the
   application's filters, and confirmation before replacing a file.
-- Every sheet offers **Use Computer Dialog**, which answers `computer`. With **Use iPhone
-  dialogs** off in the computer's settings, every request is answered `computer`.
+- The source sheet and the Save and folder sheets offer **Use Computer Dialog**, which
+  answers `computer`; so does the alert for a file that could not be sent. With **Open and
+  Save with iPhone** off in the computer's settings, every file request is answered
+  `computer`.
 - `bridge.cancel` dismisses the sheet.
+- A request the app cannot read (one from a newer computer) is answered `computer`.
+
+### Scanning
+
+A `scan` request opens the document scanner at once, also with **Open and Save with
+iPhone** off: the owner asked for it from the computer. The scan is uploaded as a new file
+in the request's format, as above, and the answer is its path (each page's for JPEG).
+Cancelling answers `cancel`; a phone without the document scanner answers `computer`. Camera
+access is asked for first; without it the app says how to allow it, and answers `cancel`.
 
 ### Appearance, Now Playing and location
 

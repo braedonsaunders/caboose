@@ -2832,11 +2832,14 @@ app group and a Keychain access group.
 
 ### Native bridge on the phone
 
-Linux file dialogs open the iOS document picker (Open) or a native sheet browsing the
-computer (Save, Choose Folder); a picked file outside the computer is copied to it and kept
-in sync like [an opened document](#open-in-place). The computer follows the phone's
-appearance, its media appears in Now Playing, and, when the owner turns it on, it gets the
-phone's location while Caboose is open. Computer settings has the switches. See
+Linux file dialogs open from Files (the iOS document picker), Photos, the camera or the
+document scanner, as the application's filters accept them (Open), or a native sheet
+browsing the computer (Save, Choose Folder); a picked file outside the computer is copied
+to it and kept in sync like [an opened document](#open-in-place), and photos, captures and
+scans become new files in `Caboose Documents`, converted to a format the application takes
+when needed. `caboose-scan` opens the scanner from the computer. The computer follows the
+phone's appearance, its media appears in Now Playing, and, when the owner turns it on, it
+gets the phone's location while Caboose is open. Computer settings has the switches. See
 [native-bridge.md](native-bridge.md#app).
 
 ## 7. Security model

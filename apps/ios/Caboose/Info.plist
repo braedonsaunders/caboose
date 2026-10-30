@@ -25,8 +25,8 @@
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>NSAppTransportSecurity</key>
 	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
-	<key>NSCameraUsageDescription</key><string>Take a photo to attach to your agent message, and let apps on your computer use this camera while Caboose is open and you allow it.</string>
-	<key>NSMicrophoneUsageDescription</key><string>Dictate a message to your agent, and let apps on your computer use this microphone while Caboose is open and you allow it.</string>
+	<key>NSCameraUsageDescription</key><string>Take a photo to attach to your agent message, take photos and videos and scan documents for apps on your computer, and let apps on your computer use this camera while Caboose is open and you allow it.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Dictate a message to your agent, record sound with videos you take for apps on your computer, and let apps on your computer use this microphone while Caboose is open and you allow it.</string>
 	<key>NSMotionUsageDescription</key><string>Apps on your computer read the barometer through Motion Sensors while Caboose is open.</string>
 	<key>NSSpeechRecognitionUsageDescription</key><string>Turn your speech into an editable agent message.</string>
 	<key>NSLocationWhenInUseUsageDescription</key><string>When you turn on Share Location with Computer, apps on your computer see where you are while Caboose is open.</string>
