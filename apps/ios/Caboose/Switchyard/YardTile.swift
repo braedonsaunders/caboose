@@ -18,13 +18,18 @@ struct YardTile: View {
     var body: some View {
         let radius = yard.metrics.cornerRadius
         let shape = ConcentricRectangle(cornerRadius: radius)
+        let available = yard.metrics.content(ofTile: rect).size
+        let natural = DesktopGeometry.surfaceSize(
+            natural: CGSize(width: window.frame.width / yard.pixelsPerPoint, height: window.frame.height / yard.pixelsPerPoint),
+            available: available, locallyRendered: window.game != nil)
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id))
         VStack(spacing: 0) {
             YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
             ZStack {
                 YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard) {
                     if yard.layout.focused != window.id { yard.focus(window.id) }
                 }
-                .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint))
+                .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint, presentedFrame: shown))
                 // Tiles without the keyboard step back a little; their text stays sharp.
                 Color.black.opacity(focused ? 0 : 0.1).allowsHitTesting(false)
             }

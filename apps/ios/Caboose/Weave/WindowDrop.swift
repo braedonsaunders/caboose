@@ -9,6 +9,8 @@ struct WindowDrop: ViewModifier {
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
     var presentedSize: CGSize? = nil
+    /// The fitted content rectangle inside its layout viewport, including padding.
+    var presentedFrame: CGRect? = nil
     @State private var error: String?
 
     func body(content: Content) -> some View {
@@ -25,7 +27,7 @@ struct WindowDrop: ViewModifier {
                               originalSession.windows[window.id] === window else { continue }
                         let remoteSize = window.frame.size
                         let shownSize = presentedSize ?? CGSize(width: remoteSize.width / pixelsPerPoint, height: remoteSize.height / pixelsPerPoint)
-                        let mapping = DesktopGeometry.SurfaceMapping(shown: CGRect(origin: .zero, size: shownSize), remote: remoteSize)
+                        let mapping = DesktopGeometry.SurfaceMapping(shown: presentedFrame ?? CGRect(origin: .zero, size: shownSize), remote: remoteSize)
                         guard let position = mapping.point(point) else { continue }
                         _ = provider.loadObject(ofClass: NSString.self) { value, failure in
                             Task { @MainActor in

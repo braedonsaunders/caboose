@@ -127,10 +127,14 @@ struct WindowScreen: View {
         let popups = model.auxiliaryWindows(for: window)
         let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
         let frames = popupFrames(popups, over: window, size: size)
+        let natural = DesktopGeometry.surfaceSize(
+            natural: CGSize(width: window.frame.width / model.pixelsPerPoint, height: window.frame.height / model.pixelsPerPoint),
+            available: size, locallyRendered: window.game != nil)
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false)
         return ZStack(alignment: .topLeading) {
             RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
                 .frame(width: size.width, height: size.height)
-                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
+                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint, presentedFrame: shown))
             ForEach(popups) { popup in
                 if let frame = frames[popup.id] {
                     RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)

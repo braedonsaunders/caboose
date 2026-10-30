@@ -226,6 +226,8 @@ for byte.
   window resizing continues to clamp each axis independently. Switchyard reasserts
   its target after an app changes size, with the same bounded correction policy as
   cards; the last sent request alone does not count as an accepted size.
+  Text drops in cards and tiles invert the same fitted rectangle, including its
+  padding, rather than assuming the viewport is the surface's natural size.
   Desktop pointer positions and scroll deltas use the shown surface rectangle and
   committed remote size. An active desktop trackpad scroll cancels when that mapping
   changes; a captured pointer drag still releases its original target at the surface edge.
