@@ -213,6 +213,10 @@ impl State {
                     }
                 }
                 if let Some(epoch) = reset_epoch {
+                    for w in self.windows.iter_mut() {
+                        w.stream.need_keyframe = true;
+                        w.stream.dirty = true;
+                    }
                     self.net.send(conn, &Message::SurfaceReset { epoch });
                 }
             }
@@ -226,6 +230,10 @@ impl State {
                     }
                 }
                 if let Some(epoch) = reset_epoch {
+                    for w in self.windows.iter_mut() {
+                        w.stream.need_keyframe = true;
+                        w.stream.dirty = true;
+                    }
                     self.net.send(conn, &Message::SurfaceReset { epoch });
                 }
             }
@@ -786,15 +794,29 @@ impl State {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut refined = false;
         let mut frame_sent = false;
-        if let Some((batch, cpu_us)) = done.surface_batch {
-            let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
-            w.stream.in_flight.push_back(done.pts_us);
-            self.stats.frames += 1;
-            self.stats.tiles += batch.tiles.len() as u64;
-            self.stats.bytes += tile_bytes as u64;
-            self.stats.encode_cpu_us += cpu_us;
-            self.net.send(conn, &Message::SurfaceBatch(batch));
-            frame_sent = true;
+        if let Some((batch, cpu_us, batch_epoch)) = done.surface_batch {
+            let mut cache_ok = true;
+            if let Some(s) = self.session.as_ref().filter(|s| s.ready) {
+                let mut guard = s.atlas_cache.lock().unwrap();
+                if !batch.keyframe && (guard.epoch != batch_epoch || w.stream.need_keyframe) {
+                    cache_ok = false;
+                } else {
+                    guard.record_published_batch(&batch);
+                }
+            }
+            if cache_ok {
+                let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
+                w.stream.in_flight.push_back(done.pts_us);
+                self.stats.frames += 1;
+                self.stats.tiles += batch.tiles.len() as u64;
+                self.stats.bytes += tile_bytes as u64;
+                self.stats.encode_cpu_us += cpu_us;
+                self.net.send(conn, &Message::SurfaceBatch(batch));
+                frame_sent = true;
+            } else {
+                w.stream.need_keyframe = true;
+                w.stream.dirty = true;
+            }
         }
         match done.result {
             None => {}

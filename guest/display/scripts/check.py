@@ -733,11 +733,14 @@ def check_atlas_exact():
     reports = []
     for extra in ((), ("--always-compose",)):
         out = tempfile.mkdtemp(prefix="atlas-exact-")
+        profile = tempfile.mkdtemp(prefix="chromium-atlas-exact-")
         def run(proc, token, out=out):
-            time.sleep(4)
-            r = probe(["--token-file", token, "--duration", "2", "--windows", "1", "--zero-video", "--save", out])
+            time.sleep(6)
+            r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video", "--save", out])
             return r, open(os.path.join(out, "window-1.png"), "rb").read()
-        r, png_bytes = with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run, extra=extra)
+        r, png_bytes = with_server(
+            CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,400", f"--app={PAGES}/popup.html"],
+            run, extra=extra)
         reports.append(r)
         pictures.append(png_bytes)
     r0 = reports[0]
@@ -753,17 +756,18 @@ def check_atlas_exact():
 def check_atlas_scroll_copyrect():
     # Scrolling a page under --zero-video must detect the translation vector and emit
     # SurfaceCopy (CopyRect) commands, encoding only the newly exposed strip.
-    actions = "wait:400;scroll:400,400,64;wait:300;scroll:400,400,64;wait:400"
+    profile = tempfile.mkdtemp(prefix="chromium-atlas-scroll-")
+    actions = "wait:500;scroll:400,400,64;wait:400;scroll:400,400,64;wait:500"
     def run(proc, token):
-        time.sleep(3)
-        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", "--zero-video",
+        time.sleep(5)
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
                    "--display", "900x800@60x1", "--actions", actions])
         w = r["windows"][0]
         if r["surface_batches"] < 2 or r["atlas_copies"] < 1 or w["decode_errors"]:
             raise Failed(f"expected SurfaceCopy on scroll, got batches={r['surface_batches']} copies={r['atlas_copies']} window={w}")
         return (f"scroll emitted {r['atlas_copies']} CopyRect command(s) across {r['surface_batches']} batches "
                 f"({r['atlas_tiles']} exposed tiles, {r['atlas_fills']} fills)")
-    return with_server(CHROMIUM + ["--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
+    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
 
 
 def check_atlas_tab_switch_dedup():
@@ -771,6 +775,7 @@ def check_atlas_tab_switch_dedup():
     # session-wide 64x64 tile hash cache and emit SurfaceTileRef (0 pixel bytes) for
     # revisited tiles.
     page_dir = tempfile.mkdtemp(prefix="atlas-tabs-")
+    profile = tempfile.mkdtemp(prefix="chromium-atlas-tabs-")
     page_path = os.path.join(page_dir, "tabs.html")
     with open(page_path, "w", encoding="utf-8") as f:
         f.write("""<!doctype html>
@@ -796,17 +801,17 @@ def check_atlas_tab_switch_dedup():
   });
 </script>
 """)
-    actions = "wait:400;click:300,300;wait:500;click:300,300;wait:500"
+    actions = "wait:500;click:300,300;wait:600;click:300,300;wait:600"
     def run(proc, token):
-        time.sleep(3)
-        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", "--zero-video",
+        time.sleep(5)
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
                    "--display", "900x600@60x1", "--actions", actions])
         w = r["windows"][0]
         if r["surface_batches"] < 3 or r["atlas_refs"] < 1 or w["decode_errors"]:
             raise Failed(f"expected SurfaceTileRef cache hits on tab switch back, got refs={r['atlas_refs']} report={r}")
         return (f"tab switch A -> B -> A emitted {r['atlas_refs']} cached tile ref(s) (0 pixel bytes) "
                 f"across {r['surface_batches']} batches")
-    return with_server(CHROMIUM + ["--window-size=900,600", f"--app=file://{page_path}"], run)
+    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,600", f"--app=file://{page_path}"], run)
 
 
 CHECKS = [

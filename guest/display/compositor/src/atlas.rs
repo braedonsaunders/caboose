@@ -2,7 +2,9 @@
 //! and per-window RGBA8888 shadow buffer, `CopyRect` scroll detector, solid-fill coalescer,
 //! and adaptive lossless tile encoder (`AtlasWindowEncoder`).
 
-use crate::encode::{CpuImage, Input, Pixels, ShmPicture};
+use crate::encode::{Input, Pixels, ShmPicture};
+#[cfg(test)]
+use crate::encode::CpuImage;
 use crate::motion;
 use caboose_display_protocol::atlas::{detect_scroll_copy, encode_atlas_tile, xxh64};
 use caboose_display_protocol::{
@@ -15,6 +17,11 @@ const TILE_SIZE: i32 = 64;
 
 /// Tracks which 64×64 RGBA8888 tile hashes the connected display client currently holds in
 /// its session-wide LRU cache (up to 32,768 tiles).
+///
+/// Entries are only inserted/touched via [`AtlasCacheTracker::record_published_batch`] when a
+/// [`SurfaceBatch`] is actually sent to the client on the main event loop, ensuring workers
+/// never emit [`SurfaceTileRef`]s for intra-batch duplicate new tiles or unpublished frames.
+#[derive(Clone)]
 pub struct AtlasCacheTracker {
     pub epoch: u64,
     capacity: usize,
@@ -53,12 +60,19 @@ impl AtlasCacheTracker {
         self.epoch
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Pure read-only check whether `hash` has already been published to the client's cache.
+    pub fn contains(&self, hash: u64) -> bool {
+        self.entries.contains_key(&hash)
     }
 
     /// If `hash` is present in the client's cache, marks it most-recently-used and returns `true`.
@@ -92,6 +106,21 @@ impl AtlasCacheTracker {
         self.compact_if_needed();
     }
 
+    /// Records all `refs` (LRU touch) and 64×64 `tiles` (LRU insert) in `batch` once the batch
+    /// is published to the client connection.
+    pub fn record_published_batch(&mut self, batch: &SurfaceBatch) {
+        for r in &batch.refs {
+            let _ = self.contains_and_touch(r.hash);
+        }
+        for t in &batch.tiles {
+            if t.rect.w == TILE_SIZE && t.rect.h == TILE_SIZE {
+                if let Some(hash) = t.hash {
+                    self.insert(hash);
+                }
+            }
+        }
+    }
+
     fn compact_if_needed(&mut self) {
         if self.order.len() > self.capacity.saturating_mul(4).max(64) {
             self.order.retain(|(h, s)| self.entries.get(h) == Some(s));
@@ -114,12 +143,16 @@ impl AtlasWindowEncoder {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
     /// Encodes a window picture from `Input` (`CpuImage` or `ShmPicture`) into an atomic
-    /// `SurfaceBatch`, updating `self.shadow` and `cache`.
+    /// `SurfaceBatch`, updating `self.shadow` while consulting `cache` read-only.
+    ///
+    /// Callers must invoke [`AtlasCacheTracker::record_published_batch`] when the returned
+    /// `SurfaceBatch` is actually sent to the client.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_input(
         &mut self,
@@ -133,7 +166,7 @@ impl AtlasWindowEncoder {
         keyframe: bool,
         damage: Option<&[Rect]>,
         excluded: Option<Rect>,
-        cache: &mut AtlasCacheTracker,
+        cache: &AtlasCacheTracker,
     ) -> Result<(Option<SurfaceBatch>, Vec<Rect>), String> {
         match input {
             Input::Cpu(image) => {
@@ -159,7 +192,7 @@ impl AtlasWindowEncoder {
                 ))
             }
             Input::Shm(shm) => {
-                self. encode_shm(
+                self.encode_shm(
                     window_id, pts_us, rect, width, height, shm, alpha, keyframe, damage, excluded, cache,
                 )
             }
@@ -179,7 +212,7 @@ impl AtlasWindowEncoder {
         keyframe: bool,
         damage: Option<&[Rect]>,
         excluded: Option<Rect>,
-        cache: &mut AtlasCacheTracker,
+        cache: &AtlasCacheTracker,
     ) -> Result<(Option<SurfaceBatch>, Vec<Rect>), String> {
         smithay::wayland::shm::with_buffer_contents(&shm.buffer, |ptr, len, data| {
             let (w, h) = (width as i32, height as i32);
@@ -214,7 +247,7 @@ impl AtlasWindowEncoder {
         keyframe: bool,
         damage: Option<&[Rect]>,
         excluded: Option<Rect>,
-        cache: &mut AtlasCacheTracker,
+        cache: &AtlasCacheTracker,
     ) -> (Option<SurfaceBatch>, Vec<Rect>) {
         if width == 0 || height == 0 {
             return (None, Vec::new());
@@ -260,7 +293,6 @@ impl AtlasWindowEncoder {
                 for r in &effective_damage {
                     mark_tiles(&mut dirty_tiles, cols, rows, *r);
                 }
-                // If exclusion leaves some tiles marked, convert those regions
                 convert_bgrx_regions_to_rgba(
                     src.data,
                     src.stride,
@@ -269,7 +301,6 @@ impl AtlasWindowEncoder {
                     &effective_damage,
                     alpha,
                 );
-                // Keep shadow inside excluded region untouched
                 let _ = ex;
             } else {
                 dirty_tiles.fill(true);
@@ -297,11 +328,23 @@ impl AtlasWindowEncoder {
         }
 
         let mut copies = Vec::new();
-        if !is_keyframe {
-            // Check damaged regions for scroll displacement (coalesce or check bounding box if multiple)
+        if !is_keyframe && excluded.is_none() {
             let scroll_candidates = coalesced_scroll_regions(&effective_damage, width as i32, height as i32);
             for cand in scroll_candidates {
                 if cand.w >= 64 && cand.h >= 64 {
+                    if effective_damage.len() > 1 {
+                        // Ensure the entire candidate bounding box is converted into staging
+                        // and marked dirty before applying an in-place shadow copy.
+                        convert_bgrx_regions_to_rgba(
+                            src.data,
+                            src.stride,
+                            &mut self.staging,
+                            w_usize * 4,
+                            &[cand],
+                            alpha,
+                        );
+                        mark_tiles(&mut dirty_tiles, cols, rows, cand);
+                    }
                     if let Some(copy) = detect_scroll_copy(&self.shadow, &self.staging, width, cand) {
                         apply_surface_copy(&mut self.shadow, width, height, copy);
                         copies.push(copy);
@@ -310,13 +353,14 @@ impl AtlasWindowEncoder {
             }
         }
 
+        let allow_refs = !is_keyframe && std::env::var("CABOOSE_ATLAS_NO_REFS").as_deref() != Ok("1");
+
         let mut fills: Vec<SurfaceFill> = Vec::new();
         let mut refs: Vec<SurfaceTileRef> = Vec::new();
         let mut tiles: Vec<SurfaceTile> = Vec::new();
         let mut changed_rects: Vec<Rect> = Vec::new();
 
-        for (copy_idx, copy) in copies.iter().enumerate() {
-            let _ = copy_idx;
+        for copy in &copies {
             changed_rects.push(copy.rect);
         }
 
@@ -374,10 +418,13 @@ impl AtlasWindowEncoder {
 
                 if tw == TILE_SIZE && th == TILE_SIZE {
                     let hash = xxh64(&tile_buf, 0);
-                    if !is_keyframe && std::env::var_os("CABOOSE_ATLAS_NO_REFS").is_none() && cache.contains_and_touch(hash) {
+                    // Only emit a `SurfaceTileRef` if `hash` was ALREADY published to the client
+                    // in a prior batch (`cache` is immutable during batch assembly). Clients apply
+                    // `batch.refs` before `batch.tiles`, so a tile newly introduced in this batch
+                    // must always be sent in `batch.tiles`.
+                    if allow_refs && cache.contains(hash) {
                         refs.push(SurfaceTileRef { x: x0, y: y0, hash });
                     } else {
-                        cache.insert(hash);
                         let (format, data) = encode_atlas_tile(&tile_buf, tw as u32, th as u32);
                         tiles.push(SurfaceTile {
                             rect: tile_rect,
@@ -492,7 +539,6 @@ fn coalesced_scroll_regions(damage: &[Rect], width: i32, height: i32) -> Vec<Rec
     if damage.len() == 1 {
         return vec![damage[0]];
     }
-    // Union of all damage rects if it covers a substantial portion
     let mut x0 = i32::MAX;
     let mut y0 = i32::MAX;
     let mut x1 = i32::MIN;
@@ -608,6 +654,7 @@ fn coalesce_vertical_fills(fills: &mut Vec<SurfaceFill>) {
 
 /// Applies a `SurfaceBatch` to an RGBA8888 surface buffer and tile cache, returning `(width, height)`.
 /// Used by unit tests and `caboose-display-probe` to reconstruct the exact window surface.
+#[allow(dead_code)]
 pub fn reconstruct_surface_batch(
     surface: &mut Vec<u8>,
     surface_size: &mut (u32, u32),
@@ -714,9 +761,10 @@ mod tests {
         let rect = Rect::new(0, 0, w as i32, h as i32);
 
         let (batch, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img), false, true, None, None, &mut cache)
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img), false, true, None, None, &cache)
             .unwrap();
         let batch = batch.expect("keyframe must emit SurfaceBatch");
+        cache.record_published_batch(&batch);
         assert!(batch.keyframe);
         assert!(!batch.fills.is_empty(), "top-left uniform tile should emit SurfaceFill");
         assert!(!batch.tiles.is_empty(), "patterned tiles should emit SurfaceTile");
@@ -751,9 +799,10 @@ mod tests {
         let rect = Rect::new(0, 0, w as i32, h as i32);
 
         let (batch0, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &mut cache)
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &cache)
             .unwrap();
         let batch0 = batch0.unwrap();
+        cache.record_published_batch(&batch0);
 
         let mut client_surface = Vec::new();
         let mut client_size = (0, 0);
@@ -764,9 +813,10 @@ mod tests {
         let img1 = paint_test_image(w, h, 42);
         let damage = [Rect::new(0, 0, w as i32, h as i32)];
         let (batch1, _) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &mut cache)
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &cache)
             .unwrap();
         let batch1 = batch1.expect("scroll frame must emit SurfaceBatch");
+        cache.record_published_batch(&batch1);
 
         assert_eq!(batch1.copies.len(), 1, "must detect vertical scroll copy");
         assert_eq!(batch1.copies[0].dx, 0);
@@ -796,9 +846,10 @@ mod tests {
 
         // Frame 1: Tab A (4 full 64x64 tiles)
         let (b1, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&tab_a), false, true, None, None, &mut cache)
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&tab_a), false, true, None, None, &cache)
             .unwrap();
         let b1 = b1.unwrap();
+        cache.record_published_batch(&b1);
         assert_eq!(b1.tiles.len(), 4);
         assert_eq!(b1.refs.len(), 0);
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
@@ -806,22 +857,93 @@ mod tests {
 
         // Frame 2: Switch to Tab B (4 new 64x64 tiles)
         let (b2, _) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&tab_b), false, false, None, None, &mut cache)
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&tab_b), false, false, None, None, &cache)
             .unwrap();
         let b2 = b2.unwrap();
+        cache.record_published_batch(&b2);
         assert_eq!(b2.tiles.len(), 4);
         assert_eq!(b2.refs.len(), 0);
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b2).unwrap();
 
         // Frame 3: Switch back to Tab A -> all 4 tiles are already in `AtlasCacheTracker`, emitted as `refs`!
         let (b3, _) = enc
-            .encode_input(1, 3000, rect, w, h, Input::Cpu(&tab_a), false, false, None, None, &mut cache)
+            .encode_input(1, 3000, rect, w, h, Input::Cpu(&tab_a), false, false, None, None, &cache)
             .unwrap();
         let b3 = b3.unwrap();
+        cache.record_published_batch(&b3);
         assert_eq!(b3.tiles.len(), 0, "revisited tab must encode 0 tile bytes");
         assert_eq!(b3.refs.len(), 4, "revisited tab must emit 4 SurfaceTileRef entries");
 
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b3).unwrap();
         assert_eq!(client_surface, expected_tab_a, "reconstructed surface from refs must match Tab A bit-for-byte");
+    }
+
+    #[test]
+    fn duplicate_new_tiles_in_same_delta_batch_and_unpublished_batches_never_emit_premature_refs() {
+        let (w, h) = (128u32, 64u32);
+        let initial = paint_test_image(w, h, 10);
+        let mut enc1 = AtlasWindowEncoder::new();
+        let mut enc2 = AtlasWindowEncoder::new();
+        let mut cache = AtlasCacheTracker::new();
+        let rect = Rect::new(0, 0, w as i32, h as i32);
+
+        let mut client_surface = Vec::new();
+        let mut client_size = (0, 0);
+        let mut client_cache = HashMap::new();
+
+        // 1. Keyframe on window 1 and window 2
+        let (b1, _) = enc1
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
+            .unwrap();
+        let b1 = b1.unwrap();
+        cache.record_published_batch(&b1);
+        reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
+
+        let (b2_init, _) = enc2
+            .encode_input(2, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
+            .unwrap();
+        let b2_init = b2_init.unwrap();
+        cache.record_published_batch(&b2_init);
+
+        // 2. Construct an image where BOTH 64x64 tiles (x=0..64 and x=64..128) have the EXACT SAME
+        //    new textured pattern (never seen before in `cache`).
+        let mut dup_img = CpuImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let tx = x % 64;
+                let off = (y as usize) * dup_img.stride + (x as usize) * 4;
+                let r = ((y.wrapping_mul(37) ^ tx.wrapping_mul(19) ^ 0xA5) & 0xFF) as u8;
+                let g = ((y.wrapping_mul(73) + tx.wrapping_mul(11) + 0x5A) & 0xFF) as u8;
+                let b = ((y ^ (tx * 5) ^ 0x3C) & 0xFF) as u8;
+                dup_img.data[off..off + 4].copy_from_slice(&[b, g, r, 0x00]);
+            }
+        }
+
+        // Encode delta batch on window 1 (without publishing yet)
+        let (delta1, _) = enc1
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, None, &cache)
+            .unwrap();
+        let delta1 = delta1.unwrap();
+        // Because clients apply `refs` before `tiles`, the second 64x64 tile in `delta1` MUST NOT
+        // be emitted as a `ref` to the first tile in the same batch!
+        assert_eq!(delta1.refs.len(), 0, "intra-batch duplicate new tile must not emit premature ref");
+        assert_eq!(delta1.tiles.len(), 2, "both identical new tiles in the batch must be sent as tiles");
+
+        // Before `delta1` is published to `cache`, window 2 encodes the same `dup_img` concurrently.
+        // Because `delta1` is not published yet, window 2 must also emit `tiles` (not `refs`)!
+        let (delta2, _) = enc2
+            .encode_input(2, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, None, &cache)
+            .unwrap();
+        let delta2 = delta2.unwrap();
+        assert_eq!(delta2.refs.len(), 0, "unpublished worker batch must not pollute shared cache");
+        assert_eq!(delta2.tiles.len(), 2);
+
+        // Client applies `delta1` (`refs` before `tiles`) with zero missing-hash errors!
+        reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &delta1).unwrap();
+        assert_eq!(client_surface, enc1.shadow);
+
+        // Now publish `delta1` to the session cache tracker.
+        cache.record_published_batch(&delta1);
+        assert!(cache.contains(delta1.tiles[0].hash.unwrap()));
     }
 }

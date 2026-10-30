@@ -149,8 +149,8 @@ pub struct Done {
     pub ends_motion: Option<u64>,
     /// Small changes sent as lossless tiles instead of a window picture.
     pub tiles: Option<TilesDone>,
-    /// Atomic lossless `SurfaceBatch` produced when `job.atlas` is true.
-    pub surface_batch: Option<(SurfaceBatch, u64)>,
+    /// Atomic lossless `SurfaceBatch` produced when `job.atlas` is true, with `(batch, cpu_us, cache_epoch)`.
+    pub surface_batch: Option<(SurfaceBatch, u64, u64)>,
 }
 
 pub struct TilesDone {
@@ -257,10 +257,28 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
         Some(shm) => Input::Shm(shm),
         None => Input::Cpu(&job.image),
     };
-    let mut fallback_cache = AtlasCacheTracker::new();
-    let batch_res = match &job.atlas_cache {
+    let fallback_cache = AtlasCacheTracker::new();
+    let (atlas_epoch, batch_res) = match &job.atlas_cache {
         Some(shared) => {
-            let mut guard = shared.lock().unwrap();
+            let guard = shared.lock().unwrap();
+            let epoch = guard.epoch;
+            let res = enc.encode_input(
+                job.window,
+                job.pts_us,
+                job.rect,
+                width,
+                height,
+                input,
+                job.alpha,
+                job.keyframe,
+                job.damage.as_deref(),
+                excluded,
+                &guard,
+            );
+            (epoch, res)
+        }
+        None => (
+            fallback_cache.epoch,
             enc.encode_input(
                 job.window,
                 job.pts_us,
@@ -272,27 +290,14 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
                 job.keyframe,
                 job.damage.as_deref(),
                 excluded,
-                &mut guard,
-            )
-        }
-        None => enc.encode_input(
-            job.window,
-            job.pts_us,
-            job.rect,
-            width,
-            height,
-            input,
-            job.alpha,
-            job.keyframe,
-            job.damage.as_deref(),
-            excluded,
-            &mut fallback_cache,
+                &fallback_cache,
+            ),
         ),
     };
     match batch_res {
         Ok((Some(batch), changed)) => {
             done.changed = changed;
-            done.surface_batch = Some((batch, thread_cpu_us().saturating_sub(cpu0)));
+            done.surface_batch = Some((batch, thread_cpu_us().saturating_sub(cpu0), atlas_epoch));
         }
         Ok((None, changed)) => {
             done.changed = changed;

@@ -300,8 +300,8 @@ impl AtlasSurface {
         batch: &proto::SurfaceBatch,
         cache: &mut HashMap<u64, Vec<u8>>,
     ) -> Result<(), String> {
-        let w = batch.rect.w.max(0) as u32;
-        let h = batch.rect.h.max(0) as u32;
+        let w = batch.size.w.max(0) as u32;
+        let h = batch.size.h.max(0) as u32;
         if w == 0 || h == 0 {
             return Err("empty surface batch rect".into());
         }
@@ -901,12 +901,12 @@ fn run(args: Args) -> Result<bool, String> {
                     let batch_bytes: u64 = b.tiles.iter().map(|t| t.data.len() as u64).sum::<u64>()
                         + (b.copies.len() * 24 + b.fills.len() * 20 + b.refs.len() * 16) as u64;
                     s.bytes += batch_bytes;
-                    if s.last_crop != Some((b.rect.w, b.rect.h)) {
+                    if s.last_crop != Some((b.size.w, b.size.h)) {
                         s.sizes += 1;
                         s.resized_without_keyframe |= !b.keyframe;
-                        s.last_crop = Some((b.rect.w, b.rect.h));
+                        s.last_crop = Some((b.size.w, b.size.h));
                     }
-                    s.size = (b.rect.w.max(0) as u32, b.rect.h.max(0) as u32);
+                    s.size = (b.size.w.max(0) as u32, b.size.h.max(0) as u32);
                     s.first.get_or_insert_with(Instant::now);
                     s.last = Some(Instant::now());
                     if b.pts_us >= connected_us {
