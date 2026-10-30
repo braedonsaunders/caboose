@@ -103,11 +103,13 @@ extension chains and custom callbacks are rejected for this experiment.
 The decoder must disable `GlDirectMem`, `VirtioGpuNext`, and `ExternalBlob` so
 it maps host-visible allocations and exchanges the actual contents. A client
 must perform the required Vulkan barriers, fence waits, flushes and invalidates.
-This experiment requires a genuinely non-coherent host-visible type, which the
-selected device may not provide. Coherent allocations are rejected; because
-Vulkan requires a coherent type, this cannot be exposed as a usable device.
-The Vulkan initialization gate remains in place; this path has not been tested
-with a decoder.
+This experiment requires a guest-advertised non-coherent host-visible type.
+The decoder can project such a type over coherent physical memory and maps the
+guest allocation index back to its backing type; raw provider flags alone do
+not establish the guest's memory properties. The [memory audit](private-memory-profile/README.md)
+describes the feature constraints and the actual-query and byte-transfer checks.
+Guest coherent allocations are rejected. The public Vulkan initialization gate
+remains closed because mandatory coherent-memory semantics are incomplete.
 
 The socket shadow records one active map range per allocation, validates map
 bounds, mapped flush/invalidate bounds and non-coherent atom alignment, and
