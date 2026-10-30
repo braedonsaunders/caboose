@@ -25,8 +25,8 @@ Remaining explicit desktop/Apple boundaries in the pinned tree:
   provide those desktop-only functions. Their complete external symbol usage still
   needs a link audit.
 - `common/base/System.cpp:35-39,342-355` includes `<libproc.h>` and calls
-  `proc_pidpath` in its Apple program-directory path. Its iOS SDK availability and
-  semantics are unverified; the candidate Mach CPU split does not fix this.
+  `proc_pidpath` in its Apple program-directory path. `0004-offscreen-apple-paths.patch` uses `_NSGetExecutablePath` on iOS and
+  retains `proc_pidpath` on macOS. The new branch has not been SDK-compiled or run.
 - `host/native_window/CMakeLists.txt:3-5` selects `native_sub_window_cocoa.mm`,
   which imports Cocoa and implements AppKit view/window operations. The candidate
   headless target retains only the native-window headers and rejects framebuffer
@@ -35,8 +35,9 @@ Remaining explicit desktop/Apple boundaries in the pinned tree:
   when the Metal platform macro is set. That function is provided by the excluded
   Cocoa native-window implementation. The offscreen configuration does not request
   native swapchains, but an unreachable runtime path can still produce a link-time
-  dependency. It must be factored or deliberately retained with a real implementation;
-  a no-op surface is not a solution.
+  dependency. `0004-offscreen-apple-paths.patch` removes this reference for the
+  headless target and explicitly rejects native surface creation; the desktop path
+  remains intact. It has not been compiled or linked.
 - `host/CMakeLists.txt:74-75,156` adds GL and render-control subtrees and links the
   desktop backend against AppKit, QuartzCore and IOSurface. The candidate headless
   branch bypasses that backend and keeps header targets required by Vulkan; actual
@@ -56,3 +57,29 @@ Remaining explicit desktop/Apple boundaries in the pinned tree:
 The decoder's generated unmarshalling is not safe against arbitrary malformed input;
 the separate mapped-memory and coherent visibility gaps remain. Nothing here enables
 an app feature or demonstrates GPU execution or readback.
+
+## Patch sequence and verification gates
+
+On a private copy of the exact pinned tree, apply 0002 then 0003 then 0004 using
+`git apply --unidiff-zero`. These patches are source preparations; 0001 loader
+injection is also required for the decoder's shared-loader integration. The order
+matters: 0003 is based on the framebuffer produced by 0002. The 0004 patch was
+applied and its guard placement checked on a private copy of its two files.
+
+When separately authorized, first build and link the macOS reference target in
+`../macos-reference/README.md` with only 0001 applied; that exercises the actual
+backend and adapter without relying on these iOS drafts. Then configure an isolated
+iOS cross-build with the 0001-0004 patch sequence,
+`CABOOSE_GFXSTREAM_HEADLESS=ON`, `CABOOSE_GFXSTREAM_HOST_GLES=0`, and the Apple
+iOS SDK and architecture explicitly selected. Compile `caboose_gfxstream_framebuffer`
+serially and link a small final executable against the complete target graph: static
+archive creation alone cannot find unresolved Cocoa, GL or Vulkan references. Inspect
+the final link map for `getMetalLayerFromView`, AppKit and IOKit, and verify the
+linked loader is the same one used for capability queries. Address actual failures
+without substituting success-returning placeholders.
+
+On an approved iOS simulator or device, test executable-directory discovery and
+initialize the real offscreen compositor; assert native display-surface creation
+fails, then separately run a real guest compute/readback fixture after schema and
+coherent memory semantics are implemented. A passing surface rejection is not
+proof of Vulkan command execution or physical-phone GPU feedback.
