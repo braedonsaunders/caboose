@@ -126,6 +126,10 @@ public final class LiveGPUPresentationOwners {
         let display = (view.session ?? view.pacer) as? CabooseDisplaySession
         guard let size = LiveGPUDrawableGeometry.extent(serverPixels: window.frame.size,
             visibleBounds: view.bounds.size, requestedPixels: display?.pendingPresentationSize(window)) else {
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            LiveGPUMemoryAudit.ownerPending(server: window.frame.size,
+                requested: display?.pendingPresentationSize(window))
+            #endif
             throw unavailable(EAGAIN)
         }
         #if DEBUG && canImport(CabooseGPUMemoryAudit)

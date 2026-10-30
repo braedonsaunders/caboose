@@ -62,6 +62,15 @@ enum LiveGPUMemoryAudit {
         terminal(["kind": "ownerExtent", "drawableWidth": server.width,
                   "drawableHeight": server.height, "viewWidth": view.width, "viewHeight": view.height])
     }
+    static func ownerPending(server: CGSize, requested: CGSize?) {
+        var fields: [String: Any] = ["kind": "ownerPending", "serverWidth": server.width,
+                                   "serverHeight": server.height]
+        if let requested {
+            fields["requestedWidth"] = requested.width
+            fields["requestedHeight"] = requested.height
+        }
+        terminal(fields)
+    }
     static func surfaceBind(_ status: LiveGPUSurfaceStatus) {
         var fields: [String: Any] = ["kind": "surfaceBind", "errno": status.nativeErrno]
         if let result = status.vkResult { fields["vkResult"] = result }
