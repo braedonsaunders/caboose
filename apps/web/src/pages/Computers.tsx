@@ -1,8 +1,7 @@
+import { PageHeader, DashboardPanel } from '../components/console-ui.js'
 import * as React from 'react'
-import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
-import {
-  Alert, AlertDescription, AlertTitle, Button, Dialog, Input, Label, PageContainer, PageHeader, Select, toast,
-} from '@braedonsaunders/appkit-ui'
+
+import { Alert, AlertDescription, AlertTitle, Button, Dialog, Input, Label, PageContainer, EmptyState, Select, toast,  } from '@braedonsaunders/appkit-ui'
 import { Monitor, Plus } from 'lucide-react'
 import {
   effectiveLimits, formatIdleDuration, formatMemoryMb, validateSettingsInput, type CabooseClient, type ComputersResponse, type Me, type NewComputer, type Person,
@@ -16,6 +15,8 @@ import { RollingWordmark } from '../brand/Logo.js'
 
 export function Computers({ client, computers, me }: { client: CabooseClient; computers: ComputersHandle; me: Me }) {
   const { list, error } = computers
+  const [query, setQuery] = React.useState('')
+  const [state, setState] = React.useState('all')
   const [creating, setCreating] = React.useState(false)
 
   if (!list) {
@@ -31,6 +32,10 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
     )
   }
 
+  const visible = list.computers.filter(computer => {
+    const search = [computer.settings.name, computer.person, me.tenants.find(tenant => tenant.id === computer.tenantId)?.name].join(' ').toLowerCase()
+    return search.includes(query.trim().toLowerCase()) && (state === 'all' || computer.state === state)
+  })
   const full = list.computers.length >= list.limits.computers
 
   return (
@@ -39,8 +44,8 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
         <PageHeader
           title="Computers"
           description={list.limits.running
-            ? `Each computer is its own Linux machine with its own disk, apps and phones. Up to ${list.limits.running} run at once; the rest stay parked until they are opened.`
-            : 'Each computer is its own Linux machine with its own disk, apps and phones.'}
+            ? `Manage assignments, resources and access. Up to ${list.limits.running} computers can run at once.`
+            : 'Manage computer assignments, resources and access.'}
           actions={list.canCreate ? (
             <Button onClick={() => setCreating(true)} disabled={full} title={full ? `This host runs at most ${list.limits.computers} computers.` : undefined}>
               <Plus className="size-4" aria-hidden />New computer
@@ -56,7 +61,12 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
         ) : null}
 
         <DashboardPanel title="All computers" icon={<Monitor className="size-4" aria-hidden />}>
-          <ComputersTable computers={list.computers} tenants={me.tenants} />
+          <div className="mb-5 flex flex-wrap items-end gap-3">
+            <div className="min-w-0 flex-[1_1_16rem] space-y-2"><Label htmlFor="computer-search">Search computers</Label><Input id="computer-search" type="search" placeholder="Name, person or tenant…" value={query} onChange={event => setQuery(event.target.value)} /></div>
+            <div className="w-44 space-y-2"><Label htmlFor="computer-state">State</Label><Select id="computer-state" value={state} onChange={event => setState(event.target.value)}><option value="all">All states</option>{['running', 'parked', 'frozen', 'waking', 'parking', 'restarting', 'error'].map(value => <option key={value} value={value}>{value === 'frozen' ? 'Sleeping' : value === 'error' ? 'Needs attention' : value[0]!.toUpperCase() + value.slice(1)}</option>)}</Select></div>
+            <p className="pb-2 text-xs text-fg-muted" role="status">{visible.length} of {list.computers.length} computers</p>
+          </div>
+          {list.computers.length > 0 && visible.length === 0 ? <EmptyState title="No matching computers" description="Try a different name or state." action={<Button variant="outline" onClick={() => { setQuery(''); setState('all') }}>Clear filters</Button>} /> : <ComputersTable computers={visible} tenants={me.tenants} />}
         </DashboardPanel>
       </div>
 

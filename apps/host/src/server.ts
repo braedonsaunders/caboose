@@ -1,4 +1,7 @@
 import { GuestEvents } from './guest-events.js'
+import { CapacitySampler, capacityFor } from './capacity.js'
+import { recoveryRoute } from './recovery.js'
+import { AccountSocketFence } from './identity/socket-fence.js'
 import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
@@ -584,7 +587,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await confirmedRestart()
       return json(response, 200, managementStatus())
     }
-    if (path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+    if (path === '/v1/recovery' || path.startsWith('/v1/recovery/') || path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+      if (path.startsWith('/v1/recovery') && principal.kind === 'phone') return json(response, 403, { error: 'Only administrators manage host captures' })
+      if (path.startsWith('/v1/recovery') && !pieces.storage) return recoveryRoute(undefined, request, response, path, principal, {} as never)
       if (!pieces.storage) return json(response, 404, { error: 'This computer cannot be backed up to a phone' })
       return pieces.storage.backups(request, response, path, principal, {
         restart: confirmedRestart,
@@ -1071,6 +1076,8 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** Image filesystem for read-only capacity sampling. */
+  capacityRoot?: string
   /** Shared storage's totals, for `GET /v1/health`; null when it is off. */
   sharedStorage?: () => SharedStorageStatus | null
   /** How phones find and reach this host, for `/v1/host/reach`. */
@@ -1079,6 +1086,7 @@ export function createCabooseServer(options: ComputerPieces & {
   /** Accounts and tenants. Without it the owner token and phones are the only principals. */
   identity?: Identity
 }) {
+  const capacitySampler = new CapacitySampler(options.capacityRoot, options.host?.runtime)
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
   const throttle = new SignInThrottle()
@@ -1265,6 +1273,17 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
+      const capacityTenant = /^\/v1\/tenants\/([0-9a-f-]{36})\/capacity$/.exec(path)
+      if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
+        const result = await capacityFor({
+          sampler: capacitySampler,
+          computers: () => [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
+          quotas: async id => { if (!identity) throw new AgentNotFoundError('tenant not found'); return (await identity.tenant(id)).quotas },
+          queued: () => { const stats = options.controller.stats() as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
+        }, principal, capacityTenant?.[1])
+        response.setHeader('cache-control', 'no-store')
+        return json(response, result.status, result.body)
+      }
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
       const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
@@ -1319,6 +1338,7 @@ export function createCabooseServer(options: ComputerPieces & {
             input.person = selected.name
           }
           await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
+          await accountSockets.revalidate()
           return json(response, 200, describe(runtime))
         }
         if (!phones && request.method === 'DELETE') {
@@ -1361,6 +1381,10 @@ export function createCabooseServer(options: ComputerPieces & {
     })
   })
 
+  const accountSockets = new AccountSocketFence()
+  const unsubscribeAuthorization = identity?.onAuthorizationChange(() => accountSockets.revalidate())
+  server.once('close', () => { unsubscribeAuthorization?.(); accountSockets.dispose() })
+
   server.on('upgrade', (request, socket, head) => void (async () => {
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
@@ -1368,10 +1392,22 @@ export function createCabooseServer(options: ComputerPieces & {
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (principal.kind === 'admin') {
+      const remove = accountSockets.add(async () => {
+        const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
+        return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
+      }, () => socket.destroy())
+      socket.once('close', remove)
+      // Fence a revocation racing the initial upgrade authorization.
+      await accountSockets.revalidate()
+      if (socket.destroyed) return
+    }
     routed.runtime.connect(request, socket, head, url, routed.path, principal)
   })())
 
   async function shutdown(): Promise<void> {
+    unsubscribeAuthorization?.()
+    accountSockets.dispose()
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }

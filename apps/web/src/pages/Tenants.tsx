@@ -1,9 +1,7 @@
+import { PageHeader, DashboardPanel } from '../components/console-ui.js'
 import * as React from 'react'
-import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
-import {
-  Alert, AlertDescription, Button, Dialog, Input, Label, PageContainer, PageHeader, Spinner,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, toast,
-} from '@braedonsaunders/appkit-ui'
+
+import { Alert, AlertDescription, Button, Dialog, EmptyState, Input, Label, PageContainer, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, toast,  } from '@braedonsaunders/appkit-ui'
 import { Building2, Plus } from 'lucide-react'
 import { CabooseApiError, formatMemoryMb, type CabooseClient, type Quotas, type Tenant } from '../api.js'
 import { errorMessage } from '../components/common.js'
@@ -52,14 +50,14 @@ export function Tenants({ client, onChanged, onUnauthorized, setupRequired = fal
       <div className="space-y-6">
         <PageHeader
           title="Tenants"
-          description="Each household or team has its own computers and administrators, and quotas on what its computers are given between them. Quotas are checked when a computer is made, resized or woken."
+          description="Manage households and teams, their resource quotas and computer allocations."
           actions={<Button disabled={setupRequired} title={setupRequired ? 'Complete host setup first.' : undefined} onClick={() => setEditing('new')}><Plus className="size-4" aria-hidden />New tenant</Button>}
         />
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
         <DashboardPanel title="All tenants" icon={<Building2 className="size-4" aria-hidden />}>
           {tenants === null ? (
             <div className="flex items-center gap-2 text-sm text-fg-muted"><Spinner size={16} />Loading…</div>
-          ) : (
+          ) : tenants.length === 0 ? <EmptyState icon={<Building2 className="size-6" aria-hidden />} title="No tenants yet" description="Create a household or team to organize its people, computers and resource quotas." /> : (
             <Table containerClassName="border-0 shadow-none">
               <TableHeader>
                 <TableRow noAnimate>
@@ -104,6 +102,7 @@ export function Tenants({ client, onChanged, onUnauthorized, setupRequired = fal
             </Table>
           )}
         </DashboardPanel>
+        <p className="text-xs text-fg-muted">Quotas are checked when a computer is created, resized or woken. Manage administrator access from People.</p>
       </div>
       <TenantDialog
         tenant={editing}

@@ -72,19 +72,28 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+New golden images have a 60 GiB sparse disk with a Btrfs root on partition 3, mounted
+with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers and
+snapshots keep their filesystem. Compression savings depend on the data; neither
+a 3:1 ratio nor a 20 GiB physical limit is guaranteed. Host disk usage counts allocated
+blocks (including snapshots); tenant admission quotas do not enforce a write-time
+physical cap. Async discard requests reclamation from the block device; host space
+recovery depends on the runtime and backing filesystem honoring discard.
+
 A Linux host can opt new computers into a split image using `CABOOSE_SPLIT_IMAGE`.
 Its `base.raw`, `vmlinux`, `initrd` and `system.erofs` form one retained version. The
 host records the absolute directory and file hashes per computer before creating its
 disk; on wake it checks the system image, kernel and initramfs, and checks the base before
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
-the computer's ext4 disk. Package and component updates persist there. Existing disks
+the computer's writable root disk. Package and component updates persist there. Existing disks
 and snapshots remain on their original image when the setting changes. An operator can
 explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
 tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
 memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
 initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
 explicit acknowledgement that writes since migration will be lost.
+The system image uses LZ4HC level 12 compression with 64 KiB physical clusters.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:
@@ -934,7 +943,7 @@ visible to the operator and their existing tenant administrators, not to other t
 
 **Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
 valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
-someone with an account confirms it with their password. A tenant keeps at least one
+someone with an account completes sign-in, including MFA when enabled. A tenant keeps at least one
 administrator.
 
 Computer status includes `sizes`, the host's preset catalog: Micro (2 vCPUs, 2048 MiB),
@@ -960,7 +969,7 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `POST` | `/v1/setup/link` | Owner token only; `{ path }` containing the one-time setup link; 409 once claimed |
 | `GET`, `POST` | `/v1/tenants/:id/people` | Lists `{ people: [{ id, tenantId, name, userId, createdAt }] }`; creates a phone user with `{ name }`, no login required |
 | `PATCH`, `DELETE` | `/v1/people/:id` | Rename `{ name }` or delete a person in an administered tenant; deletion refuses assigned computers |
-| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
+| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`, and the account security routes described in [account security](account-security.md). Sign-up is closed; accounts come from setup and invitations |
 | `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, setupRequired, tenants: [{ id, name, quotas, createdAt }] }` |
 | `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
 | `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
@@ -969,11 +978,28 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `GET`, `POST` | `/v1/tenants/:id/invites` | Waiting invitations; `POST { email }` → 201 `{ invite, token }`, the token shown only here |
 | `DELETE` | `/v1/tenants/:id/invites/:invite` | Withdraws an invitation |
 | `GET` | `/v1/invites/:token` | **No account.** `{ tenantName, email, expiresAt, accountExists }` |
-| `POST` | `/v1/invites/:token/accept` | **No account.** `{ name?, password }` → the session cookie; `name` for a new account |
+| `POST` | `/v1/invites/:token/accept` | `{ name, password }` creates a new account and session; an existing account must already have a completed matching session |
 
 A tenant an administrator does not administer answers 404, as if it were not there.
 
+### Capacity and usage
+
+The console Usage page reads `GET /v1/tenants/:id/capacity` for an administered
+tenant and `GET /v1/host/capacity` for the operator. It separates configured and
+running allocations from measured CPU busy time, OS free/available memory, and
+filesystem availability. Storage distinguishes logical bytes from allocated file
+blocks; shared/reflink block sums are never labeled unique physical usage. Missing
+measurements are explicit. Reads acquire no leases and wake no computers; host
+samples are cached ten seconds, bounded storage scans sixty seconds, and the visible
+console polls thirty seconds. Existing quotas and enforcement are unchanged.
+See [capacity and usage](capacity.md) for the complete contract and limitations.
+
 ### Authentication
+
+Account security provides password changes, configured recovery email, authenticator MFA,
+single-use recovery codes and session revocation; see [administrator account security](account-security.md).
+Existing-account invitations require completed sign-in including MFA. Revocation revalidates
+open administrator sockets before returning; expiry is checked every thirty seconds.
 
 A request is from one of three kinds of caller:
 
@@ -1236,6 +1262,38 @@ captures) are shared and deallocated with it; a clone that has diverged keeps it
   the first pass reports it in `lastError` and shared storage stops.
 - `apps/host/disk/scripts/check-reflink.sh` checks the helper against a real loop-mounted XFS
   or Btrfs filesystem.
+
+### Console recovery
+
+The operator and a tenant's administrators manage local disk captures through
+`/v1/computers/:id/recovery`. The server checks the computer's tenant before routing;
+phones cannot use this API. `GET` returns availability/reason, parked capture readiness,
+retention, capture metadata and the last management operation. No disk bytes, device
+keys, manifests or protected configuration are exported by management routes.
+
+`POST /capture` manually captures a coherent parked Files view without enrolling a phone.
+A running computer or one without a coherent view is refused. The existing parked-work
+hold protects the reflink; hashing runs against the immutable clone. No running disk is
+copied and no guest filesystem is mounted on the host. Retention keeps the newest two
+captures plus captures pinned by phone downloads; deleting the computer deletes them.
+
+`POST /captures/:capture/restore` requires `{ confirm: "<capture id>" }`. It rebuilds and
+verifies the disk from available host data, checks matching image dependencies, then uses
+the guarded restart and journaled disk replacement. It refuses overlapping capture/restore
+work and an in-progress staged phone restore. The UI asks for typed destructive confirmation.
+Management operation state is saved privately; an interrupted operation is reported after
+host restart. Failure details in the console are sanitized; operator logs hold diagnostics.
+A failed staged restore may require operator inspection before retrying; staging expires
+under the existing restore retention rules. These routes do not change phone authorization
+or decrypt the phone's vault.
+
+Host captures share the server's failure domain and do not protect host identity, secrets
+or external dependencies. Whole-host recovery uses the explicit
+[offline capture, verification and restore procedure](../apps/host/scripts/RECOVERY.md).
+The tool copies protected directories only while the Linux host lock is held, and restores
+into an absent staging directory with an explicit byte bound. External PostgreSQL,
+container volumes and cold-tier storage require the operator steps in that procedure.
+No new backup scheduler, remote storage or automatic restore is enabled.
 
 ### Phone backups
 

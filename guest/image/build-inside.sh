@@ -18,21 +18,17 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-truncate -s 16G "$work/base.raw"
-sfdisk "$work/base.raw" <<'PARTS'
-label: gpt
-start=2048, size=2048, type=linux
-size=2048, type=linux
-type=linux
-PARTS
+# Shared with the scratch-device validation; never applied to an existing disk.
+# shellcheck source=guest/image/storage-layout.sh
+source /builder/storage-layout.sh
+create_root_disk "$work/base.raw"
 # Containers often have loop-control but lack device nodes for unused loops.
 for n in $(seq 0 255); do [[ -b /dev/loop$n ]] || mknod -m 0660 /dev/loop$n b 7 "$n"; done
-# Partition 3 starts at sector 6144; attach its contents directly. This avoids
-# relying on udev to create loop partition nodes in the container.
-loop=$(losetup --find --show --offset $((6144 * 512)) --sizelimit $((33546240 * 512)) "$work/base.raw")
-mkfs.ext4 -F -L caboose "$loop"
+# Attach only partition 3, excluding the backup GPT at the end of the disk.
+loop=$(attach_root_disk "$work/base.raw")
+mkfs.btrfs -f -L caboose "$loop"
 mkdir "$work/root"
-mount "$loop" "$work/root"
+mount -t btrfs -o "$CABOOSE_ROOT_OPTIONS" "$loop" "$work/root"
 # The disposable image is synced before publication; avoid per-file fsyncs
 # during the initial package install, which are costly on loop-backed storage.
 mkdir -p "$work/root/etc/dpkg/dpkg.cfg.d"
@@ -63,6 +59,7 @@ cp -r /builder/gpu "$work/root/tmp/gpu"
 cp -r /builder/apps "$work/root/tmp/apps"
 cp -r /builder/media-handoff "$work/root/tmp/media-handoff"
 cp /etc/resolv.conf "$work/root/etc/resolv.conf"
+install -D -m 0755 /builder/caboose-storage "$work/root/etc/initramfs-tools/scripts/local-bottom/caboose-storage"
 chroot "$work/root" /usr/bin/env LD_PRELOAD=/usr/local/lib/libeatmydata.so.1 /bin/bash /tmp/configure-guest.sh
 kernel=$(printf '%s\n' "$work/root"/boot/vmlinuz-* | sort -V | tail -1)
 # Virtualization.framework takes the uncompressed ARM64 Image; Debian may gzip it.
@@ -86,19 +83,14 @@ if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
   rm -rf "$work/root/usr" "$work/root/opt"
   mkdir "$work/root/usr" "$work/root/opt"
 fi
+# Flush deleted package and split-system extents, then punch their backing-file
+# holes through loop discard. This also trims ordinary (non-split) images.
 sync
+btrfs filesystem sync "$work/root"
+fstrim -v "$work/root"
 for p in dev/pts dev proc sys; do umount -l "$work/root/$p" 2>/dev/null || true; done
 umount "$work/root"
-if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
-  # Deleted /usr and /opt are free blocks, but remain allocated in a raw file.
-  # Zero those blocks before making a sparse copy so clones do not carry them.
-  zerofree "$loop"
-fi
 losetup -d "$loop"; loop=
-if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
-  cp --sparse=always "$work/base.raw" "$work/base.sparse"
-  mv "$work/base.sparse" "$work/base.raw"
-fi
 mv "$work/initrd" /output/initrd
 mv "$work/vmlinux" /output/vmlinux
 mv "$work/base.raw" /output/base.raw

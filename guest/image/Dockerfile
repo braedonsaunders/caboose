@@ -26,9 +26,9 @@ ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils zerofree ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh /builder/
-COPY image/initramfs/caboose-system /builder/caboose-system
+RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils btrfs-progs ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh image/storage-layout.sh /builder/
+COPY image/initramfs/caboose-system image/initramfs/caboose-storage /builder/
 COPY components /builder/components
 COPY template/caboose-template.py template/caboose-template.target /builder/template/
 COPY keyring /builder/keyring

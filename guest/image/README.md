@@ -14,7 +14,7 @@ components.
 | `build.sh` | Builds the builder image and runs it. Entry point. |
 | `Dockerfile` | The builder: a first stage compiles Caboose Display and the VA-API passthrough driver; the second has debootstrap and copies the guest components. |
 | `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
-| `make-system-image.sh` | Packs a prepared root’s `/usr` and `/opt` into an uncompressed EROFS image without modifying the root. |
+| `make-system-image.sh` | Packs a prepared root’s `/usr` and `/opt` into an LZ4HC-compressed EROFS image without modifying the root. |
 | `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
 | `apps.sh` | The app lineup installer, shared with the container image and usable on a running computer. |
 | `desktop-apps.sh`, `desktop-apps.tsv` | Official desktop package installer and exact version/SHA-256 pins for both architectures. |
@@ -24,7 +24,7 @@ components.
 ## Build
 
 Build on a native amd64 or arm64 Linux machine with Docker, `/dev/loop-control`, network access, space for a
-16 GiB raw image, and a reflink-capable target filesystem (XFS with reflink, or Btrfs).
+60 GiB sparse raw image, and a reflink-capable target filesystem (XFS with reflink, or Btrfs).
 The output matches the build machine; it does not cross-compile. ARM64 kernels are
 written as an uncompressed Linux Image. Rust builds use two jobs by default
 (`CARGO_BUILD_JOBS` Docker build argument). The builder runs privileged because it creates and mounts a loop device and chroots into the
@@ -51,7 +51,11 @@ This stages the build in `/data/caboose/build` and copies it through the contain
 `/data/caboose/disks`. The container's image files must not exist and its `overlays`
 directory must be empty. The staged files remain for inspection.
 
-The disk is GPT with an ext4 root (label `caboose`) on partition 3, mounted with `noatime`.
+The disk is a 60 GiB sparse GPT image with a Btrfs root (label `caboose`) on partition 3,
+mounted with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers
+retain their filesystem. Compression savings vary with the workload; sparse logical
+capacity is not a reservation of physical host storage. Discard reclamation requires
+support throughout the runtime and backing filesystem.
 `/home/caboose/.cache` is a 512 MiB tmpfs, shared by application caches and cleared at every
 cold boot. Keep the base and overlays on XFS with reflink or on Btrfs. A computer's overlay
 and snapshot refer to the base they were made from: do not replace a base underneath an
@@ -215,17 +219,32 @@ The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker)
 On Linux with `erofs-utils` installed, `guest/image/make-system-image.sh ROOT OUTPUT`
 creates and checks an EROFS image containing the prepared root's `usr` and `opt`.
 It refuses to replace an existing output and leaves the source unchanged. The image
-contains uncompressed, non-inlined files; filesystem DAX additionally requires a
-DAX-capable device and guest kernel. To build a complete split image into a separate empty directory, set
+uses LZ4HC level 12 compression with 64 KiB physical clusters, served through
+read-only virtio-block. To build a complete split image into a separate empty directory, set
 `CABOOSE_SPLIT_SYSTEM=1 OUT_DIR=/path/to/version ./guest/image/build.sh`. It contains
 `base.raw`, `vmlinux`, `initrd`, and `system.erofs`. On boot, initramfs mounts the
 image read-only and overlays `/usr` and `/opt` with writable data on the computer's
-ext4 disk. The host selects this format with `CABOOSE_SPLIT_IMAGE`; existing disks
+writable root disk. The host selects this format with `CABOOSE_SPLIT_IMAGE`; existing disks
 are not changed. The four files are one version and must remain available unchanged
 for computers that use it. Run `guest/image/check-system-image.sh` on Linux to check image creation,
 extraction, source preservation and overwrite refusal.
 
-`guest/image/check-system-overlay.sh` checks read-only EROFS and persistent overlay writes on Linux; it requires root, loop devices, mount permissions and erofs-utils.
+`sudo guest/image/check-compressed-storage.sh` checks the actual 60 GiB sparse GPT
+layout, Btrfs compression with a 16 MiB text fixture, and loop-device discard with
+a 32 MiB payload. It needs Linux, loop devices, Btrfs tools, util-linux and Python 3.
+Its measured allocation deltas describe those fixtures, not arbitrary workloads.
+
+`sudo guest/image/check-system-overlay.sh` checks read-only compressed EROFS and
+persistent overlay writes on disposable ext4 and Btrfs upper filesystems. It needs
+Linux, loop devices, mount permissions, erofs-utils, e2fsprogs and btrfs-progs.
+
+`guest/image/check-compressed-boot.sh IMAGE_DIRECTORY amd64|arm64` boots a built
+split image under QEMU software emulation, with a temporary writable snapshot and
+no guest network. It checks Btrfs root mounting, compressed EROFS and writable
+system overlays. It needs the matching QEMU system emulator, initramfs-tools-core,
+cpio, gzip, Python 3 and timeout. `python3 guest/image/test_boot_check.py` checks
+test-hook insertion for both initramfs archive layouts. Hosted split-image CI runs
+the real boot check on both architectures.
 
 On a split microVM, run `sudo guest/image/check-split-system.sh prepare`, cold-restart
 the computer, then run `sudo guest/image/check-split-system.sh verify` to check that a

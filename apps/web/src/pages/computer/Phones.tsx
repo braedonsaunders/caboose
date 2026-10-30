@@ -1,5 +1,6 @@
+import { DashboardPanel } from '../../components/console-ui.js'
 import * as React from 'react'
-import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
+
 import {
   Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, Spinner,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, toast,

@@ -5,8 +5,8 @@
 use std::io;
 use std::path::Path;
 
-/// The block size every computer disk is managed in: the guest's ext4 block and the host
-/// filesystem's (XFS or Btrfs) allocation unit.
+/// The 4 KiB unit used to compare raw disk ranges, independent of the guest filesystem.
+/// Shared ranges must also satisfy the host filesystem's allocation alignment.
 pub const BLOCK: u64 = 4096;
 
 /// Index of an open file within a `Volume`.

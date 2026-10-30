@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { WebSocket } from 'ws'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -123,6 +124,11 @@ describe('a host with accounts and tenants', () => {
     const listed = await (await operator('/v1/computers')).json()
     expect(listed.computers).toEqual([expect.objectContaining({ id: 'owner', tenantId: home })])
     expect((await operator('/v1/health')).status).toBe(200)
+    const capacity = await operator('/v1/host/capacity')
+    expect(capacity.status).toBe(200)
+    expect(capacity.headers.get('cache-control')).toBe('no-store')
+    expect((await capacity.json()).scope).toBe('host')
+    expect((await anonymous('/v1/host/capacity')).status).toBe(401)
     expect((await operator('/v1/host/reach')).status).toBe(200)
     const unavailable = await operator('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: true } })
     expect(unavailable.status).toBe(409)
@@ -171,11 +177,27 @@ describe('a host with accounts and tenants', () => {
 
     const theirs = (await (await parent('/v1/computers')).json()).computers as Array<{ id: string; tenantId: string }>
     expect(theirs.map(computer => computer.tenantId)).toEqual([family])
+    expect((await parent(`/v1/computers/${theirs[0]!.id}/recovery`)).status).toBe(200)
+    expect((await operator(`/v1/computers/${OWNER_COMPUTER}/recovery`)).status).toBe(200)
+    for (const [suffix, method] of [['recovery', 'GET'], ['recovery/capture', 'POST'], ['recovery/captures/00000000-0000-4000-8000-000000000000/restore', 'POST']]) {
+      expect((await parent(`/v1/computers/${OWNER_COMPUTER}/${suffix}`, { method })).status).toBe(404)
+    }
+    expect((await parent('/v1/recovery')).status).toBe(403)
+
     expect((await parent(`/v1/computers/${OWNER_COMPUTER}`)).status).toBe(404)
     expect((await parent(`/v1/computers/${OWNER_COMPUTER}/computer`)).status).toBe(404)
     expect((await parent('/v1/computer')).status).toBe(403)
     expect((await parent('/v1/health')).status).toBe(403)
     expect((await parent('/v1/host')).status).toBe(403)
+    const beforeCapacity = woken.length
+    expect((await parent('/v1/host/capacity')).status).toBe(403)
+    expect((await parent(`/v1/tenants/${home}/capacity`)).status).toBe(404)
+    const usage = await (await parent(`/v1/tenants/${family}/capacity`)).json()
+    expect(usage.scope).toBe('tenant')
+    expect(usage.host).toBeUndefined()
+    expect(usage.counts.total).toBe(theirs.length)
+    expect(usage.counts.queued.value).toBeNull()
+    expect(woken.length).toBe(beforeCapacity)
     expect((await parent('/v1/host/reach')).status).toBe(403)
     expect((await parent('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: true } })).status).toBe(403)
     expect((await parent('/v1/tenants', { method: 'POST', body: { name: 'Mine' } })).status).toBe(403)
@@ -207,7 +229,13 @@ describe('a host with accounts and tenants', () => {
     const { token: phoneToken } = await paired.json()
     const phone = browser()
     const headers = { authorization: `Bearer ${phoneToken}` }
+    for (const [path, method] of [['/v1/recovery', 'GET'], ['/v1/recovery/capture', 'POST'], [`/v1/computers/${theirs[0]!.id}/recovery`, 'GET']]) {
+      expect((await phone(path!, { headers, method })).status).toBe(403)
+    }
+
     expect((await phone('/v1/host/reach', { headers })).status).toBe(403)
+    expect((await phone('/v1/host/capacity', { headers })).status).toBe(403)
+    expect((await phone(`/v1/tenants/${family}/capacity`, { headers })).status).toBe(403)
     expect((await phone(`/v1/tenants/${family}/people`, { headers })).status).toBe(403)
     expect((await phone(`/v1/people/${theirComputer.personId}`, { headers, method: 'DELETE' })).status).toBe(403)
     expect((await phone('/v1/setup/link', { headers, method: 'POST' })).status).toBe(403)
@@ -222,3 +250,64 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/me')).status).toBe(200)
   })
 })
+
+
+it('closes a live administrator control socket when its session is revoked', async () => {
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, {
+    method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse' }),
+  })
+  expect(signedIn.status).toBe(200)
+  const cookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const accountHeaders = { cookie, origin: base, 'content-type': 'application/json' }
+  const current = await (await fetch(`${base}/v1/auth/get-session`, { headers: accountHeaders })).json()
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: accountHeaders, body: '{}' })).status).toBe(200)
+  const socket = new WebSocket(`${base.replace('http:', 'ws:')}/v1/control`, { headers: { cookie }, handshakeTimeout: 5_000 })
+  try {
+    await once(socket, 'open')
+    const closed = once(socket, 'close')
+    const revoked = await fetch(`${base}/v1/auth/revoke-session`, { method: 'POST', headers: accountHeaders, body: JSON.stringify({ id: current.session.id }) })
+    expect(revoked.status).toBe(200)
+    await closed
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/me`, { headers: accountHeaders })).status).toBe(401)
+  } finally { socket.terminate() }
+}, 15_000)
+
+it('fences the former tenant socket on a move and admits the destination administrator', async () => {
+  const ownerHeaders = { authorization: 'Bearer owner-token-for-tests', origin: base, 'content-type': 'application/json' }
+  const records = (await (await fetch(`${base}/v1/computers`, { headers: ownerHeaders })).json()).computers as Array<{ id: string; tenantId: string; personId: string }>
+  // Earlier tests rename the tenant. Ownership IDs remain the fixture identity.
+  const owned = records.filter(record => record.id !== OWNER_COMPUTER)
+  expect(owned).toHaveLength(1)
+  const target = owned[0]!
+  const family = { id: target.tenantId }
+  const home = { id: records.find(record => record.id === OWNER_COMPUTER)!.tenantId }
+  const homePerson = (await (await fetch(`${base}/v1/tenants/${home.id}/people`, { headers: ownerHeaders })).json()).people[0]
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ email: 'parent@example.com', password: 'parent password' }) })
+  expect(signedIn.status).toBe(200)
+  const oldCookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  expect((await fetch(`${base}/v1/computers/${target.id}/session`, { method: 'POST', headers: { cookie: oldCookie, origin: base, 'content-type': 'application/json' }, body: '{}' })).status).toBe(200)
+  const invitation = await (await fetch(`${base}/v1/tenants/${home.id}/invites`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ email: 'move-admin@example.com' }) })).json()
+  const accepted = await fetch(`${base}/v1/invites/${invitation.token}/accept`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Move administrator', password: 'move admin password' }) })
+  expect(accepted.status).toBe(200)
+  const newCookie = accepted.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const socketURL = `${base.replace('http:', 'ws:')}/v1/computers/${target.id}/control`
+  const oldSocket = new WebSocket(socketURL, { headers: { cookie: oldCookie }, handshakeTimeout: 5_000 })
+  let newSocket: WebSocket | undefined
+  try {
+    await once(oldSocket, 'open')
+    const closed = once(oldSocket, 'close')
+    const moved = await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: home.id, personId: homePerson.id }) })
+    expect(moved.status).toBe(200)
+    await closed
+    expect(oldSocket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/computers/${target.id}`, { headers: { cookie: oldCookie } })).status).toBe(404)
+    newSocket = new WebSocket(socketURL, { headers: { cookie: newCookie }, handshakeTimeout: 5_000 })
+    await once(newSocket, 'open')
+    expect(newSocket.readyState).toBe(WebSocket.OPEN)
+  } finally {
+    oldSocket.terminate(); newSocket?.terminate()
+    await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: family.id, personId: target.personId }) })
+  }
+}, 20_000)

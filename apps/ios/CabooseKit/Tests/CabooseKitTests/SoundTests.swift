@@ -247,7 +247,12 @@ enum Tone {
         let peak = steady.map(abs).max() ?? 0
         #expect(peak > 0.4 && peak < 0.6, "peak \(peak)")
         // 1 kHz: two zero crossings a millisecond.
-        let crossings = zip(steady, steady.dropFirst()).filter { $0 < 0 && $1 >= 0 || $0 >= 0 && $1 < 0 }.count
+        var crossings = 0
+        for (before, after) in zip(steady, steady.dropFirst()) {
+            if (before < 0 && after >= 0) || (before >= 0 && after < 0) {
+                crossings += 1
+            }
+        }
         let perMillisecond = Double(crossings) / (Double(steady.count) / 48)
         #expect(abs(perMillisecond - 2) < 0.1, "\(perMillisecond) crossings/ms")
     }

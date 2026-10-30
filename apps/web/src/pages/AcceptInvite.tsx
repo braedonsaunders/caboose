@@ -1,17 +1,19 @@
 import * as React from 'react'
 import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from '@braedonsaunders/appkit-ui'
 import { CabooseClient, type InviteDetails } from '../api.js'
+import { SignIn } from './SignIn.js'
 import { Wordmark } from '../brand/Logo.js'
 import { errorMessage } from '../components/common.js'
 import { useSearchParam } from '../navigation.js'
 
 /**
  * Accepting an invitation to administer a tenant: a new administrator chooses a name and
- * password; someone with an account already confirms it with their password.
+ * password; someone with an account completes sign-in including MFA first.
  */
 export function AcceptInvite({ onDone }: { onDone: () => void }) {
   const token = useSearchParam('token') ?? ''
   const client = React.useMemo(() => new CabooseClient(() => ''), [])
+  const [signedIn, setSignedIn] = React.useState(false)
   const [invite, setInvite] = React.useState<InviteDetails | null>(null)
   const [problem, setProblem] = React.useState<string | null>(null)
   const [form, setForm] = React.useState({ name: '', password: '', confirm: '' })
@@ -26,7 +28,7 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
   const update = (changes: Partial<typeof form>) => setForm(current => ({ ...current, ...changes }))
   const newAccount = invite ? !invite.accountExists : false
   const mismatch = newAccount && form.confirm.length > 0 && form.confirm !== form.password
-  const ready = newAccount ? form.name.trim() && form.password.length >= 8 && form.password === form.confirm : form.password.length > 0
+  const ready = newAccount ? form.name.trim() && form.password.length >= 8 && form.password === form.confirm : signedIn
 
   async function submit(event: React.FormEvent) {
     event.preventDefault()
@@ -41,6 +43,8 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
       setSaving(false)
     }
   }
+
+  if (invite?.accountExists && !signedIn) return <SignIn accountOnly onSignIn={session => { if (session.kind === 'account') setSignedIn(true) }} />
 
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
@@ -74,12 +78,9 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
                   </div>
                 </>
               ) : (
-                <div className="space-y-2">
-                  <Label htmlFor="invite-existing">Your password</Label>
-                  <Input id="invite-existing" type="password" autoFocus autoComplete="current-password" value={form.password} onChange={event => update({ password: event.target.value })} />
-                  <p className="text-xs text-fg-muted">You already have an account on this host as {invite.email}.</p>
-                </div>
+                <p className="text-sm text-fg-muted">Accept as {invite.email}. Your completed sign-in is required.</p>
               )}
+              {!newAccount && <Button type="button" variant="ghost" onClick={() => { setSignedIn(false); setError(null) }}>Sign in with a different account</Button>}
               {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
               <Button type="submit" className="w-full" disabled={saving || !ready}>{saving ? 'Joining…' : 'Accept invitation'}</Button>
             </form>
