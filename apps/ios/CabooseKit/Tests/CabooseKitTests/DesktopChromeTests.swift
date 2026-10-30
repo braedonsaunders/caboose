@@ -29,6 +29,14 @@ struct DesktopChromeTests {
         #expect(DesktopChrome.dockBottomPadding(contentInset: 34, windowInset: 34) == 24)
     }
 
+    @Test func softwareKeyboardReclaimsDockGapAndPaddingWithoutSubtractingKeyboardTwice() {
+        let visible = CGSize(width: 466, height: 300)
+        let typing = DesktopChrome.workspaceSize(in: visible, dockHeight: 58, bottomInset: 24, keyboardVisible: true)
+        let restored = DesktopChrome.workspaceSize(in: visible, dockHeight: 58, bottomInset: 24, keyboardVisible: false)
+        #expect(typing == visible)
+        #expect(typing.height - restored.height == 88)
+    }
+
     @Test func desktopKeepsNavigationUnlessLaptopProvidesItsReplacement() {
         for tab in ShellTab.allCases {
             #expect(!DesktopChrome.hidesShell(tab: tab, laptopDesktop: false, laptopTerminal: false))

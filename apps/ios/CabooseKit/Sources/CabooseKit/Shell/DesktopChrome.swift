@@ -24,9 +24,12 @@ public enum DesktopChrome {
         (tab == .desktop && laptopDesktop) || (tab == .terminal && laptopTerminal)
     }
 
-    /// Both tiled and fullscreen content end above the dock.
-    public static func workspaceSize(in size: CGSize, dockHeight: CGFloat, bottomInset: CGFloat) -> CGSize {
-        CGSize(width: max(0, size.width), height: max(0, size.height - dockHeight - 6 - bottomInset))
+    /// The software keyboard hides the dock. `size` already excludes the keyboard;
+    /// returning its full height also removes the dock gap and safe-area padding.
+    public static func workspaceSize(in size: CGSize, dockHeight: CGFloat, bottomInset: CGFloat,
+                                     keyboardVisible: Bool = false) -> CGSize {
+        let reserved = keyboardVisible ? 0 : dockHeight + 6 + bottomInset
+        return CGSize(width: max(0, size.width), height: max(0, size.height - reserved))
     }
 
     public static func usesCompactPanel(size: CGSize) -> Bool {
