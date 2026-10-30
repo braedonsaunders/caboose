@@ -230,3 +230,17 @@ not a conformant device: it does not provide mandatory coherent-memory semantics
 full transport-loss handling, or recovery. Test it with a supervised process,
 real backend, fresh challenge and `guest/gpu/emulation-check/verify.py` rather
 than using it for workloads.
+
+## Private live broker source
+
+`caboose-gpu-broker` is the private owner-compositor child. It accepts an
+inherited Unix control socket and a per-wake token-file path, and binds the
+requested local socket only after the executor reports real session readiness.
+Its modules use the CGLV codec in `guest/gpu/broker/live_protocol.py`. The
+compositor's routing hook is disabled by default; `/gpu` returns HTTP 503 until
+it is explicitly wired and the private bridge is validated. The broker is not
+installed by the component build, and the public ICD remains gated.
+
+Run source-only checks with `python3 -m unittest discover -s
+guest/gpu/gfxstream -p 'test_*.py'`. These do not establish phone execution,
+coherent mapped memory, WSI presentation, or compositor integration.
