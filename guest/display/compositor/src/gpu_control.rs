@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(u64_at(&denied, 16), 3);
         assert_eq!(u32_at(&denied, 24), 1);
         assert!(denied[32..].iter().all(|b| *b == 0));
-        let grant = crate::gpu_grant::Grant { epoch: [1;16], token: [2;16], window: 7, generation: 8 };
+        let grant = crate::gpu_grant::Grant { epoch: [1;16], token: [2;16], window: 7, process: 3, peer: (1000, 42, 123, 17), generation: 8 };
         let accepted = response(3, Some(grant)).unwrap();
         assert_eq!(accepted.len(), 80);
         assert_eq!(u32_at(&accepted, 24), 0);

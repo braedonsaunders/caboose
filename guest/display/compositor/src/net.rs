@@ -93,6 +93,9 @@ pub trait HasNet: Sized + 'static {
     fn net(&mut self) -> &mut Net;
     fn loop_handle(&self) -> LoopHandle<'static, Self>;
     fn on_net_events(&mut self, events: Vec<NetEvent>);
+    fn on_gpu_record(&mut self, record: crate::gpu_control::Record);
+    fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>);
+    fn on_gpu_control_failure(&mut self);
 }
 
 impl Net {
@@ -134,18 +137,43 @@ impl Net {
         if self.gpu_router.is_some() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "GPU router already active"));
         }
-        let (tx, rx) = channel::<crate::gpu_supervisor::RoutedDisplay>();
-        let router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, move |routed| {
-            let _ = tx.send(routed);
+        let (tx, rx) = channel::<crate::gpu_supervisor::RouteEvent>();
+        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, move |event| {
+            let _ = tx.send(event);
         })?;
+        let control = router.clone_control()?;
         handle.insert_source(rx, |event, _, state: &mut S| {
-            if let ChannelEvent::Msg(routed) = event {
-                let (stream, peer) = routed.into_parts();
-                state_accept_display(state, stream, peer);
+            if let ChannelEvent::Msg(event) = event {
+                match event {
+                    crate::gpu_supervisor::RouteEvent::Display(routed) => {
+                        let (stream, peer) = routed.into_parts();
+                        state_accept_display(state, stream, peer);
+                    }
+                    crate::gpu_supervisor::RouteEvent::ControlSent(grant) => state.on_gpu_control_sent(grant),
+                    crate::gpu_supervisor::RouteEvent::ControlFailed => state.on_gpu_control_failure(),
+                }
             }
+        }).map_err(|e| io::Error::other(e.to_string()))?;
+        handle.insert_source(Generic::new(control, Interest::READ, Mode::Level), |_, socket, state: &mut S| {
+            loop {
+                match crate::gpu_control::receive(socket) {
+                    Ok(record) => state.on_gpu_record(record),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => { state.on_gpu_control_failure(); return Ok(PostAction::Remove); }
+                }
+            }
+            Ok(PostAction::Continue)
         }).map_err(|e| io::Error::other(e.to_string()))?;
         self.gpu_router = Some(router);
         Ok(())
+    }
+
+    pub fn fail_gpu_control(&mut self) {
+        if let Some(router) = self.gpu_router.as_mut() { router.fail(); }
+    }
+
+    pub fn queue_gpu_control(&self, bytes: Vec<u8>, revoke: Option<crate::gpu_grant::Grant>) -> io::Result<()> {
+        self.gpu_router.as_ref().ok_or_else(|| io::Error::other("GPU router unavailable"))?.queue_control(bytes, revoke)
     }
 
     /// Queues one protocol message. Errors other than a full kernel buffer close the

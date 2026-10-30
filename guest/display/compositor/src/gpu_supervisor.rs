@@ -247,31 +247,87 @@ impl RoutedDisplay {
     }
 }
 
+pub enum RouteEvent {
+    Display(RoutedDisplay),
+    ControlSent(Option<crate::gpu_grant::Grant>),
+    ControlFailed,
+}
+
+fn send_control_wait(ipc: &UnixStream, data: &[u8], stop: &AtomicBool) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if stop.load(Ordering::Acquire) { return Err(io::Error::new(io::ErrorKind::Interrupted, "GPU router stopped")); }
+        // SAFETY: data points to the complete immutable sequenced-packet record.
+        let result = unsafe { libc::send(ipc.as_raw_fd(), data.as_ptr().cast(), data.len(), libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL) };
+        if result == data.len() as isize { return Ok(()); }
+        if result >= 0 { return Err(io::Error::new(io::ErrorKind::WriteZero, "partial GPU control record")); }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::WouldBlock { return Err(error); }
+        if Instant::now() >= deadline { return Err(io::Error::new(io::ErrorKind::TimedOut, "GPU control backpressure")); }
+        let mut fd = libc::pollfd { fd: ipc.as_raw_fd(), events: libc::POLLOUT, revents: 0 };
+        // SAFETY: fd is a valid pollfd and the timeout is bounded.
+        let result = unsafe { libc::poll(&mut fd, 1, 100) };
+        if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted { return Err(io::Error::last_os_error()); }
+        if fd.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker closed"));
+        }
+    }
+}
+
 pub struct GpuRouter {
     supervisor: GpuSupervisor,
     stop: std::sync::Arc<AtomicBool>,
     active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     workers: Vec<std::thread::JoinHandle<()>>,
-    deliver: std::sync::Arc<dyn Fn(RoutedDisplay) + Send + Sync>,
+    deliver: std::sync::Arc<dyn Fn(RouteEvent) + Send + Sync>,
+    control_tx: std::sync::mpsc::SyncSender<(Vec<u8>, Option<crate::gpu_grant::Grant>)>,
+    control_worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl GpuRouter {
     pub fn start(
         token_file: &Path,
         local_socket: &Path,
-        deliver: impl Fn(RoutedDisplay) + Send + Sync + 'static,
+        deliver: impl Fn(RouteEvent) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        Ok(Self {
-            supervisor: GpuSupervisor::start(token_file, local_socket)?,
-            stop: std::sync::Arc::new(AtomicBool::new(false)),
-            active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            workers: Vec::new(),
-            deliver: std::sync::Arc::new(deliver),
-        })
+        let mut supervisor = GpuSupervisor::start(token_file, local_socket)?;
+        let ipc = supervisor.clone_ipc()?;
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let deliver: std::sync::Arc<dyn Fn(RouteEvent) + Send + Sync> = std::sync::Arc::new(deliver);
+        let (control_tx, control_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, Option<crate::gpu_grant::Grant>)>(64);
+        let worker_stop = stop.clone();
+        let worker_deliver = deliver.clone();
+        let control_worker = std::thread::Builder::new().name("caboose-gpu-control".into()).spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                match control_rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok((data, grant)) => match send_control_wait(&ipc, &data, &worker_stop) {
+                        Ok(()) => worker_deliver(RouteEvent::ControlSent(grant)),
+                        Err(_) => { worker_deliver(RouteEvent::ControlFailed); break; }
+                    },
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })?;
+        Ok(Self { supervisor, stop, active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            workers: Vec::new(), deliver, control_tx, control_worker: Some(control_worker) })
+    }
+
+    pub fn clone_control(&mut self) -> io::Result<UnixStream> { self.supervisor.clone_ipc() }
+
+    pub fn fail(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(ipc) = &self.supervisor.ipc { let _ = ipc.shutdown(std::net::Shutdown::Both); }
+    }
+
+    pub fn queue_control(&self, data: Vec<u8>, revoke: Option<crate::gpu_grant::Grant>) -> io::Result<()> {
+        if data.len() > 80 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "oversized GPU control record")); }
+        self.control_tx.try_send((data, revoke)).map_err(|_| io::Error::other("GPU control queue unavailable"))
     }
 
     /// Takes ownership, including on rejection. At most 64 workers exist at once.
     pub fn accept(&mut self, stream: std::net::TcpStream, peer: std::net::SocketAddr) -> io::Result<()> {
+        if self.stop.load(Ordering::Acquire) { return Err(io::Error::other("GPU router stopped")); }
         let mut running = Vec::new();
         for worker in self.workers.drain(..) {
             if worker.is_finished() { let _ = worker.join(); } else { running.push(worker); }
@@ -292,9 +348,9 @@ impl GpuRouter {
                         let _ = handoff_wait(&ipc, &stream, &stop, Duration::from_secs(5));
                     }
                 }
-                Ok(false) if !stop.load(Ordering::Acquire) => deliver(RoutedDisplay {
+                Ok(false) if !stop.load(Ordering::Acquire) => deliver(RouteEvent::Display(RoutedDisplay {
                     stream: Some(stream), peer, _permit: permit,
-                }),
+                })),
                 _ => {}
             }
         });
@@ -309,6 +365,7 @@ impl Drop for GpuRouter {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         for worker in self.workers.drain(..) { let _ = worker.join(); }
+        if let Some(worker) = self.control_worker.take() { let _ = worker.join(); }
         // GpuSupervisor then closes IPC and waits for its owned broker child.
     }
 }

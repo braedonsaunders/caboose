@@ -143,7 +143,7 @@ impl State {
         }
     }
 
-    fn end_session(&mut self) {
+    pub(crate) fn end_session(&mut self) {
         if self.session.as_ref().is_some_and(|s| s.devices) {
             if let Some(hub) = &self.devices {
                 hub.disconnected();
@@ -323,7 +323,7 @@ impl State {
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
-                gpu_live_epoch: None,
+                gpu_live_epoch: self.gpu_grants.as_ref().and_then(|g| g.epoch_if_ready()),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());

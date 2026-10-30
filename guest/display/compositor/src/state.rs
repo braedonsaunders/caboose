@@ -211,6 +211,8 @@ pub struct State {
     pub generation: u64,
     /// Random for this process, sent in every hello: window ids are unique within it.
     pub epoch: String,
+    pub gpu_grants: Option<crate::gpu_grant::Grants>,
+    pub gpu_last_bind_request: u64,
     pub stats: Stats,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
@@ -226,10 +228,17 @@ impl HasNet for State {
         self.handle.clone()
     }
     fn on_net_events(&mut self, events: Vec<NetEvent>) {
-        for event in events {
-            self.on_net_event(event);
+        for event in events { self.on_net_event(event); }
+    }
+    fn on_gpu_record(&mut self, record: crate::gpu_control::Record) { self.handle_gpu_record(record); }
+    fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>) {
+        if let Some(grant) = grant {
+            if self.gpu_grants.as_mut().is_none_or(|grants| grants.revoke_sent(grant).is_err()) {
+                self.gpu_control_failed();
+            }
         }
     }
+    fn on_gpu_control_failure(&mut self) { self.gpu_control_failed(); }
 }
 
 impl State {
@@ -246,6 +255,77 @@ impl State {
         let peer = client.get_data::<ClientState>()?.gpu_peer.as_ref()?;
         if !peer.alive() { return None; }
         Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
+    }
+
+    fn gpu_control_failed(&mut self) {
+        if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
+        self.net.fail_gpu_control();
+        self.reconnect_for_gpu_epoch();
+    }
+
+    fn reconnect_for_gpu_epoch(&mut self) {
+        if let Some(conn) = self.session.as_ref().map(|s| s.conn) {
+            self.net.close_with(conn, None);
+            self.end_session();
+        }
+    }
+
+    fn queue_gpu_revoke(&mut self, grant: crate::gpu_grant::Grant) -> std::io::Result<()> {
+        let bytes = crate::gpu_control::revoke(grant)?;
+        self.net.queue_gpu_control(bytes, Some(grant))
+    }
+
+    fn handle_gpu_record(&mut self, record: crate::gpu_control::Record) {
+        use crate::gpu_control::{self, Record};
+        use std::os::fd::AsRawFd;
+        use smithay::reexports::wayland_server::Resource;
+        match record {
+            Record::Bind(bind) => {
+                if bind.request <= self.gpu_last_bind_request {
+                    self.gpu_control_failed(); return;
+                }
+                self.gpu_last_bind_request = bind.request;
+                let mut matches = Vec::new();
+                for window in self.windows.iter() {
+                    let Surface::Toplevel(toplevel) = &window.surface else { continue };
+                    let object = toplevel.wl_surface().id();
+                    if object.protocol_id() != bind.object { continue; }
+                    let Ok(client) = self.dh.get_client(object) else { continue };
+                    let Some(peer) = client.get_data::<ClientState>().and_then(|state| state.gpu_peer.as_ref()) else { continue };
+                    if peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
+                        matches.push(window.id);
+                    }
+                }
+                let grant = self.gpu_grants.as_mut().and_then(|grants|
+                    grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+                if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
+                    self.gpu_control_failed();
+                }
+            }
+            Record::Lifecycle { kind, executor, generation } => {
+                let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
+                match kind {
+                    4 => {
+                        if grants.ready(executor, generation).is_err() { self.gpu_control_failed(); }
+                        else { self.reconnect_for_gpu_epoch(); }
+                    }
+                    5 => {
+                        let revokes = match grants.lost(executor, generation) {
+                            Ok(revokes) => revokes,
+                            Err(_) => { self.gpu_control_failed(); return; }
+                        };
+                        for grant in revokes {
+                            if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); return; }
+                        }
+                        self.reconnect_for_gpu_epoch();
+                    }
+                    6 => {
+                        if grants.retired(executor, generation).is_err() { self.gpu_control_failed(); }
+                    }
+                    _ => self.gpu_control_failed(),
+                }
+            }
+        }
     }
 
     pub fn now_us(&self) -> u64 {
@@ -315,6 +395,10 @@ impl State {
     }
 
     fn forget_window(&mut self, id: u64) {
+        let revoke = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+        if let Some(grant) = revoke {
+            if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+        }
         let focused = self.focus_history.last() == Some(&id);
         self.focus_history.retain(|f| *f != id);
         let Some(w) = self.windows.remove(id) else { return };

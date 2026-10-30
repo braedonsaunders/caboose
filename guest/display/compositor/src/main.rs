@@ -442,6 +442,8 @@ fn run(config: Config) -> Result<(), String> {
         devices_tx,
         generation: 0,
         epoch: session::new_epoch(),
+        gpu_grants: None,
+        gpu_last_bind_request: 0,
         stats: Default::default(),
         cursor: None,
         refine_timer: None,
