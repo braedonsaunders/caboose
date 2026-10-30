@@ -1,3 +1,4 @@
+import { ComputerUsagePanel } from '../components/ComputerUsage.js'
 import * as React from 'react'
 import {
   Alert, AlertDescription, AlertTitle, Badge, Button, DetailHeader, DetailPageLayout, EmptyState, PageContainer, SubtabNav,
@@ -131,7 +132,7 @@ export function Computer({ client: hostClient, computers, id, host, me, tab, onU
         />
       }
     >
-      {tab === 'overview' ? <ComputerOverview computer={computer} host={host} /> : null}
+      {tab === 'overview' ? <><ComputerOverview computer={computer} host={host} /><ComputerUsagePanel key={id} client={hostClient} id={id} /></> : null}
       {tab === 'files' ? <Files client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'apps' ? <Apps client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'phones' ? <Phones client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}

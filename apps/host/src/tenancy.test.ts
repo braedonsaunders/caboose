@@ -129,6 +129,9 @@ describe('a host with accounts and tenants', () => {
     expect(capacity.headers.get('cache-control')).toBe('no-store')
     expect((await capacity.json()).scope).toBe('host')
     expect((await anonymous('/v1/host/capacity')).status).toBe(401)
+    expect((await anonymous('/v1/computers/owner/usage')).status).toBe(401)
+    expect((await operator('/v1/computers/owner/usage')).status).toBe(200)
+    expect((await operator('/v1/computers/owner/usage/storage', { method: 'POST' })).status).toBe(200)
     expect((await operator('/v1/host/reach')).status).toBe(200)
     const unavailable = await operator('/v1/host/reach/tailscale', { method: 'PUT', body: { enabled: true } })
     expect(unavailable.status).toBe(409)
@@ -190,6 +193,12 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/health')).status).toBe(403)
     expect((await parent('/v1/host')).status).toBe(403)
     const beforeCapacity = woken.length
+    for (const [suffix, method] of [['usage', 'GET'], ['usage/storage', 'POST']]) {
+      expect((await parent(`/v1/computers/${OWNER_COMPUTER}/${suffix}`, { method })).status).toBe(404)
+      const response = await parent(`/v1/computers/${theirs[0]!.id}/${suffix}`, { method })
+      expect(response.status).toBe(200)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+    }
     expect((await parent('/v1/host/capacity')).status).toBe(403)
     expect((await parent(`/v1/tenants/${home}/capacity`)).status).toBe(404)
     const usage = await (await parent(`/v1/tenants/${family}/capacity`)).json()
@@ -235,6 +244,8 @@ describe('a host with accounts and tenants', () => {
 
     expect((await phone('/v1/host/reach', { headers })).status).toBe(403)
     expect((await phone('/v1/host/capacity', { headers })).status).toBe(403)
+    expect((await phone(`/v1/computers/${theirs[0]!.id}/usage`, { headers })).status).toBe(403)
+    expect((await phone(`/v1/computers/${theirs[0]!.id}/usage/storage`, { headers, method: 'POST' })).status).toBe(403)
     expect((await phone(`/v1/tenants/${family}/capacity`, { headers })).status).toBe(403)
     expect((await phone(`/v1/tenants/${family}/people`, { headers })).status).toBe(403)
     expect((await phone(`/v1/people/${theirComputer.personId}`, { headers, method: 'DELETE' })).status).toBe(403)

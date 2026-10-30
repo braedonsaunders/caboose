@@ -747,3 +747,10 @@ for authorization, units, unavailable categories and focused checks.
 
 Administrator password recovery, authenticator enrollment and session management are
 documented in [account security](../../docs/account-security.md).
+
+Per-computer resource telemetry uses local Docker Engine counters and persists bounded
+hourly CPU history in `CABOOSE_IMAGE_ROOT/usage-history.json`. It never wakes a guest.
+VM counters and remote Docker endpoints are unavailable. Explicit container storage
+measurement requires locally accessible home-volume metadata; Docker logical layer
+sizes are separate from allocated blocks. See [capacity and usage](../../docs/capacity.md)
+for API authorization, sampling overhead, history gaps, storage deadlines and focused tests.
