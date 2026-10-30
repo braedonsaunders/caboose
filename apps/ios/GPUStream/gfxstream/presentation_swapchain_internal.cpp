@@ -30,8 +30,15 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
         get(device.instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"));
     auto families = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
         get(device.instance, "vkGetPhysicalDeviceQueueFamilyProperties"));
-    if (!support || !capabilities || !formats || !modes || !families) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    auto formatProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
+        get(device.instance, "vkGetPhysicalDeviceFormatProperties"));
+    if (!support || !capabilities || !formats || !modes || !families || !formatProperties)
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
     try {
+        VkFormatProperties props{};
+        formatProperties(device.physicalDevice, format, &props);
+        const VkFormatFeatureFlags transfer = VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        if ((props.optimalTilingFeatures & transfer) != transfer) return VK_ERROR_FORMAT_NOT_SUPPORTED;
         uint32_t familyCount = 0;
         families(device.physicalDevice, &familyCount, nullptr);
         if (!familyCount || familyCount > 4096 || device.queueFamily >= familyCount)

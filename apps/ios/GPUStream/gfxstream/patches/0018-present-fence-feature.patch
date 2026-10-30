@@ -4,7 +4,7 @@
 +        if (!dev->caboosePresentFenceEnabled) return VK_ERROR_FEATURE_NOT_PRESENT;
 @@ -406,0 +408 @@
 +        if (!deviceInfo->caboosePresentFenceEnabled) return VK_ERROR_FEATURE_NOT_PRESENT;
-@@ -2769,0 +2772,39 @@
+@@ -2770,0 +2773,39 @@
 +        // Enable present fences only in the explicitly selected private WSI
 +        // mode, with real extension dependencies and a queried host feature.
 +        bool caboosePresentFenceEnabled = false;
@@ -44,9 +44,9 @@
 +            caboosePresentFenceEnabled = true;
 +        }
 +
-@@ -2906,0 +2948 @@
+@@ -2907,0 +2949 @@
 +        deviceInfo.caboosePresentFenceEnabled = caboosePresentFenceEnabled;
-@@ -11085,0 +11128,15 @@
+@@ -11086,0 +11129,15 @@
 +            // Present fences need a matching surface-maintenance instance
 +            // extension and its capabilities2 dependency. Never advertise these
 +            // host-only additions as guest capabilities.
@@ -62,10 +62,10 @@
 +                        })) res.push_back(extension);
 +                }
 +            }
-@@ -11423 +11480 @@
+@@ -11424 +11481 @@
 -        if (hasGetPhysicalDeviceFeatures2) {
 +        if (hasGetPhysicalDeviceFeatures2 && vk->vkGetPhysicalDeviceFeatures2) {
-@@ -11425 +11482 @@
+@@ -11426 +11483 @@
 -        } else if (hasGetPhysicalDeviceFeatures2KHR) {
 +        } else if (hasGetPhysicalDeviceFeatures2KHR && vk->vkGetPhysicalDeviceFeatures2KHR) {
 --- a/host/vulkan/vk_decoder_internal_structs.h

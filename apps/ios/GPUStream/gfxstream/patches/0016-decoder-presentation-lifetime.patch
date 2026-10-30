@@ -73,7 +73,7 @@
 +        std::unique_ptr<CaboosePresentationObjects>* out);
 --- a/host/vulkan/vk_decoder_global_state.cpp
 +++ b/host/vulkan/vk_decoder_global_state.cpp
-@@ -320,0 +321,141 @@
+@@ -320,0 +321,142 @@
 +
 +    VkResult acquireCaboosePresentationInstance(uint32_t contextId, VkInstance boxedInstance,
 +        std::unique_ptr<CaboosePresentationInstance>* out) {
@@ -164,6 +164,7 @@
 +        if (ci.imageType != VK_IMAGE_TYPE_2D || ci.format != format || ci.extent.width != width ||
 +            ci.extent.height != height || ci.extent.depth != 1 || ci.mipLevels != 1 ||
 +            ci.arrayLayers != 1 || ci.samples != VK_SAMPLE_COUNT_1_BIT || ci.flags != 0 ||
++            ci.tiling != VK_IMAGE_TILING_OPTIMAL ||
 +            ci.sharingMode != VK_SHARING_MODE_EXCLUSIVE ||
 +            !(ci.usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || imageInfo->externalHandleTypes ||
 +            imageInfo->anbInfo || imageInfo->compressInfo || imageInfo->boundColorBuffer ||
@@ -215,7 +216,7 @@
 +        *out = std::move(result);
 +        return VK_SUCCESS;
 +    }
-@@ -1533,0 +1675,9 @@
+@@ -1533,0 +1676,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -225,7 +226,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3251 +3401,9 @@
+@@ -3251 +3402,9 @@
 -
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
@@ -236,16 +237,16 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3253 +3410,0 @@
+@@ -3253 +3411,0 @@
 -
-@@ -3382,0 +3540,6 @@
+@@ -3382,0 +3541,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3399,0 +3563,8 @@
+@@ -3399,0 +3564,8 @@
 +        }
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
@@ -254,7 +255,7 @@
 +                auto* info = gfxstream::base::find(mMemoryInfo, pBindInfos[i].memory);
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
-@@ -3645,0 +3817,9 @@
+@@ -3645,0 +3818,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -264,14 +265,14 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3716,0 +3897,6 @@
+@@ -3716,0 +3898,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3813,0 +4000,9 @@
+@@ -3813,0 +4001,9 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -281,7 +282,7 @@
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
 +        }
-@@ -4562,0 +4758,9 @@
+@@ -4562,0 +4759,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -291,7 +292,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -7527,0 +7732,9 @@
+@@ -7527,0 +7733,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -301,7 +302,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -11940,0 +12154,28 @@
+@@ -11940,0 +12155,28 @@
 +VkResult VkDecoderGlobalState::acquireCaboosePresentationInstance(
 +    uint32_t contextId, VkInstance boxedInstance, std::unique_ptr<CaboosePresentationInstance>* out) {
 +    try { return mImpl->acquireCaboosePresentationInstance(contextId, boxedInstance, out); }
