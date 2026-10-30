@@ -231,6 +231,8 @@ struct WindowStats {
     kind: &'static str,
     parent: Option<u64>,
     geometry: proto::Rect,
+    /// The window keeps its alpha: it is sent as RGBA tiles and no frames.
+    alpha: bool,
     frames: u64,
     keyframes: u64,
     bytes: u64,
@@ -337,16 +339,29 @@ struct Decoder {
     tiles: Vec<(proto::Rect, Vec<u8>)>,
 }
 
-/// A PNG tile's RGB pixels, if it is an 8-bit RGB PNG of the rectangle's size.
+/// A PNG tile's RGB pixels, if it is an 8-bit RGB or RGBA PNG of the rectangle's size
+/// (an alpha window's tile is composed over black).
 fn decode_tile(rect: proto::Rect, data: &[u8]) -> Option<Vec<u8>> {
     let mut reader = png::Decoder::new(std::io::Cursor::new(data)).read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).ok()?;
     let fits = info.width == rect.w as u32 && info.height == rect.h as u32;
-    (fits && info.color_type == png::ColorType::Rgb && info.bit_depth == png::BitDepth::Eight).then(|| {
-        buf.truncate(info.buffer_size());
-        buf
-    })
+    if !fits || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    match info.color_type {
+        png::ColorType::Rgb => Some(buf),
+        png::ColorType::Rgba => Some(
+            buf.chunks_exact(4)
+                .flat_map(|px| {
+                    let a = px[3] as u32;
+                    [px[0], px[1], px[2]].map(|c| ((c as u32 * a + 127) / 255) as u8)
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
@@ -667,6 +682,7 @@ fn run(args: Args) -> Result<bool, String> {
                     s.geometry = c.geometry;
                     s.kind = c.kind.as_str();
                     s.parent = c.parent;
+                    s.alpha = c.alpha;
                 }
                 Message::WindowUpdate(u) => {
                     let s = windows.entry(u.id).or_default();
@@ -675,6 +691,9 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                     if let Some(g) = u.geometry {
                         s.geometry = g;
+                    }
+                    if let Some(a) = u.alpha {
+                        s.alpha = a;
                     }
                 }
                 Message::WindowDestroy { id } => {
@@ -687,6 +706,8 @@ fn run(args: Args) -> Result<bool, String> {
                     s.tile_bytes += t.data.len() as u64;
                     match (decode_tile(t.rect, &t.data), decoders.get_mut(&t.id)) {
                         (Some(rgb), Some(d)) if d.last.is_some() => d.tiles.push((t.rect, rgb)),
+                        // An alpha window has no picture for its tiles to paint over.
+                        (Some(_), _) if s.alpha => {}
                         _ => s.tile_errors += 1,
                     }
                 }
@@ -958,7 +979,7 @@ fn run(args: Args) -> Result<bool, String> {
                     _ => 0.0,
                 };
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -966,6 +987,7 @@ fn run(args: Args) -> Result<bool, String> {
                     w.geometry.y,
                     w.geometry.w,
                     w.geometry.h,
+                    w.alpha,
                     w.first_keyframe,
                     w.codec.map(|c| c.as_str()).unwrap_or(""),
                     w.size.0,
