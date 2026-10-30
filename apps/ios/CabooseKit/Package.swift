@@ -7,6 +7,19 @@ import PackageDescription
 // a build product, not checked in; without it CabooseKit builds without the player.
 let gpuStream = FileManager.default.fileExists(
     atPath: Context.packageDirectory + "/Frameworks/CabooseGPUStream.xcframework/Info.plist")
+let gpuLive = FileManager.default.fileExists(
+    atPath: Context.packageDirectory + "/Frameworks/CabooseGPULive.xcframework/Info.plist")
+// Both archives contain their own Vulkan provider. Never resolve calls against
+// one provider while executing them through another.
+if gpuStream && gpuLive {
+    fatalError("Choose CabooseGPULive or CabooseGPUStream; both Vulkan providers cannot be linked together")
+}
+let gpuDependencies: [Target.Dependency] = gpuLive
+    ? [.target(name: "CabooseGPULive", condition: .when(platforms: [.iOS]))]
+    : (gpuStream ? [.target(name: "CabooseGPUStream")] : [])
+let gpuBinaryTargets: [Target] = gpuLive
+    ? [.binaryTarget(name: "CabooseGPULive", path: "Frameworks/CabooseGPULive.xcframework")]
+    : (gpuStream ? [.binaryTarget(name: "CabooseGPUStream", path: "Frameworks/CabooseGPUStream.xcframework")] : [])
 
 let gpuStreamLinking: [LinkerSetting] = [
     .linkedLibrary("c++"),
@@ -30,10 +43,10 @@ let package = Package(
     targets: [
         .target(
             name: "CabooseKit",
-            dependencies: gpuStream ? ["CabooseGPUStream"] : [],
+            dependencies: gpuDependencies,
             resources: [.process("Resources")],
-            linkerSettings: gpuStream ? gpuStreamLinking : []),
+            linkerSettings: gpuStream || gpuLive ? gpuStreamLinking : []),
         .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),
-    ] + (gpuStream ? [.binaryTarget(name: "CabooseGPUStream", path: "Frameworks/CabooseGPUStream.xcframework")] : []),
+    ] + gpuBinaryTargets,
     swiftLanguageModes: [.v5]
 )
