@@ -8,6 +8,16 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+// Private diagnostic framing, not the Caboose display protocol. The peer only
+// echoes this after verifying its actual immutable features and source pins.
+static constexpr unsigned char kHello[48] = {
+    'C','B','G','L','R','E','F','1', 1,0,0,0, 0,0,0,0,
+    0x20,0xd3,0xbb,0x2e,0x30,0x33,0x7c,0xab,
+    0xf0,0xfe,0xbb,0x00,0x6e,0xd1,0x02,0xab,
+    0x25,0xcc,0xf6,0xd9,0xdd,0xbf,0xaf,0x62,
+    0x4c,0x7e,0x68,0xf9,0x04,0x09,0x69,0xc0,
+};
+
 CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
 CabooseSocketStream::~CabooseSocketStream() {
     // Do not flush during teardown: an interrupted session must not send stale work.
@@ -17,6 +27,8 @@ void CabooseSocketStream::invalidate() {
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
 }
 int CabooseSocketStream::connect(const char* path) {
+    const uint32_t nativeOne = 1;
+    if (*reinterpret_cast<const unsigned char*>(&nativeOne) != 1) { errno = ENOTSUP; return -1; }
     if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
     if (!path || !*path || fd_ >= 0) { errno = EINVAL; return -1; }
     sockaddr_un addr{};
@@ -32,6 +44,15 @@ int CabooseSocketStream::connect(const char* path) {
         return -1;
     }
     fd_ = fd;
+    unsigned char reply[sizeof(kHello)];
+    if (writeFully(kHello, sizeof(kHello)) != 0 ||
+        !readFully(reply, sizeof(reply)) || std::memcmp(reply, kHello, sizeof(kHello))) {
+        invalidate();
+        close(fd_);
+        fd_ = -1;
+        errno = EPROTO;
+        return -1;
+    }
     return 0;
 }
 void* CabooseSocketStream::allocBuffer(size_t size) {

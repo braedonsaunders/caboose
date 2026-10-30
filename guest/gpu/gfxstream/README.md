@@ -28,7 +28,7 @@ provide a runnable ICD or claim GPU remoting works.
 Unix stream socket. The socket path is selected with `CABOOSE_GFXSTREAM_SOCKET`;
 access to the socket must be restricted to the intended broker and guest user.
 There is one connection per Mesa thread-local connection manager. Mesa writes the
-initial native 32-bit zero client flags; the adapter sends no extra handshake.
+initial native 32-bit zero client flags after the private handshake described below.
 The broker must bind connections to the authenticated process and session outside
 the raw byte stream. Closing the peer unblocks a waiting read; no cancellation
 API or bounded write timeout is provided here.
@@ -154,5 +154,39 @@ thread stream through `caboose_gfx_process_run(registry, process_id, fd,
 max_packet, max_buffer)`. The broker binds those streams to that context outside
 the raw protocol and calls stop and finish for its lifetime. Each Mesa thread
 sends native uint32 zero client flags; the socket path does not implement the
-QEMU `GLProcessPipe` exchange. The socket path still lacks feature/seqno
-negotiation and the no-render-control initialization path. It remains gated.
+QEMU `GLProcessPipe` exchange. The public ICD does not yet connect the private feature agreement to its
+no-render-control initialization path. It remains gated.
+
+## Private encoder probe
+
+`python3 guest/gpu/gfxstream/prepare_probe.py /path/to/mesa` adds a private
+`caboose_gfxstream_encoder_probe` target to the already prepared Mesa tree.
+Build it with `ninja -C /path/to/build -j2
+    src/gfxstream/guest/vulkan/caboose_gfxstream_encoder_probe`. Invoke the
+result with the receiver's private Unix socket path and an external timeout.
+The probe uses Mesa's generated `VkEncoder::vkEnumerateInstanceVersion` and
+prints the actual Vulkan result and returned API version. It does not open the
+public ICD or exercise coherent memory, compute, readback or presentation.
+Transport loss in this probe can still terminate its process through upstream
+encoder reads; run it only as a supervised private child.
+
+Before Mesa's native zero client flags, the socket exchanges exactly 48 bytes:
+`CBGLREF1`, little-endian uint32 version 1, little-endian uint32 feature mask,
+and a 32-byte SHA-256 source-tuple fingerprint. The client expects mask zero;
+the receiver checks its actual immutable configuration and echoes the hello
+only on an exact match. Mask bits 0, 1, 2 and 3 describe seqno, direct memory,
+VirtioGpuNext and ExternalBlob respectively. Unknown or mismatched bits fail
+before raw commands. Both peers require little-endian hosts. The fingerprint
+is SHA-256 of the following exact UTF-8 bytes including the final newline:
+
+```text
+caboose-gfxstream-private-v1
+gfxstream=f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be
+mesa=541c56aa3fd24027ed46ae350287d21dcd56c901
+```
+
+Its value is `20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0`.
+The fingerprint identifies the source tuple; it is not proof of complete wire
+compatibility. The broker authenticates and associates each connection with its
+process context separately. Hardware properties must come from Vulkan queries,
+not from the hello.
