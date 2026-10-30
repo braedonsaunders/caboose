@@ -209,3 +209,23 @@ must be a uint32 congruent to 3 modulo 4. Its JSON output and actual RGBA bytes
 are checked with the existing `guest/gpu/emulation-check/verify.py` and
 `expected.json` `compute_cpu_feedback` case. This private result is not evidence
 of a physical-phone executor or a working public ICD.
+
+## Private loader diagnostic build
+
+After `prepare_mesa.py` and `fix_instance_gate.py`,
+`python3 guest/gpu/gfxstream/prepare_private_icd.py /path/to/mesa` applies a
+hash-checked diagnostic patch. Build this source in a **separate** build tree
+with `-Dcpp_args=-DCABOOSE_GFXSTREAM_PRIVATE_ICD` in addition to the headless
+options above. Without that compile-time option, both socket gates remain in
+place. The diagnostic ICD must be selected only through a private loader
+manifest and must not be installed or advertised as a usable Vulkan device.
+
+In the diagnostic build, a socket-selected instance uses the validated zero-mask
+private handshake and does not query VirtGpu caps, render control or VirtGpu
+metadata. The receiver/broker must authenticate and bind all streams from the
+client to the same process context; this association is outside the raw stream.
+The private mode exposes only the experimental non-coherent shadow path and is
+not a conformant device: it does not provide mandatory coherent-memory semantics,
+full transport-loss handling, or recovery. Test it with a supervised process,
+real backend, fresh challenge and `guest/gpu/emulation-check/verify.py` rather
+than using it for workloads.
