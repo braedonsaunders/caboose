@@ -23,7 +23,12 @@ public final class PhoneDevices: DeviceBackend {
     private let microphone = MicrophoneCapture()
     private let motion = MotionCapture()
     private let controllerBridge = ControllerBridge()
-    private var screenHaptics: CHHapticEngine?
+    private let screenRumbler = Rumbler {
+        let engine = try? CHHapticEngine()
+        engine?.isAutoShutdownEnabled = true
+        return engine
+    }
+    public let screenRumble = CHHapticEngine.capabilitiesForHardware().supportsHaptics
     private var observers: [NSObjectProtocol] = []
 
     public init() {
@@ -114,26 +119,13 @@ public final class PhoneDevices: DeviceBackend {
         camera.output = nil
         microphone.output = nil
         motion.output = nil
-        screenHaptics?.stop()
-        screenHaptics = nil
+        screenRumbler.stop()
     }
 
     /// The on-screen controller rumbles the phone itself.
     private func playScreenRumble(strong: Double, weak: Double, ms: Int) {
-        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
-        if screenHaptics == nil {
-            screenHaptics = try? CHHapticEngine()
-            screenHaptics?.isAutoShutdownEnabled = true
-        }
-        guard let engine = screenHaptics else { return }
-        engine.stop(completionHandler: nil)
-        guard ms > 0, let pattern = Rumble.pattern(strong: strong, weak: weak, ms: ms) else { return }
-        do {
-            try engine.start()
-            try engine.makePlayer(with: pattern).start(atTime: CHHapticTimeImmediate)
-        } catch {
-            screenHaptics = nil
-        }
+        guard screenRumble else { return }
+        screenRumbler.play(strong: strong, weak: weak, ms: ms)
     }
 
     /// What this phone has, read once: the hardware does not change while the app runs.
@@ -214,7 +206,7 @@ final class ControllerBridge {
     private var output: DeviceOutput?
     private var offered = Set<String>()
     private var last: [String: GamepadReport] = [:]
-    private var engines: [String: CHHapticEngine] = [:]
+    private var rumblers: [String: Rumbler] = [:]
     private var observers: [NSObjectProtocol] = []
 
     init() {
@@ -246,22 +238,14 @@ final class ControllerBridge {
         output = nil
         offered = []
         last.removeAll()
-        for engine in engines.values { engine.stop() }
-        engines.removeAll()
+        for rumbler in rumblers.values { rumbler.stop() }
+        rumblers.removeAll()
     }
 
     func rumble(_ id: String, strong: Double, weak: Double, ms: Int) {
         guard let controller = byID[id], let haptics = controller.haptics else { return }
-        if engines[id] == nil { engines[id] = haptics.createEngine(withLocality: .default) }
-        guard let engine = engines[id] else { return }
-        engine.stop(completionHandler: nil)
-        guard ms > 0, let pattern = Rumble.pattern(strong: strong, weak: weak, ms: ms) else { return }
-        do {
-            try engine.start()
-            try engine.makePlayer(with: pattern).start(atTime: CHHapticTimeImmediate)
-        } catch {
-            engines[id] = nil
-        }
+        if rumblers[id] == nil { rumblers[id] = Rumbler { [weak haptics] in haptics?.createEngine(withLocality: .default) } }
+        rumblers[id]?.play(strong: strong, weak: weak, ms: ms)
     }
 
     private func reload() {
@@ -281,8 +265,8 @@ final class ControllerBridge {
             }
         }
         for id in byID.keys where map[id] == nil {
-            engines[id]?.stop()
-            engines[id] = nil
+            rumblers[id]?.stop()
+            rumblers[id] = nil
             last[id] = nil
         }
         byID = map
@@ -326,6 +310,54 @@ final class ControllerBridge {
         state[.rightX] = Double(pad.rightThumbstick.xAxis.value)
         state[.rightY] = -Double(pad.rightThumbstick.yAxis.value)
         return state
+    }
+}
+/// Plays rumbles on one haptic engine, kept running between them: each replaces the one
+/// playing, and a rumble of 0 ms only stops it.
+@MainActor
+final class Rumbler {
+    private let make: () -> CHHapticEngine?
+    private var engine: CHHapticEngine?
+    private var running = false
+    private var player: CHHapticPatternPlayer?
+
+    init(make: @escaping () -> CHHapticEngine?) {
+        self.make = make
+    }
+
+    func play(strong: Double, weak: Double, ms: Int) {
+        try? player?.stop(atTime: CHHapticTimeImmediate)
+        player = nil
+        guard ms > 0, let pattern = Rumble.pattern(strong: strong, weak: weak, ms: ms) else { return }
+        if engine == nil {
+            guard let made = make() else { return }
+            // The system stops an engine (audio interruptions, the app in the background);
+            // the next rumble starts it again.
+            made.stoppedHandler = { [weak self] _ in Task { @MainActor in self?.running = false } }
+            made.resetHandler = { [weak self] in Task { @MainActor in self?.running = false } }
+            engine = made
+        }
+        guard let engine else { return }
+        do {
+            if !running {
+                try engine.start()
+                running = true
+            }
+            let next = try engine.makePlayer(with: pattern)
+            try next.start(atTime: CHHapticTimeImmediate)
+            player = next
+        } catch {
+            self.engine = nil
+            running = false
+        }
+    }
+
+    func stop() {
+        try? player?.stop(atTime: CHHapticTimeImmediate)
+        player = nil
+        engine?.stop(completionHandler: nil)
+        engine = nil
+        running = false
     }
 }
 #endif

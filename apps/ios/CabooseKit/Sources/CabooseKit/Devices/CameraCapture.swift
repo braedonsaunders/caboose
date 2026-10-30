@@ -1,5 +1,6 @@
 #if os(iOS)
 import AVFoundation
+import AVKit
 import CoreMedia
 import UIKit
 import VideoToolbox
@@ -93,7 +94,7 @@ final class CameraCapture {
     /// Another app taking the camera, or the camera failing, ends what the computer opened.
     private func observe(_ run: CaptureRun) {
         let center = NotificationCenter.default
-        observers.append(center.addObserver(forName: .AVCaptureSessionWasInterrupted, object: run.session, queue: .main) { [weak self] note in
+        observers.append(center.addObserver(forName: AVCaptureSession.wasInterruptedNotification, object: run.session, queue: .main) { [weak self] note in
             let reason = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int).flatMap(AVCaptureSession.InterruptionReason.init)
             MainActor.assumeIsolated {
                 guard let self, self.running === run else { return }
@@ -104,7 +105,7 @@ final class CameraCapture {
                 }
             }
         })
-        observers.append(center.addObserver(forName: .AVCaptureSessionRuntimeError, object: run.session, queue: .main) { [weak self] note in
+        observers.append(center.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: run.session, queue: .main) { [weak self] note in
             let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error
             MainActor.assumeIsolated {
                 guard let self, self.running === run else { return }
@@ -194,7 +195,10 @@ final class CameraCapture {
 final class CaptureRun: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureDepthDataOutputDelegate, @unchecked Sendable {
     let id: String
     let session = AVCaptureSession()
-    private let queue = DispatchQueue(label: "caboose.devices.capture", qos: .userInteractive)
+    /// One queue for every run, so a camera being switched away from stops before the next
+    /// one starts.
+    private static let sharedQueue = DispatchQueue(label: "caboose.devices.capture", qos: .userInteractive)
+    private var queue: DispatchQueue { Self.sharedQueue }
     private let output: DeviceOutput
     private var encoder: H264Encoder?
     private var depthSize: (width: Int, height: Int)?
@@ -370,15 +374,24 @@ final class H264Encoder: @unchecked Sendable {
         let bitRate = Int(Double(width * height) * fps * 0.12)
         let properties: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
-            kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_Main_AutoLevel,
+            // Low-latency rate control supports the constrained profiles only.
+            kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
             kVTCompressionPropertyKey_ExpectedFrameRate: fps,
             kVTCompressionPropertyKey_MaxKeyFrameInterval: Int(fps * 2),
             kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 2,
             kVTCompressionPropertyKey_AverageBitRate: bitRate,
         ]
-        for (key, value) in properties { VTSessionSetProperty(session, key: key, value: value as CFTypeRef) }
-        VTCompressionSessionPrepareToEncodeFrames(session)
+        for (key, value) in properties {
+            guard VTSessionSetProperty(session, key: key, value: value as CFTypeRef) == noErr else {
+                VTCompressionSessionInvalidate(session)
+                return nil
+            }
+        }
+        guard VTCompressionSessionPrepareToEncodeFrames(session) == noErr else {
+            VTCompressionSessionInvalidate(session)
+            return nil
+        }
         var transfer: VTPixelTransferSession?
         guard VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &transfer) == noErr, let transfer else { return nil }
         VTSessionSetProperty(transfer, key: kVTPixelTransferPropertyKey_ScalingMode, value: kVTScalingMode_Letterbox)

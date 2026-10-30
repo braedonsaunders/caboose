@@ -229,16 +229,20 @@ on a device that also has an input, so it declares a mute key, which is never pr
   `device.open` and `device.close`, and sends `device.error` when iOS refuses.
 - **Cameras.** One `AVCaptureSession` runs the camera that is open; opening another camera
   switches to it. Pictures are encoded by `VTCompressionSession` as real-time H.264
-  (main profile, no reordering, a keyframe every 2 s and on `device.keyframe`) at the
+  (Constrained High profile with low-latency rate control, no reordering, a keyframe every
+  2 s and on `device.keyframe`) at the
   device's `size` and `fps`, rotated upright for the phone's orientation and letterboxed
   into that size. While a camera streams, `AVCaptureEventInteraction` delivers volume up as
   `volume-up` and its primary button (volume down or Camera Control) as `camera`.
 - **Depth** uses the LiDAR camera where the phone has one, otherwise TrueDepth, at the
   depth output's native size.
 - **Microphone.** `AVAudioEngine`'s input with voice processing, converted to 48 kHz mono
-  and encoded to Opus by AudioToolbox in 20 ms packets.
+  and encoded to Opus by AudioToolbox in 20 ms packets. Voice processing cancels the echo
+  only of sound the engine itself plays; the computer's sound plays through its own
+  renderer, so during a call on the computer with the phone's speaker, the far end hears
+  itself. Headphones avoid it.
 - **Motion.** `CMMotionManager` device motion (attitude, rotation rate, calibrated magnetic
-  field) and raw acceleration at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
+  field, and acceleration as gravity plus user acceleration) at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
   batched every 20 ms.
 - **Controllers.** Every `GCController` with an extended gamepad profile is a gamepad, and
   so is the on-screen controller when Customize gives other windows **A Linux controller**

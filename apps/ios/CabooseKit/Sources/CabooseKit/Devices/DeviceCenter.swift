@@ -19,6 +19,8 @@ public struct DeviceOutput: Sendable {
     var hardware: PhoneHardware { get }
     /// Controllers paired with the phone, with their stable ids.
     var controllers: [ConnectedController] { get }
+    /// The phone can rumble for the on-screen controller (it has haptics).
+    var screenRumble: Bool { get }
     /// Nil where the phone reports no battery.
     var battery: BatteryReport? { get }
     /// Called when the hardware, the controllers or the battery change.
@@ -187,7 +189,7 @@ public final class DeviceCenter {
         var controllers = backend.controllers
         if screenGamepadActive {
             controllers.insert(ConnectedController(id: ConnectedController.screenID, name: "\(backend.hardware.model) On-Screen Controller",
-                                                   rumble: true), at: 0)
+                                                   rumble: backend.screenRumble), at: 0)
         }
         let next = DeviceCatalog.descriptors(hardware: backend.hardware, permissions: permissions, controllers: controllers)
         if next != offered {
@@ -204,8 +206,9 @@ public final class DeviceCenter {
                 inUse[device.id] = nil
             }
             offered = next
-            backend.offer(next)
+            // The computer hears of a device before its first report.
             output.send(.devices(next))
+            backend.offer(next)
             lastBattery = nil
         }
         if let battery = offered.first(where: { $0.kind == .battery }), let report = backend.battery, report != lastBattery {

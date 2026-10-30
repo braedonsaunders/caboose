@@ -160,6 +160,7 @@ import Testing
     @MainActor final class FakeBackend: DeviceBackend {
         var hardware = DeviceTests.phone
         var controllers: [ConnectedController] = []
+        var screenRumble = true
         var battery: BatteryReport? = BatteryReport(level: 0.5, charging: false, full: false, lowPower: false, thermal: .nominal)
         var onChange: (() -> Void)?
         var onButton: ((DeviceKey, Bool) -> Void)?
