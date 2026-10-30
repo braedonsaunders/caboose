@@ -289,6 +289,20 @@ receipts and host-wide retries, including after a computer is deleted. The disk
 overlay stays local. Keep the private snapshot key and storage configuration with
 the host's protected backups.
 
+The portable-computer storage module provides a separate encrypted archive of a
+complete Linux microVM disk, boot assets, keyring secret and selected per-computer
+host state. Its caller must hold the source immutable throughout capture. Versioned,
+authenticated manifests bind the runtime and architecture; restore verifies all bytes
+into a new directory and never replaces a running disk. Upload journals retain object
+identities for interrupted-operation reconciliation. This module does not capture RAM,
+claim execution ownership, boot a restored computer or relocate a phone connection.
+See [portable storage](../apps/host/src/portable-storage/README.md).
+
+Personal installations continue to use local disks and embedded identity storage.
+Portable object storage is explicitly enabled by its caller and
+`CABOOSE_PORTABLE_STORAGE=on`; an unset or `off` setting requires no object-storage
+credentials or service. S3-compatible storage is an archive backend, not a live disk.
+
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
 It runs as the login user without root privileges. The helper gives each guest its own
