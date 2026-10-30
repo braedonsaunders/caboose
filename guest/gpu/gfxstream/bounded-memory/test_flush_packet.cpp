@@ -14,7 +14,7 @@ int main() {
     uint64_t sent = 0;
     FlushPacket packet{
         [&](const FlushFragment* parts, size_t count, uint64_t wireBytes) {
-            assert(count > 0 && count <= 8 && wireBytes <= 512 * 1024);
+            assert(count > 0 && count <= flushFragmentCapacity && wireBytes <= flushPacketByteLimit);
             uint64_t actualWire = 20;
             for (size_t i = 0; i < count; ++i) {
                 const auto& f = parts[i];
@@ -32,7 +32,7 @@ int main() {
         return packet.push(i, offset, size);
     }) == 0);
     assert(packet.finish() == 0);
-    assert(packets == 65 && replies == 65 && fragments == 513 && sent == bytes && !invalidated);
+    assert(packets == 35 && replies == 35 && fragments == 513 && sent == bytes && !invalidated);
     assert(std::memcmp(remote.data(), shadow.get(), bytes) == 0);
     assert(processBudget.used() == 0);
 

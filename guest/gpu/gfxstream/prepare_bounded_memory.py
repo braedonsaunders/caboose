@@ -24,6 +24,7 @@ HEADERS = (
     'flush_timing.h',
     'rpc_timing.h',
     'cb_staging.h',
+    'flush_shadow.h',
 )
 TIMED_RPCS = (
     'vkQueueSubmit',
@@ -1079,8 +1080,16 @@ def transform(encoder, encoder_h, tracker, tracker_h):
         '#include "caboose-bounded-memory/ranges.h"\n'
         '#include "caboose-bounded-memory/cb_staging.h"\n'
         '#include "caboose-bounded-memory/rpc_timing.h"\n'
+        '#include "caboose-bounded-memory/flush_shadow.h"\n'
         + tracker_h
     )
+    for signature in (
+        'void ResourceTracker::on_vkFreeMemory(void* context, VkDevice device, VkDeviceMemory memory,\n'
+        '                                      const VkAllocationCallbacks* pAllocateInfo) {\n',
+        'void ResourceTracker::on_vkUnmapMemory(void*, VkDevice device, VkDeviceMemory memory) {\n',
+    ):
+        tracker = replace_once(tracker, signature, signature +
+            '    caboose::memory::flushShadow.forget(uint64_t(uintptr_t(memory)));\n')
     tracker_h = replace_once(tracker_h, '    uint32_t getStreamFeatures() const;',
         '''    bool cabooseMappedRange(VkDevice device, VkDeviceMemory memory, caboose::memory::Range& out);
     uint32_t getStreamFeatures() const;''')

@@ -5,21 +5,25 @@
 #include <utility>
 
 namespace caboose::memory {
-inline constexpr size_t flushFragmentCapacity = 8;
+// Changed-page flushes produce many small fragments; each drained packet costs a
+// full round-trip, so a packet carries many fragments under one byte ceiling.
+// The guest-to-device transport closes the stream on packets past 1 MiB.
+inline constexpr size_t flushFragmentCapacity = 64;
+inline constexpr uint64_t flushPacketByteLimit = 15 * rpcBytes;
 struct FlushFragment {
     unsigned range;
     uint64_t offset;
     uint64_t size;
 };
 
-// One ordinary, unsequenced multi-range flush. The raw byte ceiling matches
-// the previous eight-packet window; DATA envelopes retain their own 64 KiB cap.
-// Send serializes this packet; Receive returns its one actual provider result.
+// One ordinary, unsequenced multi-range flush; DATA envelopes retain their own
+// 64 KiB cap. Send serializes this packet; Receive returns its one actual
+// provider result.
 template<class Send, class Receive, class Invalidate>
 class FlushPacket {
 public:
     static constexpr size_t capacity = flushFragmentCapacity;
-    static constexpr uint64_t byteLimit = capacity * rpcBytes;
+    static constexpr uint64_t byteLimit = flushPacketByteLimit;
     static constexpr uint64_t headerBytes = 20, fragmentOverhead = 40;
     FlushPacket(Send send, Receive receive, Invalidate invalidate)
         : send_(std::move(send)), receive_(std::move(receive)), invalidate_(std::move(invalidate)) {}
