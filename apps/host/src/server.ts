@@ -1,4 +1,6 @@
 import { GuestEvents } from './guest-events.js'
+import { UsageHistory } from './computer-usage.js'
+import type { UsageCounters, ComputerStorage as UsageStorage } from '../../../packages/capacity/types.js'
 import { CapacitySampler, capacityFor } from './capacity.js'
 import { recoveryRoute } from './recovery.js'
 import { AccountSocketFence } from './identity/socket-fence.js'
@@ -69,6 +71,8 @@ export interface Controller extends ComputerDriver<Session> {
   parkedFilesView?(): Promise<ParkedFilesView | undefined>
   componentsMode?: ComponentsMode
   componentsWarning?(): string | undefined
+  usageCounters?(): Promise<UsageCounters>
+  usageStorage?(): Promise<UsageStorage>
   stats(): unknown
   apps(): Promise<App[]>
   /** Starts an entry, opening a home-relative file with it or running one of its actions. */
@@ -1036,7 +1040,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { id, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /** What someone started on the computer that deleting it would cut short, if anything. */
     operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : null,
   }
@@ -1078,6 +1082,7 @@ export function createCabooseServer(options: ComputerPieces & {
   machine?: () => Promise<MachineResources>
   /** Image filesystem for read-only capacity sampling. */
   capacityRoot?: string
+  usageHistoryFile?: string
   /** Shared storage's totals, for `GET /v1/health`; null when it is off. */
   sharedStorage?: () => SharedStorageStatus | null
   /** How phones find and reach this host, for `/v1/host/reach`. */
@@ -1087,6 +1092,7 @@ export function createCabooseServer(options: ComputerPieces & {
   identity?: Identity
 }) {
   const capacitySampler = new CapacitySampler(options.capacityRoot, options.host?.runtime)
+  const usage = new UsageHistory(options.usageHistoryFile)
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
   const throttle = new SignInThrottle()
@@ -1153,6 +1159,29 @@ export function createCabooseServer(options: ComputerPieces & {
     }
   }
   const deleting = new Set<string>()
+  let usageCursor = 0
+  let usageStopped = false, usageWork: Promise<void> | undefined
+  // One sequential collector, no overlap; slow fleets explicitly lose interval coverage.
+  function collectUsage() {
+    if (usageStopped || usageWork) return
+    usageWork = (async () => {
+      const deadline = Date.now() + 45_000
+      const all = [...runtimes.values()]
+      const ordered = [...all.slice(usageCursor), ...all.slice(0, usageCursor)]
+      for (const runtime of ordered) {
+        if (usageStopped) break
+        if (deleting.has(runtime.id)) continue
+        const inBudget = Date.now() < deadline
+        const sample = inBudget ? await runtime.controller.usageCounters?.().catch(() => null) ?? null : null
+        if (inBudget) usageCursor = (all.indexOf(runtime) + 1) % Math.max(1, all.length)
+        if (runtimes.get(runtime.id) === runtime && !deleting.has(runtime.id)) await usage.record(runtime.id, sample, Date.now(), !runtime.controller.usageCounters ? 'This runtime does not expose per-computer host resource counters' : !inBudget ? 'Collector fleet deadline reached' : 'Docker counters unavailable, stopped, or stale')
+      }
+      await usage.save([...runtimes.keys()].filter(id => !deleting.has(id)))
+    })().catch(() => console.error('Usage history could not be saved')).finally(() => { usageWork = undefined })
+  }
+  const usageTimer = options.usageHistoryFile ? setInterval(collectUsage, 60_000) : undefined
+  usageTimer?.unref()
+
   const pairing = new PairingCodes()
 
   async function principalOf(request: IncomingMessage): Promise<Principal | undefined> {
@@ -1242,6 +1271,7 @@ export function createCabooseServer(options: ComputerPieces & {
       await options.library?.depot?.forget(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
       runtimes.delete(runtime.id)
+      await usage.save([...runtimes.keys()]).catch(() => console.error('Deleted usage history could not be persisted'))
     } finally { deleting.delete(runtime.id) }
   }
 
@@ -1277,12 +1307,31 @@ export function createCabooseServer(options: ComputerPieces & {
       if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
         const result = await capacityFor({
           sampler: capacitySampler,
+          usage: id => usage.get(id),
           computers: () => [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
           quotas: async id => { if (!identity) throw new AgentNotFoundError('tenant not found'); return (await identity.tenant(id)).quotas },
           queued: () => { const stats = options.controller.stats() as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
         }, principal, capacityTenant?.[1])
         response.setHeader('cache-control', 'no-store')
         return json(response, result.status, result.body)
+      }
+      const usageRoute = /^\/v1\/computers\/([^/]+)\/usage(\/storage)?$/.exec(path)
+      if (usageRoute) {
+        if (!principal) return json(response, 401, { error: 'unauthorized' })
+        if (principal.kind === 'phone') return json(response, 403, { error: 'forbidden' })
+        const runtime = runtimes.get(usageRoute[1]!)
+        if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
+        response.setHeader('cache-control', 'no-store')
+        if (!usageRoute[2] && request.method === 'GET') return json(response, 200, usage.get(runtime.id))
+        if (usageRoute[2] && request.method === 'POST') {
+          const result = runtime.controller.usageStorage
+            ? await runtime.controller.usageStorage().catch(() => { throw new ComputerConflictError('Another storage measurement is in progress') })
+            : { sampledAt: Date.now(), vm: await capacitySampler.storage([runtime.id]) }
+          const current = await principalOf(request)
+          if (!current || current.kind === 'phone' || runtimes.get(runtime.id) !== runtime || deleting.has(runtime.id) || !manages(current, runtime.id)) return json(response, 404, { error: 'computer not found' })
+          return json(response, 200, result)
+        }
+        return json(response, 405, { error: 'method not allowed' })
       }
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
@@ -1383,7 +1432,8 @@ export function createCabooseServer(options: ComputerPieces & {
 
   const accountSockets = new AccountSocketFence()
   const unsubscribeAuthorization = identity?.onAuthorizationChange(() => accountSockets.revalidate())
-  server.once('close', () => { unsubscribeAuthorization?.(); accountSockets.dispose() })
+  server.once('listening', () => { if (options.usageHistoryFile) collectUsage() })
+  server.once('close', () => { usageStopped = true; clearInterval(usageTimer); unsubscribeAuthorization?.(); accountSockets.dispose() })
 
   server.on('upgrade', (request, socket, head) => void (async () => {
     const url = new URL(request.url ?? '/', 'http://localhost')
@@ -1406,6 +1456,7 @@ export function createCabooseServer(options: ComputerPieces & {
   })())
 
   async function shutdown(): Promise<void> {
+    usageStopped = true; clearInterval(usageTimer); await usageWork
     unsubscribeAuthorization?.()
     accountSockets.dispose()
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
