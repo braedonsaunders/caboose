@@ -96,4 +96,7 @@ and test its extension query. `known` comes from actual provider layer enumerati
 Missing layers must return `VK_ERROR_LAYER_NOT_PRESENT`; the patch's error path
 also leaves count and property sentinels untouched. Null and known-layer controls
 check actual count/property consistency. A process crash is a failed case, not an
-unsupported result. This source fixture is not yet compiled or executed.
+unsupported result. The macOS fixture passes all eight instance/device cases
+with the provider patched by 0014. The baseline crashes on empty and unknown
+instance layers. Null and known-layer counts match between providers; the fixture
+validates returned names but does not compare the full property lists.
