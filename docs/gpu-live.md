@@ -148,8 +148,10 @@ registry matches the display epoch, window object and one visible eligible view.
 The executor survives an ordinary display reconnect; losing its owner, changing
 extent requests revocation of the affected surface. Background or computer
 replacement drains the entire executor. This path is not enabled
-by the app's default session creation, and its native presentation runtime remains
-unvalidated.
+by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
+AppModel then opens the existing authenticated host endpoint and updates the
+registry from its ordinary display. Agent and thumbnail sessions never create an
+executor. Native presentation runtime remains unvalidated.
 Neither a WebSocket send, a queue-submit return nor a local cleanup callback means
 an image was displayed.
 
@@ -245,6 +247,13 @@ Late local invalidations after retirement are ignored; foreign peer records stil
 reject. Already-in-transit query or present requests receive a local stale-owner
 error while retirement is pending. No successful retirement is inferred from the
 request being sent.
+
+App backgrounding requests bounded UIKit background time for graceful executor
+drain; expiration aborts local transport. Computer switches and display takeover
+also drain the owner. Ordinary display reconnects keep the same executor. The
+app releases its process-wide owner reservation only after native cleanup, its
+REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss
+or failed cleanup retains the reservation and never triggers automatic retry.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never

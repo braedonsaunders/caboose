@@ -122,7 +122,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPUSurfaceRevoking, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -137,6 +137,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPUSurfaceRevo
     private var drainRequested = false
     private var drainSent = false
     private var peerRevoked = false
+    private var receiptSent = false
+    var retirementReceiptSent: Bool { lock.withLock { receiptSent } }
     private var identity: (Data, UInt64)?
     private var processes: [UInt64: LiveGPUProcess] = [:]
     private var lastProcess: UInt64 = 0
@@ -289,6 +291,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPUSurfaceRevo
                 try send(.processRetired, process: id)
             }
             try send(.revoked)
+            lock.withLock { receiptSent = true }
         default: throw LiveGPUBindingError.protocolViolation("unexpected peer message")
         }
     }

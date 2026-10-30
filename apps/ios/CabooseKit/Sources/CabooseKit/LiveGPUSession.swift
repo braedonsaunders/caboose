@@ -30,6 +30,12 @@ protocol LiveGPUSurfaceRevoking: AnyObject {
     func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws
 }
 
+/// Written by the serial consumer only after actual native retirement and an
+/// admitted REVOKED receipt. A normal broker close is separately required.
+protocol LiveGPURetirementReporting: AnyObject {
+    var retirementReceiptSent: Bool { get }
+}
+
 public enum LiveGPUSessionEvent: Sendable {
     /// WebSocket accepted. Does not imply native runtime, negotiation or presentation readiness.
     case transportOpened
@@ -52,6 +58,8 @@ public final class LiveGPUSession: @unchecked Sendable {
     private var stopping = false
     private var opened = false
     private var draining = false
+    private var confirmedRetirement = false
+    public var remoteRetirementCompleted: Bool { lock.withLock { confirmedRetirement } }
     private var drainDeadline: DispatchWorkItem?
     private let drainTimeout: TimeInterval
     private var event: (@Sendable (LiveGPUSessionEvent) -> Void)?
@@ -116,7 +124,7 @@ public final class LiveGPUSession: @unchecked Sendable {
 
     private func receive(_ incoming: LiveGPUTransportEvent) {
         switch incoming {
-        case .closed(let error): stop(error)
+        case .closed(let error): stop(error, normalPeerClose: error == nil)
         case .opened:
             lock.lock()
             guard !stopping, !opened else { lock.unlock(); return }
@@ -152,7 +160,7 @@ public final class LiveGPUSession: @unchecked Sendable {
         return true
     }
 
-    private func stop(_ cause: Error?) {
+    private func stop(_ cause: Error?, normalPeerClose: Bool = false) {
         lock.lock()
         guard !stopping else { lock.unlock(); return }
         stopping = true; ingress.revoke()
@@ -167,6 +175,8 @@ public final class LiveGPUSession: @unchecked Sendable {
             worker.async { [self] in
                 var cleanupError = priorError
                 do { try consumer.finish() } catch { if cleanupError == nil { cleanupError = error } }
+                let receipt = (consumer as? any LiveGPURetirementReporting)?.retirementReceiptSent == true
+                lock.withLock { confirmedRetirement = normalPeerClose && cause == nil && cleanupError == nil && receipt }
                 event?(.ended(cause: cause, cleanupError: cleanupError))
                 event = nil
             }

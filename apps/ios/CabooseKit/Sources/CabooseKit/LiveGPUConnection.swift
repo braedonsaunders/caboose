@@ -191,7 +191,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task === self.task else { return }
-        finish(error)
+        // Only didCloseWith(.normalClosure) proves a normal peer close.
+        // Completion without that receipt cannot release an executor lease.
+        finish(error ?? LiveGPUError.closed)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask,

@@ -1394,3 +1394,18 @@ Use the same explicit compile command above after source changes. The 90-second 
 limit still covers both 26-second arms. A time-domain improvement would establish an
 algorithm-dependent local mechanism; phone behavior and audio quality still require
 validation before claiming the production incident resolved.
+
+### Private indexed GPU acceptance
+
+The live driver integration is disabled by default. A Debug build launched with
+`CABOOSE_PRIVATE_GPU_INDEXED=1` creates one executor for the paired owner computer
+using its existing phone token and host `/v1/gpu` endpoint. The matching guest
+requires the authenticated private sockets and explicit indexed broker selection
+described in [the live GPU contract](../../docs/gpu-live.md). This path never
+selects a diagnostic endpoint or creates an agent/thumbnail executor.
+
+The app's ordinary display supplies the compositor epoch and owner window objects;
+only their visible interactive views can supply a Metal layer. Backgrounding or
+switching computers drains the executor. Failed or unconfirmed retirement keeps
+its reservation and disables replacement for that app process. Native indexed
+presentation and game execution on this path remain unverified.

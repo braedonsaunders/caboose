@@ -60,6 +60,21 @@ final class AppModel {
     var addingComputer = false
     /// The owner's display.
     private(set) var session: (any DisplaySession)?
+    // Private physical acceptance uses the ordinary authenticated host and owner
+    // window path. Release builds never activate this experimental executor.
+    private static var privateIndexedGPU: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_INDEXED"] == "1"
+        #else
+        false
+        #endif
+    }
+    private var liveGPUOwner: LiveGPUOwnerSession?
+    private var liveGPUIdentity: String?
+    private var liveGPUGeneration = UUID()
+    private var liveGPUFailedIdentity: String?
+    private var liveGPUBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+
     private(set) var computer: HostClient.Session.Computer?
     private(set) var apps: [HostClient.App] = []
     private(set) var appIcons: [String: UIImage] = [:]
@@ -485,6 +500,7 @@ final class AppModel {
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
     func sceneEnteredBackground() {
         sceneActive = false
+        closeLiveGPU(allowBackgroundTime: true)
         phone.setActive(false)
         bridge.setActive(false)
         wakes.invalidate()
@@ -680,6 +696,7 @@ final class AppModel {
 
     private func sessionChanged() {
         guard let session else { return }
+        syncLiveGPU()
         switch session.state {
         case .ready:
             // Id-keyed placements belong to this compositor lifetime, not just its host.
@@ -706,6 +723,7 @@ final class AppModel {
         case .closed(let reason):
             // Another device has the display: taking it back on our own would start a tug of war.
             if session.isReplaced {
+                closeLiveGPU()
                 link.stop()
                 phase = .displayElsewhere
             // A lost connection while the app is in use is retried quietly on the link's schedule;
@@ -1046,6 +1064,59 @@ final class AppModel {
         try? await refreshComputer()
     }
 
+    /// READY-induced display reconnects retain this independent executor. A new
+    /// computer or foreground lease waits for actual retirement of its predecessor.
+    private func syncLiveGPU() {
+        guard Self.privateIndexedGPU, sceneActive, let credentials,
+              let display = session as? CabooseDisplaySession, display.state == .ready else { return }
+        let identity = Self.identity(credentials)
+        if let owner = liveGPUOwner {
+            if owner.canReplace {
+                liveGPUOwner = nil; liveGPUIdentity = nil
+            } else {
+                if liveGPUIdentity != identity { owner.close() }
+                else { owner.update(display: display) }
+                return
+            }
+        }
+        guard liveGPUFailedIdentity != identity else { return }
+        let generation = UUID()
+        do {
+            let owner = try LiveGPUOwnerSession(hostURL: activeHostURL ?? credentials.hostURL,
+                phoneToken: credentials.token) { [weak self] _, _ in
+                    guard let self, self.liveGPUGeneration == generation else { return }
+                    self.endLiveGPUBackgroundTime()
+                    if self.liveGPUOwner?.canReplace == true { self.syncLiveGPU() }
+                    else { self.liveGPUFailedIdentity = identity }
+                }
+            try owner.start()
+            liveGPUGeneration = generation; liveGPUIdentity = identity; liveGPUOwner = owner
+            owner.update(display: display)
+        } catch {
+            // An unavailable endpoint or quarantined native owner is not retried
+            // by ordinary display observation or its reconnect loop.
+            liveGPUFailedIdentity = identity
+        }
+    }
+
+    private func closeLiveGPU(allowBackgroundTime: Bool = false) {
+        guard let owner = liveGPUOwner else { return }
+        if allowBackgroundTime, liveGPUBackgroundTask == .invalid {
+            liveGPUBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "GPU retirement") { [weak self, weak owner] in
+                Task { @MainActor in
+                    owner?.abort()
+                    self?.endLiveGPUBackgroundTime()
+                }
+            }
+        }
+        owner.close()
+    }
+    private func endLiveGPUBackgroundTime() {
+        guard liveGPUBackgroundTask != .invalid else { return }
+        let task = liveGPUBackgroundTask; liveGPUBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
+    }
+
     /// Cold-restarts the computer and reconnects. The person has already confirmed that open apps close.
     func restartComputer() async {
         guard let host else { return }
@@ -1068,6 +1139,7 @@ final class AppModel {
 
     /// Drops the display and the agent channel without parking; the host decides what happens next.
     private func closeDisplay() {
+        closeLiveGPU()
         dockLaunchTimeouts.values.forEach { $0.cancel() }
         dockLaunchTimeouts.removeAll()
         dockLaunches.reset()

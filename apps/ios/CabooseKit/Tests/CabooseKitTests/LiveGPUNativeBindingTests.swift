@@ -45,6 +45,7 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         try binding.requestDrain()
         XCTAssertEqual(try output.frames().map(\.kind), [.sessionReady, .executorDrain])
         XCTAssertTrue(runtime.finishedTokens.isEmpty)
+        XCTAssertFalse(binding.retirementReceiptSent)
         // A process already in flight still requires its genuine lifecycle receipts.
         try binding.consume(wire(.processOpen, sequence: 2, process: 1))
         try binding.consume(wire(.processStop, sequence: 3, process: 1))
@@ -52,6 +53,7 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertEqual(try output.frames().map(\.kind),
                        [.sessionReady, .executorDrain, .processReady, .processRetired, .revoked])
         XCTAssertEqual(runtime.finishedTokens, [1])
+        XCTAssertTrue(binding.retirementReceiptSent)
         try binding.finish()
     }
 

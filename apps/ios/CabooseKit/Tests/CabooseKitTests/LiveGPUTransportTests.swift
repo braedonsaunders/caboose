@@ -138,6 +138,30 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertEqual(transport.closes, 1)
     }
 
+    func testReplacementRequiresReceiptNormalPeerCloseAndSuccessfulCleanup() throws {
+        for (receipt, peerClose, cleanupFails, expected) in [
+            (true, true, false, true), (false, true, false, false),
+            (true, false, false, false), (true, true, true, false)
+        ] {
+            let transport = GPUTransportProbe()
+            let consumer = GPUConsumerProbe()
+            consumer.retirementReceiptSent = receipt
+            if cleanupFails { consumer.finishError = LiveGPUError.closed }
+            let session = try LiveGPUSession(transport: transport, nativeBinding: consumer)
+            let ready = expectation(description: "ready"), ended = expectation(description: "ended")
+            session.start {
+                switch $0 {
+                case .transportOpened: ready.fulfill()
+                case .ended: ended.fulfill()
+                }
+            }
+            wait(for: [ready], timeout: 2)
+            if peerClose { transport.emit(.closed(nil)) } else { session.abort() }
+            wait(for: [ended], timeout: 2)
+            XCTAssertEqual(session.remoteRetirementCompleted, expected)
+        }
+    }
+
     func testIngressOverflowCancelsBlockedConsumerAndReportsCleanupFailure() throws {
         let transport = GPUTransportProbe()
         let consumer = GPUConsumerProbe()
@@ -178,7 +202,7 @@ private final class GPUTransportProbe: LiveGPUTransport, @unchecked Sendable {
     func emit(_ event: LiveGPUTransportEvent) { self.event?(event) }
 }
 
-private final class GPUConsumerProbe: LiveGPUByteConsumer, @unchecked Sendable {
+private final class GPUConsumerProbe: LiveGPUByteConsumer, LiveGPURetirementReporting, @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
     let drainEntered = DispatchSemaphore(value: 0)
     private let unblock = DispatchSemaphore(value: 0)
@@ -187,6 +211,7 @@ private final class GPUConsumerProbe: LiveGPUByteConsumer, @unchecked Sendable {
     var history: [String] { lock.withLock { records } }
     var output: (@Sendable (Data) -> Bool)?
     var finishError: Error?
+    var retirementReceiptSent = false
     private func record(_ s: String) { lock.withLock { records.append(s) } }
     func start(output: @escaping @Sendable (Data) -> Bool, failed: @escaping @Sendable (Error) -> Void) throws {
         self.output = output; record("start")

@@ -9,6 +9,10 @@ public final class LiveGPUOwnerSession {
     public enum State: Equatable { case idle, connecting, connected, draining, ended(cleanupFailed: Bool) }
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
+    public var canReplace: Bool {
+        if case .ended(cleanupFailed: false) = state { return executor.remoteRetirementCompleted }
+        return false
+    }
     // Failed native retirement must survive UI/session ARC. This reservation is
     // released only after local native cleanup succeeds, never on view dismissal.
     private static var retainedExecutor: LiveGPUOwnerSession?
@@ -42,7 +46,8 @@ public final class LiveGPUOwnerSession {
                 case .ended(let cause, let cleanupError):
                     self.presentationOwners.revoke()
                     self.state = .ended(cleanupFailed: cleanupError != nil)
-                    if cleanupError == nil, Self.retainedExecutor === self { Self.retainedExecutor = nil }
+                    if cleanupError == nil, self.executor.remoteRetirementCompleted,
+                       Self.retainedExecutor === self { Self.retainedExecutor = nil }
                     self.onEnd(cause, cleanupError)
                 }
             }
