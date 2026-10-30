@@ -184,7 +184,8 @@ final class LiveGPUReplyBatchTests: XCTestCase {
             XCTAssertNil(budget.admit(0))
             queue.enqueue(Data())
         }
-        XCTAssertEqual(budget.retained, (bytes: 0, count: 2))
+        XCTAssertEqual(budget.retained.bytes, 0)
+        XCTAssertEqual(budget.retained.count, 2)
         guard let emptyBatch = queue.nextBatch() else { return XCTFail("expected coalesced empty batch") }
         XCTAssertEqual(emptyBatch.count, 2)
         XCTAssertEqual(emptyBatch.originalBytes, 0)
@@ -192,9 +193,11 @@ final class LiveGPUReplyBatchTests: XCTestCase {
         XCTAssertTrue(emptyBatch.data.isEmpty)
         XCTAssertTrue(queue.isEmpty)
         queue.discardPending()
-        XCTAssertEqual(budget.retained, (bytes: 0, count: 2))
+        XCTAssertEqual(budget.retained.bytes, 0)
+        XCTAssertEqual(budget.retained.count, 2)
         XCTAssertTrue(queue.completeInFlight())
-        XCTAssertEqual(budget.retained, (bytes: 0, count: 0))
+        XCTAssertEqual(budget.retained.bytes, 0)
+        XCTAssertEqual(budget.retained.count, 0)
 
         // Mixed empty and non-empty records preserve exact byte order and count accounting.
         let records = [Data(), Data([1, 2]), Data(), Data([3, 4, 5]), Data()]
@@ -202,17 +205,20 @@ final class LiveGPUReplyBatchTests: XCTestCase {
             XCTAssertNil(budget.admit(record.count))
             queue.enqueue(record)
         }
-        XCTAssertEqual(budget.retained, (bytes: 5, count: 5))
+        XCTAssertEqual(budget.retained.bytes, 5)
+        XCTAssertEqual(budget.retained.count, 5)
         guard let mixedBatch = queue.nextBatch() else { return XCTFail("expected coalesced mixed batch") }
         XCTAssertEqual(mixedBatch.count, 5)
         XCTAssertEqual(mixedBatch.originalBytes, 5)
         XCTAssertEqual(mixedBatch.scratchBytes, 5)
         XCTAssertEqual(mixedBatch.data, Data([1, 2, 3, 4, 5]))
         XCTAssertTrue(queue.isEmpty)
-        XCTAssertEqual(budget.retained, (bytes: 10, count: 5))
+        XCTAssertEqual(budget.retained.bytes, 10)
+        XCTAssertEqual(budget.retained.count, 5)
         queue.discardPending()
         XCTAssertTrue(queue.completeInFlight())
-        XCTAssertEqual(budget.retained, (bytes: 0, count: 0))
+        XCTAssertEqual(budget.retained.bytes, 0)
+        XCTAssertEqual(budget.retained.count, 0)
     }
 
     func testCloseWithPendingAndInFlightBatchReleasesPendingImmediatelyAndInFlightOnCallback() {
