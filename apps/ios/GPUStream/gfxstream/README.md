@@ -57,7 +57,9 @@ c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-framing-test
 ```
 
-The framing changes and this fixture have not been compiled or run.
+The standalone framing fixture passes on macOS with assertions enabled. It does
+not invoke the upstream decoder or validate arbitrary Vulkan command fields;
+the changed decoder wiring still requires an integrated build and runtime check.
 
 ## Process lifetime
 
