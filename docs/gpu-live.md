@@ -22,8 +22,11 @@ token before interpreting those identities. A successful HTTP upgrade means
 authenticated pending admission, not decoder readiness. Waiting for a decoder
 handshake before sending HTTP 101 would deadlock this connection.
 
-One pending or active executor is admitted per computer. Closing both relay
-sockets releases the host transport reservation; it does not prove native
+One pending or active executor is admitted per computer. The relay forwards a
+normal WebSocket close with code 1000 and waits at most one second for the other
+endpoint before terminating it. Errors and abnormal closes terminate both ends
+without manufacturing a normal-close receipt. Closing both relay sockets
+releases the host transport reservation; it does not prove native
 resource retirement. Guest admission remains fenced until the old generation's
 native cleanup is complete. Local applications are bound through kernel Unix
 peer credentials, a retained peer pidfd and process start time, not a claimed

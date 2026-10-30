@@ -10,6 +10,9 @@ vi.mock('ws', async () => {
     protocol = 'caboose.gpu.live.v1'
     pending: Array<(error?: Error) => void> = []
     paused = false
+    closeCodes: number[] = []
+    close(code: number) { this.closeCodes.push(code); this.readyState = 2 }
+    peerClose(code: number) { this.readyState = 3; this.emit('close', code) }
     constructor(..._args: unknown[]) { super(); state.created.push(this) }
     pause() { this.paused = true }
     resume() { this.paused = false }
@@ -20,9 +23,9 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
 
-type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean }
+type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; peerClose(code: number): void }
 function pair() {
   const client = new WebSocket('ws://test') as ControlledSocket
   const done = relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 'test', computer: 'owner', executor: 'test' })
@@ -79,4 +82,39 @@ it('closes both directions when a queued send fails', async () => {
   await done
   expect(client.readyState).toBe(WebSocket.CLOSED)
   expect(upstream.readyState).toBe(WebSocket.CLOSED)
+})
+
+
+it('forwards normal close and waits for both socket handshakes', async () => {
+  const { client, upstream, done } = pair()
+  let finished = false
+  void done.then(() => { finished = true })
+  upstream.peerClose(1000)
+  expect(client.closeCodes).toEqual([1000])
+  expect(client.paused).toBe(false)
+  await Promise.resolve()
+  expect(finished).toBe(false)
+  client.peerClose(1000)
+  await done
+  expect(finished).toBe(true)
+})
+
+it('bounds a peer that never acknowledges normal close', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream, done } = pair()
+    upstream.peerClose(1000)
+    expect(client.closeCodes).toEqual([1000])
+    await vi.advanceTimersByTimeAsync(GPU_CLOSE_TIMEOUT_MS)
+    await done
+    expect(client.readyState).toBe(WebSocket.CLOSED)
+  } finally { vi.useRealTimers() }
+})
+
+it('does not turn abnormal upstream closure into a normal receipt', async () => {
+  const { client, upstream, done } = pair()
+  upstream.peerClose(1006)
+  await done
+  expect(client.closeCodes).toEqual([])
+  expect(client.readyState).toBe(WebSocket.CLOSED)
 })
