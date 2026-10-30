@@ -2550,6 +2550,11 @@ work on those grants and stale or foreign retirement messages. Native resources
 remain fenced until actual cleanup succeeds. A controller retains at most 256
 grants including failed admissions; exhausting that bound ends admission.
 
+The private indexed memory preparation splits explicit mapped-memory transfers
+into bounded synchronous RPCs and publishes invalidate results only after the
+complete original call succeeds. Its [staging limits and checks](../guest/gpu/gfxstream/bounded-memory/README.md)
+are private-profile constraints; public coherent-memory support remains absent.
+
 An explicitly selected diagnostic package exposes a separate memory-audit module.
 Its debug launch opt-in records immutable decoder feature flags and bounded allocation
 mapping receipts before process cleanup; it never records memory contents or credentials.

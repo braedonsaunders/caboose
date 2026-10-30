@@ -116,6 +116,15 @@ bounds, mapped flush/invalidate bounds and non-coherent atom alignment, and
 clears that range on unmap. Socket EOF or write failure shuts down the stream.
 The Python range and reply fixtures are reference cases, not native tests.
 
+## Private bounded mapped-memory calls
+
+`prepare_bounded_memory.py PREPARED_PRIVATE_MESA` adds the indexed-only
+[bounded transfer path](bounded-memory/README.md) after socket/shadow preparation.
+It sends ordinary synchronous encoder calls, preserves memory-type indices, and
+leaves public and direct-mapping paths unchanged. The broker reserves outbound
+queue credit before reading local payload bytes and releases queued credit only
+after the writer drains. Cancellation of a local read releases its reservation.
+
 ## Flush and invalidate disconnection handling
 
 The preparation patch gives the two mapped-memory entrypoints a non-aborting
