@@ -64,7 +64,7 @@ if(TARGET gfxstream_backend_static)
     target_compile_definitions(caboose_gfxstream_framebuffer PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
     if(CABOOSE_GFXSTREAM_PRESENTATION_LEASE)
         target_compile_definitions(caboose_gfxstream_framebuffer PRIVATE CABOOSE_GPU_PRESENTATION_LEASE=1)
-        target_sources(caboose_gfxstream_framebuffer PRIVATE presentation_copy_internal.cpp presentation_swapchain_internal.cpp presentation_query_internal.cpp)
+        target_sources(caboose_gfxstream_framebuffer PRIVATE presentation_copy_internal.cpp presentation_swapchain_internal.cpp presentation_query_internal.cpp presentation_acquire_internal.cpp)
     endif()
     target_compile_features(caboose_gfxstream_framebuffer PRIVATE cxx_std_17)
     target_include_directories(caboose_gfxstream_framebuffer PRIVATE
