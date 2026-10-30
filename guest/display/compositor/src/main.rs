@@ -8,7 +8,6 @@ mod control;
 mod displays;
 mod encode;
 mod game;
-#[path = "../../../gpu/gfxstream/gpu_supervisor.rs"]
 mod gpu_supervisor;
 mod input;
 mod keymap;
