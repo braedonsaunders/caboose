@@ -2545,7 +2545,10 @@ the app card, and a detached view releases its layers.
   Outside Laptop, the shell's keyboard-adjusted viewport is used directly, without
   subtracting the keyboard a second time. While the software keyboard covers the shell,
   the tiled desktop hides its dock and gives windows the dock's height, gap and padding.
-  The dock returns when the keyboard closes; hardware-keyboard shortcuts bars do not hide it.
+  During the pending tiled resize, the old picture keeps its width and top anchor, clipped
+  below the keyboard until new pixels arrive. Fullscreen and settled minimum-size windows
+  retain whole-picture fitting. The dock returns when the keyboard closes; hardware-keyboard
+  shortcuts bars do not hide it.
   When shown, its bottom padding is limited to the shell window's system safe area. The
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad,
   Keyboard & Trackpad and Gamepad choices behind one input button. Its trailing rail contains window switching, settings,
