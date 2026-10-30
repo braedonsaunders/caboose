@@ -18,7 +18,8 @@ typedef struct caboose_gpu_acquire_request caboose_gpu_acquire_request;
 // present-fence records independently: after a real queued present the index
 // may be reacquired while earlier retirement records still exist. A new acquire
 // must not overwrite those records. SOURCE_RELEASED follows its actual copy
-// fence. An acquired unused index becomes unacquired only after real maintenance1
+// fence. Reuse requires both actual acquisition and source release; neither
+// condition alone implies the other. An acquired unused index becomes unacquired only after real maintenance1
 // release succeeds and all relevant use has completed. Ambiguous operations
 // are QUARANTINED. Retirement never turns a timeout into completion.
 //
@@ -34,8 +35,15 @@ typedef struct caboose_gpu_acquire_request caboose_gpu_acquire_request;
 
 typedef struct caboose_gpu_swapchain_create_info {
     caboose_gpu_surface_identity identity;
-    uint64_t boxed_device, boxed_queue;
-    uint32_t queue_family, vk_format, width, height;
+    uint64_t boxed_device;
+    uint32_t create_flags, min_image_count, vk_format, color_space, width, height;
+    uint32_t image_array_layers, image_usage, pre_transform, composite_alpha;
+    uint32_t present_mode, clipped, sharing_mode;
+    uint32_t queue_family_count, has_unsupported_extensions;
+    const uint32_t* queue_families;
+    // Existing authenticated virtual swapchain identity, or zero. Replacement
+    // is unsupported until actual old-swapchain retirement is implemented.
+    uint64_t old_swapchain_id;
 } caboose_gpu_swapchain_create_info;
 
 typedef struct caboose_gpu_acquire_info {
@@ -56,6 +64,8 @@ typedef struct caboose_gpu_acquire_result {
 typedef struct caboose_gpu_mapped_present_info {
     caboose_gpu_surface_identity identity;
     uint64_t present_serial;
+    uint64_t boxed_queue;
+    uint32_t queue_family;
     uint32_t image_index;
     uint32_t vk_image_layout; // GENERAL after the private WSI remapping
     uint32_t wait_semaphore_count;
@@ -64,7 +74,12 @@ typedef struct caboose_gpu_mapped_present_info {
 
 // Worker only after attached surface and actual pre-device capabilities query.
 // On success returns the provider's full real image count and owns the actual
-// swapchain until retirement. Zero/oversized/incompatible counts fail closed.
+// swapchain until retirement. The provider must honor every accepted creation
+// field, including the requested minimum image count, and return a count at
+// least that minimum and no greater than a nonzero provider maximum. Unsupported
+// flags, pNext, replacement or other combinations must be explicitly rejected;
+// never silently select another mode, format, alpha or transform. Queue choice
+// is deferred until PRESENT. Zero/oversized/incompatible counts fail closed.
 // All objects stay leased; success does not mean that sources are mapped.
 int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
     const caboose_gpu_swapchain_create_info* info, caboose_gpu_virtual_swapchain** out,
@@ -81,7 +96,10 @@ int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
 // acquire, without holding the decoder global lock across it. NOT_READY has no
 // index and no signal; success owns the actual returned index and provider's
 // original semaphore/fence signal operation. A caller implements a monotonic
-// deadline and paced polls; local deadline/cancellation is not a VkResult.
+// deadline and paced polls; local deadline/cancellation is not a provider result.
+// A guest-facing Vulkan timeout is VK_NOT_READY for a zero timeout or VK_TIMEOUT
+// after an expired finite timeout, only after cancellation serializes with any
+// in-flight poll and proves no successful acquire raced the deadline.
 // Poll/cancel serialize with each other and native swapchain host operations.
 int caboose_gpu_acquire_begin(caboose_gpu_virtual_swapchain* swapchain,
     const caboose_gpu_acquire_info* info, caboose_gpu_acquire_request** out);
@@ -93,7 +111,9 @@ int caboose_gpu_acquire_cancel(caboose_gpu_acquire_request* request);
 // observed; underlying in-flight signal lifetimes are retained independently.
 void caboose_gpu_acquire_request_release(caboose_gpu_acquire_request* request);
 
-// Must name the mapped index currently acquired for this generation. Exactly one
+// Must name the mapped index currently acquired for this generation and the
+// actual boxed queue/family selected by the application; validate and lease
+// both on the same device. Exactly one
 // consumption of the original present wait set; queued, source-release and
 // present-retirement are distinct. Callback context is kept until retirement.
 caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
