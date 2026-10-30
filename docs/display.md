@@ -264,6 +264,11 @@ ids it accepted, `encoders` = its encoders ∩ the client's decoders in the serv
 preference order, its `features` and its `epoch`; then sends `window.create` for every
 live window, followed by a keyframe of each.
 
+The client also parses the optional `gpu_live_epoch` as exactly 16 nonzero bytes
+(a CBOR byte string with at least one nonzero byte), separately from the text `epoch`.
+Absent or malformed values leave live GPU display identity unavailable without rejecting
+the ordinary display. Parsing this identity does not enable a GPU executor or bind a layer.
+
 The server writes every `window.create` of a hello before it reads the client's next
 message, and answers `ping` on the same ordered connection. A `pong` to a ping sent after
 the hello therefore follows the last `window.create` of that hello: at that point the

@@ -378,6 +378,10 @@ public struct ServerHello: Equatable, Sendable {
     /// The server process's epoch: window ids name the same windows only within one. Nil
     /// from a server that sends none, or one that is not 1–64 bytes of text.
     public var epoch: String?
+    /// Live GPU service identity for this owner display. Only a nonzero 16-byte
+    /// value can authorize matching a GPU surface to one of this display's windows.
+    /// This is distinct from the text epoch used for retained ordinary pictures.
+    public var gpuLiveEpoch: Data?
 
     init(_ body: CBOR) {
         version = body["version"]?.int ?? 0
@@ -385,6 +389,9 @@ public struct ServerHello: Equatable, Sendable {
         encoders = body["encoders"]?.array?.compactMap(\.string) ?? []
         features = Set(body["features"]?.array?.compactMap(\.string) ?? [])
         epoch = body["epoch"]?.string.flatMap { (1 ... 64).contains($0.utf8.count) ? $0 : nil }
+        gpuLiveEpoch = body["gpu_live_epoch"]?.data.flatMap {
+            $0.count == 16 && $0.contains(where: { $0 != 0 }) ? $0 : nil
+        }
     }
 }
 

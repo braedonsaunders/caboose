@@ -2479,6 +2479,11 @@ An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamep
 
 ### GPU streams
 
+The live GPU client retains an optional binary display identity from `gpu_live_epoch`
+in the display hello. It accepts only 16 bytes with at least one nonzero byte. This
+identity is separate from the ordinary retained-picture epoch; parsing it alone does
+not activate native GPU rendering.
+
 A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
 device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
 `gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the
