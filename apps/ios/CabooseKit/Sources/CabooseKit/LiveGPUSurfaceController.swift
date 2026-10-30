@@ -101,6 +101,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         var lastSerial: UInt64 = 0
         var receipts: LiveGPUPresentReceipts?
         var retiring = false
+        var revokeRequested = false
     }
     private let backend: any LiveGPUSurfaceBackend
     private var entries: [Data: Entry] = [:]
@@ -142,6 +143,22 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         guard var entry = entries[identity.grant], entry.identity == identity, entry.process == process else {
             throw violation("unknown or foreign grant")
         }
+        if entry.revokeRequested, !entry.retiring {
+            // Peer work already in transit may cross the local revoke request.
+            // Return a local rejection while preserving process and source leases.
+            switch message.body {
+            case .query(let request, _):
+                try emit(.capabilities(request: request, status: .init(nativeErrno: ESTALE, vkResult: nil), value: nil))
+                return
+            case .present(let request):
+                guard request.serial > entry.lastSerial else { throw violation("stale present") }
+                entry.lastSerial = request.serial; entries[identity.grant] = entry
+                try emit(.presentResult(serial: request.serial, status: .init(nativeErrno: ESTALE, vkResult: nil),
+                                        disposition: .rejected, event: .submission))
+                return
+            default: break
+            }
+        }
         switch message.body {
         case .query(let request, let physical):
             guard !entry.retiring else { throw violation("query during retirement") }
@@ -172,6 +189,15 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             try emit(.retired(.init(nativeErrno: 0, vkResult: nil)))
         default: throw violation("wrong-direction surface message")
         }
+    }
+
+    /// A local view can disappear after the peer has already retired its grant.
+    /// Match the complete retained identity, emit once, and await compositor RETIRE.
+    func requestRevocation(_ identity: LiveGPUSurfaceIdentity, output: Output) throws {
+        guard var entry = entries[identity.grant], entry.identity == identity,
+              !entry.retiring, !entry.revokeRequested else { return }
+        entry.revokeRequested = true; entries[identity.grant] = entry
+        try output(entry.process, .init(identity: identity, body: .swapchain(.revokeSurface)))
     }
 
     /// Must finish before runtime_finish: an attached layer holds an instance

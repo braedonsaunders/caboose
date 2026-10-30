@@ -15,11 +15,11 @@ public final class LiveGPUPresentationOwners {
     private var windows: [UInt64: ObjectIdentifier] = [:]
     private var views: [ObjectIdentifier: ViewRef] = [:]
     private var leases: [UInt64: LiveGPULayerLease] = [:]
-    private let invalidated: @MainActor () -> Void
+    private let invalidated: @MainActor (LiveGPUSurfaceIdentity) -> Void
     private var stopped = false
     private let waiting = LiveGPUOwnerWaiter<LiveGPULayerLease>()
 
-    public init(invalidated: @escaping @MainActor () -> Void) { self.invalidated = invalidated }
+    init(invalidated: @escaping @MainActor (LiveGPUSurfaceIdentity) -> Void) { self.invalidated = invalidated }
 
     public func update(epoch: Data?, windows: [Int: RemoteWindow]) {
         guard !stopped else { return }
@@ -50,7 +50,7 @@ public final class LiveGPUPresentationOwners {
     func withdraw(_ view: RemoteWindowView) {
         views.removeValue(forKey: ObjectIdentifier(view))
         for lease in leases.values where lease.view === view {
-            if lease.invalidate() { invalidated() }
+            if lease.invalidate() { invalidated(lease.identity) }
         }
     }
     private func validate(_ lease: LiveGPULayerLease) {
@@ -60,12 +60,13 @@ public final class LiveGPUPresentationOwners {
               let view = lease.view, let window = view.remoteWindow,
               ObjectIdentifier(window) == lease.windowIdentity, eligible(view),
               extent(view) == lease.extent else {
-            if lease.invalidate() { invalidated() }
+            if lease.invalidate() { invalidated(lease.identity) }
             return
         }
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
-        guard GamePresentation.hosts(interactive: view.isInteractive, desktop: view.hostsGame,
+        guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
+              GamePresentation.hosts(interactive: view.isInteractive, desktop: view.hostsGame,
             contentEnabled: view.showsVideo, hasConnection: (view.session ?? view.pacer) != nil,
             onScreen: view.window != nil), let window = view.window, view.superview != nil else { return false }
         var ancestor: UIView? = view

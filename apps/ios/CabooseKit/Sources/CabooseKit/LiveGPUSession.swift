@@ -25,6 +25,11 @@ public protocol LiveGPUByteConsumer: AnyObject, Sendable {
     func finish() throws
 }
 
+/// Internal owner-view command; no application-supplied process ID is accepted.
+protocol LiveGPUSurfaceRevoking: AnyObject {
+    func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws
+}
+
 public enum LiveGPUSessionEvent: Sendable {
     /// WebSocket accepted. Does not imply native runtime, negotiation or presentation readiness.
     case transportOpened
@@ -84,6 +89,25 @@ public final class LiveGPUSession: @unchecked Sendable {
         }
         lock.unlock()
         cleanup.asyncAfter(deadline: .now() + drainTimeout, execute: deadline)
+    }
+
+    /// Owner-view invalidation joins the same bounded serial queue as peer input.
+    /// It does not close the executor or infer native retirement.
+    func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) {
+        lock.lock()
+        guard started, opened, !stopping, !draining else { lock.unlock(); return }
+        if let error = ingress.admit(40) { lock.unlock(); stop(error); return }
+        worker.async { [self] in
+            defer { ingress.release(40) }
+            guard ingress.active else { return }
+            do {
+                guard let revoking = consumer as? LiveGPUSurfaceRevoking else {
+                    throw LiveGPUError.missingNativeBinding
+                }
+                try revoking.requestSurfaceRevocation(identity)
+            } catch { stop(error) }
+        }
+        lock.unlock()
     }
 
     /// Immediate local teardown, including when the caller cannot keep its transport

@@ -145,6 +145,77 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(runtime.finishes, 0)
         XCTAssertEqual(controller.retainedCount, 1)
     }
+    func testOwnerRevokeIsIdempotentAndWaitsForActualPeerRetirement() throws {
+        let backend = TestSurfaceBackend(), output = SurfaceOutput()
+        let controller = LiveGPUSurfaceController(backend: backend)
+        try bind(controller, output)
+        backend.resource.submissions = [queued]
+        try consume(controller, .present(request(1)), output: output)
+        let stale = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: identity.grant, generation: 2)
+        try controller.requestRevocation(stale) { _, _ in XCTFail("stale local view revoked a live grant") }
+        for _ in 0..<2 {
+            try controller.requestRevocation(identity) { process, message in
+                XCTAssertEqual(process, 1); output.append(message)
+            }
+        }
+        XCTAssertEqual(output.messages.filter { $0.kind == .surfaceRevokeRequest }.count, 1)
+        XCTAssertEqual(controller.retainedCount, 1)
+        XCTAssertEqual(backend.resource.retired, 0)
+        // Already-running copy/device callbacks survive the revoke request.
+        backend.resource.callbacks[0](.sourceReleased(serial: 1))
+        XCTAssertEqual(output.messages.last?.kind, .sourceReleased)
+        try consume(controller, .query(request: 2, physicalDevice: 9), output: output)
+        XCTAssertEqual(output.messages.last?.body,
+            .capabilities(request: 2, status: .init(nativeErrno: ESTALE, vkResult: nil), value: nil))
+        try consume(controller, .present(request(2)), output: output)
+        XCTAssertEqual(output.messages.last?.body,
+            .presentResult(serial: 2, status: .init(nativeErrno: ESTALE, vkResult: nil), disposition: .rejected, event: .submission))
+        XCTAssertEqual(backend.resource.callbacks.count, 1)
+        try consume(controller, .retire, output: output)
+        XCTAssertEqual(controller.retainedCount, 0)
+        XCTAssertEqual(backend.resource.retired, 1)
+        try controller.requestRevocation(identity) { _, _ in XCTFail("retired local view emitted a revoke") }
+        XCTAssertThrowsError(try consume(controller, .retire, output: output)) // Peer duplicates stay strict.
+    }
+
+    func testLocalSurfaceRevokePreservesNativeProcessUntilProcessStop() throws {
+        let backend = TestSurfaceBackend(), runtime = SurfaceRuntime(), output = SurfaceOutput()
+        let controller = LiveGPUSurfaceController(backend: backend)
+        let binding = try LiveGPUNativeBinding(backend: runtime, surfaces: controller)
+        let executor = Data(repeating: 9, count: 16)
+        let parser = try LiveGPUEnvelopeDecoder(executor: executor, generation: 1)
+        try binding.start(output: { bytes in
+            do {
+                try parser.feed(bytes) { frame in
+                    if frame.kind.isSurface {
+                        output.append(try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload))
+                    }
+                }
+                return true
+            } catch { output.fail(error); return false }
+        }, failed: { output.fail($0) })
+        func frame(_ kind: LiveGPUEnvelope.Kind, _ seq: UInt64, process: UInt64 = 0, payload: Data = Data()) throws {
+            try binding.consume(LiveGPUEnvelope(kind: kind, executor: executor, generation: 1,
+                process: process, stream: 0, sequence: seq, payload: payload).encoded())
+        }
+        try frame(.session, 1, payload: LiveGPUEnvelope.hello)
+        try frame(.processOpen, 2, process: 1)
+        try frame(.surfaceBind, 3, process: 1, payload: LiveGPUSurfaceMessage(identity: identity,
+            body: .bind(window: 7, instance: 8, width: 800, height: 600)).encoded())
+        try binding.requestSurfaceRevocation(identity)
+        XCTAssertEqual(output.messages.last?.kind, .surfaceRevokeRequest)
+        XCTAssertEqual(runtime.finishes, 0)
+        XCTAssertEqual(backend.resource.retired, 0)
+        try frame(.surfaceRetire, 4, process: 1,
+                  payload: LiveGPUSurfaceMessage(identity: identity, body: .retire).encoded())
+        XCTAssertEqual(output.messages.last?.kind, .surfaceRetired)
+        XCTAssertEqual(runtime.finishes, 0)
+        try frame(.processStop, 5, process: 1)
+        XCTAssertEqual(runtime.finishes, 1)
+        try binding.finish()
+        XCTAssertTrue(output.errors.isEmpty)
+    }
+
     func testBoundedSurfaceAdmission() throws {
         let backend = TestSurfaceBackend(), output = SurfaceOutput()
         let controller = LiveGPUSurfaceController(backend: backend, limit: 1)

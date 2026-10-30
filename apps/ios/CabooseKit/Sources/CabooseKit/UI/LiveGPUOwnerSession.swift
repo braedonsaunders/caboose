@@ -19,7 +19,9 @@ public final class LiveGPUOwnerSession {
     public init(hostURL: URL, phoneToken: String,
                 onEnd: @escaping @MainActor (Error?, Error?) -> Void) throws {
         let reference = Reference()
-        let owners = LiveGPUPresentationOwners { [reference] in reference.owner?.close() }
+        let owners = LiveGPUPresentationOwners { [reference] identity in
+            reference.owner?.executor.requestSurfaceRevocation(identity)
+        }
         let binding = try LiveGPUNativeBinding(presentationOwners: owners)
         executor = try LiveGPUSession(transport: LiveGPUConnection(hostURL: hostURL, phoneToken: phoneToken),
                                       nativeBinding: binding)

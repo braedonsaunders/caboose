@@ -122,7 +122,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPUSurfaceRevoking, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -201,6 +201,15 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
         guard lock.withLock({ started && !cancelled && !finished }) else { throw LiveGPUError.closed }
         drainRequested = true
         try sendDrainIfReady()
+    }
+    /// Serial consumer-worker command. Late UIKit invalidation after retirement
+    /// is harmless; it can neither resurrect a surface nor target a new generation.
+    func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws {
+        guard lock.withLock({ started && !cancelled && !finished }),
+              negotiated, !peerRevoked, !drainRequested else { return }
+        try surfaces?.requestRevocation(identity) { [self] process, message in
+            try send(message.kind, process: process, payload: message.encoded())
+        }
     }
     private func sendDrainIfReady() throws {
         guard negotiated, drainRequested, !drainSent, !peerRevoked else { return }

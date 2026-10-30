@@ -137,7 +137,8 @@ cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registr
 and linked surface backend; ordinary display and agent sessions do not. The
 registry matches the display epoch, window object and one visible eligible view.
 The executor survives an ordinary display reconnect; losing its owner, changing
-extent or moving to the background revokes admission. This path is not enabled
+extent requests revocation of the affected surface. Background or computer
+replacement drains the entire executor. This path is not enabled
 by the app's default session creation, and its native presentation runtime remains
 unvalidated.
 Neither a WebSocket send, a queue-submit return nor a local cleanup callback means
@@ -224,6 +225,14 @@ before native `present` returns. A source-release receipt does not dispose of th
 callback: later actual device loss remains reportable. A new accepted or uncertain
 native submission joins the prior frame worker; a rejected submission does not.
 The Swift adapter retains at most the prior and attempted serial during that call.
+
+Owner-view invalidation enters the bounded serial consumer queue and emits kind
+35 once for the complete retained grant. It preserves the process and callback
+context until the compositor requests retirement and native cleanup succeeds.
+Late local invalidations after retirement are ignored; foreign peer records still
+reject. Already-in-transit query or present requests receive a local stale-owner
+error while retirement is pending. No successful retirement is inferred from the
+request being sent.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never
