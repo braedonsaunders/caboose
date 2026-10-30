@@ -1,19 +1,22 @@
 # Private bounded memory RPCs
 
 The indexed socket encoder splits ordinary flush and invalidate ranges into
-complete RPCs of at most 64 KiB. Flush holds one encoder lock and pipelines at most eight ordinary packets before
-reading every original result in order. Invalidate waits for each original result
-before sending its next chunk. Original range order and overlaps are preserved;
+atom-aligned fragments of at most 64 KiB including single-range framing. Flush
+holds one encoder lock and packs up to eight fragments into one ordinary
+multi-range packet of at most 512 KiB. Each packet waits for its actual provider
+result before the next packet. Invalidate sends one fragment per RPC and waits
+for each result. Original range order and overlaps are preserved;
 WHOLE_SIZE ends at the current mapping, and chunks obey the actual noncoherent
 atom and allocation-end rules. All ranges are validated before the first RPC.
 The original public, non-indexed, direct-mapping and sequenced-stream methods remain unchanged.
 
-Flush returns the first provider error only after all already queued replies have
-been consumed. Later packets in that window may execute after an earlier packet
-fails; flush has no rollback. No further window is sent after failure. A partial
-send, failed reply read, or exception with pending packets invalidates the stream;
-transport loss takes precedence over a provider error. Fixed window metadata shares
-the process staging budget; packet and transport limits are unchanged.
+Flush returns the first failed packet's actual provider error and sends no later
+packet; already published bytes have no rollback. A partial send, failed reply
+read, or exception with a pending packet invalidates the stream. Fixed packet
+metadata and the temporary mapped-range array share the process staging budget.
+The native 16 MiB frame limit, 64 KiB transport DATA slices, and transport queue
+budgets are unchanged. Only flush packets combine fragments; invalidate replies
+remain bounded by the original 64 KiB RPC size.
 
 Invalidate retains every chunk until all original ranges succeed, then publishes
 in original order. A process-wide 64 MiB budget covers operation staging bytes
@@ -37,6 +40,8 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_ranges.cpp -o /tmp/r
 /tmp/ranges
 c++ -std=c++17 -Wall -Wextra -Werror test_flush_window.cpp -o /tmp/flush-window
 /tmp/flush-window
+c++ -std=c++17 -Wall -Wextra -Werror -pthread test_flush_packet.cpp -o /tmp/flush-packet
+/tmp/flush-packet
 c++ -std=c++17 -Wall -Wextra -Werror test_flush_timing.cpp -o /tmp/flush-timing
 /tmp/flush-timing
 c++ -std=c++17 -Wall -Wextra -Werror test_rpc_timing.cpp -o /tmp/rpc-timing

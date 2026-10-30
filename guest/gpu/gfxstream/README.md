@@ -300,8 +300,9 @@ buffered-write/wait time, remaining-reply wait time, byte counts and results.
 The whole-call elapsed interval begins before validation and encoder-lock
 acquisition and reports `validation_us` and `lock_wait_us` separately. The first
 reply includes the IOStream buffer commit; neither whole-call elapsed nor
-first-reply wait is a pure network round-trip measurement. Diagnostics preserve
-the eight-packet window, control/lock order and metadata budget accounting, and
+first-reply wait is a pure network round-trip measurement. Each packed flush RPC
+has one reply, so its remaining-reply count is zero. Diagnostics preserve
+packet ordering, control/lock order and metadata budget accounting, and
 do not log handles, addresses or memory contents.
 
 The encoder also accepts `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` for bounded whole-call

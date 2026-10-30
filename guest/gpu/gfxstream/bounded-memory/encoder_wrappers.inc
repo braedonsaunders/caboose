@@ -15,11 +15,18 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
         if (doLock) timing.lock([&] { this->lock(); });
         Unlock unlock{this, doLock != 0};
         auto stream = mImpl->stream();
-        caboose::memory::FlushWindow window{
-            [&](unsigned i, unsigned long long offset, unsigned long long size) {
-                VkMappedMemoryRange part = ranges[i]; part.offset = offset; part.size = size;
-                return timing.send(size, [&] {
-                    return int(cabooseFlushMemoryChunk(device, 1, &part, 0, true));
+        caboose::memory::FlushPacket packet{
+            [&](const caboose::memory::FlushFragment* fragments, size_t size, uint64_t) {
+                std::array<VkMappedMemoryRange, caboose::memory::flushFragmentCapacity> parts{};
+                uint64_t payload = 0;
+                for (size_t i = 0; i < size; ++i) {
+                    parts[i] = ranges[fragments[i].range];
+                    parts[i].offset = fragments[i].offset;
+                    parts[i].size = fragments[i].size;
+                    payload += fragments[i].size;
+                }
+                return timing.send(payload, [&] {
+                    return int(cabooseFlushMemoryChunk(device, uint32_t(size), parts.data(), 0, true));
                 });
             }, [&](int& result) {
                 return timing.receive(result, [&] {
@@ -32,7 +39,9 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
                 stream->invalidate();
             }};
         caboose::memory::Reservation metadata{caboose::memory::processBudget};
-        if (!metadata.add(sizeof(window) + sizeof(timing))) return static_cast<VkResult>(timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
+        if (!metadata.add(sizeof(packet) + sizeof(timing) +
+                          sizeof(VkMappedMemoryRange) * caboose::memory::flushFragmentCapacity))
+            return static_cast<VkResult>(timing.finish(VK_ERROR_OUT_OF_HOST_MEMORY));
         const int result = caboose::memory::transact(false, count,
             [&](uint32_t i, caboose::memory::Range& out) {
                 if (!sResourceTracker->cabooseMappedRange(device, ranges[i].memory, out)) return false;
@@ -40,10 +49,10 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
                 out.whole = ranges[i].size == VK_WHOLE_SIZE;
                 return !ranges[i].pNext && ranges[i].sType == VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
             }, [&](uint32_t i, uint64_t offset, uint64_t size, uint8_t*) {
-                return window.push(i, offset, size);
+                return packet.push(i, offset, size);
             });
         if (result != caboose::memory::success) return static_cast<VkResult>(timing.finish(result));
-        return static_cast<VkResult>(timing.finish(window.finish()));
+        return static_cast<VkResult>(timing.finish(packet.finish()));
     }
 #endif
     return cabooseFlushMemoryChunk(device, count, ranges, doLock);

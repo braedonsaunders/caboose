@@ -55,7 +55,8 @@ struct Range {
 template<class Lookup, class Emit>
 int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
              Budget& budget = processBudget) {
-    if (!count || count > (SIZE_MAX - sizeof(Reservation)) / sizeof(Range)) return outOfHostMemory;
+    if (!count || uint64_t(count) > (uint64_t(SIZE_MAX) - sizeof(Reservation)) / sizeof(Range))
+        return outOfHostMemory;
     Reservation reservation{budget};
     if (!reservation.add(size_t(count) * sizeof(Range) + sizeof(Reservation))) return outOfHostMemory;
     std::unique_ptr<Range[]> plan(new (std::nothrow) Range[count]);

@@ -61,6 +61,26 @@ int main() {
     assert(diagnostic.rangeCount == 1 && diagnostic.rangeIndex == 0);
     assert(diagnostic.tailPresent && diagnostic.tailBytes == 32u * 1024u * 1024u);
     assert(diagnostic.tailOffset == 60);
+    // Eight existing atom-aligned fragments form one ordinary multi-range
+    // flush, split across unchanged 64 KiB transport DATA slices.
+    std::vector<uint8_t> packed;
+    put<uint32_t>(packed, 20025); put<uint32_t>(packed, 20 + 8 * 32);
+    put<uint64_t>(packed, 11); put<uint32_t>(packed, 8);
+    for (unsigned i = 0; i < 8; ++i) {
+        put<uint32_t>(packed, 6); put<uint32_t>(packed, 0);
+        put<uint64_t>(packed, 100 + i); put<uint64_t>(packed, 0);
+        put<uint64_t>(packed, 65472);
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+        put<uint64_t>(packed, 65472); packed.resize(packed.size() + 65472, uint8_t(i));
+    }
+    assert(packed.size() == 524116 && packed.size() < 512u * 1024u);
+    for (size_t cut = 65536; cut < packed.size(); cut += 65536) {
+        const auto part = inspectFrame(packed.data(), cut, 16u * 1024u * 1024u, false);
+        assert(part.status == FrameStatus::need_more && part.size > cut && part.size <= packed.size());
+    }
+    const auto complete = inspectFrame(packed.data(), packed.size(), 16u * 1024u * 1024u, false);
+    assert(complete.status == FrameStatus::ready && complete.size == packed.size());
     // An incomplete tail length must never be reported as an observed size.
     limited = inspectFrame(large.data(), 59, 16u * 1024u * 1024u, false, &diagnostic);
     assert(limited.status == FrameStatus::need_more && !diagnostic.tailPresent);
