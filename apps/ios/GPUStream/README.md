@@ -47,10 +47,16 @@ retirement on a worker and layer detachment on main must complete first: they
 release decoder-instance leases that upstream cleanup waits for. A failed
 retirement retains the reservation and layer; it does not permit replacement.
 
-The indexed package is kept separate from the selected v3 app package while the
-matching wire adapter is incomplete. Selecting it requires the matching v4
-consumer; the versioned start symbol deliberately prevents linking an older
-consumer against it.
+The indexed package requires the matching v4 app consumer; the versioned start
+symbol deliberately prevents linking an older consumer against it. Keep prior
+validated packages separate when selecting a new private build.
+
+An explicitly diagnostic native build with `CABOOSE_GFXSTREAM_MEMORY_AUDIT=ON`
+requires `--memory-audit` when packaging. This adds the separate
+`CabooseGPUMemoryAudit` module, propagates its native compile flag, and links all
+three real audit entrypoints in the Swift link probe. The ordinary package omits
+that module. A mismatched build-cache setting is rejected. The diagnostic receipt
+records this selection; it does not establish allocation or byte-transfer results.
 
 CabooseKit conditionally links a selected package on iOS. Its manifest rejects the
 simultaneous presence of the replay `CabooseGPUStream.xcframework`, which contains

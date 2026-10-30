@@ -53,6 +53,16 @@ class ProviderExportsTests(unittest.TestCase):
             self.assertIn(name + "(", source)
         self.assertNotIn("caboose_gpu_live_start_v3", source)
 
+    def test_memory_audit_requires_separate_module_and_real_symbols(self):
+        plain = package.swift_link_probe()
+        audit = package.swift_link_probe(memory_audit=True)
+        self.assertNotIn("CabooseGPUMemoryAudit", plain)
+        self.assertIn("import CabooseGPUMemoryAudit", audit)
+        for symbol in package.AUDIT_NATIVE:
+            self.assertIn(symbol + "(", audit)
+        self.assertLess(audit.index("caboose_gpu_runtime_enable_memory_audit()"),
+                        audit.index("caboose_gpu_live_start_v4()"))
+
 
 if __name__ == "__main__":
     unittest.main()

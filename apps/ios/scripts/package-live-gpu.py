@@ -51,6 +51,8 @@ REQUIRED_NATIVE = {
 }
 REQUIRED_EXPORTS = {"vkGetInstanceProcAddr", "vkGetDeviceProcAddr", "vkCreateInstance",
                     "vkDestroyInstance", "vkCreateDevice", "vkDestroyDevice"}
+AUDIT_NATIVE = {"caboose_gpu_runtime_enable_memory_audit", "caboose_gpu_runtime_memory_features",
+                "caboose_gpu_runtime_memory_receipts"}
 
 
 def digest(path):
@@ -101,10 +103,10 @@ extern "C" int caboose_gpu_live_start_v4(void) {
 '''
 
 
-def swift_link_probe():
+def swift_link_probe(memory_audit=False):
     # Link the actual callable ABI, including ObjC layer types and query status.
     # This executable is never run: it proves symbol/ABI closure, not GPU results.
-    return """import QuartzCore
+    source = """import QuartzCore
 import CabooseGPULive
 @main struct LinkProbe {
     @MainActor static func main() {
@@ -143,6 +145,16 @@ import CabooseGPULive
     }
 }
 """
+    if memory_audit:
+        source = source.replace("import CabooseGPULive\n", "import CabooseGPULive\nimport CabooseGPUMemoryAudit\n")
+        source = source.replace("        _ = caboose_gpu_live_start_v4()", """        _ = caboose_gpu_runtime_enable_memory_audit()
+        _ = caboose_gpu_live_start_v4()
+        var features = caboose_gpu_memory_features()
+        _ = caboose_gpu_runtime_memory_features(&features)
+        var receipt = caboose_gpu_memory_receipt()
+        var receiptCount = 0
+        _ = caboose_gpu_runtime_memory_receipts(0, &receipt, 1, &receiptCount)""")
+    return source
 
 
 def run(argv, **kwargs):
@@ -158,6 +170,8 @@ def main():
                         help="Pinned Vulkan-Headers checkout containing include/ and registry/")
     parser.add_argument("--output", required=True, type=Path,
                         help="New CabooseGPULive.xcframework directory; existing output is refused")
+    parser.add_argument("--memory-audit", action="store_true",
+                        help="Require the diagnostic native closure and expose its separate audit module")
     args = parser.parse_args()
     if args.output.name != "CabooseGPULive.xcframework" or os.path.lexists(args.output):
         parser.error("output must be a new CabooseGPULive.xcframework")
@@ -172,6 +186,9 @@ def main():
     archives.append(args.provider.resolve(strict=True))
     input_hashes = {str(path): digest(path) for path in archives}
     cache = (args.build_dir / "CMakeCache.txt").read_text()
+    audit_built = bool(re.search(r"^CABOOSE_GFXSTREAM_MEMORY_AUDIT:[^=]+=ON$", cache, re.MULTILINE))
+    if audit_built != args.memory_audit:
+        parser.error("--memory-audit must match CABOOSE_GFXSTREAM_MEMORY_AUDIT in the build cache")
     for key, expected in (("CMAKE_OSX_ARCHITECTURES", "arm64"),
                           ("CABOOSE_GFXSTREAM_HOST_GLES", "0"),
                           ("CABOOSE_GFXSTREAM_PRESENTATION_LEASE", "ON"),
@@ -185,7 +202,8 @@ def main():
         if archs != "arm64":
             parser.error(f"expected one arm64 slice: {archive}")
     native_symbols = run(["xcrun", "nm", "-gjU", str(archives[0])], capture_output=True, text=True).stdout.splitlines()
-    missing_native = sorted(REQUIRED_NATIVE - {name.removeprefix("_") for name in native_symbols})
+    required_native = REQUIRED_NATIVE | (AUDIT_NATIVE if args.memory_audit else set())
+    missing_native = sorted(required_native - {name.removeprefix("_") for name in native_symbols})
     if missing_native:
         parser.error("native runtime lacks required v4 indexed API: " + ", ".join(missing_native))
     registry = args.vulkan_headers / "registry/vk.xml"
@@ -201,9 +219,14 @@ def main():
         (headers / public_header.name).write_bytes(public_header.read_bytes())
         for header in PRESENTATION_HEADERS:
             (headers / header).write_bytes((adapter / header).read_bytes())
+        module_map = 'module CabooseGPULive { header "caboose_gpu_live.h" export * }\n'
+        if args.memory_audit:
+            (headers / "memory_audit.h").write_bytes((adapter / "memory_audit.h").read_bytes())
+            (headers / "caboose_gpu_memory_audit.h").write_text(
+                '#pragma once\n#define CABOOSE_GPU_MEMORY_AUDIT 1\n#include "memory_audit.h"\n')
+            module_map += 'module CabooseGPUMemoryAudit { header "caboose_gpu_memory_audit.h" export * }\n'
         header_hashes = {path.name: digest(path) for path in headers.iterdir()}
-        (headers / "module.modulemap").write_text(
-            'module CabooseGPULive { header "caboose_gpu_live.h" export * }\n')
+        (headers / "module.modulemap").write_text(module_map)
         sdk = run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], capture_output=True, text=True).stdout.strip()
         obj = work / "provider.o"
         run(["xcrun", "--sdk", "iphoneos", "clang++", "-std=c++17", "-target", "arm64-apple-ios26.0",
@@ -217,7 +240,7 @@ def main():
         # the public module in Swift and link the actual start path into an iOS
         # executable. Never run this executable or install it on a device.
         probe = work / "LinkProbe.swift"
-        probe.write_text(swift_link_probe())
+        probe.write_text(swift_link_probe(args.memory_audit))
         run(["xcrun", "--sdk", "iphoneos", "swiftc", "-parse-as-library",
              "-target", "arm64-apple-ios26.0", "-sdk", sdk,
              "-I", str(headers), "-L", str(work), "-lCabooseGPULive", "-lc++", "-lz",
@@ -232,6 +255,7 @@ def main():
             raise RuntimeError("Native build inputs changed during packaging")
         receipt = {"format": 1, "platform": "ios-arm64", "deploymentTarget": "26.0",
                    "liveHelloVersion": 4, "liveHelloFeatureMask": 0x70, "virtualWSI": True,
+                   "memoryAuditModule": args.memory_audit,
                    "indexedAcquireAPILink": "passed (not executed)",
                    "inputs": input_hashes, "swiftImportAndLink": "passed",
                    "linkProbeSHA256": digest(work / "LinkProbe"),

@@ -25,7 +25,21 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     // initialization remains failed for process lifetime; reconnect never retries it.
     private static let startResult: Int32 = {
         #if canImport(CabooseGPULive)
-        return caboose_gpu_live_start_v4()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_MEMORY_AUDIT"] == "1" {
+            #if canImport(CabooseGPUMemoryAudit)
+            let audit = LiveGPUMemoryAudit.enable()
+            if audit != 0 { return audit }
+            #else
+            return ENOTSUP
+            #endif
+        }
+        #endif
+        let result = caboose_gpu_live_start_v4()
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        if result == 0 { LiveGPUMemoryAudit.features() }
+        #endif
+        return result
         #else
         return ENODEV
         #endif
@@ -54,6 +68,11 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     }
     func finish(_ token: UInt64) -> Int32 {
         #if canImport(CabooseGPULive)
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        // Snapshot while the native process identity still exists, after its
+        // streams have joined. Diagnostic failure never skips actual cleanup.
+        LiveGPUMemoryAudit.receipts(token)
+        #endif
         return caboose_gpu_runtime_finish(token)
         #else
         return ENODEV

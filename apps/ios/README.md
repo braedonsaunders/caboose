@@ -1409,3 +1409,12 @@ only their visible interactive views can supply a Metal layer. Backgrounding or
 switching computers drains the executor. Failed or unconfirmed retirement keeps
 its reservation and disables replacement for that app process. Native indexed
 presentation and game execution on this path remain unverified.
+
+With the separately packaged memory-audit module, Debug launch variable
+`CABOOSE_PRIVATE_GPU_MEMORY_AUDIT=1` enables native allocation receipts before the
+first provider initialization. Fixed `CABOOSE_GPU_MEMORY_AUDIT` console records
+contain actual feature flags and per-process allocation indices, sizes and provider
+results. They exclude memory contents and credentials. The receipt snapshot runs
+after decoder streams join and before process cleanup. Overflow or a snapshot
+error is reported as incomplete and never skips cleanup. Requesting this audit
+without its native module fails explicitly; it is absent from ordinary builds.
