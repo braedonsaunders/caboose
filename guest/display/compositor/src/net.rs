@@ -32,10 +32,9 @@ impl tungstenite::handshake::server::Callback for SubprotocolCallback {
         // Live GPU does not use the display codec. Until the private broker is
         // connected, reject its path rather than upgrading it as a display.
         if request.uri().path() == "/gpu" {
-            return Err(ErrorResponse::builder()
-                .status(503)
-                .body(Some("GPU broker unavailable".into()))
-                .expect("static HTTP response"));
+            let mut error = ErrorResponse::new(Some("GPU broker unavailable".into()));
+            *error.status_mut() = tungstenite::http::StatusCode::SERVICE_UNAVAILABLE;
+            return Err(error);
         }
         // The host relay asks for "binary"; echo it so the handshake completes.
         let offered = request
@@ -142,7 +141,6 @@ impl Net {
                 let (stream, peer) = routed.into_parts();
                 state_accept_display(state, stream, peer);
             }
-            Ok(())
         }).map_err(|e| io::Error::other(e.to_string()))?;
         self.gpu_router = Some(router);
         Ok(())
