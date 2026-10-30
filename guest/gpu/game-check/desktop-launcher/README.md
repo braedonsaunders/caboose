@@ -13,7 +13,8 @@ existing host still supplies `/run/caboose/display-token` and relays port 14600.
 existing Caboose debug app supplies the executor over that authenticated display
 session with `CABOOSE_PRIVATE_GPU_INDEXED=1`. No standalone executor is involved.
 Release apps and ordinary app launches without that debug environment cannot execute
-this private GPU lane.
+this private GPU lane. The acceptance wrapper enables the broker's bounded numeric
+surface-progress records; it does not log packet contents or credentials.
 
 `launch.py` checks the owner seat, live control-socket peer, exact compositor path
 and private socket arguments, vkQuake ELF hash, bundle launcher hash and ICD library hash. It prevents
@@ -23,7 +24,7 @@ Wayland through the retained bundle's `launch.sh`, preserving its private librar
 PulseAudio search paths plus the inherited `LD_LIBRARY_PATH`. The Linux dynamic loader
 checks the ELF's transitive dependency resolution before either launch or `--check`
 succeeds. Errors and game output go
-to `~/.cache/caboose/quake-gpu-acceptance.log`; early errors also attempt an ordinary
+line-buffered to `~/.cache/caboose/quake-gpu-acceptance.log`; early errors also attempt an ordinary
 desktop notification. Apps launch acceptance itself does not report successful GPU
 execution. Socket files and the control peer do not prove an executor is attached.
 

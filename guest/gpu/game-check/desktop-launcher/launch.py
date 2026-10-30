@@ -127,7 +127,8 @@ def main():
         raise RuntimeError('Quake is already running.') from None
     os.set_inheritable(lock, True)
     # Retain the fixture's private SDL/Pulse dependency setup and native Wayland launch.
-    os.execve(BUNDLE / 'launch.sh', [str(BUNDLE / 'launch.sh'), '-nosound', '+map', 'start'], environment)
+    os.execve('/usr/bin/stdbuf', ['stdbuf', '-oL', '-eL', str(BUNDLE / 'launch.sh'),
+                                '-nosound', '+map', 'start'], environment)
 
 
 if __name__ == '__main__':
