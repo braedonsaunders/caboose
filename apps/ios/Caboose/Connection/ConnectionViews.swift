@@ -24,12 +24,6 @@ struct ConnectionBanner: View {
                             .lineLimit(2)
                     }
                     Spacer(minLength: 0)
-                    ComputerSwitcher {
-                        Image(systemName: "desktopcomputer")
-                    }
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
-                    .accessibilityLabel("Switch Computer")
                     if case .reconnecting(_, _, let at?, let reason) = model.link.status, at.timeIntervalSinceNow >= 1 {
                         Button("Try Now") { model.link.retryNow(reason: reason) }
                             .buttonStyle(.glass)

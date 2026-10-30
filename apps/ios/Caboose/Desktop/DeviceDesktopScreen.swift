@@ -156,10 +156,6 @@ struct DesktopRailControls: View {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
                     .frame(width: 56, height: 44)
             }
-            ComputerSwitcher {
-                Image(systemName: "desktopcomputer")
-            }
-            .frame(width: 56, height: 44)
             Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                 .frame(width: 56, height: 44)
             LifecycleMenu().frame(width: 56, height: 44)

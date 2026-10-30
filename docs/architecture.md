@@ -3232,3 +3232,6 @@ The private GPU owner layer uses the authenticated display window’s server pix
 size for its actual Metal drawable. UIKit fitting and phone screen scale do not
 change that Vulkan extent. A server pixel-size change revokes the generation and
 requires native retirement before rebinding; fitting unchanged pixels does not.
+
+Computer selection is available only on Home. Desktop, connection recovery and
+other tabs follow Home’s selected computer without separate switching controls.

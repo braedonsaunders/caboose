@@ -110,19 +110,10 @@ struct ComputerStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaInset(edge: .bottom) {
-            if model.credentials != nil {
-                ComputerSwitcher {
-                    Label("Switch Computer", systemImage: "desktopcomputer")
-                }
-                .buttonStyle(.glass)
-                .padding(20)
-            }
-        }
     }
 }
 
-/// Every tab offers saved computers, settings and the lifecycle menu.
+/// Tabs follow Home’s selected computer and offer settings and the lifecycle menu.
 /// They overflow last when the vertical bar runs short of room.
 struct ComputerToolbar: ToolbarContent {
     var body: some ToolbarContent {
@@ -135,7 +126,6 @@ struct ComputerToolbar: ToolbarContent {
 
     private var items: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            ComputerSwitcher { Image(systemName: "desktopcomputer") }
             ComputerSettingsButton()
             LifecycleMenu()
         }
