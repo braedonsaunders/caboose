@@ -70,6 +70,7 @@ echo "Building the host and the console ($version)"
 ( cd "$repo" && pnpm --filter caboose-web build >/dev/null )
 rm -rf "$repo/apps/host/dist"
 ( cd "$repo/apps/host" && pnpm exec tsc --outDir dist )
+[[ -f $repo/apps/host/dist/index.js ]] || { echo "Host compilation did not emit dist/index.js" >&2; exit 1; }
 cp "$repo"/apps/host/src/*.py "$repo/apps/host/dist/"
 find "$repo/apps/host/dist" -name '*.test.js' -delete
 
