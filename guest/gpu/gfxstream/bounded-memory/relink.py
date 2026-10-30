@@ -28,7 +28,8 @@ def main():
         if digest(previous / name) != sha: raise ValueError('retained 873 input changed: ' + name)
     # Original link recorded all direct inputs and thin-archive members.
     for name, sha in baseline['input_sha256'].items():
-        if digest(Path(name)) != sha: raise ValueError('retained baseline input changed: ' + name)
+        path=Path('/previous-source') / Path(name).relative_to('/slice') if name.startswith('/slice/') else Path(name)
+        if digest(path) != sha: raise ValueError('retained baseline input changed: ' + name)
     database = Path('/work/build-private/compile_commands.json')
     if digest(database) != baseline['database_sha256']: raise ValueError('compile database changed')
     entries = json.loads(database.read_text())
@@ -47,7 +48,7 @@ def main():
             args.append(arg)
         if found != 1 or args[0] != 'c++': raise ValueError('unexpected compiler command')
         args += ['-I/slice', '-DCABOOSE_GFXSTREAM_PRIVATE_LIVE',
-                 '-DCABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI', '-c', str(source / name),
+                 '-DCABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI', '-c', entry['file'],
                  '-o', str(output / (name + '.o'))]
         commands.append(args)
         replacements[entry['output']] = str(output / (name + '.o'))
