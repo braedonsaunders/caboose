@@ -23,6 +23,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/agent-routines.ts` | Persistent per-computer routines, same-UUID task recovery and bounded run history; [adapter contract and tests](../../docs/agent-routines.md). |
 | `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs`, `/v1/files` and the authenticated agent-app bridge, through the guest's file service. |
 | `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
+| `src/gpu-relay.ts` | `/v1/gpu`: bounded binary live GPU transport, isolated from display/media flow control. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
@@ -379,6 +380,26 @@ relays bytes to the owner's display on guest port 14600; `/v1/display?seat=agent
 the agent seat on port 14601, starting `caboose-display-agent.service` (or
 `caboose-session start-agent`) first if it is not running. The host does not parse the
 stream. Every open WebSocket holds a lease that keeps the computer awake.
+
+`/v1/gpu` is a separate binary WebSocket with the exact subprotocol
+`caboose.gpu.live.v1`. It uses the same computer authorization and revocation
+fences, rejects all query parameters (including agent-seat selection), and admits
+one pending or connected executor per computer. It relays to `/gpu` on the owner's
+existing display service using the current per-wake display token. The host supplies
+`X-Caboose-GPU-Computer` and a fresh `X-Caboose-GPU-Executor` UUID; client versions of
+these headers and the phone/owner bearer token are never forwarded. The guest must
+authenticate the display token before trusting the host identities.
+
+Messages are at most 256 KiB, with at most 1 MiB or 64 pending messages per direction.
+Compression and text messages are refused; each direction pauses independently.
+The relay forwards normal close code 1000 and waits at most one second for the
+other endpoint; errors and abnormal closes terminate both endpoints without
+manufacturing a normal-close receipt. The executor reservation lasts until both
+have closed. This transport state does not prove native resource retirement. A reconnect receives a new executor identity; no command history
+is replayed. The relay does not interpret GPU completion, capabilities or resource
+handles. It requires a matching guest `/gpu` implementation and does not enable the
+existing capture player or advertise a usable driver. Run its isolated socket and
+admission checks with `pnpm exec vitest run src/gpu-relay.test.ts src/gpu-server.test.ts`.
 
 ## Computer management
 
