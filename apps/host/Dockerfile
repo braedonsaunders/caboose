@@ -72,7 +72,7 @@ COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/game ./guest/game
 COPY guest/gpu/install.sh guest/gpu/caboose-gpu-run guest/gpu/profile.json ./guest/gpu/
-COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/guest/apps/net.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
+COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/net.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons
