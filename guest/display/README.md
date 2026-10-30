@@ -424,3 +424,25 @@ The pure `DesktopGeometryTests`/`FullscreenGeometryTests` and iOS hosted
 `DesktopSurfaceLayoutTests` check ordinary top fitting, fullscreen centering during
 rotation/settling, and consistent input, popup and text-drop geometry. These are
 presentation checks; they do not establish a scroll-delivery fix.
+
+### Internal marker regression
+
+The production `passthrough` check verifies local-decode admission. The historical
+marker binding/forwarding check is retained separately in
+`scripts/check-marker-binding.py`. It is explicitly opt-in and requires
+`CABOOSE_DISPLAY_BIN` pointing to isolated legacy/internal compositor and probe binaries:
+
+```sh
+CABOOSE_DISPLAY_BIN=/path/to/isolated/test-binaries python3 scripts/check-marker-binding.py --legacy-marker-binding
+```
+
+It intentionally fails against the current production admission policy; it adds no
+runtime override to the compositor. Source tests in `video::marker` and `video::tests`
+cover marker detection, geometry, internal binding fields, decode order and the
+reconnect presentation fence without accepting a production passthrough stream.
+
+`.github/workflows/check-video.yml` builds the declared display test image, tests video
+internals, builds compositor/probe from the checked source, then runs admission with
+those exact binaries. Its separate VAAPI job builds `guest/vaapi/Dockerfile`, which
+includes FFmpeg and Xvfb, and runs state tests plus four selected codec roundtrips.
+These hosted software checks do not establish native phone decode or overlay correctness.

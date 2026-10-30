@@ -183,3 +183,10 @@ They do not establish paused native VideoToolbox output or foreground compositio
 
 The source-owned [composition and pause fixture](tests/acceptance.md) covers the
 remaining visual/native acceptance gates and records the limits of automated checks.
+
+The hosted `Check video fallback and bitstreams` workflow builds this directory's
+Dockerfile (including FFmpeg and Xvfb) and runs `h264-cbp`, `hevc-default`,
+`av1-aom-realtime`, and `av1-aom-altref` with a 300-second test bound. Its admission job
+builds the compositor and probe from the checked source before exercising local-decode
+admission. The workflow is source-owned; a passing run is required evidence, not implied
+by the presence of its configuration.
