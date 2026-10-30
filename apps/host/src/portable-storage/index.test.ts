@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rm, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -72,4 +72,26 @@ it('cancels before publication and refuses symlink inputs', async () => {
   const { symlink } = await import('node:fs/promises')
   await rm(join(s.source.directory, 'disk.raw')); await symlink(join(s.source.directory, 'vmlinux'), join(s.source.directory, 'disk.raw'))
   await expect(s.archives.capture(s.authority, join(s.root, 'link'))).rejects.toThrow('unsupported')
+})
+it('preserves sparse disk length, split boot assets and per-computer profile state', async () => {
+  const s = await setup(); s.source.metadata.imageFormat = 'split'
+  const { open } = await import('node:fs/promises')
+  const file = await open(join(s.source.directory, 'disk.raw'), 'r+')
+  await file.truncate(8 * 1024 * 1024); await file.close()
+  await writeFile(join(s.source.directory, 'system.erofs'), 'immutable system')
+  await writeFile(join(s.source.directory, 'agent-profiles.json'), '{"profiles":[]}')
+  const ref = await s.archives.capture(s.authority, join(s.root, 'receipt'))
+  const manifest = await s.archives.restore(ref, s.source.metadata, join(s.root, 'restored'))
+  expect(manifest.archive.entries.find(entry => entry.name === 'disk.raw')!.size).toBe(8 * 1024 * 1024)
+  expect(createHash('sha256').update(await readFile(join(s.root, 'restored', 'disk.raw'))).digest('hex')).toBe(createHash('sha256').update(await readFile(join(s.source.directory, 'disk.raw'))).digest('hex'))
+  expect(await readFile(join(s.root, 'restored', 'agent-profiles.json'), 'utf8')).toBe('{"profiles":[]}')
+})
+it('refuses receipt reuse and malformed required state before writing objects', async () => {
+  const s = await setup(); const receipt = join(s.root, 'receipt')
+  await writeFile(receipt, 'existing operation')
+  await expect(s.archives.capture(s.authority, receipt)).rejects.toMatchObject({ code: 'EEXIST' })
+  expect(await readFile(receipt, 'utf8')).toBe('existing operation')
+  await writeFile(join(s.source.directory, 'computer.json'), JSON.stringify({ version: 1, record: { id: 'c-1234567890', slot: 0 }, settings: {} }))
+  await expect(s.archives.capture(s.authority, join(s.root, 'bad-state'))).rejects.toThrow('computer state')
+  expect(s.objects.size).toBe(0)
 })

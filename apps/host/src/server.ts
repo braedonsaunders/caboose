@@ -32,7 +32,7 @@ import { replaceGuestFile } from './guest-private-file.js'
 import type { SmitheryCatalog } from './smithery.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
-import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentConflictError, AgentIdentityError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest, type AgentProfileSnapshot } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { tieredController, type SnapshotTierOptions } from './snapshot-tier-controller.js'
@@ -64,7 +64,7 @@ import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenTy
 import { agentAutomation } from './agent-automation.js'
 import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journal.js'
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
-import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
+import { AgentProfiles, prepareProfileStart, profileContext } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
 import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU } from './gpu-relay.js'
 
@@ -137,6 +137,19 @@ export function withAdmission(controller: Controller, admit: () => Promise<void>
     return controller.wake(mode)
   }
   return gated
+}
+
+/** Ordinary chats use their agent's default identity on this computer; an archived one is restored by the owner, never implicitly. */
+export function defaultIdentity(profiles: AgentProfiles, changed: () => void): (agent: string, agentName: string) => Promise<AgentProfileSnapshot> {
+  return async (agent, agentName) => {
+    let result
+    try { result = await profiles.ensureDefault(agent, agentName) } catch (error) {
+      throw new AgentIdentityError(`Cannot create the ${agentName} identity for memory and routines: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (result.created) changed()
+    if (result.profile.archived) throw new AgentIdentityError(`${result.profile.name}, the identity of ${agentName} chats, is archived. Restore it in agent profiles to use its memories and routines.`)
+    return { id: result.profile.id, instructions: profileContext(result.profile) }
+  }
 }
 
 /** The Library's host-wide parts, shared by every computer. */
@@ -217,6 +230,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
+    ...(pieces.openToolJournal && pieces.profiles ? { defaultIdentity: defaultIdentity(pieces.profiles, () => broadcast({ type: 'agent.profiles.changed' })) } : {}),
     subscribe: guestEvents.subscribe, eventsChanged: () => guestEvents.refresh(),
     resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => mcp.sync(true) } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
@@ -515,7 +529,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyWebview(controller.fileService(), webviewBridge[1]!, request, response)
-      })
+      }, 'headless')
     }
     if (path.startsWith('/v1/fs/')) {
       if (request.method === 'GET' && controller.parkedFilesView && computer.state === 'parked') {
@@ -534,7 +548,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyFiles(controller.fileService(), request, response)
-      })
+      }, 'headless')
     }
     if (path === '/v1/activities' && request.method === 'POST') {
       if (!activities) return json(response, 503, { error: 'Live Activities unavailable' })
@@ -703,7 +717,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       craftJobs.add(input.job)
       craftBusy++
       try {
-        await computer.wake()
+        await computer.wake('headless')
         return await leased(async () => {
           const listing = await appCatalog.list()
           const app = listing.apps.find(item => item.id === id)

@@ -289,6 +289,20 @@ receipts and host-wide retries, including after a computer is deleted. The disk
 overlay stays local. Keep the private snapshot key and storage configuration with
 the host's protected backups.
 
+The portable-computer storage module provides a separate encrypted archive of a
+complete Linux microVM disk, boot assets, keyring secret and selected per-computer
+host state. Its caller must hold the source immutable throughout capture. Versioned,
+authenticated manifests bind the runtime and architecture; restore verifies all bytes
+into a new directory and never replaces a running disk. Upload journals retain object
+identities for interrupted-operation reconciliation. This module does not capture RAM,
+claim execution ownership, boot a restored computer or relocate a phone connection.
+See [portable storage](../apps/host/src/portable-storage/README.md).
+
+Personal installations continue to use local disks and embedded identity storage.
+Portable object storage is explicitly enabled by its caller and
+`CABOOSE_PORTABLE_STORAGE=on`; an unset or `off` setting requires no object-storage
+credentials or service. S3-compatible storage is an archive backend, not a live disk.
+
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
 It runs as the login user without root privileges. The helper gives each guest its own
@@ -916,6 +930,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   never deletes the computer's disk.
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
+
+File transfers, web-app bridge requests and batch file exports wake the microVM
+without starting the owner display. Opening a desktop session or launching an
+application promotes that same running computer to interactive mode without a
+second boot or token rotation.
 
 ### Accounts and tenants
 
@@ -1754,6 +1773,35 @@ Profile edits apply to new conversations; existing conversations retain their ad
 snapshot. An archived profile cannot start a conversation; restoring it retains its memories
 and workspace. Raw task requests cannot supply arbitrary instructions or workspace paths.
 Stable task-ID retries compare the profile snapshot as well as the original prompt/files.
+
+**Default identities.** An ordinary chat (`POST /v1/agent/tasks` without `profileId`) uses
+its agent's default identity: a profile the host creates on first use with `defaultFor:
+<registry id>`, named after the agent, with approvals `ask` and instructions to use the
+memory and routine tools. There is at most one per agent on each computer; concurrent first
+chats get the same record. It is listed and edited like any profile, but its `agent` cannot
+change, and no request can set `defaultFor`. The chat keeps its own approvals and works in
+its own task directory, as ordinary chats always have. It gets the identity's memories and
+the `caboose-agent-tools` server, bound to that profile in the host journal before admission.
+Routines it creates run as tasks of that profile. An archived default identity is never
+replaced or restored implicitly: ordinary chats with that agent fail with 409 until the owner
+restores it. When tools cannot be attached (the tool journal is unavailable or full, or the
+profile limit is reached) the chat is not started and the 409 says why.
+
+A chat from before default identities, with no profile, receives one before its next turn.
+The host persists the binding first. Then one guest command for that task checks whether its
+runner is alive. If so, the runner is retired only when provably idle: the current turn has a
+completion receipt and no prompt waits. The command then writes `profile-instructions.txt`,
+adds only `profileId` and `agentTools` to `task.json`, and writes `profile-id` last. A reply
+to an idle chat does this before admission: if it fails, nothing is admitted and the reply
+gets a 409 with the reason, such as a runner still finishing (retried for five seconds, 20
+for Send Now). Replies queued during a turn are kept when it fails at the turn's end; the task
+is reported failed with the reason, and a reply or Send Now retries. Every crash point repeats
+the same steps, keeping a committed instructions snapshot. A host binding to another profile,
+or a `profile-id` that differs from the binding, fails closed; a guest marker never grants
+tools. The next runner reopens the same session (`session/resume` or `session/load`) with the
+same cwd, model and approvals, and the transcript, queue and delivery journal are unchanged.
+An agent that can do neither starts a new session with a recap, as after any runner restart.
+A profile task from before the tool journal has no binding and continues without tools.
 
 ### The runner
 
