@@ -198,6 +198,7 @@ describe('media routes', () => {
     close.push(() => new Promise(resolve => upstream.close(() => resolve())))
     let eventState: unknown = pageVideo
     const files = createServer(async (request, response) => {
+      if (request.url === '/events/presence') { response.end('{}'); return }
       const chunks = []
       for await (const chunk of request) chunks.push(chunk)
       const body = JSON.parse(Buffer.concat(chunks).toString())
@@ -214,7 +215,7 @@ describe('media routes', () => {
       apps: async () => [], launch: async () => {}, ensureAgentSeat: async () => {},
       displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1',
       guest: () => running ? fake.guest : undefined,
-      fileService: () => running ? { url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'events' } : undefined,
+      fileService: () => ({ url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'events' }),
     }
     const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
     const app = createCabooseServer({ token: 'owner', settings, controller })

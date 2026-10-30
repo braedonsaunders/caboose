@@ -444,7 +444,9 @@ response; the host relays display bytes without inspecting them.
 `caboose-files.service`) runs as `caboose` on TCP 14700 and requires
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
-service still wakes. The protocol is in [Files](#files).
+service still wakes. The protocol is in [Files](#files). Its private bounded `POST /events` long poll
+combines queue deliveries, media snapshots, active task output and filesystem change
+anchors; [guest events](guest-events.md) defines acceptance and reconnect behavior.
 
 **Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
 `caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
@@ -1182,10 +1184,10 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   does not report every change (including modifications through memory mappings), and
   processing is asynchronous. The host does not serve parked reads from this journal;
   reads and writes wake the computer.
-- While the computer runs and at least one control socket is connected, the host polls the
-  journal every second and broadcasts `fs.changed { anchor }` when something changed. It
-  keeps the last anchor through a resident freeze and resumes polling from it on thaw; park,
-  restart or the last control socket closing resets the host's polling anchor.
+- While the computer runs and at least one control socket is connected, the host subscribes to the
+  journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
+  keeps the last anchor through a resident freeze and resumes from it on thaw; park,
+  restart or the last control socket closing resets the host's event anchor.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
@@ -1396,8 +1398,8 @@ agent seat never reads or presses the owner's windows, and the reverse.
 
 ### Phone handoff
 
-The host drains the guest's phone queue (`caboose-phone drain`, at most 50 events) every
-second while the computer is running and at least one control socket opened with
+The host receives the guest's phone queue through the bounded Files event receiver
+while the computer is running and at least one control socket opened with
 `?phone=1` is connected. It validates each event and sends it to those sockets:
 
 - `phone.open { url }`: a URL of at most 8192 characters with no spaces or control
@@ -1409,8 +1411,9 @@ second while the computer is running and at least one control socket opened with
   separators or control characters, `size` at most 10 MiB, and `contentType` a MIME type.
   Print content is `application/pdf`.
 
-Delivery is at most once: events drained while no phone socket can receive them are not
-replayed. The token scopes the connection to its computer.
+Guest records remain queued until the host accepts their validated delivery. A lost
+acknowledgement can replay a record; this is not a durable phone receipt. The token scopes
+the connection to its computer.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -1454,8 +1457,8 @@ The media state, in the guest file and as the host sends it:
 
 The extension reports on `play`, `playing`, `pause`, `seeked`, `ended` and `emptied`, and
 every 5 seconds while playing. In the guest file `updatedAt` is the guest-clock sample
-time. The host reads the file, with the guest's clock so skew does not matter, about once
-a second, and only while the computer is running and at least one display client is
+time. The Files event receiver sends changed snapshots with the guest's clock so skew does not
+matter, only while the computer is running and at least one display client is
 connected. Reads go straight to the guest: they never wake the computer, hold a lease or
 delay parking. A file whose native host is no longer running is ignored. What the host
 sends has `position` extrapolated to the moment it is sent while playing (capped at
@@ -1476,7 +1479,7 @@ restarts. `sent` means the command reached the computer; an id the browser no lo
 is ignored there, and the next state shows the result.
 
 Control-socket events: `media.playing { media }` on every change of the state (including
-each 5-second report while playing, and once when polling starts), and
+each 5-second report while playing, and once when observation starts), and
 `media.stopped { id }` when that video stops being offered (it ended, its tab closed, the
 browser closed, another video replaced it, or the computer stopped running).
 
@@ -1492,7 +1495,7 @@ the control events above. The contract is [native-bridge.md](native-bridge.md#ho
 
 ### Desktop notifications
 
-While the computer runs, the host drains the owner's notification queue every second as
+While the computer runs, the host receives the owner's notification queue through Files as
 `caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
@@ -1870,7 +1873,7 @@ Control-socket events:
 | `agent.task.queued` | `{ id, queued: string[], queuedAttachments?: string[][] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
-| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, at the host's one-second polling cadence |
+| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, when the guest snapshot changes |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
 
 A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked

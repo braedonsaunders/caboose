@@ -47,6 +47,7 @@ if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then
   echo 'Guest components require working node and npm commands after package installation' >&2
   exit 1
 fi
+install -Dm644 "$root/files/event_stream.py" /opt/caboose/files/event_stream.py
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm755 "$root/components/check-steam-bootstrap.sh" /usr/local/libexec/caboose-check-steam-bootstrap
 install -Dm755 "$root/files/parked_quiesce.py" /opt/caboose/files/parked_quiesce.py

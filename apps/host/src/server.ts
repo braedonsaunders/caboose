@@ -1,3 +1,4 @@
+import { GuestEvents } from './guest-events.js'
 import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
@@ -187,6 +188,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     ? pieces.openToolJournal(agentAutomation(pieces.profiles, () => routinesReady, () => broadcast({ type: 'agent.profiles.changed' })))
       .catch(error => { toolsError = error instanceof Error ? error.message : String(error); console.error('Cannot open agent tools:', error); return null })
     : Promise.resolve(null)
+  const guestEvents = new GuestEvents(() => controller.fileService?.(), () => agents.eventTasks())
   const agents: AgentTasks = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (push) void push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
@@ -194,6 +196,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
+    subscribe: guestEvents.subscribe, eventsChanged: () => guestEvents.refresh(),
     resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => mcp.sync(true) } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
   let routineError: string | null = null
@@ -236,7 +239,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
     if (push) void push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
-  })
+  }, guestEvents.subscribe)
   computer.setBeforeFreeze(async () => {
     await Promise.all([desktopNotifications.quiesce(), agents.drainToolWork(), location.quiesce()])
     // A detached terminal can still run a foreground child. Until the service can prove it
@@ -248,50 +251,29 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   })
   let craftBusy = 0
   const craftJobs = new Set<string>()
-  const media = new MediaHandoff(() => controller.guest(), broadcast)
+  const media = new MediaHandoff(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   let fileAnchor: string | undefined
-  let filePoll: ReturnType<typeof setInterval> | undefined
-  let filePollGeneration = 0
-  let pollingFiles: number | undefined
+  let stopFiles: (() => void) | undefined
   function syncFiles(): void {
     const active = computer.state === 'running' && controls.size > 0 && controller.fileService
     if (!active) {
-      if (filePoll) clearInterval(filePoll)
-      filePoll = undefined
-      filePollGeneration++
-      pollingFiles = undefined
-      // Freeze preserves the guest epoch. Keep the last observed anchor for the first
-      // poll after thaw, but discard it when the guest or all observers have gone away.
+      stopFiles?.(); stopFiles = undefined
       if (computer.state !== 'frozen' || controls.size === 0) fileAnchor = undefined
       return
     }
-    if (filePoll) return
-    const poll = async () => {
-      if (pollingFiles !== undefined || !controller.fileService || computer.state !== 'running') return
-      const generation = filePollGeneration
-      pollingFiles = generation
-      try {
-        const service = controller.fileService()
-        const url = new URL('/changes', service.url)
-        if (fileAnchor) url.searchParams.set('anchor', fileAnchor)
-        const response = await fetch(url, { headers: { authorization: `Bearer ${service.token}` }, signal: AbortSignal.timeout(5000) })
-        if (!response.ok) throw new Error('File change feed unavailable')
-        const change = await response.json() as { anchor: string; changed: boolean }
-        if (generation !== filePollGeneration) return
-        if (fileAnchor && change.changed) broadcast({ type: 'fs.changed', anchor: change.anchor })
-        fileAnchor = change.anchor
-      } catch { /* Retry with the previous anchor so missed changes trigger a rescan. */ }
-      finally { if (pollingFiles === generation) pollingFiles = undefined }
-    }
-    void poll()
-    filePoll = setInterval(() => { void poll() }, 1000)
-    filePoll.unref()
+    if (stopFiles) return
+    stopFiles = guestEvents.subscribe('fs', value => {
+      const change = value as { anchor?: unknown }
+      if (!change || typeof change.anchor !== 'string' || change.anchor.length > 128) return
+      if (fileAnchor && fileAnchor !== change.anchor) broadcast({ type: 'fs.changed', anchor: change.anchor })
+      fileAnchor = change.anchor
+    })
   }
 
   const phone = new PhoneHandoff(() => controller.guest(), event => {
     const message = JSON.stringify(event)
     for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
-  })
+  }, 1000, guestEvents.subscribe)
   /** File chooser requests go to phone sockets only; an answered one is withdrawn from the other phones. */
   const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string) => {
     const message = JSON.stringify(event)
@@ -299,16 +281,17 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       if (exceptPhone !== undefined && phoneSockets.get(socket) === exceptPhone) continue
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
-  })
+  }, 1000, Date.now, guestEvents.subscribe)
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
-  const nowPlaying = new NowPlaying(() => controller.guest(), broadcast)
+  const nowPlaying = new NowPlaying(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
     const watching = computer.state === 'running' && sockets.size - controls.size - terminals.size > 0
     media.setActive(watching)
     nowPlaying.setActive(watching)
     const phones = computer.state === 'running' && [...phoneControls].some(socket => !backgroundControls.has(socket))
+    guestEvents.setPhone(phones)
     phone.setActive(phones)
     bridge.setActive(phones)
   }
@@ -404,6 +387,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         }).finally(() => { upgrading = false; release() })
       }
     }
+    guestEvents.setRunning(state === 'running')
     if (state === 'running') { agents.resume(); if (!resumed) bridgeWake() }
     else if (state === 'frozen') agents.pause()
     else { agents.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
@@ -1017,6 +1001,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await tiering?.close()
     pieces.storage?.close()
     clearInterval(autoUpdates)
+    guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
     await agents.drainToolWork()
@@ -1031,6 +1016,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    */
   async function destroy(): Promise<void> {
     clearInterval(autoUpdates)
+    guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
     await agents.drainToolWork()

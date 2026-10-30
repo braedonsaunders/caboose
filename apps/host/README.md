@@ -450,7 +450,7 @@ display's launch environment, which names its control socket.
 
 `src/media.ts` reads the video playing in the computer's Chromium from
 `/home/caboose/.cache/caboose/media.json` (written by
-[`guest/media-handoff`](../../guest/media-handoff/README.md)) about once a second, only
+[`guest/media-handoff`](../../guest/media-handoff/README.md)) through the private Files event receiver, only
 while the computer is running and a display client is connected, and broadcasts
 `media.playing` and `media.stopped` on `/v1/control`. `GET /v1/media` returns the current
 state (null unless running; it never wakes or leases the computer).
@@ -462,7 +462,7 @@ returns `{ "sent": true }`, or 409 while the computer is not running. The contra
 ## Notifications and Live Activities
 
 Desktop notifications from the owner's session (see
-[`guest/notifications`](../../guest/notifications/README.md)) are drained from the guest
+[`guest/notifications`](../../guest/notifications/README.md)) arrive through the private Files event receiver
 while it runs and sent as `notification` events and, with APNs configured, as pushes.
 
 Set all four `CABOOSE_APNS_*` variables (the key is a private P-256 `.p8` file) to enable
@@ -522,7 +522,7 @@ and retention are in `docs/architecture.md` § Shortcuts and Spotlight.
 ## iOS handoff
 
 The host relays validated guest `phone.open`, `phone.share` and `phone.print` events only to
-owner-authenticated `/v1/control?phone=1` sockets, and polls the guest only while one is
+owner-authenticated `/v1/control?phone=1` sockets, and subscribes to guest events only while one is
 connected. `GET /v1/phone/files/:id` reads a staged file through the guest command channel;
 it accepts no arbitrary guest path and never wakes the computer. The schema and delivery
 rules are in `docs/architecture.md` § Phone handoff; the guest side is
@@ -701,3 +701,15 @@ It preserves any memory inode pinned by a descendant. For an incomplete source
 with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
 or child memory inode while a VMM may still map it.
+
+## Guest event receiver
+
+`src/guest-events.ts` owns one authenticated bounded Files long poll per running
+computer. It dispatches validated channel envelopes to the existing bridge, phone,
+media, notification and task adapters, then acknowledges accepted queue records.
+It stops on freeze, park, shutdown and deletion; reconnects request an authoritative
+snapshot. It does not fall back to idle guest exec polling on old components.
+The guest components must include the event endpoint. See [the contract](../../docs/guest-events.md).
+
+Run the focused transport tests with `pnpm exec vitest run src/guest-events.test.ts
+src/event-adapters.test.ts` from this directory.
