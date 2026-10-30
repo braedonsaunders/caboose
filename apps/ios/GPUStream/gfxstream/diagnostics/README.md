@@ -70,8 +70,9 @@ mutable sampler, and vertex-only layouts. Modes 4 and 5 use two- and three-plane
 YCbCr immutable samplers and exit 2 if the device lacks the required conversion,
 sampled-image or cosited-chroma support. After pipeline creation they upload
 neutral and chromatic YCbCr planes, sample through the compositor shader and
-compare RGBA readback against independently calculated BT.601 colors. This readback remains unverified
-on Metal.
+compare RGBA readback against independently calculated BT.601 colors. On macOS
+with a patched MoltenVK 1.4.2 build, both formats pass the neutral and chromatic
+readback checks. This does not establish physical-phone behavior.
 
 `spirv-multiplane.cpp` builds against the core, GLSL and MSL libraries from
 SPIRV-Cross revision `6c09849fe88c48eaed08413aa022aaa136a3a057` and includes the
@@ -79,8 +80,8 @@ unchanged gfxstream vertex shader header. Arguments are plane count (1–3),
 sampler registration first (0 or 1), descriptor count (1 or 2), and decoy
 (0 = matching, 1 = wrong stage, 2 = wrong set). Patch 0011 targets that exact
 SPIRV-Cross revision, not gfxstream. It only resolves scalar immutable YCbCr
-bindings; arrays retain their previous behavior. It has not been validated on
-Metal or a phone.
+bindings; arrays retain their previous behavior. The patch passes the macOS
+Metal readback above; physical-phone execution is not verified.
 
 After compiling the probe separately against the original and patched translator
 libraries, run `check-spirv-multiplane.sh BASELINE PATCHED` to check the expected
