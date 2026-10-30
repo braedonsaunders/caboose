@@ -89,7 +89,9 @@ This directory is a Cargo workspace:
   through text-input-v3, whose enable/disable is reported with `text_input` (also to a
   client that connects after a field was focused); deletions are BackSpace/Delete
   presses, one per grapheme cluster. Surfaces without text-input-v3 (X11 apps, many
-  terminals) get the commit as key presses.
+  terminals) get the commit as key presses. The virtual pointer publishes paired absolute
+  and relative motion in one frame, retaining one Xwayland source device for XI2 scrolling.
+  Relative deltas use logical coordinates and receive no additional acceleration.
 - **Reconnecting.** Every hello carries the process's random `epoch` (16 hex characters,
   from `/dev/urandom` at start), so a client can tell that window ids still name the same
   windows. A hello's `window.create` messages are all written before the next client
@@ -99,7 +101,9 @@ This directory is a Cargo workspace:
   applications paste; what they copy reaches the phone (and a new client is sent the
   current text on connect). Copying between Wayland and X11 applications on the computer
   works through Xwayland's window manager. When a focused window closes, focus returns to
-  the window focused before it.
+  the window focused before it. X11 foreground metadata (`_NET_ACTIVE_WINDOW`)
+tracks the seat’s focused X11 window and clears for Wayland or no focus. Stale XWM
+property updates are reconciled on notifications, without a polling timer.
 - **Sound.** The compositor runs its own PulseAudio on a private socket with a null sink
   as the only, so default, output, and gives launched applications `PULSE_SERVER`. While a
   client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
@@ -112,15 +116,12 @@ This directory is a Cargo workspace:
 - **Video passthrough** ([docs/codec-passthrough.md](../../docs/codec-passthrough.md)). The
   compositor listens on the video socket (`$CABOOSE_VIDEO_SOCKET`, default
   `$XDG_RUNTIME_DIR/caboose-video.sock`) for the Caboose VA-API driver
-  ([guest/vaapi](../vaapi/README.md)), which hands it each player's bitstream instead of
-  decoding it. It accepts streams the client can play (`hello.video_decoders`), marks each
-  with a tag, finds the driver's marker in the windows of the player's process family
-  (half resolution, refined at full resolution, only while a stream is open), and sends
-  `video.create`/`video.update` for where the video is and `video.frame` for every access
-  unit, replaying from the last keyframe when a client connects or its decoder fails, and
-  `video.present` when the application shows each frame. A client that keeps failing to
-  decode a stream gets it decoded on the server. Launched applications get
-  `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+  ([guest/vaapi](../vaapi/README.md)), which offers each player's reconstructed bitstream. Every `OPEN` receives local-decode mode, including when no client is
+  connected or the client advertises the codec: flattened marker pixels cannot prove
+  foreground alpha or occlusion. Applications compose controls and subtitles over real
+  decoded pixels, carried by the ordinary window/motion paths. Marker recognition and
+  stream machinery remain available as experimental source; no alpha mask is inferred.
+  Launched applications get `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
 - **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
   compositor listens on the game socket (`$CABOOSE_GAME_SOCKET`, default
   `$XDG_RUNTIME_DIR/caboose-game.sock`) for `caboose-game-run`
@@ -129,6 +130,14 @@ This directory is a Cargo workspace:
   says `wasm: true` gets `game.create` after the window's `window.create` and
   `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
   `--no-games` turns it off (the agent seat).
+- **Phone devices** ([docs/devices.md](../../docs/devices.md), `src/devices`). For a client
+  whose hello says `devices: true`, a hub thread makes the phone's hardware the computer's:
+  gamepads, the motion device and buttons through uinput, the motion sensors (IIO) and
+  battery as HID devices through UHID, cameras and depth as v4l2loopback devices, and the
+  microphone as a source in the display's PulseAudio. It tells the phone with
+  `device.open` and `device.close` when applications start and stop using a device, and
+  writes `$XDG_RUNTIME_DIR/caboose-devices.json`. `--no-devices` turns it off (the agent
+  seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
@@ -201,7 +210,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
 | `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
-| `passthrough` | a stand-in VA-API driver (`scripts/fake-video-driver.py`, the real socket protocol, real H.264) streams while Chromium shows its marker: the stream is bound to the right window and rectangle, every frame decodes on the client, presents name frames the client has, and the driver's own detector agrees on the rectangle |
+| `passthrough` | `video-admission.py` opens all four driver codecs before/during an advertising probe session and requires local-decode mode; no owner windows or media |
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
@@ -213,13 +222,27 @@ probe. Every check asserts on what arrived, not on a picture:
 | `copies` | 24 precise scrolls (requested deltas ±10; actual picture shifts are reported) of an article in Chromium at 1179×2556, with a probe that applies `frame.copy`: at least 8 go as copies, every tile decodes, no copy comes before a picture, and the window sends fewer pictures and the server spends less CPU than with `--no-copy`. How far the two final pictures are apart is reported, not asserted: both are lossy, and that a copy and its tiles give the new picture exactly is checked by the unit tests in `src/encode/scroll.rs` |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
-For the `passthrough` check's cross-check against the driver's reference detector, mount
-the driver's source with `CABOOSE_DISPLAY_DOCKER_ARGS="-v $PWD/guest/vaapi:/vaapi:ro"` and
-build `cbva-detect` first (`make -C /vaapi BUILD=/tmp/vaapi`). To run the real driver
-against the real socket, build it the same way and run a VA player with
-`LIBVA_DRIVERS_PATH=/tmp/vaapi LIBVA_DRIVER_NAME=caboose` under the compositor, with
-`CABOOSE_DISPLAY_DRI=1` and `/dev/udmabuf`; a readback closes the stream as the contract
-says.
+`scripts/check-devices.py` checks the phone's devices ([docs/devices.md](../../docs/devices.md))
+against a real kernel, so it runs inside a computer rather than the dev container: as root,
+with the owner's display running and no phone connected, it plays a phone over the
+protocol and checks each device through the kernel's own interfaces.
+
+```sh
+sudo python3 /path/to/guest/display/scripts/check-devices.py
+sudo python3 check-devices.py --only microphone   # a container computer
+```
+
+| Check | What it proves |
+| --- | --- |
+| `gamepad` | a press and a stick reach the gamepad's event device, which the owner's applications can open; a rumble effect uploaded and played through evdev arrives as `device.rumble` with its magnitudes and length |
+| `buttons` | volume up and the camera button arrive as `KEY_VOLUMEUP` and `KEY_CAMERA` presses and releases |
+| `motion` | opening the motion event device sends `device.open` at 100 Hz, a face-up sample reads `ABS_Z` 8192 (1 g), closing it sends `device.close` |
+| `iio` | the HID sensor hub became `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation` and `press`; enabling the accelerometer's buffer opens motion, and the sample reads 9.80665 m/s² through the IIO scale |
+| `battery` | the power supply reads 75%, Charging, scope Device |
+| `camera` | ffmpeg streaming from the camera's node opens it; the phone's H.264 test picture arrives as YUYV; stopping sends `device.close` |
+| `depth` | the depth node streams the phone's millimetres unchanged as 16-bit greyscale (`Y16`) |
+| `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
+| `disconnect` | closing the connection removes the gamepad and the battery |
 
 `scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
 the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
@@ -274,6 +297,7 @@ summary.
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--no-games` | | Do not listen for game launchers |
+| `--no-devices` | | Do not accept the phone's hardware as devices ([docs/devices.md](../../docs/devices.md)) |
 | `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
@@ -371,11 +395,10 @@ environment is written once it is.
 
 On a Debian 13 system with the release binaries built, `install.sh [TARGET_DIR]`
 installs the runtime libraries, the binaries, both units (not enabled), the readiness
-check, and the D-Bus notification endpoint and monitor from
-[guest/notifications](../notifications). The monitor forwards notifications through the
-host, separately from the display protocol. Run `guest/notifications/check-container.sh`
-to exercise the monitor without a VM; `guest/notifications/check.sh` checks a running
-guest.
+check, and the D-Bus notification endpoints from [guest/notifications](../notifications).
+The owner's endpoint records notifications, which reach the phone through the host,
+separately from the display protocol. Run `guest/notifications/check-container.sh` to
+exercise the endpoints without a VM; `guest/notifications/check.sh` checks a running guest.
 
 ### Window decoration check
 
@@ -386,3 +409,167 @@ debug compositor first (`cargo build` in the dev container). The dev image inclu
 PyGObject and GTK 3 introspection for this check. After deploying a new compositor,
 reopen a CLI launcher such as OpenCode: the phone supplies its single window header,
 while the terminal menu remains usable. Existing app processes must be reopened.
+
+### X11 foreground regression
+
+`scripts/check-x11-focus.py` runs against a disposable, initially empty seat. Source
+that seat’s launch environment and run:
+
+```sh
+python3 scripts/check-x11-focus.py --control "$CABOOSE_DISPLAY_CONTROL" \
+  --wayland-command weston-simple-shm
+```
+
+The fixture creates a passive X11 client and a globally active `WM_TAKE_FOCUS` client,
+checks Return delivery, injects stale foreground properties and a property burst,
+then checks Wayland and empty-seat transitions and notification convergence. It uses
+Python, libX11 and libXtst; the supplied command creates a native Wayland window.
+It closes its own clients on success or failure and refuses an occupied seat. Run
+the identical fixture on the previous compositor as a negative control: stale
+foreground metadata fails its foreground assertion. No owner display is involved.
+
+### X11 core wheel delivery check
+
+`scripts/check-x11-scroll.py --control /path/to/private/control.sock --compositor-pid PID` compares one
+XTest wheel-down press/release with two separate ordinary wheel scrolls through the
+compositor control socket at the same point. Source the private seat's launch
+environment first so `DISPLAY` and `XAUTHORITY` match that control socket. The check
+requires Python 3, libX11 and libXtst and refuses a nonempty seat. Before creating
+any X resource it verifies the control peer PID, matching private authority path,
+and X socket ownership by that compositor or its directly spawned Xwayland. It creates its own
+X11 parent and child, selects only core pointer events on its own child, asserts one
+button-5 press/release pair for each path, and destroys both windows on exit. It does
+not use XI event selection or RECORD on another application's windows. Run only on
+a disposable compositor: it creates windows and injects input into that private seat.
+This check covers ordinary wheel delivery; it does not measure a toolkit's response
+to precise scroll values.
+
+Add `--record-oracle` to validate the passive RECORD reader against that owned
+fixture. The check reads back the registered client and event ranges, then requires
+RECORD's core wheel type/button/time/recipient tuples to equal the tuples received
+by the fixture. `python3 scripts/test_x11_record.py` checks fixed 32-byte RECORD
+headers (including GenericEvents advertising a larger body), byte order, ABI layout,
+and exclusion of keys and unrelated generic extensions. The reader requires Xlib
+thread initialization before opening any display, as the fixture does. It records
+at most 256 pointer metadata entries and closes its context, thread and displays.
+
+`--xi2-oracle observe` additionally selects XI2 master pointer motion, buttons and
+device changes on the fixture's own child, requiring libXi. It preserves the core
+oracle first, then compares two consecutive compositor wheels: the actual vertical
+valuator delta must equal the source device's advertised scroll increment. It queries
+the X pointer position before and after, records device/source IDs and scroll classes,
+and compares received XI2 pointer headers against RECORD AllClients restricted to the
+owned child. RECORD does not contain the full valuator payload; the owned XI2 client
+supplies that independent oracle. No other application's XI selection is changed.
+
+The fixture also models a consumer that discards the first sample after a source-device
+switch, as Chromium's X11 event handling does. `--xi2-consumption switching` requires repeated
+source switches and zero consumed deltas despite an advancing valuator;
+`--xi2-consumption stable` requires no switch during the second wheel and one consumed
+increment. `--moving-anchor` also moves the second wheel's position within the owned
+child and verifies its root and local coordinates. These product assertions use the
+owned client's events independently of RECORD. The separate `--xi2-oracle` modes require
+the same assertions plus successful recording; they fail when RECORD misses delivery.
+XI2 RECORD observation is unavailable in the pinned 24.1.6 private fixture despite
+verified owned-client delivery; an empty observer result does not mean no delivery.
+`python3 scripts/test_x11_scroll_xi2.py` checks the LP64 Xlib/XInput2 layouts, packed
+valuator masks, scroll-class increments and both baseline-consumption sequences without
+opening a display. Bound the runtime fixture with `timeout --kill-after=2 20` on a
+private compositor; it does not change the compositor or any application settings.
+
+The consumer semantics are pinned to Chromium commit
+[`f0e7f7419b34`](https://github.com/chromium/chromium/tree/f0e7f7419b34b221aa949b302d6629c4dba8fb06):
+`ui/events/platform/x11/x11_event_source.cc` invalidates a source's scroll baseline
+on `SlaveSwitch`, and `ui/events/devices/x11/device_data_manager_x11.cc` consumes zero
+for its first sample. Xwayland 24.1.6's `hw/xwayland/xwayland-input.c` selects the
+absolute pointer for motion without a relative event and its relative pointer for
+scrolling; `dix/getevents.c::UpdateFromMaster` emits the source-switch notification.
+The official `xwayland-24.1.6.tar.xz` SHA-256 is
+`737e612ca36bbdf415a911644eb7592cf9389846847b47fa46dc705bd754d2d7`.
+This consumer fixture does not establish which Chromium revision an application embeds.
+
+`scripts/check-pointer-scroll-clients.py --control /path/to/private/control.sock
+--compositor-pid PID --token-file /private/runtime/token --port 15499` validates real
+Chromium content scrolling under X11 and native Wayland. It requires the existing
+Chromium binary and Python websockets, verifies private socket/process/authority pairing
+before launching either client, and refuses a nonempty seat. It uses separate temporary
+profiles and the local `pages/pointer-scroll.html`, with no external content or CDP input.
+At display scale 1.5, protocol pointer messages must move the page's pointer, deliver a
+button drag and release, and scroll actual content with both ordinary wheels and precise
+deltas while the anchor moves. Fixture-generated event counts and `scrollY` are the
+oracle; the page does not implement scrolling itself. Run in the private networkless
+container under a 20-second process deadline. The script closes its session and browser
+process groups, and the harness reaps its compositor and entire container.
+
+`--scale` selects the output scale (default 1.5); `--precise-delta` selects each of
+three precise samples (default 24). The result includes these inputs, DOM wheel delta
+sums/mode and actual `scrollY`. On a fresh private seat for each run, compare
+`--precise-delta 24` with `--precise-delta 2` to exercise the phone's direct-content
+calibration, then repeat at scales 1 and 3. Subtract the `wheel` snapshot from `precise`
+for both DOM deltas and content displacement. The X11 and native Wayland results are
+reported separately; acceptance requires movement, not a universal pixel gain.
+The [phone unit trace](../../docs/display.md#direct-content-scroll-units) describes
+how to map the measured content distance back through a presented surface. Retain
+image digest, compositor hash and Chromium version alongside results. This fixture
+uses protocol pointer input; native `wl_touch` scrolling remains a separate device check.
+
+### Fullscreen output resize regression
+
+`scripts/check-output-resize.py` checks native Wayland and X11 GTK3 windows on a
+private, initially empty compositor. The harness must isolate its network namespace
+and home, start the compositor with a private token and sockets, and source that
+compositor's launch environment. Run with a 20-second fixture deadline:
+
+```sh
+timeout -k 2 20 python3 scripts/check-output-resize.py \
+  --control "$CABOOSE_DISPLAY_CONTROL" --compositor-pid "$PRIVATE_COMPOSITOR_PID" \
+  --token-file "$PRIVATE_TOKEN_FILE" --port 15499
+```
+
+The check requires GTK3 PyGObject and Python `websockets` with the sync API. It
+validates control/Wayland socket peers and the matching child Xwayland before
+creating clients. Each backend creates fullscreen, maximized and ordinary windows.
+The assertions cover same-id portrait mode changes, an identical output announcement
+(no additional client configure events), downstream output-origin movement, and
+removed-output fallback. Fullscreen/maximized state and window identities persist;
+ordinary window sizes/positions remain unchanged. Frame acknowledgements keep the
+private clients rendering. It sends no pointer, keyboard or focus commands and
+closes its connections and GTK children on exit. The harness must reap the private
+compositor/Xwayland too; never run it against an owner's display. The unchanged
+compositor fails the same-id portrait size assertion.
+
+The pure `DesktopGeometryTests`/`FullscreenGeometryTests` and iOS hosted
+`DesktopSurfaceLayoutTests` check ordinary top fitting, fullscreen centering during
+rotation/settling, and consistent input, popup and text-drop geometry. These are
+presentation checks; they do not establish a scroll-delivery fix.
+
+### Internal marker regression
+
+The production `passthrough` check verifies local-decode admission. The historical
+marker binding/forwarding check is retained separately in
+`scripts/check-marker-binding.py`. It is explicitly opt-in and requires
+`CABOOSE_DISPLAY_BIN` pointing to compositor and probe binaries built together from
+pinned legacy source `7f3b94796bcc1e691ac39a5754048fe26ddd158f`. Record both binary
+SHA-256 hashes with the run and use a disposable fixture environment; this is not a
+production launch recipe:
+
+```sh
+CABOOSE_DISPLAY_BIN=/path/to/isolated/test-binaries python3 scripts/check-marker-binding.py --legacy-marker-binding
+```
+
+It intentionally fails against the current production admission policy; it adds no
+runtime override to the compositor. Source tests in `video::marker` and `video::tests`
+cover marker detection, geometry, internal binding fields, decode order and the
+reconnect presentation fence without accepting a production passthrough stream.
+
+`.github/workflows/check-video.yml` builds the declared display test image, tests video
+internals, builds compositor/probe from the checked source, then runs admission with
+those exact binaries. Its separate VAAPI job builds `guest/vaapi/Dockerfile`, which
+includes FFmpeg and Xvfb, and runs state tests plus four selected codec roundtrips.
+These hosted software checks do not establish native phone decode or overlay correctness.
+
+Device checks accept `--token-file` and `--display-env` for isolated test instances,
+and `--expect-no-devices` verifies the agent seat omits capability and ignores offers.
+They reject unknown check names, bound helper processes, and open input/video nodes as
+`caboose` to check the owner's actual access before exercising them as root. Containers
+support the private microphone only; kernel input, camera and UHID checks require a VM.

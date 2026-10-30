@@ -72,19 +72,28 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+New golden images have a 60 GiB sparse disk with a Btrfs root on partition 3, mounted
+with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers and
+snapshots keep their filesystem. Compression savings depend on the data; neither
+a 3:1 ratio nor a 20 GiB physical limit is guaranteed. Host disk usage counts allocated
+blocks (including snapshots); tenant admission quotas do not enforce a write-time
+physical cap. Async discard requests reclamation from the block device; host space
+recovery depends on the runtime and backing filesystem honoring discard.
+
 A Linux host can opt new computers into a split image using `CABOOSE_SPLIT_IMAGE`.
 Its `base.raw`, `vmlinux`, `initrd` and `system.erofs` form one retained version. The
 host records the absolute directory and file hashes per computer before creating its
 disk; on wake it checks the system image, kernel and initramfs, and checks the base before
 creating a disk. Initramfs mounts the EROFS image read-only and
 mounts writable overlays for `/usr` and `/opt`, whose upper and work directories live on
-the computer's ext4 disk. Package and component updates persist there. Existing disks
+the computer's writable root disk. Package and component updates persist there. Existing disks
 and snapshots remain on their original image when the setting changes. An operator can
 explicitly migrate a cold-stopped legacy disk using the offline Linux migration tool. The
 tool retains the original disk and kernel, uses a crash-recovery journal, refuses parked
 memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
 initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
 explicit acknowledgement that writes since migration will be lost.
+The system image uses LZ4HC level 12 compression with 64 KiB physical clusters.
 The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
 
 The image contains:
@@ -97,16 +106,30 @@ The image contains:
   desktop launchers for terminal tools and agents. Mesa provides software Vulkan and OpenGL when the
   computer has no GPU. Fonts are Inter, JetBrains Mono and Noto (including CJK and colour
   emoji). Optional applications come from the catalog (below).
+  On amd64, guest components also register Debian's i386 package architecture and install
+  the native Steam bootstrap's 32-bit loader and GL dependencies (`libc6-i386` and
+  `libgl1:i386`); arm64 keeps its native dependencies. This does not advertise additional
+  GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
+- **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
+  V4L2 drivers, `v4l2loopback` built for it, `iio-sensor-proxy` and the udev rules from
+  `guest/devices`, so the phone's hardware becomes the computer's devices
+  ([devices.md](devices.md)). Container computers expose the microphone only; shared host input, camera and
+  UHID devices are not passed through to computers.
+  On iOS, microphone capture and dictation hold temporary audio-session category leases,
+  including route-sharing policy. AirPlay and media category changes retire older leases;
+  releasing a recorder cannot overwrite a later owner or deactivate shared playback.
+  Capture rebuilds after route or media-service changes, resumes interruptions only when
+  iOS permits, and reports failures. Physical-device echo suppression remains unverified.
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
-- **Services.** The file service, the notification monitor and endpoints, phone handoff
+- **Services.** The file service, the notification endpoints, phone handoff
   (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
@@ -143,8 +166,8 @@ to build it or which variable names a published one.
 
 ### Guest components
 
-Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+Caboose's own guest plumbing (the file and terminal services, the notification endpoints,
+phone handoff, `caboose-game-run` with the game bundles Caboose ships in
 `/usr/local/share/caboose/games`, the agent runner and the agent app runtime) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
@@ -162,6 +185,9 @@ same installer to update computers whose disks predate the host:
   exact service script; readiness requires that process to own its listening socket.
   Container service startup also ensures the system and owner session buses are available
   for credential preparation, including on headless wakes, without starting a display.
+  Interactive seat readiness publishes that seat's current display variables to its
+  session bus before accessibility and applications start; D-Bus-activated portals use
+  the same display as directly launched applications.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
@@ -194,8 +220,11 @@ The password travels in a bounded request body and helper stdin, never in comman
 environment variables or logs. The public filesystem proxy permits only file operations.
 
 The helper activates or adopts the owner's GNOME Secret Service on `/run/user/1000/bus`.
-It unlocks through the daemon's control socket, checking the peer PID against the D-Bus
-service owner. Only an empty credential store is initialized; existing keyrings and browser
+It unlocks existing login keyrings through the daemon's control socket, checking the peer PID
+against the D-Bus service owner. For an empty store it uses GNOME's D-Bus
+`CreateWithMasterPassword` extension so the new login collection is exported immediately;
+the nonempty password travels in a private owner-bus Secret Service session, closed after
+creation. Only an empty credential store is initialized; existing keyrings and browser
 profiles are preserved. An existing locked keyring that does not accept the managed password
 requires its original password and an explicit operator migration. No reset, empty password
 or plaintext browser password store is selected. The host waits for this bounded preparation
@@ -204,8 +233,14 @@ before owner app, file and URL launches. `GET /v1/computer` and `computer.settin
 available.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
-The agent seat still has separate Secret Service activation against the shared home;
-concurrent credential-store access from both seats is unresolved.
+The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
+client has a separate upstream D-Bus identity, preserving session/object ownership.
+Bodyless calls and replies, including `Session.Close`, retain their empty D-Bus bodies; other
+agent bus traffic remains on the agent bus. GUI unlock prompts return an explicit
+interaction-required error for owner recovery. No second keyring writer, KWallet proxy,
+or automatic credential reset is selected. Existing agent buses require an explicit
+restart onto the private activation configuration before agent-seat startup succeeds.
+See [agent credential routing](../guest/keyring/README.md#agent-credential-routing).
 
 ### Runtimes
 
@@ -254,6 +289,20 @@ receipts and host-wide retries, including after a computer is deleted. The disk
 overlay stays local. Keep the private snapshot key and storage configuration with
 the host's protected backups.
 
+The portable-computer storage module provides a separate encrypted archive of a
+complete Linux microVM disk, boot assets, keyring secret and selected per-computer
+host state. Its caller must hold the source immutable throughout capture. Versioned,
+authenticated manifests bind the runtime and architecture; restore verifies all bytes
+into a new directory and never replaces a running disk. Upload journals retain object
+identities for interrupted-operation reconciliation. This module does not capture RAM,
+claim execution ownership, boot a restored computer or relocate a phone connection.
+See [portable storage](../apps/host/src/portable-storage/README.md).
+
+Personal installations continue to use local disks and embedded identity storage.
+Portable object storage is explicitly enabled by its caller and
+`CABOOSE_PORTABLE_STORAGE=on`; an unset or `off` setting requires no object-storage
+credentials or service. S3-compatible storage is an archive backend, not a live disk.
+
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
 It runs as the login user without root privileges. The helper gives each guest its own
@@ -283,7 +332,7 @@ and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
-                             # notification monitor and endpoint, and the owner's display
+                             # notification endpoint, and the owner's display
 caboose-session ready        # wait for the owner's display, then its accessibility bus
 caboose-session start-agent  # the agent seat: its bus, endpoint, display and accessibility bus
 caboose-session start-files  # the file service on 14700
@@ -364,10 +413,18 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
 | Game handoff | `$XDG_RUNTIME_DIR/caboose-game.sock` | None (`--no-games`) |
+| Phone devices | The phone's hardware ([devices.md](devices.md)) | None (`--no-devices`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
+
+Agent GUI applications use a separate persistent home and XDG profile directories under
+`~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
+are independent of owner applications. No owner profile snapshot or sign-in import occurs.
+The task runner retains owner CLI authentication settings and selects the isolated GUI
+launch environment through browser/editor wrappers and desktop MCP. This is routing
+within the existing shared Unix user, not an arbitrary-command security boundary.
 
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
@@ -376,11 +433,18 @@ Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
 passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
+The agent launch environment also publishes `HOME`, its four XDG state directories,
+`CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
 The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
 any application: the accessibility bus of the seat's session bus, with its socket named
 after the seat's X display and published as `AT_SPI_BUS` on its Xwayland, so Wayland and
 X11 applications on a seat share one bus and the two seats never share one.
+
+X11 foreground metadata follows the seat’s keyboard focus. `_NET_ACTIVE_WINDOW` identifies
+the focused X11 window and is zero while a Wayland surface or no surface has focus.
+The compositor reconciles stale XWM property notifications on events; this does not
+change application focus protocols or synthesize input.
 
 **Control socket.** Each instance serves `control.sock` (mode 0600, only to processes of
 its own user) for the computer's own tools: the screen routes and the agents' desktop tools
@@ -432,7 +496,9 @@ response; the host relays display bytes without inspecting them.
 `caboose-files.service`) runs as `caboose` on TCP 14700 and requires
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
-service still wakes. The protocol is in [Files](#files).
+service still wakes. The protocol is in [Files](#files). Its private bounded `POST /events` long poll
+combines queue deliveries, media snapshots, active task output and filesystem change
+anchors; [guest events](guest-events.md) defines acceptance and reconnect behavior.
 
 **Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
 `caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
@@ -452,13 +518,27 @@ environment, and answers `{ session }` for a client to attach to; the agent runn
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
 
-**Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
-`org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
-private record in `/home/caboose/.cache/caboose/notifications/<uuid>.json`:
-`{ id, app, summary, body, created }`, with `app` at most 200 characters, `summary` 500,
-`body` 1000 and `created` in Unix seconds. It keeps the newest 100 records. `daemon.py`
-owns the notification name on each seat's bus. The agent seat has its own bus, so its
-notifications never enter the owner's queue.
+**Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
+owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
+display) supports `actions`, `body` and `inline-reply`, keeps its live notifications in
+memory (at most 256), and writes each as a private record in
+`/home/caboose/.cache/caboose/notifications/<id>.json`:
+`{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }`. `id` is a
+UUID; a notification that replaces a live one keeps its `id`, and its record overwrites one
+not yet read. `app` is at most 200 characters, `summary` 500, `body` 1000; `created` is in
+Unix seconds; `desktopEntry` is the `desktop-entry` hint as a desktop file ID without
+`.desktop` (`[A-Za-z0-9][A-Za-z0-9._+-]{0,254}`) or null; `actions` is at most 4
+`{ key, label }` buttons (keys 1–64 characters without control characters, labels one line of
+1–64), without `default` and `inline-reply`; `defaultAction` is whether the application
+offered `default`; `reply` is `{ label, placeholder }` (at most 64 and 100 characters) when it
+offered `inline-reply`, else null. It keeps the newest 100 records.
+`caboose-notify respond <id> --action=KEY | --reply=TEXT`, run as `caboose`, asks the owner's
+endpoint to emit `ActionInvoked` or `NotificationReplied` (TEXT 1–2000 characters) and then
+`NotificationClosed` (reason 2) unless the notification is `resident`; it prints
+`{"result": "responded" | "unknown-action" | "unknown-notification"}`. Live notifications
+end when the owner's display or endpoint stops. The agent seat has its own bus and an
+endpoint that supports nothing and records nothing, so its notifications never enter the
+owner's queue. See [guest/notifications](../guest/notifications/README.md).
 
 **Phone handoff.** `guest/phone` installs `caboose-open URL` and `caboose-share FILE...`,
 registers `caboose-phone.desktop` as the handler for the `mailto`, `tel`, `sms`, `facetime`,
@@ -473,8 +553,9 @@ pending requests, and both expire after 24 hours. See [Phone handoff](#phone-han
 calls from the phone: the FileChooser and Settings portals (`caboose-portal`, with
 `xdg-desktop-portal-gtk` for the rest and as the fallback without a phone), and
 `caboose-bridge`, the host's commands and the owner seat's daemon for Now Playing and the
-appearance. GeoClue's static source serves a shared location. See
-[native-bridge.md](native-bridge.md).
+appearance. `caboose-scan` asks the phone to scan a document and prints where the scan was
+saved, failing at once without the phone. GeoClue's static source serves a shared
+location. See [native-bridge.md](native-bridge.md).
 
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
@@ -638,13 +719,35 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   security policy under which script runs only from the app's files and frames hold only
   its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
   app; web, mail and phone links the person follows open in their default application.
+- Generation prompts direct agents to the app guide's interaction acceptance checks at
+  phone and desktop sizes. `check`, `publish` and `list` report nonfatal entry-page
+  viewport warnings, also returned by MCP `app_publish`; they never rewrite owner files
+  or storage. Static validation does not verify controls or phone touch routing. Agents
+  report the interactions tested and any unavailable phone checks.
 - `window.caboose` exists only in the top frame, through a relay in an isolated script world
   that admits only the current document. It offers the capabilities `app.json` declares:
   `exec` (programs, with bounded arguments, output, time and concurrency, each in its own
   process group, ended when the document is replaced or the app quits), `files`
-  (symlink-safe file operations in the home), `notify` (a desktop notification, which
-  reaches the phone) and `open`. Declared capabilities describe the app; they are not a
-  sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
+  (symlink-safe file operations in the home), `net`, `notify` (a desktop
+  notification, which reaches the phone) and `open`. Declared capabilities describe the
+  app; they are not a sandbox. An app runs as `caboose`, and `exec` has that user's full
+  authority.
+- `net` gives the page a network origin: a loopback HTTP server that one run of the app
+  knows by a random token, on its own port, so it is never the app's origin and what it
+  fetches is never the app's script. `<base><scheme>/<authority><path>?<query>` makes that
+  request to any http or https URL with the page's method, headers and body, and streams
+  the answer back with CORS headers for the app's page; `caboose.fetch` and
+  `caboose.net.url` build these URLs. On the computer the runtime serves it with curl; on a
+  device that runs the app natively, CabooseKit's `AgentAppNetServer` serves it with the
+  device's own network. Requests carry no cookie jar.
+- A handed-off page that is playing media when Caboose leaves the screen keeps running on
+  the device (CabooseKit's `AgentAppPages`) instead of closing with the display connection,
+  so its sound, Picture in Picture video, timers and `net` requests carry on, with the
+  system's media controls through WebKit's Media Session support; its computer bridge is
+  cut meanwhile. The computer's next announcement of the app takes the kept page over
+  without a reload; once the computer has announced its apps without it, it ends. The app
+  has the `audio` background mode for this, and allows plain-http loads (App Transport
+  Security's arbitrary loads) so pages and `net` requests reach any server.
 - App files live under `~/.local/share/caboose/apps/<id>/files/`. Apps that opt in to
   handoff keep persistent app state in those files: WebKitGTK storage and device WebKit
   storage are separate and are not migrated. Device origins are stable per computer and app.
@@ -691,6 +794,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose forwarding headers are believed: IPv4 or IPv6 addresses or CIDR ranges, separated by commas; loopback always is. From a trusted proxy, `X-Forwarded-For` names the client whose sign-in attempts are counted (the last address no trusted proxy added) and `X-Forwarded-Proto` the scheme of the request's origin; from anyone else both are ignored |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -699,10 +803,11 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
-- The owner's computer's `caboose.json` (settings), `push-devices.json` and
-  `activities.json` at the root, where a host from before several computers kept them.
-- Every other computer's own `caboose.json`, `push-devices.json` and `activities.json`
-  in `computers/<id>/`.
+- The owner's computer's `caboose.json` (settings), `push-devices.json`,
+  `activities.json` and `commands/` (one `<id>.json` per command, directory mode 0700) at the
+  root, where a host from before several computers kept them.
+- Every other computer's own `caboose.json`, `push-devices.json`, `activities.json` and
+  `commands/` in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
 - Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
@@ -730,7 +835,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
 | `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
-| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
@@ -821,7 +926,7 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
 - **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
-  tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
+  tasks, catalog operations, Craft jobs, running commands, agent installs and sign-ins, and each `/v1/fs`
   request until its response completes. Control sockets marked `foreground=0` do not hold a
   lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
   `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
@@ -841,6 +946,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   never deletes the computer's disk.
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
+
+File transfers, web-app bridge requests and batch file exports wake the microVM
+without starting the owner display. Opening a desktop session or launching an
+application promotes that same running computer to interactive mode without a
+second boot or token rotation.
 
 ### Accounts and tenants
 
@@ -884,7 +994,7 @@ visible to the operator and their existing tenant administrators, not to other t
 
 **Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
 valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
-someone with an account confirms it with their password. A tenant keeps at least one
+someone with an account completes sign-in, including MFA when enabled. A tenant keeps at least one
 administrator.
 
 Computer status includes `sizes`, the host's preset catalog: Micro (2 vCPUs, 2048 MiB),
@@ -910,7 +1020,7 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `POST` | `/v1/setup/link` | Owner token only; `{ path }` containing the one-time setup link; 409 once claimed |
 | `GET`, `POST` | `/v1/tenants/:id/people` | Lists `{ people: [{ id, tenantId, name, userId, createdAt }] }`; creates a phone user with `{ name }`, no login required |
 | `PATCH`, `DELETE` | `/v1/people/:id` | Rename `{ name }` or delete a person in an administered tenant; deletion refuses assigned computers |
-| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
+| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`, and the account security routes described in [account security](account-security.md). Sign-up is closed; accounts come from setup and invitations |
 | `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, setupRequired, tenants: [{ id, name, quotas, createdAt }] }` |
 | `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
 | `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
@@ -919,11 +1029,28 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `GET`, `POST` | `/v1/tenants/:id/invites` | Waiting invitations; `POST { email }` → 201 `{ invite, token }`, the token shown only here |
 | `DELETE` | `/v1/tenants/:id/invites/:invite` | Withdraws an invitation |
 | `GET` | `/v1/invites/:token` | **No account.** `{ tenantName, email, expiresAt, accountExists }` |
-| `POST` | `/v1/invites/:token/accept` | **No account.** `{ name?, password }` → the session cookie; `name` for a new account |
+| `POST` | `/v1/invites/:token/accept` | `{ name, password }` creates a new account and session; an existing account must already have a completed matching session |
 
 A tenant an administrator does not administer answers 404, as if it were not there.
 
+### Capacity and usage
+
+The console Usage page reads `GET /v1/tenants/:id/capacity` for an administered
+tenant and `GET /v1/host/capacity` for the operator. It separates configured and
+running allocations from measured CPU busy time, OS free/available memory, and
+filesystem availability. Storage distinguishes logical bytes from allocated file
+blocks; shared/reflink block sums are never labeled unique physical usage. Missing
+measurements are explicit. Reads acquire no leases and wake no computers; host
+samples are cached ten seconds, bounded storage scans sixty seconds, and the visible
+console polls thirty seconds. Existing quotas and enforcement are unchanged.
+See [capacity and usage](capacity.md) for the complete contract and limitations.
+
 ### Authentication
+
+Account security provides password changes, configured recovery email, authenticator MFA,
+single-use recovery codes and session revocation; see [administrator account security](account-security.md).
+Existing-account invitations require completed sign-in including MFA. Revocation revalidates
+open administrator sockets before returning; expiry is checked every thirty seconds.
 
 A request is from one of three kinds of caller:
 
@@ -937,6 +1064,9 @@ A request is from one of three kinds of caller:
   direct LAN HTTP uses host-only HTTP cookies. Both use the same accounts and session
   store, even when `CABOOSE_PUBLIC_URL` advertises HTTPS. Sign-out clears the matching
   transport's cookies.
+  A request that is not a `GET`, `HEAD` or `OPTIONS`, and every
+  WebSocket upgrade, is accepted on a cookie only from the console's own origin
+  ([Security model](#7-security-model)); otherwise it answers 403 `cross-site request refused`.
 - **A phone token**, which reaches only its own computer's routes, without a computer in the
   path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
 
@@ -951,15 +1081,16 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
 | 401 | Missing or unknown token or session |
-| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs; or a session cookie sent by a page on another site |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 413 | A JSON body beyond the route's limit |
 | 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
@@ -972,10 +1103,11 @@ guest answer 409 while it is not running.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/session` | **Wakes.** → `{ state: "running", display: { path: "/v1/display", token, protocol: "caboose-display" }, computer: { name, image, memoryMb, vcpus } }`. `image` is `"Debian 13"`, or `"Debian 13 · GPU"` for a container with a GPU |
-| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation or Craft job runs |
+| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
-| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events |
+| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
+| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
@@ -1004,15 +1136,15 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.state` | `{ state }` | Every lifecycle transition |
 | `computer.settings` | `{ computer: <management status> }` | Settings or their applied state change |
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
-| `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
+| `notification` | `{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }` | A desktop notification on the owner's display (see [Desktop notifications](#desktop-notifications)) |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
 | `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
-| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
+| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job (`kind: "craft"`) or command (`kind: "command"`, see [Commands](#commands)) starts, is still running after 10 s (commands only), or ends |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
 | `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
-| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request, and its withdrawal. Only to sockets opened with `?phone=1` |
+| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request or `caboose-scan`'s scan, and its withdrawal. Only to sockets opened with `?phone=1`; a scan only to those also opened with `?scan=1` |
 | `now-playing.changed`, `now-playing.stopped` | see [native bridge](native-bridge.md#now-playing-relay) | The computer's media player for Now Playing, while a display client is connected |
 
 ### Management
@@ -1148,11 +1280,12 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   does not report every change (including modifications through memory mappings), and
   processing is asynchronous. The host does not serve parked reads from this journal;
   reads and writes wake the computer.
-- While the computer runs and at least one control socket is connected, the host polls the
-  journal every second and broadcasts `fs.changed { anchor }` when something changed. It
-  keeps the last anchor through a resident freeze and resumes polling from it on thaw; park,
-  restart or the last control socket closing resets the host's polling anchor.
-- `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
+- While the computer runs and at least one control socket is connected, the host subscribes to the
+  journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
+  keeps the last anchor through a resident freeze and resumes from it on thaw; park,
+  restart or the last control socket closing resets the host's event anchor.
+- `POST /v1/files` holds the whole body in memory, so it accepts at most 16 MiB and answers
+  413 beyond that; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
 
@@ -1186,6 +1319,38 @@ captures) are shared and deallocated with it; a clone that has diverged keeps it
   the first pass reports it in `lastError` and shared storage stops.
 - `apps/host/disk/scripts/check-reflink.sh` checks the helper against a real loop-mounted XFS
   or Btrfs filesystem.
+
+### Console recovery
+
+The operator and a tenant's administrators manage local disk captures through
+`/v1/computers/:id/recovery`. The server checks the computer's tenant before routing;
+phones cannot use this API. `GET` returns availability/reason, parked capture readiness,
+retention, capture metadata and the last management operation. No disk bytes, device
+keys, manifests or protected configuration are exported by management routes.
+
+`POST /capture` manually captures a coherent parked Files view without enrolling a phone.
+A running computer or one without a coherent view is refused. The existing parked-work
+hold protects the reflink; hashing runs against the immutable clone. No running disk is
+copied and no guest filesystem is mounted on the host. Retention keeps the newest two
+captures plus captures pinned by phone downloads; deleting the computer deletes them.
+
+`POST /captures/:capture/restore` requires `{ confirm: "<capture id>" }`. It rebuilds and
+verifies the disk from available host data, checks matching image dependencies, then uses
+the guarded restart and journaled disk replacement. It refuses overlapping capture/restore
+work and an in-progress staged phone restore. The UI asks for typed destructive confirmation.
+Management operation state is saved privately; an interrupted operation is reported after
+host restart. Failure details in the console are sanitized; operator logs hold diagnostics.
+A failed staged restore may require operator inspection before retrying; staging expires
+under the existing restore retention rules. These routes do not change phone authorization
+or decrypt the phone's vault.
+
+Host captures share the server's failure domain and do not protect host identity, secrets
+or external dependencies. Whole-host recovery uses the explicit
+[offline capture, verification and restore procedure](../apps/host/scripts/RECOVERY.md).
+The tool copies protected directories only while the Linux host lock is held, and restores
+into an absent staging directory with an explicit byte bound. External PostgreSQL,
+container volumes and cold-tier storage require the operator steps in that procedure.
+No new backup scheduler, remote storage or automatic restore is enabled.
 
 ### Phone backups
 
@@ -1276,6 +1441,81 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
   than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
   kept only in its 256 KiB replay.
 
+### Commands
+
+A command is a Bash script that runs in the computer as `caboose`, detached from the request
+that starts it: it keeps running when the phone, the request or the host goes away, and its
+result stays with the host. Commands are for the same callers as `/v1/terminal`, which already
+gives them a shell as `caboose`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/commands` | **Wakes** (headless). `{ script, id?, stdin?, inputs?, cwd?, timeout?, wait? }` → 201 `Command` once it ends or after `wait` seconds, whichever is first. 400 when an input or `cwd` is missing in the computer (no command is kept); 409 when the id exists or 4 commands already run on the computer |
+| `GET` | `/v1/commands` | `{ commands: [{ id, title, status, exitCode, createdAt, finishedAt }] }`, newest first. Never wakes |
+| `GET` | `/v1/commands/:id?wait=` | `Command`, now or once it ends within `wait` seconds (0–60). Never wakes; 404 for an unknown id |
+| `POST` | `/v1/commands/:id/cancel` | **Wakes** (headless). Stops a running command → `Command` once it has ended, or after 10 s; 409 when it has already ended |
+
+The request body may be 4 MiB; unknown fields answer 400.
+
+- `script`: not blank, at most 64 KiB of UTF-8, without NUL.
+- `id`: 32 lowercase hex digits, chosen by the client so it can stage inputs first; the host
+  makes one when absent.
+- `stdin`: text of at most 1 MiB, the script's standard input; otherwise it reads `/dev/null`.
+- `inputs`: at most 100 distinct file names the client uploaded to `.caboose-jobs/cmd-<id>/in/`
+  through `/v1/fs` before starting (requires `id`); each must be a regular file there. A name
+  is one path component of 1–255 bytes without control characters, not `.` or `..`, and not
+  beginning `.caboose-upload-`.
+- `cwd`: an existing home-relative directory (`""` is the home); the job directory when absent.
+- `timeout`: seconds, 1–86400, default 3600. `wait`: seconds, 0–60, default 0.
+
+```ts
+type Command = {
+  id: string,
+  title: string,              // the script's first line that is not a #! line, at most 100 characters
+  script: string, cwd: string | null, inputs: string[], timeout: number,
+  status: 'running' | 'succeeded' | 'failed' | 'timed-out' | 'cancelled',
+  exitCode: number | null,    // null when a signal or the host ended it
+  signal: string | null,      // the signal that ended the shell, e.g. "SIGTERM"
+  error: string | null,       // why the host ended it, e.g. "Stopped when the computer restarted."
+  stdout: string, stderr: string,              // UTF-8; invalid bytes are replaced
+  truncated: { stdout: boolean, stderr: boolean },
+  outputs: string[],          // file names in the job's out/
+  createdAt: string, finishedAt: string | null,  // ISO 8601
+  directory: string,          // ".caboose-jobs/cmd-<id>", home-relative
+}
+```
+
+- **Running.** The host creates `~/.caboose-jobs/cmd-<id>/` with `in/` and `out/`, opening
+  each directory without following symlinks, and writes the script to `command.sh` and the
+  input to `stdin` through the file service, so neither passes on a command line. A supervisor
+  started as `caboose` through `runuser` (entering `caboose-workloads.slice` where the guest
+  has it) runs `bash --login command.sh` in its own session and process group, in `cwd`, with
+  `HOME`, `USER`, `LANG=C.UTF-8`, `XDG_RUNTIME_DIR`, the session bus when it runs,
+  `CABOOSE_COMMAND_ID`, `CABOOSE_JOB` (the job directory), `CABOOSE_IN` and `CABOOSE_OUT`; the
+  login shell sets `PATH` from the owner's profile.
+- **Bounds.** `stdout` keeps its first 1 MiB and `stderr` its last 1 MiB; `truncated` says
+  which lost bytes. At `timeout`, or on cancel, the supervisor sends SIGTERM to the script's
+  process group and SIGKILL 5 s later. When the script ends, what it left in its process group
+  is killed; a process that started its own session keeps running. The time limit counts
+  while the computer runs. `outputs` lists the regular files directly in `out/` (not
+  symlinks or directories) by name, at most 100. At most 4 commands run at once on a computer.
+- **Results.** The supervisor writes `result.json`, `stdout` and `stderr` in the job
+  directory. The host polls once a second while a command runs, checks the result field by
+  field and keeps it in `commands/` in the host state: every running command, and the 50 most
+  recent finished ones for 7 days. The job directory stays in the home until a client removes
+  it. A host that starts with commands still running wakes the computer headless, holds their
+  leases again and collects them.
+- **Lifecycle.** A running command holds a lease, so the computer neither freezes nor parks
+  for idleness under it, and an explicit park answers 409. A restart or deleting the computer
+  fails running commands with "Stopped when the computer restarted."; a supervisor gone
+  without a result fails its command with "The command stopped without a result.".
+  A lost start acknowledgment retains the command ID and lease while the host checks the
+  supervisor; it does not replay the script or forget a possibly running command.
+- **Progress.** Control sockets get `job.progress` (`kind: "command"`) when a command starts,
+  after 10 s, and when it ends. After 10 s the command is published to Live Activities with
+  its title and detail `Running`, and its end updates and ends the activity. When it ends with
+  no request waiting for it, it sends a `task` push (§ Push notifications).
+
 ### MCP Library routes
 
 Per computer, authorized like the catalog's; none wakes the computer (§ MCP Library).
@@ -1362,8 +1602,8 @@ agent seat never reads or presses the owner's windows, and the reverse.
 
 ### Phone handoff
 
-The host drains the guest's phone queue (`caboose-phone drain`, at most 50 events) every
-second while the computer is running and at least one control socket opened with
+The host receives the guest's phone queue through the bounded Files event receiver
+while the computer is running and at least one control socket opened with
 `?phone=1` is connected. It validates each event and sends it to those sockets:
 
 - `phone.open { url }`: a URL of at most 8192 characters with no spaces or control
@@ -1375,8 +1615,9 @@ second while the computer is running and at least one control socket opened with
   separators or control characters, `size` at most 10 MiB, and `contentType` a MIME type.
   Print content is `application/pdf`.
 
-Delivery is at most once: events drained while no phone socket can receive them are not
-replayed. The token scopes the connection to its computer.
+Guest records remain queued until the host accepts their validated delivery. A lost
+acknowledgement can replay a record; this is not a durable phone receipt. The token scopes
+the connection to its computer.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -1420,8 +1661,8 @@ The media state, in the guest file and as the host sends it:
 
 The extension reports on `play`, `playing`, `pause`, `seeked`, `ended` and `emptied`, and
 every 5 seconds while playing. In the guest file `updatedAt` is the guest-clock sample
-time. The host reads the file, with the guest's clock so skew does not matter, about once
-a second, and only while the computer is running and at least one display client is
+time. The Files event receiver sends changed snapshots with the guest's clock so skew does not
+matter, only while the computer is running and at least one display client is
 connected. Reads go straight to the guest: they never wake the computer, hold a lease or
 delay parking. A file whose native host is no longer running is ignored. What the host
 sends has `position` extrapolated to the moment it is sent while playing (capped at
@@ -1442,7 +1683,7 @@ restarts. `sent` means the command reached the computer; an id the browser no lo
 is ignored there, and the next state shows the result.
 
 Control-socket events: `media.playing { media }` on every change of the state (including
-each 5-second report while playing, and once when polling starts), and
+each 5-second report while playing, and once when observation starts), and
 `media.stopped { id }` when that video stops being offered (it ended, its tab closed, the
 browser closed, another video replaced it, or the computer stopped running).
 
@@ -1452,18 +1693,36 @@ from `position`, then `POST …/control { action: "pause" }`; when the phone sto
 
 ### Native bridge
 
-File requests from the computer's portal, the phone's appearance and location, and the
-computer's Now Playing, relayed with the routes `/v1/bridge/*` and `/v1/now-playing*` and
-the control events above. The contract is [native-bridge.md](native-bridge.md#host).
+File and scan requests from the computer's portal and `caboose-scan`, the phone's
+appearance and location, and the computer's Now Playing, relayed with the routes
+`/v1/bridge/*` and `/v1/now-playing*` and the control events above. The contract is [native-bridge.md](native-bridge.md#host).
 
 ### Desktop notifications
 
-While the computer runs, the host drains the owner's notification queue every second as
-`caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
+While the computer runs, Files reads the owner's notification queue as `caboose`, at most
+32 KiB per record. It removes each record only after the host accepts it. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
-`desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
-opens the app.
+`desktop` alert. The event carries the record's fields ([Guest services](#guest-services)):
+`id` (a UUID that stays the same when the application replaces the notification),
+`desktopEntry` (a desktop file ID without `.desktop`, or null), `actions` (at most 4
+`{ key, label }`), `defaultAction` (boolean) and `reply` (`{ label, placeholder }` or null).
+Records from guests without these fields arrive with null, `[]` and `false`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/notifications/:id/respond` | **Wakes** (headless). `{ action }` or `{ reply }`, exactly one → `{ responded: true }`. `action` is one of the notification's action keys, or `default` when `defaultAction` is true (1–64 characters, no control characters); `reply` is 1–2000 characters of text without NUL, for a notification with `reply`. 400 for an invalid id or body; 404 when the notification is closed, answered or gone, or does not offer that answer |
+
+The host runs `caboose-notify respond` as `caboose` with the id and the answer as arguments;
+the owner's endpoint delivers it to the application and closes the notification. A parked
+computer resumes with its memory, so its applications and their notifications are still
+there; the route wakes it without starting the owner's display, which a memory restore keeps
+if it was running. A notification lives only as long as the owner's endpoint: after a
+restart, a cold boot or a guest component update, or when the owner's display is not
+running, its id answers 404. Linux notifications name their application, not a window: the
+phone opens the application `desktopEntry` names, showing its existing window, and answers
+`default` so the application shows what the notification is about ([iOS
+notifications](#notifications)).
 
 ### Push notifications
 
@@ -1487,10 +1746,14 @@ background; other control clients do not suppress alerts.
 | --- | --- | --- | --- |
 | `approval` | `agent.task.approval` | "Approval requested", the request summary; category `AGENT_APPROVAL` | `taskId`, `approvalId` |
 | `task` | `agent.task.finished` with `succeeded` or `failed` | "Task finished" or "Task failed", the summary | `taskId` |
-| `desktop` | a desktop notification | its summary (or app), its body | none |
+| `task` | A command ends, other than by cancelling, while no request waits for it | "Command finished", "Command failed" or "Command timed out", its title and how it ended | `commandId` |
+| `desktop` | a desktop notification | its summary (or app), its body; category `DESKTOP_REPLY` when it has `reply` | `notificationId`, `desktopEntry` when present, `defaultAction` when true |
 
-Alert bodies are at most 700 characters. Alerts for a task share the thread
-`task-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
+Alert bodies are at most 700 characters. Task alerts share `task-<id>` and command alerts
+share `command-<id>`. The phone registers notification categories before a push arrives,
+so desktop pushes offer Reply when supported, while application-specific buttons appear
+in the foreground app. A tap opens the application. An APNs 410 `Unregistered` response
+removes the registration unless it was
 registered again while the request was in flight. Provider tokens are refreshed after 50
 minutes, and each request times out after 15 s. Delivery is best effort.
 
@@ -1516,8 +1779,9 @@ The activity's attributes are `JobAttributes { jobID, kind, title }` and its con
 dismissal date one hour later and removes the registration once delivered. A `start`
 event goes to every push-to-start token when a job starts while no foreground control
 socket is connected. Agent tasks publish themselves (`kind: "agent"`) as they start, reply,
-pause, resume and finish; Craft jobs publish with `kind: "craft"`. The registrations and
-the latest 200 job states are stored in `activities.json`.
+pause, resume and finish; Craft jobs publish with `kind: "craft"`. A command publishes with
+`kind: "command"` once it has run for 10 s, and again when it ends ([Commands](#commands)).
+The registrations and the latest 200 job states are stored in `activities.json`.
 
 ## 4. Display
 
@@ -1527,9 +1791,9 @@ or TV places them as native surfaces. It encodes each window's changes (H.264, H
 with lossless PNG tiles for small changes, scrolls as copies within the client's picture
 plus tiles, and a sharpening pass once content is still),
 paces frames on the client's vsync, carries clipboard text, named cursors, touch,
-text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. Video an
-application decodes through the Caboose VA-API driver reaches the client as its own
-compressed stream, layered into the window when the application presents each frame.
+text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
+composition; marker-based passthrough is fenced because it cannot preserve arbitrary
+foreground alpha and occlusion.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
   little-endian length and one canonical CBOR map), the hello and display token, pacing and
@@ -1624,6 +1888,35 @@ Profile edits apply to new conversations; existing conversations retain their ad
 snapshot. An archived profile cannot start a conversation; restoring it retains its memories
 and workspace. Raw task requests cannot supply arbitrary instructions or workspace paths.
 Stable task-ID retries compare the profile snapshot as well as the original prompt/files.
+
+**Default identities.** An ordinary chat (`POST /v1/agent/tasks` without `profileId`) uses
+its agent's default identity: a profile the host creates on first use with `defaultFor:
+<registry id>`, named after the agent, with approvals `ask` and instructions to use the
+memory and routine tools. There is at most one per agent on each computer; concurrent first
+chats get the same record. It is listed and edited like any profile, but its `agent` cannot
+change, and no request can set `defaultFor`. The chat keeps its own approvals and works in
+its own task directory, as ordinary chats always have. It gets the identity's memories and
+the `caboose-agent-tools` server, bound to that profile in the host journal before admission.
+Routines it creates run as tasks of that profile. An archived default identity is never
+replaced or restored implicitly: ordinary chats with that agent fail with 409 until the owner
+restores it. When tools cannot be attached (the tool journal is unavailable or full, or the
+profile limit is reached) the chat is not started and the 409 says why.
+
+A chat from before default identities, with no profile, receives one before its next turn.
+The host persists the binding first. Then one guest command for that task checks whether its
+runner is alive. If so, the runner is retired only when provably idle: the current turn has a
+completion receipt and no prompt waits. The command then writes `profile-instructions.txt`,
+adds only `profileId` and `agentTools` to `task.json`, and writes `profile-id` last. A reply
+to an idle chat does this before admission: if it fails, nothing is admitted and the reply
+gets a 409 with the reason, such as a runner still finishing (retried for five seconds, 20
+for Send Now). Replies queued during a turn are kept when it fails at the turn's end; the task
+is reported failed with the reason, and a reply or Send Now retries. Every crash point repeats
+the same steps, keeping a committed instructions snapshot. A host binding to another profile,
+or a `profile-id` that differs from the binding, fails closed; a guest marker never grants
+tools. The next runner reopens the same session (`session/resume` or `session/load`) with the
+same cwd, model and approvals, and the transcript, queue and delivery journal are unchanged.
+An agent that can do neither starts a new session with a recap, as after any runner restart.
+A profile task from before the tool journal has no binding and continues without tools.
 
 ### The runner
 
@@ -1837,7 +2130,7 @@ Control-socket events:
 | `agent.task.queued` | `{ id, queued: string[], queuedAttachments?: string[][] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
-| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, at the host's one-second polling cadence |
+| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, when the guest snapshot changes |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
 
 A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
@@ -2031,7 +2324,8 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
 acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
 the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption; renderer timebase updates never drive backlog recovery. Live
+cleared on interruption. Placement samples host time once against the requested anchor;
+renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
@@ -2040,17 +2334,45 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+The iOS app omits `video_decoders`. The compositor also requests local decode for
+every marker stream, including headless sessions, because the marker has no independent
+foreground alpha or occlusion provenance. Controls and subtitles are composed by the
+application over decoded pixels before the ordinary window/motion paths encode them. The iOS app
 requests half-resolution software-encoded motion streams and upscales them with MetalFX,
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
-The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator.
+Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
+payload. Excess or empty packets are rejected before dispatch, counted as
+`ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
+After rejection, the next admitted packet retains its server timestamp instead of joining
+across the missing duration; the Opus decoder remains alive, with no synthetic concealment
+packet or replay. Packet loss can therefore be audible. Existing playout thresholds govern
+any rebuffer. Stop and interruption invalidate old jobs without releasing their memory
+budget until those jobs exit.
+Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
+packets do not write the synchronizer rate. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone coalesces renderer-specific
+notifications and flushes surviving buffers on its playback queue before subsequent
+enqueues, without resetting the running clock or rate. Stop and interruption invalidate
+that observer generation. Discarded packets are not replayed; this recovery does not
+acknowledge asynchronous clock changes or correct renderer-clock divergence.
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Stopping playback clears
+the clock anchor. There is no continuous sample-clock correction: sustained source/host
+clock mismatch can require rebuffering, and hardware/host clock drift can accumulate
+between explicit rebufferings.
+Opt-in audio diagnostics retain the existing five-second timing reports and bounded
+restart summaries in an asynchronous app-cache snapshot, limited to 64 fixed-schema
+records and 128 KiB. With the same opt-in, the first twelve seconds of audio after
+start or an ingress gap of at least one second also produce nonempty 250 ms startup
+metadata buckets, limited to 48 within that shared cap. They reuse placement's host
+sample and retain numeric timing/format metadata, never PCM or encoded payloads.
+Each interval can include the latest 16 rate-write traces plus
+bounded rate-change and interruption metadata; these observations never drive recovery. Recording defaults off and changes neither playback nor the wire protocol;
+[the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
+and collection path.
 
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.
@@ -2091,7 +2413,12 @@ the app card, and a detached view releases its layers.
   in a bar at least 32 points tall, with their symbols always shown.
   Dragging a title bar to a side edge snaps the window to that half, near a corner to that
   quarter (where quarters are at least 280 × 200 points), and to the top edge maximizes it,
-  with an outline of where it will go; elsewhere its edges pull onto the desktop's and its
+  with an outline of where it will go. After twelve points of title-bar movement, a
+  translucent layout chooser appears above the windows. Sliding across its miniature
+  regions previews full screen, halves, quarters, thirds and either two-thirds/one-third
+  arrangement; releasing applies the preview. Regions smaller than the app's minimum
+  are dimmed and cannot be selected. Leaving the chooser returns to edge snapping and
+  free placement. The preview follows Reduce Motion; elsewhere window edges pull onto the desktop's and its
   neighbours' within ten points. Pulled out of a snap, a window takes back its own size
   under the finger. Each window keeps a place (`FreeDesktopLayout`): the frame last given
   by hand and the work area it was given in, or a snap. Every other desktop size, after a
@@ -2120,6 +2447,9 @@ the app card, and a detached view releases its layers.
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
   upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
+  The measured reserved division between the upper panel and controls stays black throughout
+  Laptop mode, including window, fullscreen and loading transitions. Keyboard occlusion does
+  not enlarge that division.
   Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
@@ -2172,8 +2502,19 @@ the app card, and a detached view releases its layers.
   so it uses the client-provided size, while an app's own full-screen request is preserved.
   Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
   never as separate cards.
+- **Native surface corners.** Screen-facing desktop, Home, agent, terminal and bridge
+  panels use iOS 26 container-concentric shapes with their interior design radius as a
+  minimum. The system resolves each corner against the enclosing screen or presentation;
+  no device-model radius is stored. Tile and floating-window title controls use measured
+  container corner insets, and the floating desktop applies the same leading clearance
+  to its control hit tests. System sheets and navigation keep their native safe areas.
+  Media/fullscreen fitting, monitor DPI and measured hinge divisions remain independent
+  of surface decoration.
 - **Switchyard.** Without an external display the Desktop tab tiles the windows on the
   device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  The outer tile margins are zero; interior resize gaps remain three points on narrow
+  workspaces and four elsewhere. Columns and scroll stops use the same outer-margin
+  geometry, so the leading and trailing edges settle flush with the workspace.
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
   a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
   offered only where a tile is at least 280 points wide and two halves fit, so an upright
@@ -2185,27 +2526,50 @@ the app card, and a detached view releases its layers.
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
   that window's Linux geometry (`configure`, from `YardMetrics.content(ofTile:)`), so apps lay out
   at that size and its input, dialogs and popups are placed by it; a
-  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
-  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  resize fits the entire retained picture proportionally until the new one arrives. Gap drags send geometry at
+  most about eight times a second; title-bar carries only configure on release. The gaps resize (snapping to the presets, with haptic
   detents). Dragging a tile's title carries it to a new column, into a stack or onto
-  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  another tile. During a carry, the shared native snap palette offers full width, halves,
+  quarters, thirds and complementary one-third/two-thirds arrangements. Each choice
+  places the carried window in ordinary Yard columns and stacks, with nearby real
+  windows filling the other slots. Unfilled slots reserve space in those columns;
+  they create no synthetic windows. Explicit snap slots keep their selected fractions
+  in portrait and landscape, independently of the ordinary column-width presets.
+  App minimum sizes constrain the guest content request through `WindowSizePolicy.fitting`,
+  not the slot: larger content fits into the slot with the same transform for rendering
+  and input. Only slots without space for native chrome and positive content are disabled.
+  The palette's region rectangles are also its hit targets. The highlighted destination
+  comes from the proposed Yard layout and scroll position that release commits, above
+  the existing tiles. The carried window stays above both the highlight and chooser;
+  selection uses the drag position, so these overlays do not intercept the gesture. Palette gaps and disabled regions do not select tiles beneath them.
+  Hover changes neither the saved layout nor guest geometry; cancellation restores the
+  track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
   Screen control, the tile's menu and accessibility action, and ⌘⌥F open the same card. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
-  rotation and folding, replaces the guest display size; the complete picture fits while
+  rotation and folding, requests the window size within its hints without replacing the
+  retained monitor; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
-  actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
+  actions, and on iPad Open in New Window or Move to Desktop for each window (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
   presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
   above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
   reconnecting and returning from another tab. A pull down from the small tab at its top
-  edge shrinks it back into its tile and tells the app to exit full screen. Separate app
+  edge carries it through the same snap palette and tile-drop path; a valid release
+  commits the destination and tells the app to exit full screen. Separate app
   cards keep their own controls. Menus and dialogs appear above the covering window and
   fit within the workspace. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.
+  App-requested fullscreen pictures remain aspect-fit and centered in the available
+  workspace, including during rotation and pending tile resizes. Rendering, input,
+  text drops and popup placement share that centered rectangle; ordinary constrained
+  tiles retain their top-aligned fit. When an output changes mode or origin, the
+  compositor reconfigures its fullscreen and maximized windows to that output's new
+  rectangle without clearing their states. Removing an output applies the same rule
+  after moving those windows to the primary output. Ordinary windows keep their size.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
   each, with a dot for an open app; tapping focuses or opens it and holding exposes
   its window actions. Icons keep their size and scroll horizontally when they do not fit.
@@ -2216,10 +2580,41 @@ the app card, and a detached view releases its layers.
   an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
-- **Lifecycle.** The display socket closes when the app goes to the background; the
-  computer parks on idle and resumes on the next foreground. The last frame of every window
-  is cached with the server's `epoch`, and shown on reopening only when the new hello has
-  the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
+- **Windows of their own.** On iPad, a Linux window can have an iPadOS window of its own: a
+  scene of a second window group whose value is a `LinuxWindowRef` (`CabooseKit/Shell/WindowScenes`),
+  naming the paired computer, the server's `epoch` and the window id. Open in New Window (the
+  tile's menu, the app card's Window Options, the dock app menu and Home's tile menu) opens it,
+  or brings its window forward when it already has one, as does dragging a window's Home tile
+  out of the app, which carries the reference in an `NSUserActivity` so iPadOS opens the window
+  where it is dropped. The Linux window fills the scene below a bar with its title, Keyboard
+  and Window Options (Move to Desktop, Exit App Full Screen, Redraw, Close Window), with an app
+  card's touch, pointer, keyboard, text and Pencil input, and its menus and dialogs inside it.
+  The scene's content size is the window's geometry, at the display origin, sent at most about
+  eight times a second while the scene is resized, the last picture stretched until the new
+  one arrives. The window's minimum and maximum sizes, plus the bar, become the scene's
+  `sizeRestrictions` (a side of zero is no limit; `SceneSizeLimits`), and the scene's title
+  follows the Linux title in App Exposé and the window menu. The scene becoming active or its
+  window key focuses the Linux window, and with a hardware keyboard makes it the first
+  responder, so keys reach it. An app's own full screen takes the computer's display; its
+  picture is fitted to the scene. While a scene shows a window (`DetachedWindows`, one scene per
+  window), the in-app desktop, its tiles, app cards and Quick Switch leave out that window and
+  the menus and dialogs whose transient parents lead to it, so only the scene configures it;
+  Home still lists it, and a tap there or on its dock app brings its scene forward. Move to
+  Desktop closes the scene and brings the shell forward on Desktop with the window focused.
+  Closing the iPadOS window also returns the Linux window to the desktop, still open, where it
+  takes its place again; closing an iPadOS window never closes its Linux window. When the
+  Linux window closes (the session is ready and has announced its windows without it, or has
+  another epoch), its scene closes; signing out or switching computers closes every such scene
+  (one iPadOS has disconnected closes when it next connects). A scene restored after
+  a relaunch shows its window again once the session announces it, or says the window is no
+  longer open and offers Close. Every such window carries Caboose's icon in Stage Manager and
+  the Dock: iPadOS has no per-window app icon.
+- **Lifecycle.** The display socket closes when the app goes to the background: when every
+  one of its scenes is in the background (SwiftUI's App-level scene phase is all of them
+  together), so a Linux window in a window of its own keeps the display while the shell's
+  window is away. The computer parks on idle and resumes on the next foreground. The last
+  frame of every window is cached with the server's `epoch`, and shown on reopening only
+  when the new hello has the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
   off the main thread, most recently raised first within a 24 MiB budget. Home's kept
   pictures use a 640-pixel long edge. Cache generations discard late readbacks.
 - **Connection recovery.** While the app is in use, one display connection is open at a
@@ -2299,7 +2694,21 @@ still goes to the computer. One stream replays at a time: a later stream's windo
 waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
 `gpu.destroy` with a reason leaves the window saying why its stream ended.
 
+`GPUDeviceCapabilities.queryJSON()` exposes an on-demand diagnostic of the same linked
+MoltenVK: physical devices, core features, relevant limits, extensions and BC format
+support. The C API returns schema-versioned JSON and owns no device or surface. Callers
+run the synchronous query off the UI thread. It does not change the display handshake,
+the computer's static profile or the renderer's advertised capabilities.
+
 ### Shell
+
+With the native vertical tab bar, Home's Ask field, the Agent composer and the tiled
+Desktop dock share a bottom baseline relative to the shell window's system safe area.
+The composer grows upward; showing the software keyboard restores its eight-point clearance.
+The phone keeps the last successful installed-app list and icons in a bounded, pairing-scoped
+cache. Home and the dock can draw while the host refreshes; a successful response replaces
+the cache, including an empty list. Sign-out removes that pairing's cache. Launches still
+resolve against the host's current installed apps.
 
 The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside wide portrait Desktop,
 where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal
@@ -2342,7 +2751,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
 The phone reads the system clipboard only for an explicit paste, not when entering the
@@ -2350,7 +2760,9 @@ foreground. Desktop Full Screen opens a borderless window card with a return han
 The desktop app launcher accepts horizontal swipes as well as its page arrows.
 
 The name on Home opens a menu of explicitly paired computers, with the active computer
-checked. Add Computer uses the existing pairing flow and retains the other pairings.
+checked. Home is the only screen that offers computer selection; Desktop, connection
+recovery, and all other screens follow that shared selection without their own switcher.
+Add Computer uses the existing pairing flow and retains the other pairings.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing
 migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;
@@ -2424,17 +2836,27 @@ and restores its dock.
 - **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
   half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
-  gestures: a tap clicks, a one-finger drag holds the primary mouse button for drawing,
-  selection or moving, and two fingers scroll with momentum. A two-finger tap or a
-  stationary long press sends a right click (an amber ring blooms where it lands, with a tick). Emulated scrolling uses fractional deltas paced to display refresh, with
+  gestures: a tap clicks and a one-finger swipe scrolls with momentum. Holding for half a
+  second before moving holds the primary mouse button for selection or dragging; lifting
+  releases it. Two fingers can also scroll, and a two-finger tap sends a right click (an
+  amber ring blooms where it lands, with a tick). Pencil strokes and hardware pointers
+  retain direct dragging. The free desktop uses the same finger pan/hold convention for
+  content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
-  phone trackpad. A new touch, context action, target change, detach or app backgrounding
-  stops client inertia. Native touch leaves fling and gesture interpretation to the Linux app.
+  phone trackpad. Direct content pans map local points through the presented surface to
+  guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
+  scrolling and dedicated phone trackpads retain their existing gain. This calibrates
+  the Xwayland/Chromium reference response; other applications retain their own scroll
+  interpretation (see [scroll units](display.md#direct-content-scroll-units)). A new touch, context action, target change, detach or app backgrounding
+  stops client inertia. Card and free-desktop scroll delivery is fenced to the original
+  connection and geometry. Changing the finger count during an emulated pan cancels
+  that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without
+  disabling the rest of an ongoing finger pan. Native touch leaves fling and gesture interpretation to the Linux app.
   Pointer taps are sent individually, retaining their real timing for double
-  clicks. A stationary half-second hold opens context immediately at the held point;
-  lifting or cancellation cannot send another click. A direct drag starts at the finger's
-  original contact point; cancellation, backgrounding and target changes release its mouse
-  button exactly once. Hardware wheel scrolling keeps its own system momentum.
+  clicks. A stationary half-second hold in native-touch content opens context immediately
+  at the held point; lifting or cancellation cannot send another click. A mouse-only
+  content hold presses once, then moves the pointer until lift. Cancellation, backgrounding
+  and target changes release a held mouse button exactly once. Hardware wheel scrolling keeps its own system momentum.
   A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
@@ -2447,7 +2869,11 @@ and restores its dock.
   and suppresses leftover touches. A gesture guide is available in both control surfaces.
   System-reserved/accessibility gestures, Force Touch and app-specific rotation are not emulated.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
-  `GCMouse`.
+  `GCMouse`. The guest's virtual pointer pairs absolute positioning with relative
+  motion in the same Wayland frame, followed by buttons and scroll axes. This keeps
+  Xwayland motion and scrolling on one source device so XI2 clients retain their
+  scroll baselines. Positions and deltas use logical coordinates after display-scale
+  conversion; the guest adds no pointer acceleration.
 - **Keyboard.** The iOS keyboard works through `UITextInput`, so autocorrect, QuickPath,
   dictation, emoji and marked-text input (Chinese, Japanese, Korean) work. The client keeps
   a `TypingBuffer` of the field's text before the remote caret and turns each edit iOS makes
@@ -2456,8 +2882,23 @@ and restores its dock.
   the caret, so predictions, autocorrect and dictation work with the words already in the
   field and can correct them; a report that races fresh keystrokes waits until the app has
   caught up. Otherwise the buffer is what was typed since the last click, Return or non-text
-  key. Where an app has text-input-v3, the keyboard follows its state, its content purpose
-  turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  key. A tap opens the keyboard from text-input-v3 or a named text cursor. An Xwayland
+  bitmap cursor reported as the compositor's generic arrow has unknown editing state and
+  does not open the keyboard automatically; the explicit keyboard control remains available. Tap focus checks preserve an already-open
+  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, the keyboard follows its state and marked text is a
+  preedit. The field's content purpose picks the keyboard, iOS AutoFill and secure entry
+  (`CabooseKit/Input/TextPurposeTraits.swift`), and changes them as focus moves between
+  fields: a password field is secure entry offering saved passwords; an email field is the
+  email keyboard offering them as a username, since an email field is almost always a
+  login's account name; PIN and digits fields are the number pad offering one-time codes
+  from Messages and Mail (Firefox reports a web page's `inputmode="numeric"` code field as
+  digits; Chromium reports it as plain text); phone, URL and name fields offer the person's
+  number, URLs and name on the phone pad, URL keyboard (Return labelled Go) and word
+  capitals; number and date/time fields use numbers and punctuation. Autocorrect is off for
+  terminals and every purpose but normal, alpha and name. A filled password or code
+  replaces what was typed into the field. AutoFill sees one field at a time and never the
+  remote site, so it fills one field per pick and does not pre-suggest the site's login;
+  its suggestions are on the iOS keyboard, not Laptop's own. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
@@ -2476,6 +2917,9 @@ and restores its dock.
   Switching groups preserves active modifiers, also indicated on the controls menu.
   The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
+  Shared light UIKit haptics accompany accessory actions and Laptop custom-key activation,
+  including held-arrow/Delete repeats. Feedback belongs to the key controls, independent
+  of text transport; the system keyboard retains its own iOS feedback setting.
   Remote inputs share the same text/composition and modifier handling, with a menu toggle
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
   Native fields use UIKit text editing, selection and IME; navigation moves native text
@@ -2601,8 +3045,22 @@ The control socket's `notification` events become local notifications while the 
 When the host has APNs configured, Computer settings offers per-device switches for
 approvals, task results and desktop notifications. Enabling them requests permission and
 registers the device's APNs token (`POST /v1/devices/push`). Approval notifications carry
-actions that call the approval route; task notifications open the task. Signing out
+actions that call the approval route; task notifications open the task, and command
+notifications the command. Signing out
 unregisters the device.
+
+A notification's buttons come from a category iOS must already have when it is shown. For
+a Linux notification it posts itself, the app registers a category for the notification's
+own buttons (`ACTION:<key>`) and reply (a text input titled with the application's label,
+else Reply, with its placeholder), named by a digest of them, before posting; it keeps the
+32 most recently used, with `AGENT_APPROVAL` and `DESKTOP_REPLY`, across launches. A push
+arrives without the app running, so it uses the fixed `DESKTOP_REPLY` (Reply) and shows no
+application buttons. A button or a reply calls `POST /v1/notifications/:id/respond` in the
+background; if that fails, a notification says why and repeats the reply's text. Opening a
+Linux notification answers `default` when the application offered it, and opens the
+application whose desktop ID matches `desktopEntry` (ignoring case and `.desktop`) like
+opening it from Home: its existing window is shown, else it is launched. Without a match the
+app opens as it is.
 
 ### Live Activities and widgets
 
@@ -2610,7 +3068,7 @@ The app starts a Live Activity for each running agent task and registers its upd
 with `POST /v1/activities`, and registers the device's push-to-start token with
 `POST /v1/activities/start-token`. It also updates or ends an activity while in the
 foreground, and unregisters both on sign-out. The widget extension renders the Lock Screen
-and Dynamic Island presentations and opens the agent task on tap.
+and Dynamic Island presentations and opens the agent task or command on tap.
 
 The WidgetKit extension reads the pairing from the shared Keychain access group and fetches
 the computer's state and running agent count without waking it; WidgetKit schedules its
@@ -2622,14 +3080,36 @@ that wakes or parks the computer.
 
 App Intents wake or park the computer, open a Linux app or run one of its desktop actions
 (New Private Window, a new document), open a URL on the computer, ask a computer agent (an approval-gated task, returning a task link), open, get or save computer
-files, and run the four Craft operations. App shortcuts offer phrases to Siri and
-Shortcuts. App and file entities use the authenticated host API. File paths are relative to
+files, run the four Craft operations, and run a command on the computer. App shortcuts offer
+phrases to Siri and Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
+
+Computer settings > Shortcuts opens Caboose’s page in Apple Shortcuts or a new shortcut
+editor, including while the host is unavailable. Users choose actions and configure their
+parameters in Apple Shortcuts. The advertised actions include Export Files and Combine
+PDFs. Export Files takes an app (PhotoCraft, LightCraft or FilmCraft), files, and a format;
+the format options follow the selected app. It validates format and input count before
+staging files. The selected app must be installed on the computer. The three individual
+export intents remain executable for saved shortcuts but are hidden from action discovery.
 
 Craft intents stage their inputs under `.caboose-jobs/<job>` through `/v1/fs`, call
 `POST /v1/catalog/:id/run`, download the outputs, and move the job directory to Trash after
 success. A failed or interrupted job's directory is kept for inspection. CLI warnings are
 returned to the shortcut.
+
+Run Command on Computer takes a script, optional input text (standard input, at most 1 MiB)
+and input files, whether to wait for the result and for how long (default 25 s), and a time
+limit in minutes (default 60). It uploads the files to `.caboose-jobs/cmd-<id>/in/` under their
+own names (made plain and distinct: `photo.jpg`, `photo (2).jpg`), calls `POST /v1/commands`,
+then long-polls `GET /v1/commands/:id` until the command ends or the wait is over. It returns a
+Command Result with the output, errors, status, whether it finished, exit code, a
+`caboose://command/<id>` link and the files from `out/`, downloaded. A succeeded command's job
+directory then moves to Trash; a failed one's stays. A non-zero exit is a result, not an
+error, so a shortcut can branch on it. A command still running when the wait ends keeps
+running: the shortcut gets its link, and the Live Activity and notification report its end.
+The link opens the command in the app, which follows it until it ends, shows its output and
+errors, cancels it, and saves its files to `~/Downloads` (moving them, then the job directory
+to Trash).
 
 File search lists the home recursively through `/v1/fs`, skipping unreadable or removed
 directories and the top-level `.caboose-jobs` directory, and sorts by modification time.
@@ -2737,12 +3217,38 @@ app group and a Keychain access group.
 
 ### Native bridge on the phone
 
-Linux file dialogs open the iOS document picker (Open) or a native sheet browsing the
-computer (Save, Choose Folder); a picked file outside the computer is copied to it and kept
-in sync like [an opened document](#open-in-place). The computer follows the phone's
-appearance, its media appears in Now Playing, and, when the owner turns it on, it gets the
-phone's location while Caboose is open. Computer settings has the switches. See
+Linux file dialogs open from Files (the iOS document picker), Photos, the camera or the
+document scanner, as the application's filters accept them (Open), or a native sheet
+browsing the computer (Save, Choose Folder); a picked file outside the computer is copied
+to it and kept in sync like [an opened document](#open-in-place), and photos, captures and
+scans become new files in `Caboose Documents`, converted to a format the application takes
+when needed. `caboose-scan` opens the scanner from the computer. The computer follows the
+phone's appearance, its media appears in Now Playing, and, when the owner turns it on, it
+gets the phone's location while Caboose is open. Computer settings has the switches. See
 [native-bridge.md](native-bridge.md#app).
+
+The Windows x64 installer embeds its Rust supervisor and installation scripts. It
+checksums the same release's Linux host bundle and dedicated Debian WSL root filesystem,
+imports a `Caboose` distribution with systemd and Docker, and selects the container runtime
+with WSL GPU support. It reuses the transactional mirrored-networking configuration,
+registers a per-user S4U startup task and a login tray app, and preserves the distribution
+on uninstall unless purge is explicitly selected. Its pairing window reads the local
+owner credential through WSL and sends it only as an HTTP bearer header. Unattended
+startup requires the documented real Windows cold-boot acceptance check.
+
+The macOS disk image carries a self-installing `Caboose.app`. Its embedded runtime
+archive contains the host and a bare menu app, without a recursive payload. On first
+launch or version change it runs the bundled per-user installer and preserves settings
+and computer disks. The native pairing window opens account setup in the browser when
+needed, then uses the local owner-token file only as an HTTP bearer header to mint
+phone codes. Closing the window cancels its status polling. The login menu runs from
+the installed version; a first GUI installation starts that menu at the next login.
+
+After initial web setup creates the operator account and household, the console shows
+phone pairing before opening the dashboard. Pairing uses the owner's computer and its
+single-use ten-minute code, with reachable addresses from the host and console origin.
+The page observes new phone sign-ins and image download status without waking the computer;
+it can enable Tailscale HTTPS and can continue to the console without pairing.
 
 ## 7. Security model
 
@@ -2755,8 +3261,16 @@ phone's location while Caboose is open. Computer settings has the switches. See
   sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
   is closed: the first account comes from setting the host up with its one-time code, the
   rest from single-use invitation links. The host allows twenty sign-in, setup or
-  invitation attempts per client in ten minutes, then answers 429. An administrator
-  sees only their tenants' computers; only the operator sees the host itself.
+  invitation attempts per client in ten minutes, then answers 429; behind a reverse proxy,
+  the client is the address the proxy forwarded only when the proxy is in
+  `CABOOSE_TRUSTED_PROXIES` or on loopback. A session cookie proves who the browser is,
+  not which page sent the request, so a state-changing request or a WebSocket upgrade
+  carrying one is refused (403, before the route runs) unless the browser vouches for the
+  page: `Sec-Fetch-Site` of `same-origin` or `none`, or an `Origin` equal to the host's own
+  origin (the `Host` header, over HTTPS when a trusted proxy says so) or to
+  `CABOOSE_PUBLIC_URL`'s. Bearer tokens need no such check: another site cannot attach
+  them. An administrator sees only their tenants' computers; only the operator sees the
+  host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
@@ -2783,7 +3297,11 @@ phone's location while Caboose is open. Computer settings has the switches. See
   validated and bounded, and the host never relays a guest-supplied file path.
 - **Guest commands.** The host passes arguments, never shell strings built from client
   input; Craft jobs and catalog operations run fixed argument vectors, and catalog MCP
-  commands are restricted to plain words.
+  commands are restricted to plain words. `/v1/commands` runs a client's script as
+  `caboose`, which adds no authority: the same owner, administrator and phone tokens already
+  open a shell as `caboose` through `/v1/terminal`. The script and its input reach the
+  computer as files through the file service, never as arguments, and the supervisor's result
+  is checked field by field before it is stored or returned.
 - **Privileged host container.** The Compose deployment (`deploy/compose.yaml`) runs the
   host in a privileged container for KVM, loop mounts and TAP networking. Its TAP,
   forwarding and NAT rules live in the container's network namespace, and the guest can
@@ -2847,12 +3365,52 @@ resumes its conversation with the new runner and applies the choice before promp
 
 Synthetic mouse clicks from app cards, the desktop and its trackpad retain a 100 ms button-down interval and a 20 ms up interval between queued clicks. This lets frame-sampled desktop interfaces observe both edges. A drag or detached input view cancels pending clicks and releases the active button; queued input is fenced to the original session connection and window. Native touch sequences retain their original phases.
 
-An app card reasserts its measured viewport when the guest resizes the window after opening, including onboarding transitions. Corrections are limited to two per one-second burst so an app enforcing a minimum size does not cause a configure loop; a later app resize or viewport change starts a new burst.
+An ordinary app card requests its measured viewport within the app's positive per-axis
+minimum and maximum size hints, including hints received after opening. A minimum wins
+over an inconsistent maximum. Dialogs follow the same size rule and fit their reported
+picture when they cannot shrink to the viewport. Corrections are limited to two per
+one-second burst so a refused size does not cause a configure loop; a later app resize or
+viewport change starts a new burst. App-requested fullscreen retains compositor-owned
+monitor geometry and aspect-fit presentation/input until an explicit exit.
+
+Switchyard tiles, app cards and desktop snap placement share viewport-aspect sizing in
+`WindowSizePolicy`: when a minimum width requires a larger remote surface, its height
+grows proportionally if the size hints permit it. Fixed-size or conflicting constraints
+fall back to independent axis limits. Ordinary floating-window resizing keeps independent
+axes. Switchyard uses the card's bounded reconciliation after app-driven size changes;
+sending a target does not imply the app accepted it. Presentation and input continue to
+use the reported surface until the replacement size arrives.
+
+The device's virtual monitor retains its initial full-screen mode, chosen DPI and
+render scale in a validated local preference keyed by the existing computer identity.
+Start/resume restores that selection before announcing outputs. Uncached Home sends an
+empty display set, retaining the server's existing/default output; it does not choose a
+fallback DPI. The first measured device desktop or card selects the mode once, using its
+existing render scale and text DPI. Card, keyboard and desktop-stage measurements do not
+replace it. The attached UIWindow supplies transient physical dimensions: the full window
+in Tablet mode and its upper panel in Laptop mode, with the reserved division converted
+into window coordinates and keyboard overlap excluded. Rotation and posture change those
+dimensions at the retained render scale and DPI. Leaving Laptop restores the current full
+window dimensions, including when the saved preference predates that measurement. The
+transient dimensions do not overwrite the saved selection. External
+monitors take precedence without overwriting the device preference; explicit owner zoom
+updates the device DPI. Window viewports and visual render scale remain separate from monitor selection. Desktop surfaces occupy the model's
+shown rectangle directly; there is no second inner aspect-fit transform.
+This stabilizes output announcements; it does not guarantee a desktop application's
+minimum resolution or establish Wine compatibility with explicit live DPI changes.
 
 Window content and input retain the server-reported size while a resize is pending.
 Apps can constrain or decline a requested size without answering again; such windows
 remain fitted at their actual aspect ratio. Optimistic placement moves the window's
 origin only, and a reported content size is applied even during placement reconciliation.
+
+Keyboard-driven tile and card transitions retain the last Metal picture's dimensions
+independently of guest configure metadata. The slot moves with native layout animation;
+the picture uses a uniform fit, and replacement picture bounds change atomically before
+presentation. Popup roots and text drops use that same fitted rectangle; direct input
+inverts it into the currently reported guest coordinates. Tablet consumes SwiftUI's
+keyboard-adjusted proposal once, while Laptop alone measures keyboard occlusion. Neither
+path changes physical monitor DPI.
 
 Chat deletion uses `DELETE /v1/agent/tasks/:id` with `{ "stop": true }` for an
 explicit stop-and-delete operation; omitting `stop` rejects a running, paused, or queued
@@ -2866,3 +3424,20 @@ files in the task directory. Provider-side conversation retention is unchanged.
 `agent.task.deleted` informs connected phones. Agents > Chats offers native swipe Delete
 with confirmation; active chats show Stop and Delete. Successful deletion clears the
 selection, drafts, title and cached transcript, and fences late responses for that chat.
+
+### Computer resource measurements
+
+The console's Usage dashboard and computer overview distinguish configured limits
+from measured consumption. Authorized per-computer usage reads expose container
+cgroup memory charge, inactive file cache, runtime memory limit, CPU activity normalized
+to the runtime vCPU limit, and measured CPU seconds with coverage over a rolling 30-day
+window. A bounded host collector reads local Docker Engine counters without executing
+inside or waking a computer. Hourly aggregates persist under the image root; missing
+intervals, counter resets and host restarts never fabricate historical CPU time.
+AppKit desk does not expose VM resource counters, so VM RAM and CPU are unavailable.
+Explicit container storage refresh validates the configured named volume or exact
+absolute bind-home source against the inspected `/home/caboose` mount and reports
+dedicated-home allocated file blocks and
+Docker logical layer sizes separately; shared/reflink bytes are never attributed as
+unique physical cost. See [capacity and usage](capacity.md) for authorization,
+measurement definitions, collection bounds and supported runtime limitations.

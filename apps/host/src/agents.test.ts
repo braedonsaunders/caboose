@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  AgentConflictError, AgentInputError, AgentNotFoundError, AgentTasks, LEGACY_SUMMARY, describeRequest, interpretLine, parsePoll, parseRequest,
+  AgentConflictError, AgentIdentityError, AgentInputError, AgentNotFoundError, AgentTasks, ATTACH_IDENTITY, LEGACY_SUMMARY, describeRequest, interpretLine, parsePoll, parseRequest,
   readAttachments, transcriptEntry, type AgentEvent, type AgentGuest, type AgentResolver,
 } from './agents.js'
 import type { AgentLaunch } from './registry.js'
@@ -103,6 +103,8 @@ function fakeGuest() {
   let beforeCancel: (() => Promise<void>) | undefined
   let beforeLaunch: ((id: string) => void) | undefined
   let claimLaunches = true
+  let crashBeforeMarker = false
+  const attaches: string[] = []
   let listing = ''
   const task = (id: string): FakeTask => {
     let entry = tasks.get(id)
@@ -142,6 +144,23 @@ function fakeGuest() {
       }
       if (rest[1]?.startsWith('// delete-agent-task')) { tasks.delete(idOf(rest[0]!)); return '' }
       if (rest[1]?.startsWith('// retire-model-runner')) { task(idOf(rest[0]!)).alive = false; return '' }
+      if (rest[1]?.startsWith('// caboose attach identity')) {
+        // Mirrors ATTACH_IDENTITY; its file logic is exercised for real in its own test.
+        const dir = rest[0]!, state = task(idOf(dir)), [id, staged] = [rest[2]!, rest[3]!]
+        attaches.push(idOf(dir))
+        const stagedText = state.files.get(`${dir}/${staged}`); state.files.delete(`${dir}/${staged}`)
+        if (state.alive && !state.exitCode) {
+          const turn = String(Math.max(1, ...state.inbox.filter(x => x !== 'cancel').map(x => JSON.parse(x).turn))).padStart(6, '0')
+          if ((state.receipts.get(turn) as { state?: string } | undefined)?.state !== 'completed') return 'busy\n'
+          state.alive = false; state.exitCode = '143'
+        }
+        const config = JSON.parse(state.files.get('task.json')!), marker = state.files.get(`${dir}/profile-id`)
+        if ((config.profileId !== undefined && config.profileId !== id) || (marker && marker !== id)) return 'conflict\n'
+        if (config.profileId !== id || !state.files.has(`${dir}/profile-instructions.txt`)) state.files.set(`${dir}/profile-instructions.txt`, stagedText ?? '')
+        state.files.set('task.json', JSON.stringify({ ...config, profileId: id, agentTools: true }))
+        if (!crashBeforeMarker) state.files.set(`${dir}/profile-id`, id)
+        return crashBeforeMarker ? Promise.reject(new Error('host lost the guest')) : 'ready\n'
+      }
       if (script.includes('requested-model.json.part')) {
         task(idOf(rest[0]!)).files.set('requested-model.json', rest[1]!)
         return ''
@@ -211,8 +230,9 @@ function fakeGuest() {
     },
   }
   return {
-    guest, calls, task,
+    guest, calls, task, attaches,
     get polls() { return polls },
+    crashBeforeMarker: (value: boolean) => { crashBeforeMarker = value },
     beforeCancel: (hook: () => Promise<void>) => { beforeCancel = hook },
     beforeLaunch: (hook: (id: string) => void) => { beforeLaunch = hook },
     claimOnLaunch: (value: boolean) => { claimLaunches = value },
@@ -1297,7 +1317,7 @@ describe('persistent profile tasks', () => {
       expect(bindTask).toHaveBeenCalledTimes(1)
     } finally { tasks.pause() }
   })
-  it('drains an in-flight mailbox poll after pausing', async () => {
+  it('drains an in-flight mailbox event after pausing', async () => {
     const fake = fakeGuest()
     let release!: () => void
     const waiting = new Promise<void>(resolve => { release = resolve })
@@ -1307,7 +1327,8 @@ describe('persistent profile tasks', () => {
       resolver: resolver(), pollMs: 10, toolJournal: async () => { if (++calls > 1) await waiting; return calls === 1 ? journal : null },
     })
     try {
-      await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      const task = await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      const delivery = tasks.acceptMailbox({ id: task.id, request: b64('{}') })
       await vi.waitFor(() => expect(calls).toBeGreaterThan(1))
       tasks.pause()
       let drained = false
@@ -1316,6 +1337,7 @@ describe('persistent profile tasks', () => {
       expect(drained).toBe(false)
       release()
       await done
+      await delivery
       expect(drained).toBe(true)
     } finally { release(); tasks.pause() }
   })
@@ -1326,5 +1348,279 @@ describe('persistent profile tasks', () => {
       await expect(s.tasks.start({ prompt: 'Hi' }, { profile: { ...profile, workspace: '/etc' } })).rejects.toThrow('Invalid persistent')
       expect(s.fake.calls).toHaveLength(0)
     } finally { s.tasks.pause() }
+  })
+})
+
+describe('ordinary chats with a default identity', () => {
+  const identity = { id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', instructions: 'You are Stand-in.\n\nUse your memory and routine tools.' }
+  function tools(bindings = new Map<string, string>()) {
+    const bindTask = vi.fn(async (taskId: string, profileId: string) => {
+      const existing = bindings.get(taskId)
+      if (existing && existing !== profileId) throw new Error('Tool task binding conflicts')
+      bindings.set(taskId, profileId)
+    })
+    return { bindings, bindTask, journal: { bindTask, profileForTask: (taskId: string) => bindings.get(taskId) } as unknown as AgentToolJournal }
+  }
+  function withIdentity(fake: ReturnType<typeof fakeGuest>, journal: AgentToolJournal, defaultIdentity = vi.fn(async (_agent: string, _name: string) => identity), events: AgentEvent[] = []) {
+    const tasks = new AgentTasks(() => fake.guest, event => events.push(event), () => () => {}, { resolver: resolver(), pollMs: 60_000, idleMs: 120_000, toolJournal: async () => journal, defaultIdentity })
+    return { tasks, defaultIdentity, events }
+  }
+  /** A chat started before default identities: one finished turn, its runner idle and waiting. */
+  async function legacyChat(fake: ReturnType<typeof fakeGuest>) {
+    const old = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, idleMs: 120_000 })
+    const task = await old.start({ prompt: 'hello', model: 'beta' })
+    old.pause()
+    fake.append(task.id, user(1)); fake.append(task.id, end(1, 'Hi there.'))
+    fake.task(task.id).receipts.set('000001', { turn: 1, deliveryId: JSON.parse(fake.task(task.id).inbox[0]!).deliveryId, state: 'completed' })
+    return task
+  }
+  const scripts = (fake: ReturnType<typeof fakeGuest>) => fake.calls.map(call => call.join(' '))
+
+  it('gives a new ordinary chat its host-bound identity in its own directory', async () => {
+    const fake = fakeGuest()
+    const { journal, bindTask } = tools()
+    const { tasks, defaultIdentity } = withIdentity(fake, journal)
+    try {
+      fake.beforeLaunch(() => { expect(bindTask).toHaveBeenCalledTimes(1) })
+      const task = await tasks.start({ prompt: 'Market update every weekday?', approvals: 'ask' })
+      expect(defaultIdentity).toHaveBeenCalledWith('stand-in', 'Stand-in')
+      expect(bindTask).toHaveBeenCalledWith(task.id, identity.id)
+      expect(task).toMatchObject({ profileId: identity.id, approvals: 'ask' })
+      const dir = `/home/caboose/Agents/${task.id}`
+      expect(JSON.parse(fake.task(task.id).files.get('task.json')!)).toMatchObject({ cwd: dir, profileId: identity.id, agentTools: true, approvals: 'ask' })
+      expect(fake.task(task.id).files.get(`${dir}/profile-instructions.txt`)).toBe(identity.instructions)
+      expect(scripts(fake).some(script => script.includes('mkdir -p -- "$1"'))).toBe(false)
+      fake.beforeLaunch(() => {})
+      // Explicit profiles and stable-id admissions never take the implicit identity.
+      const profiled = await tasks.start({ prompt: 'hi', profileId: identity.id }, { profile: { ...identity, workspace: `/home/caboose/AgentWorkspaces/${identity.id}` } })
+      expect(JSON.parse(fake.task(profiled.id).files.get('task.json')!).cwd).toBe(`/home/caboose/AgentWorkspaces/${identity.id}`)
+      expect(defaultIdentity).toHaveBeenCalledTimes(1)
+    } finally { tasks.pause() }
+  })
+
+  it('refuses to start an ordinary chat without its tools, with an actionable error', async () => {
+    const fake = fakeGuest()
+    const archived = vi.fn(async () => { throw new AgentIdentityError('Stand-in is archived. Restore it in agent profiles.') })
+    const { tasks } = withIdentity(fake, tools().journal, archived)
+    await expect(tasks.start({ prompt: 'hi' })).rejects.toThrow('Restore it')
+    const full = tools(); full.bindTask.mockRejectedValue(new Error('Tool journal capacity reached'))
+    const capped = withIdentity(fake, full.journal).tasks
+    await expect(capped.start({ prompt: 'hi' })).rejects.toThrow(AgentIdentityError)
+    await expect(capped.start({ prompt: 'hi' })).rejects.toThrow('capacity reached')
+    const unavailable = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, toolJournal: async () => null, defaultIdentity: async () => identity })
+    await expect(unavailable.start({ prompt: 'hi' })).rejects.toThrow('unavailable')
+    expect(scripts(fake).some(script => script.includes('> task.json'))).toBe(false)
+  })
+
+  it('upgrades an idle legacy chat on its next reply, keeping session, cwd, model and transcript', async () => {
+    const fake = fakeGuest()
+    const legacy = await legacyChat(fake)
+    const dir = `/home/caboose/Agents/${legacy.id}`
+    const before = JSON.parse(fake.task(legacy.id).files.get('task.json')!)
+    const transcript = fake.task(legacy.id).transcript.toString()
+    const { journal, bindTask, bindings } = tools()
+    // The host binding is durable before the guest configuration changes.
+    bindTask.mockImplementationOnce(async (taskId: string, profileId: string) => { expect(fake.attaches).toEqual([]); bindings.set(taskId, profileId) })
+    const { tasks, defaultIdentity } = withIdentity(fake, journal)
+    try {
+      await tasks.restore()
+      expect(tasks.list()[0]).toMatchObject({ id: legacy.id, status: 'succeeded' })
+      expect(tasks.list()[0]!.profileId).toBeUndefined()
+      expect(fake.task(legacy.id).alive).toBe(true)
+      const replied = await tasks.reply(legacy.id, { prompt: 'Can you give me an update every weekday morning?' })
+      expect(defaultIdentity).toHaveBeenCalledWith('stand-in', 'Stand-in')
+      expect(bindings.get(legacy.id)).toBe(identity.id)
+      expect(replied).toMatchObject({ status: 'running', turns: 2, profileId: identity.id })
+      const after = JSON.parse(fake.task(legacy.id).files.get('task.json')!)
+      expect(after).toEqual({ ...before, profileId: identity.id, agentTools: true })
+      expect(fake.task(legacy.id).files.get(`${dir}/profile-id`)).toBe(identity.id)
+      expect(fake.task(legacy.id).files.get(`${dir}/profile-instructions.txt`)).toBe(identity.instructions)
+      expect(fake.task(legacy.id).transcript.toString()).toBe(transcript)
+      // Binding, then guest configuration and runner retirement, then admission and a new runner.
+      const order = scripts(fake)
+      const attach = order.findIndex(script => script.includes('caboose attach identity'))
+      const launch = order.findIndex(script => script.includes('echo launched'))
+      expect(attach).toBeGreaterThan(-1); expect(launch).toBeGreaterThan(attach)
+      expect(JSON.parse(fake.task(legacy.id).published.get('000002')!).text).toContain('weekday')
+      // Later replies and a restarted host do not repeat the upgrade.
+      fake.append(legacy.id, user(2)); fake.append(legacy.id, end(2, 'Done.')); await tasks.poll()
+      await tasks.reply(legacy.id, { prompt: 'thanks' })
+      expect(fake.attaches).toEqual([legacy.id])
+      const restarted = withIdentity(fake, journal).tasks
+      try {
+        await restarted.restore()
+        expect(restarted.list()[0]!.profileId).toBe(identity.id)
+        expect(bindTask).toHaveBeenCalledTimes(1)
+      } finally { restarted.pause() }
+    } finally { tasks.pause() }
+  })
+
+  it('never interrupts a runner that is not provably idle and admits nothing on failure', async () => {
+    const fake = fakeGuest()
+    const legacy = await legacyChat(fake)
+    fake.task(legacy.id).receipts.set('000001', { turn: 1, state: 'claimed' })
+    const { journal } = tools()
+    const { tasks } = withIdentity(fake, journal)
+    try {
+      await tasks.restore()
+      const journalBefore = fake.task(legacy.id).files.get('delivery.json')
+      await expect(tasks.reply(legacy.id, { prompt: 'again', operationId: 'op-1' })).rejects.toThrow('still finishing')
+      expect(fake.task(legacy.id).alive).toBe(true)
+      expect(fake.task(legacy.id).files.get('delivery.json')).toBe(journalBefore)
+      expect(JSON.parse(fake.task(legacy.id).files.get('task.json')!).agentTools).toBeUndefined()
+      expect(scripts(fake).some(script => script.includes('echo launched'))).toBe(false)
+      // Once the turn's completion receipt exists, the same reply goes through.
+      fake.task(legacy.id).receipts.set('000001', { turn: 1, state: 'completed' })
+      await expect(tasks.reply(legacy.id, { prompt: 'again', operationId: 'op-1' })).resolves.toMatchObject({ turns: 2, profileId: identity.id })
+    } finally { tasks.pause() }
+  }, 15_000)
+
+  it('requires restoring an archived identity instead of continuing without tools', async () => {
+    const fake = fakeGuest()
+    const legacy = await legacyChat(fake)
+    const { journal, bindTask } = tools()
+    const archived = vi.fn(async () => { throw new AgentIdentityError('Stand-in is archived. Restore it in agent profiles.') })
+    const { tasks } = withIdentity(fake, journal, archived)
+    try {
+      await tasks.restore()
+      await expect(tasks.reply(legacy.id, { prompt: 'again' })).rejects.toThrow('Restore it')
+      expect(bindTask).not.toHaveBeenCalled()
+      expect(fake.attaches).toEqual([])
+      expect(tasks.list()[0]!.queued).toBeUndefined()
+    } finally { tasks.pause() }
+  })
+
+  it('finishes an upgrade interrupted after the guest configuration and before its marker', async () => {
+    const fake = fakeGuest()
+    const legacy = await legacyChat(fake)
+    const { journal, bindTask } = tools()
+    const first = withIdentity(fake, journal).tasks
+    try {
+      await first.restore()
+      fake.crashBeforeMarker(true)
+      await expect(first.reply(legacy.id, { prompt: 'again' })).rejects.toThrow('lost the guest')
+    } finally { first.pause() }
+    expect(JSON.parse(fake.task(legacy.id).files.get('task.json')!).profileId).toBe(identity.id)
+    fake.crashBeforeMarker(false)
+    const second = withIdentity(fake, journal).tasks
+    try {
+      await second.restore()
+      expect(second.list()[0]!.profileId).toBeUndefined()
+      await expect(second.reply(legacy.id, { prompt: 'again' })).resolves.toMatchObject({ profileId: identity.id, turns: 2 })
+      expect(bindTask).toHaveBeenCalledTimes(1)
+      expect(fake.task(legacy.id).files.get(`/home/caboose/Agents/${legacy.id}/profile-id`)).toBe(identity.id)
+    } finally { second.pause() }
+  })
+
+  it('fails closed when guest markers or host bindings disagree', async () => {
+    const fake = fakeGuest()
+    const legacy = await legacyChat(fake)
+    const other = 'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    const bound = tools(new Map([[legacy.id, other]]))
+    const { tasks } = withIdentity(fake, bound.journal)
+    try {
+      await tasks.restore()
+      await expect(tasks.reply(legacy.id, { prompt: 'again' })).rejects.toThrow('different identity')
+      expect(fake.attaches).toEqual([])
+    } finally { tasks.pause() }
+    // A guest-written marker never grants tools or blocks the host binding check.
+    fake.task(legacy.id).files.set(`/home/caboose/Agents/${legacy.id}/profile-id`, other)
+    const forged = withIdentity(fake, tools(new Map([[legacy.id, identity.id]])).journal).tasks
+    try {
+      await forged.restore()
+      await expect(forged.reply(legacy.id, { prompt: 'again' })).rejects.toThrow('does not match its host binding')
+    } finally { forged.pause() }
+  })
+
+  it('keeps replies queued during a legacy turn when the identity cannot attach, and says why', async () => {
+    const fake = fakeGuest()
+    const old = new AgentTasks(() => fake.guest, () => {}, () => () => {}, { resolver: resolver(), pollMs: 60_000, idleMs: 120_000 })
+    const legacy = await old.start({ prompt: 'long job' })
+    old.pause()
+    fake.append(legacy.id, user(1))
+    const events: AgentEvent[] = []
+    const { tasks } = withIdentity(fake, tools().journal, vi.fn(async () => { throw new AgentIdentityError('Stand-in is archived. Restore it in agent profiles.') }), events)
+    try {
+      await tasks.restore()
+      expect(tasks.list()[0]!.status).toBe('running')
+      await tasks.reply(legacy.id, { prompt: 'and then this' })
+      fake.append(legacy.id, end(1, 'Job done.'))
+      await tasks.poll()
+      await vi.waitFor(() => expect(tasks.list()[0]!.status).toBe('failed'))
+      expect(tasks.list()[0]).toMatchObject({ queued: ['and then this'] })
+      expect(tasks.list()[0]!.summary).toContain('Restore it')
+      expect(events.at(-1)).toMatchObject({ type: 'agent.task.finished', status: 'failed' })
+      expect(scripts(fake).some(script => script.includes('echo launched'))).toBe(false)
+    } finally { tasks.pause() }
+  })
+})
+
+describe('ATTACH_IDENTITY', () => {
+  it('writes the identity once, keeps a committed snapshot and refuses a different one', async () => {
+    const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises')
+    const { execFileSync } = await import('node:child_process')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'caboose-attach-'))
+    const procRoot = await mkdtemp(join(tmpdir(), 'caboose-proc-'))
+    const id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    const run = async (profileId: string, text: string) => {
+      await writeFile(join(dir, '.staged.part'), text)
+      // An empty process table: the live-runner path needs a Linux guest (scripts/check-persistent-agents.mjs).
+      return execFileSync(process.execPath, ['-e', ATTACH_IDENTITY, dir, profileId, '.staged.part'], { env: { ...process.env, CABOOSE_PROC_ROOT: procRoot } }).toString().trim()
+    }
+    try {
+      const config = { agent: { id: 'codex-acp' }, model: 'beta', cwd: dir, approvals: 'ask', idleMs: 1 }
+      await writeFile(join(dir, 'task.json'), JSON.stringify(config))
+      // An interrupted earlier attempt left configuration but no marker.
+      await writeFile(join(dir, 'task.json'), JSON.stringify({ ...config, profileId: id }))
+      expect(await run(id, 'first')).toBe('ready')
+      expect(JSON.parse(await readFile(join(dir, 'task.json'), 'utf8'))).toEqual({ ...config, profileId: id, agentTools: true })
+      expect(await readFile(join(dir, 'profile-id'), 'utf8')).toBe(id)
+      expect(await run(id, 'second')).toBe('ready')
+      expect(await readFile(join(dir, 'profile-instructions.txt'), 'utf8')).toBe('first')
+      expect(await run('bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee', 'other')).toBe('conflict')
+      await expect(readFile(join(dir, '.staged.part'))).rejects.toThrow()
+    } finally { await rm(dir, { recursive: true, force: true }); await rm(procRoot, { recursive: true, force: true }) }
+  })
+
+  it('retires a live runner only when its current turn completed, and waits until it is gone', async () => {
+    const { mkdtemp, mkdir, readFile, rm, symlink, writeFile } = await import('node:fs/promises')
+    const { execFile, spawn } = await import('node:child_process')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'caboose-attach-'))
+    const procRoot = await mkdtemp(join(tmpdir(), 'caboose-proc-'))
+    const id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+    // A stand-in runner process group, described by a process table entry the test owns.
+    const child = spawn('sleep', ['60'], { detached: true, stdio: 'ignore' })
+    const pid = child.pid!
+    const entry = join(procRoot, String(pid))
+    const exited = new Promise<void>(resolve => child.on('exit', () => { void rm(entry, { recursive: true, force: true }).then(() => resolve()) }))
+    const run = (text: string) => new Promise<string>((resolve, reject) => {
+      void writeFile(join(dir, '.staged.part'), text).then(() => execFile(process.execPath, ['-e', ATTACH_IDENTITY, dir, id, '.staged.part'], { env: { ...process.env, CABOOSE_PROC_ROOT: procRoot } },
+        (error, stdout) => error ? reject(error) : resolve(stdout.trim())))
+    })
+    try {
+      await mkdir(entry); await mkdir(join(dir, 'receipts'))
+      await writeFile(join(entry, 'stat'), `${pid} (sh) S 1`)
+      await writeFile(join(entry, 'cmdline'), ['sh', '-c', `node /opt/caboose/agentd/caboose-agentd.mjs run "$PWD"`].join('\0'))
+      await symlink(dir, join(entry, 'cwd'))
+      await writeFile(join(dir, 'pid'), String(pid)); await writeFile(join(dir, 'turns'), '8')
+      await writeFile(join(dir, 'task.json'), JSON.stringify({ agent: { id: 'codex-acp' }, cwd: dir, approvals: 'ask' }))
+      await writeFile(join(dir, 'receipts/000008.json'), JSON.stringify({ turn: 8, state: 'claimed' }))
+      expect(await run('x')).toBe('busy')
+      expect(child.exitCode).toBeNull()
+      expect(JSON.parse(await readFile(join(dir, 'task.json'), 'utf8')).profileId).toBeUndefined()
+      await writeFile(join(dir, 'receipts/000008.json'), JSON.stringify({ turn: 8, state: 'completed' }))
+      await mkdir(join(dir, 'inbox')); await writeFile(join(dir, 'inbox/000009.prompt.json'), '{}')
+      expect(await run('x')).toBe('busy')
+      await rm(join(dir, 'inbox/000009.prompt.json'))
+      expect(await run('identity')).toBe('ready')
+      await exited
+      expect(child.signalCode).toBe('SIGTERM')
+      expect(JSON.parse(await readFile(join(dir, 'task.json'), 'utf8'))).toMatchObject({ profileId: id, agentTools: true })
+    } finally {
+      child.kill('SIGKILL'); await rm(dir, { recursive: true, force: true }); await rm(procRoot, { recursive: true, force: true }) }
   })
 })

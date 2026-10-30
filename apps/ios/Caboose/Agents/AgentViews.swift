@@ -57,8 +57,8 @@ struct ChatComposer: View {
 
         }
         .padding(12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 26))
-        .padding(.horizontal, 14).padding(.bottom, 8)
+        .glassEffect(.regular, in: .surface(cornerRadius: 26))
+        .padding(.horizontal, 14).shellComposerBottomPadding()
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .photosPicker(isPresented: $showingPhotos, selection: $photos, maxSelectionCount: max(1, 4 - draft.files.count), matching: .images)
@@ -120,7 +120,7 @@ struct ChatComposer: View {
                                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                                 }.accessibilityLabel("Remove \(file.attachment.name)")
                             }
-                            .padding(8).background(.white.opacity(0.06), in: .rect(cornerRadius: 12))
+                            .padding(8).background(.white.opacity(0.06), in: .surface(cornerRadius: 12))
                         }
                     }
                 }.scrollIndicators(.hidden)
@@ -398,7 +398,7 @@ struct TaskCard: View {
             }
         }
         .padding(14)
-        .glassEffect(.regular.tint(task.pendingApproval != nil ? Color.yellow.opacity(0.10) : .clear), in: .rect(cornerRadius: 22))
+        .glassEffect(.regular.tint(task.pendingApproval != nil ? Color.yellow.opacity(0.10) : .clear), in: .surface(cornerRadius: 22))
         .animation(.snappy, value: task.status)
     }
 }
@@ -591,7 +591,7 @@ struct ApprovalBanner: View {
                 ApprovalRow(task: task, approval: approval)
             }
             .padding(14)
-            .glassEffect(.regular, in: .rect(cornerRadius: 20))
+            .glassEffect(.regular, in: .surface(cornerRadius: 20))
             .padding(.horizontal, 12)
             .transition(.move(edge: .top).combined(with: .opacity))
             .id(approval.id)

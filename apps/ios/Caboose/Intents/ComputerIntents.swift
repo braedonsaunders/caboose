@@ -104,10 +104,9 @@ struct CabooseShortcuts: AppShortcutsProvider {
         #if CABOOSE_APP
         AppShortcut(intent: OpenComputerURLIntent(), phrases: ["Open a website on my computer with \(.applicationName)"], shortTitle: "Open Website", systemImageName: "globe")
         AppShortcut(intent: OpenComputerFileIntent(), phrases: ["Open a computer file with \(.applicationName)"], shortTitle: "Open File", systemImageName: "doc")
-        AppShortcut(intent: PhotoCraftConvertIntent(), phrases: ["Convert images with \(.applicationName)"], shortTitle: "Convert Images", systemImageName: "photo")
+        AppShortcut(intent: ExportFilesIntent(), phrases: ["Export files with \(.applicationName)"], shortTitle: "Export Files", systemImageName: "square.and.arrow.up")
         AppShortcut(intent: PDFCraftCombineIntent(), phrases: ["Combine PDFs with \(.applicationName)"], shortTitle: "Combine PDFs", systemImageName: "doc.on.doc")
-        AppShortcut(intent: LightCraftRenderIntent(), phrases: ["Develop a photo with \(.applicationName)"], shortTitle: "Develop Photo", systemImageName: "camera")
-        AppShortcut(intent: FilmCraftExportIntent(), phrases: ["Export a film with \(.applicationName)"], shortTitle: "Export Film", systemImageName: "film")
+        AppShortcut(intent: RunComputerCommandIntent(), phrases: ["Run a command on my computer with \(.applicationName)", "Run a \(.applicationName) command"], shortTitle: "Run Command", systemImageName: "terminal")
         #endif
     }
 }

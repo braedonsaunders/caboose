@@ -1,5 +1,6 @@
+import { DashboardPanel } from '../../components/console-ui.js'
 import * as React from 'react'
-import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
+
 import { Alert, AlertDescription, AlertTitle, Badge, Button, Spinner, Switch, toast } from '@braedonsaunders/appkit-ui'
 import { Copy, Globe } from 'lucide-react'
 import { CabooseApiError, type CabooseClient, type Reach } from '../../api.js'

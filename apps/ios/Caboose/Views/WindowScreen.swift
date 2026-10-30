@@ -1,12 +1,13 @@
 import CabooseKit
 import SwiftUI
 
-/// One Linux app, full screen, sized to the phone: the window is configured to exactly
-/// the space it is shown in, so the app lays itself out for this screen. A swipe in from
+/// One Linux app presented on the phone. Resizable windows fit the viewport within their
+/// size hints; fullscreen windows retain their monitor geometry. A swipe in from
 /// either side edge goes to the next or previous open app, in the order they opened.
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.openWindow) private var openWindow
     @State private var chromeVisible = true
     @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
@@ -127,10 +128,15 @@ struct WindowScreen: View {
         let popups = model.auxiliaryWindows(for: window)
         let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
         let frames = popupFrames(popups, over: window, size: size)
+        let natural = DesktopGeometry.surfaceSize(
+            natural: CGSize(width: window.presentationSize.width / model.pixelsPerPoint, height: window.presentationSize.height / model.pixelsPerPoint),
+            available: size, locallyRendered: window.game != nil)
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false,
+                                                  fullscreen: window.isFullscreen)
         return ZStack(alignment: .topLeading) {
             RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
                 .frame(width: size.width, height: size.height)
-                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint))
+                .modifier(WindowDrop(window: window, pixelsPerPoint: model.pixelsPerPoint, presentedFrame: shown))
             ForEach(popups) { popup in
                 if let frame = frames[popup.id] {
                     RemoteWindowCanvas(window: popup, keyboardVisible: model.keyboardVisible && keyTarget == popup.id)
@@ -139,6 +145,8 @@ struct WindowScreen: View {
                         .shadow(color: .black.opacity(0.45), radius: 18, y: 8)
                         .onAppear { fitDialog(popup, over: window, in: size) }
                         .onChange(of: size) { _, size in fitDialog(popup, over: window, in: size) }
+                        .onChange(of: popup.minimumSize) { _, _ in fitDialog(popup, over: window, in: size) }
+                        .onChange(of: popup.maximumSize) { _, _ in fitDialog(popup, over: window, in: size) }
                 }
             }
         }
@@ -149,17 +157,21 @@ struct WindowScreen: View {
         .overlay { cardEdges(from: window, width: size.width) }
         .onChange(of: window.isFullscreen) { _, fullscreen in
             withAnimation(.snappy) { chromeVisible = !fullscreen }
+            cardFit = CardWindowFit()
+            fit(window, to: size)
         }
         .onAppear { fit(window, to: size) }
         .onChange(of: size) { _, size in fit(window, to: size) }
         .onChange(of: window.id) { _, _ in cardFit = CardWindowFit(); fit(window, to: size) }
         .onChange(of: window.frame) { _, _ in fit(window, to: size) }
+        .onChange(of: window.minimumSize) { _, _ in fit(window, to: size) }
+        .onChange(of: window.maximumSize) { _, _ in fit(window, to: size) }
     }
 
     // MARK: Swiping between apps
 
     /// The open apps' windows in the order they opened, so swiping is predictable.
-    private var cardOrder: [RemoteWindow] { model.appWindows.sorted { $0.id < $1.id } }
+    private var cardOrder: [RemoteWindow] { model.workspaceWindows.sorted { $0.id < $1.id } }
 
     /// The app the card swipes towards: the next one for a swipe to the left.
     private func neighbour(of window: RemoteWindow, leftward: Bool) -> RemoteWindow? {
@@ -327,6 +339,10 @@ struct WindowScreen: View {
     /// The presenting toolbar button anchors these system actions beside the controls.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        // The card closes once the window's own iPadOS window takes it.
+        if let ref = model.windowRef(for: window) {
+            Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(value: ref) }
+        }
         Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
             model.session?.exitFullscreen(window, frame: window.frame)
             withAnimation(.snappy) { chromeVisible = true }
@@ -338,36 +354,37 @@ struct WindowScreen: View {
             Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
         }
         Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
-        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
+        Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.closeDiagnosed(window) }
     }
 
     /// Fill the shown area with the window, in Linux pixels.
     private func fit(_ window: RemoteWindow, to size: CGSize) {
         guard model.presentedWindowID == window.id, size.width > 0, size.height > 0, let session = model.session else { return }
         model.windowCardResized(to: size)
-        let target = DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint)
-        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
-            var state = ["maximized": false]
-            if model.externalDisplayActive && window.isFullscreen { state["fullscreen"] = false }
-            session.configure(window, frame: target, state: state)
-        }
         session.focus(window)
+        guard let target = WindowSizePolicy.fitting(
+            DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint),
+            minimum: window.minimumSize, maximum: window.maximumSize, fullscreen: window.isFullscreen)
+        else { return }
+        if cardFit.shouldCorrect(frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime) {
+            session.configure(window, frame: target, state: ["maximized": false])
+        }
     }
 
-    /// A dialog (not a menu or tooltip) is moved, and shrunk if it must be, to sit centred in
-    /// the shown area: apps size and place dialogs for a desktop, and half of one off the
-    /// edge of a phone cannot be reached. The server is told, so clicks land where it shows.
+    /// Center dialogs within their size hints. A minimum larger than the viewport is
+    /// retained; popup presentation fits the whole picture and its input transform.
     private func fitDialog(_ dialog: RemoteWindow, over parent: RemoteWindow, in size: CGSize) {
         guard model.presentedWindowID == parent.id, !dialog.isOverrideRedirect, let session = model.session,
               size.width > 0, size.height > 0 else { return }
         let scale = model.pixelsPerPoint
         let margin = 12 * scale
         let area = CGSize(width: size.width * scale, height: size.height * scale)
-        let width = min(dialog.frame.width, area.width - 2 * margin)
-        let height = min(dialog.frame.height, area.height - 2 * margin)
-        let target = CGRect(x: parent.frame.minX + (area.width - width) / 2,
-                            y: parent.frame.minY + (area.height - height) / 2,
-                            width: width, height: height).integral
+        let proposed = CGRect(x: 0, y: 0, width: max(1, min(dialog.frame.width, area.width - 2 * margin)),
+                              height: max(1, min(dialog.frame.height, area.height - 2 * margin)))
+        guard var target = WindowSizePolicy.request(proposed, minimum: dialog.minimumSize,
+            maximum: dialog.maximumSize, fullscreen: dialog.isFullscreen) else { return }
+        target.origin = CGPoint(x: (parent.frame.minX + (area.width - target.width) / 2).rounded(),
+                                y: (parent.frame.minY + (area.height - target.height) / 2).rounded())
         if dialog.frame != target { session.configure(dialog, frame: target) }
         session.focus(dialog)
     }
@@ -377,8 +394,8 @@ struct WindowScreen: View {
     private func popupFrames(_ popups: [RemoteWindow], over parent: RemoteWindow, size: CGSize) -> [Int: CGRect] {
         let scale = model.pixelsPerPoint
         let root = DesktopGeometry.surfaceFrame(
-            natural: CGSize(width: parent.frame.width / scale, height: parent.frame.height / scale),
-            available: size, resizing: false)
+            natural: CGSize(width: parent.presentationSize.width / scale, height: parent.presentationSize.height / scale),
+            available: size, resizing: false, fullscreen: parent.isFullscreen)
         let windows = Dictionary(uniqueKeysWithValues: ([parent] + popups).map {
             ($0.id, DesktopGeometry.WindowGeometry(frame: $0.frame, parent: $0.transientFor))
         })
@@ -423,24 +440,37 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let keyboardVisible: Bool
+    /// Stretches the last picture over the view while a new size is on its way.
+    var stretch = false
+    /// Where a tap's answer to whether the keyboard is wanted goes: the shell's keyboard
+    /// unless a window of its own keeps its own.
+    var keyboardWanted: ((Bool) -> Void)?
 
     func makeUIView(context: Context) -> YardSurfaceView {
         let view = YardSurfaceView(content: RemoteWindowView(session: model.session, window: window))
         view.content.pixelsPerPoint = model.pixelsPerPoint
+        view.content.onKeyboardWanted = keyboardHandler
+        return view
+    }
+
+    private var keyboardHandler: (Bool) -> Void {
+        if let keyboardWanted { return keyboardWanted }
         let model = model
-        view.content.onKeyboardWanted = { wanted in
+        return { wanted in
             if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
         }
-        return view
     }
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
+        view.content.onKeyboardWanted = keyboardHandler
+        view.stretch = stretch
         view.locallyRendered = window.game != nil
+        view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
-        view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,
-                              height: window.frame.height / model.pixelsPerPoint)
+        view.natural = CGSize(width: window.presentationSize.width / model.pixelsPerPoint,
+                              height: window.presentationSize.height / model.pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboardVisible && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }

@@ -1,0 +1,8 @@
+{
+  "name": "device-rumble",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "device.rumble", "type_id": 99, "fields": {"ms": 250, "weak": {"$float": 0.25}, "device": "gamepad-1", "strong": {"$float": 1.0}}}
+  ],
+  "hex": "6335000000a4626d7318fa647765616bfb3fd0000000000000666465766963656967616d657061642d31667374726f6e67fb3ff0000000000000"
+}

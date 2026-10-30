@@ -23,13 +23,15 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/agent-routines.ts` | Persistent per-computer routines, same-UUID task recovery and bounded run history; [adapter contract and tests](../../docs/agent-routines.md). |
 | `src/fs-proxy.ts`, `src/files.ts` | `/v1/fs`, `/v1/files` and the authenticated agent-app bridge, through the guest's file service. |
 | `src/terminal.ts` | `/v1/terminal`: the terminal relay to the guest's terminal service, its control messages and session routes. |
+| `src/gpu-relay.ts` | `/v1/gpu`: bounded binary live GPU transport, isolated from display/media flow control. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
+| `src/commands.ts`, `src/guest-command.py` | `/v1/commands`: owner scripts run detached in the computer, their supervisor, and their results in the host state. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
 | `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
 | `src/shared-storage.ts`, `src/backup.ts`, `src/restore-journal.ts`, `src/storage.ts` | Shared storage across parked microVM disks, phone backups and journaled restores, through `disk/`. |
 | `disk/` | `caboose-disk`, the Rust helper that shares blocks between disks, describes backups and deallocates zeros ([its README](disk/README.md)). |
-| `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs. |
+| `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs, commands. |
 | `scripts/` | Real-host checks, the Docker entrypoint and `setup-disks.sh`. |
 | `systemd/caboose-host.service` | A user-service unit for running from a checkout. |
 | `Dockerfile` | The self-hosting image (host, web console and Cloud Hypervisor). |
@@ -226,12 +228,13 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed: addresses or CIDR ranges separated by commas (loopback always is). List a proxy on another machine or in another container, or every client behind it shares one sign-in throttle. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
 | `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | The computers' image (container); pulled when missing if it names a registry. |
 | `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` (container). |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). Explicit storage measurement requires the matching inspected home mount and a locally accessible directory; bind paths must be absolute, without root-only, traversal or noncanonical slash spellings. |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |
 | `CABOOSE_GPU` | `auto` | `wsl`, `nvidia`, `dri` or `none`; `auto` detects `/dev/dxg`, then NVIDIA, then `/dev/dri/renderD128` (container). |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the computer reach private networks. |
@@ -291,6 +294,15 @@ setup until this is done; existing computers and paired phones continue to work.
 from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
 Postgres database) with the disks. The owner token keeps working for the whole API.
+
+A session cookie changes something, or opens a WebSocket, only from the console's own
+origin: the browser's `Sec-Fetch-Site` or `Origin` header must name it (the origin in
+`Host`, or `CABOOSE_PUBLIC_URL`), or the host answers 403 `cross-site request refused`
+before the route runs. Reads pass from anywhere. The owner and phone tokens are bearer
+headers no other site can attach, so they are not checked. Behind a reverse proxy that
+terminates HTTPS on another machine or in another container, list the proxy in
+`CABOOSE_TRUSTED_PROXIES` so the host believes its `X-Forwarded-Proto` and counts sign-in
+attempts per client rather than per proxy.
 
 ## Computers
 
@@ -380,6 +392,26 @@ the agent seat on port 14601, starting `caboose-display-agent.service` (or
 `caboose-session start-agent`) first if it is not running. The host does not parse the
 stream. Every open WebSocket holds a lease that keeps the computer awake.
 
+`/v1/gpu` is a separate binary WebSocket with the exact subprotocol
+`caboose.gpu.live.v1`. It uses the same computer authorization and revocation
+fences, rejects all query parameters (including agent-seat selection), and admits
+one pending or connected executor per computer. It relays to `/gpu` on the owner's
+existing display service using the current per-wake display token. The host supplies
+`X-Caboose-GPU-Computer` and a fresh `X-Caboose-GPU-Executor` UUID; client versions of
+these headers and the phone/owner bearer token are never forwarded. The guest must
+authenticate the display token before trusting the host identities.
+
+Messages are at most 256 KiB, with at most 1 MiB or 64 pending messages per direction.
+Compression and text messages are refused; each direction pauses independently.
+The relay forwards normal close code 1000 and waits at most one second for the
+other endpoint; errors and abnormal closes terminate both endpoints without
+manufacturing a normal-close receipt. The executor reservation lasts until both
+have closed. This transport state does not prove native resource retirement. A reconnect receives a new executor identity; no command history
+is replayed. The relay does not interpret GPU completion, capabilities or resource
+handles. It requires a matching guest `/gpu` implementation and does not enable the
+existing capture player or advertise a usable driver. Run its isolated socket and
+admission checks with `pnpm exec vitest run src/gpu-relay.test.ts src/gpu-server.test.ts`.
+
 ## Computer management
 
 The web console and the iOS app use `GET /v1/computer`, `PATCH /v1/computer/settings` and
@@ -450,7 +482,7 @@ display's launch environment, which names its control socket.
 
 `src/media.ts` reads the video playing in the computer's Chromium from
 `/home/caboose/.cache/caboose/media.json` (written by
-[`guest/media-handoff`](../../guest/media-handoff/README.md)) about once a second, only
+[`guest/media-handoff`](../../guest/media-handoff/README.md)) through the private Files event receiver, only
 while the computer is running and a display client is connected, and broadcasts
 `media.playing` and `media.stopped` on `/v1/control`. `GET /v1/media` returns the current
 state (null unless running; it never wakes or leases the computer).
@@ -462,15 +494,18 @@ returns `{ "sent": true }`, or 409 while the computer is not running. The contra
 ## Notifications and Live Activities
 
 Desktop notifications from the owner's session (see
-[`guest/notifications`](../../guest/notifications/README.md)) are drained from the guest
+[`guest/notifications`](../../guest/notifications/README.md)) arrive through the private Files event receiver
 while it runs and sent as `notification` events and, with APNs configured, as pushes.
+`POST /v1/notifications/:id/respond` answers one with an action or a reply through the
+guest's `caboose-notify`, waking a parked computer headless (`docs/architecture.md` §
+Desktop notifications).
 
 Set all four `CABOOSE_APNS_*` variables (the key is a private P-256 `.p8` file) to enable
 APNs. Devices are stored in `push-devices.json` and Live Activity registrations in
 `activities.json`, both under `CABOOSE_IMAGE_ROOT` with mode 0600. Agent task events update
 Live Activities; other producers can publish the generic job shape through
-`POST /v1/jobs/activity`. The sender uses the app topic with `.push-type.liveactivity`
-appended. The API and its limits are in `docs/architecture.md` § Notifications.
+`POST /v1/jobs/activity`; commands publish themselves once they have run for 10 s. The
+sender uses the app topic with `.push-type.liveactivity` appended. The API and its limits are in `docs/architecture.md` § Notifications.
 
 ## MCP Library
 
@@ -519,10 +554,20 @@ Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, o
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events
 and retention are in `docs/architecture.md` § Shortcuts and Spotlight.
 
+## Commands
+
+`POST /v1/commands` runs a Bash script as `caboose` in `~/.caboose-jobs/cmd-<id>/`, detached
+from the request: `src/guest-command.py` starts a supervisor in the guest that keeps bounded
+output, enforces the time limit and writes the result, and `src/commands.ts` polls for it,
+holds a lease while it runs and keeps results in the computer's `commands/` directory in the
+host state (mode 0600 files). The routes, bounds and retention are in `docs/architecture.md`
+§ Commands. The unit tests include `src/guest-command-check.py`, which runs the supervisor
+against real files, Bash and processes in a temporary directory (Python 3 and Bash).
+
 ## iOS handoff
 
 The host relays validated guest `phone.open`, `phone.share` and `phone.print` events only to
-owner-authenticated `/v1/control?phone=1` sockets, and polls the guest only while one is
+owner-authenticated `/v1/control?phone=1` sockets, and subscribes to guest events only while one is
 connected. `GET /v1/phone/files/:id` reads a staged file through the guest command channel;
 it accepts no arbitrary guest path and never wakes the computer. The schema and delivery
 rules are in `docs/architecture.md` § Phone handoff; the guest side is
@@ -548,8 +593,8 @@ appearance. A request timeout on the phone does not cancel work already admitted
 These run against a deployed host with a built guest, are separate from the unit tests, and
 change the computer as described. Except for `check-push.mjs`, each reads
 `CABOOSE_OWNER_TOKEN` and `CABOOSE_URL` from the environment; keep the token in your private
-environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-craft.mjs` and
-`check-open-app.sh` require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
+environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-craft.mjs`,
+`check-commands.mjs` and `check-open-app.sh` require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
 
 | Command | What it checks |
 | --- | --- |
@@ -563,11 +608,12 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
 | `node apps/host/scripts/check-fs.mjs` | Creates a temporary directory, uploads, lists, downloads a byte range, moves, and trashes its files and the directory. |
-| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using a disposable ext4 image; it does not exercise parked Files access. |
+| `bash apps/host/scripts/check-parked-appliance.sh <reflink-directory>` | Checks reflink and read-only libguestfs appliance access using disposable ext4 and Btrfs images through the production appliance reader; verifies unchanged disk bytes. It does not exercise the host HTTP API. |
 | `node apps/host/scripts/check-storage.mjs` | On a disposable Linux microVM host started with `CABOOSE_SHARED_STORAGE=on`, `CABOOSE_SHARED_STORAGE_DELAY_MS=5000` and `CABOOSE_PARKED_FILES=on` (`CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, `CABOOSE_OWNER_TOKEN`): makes two throwaway computers, checks the same data in both becomes shared storage and reads back unchanged, wakes one during a pass, then backs one up as a phone does (every chunk checked against its hash), changes it and restores it by uploading every chunk, and deletes both. |
 | `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
 | `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
+| `node apps/host/scripts/check-commands.mjs` | Runs commands through `/v1/commands` (waking the computer): one with a staged input file, standard input and an output file that checks it runs as `caboose` in a login shell in its job directory; a non-zero exit; 2 MB of output kept to 1 MiB; a time limit; a cancelled command while a park is refused; and a command that finishes after its request returned. Moves every job directory to Trash. |
 | `apps/host/scripts/check-open-app.sh` | With `CABOOSE_CHECK_FILE` (a local document) and `CABOOSE_CHECK_APP` (an installed desktop entry id): uploads the file and opens it with that app. Check the owner's display; the test copy stays in a uniquely named folder in the home. |
 
 For `check-parked-files.mjs`, use a dedicated disposable Linux microVM with a
@@ -597,7 +643,9 @@ provider, instructions, approval default and owner-editable memories. Profile AP
 available while the computer is parked. Tasks select `profileId`; new conversations receive
 its current context snapshot and share `~/AgentWorkspaces/<profile UUID>`. Existing
 conversations retain their snapshot. Archiving a profile prevents new starts and preserves
-its workspace. See the architecture contract for endpoints and limits.
+its workspace. Ordinary chats use a host-created default identity for their agent, so they
+have memory and routine tools in their own task directory; chats from before it receive it
+on their next idle reply. See the architecture contract for endpoints and limits.
 
 Agent model discovery uses `POST /v1/agents/:id/models`, backed by an ACP session with
 no prompts or MCP servers. Task creation accepts an advertised `model` id. Read a chat's
@@ -648,10 +696,16 @@ with disposable processes. The lock cannot fence VMMs started by older hosts.
 
 ### Migrate a legacy microVM disk
 
+The appliance accepts ext4 and Btrfs roots. Migration keeps the root filesystem and
+reclaims deleted system files with discard on its staged clone. Unlike sealed
+parked-file views, migration permits journal/log recovery inside libguestfs's
+private COW overlays when reading an uncleanly stopped source; the source bytes
+remain unchanged.
+
 On the Linux machine that owns the image root, stop the host and make sure the
 computer is cold-stopped. Local snapshots, cold snapshot pointers and incomplete
 snapshot staging block migration; parked memory is never discarded. The tool
-requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, and
+requires root, Python 3, guestfish, supermin, QEMU, `erofs-utils`, `btrfs-progs`, `attr` (for `getfattr`), and
 the pinned Cloud Hypervisor v54 binary. Set `CABOOSE_VMM_PATH` or pass `--vmm`
 if it is not `/usr/local/bin/cloud-hypervisor`. Use `--mkfs` and `--fsck`
 for nonstandard `erofs-utils` paths. The appliance kernel must be installed and readable by root. The host must provide local OFD locking and
@@ -671,9 +725,23 @@ reflinks, packs its existing `/usr` and `/opt`, and rebuilds its initramfs with
 the matching installed kernel. Network-disabled libguestfs appliances parse the
 disk; guest-controlled hooks execute on a separate disposable clone. Migration
 rejects hard links crossing the system-image boundary. The original disk and
-the retained image remain in the image root. For the packing appliance, the
-image-root filesystem must have at least eight times the disk's logical size plus 5 GiB available; the tool refuses when this
-space is unavailable.
+the retained image remain in the image root.
+
+Packing sizes its scratch disk from `/usr` and `/opt` logical file lengths measured
+inside a bounded read-only appliance, counting hardlinks per pathname and sparse
+files at their full logical size. It also measures serialized extended attributes
+and allows 16 KiB per entry for metadata, plus fixed tool/filesystem headroom.
+The measurement rejects more than one million entries, 1 TiB of logical content,
+or 16 MiB or more of serialized extended attributes. Read-only scans reserve 16 GiB;
+packing reserves four times its computed scratch size plus 4 GiB. These limits
+include simultaneous output, cache, COW and log artifacts; unavailable space fails
+before that phase starts.
+
+Guest-controlled initramfs hooks retain their disk-size-based allowance: four times
+the source disk's logical size plus 4 GiB (244 GiB for a 60 GiB source). The final
+layout phase requires twice the logical disk size plus 2 GiB. Packing can require
+more for a large expanded tree. Optional offline migration therefore still needs
+substantial free space; new-image creation does not use these migration allowances.
 
 If interrupted, keep the host stopped and run `recover` with the same image
 root and computer ID. Recovery refuses while a preparation appliance is running
@@ -686,8 +754,14 @@ writes made after migration are absent from the restored original. A subsequent
 migration archives the rollback artifacts in `migration-images`.
 
 The transaction and appliance checks run with `python3` on the corresponding
-`apps/host/scripts/tests/test-migration-*.py` files. Real-device checks require
-a disposable Linux microVM; never run them on a production computer.
+`apps/host/scripts/tests/test-migration-*.py` files.
+`sudo /usr/bin/python3 apps/host/scripts/tests/check-compressed-migration.py --work DIR`
+checks production measurement and packing of disposable ext4/Btrfs fixtures,
+including hardlinks, xattrs, sparse files and symlinks. It needs the migration
+appliance tools, at least 21 GiB free, and uses a 600-second deadline per appliance.
+It retains failures with their guard journals for diagnosis. Full migration and
+rollback checks require a disposable Linux microVM; never run them on a production
+computer.
 ### Recovering an interrupted template source build
 
 An incomplete source build is never silently reused. Stop the Caboose host and
@@ -701,3 +775,46 @@ It preserves any memory inode pinned by a descendant. For an incomplete source
 with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
 or child memory inode while a VMM may still map it.
+
+## Guest event receiver
+
+`src/guest-events.ts` owns one authenticated bounded Files long poll per running
+computer. It dispatches validated channel envelopes to the existing bridge, phone,
+media, notification and task adapters, then acknowledges accepted queue records.
+It stops on freeze, park, shutdown and deletion; reconnects request an authoritative
+snapshot. It does not fall back to idle guest exec polling on old components.
+The guest components must include the event endpoint. See [the contract](../../docs/guest-events.md).
+
+Run the focused transport tests with `pnpm exec vitest run src/guest-events.test.ts
+src/event-adapters.test.ts` from this directory.
+## Console and whole-host recovery
+
+Administrators inspect and manually capture parked disks or confirm a local capture restore
+through the separate management recovery API documented in [architecture](../../docs/architecture.md#console-recovery).
+This uses the existing opt-in parked Files and disk-helper prerequisites. Phone vault keys
+remain on devices. Local captures are not independent server backups.
+
+The operator's [offline recovery procedure](scripts/RECOVERY.md) covers protected directory
+capture, bounded hash verification, restoration to empty staging, identity databases,
+image dependencies, secrets and isolated restore drills. Run its focused checks with
+`python3 scripts/tests/test-offline-recovery.py`.
+### Capacity API
+
+The read-only host and tenant capacity endpoints expose allocations, measured OS
+resources and bounded storage scans. See [capacity and usage](../../docs/capacity.md)
+for authorization, units, unavailable categories and focused checks.
+
+Administrator password recovery, authenticator enrollment and session management are
+documented in [account security](../../docs/account-security.md).
+
+Per-computer resource telemetry uses local Docker Engine counters and persists bounded
+hourly CPU history in `CABOOSE_IMAGE_ROOT/usage-history.json`. It never wakes a guest.
+VM counters and remote Docker endpoints are unavailable. Explicit container storage
+measurement requires locally accessible home-volume metadata; Docker logical layer
+sizes are separate from allocated blocks. See [capacity and usage](../../docs/capacity.md)
+for API authorization, sampling overhead, history gaps, storage deadlines and focused tests.
+
+The host uses headless wake for file transfers, web-app bridges and batch exports.
+A later desktop session promotes the running computer without another boot.
+`python3 scripts/efficiency-baseline.py --help` describes a real-host timing check;
+it only observes unless an explicit files, session or park operation is selected.

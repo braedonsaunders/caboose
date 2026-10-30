@@ -120,6 +120,12 @@ export async function pollAgentTools(guest: AgentGuest, journal: AgentToolJourna
   }
   const rows: unknown = result[1]
   if (!Array.isArray(rows) || rows.length > 16) throw new Error('Invalid tool mailbox poll')
+  await acceptAgentTools(guest, journal, live, stillLive, rows)
+}
+
+/** Consumes authenticated transport rows after rechecking the host-owned profile binding. */
+export async function acceptAgentTools(guest: AgentGuest, journal: AgentToolJournal, live: LiveToolTask[], stillLive: (task: LiveToolTask) => boolean, rows: unknown[]): Promise<void> {
+  const tasks = new Map(live.filter(t => UUID.test(t.id) && UUID.test(t.profileId) && journal.profileForTask(t.id) === t.profileId).map(t => [t.id, t]))
   for (const row of rows) {
     if (!Array.isArray(row) || row.length !== 3 || !row.every(x => typeof x === 'string')) continue
     const [taskId, id, encoded] = row as string[]
@@ -135,6 +141,6 @@ export async function pollAgentTools(guest: AgentGuest, journal: AgentToolJourna
     catch (error) { result = { ok: false, error: error instanceof Error ? error.message.slice(0, 2000) : 'Tool request failed' } }
     if (!stillLive(task)) continue
     const response = Buffer.from(JSON.stringify({ id, ...result })).toString('base64')
-    await run(guest, ['respond', task.id, id, ...(response.match(/.{1,48000}/g) ?? [])]).catch(() => {})
+    await run(guest, ['respond', task.id, id, ...(response.match(/.{1,48000}/g) ?? [])])
   }
 }

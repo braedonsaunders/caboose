@@ -88,6 +88,9 @@ fn enum_field<T>(f: &Fields<'_>, key: &'static str, parse: fn(&str) -> Option<T>
     })
 }
 
+mod devices;
+pub use devices::*;
+
 /// One of the client's displays (a phone screen, an iPad, a TV).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Display {
@@ -304,6 +307,8 @@ pub struct ClientHello {
     pub scaled_motion: bool,
     /// The client applies `frame.copy`. Sent only when true.
     pub copy: bool,
+    /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
+    pub devices: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -513,6 +518,24 @@ pub enum Message {
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
+    /// What each offered device became in the computer.
+    DeviceStatus {
+        devices: Vec<DeviceState>,
+    },
+    /// A computer application started using a device; `rate_hz` for motion.
+    DeviceOpen {
+        device: String,
+        rate_hz: Option<f64>,
+    },
+    /// The last application using a device stopped.
+    DeviceClose {
+        device: String,
+    },
+    DeviceRumble(DeviceRumble),
+    /// Send a camera keyframe next.
+    DeviceKeyframe {
+        device: String,
+    },
     VideoCreate(VideoCreate),
     VideoFrame(VideoFrame),
     VideoUpdate(VideoUpdate),
@@ -578,6 +601,26 @@ pub enum Message {
     Key(Key),
     Text(Text),
     ClientClipboard(Clipboard),
+    /// The complete set of devices the phone offers now.
+    Devices {
+        devices: Vec<Device>,
+    },
+    DeviceCamera(DeviceCamera),
+    DeviceDepth(DeviceDepth),
+    DeviceAudio(DeviceAudio),
+    DeviceMotion(DeviceMotion),
+    DeviceGamepad(DeviceGamepad),
+    DeviceButton {
+        device: String,
+        key: DeviceKey,
+        pressed: bool,
+    },
+    DeviceBattery(DeviceBattery),
+    /// The phone cannot run a device it was asked to open.
+    DeviceError {
+        device: String,
+        reason: String,
+    },
     /// The client has the video frame `seq` queued for display.
     VideoAck {
         id: u64,
@@ -633,6 +676,11 @@ pub mod type_id {
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
     pub const AUDIO: u8 = 0x40;
+    pub const DEVICE_STATUS: u8 = 0x60;
+    pub const DEVICE_OPEN: u8 = 0x61;
+    pub const DEVICE_CLOSE: u8 = 0x62;
+    pub const DEVICE_RUMBLE: u8 = 0x63;
+    pub const DEVICE_KEYFRAME: u8 = 0x64;
     pub const PONG: u8 = 0x7E;
     pub const BYE: u8 = 0x7F;
     pub const CLIENT_HELLO: u8 = 0x81;
@@ -653,6 +701,15 @@ pub mod type_id {
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
+    pub const DEVICES: u8 = 0xB0;
+    pub const DEVICE_CAMERA: u8 = 0xB1;
+    pub const DEVICE_DEPTH: u8 = 0xB2;
+    pub const DEVICE_AUDIO: u8 = 0xB3;
+    pub const DEVICE_MOTION: u8 = 0xB4;
+    pub const DEVICE_GAMEPAD: u8 = 0xB5;
+    pub const DEVICE_BUTTON: u8 = 0xB6;
+    pub const DEVICE_BATTERY: u8 = 0xB7;
+    pub const DEVICE_ERROR: u8 = 0xB8;
     pub const PING: u8 = 0xFE;
 }
 
@@ -706,6 +763,20 @@ impl Message {
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::Audio(_) => AUDIO,
+            Message::DeviceStatus { .. } => DEVICE_STATUS,
+            Message::DeviceOpen { .. } => DEVICE_OPEN,
+            Message::DeviceClose { .. } => DEVICE_CLOSE,
+            Message::DeviceRumble(_) => DEVICE_RUMBLE,
+            Message::DeviceKeyframe { .. } => DEVICE_KEYFRAME,
+            Message::Devices { .. } => DEVICES,
+            Message::DeviceCamera(_) => DEVICE_CAMERA,
+            Message::DeviceDepth(_) => DEVICE_DEPTH,
+            Message::DeviceAudio(_) => DEVICE_AUDIO,
+            Message::DeviceMotion(_) => DEVICE_MOTION,
+            Message::DeviceGamepad(_) => DEVICE_GAMEPAD,
+            Message::DeviceButton { .. } => DEVICE_BUTTON,
+            Message::DeviceBattery(_) => DEVICE_BATTERY,
+            Message::DeviceError { .. } => DEVICE_ERROR,
             Message::VideoCreate(_) => VIDEO_CREATE,
             Message::VideoFrame(_) => VIDEO_FRAME,
             Message::VideoUpdate(_) => VIDEO_UPDATE,
@@ -921,6 +992,25 @@ impl Message {
                 .opt("channels", m.channels)
                 .put("data", m.data.clone())
                 .build(),
+            Message::DeviceStatus { devices } => devices::status_value(devices),
+            Message::DeviceOpen { device, rate_hz } => {
+                MapBuilder::new().put("device", device.as_str()).opt("rate_hz", *rate_hz).build()
+            }
+            Message::DeviceClose { device } | Message::DeviceKeyframe { device } => {
+                MapBuilder::new().put("device", device.as_str()).build()
+            }
+            Message::DeviceRumble(m) => devices::rumble_value(m),
+            Message::Devices { devices } => devices::devices_value(devices),
+            Message::DeviceCamera(m) => devices::camera_value(m),
+            Message::DeviceDepth(m) => devices::depth_value(m),
+            Message::DeviceAudio(m) => devices::audio_value(m),
+            Message::DeviceMotion(m) => devices::motion_value(m),
+            Message::DeviceGamepad(m) => devices::gamepad_value(m),
+            Message::DeviceButton { device, key, pressed } => devices::button_value(device, *key, *pressed),
+            Message::DeviceBattery(m) => devices::battery_value(m),
+            Message::DeviceError { device, reason } => {
+                MapBuilder::new().put("device", device.as_str()).put("reason", reason.as_str()).build()
+            }
             Message::Pong { t_us } | Message::Ping { t_us } => MapBuilder::new().put("t_us", *t_us).build(),
             Message::Bye { reason } => MapBuilder::new().put("reason", *reason).build(),
             Message::ClientHello(m) => MapBuilder::new()
@@ -935,6 +1025,7 @@ impl Message {
                 .opt("gpu", m.gpu.then_some(true))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("copy", m.copy.then_some(true))
+                .opt("devices", m.devices.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1201,6 +1292,7 @@ impl Message {
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 copy: f.opt_bool("copy")?.unwrap_or(false),
+                devices: f.opt_bool("devices")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1267,6 +1359,23 @@ impl Message {
             }),
             CLIENT_CLIPBOARD => Message::ClientClipboard(clipboard_from(&f)?),
             PING => Message::Ping { t_us: f.u64("t_us")? },
+            DEVICE_STATUS => Message::DeviceStatus { devices: devices::status_from(&f)? },
+            DEVICE_OPEN => Message::DeviceOpen { device: f.string("device")?, rate_hz: f.opt_f64("rate_hz")? },
+            DEVICE_CLOSE => Message::DeviceClose { device: f.string("device")? },
+            DEVICE_RUMBLE => Message::DeviceRumble(devices::rumble_from(&f)?),
+            DEVICE_KEYFRAME => Message::DeviceKeyframe { device: f.string("device")? },
+            DEVICES => Message::Devices { devices: devices::devices_from(&f)? },
+            DEVICE_CAMERA => Message::DeviceCamera(devices::camera_from(&f)?),
+            DEVICE_DEPTH => Message::DeviceDepth(devices::depth_from(&f)?),
+            DEVICE_AUDIO => Message::DeviceAudio(devices::audio_from(&f)?),
+            DEVICE_MOTION => Message::DeviceMotion(devices::motion_from(&f)?),
+            DEVICE_GAMEPAD => Message::DeviceGamepad(devices::gamepad_from(&f)?),
+            DEVICE_BUTTON => {
+                let (device, key, pressed) = devices::button_from(&f)?;
+                Message::DeviceButton { device, key, pressed }
+            }
+            DEVICE_BATTERY => Message::DeviceBattery(devices::battery_from(&f)?),
+            DEVICE_ERROR => Message::DeviceError { device: f.string("device")?, reason: f.string("reason")? },
             _ => unreachable!("type_name covers exactly these ids"),
         };
         Ok(Some(message))
@@ -1321,6 +1430,20 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         KEY => "key",
         TEXT => "text",
         PING => "ping",
+        DEVICE_STATUS => "device.status",
+        DEVICE_OPEN => "device.open",
+        DEVICE_CLOSE => "device.close",
+        DEVICE_RUMBLE => "device.rumble",
+        DEVICE_KEYFRAME => "device.keyframe",
+        DEVICES => "devices",
+        DEVICE_CAMERA => "device.camera",
+        DEVICE_DEPTH => "device.depth",
+        DEVICE_AUDIO => "device.audio",
+        DEVICE_MOTION => "device.motion",
+        DEVICE_GAMEPAD => "device.gamepad",
+        DEVICE_BUTTON => "device.button",
+        DEVICE_BATTERY => "device.battery",
+        DEVICE_ERROR => "device.error",
         _ => return None,
     })
 }

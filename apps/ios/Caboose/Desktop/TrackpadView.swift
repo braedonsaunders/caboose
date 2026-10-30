@@ -62,8 +62,8 @@ struct TrackpadScreen: View {
                           enabled: model.presentedWindowID == nil && model.selectedTab == .desktop,
                           input: $input, systemKeyboard: $systemKeyboard)
                 .background { DesktopKeyCommands(desktop: desktop) }
-                .clipShape(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: input.showsKeyboard ? 16 : 28, style: .continuous).stroke(.white.opacity(0.12)))
+                .clipShape(ConcentricRectangle(cornerRadius: input.showsKeyboard ? 16 : 28))
+                .overlay(ConcentricRectangle(cornerRadius: input.showsKeyboard ? 16 : 28).stroke(.white.opacity(0.12)))
             if !input.showsKeyboard {
                 TimelineView(.periodic(from: .now, by: 2)) { _ in
                     Text(model.connectionSummary).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -108,11 +108,7 @@ struct Trackpad: UIViewRepresentable {
         view.bareSystemKeyboard = bareSystemKeyboard
         view.dismissInline = dismissInline
         view.wantsKeyboard = (keyboardVisible || inlineControls) && enabled
-        if view.autocorrectChoice == nil {
-            if let purpose = model.session?.textPurpose {
-                view.prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"].contains(purpose)
-            } else { view.prefersProse = !RemoteWindowView.isCodeApp(target) }
-        }
+        view.followField(purpose: model.session?.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
         if (!enabled && view.inputEnabled) || (!pointerEnabled && view.pointerEnabled) { view.endInteraction() }
         view.inputEnabled = enabled
         view.pointerEnabled = pointerEnabled
@@ -258,7 +254,7 @@ final class TrackpadSurface: RemoteTextInputView {
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
                 resetTyping()
-                defer { prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow) }
+                defer { followField(purpose: session?.textPurpose, isCode: RemoteWindowView.isCodeApp(focusedWindow)) }
                 desktop?.click(button: button, session: session, open: open)
                 if button == 1 { checkDesktopTextFocus() }
                 haptics.impactOccurred()
@@ -275,33 +271,40 @@ final class TrackpadSurface: RemoteTextInputView {
             guard let session else { return }
             let window: RemoteWindow
             let anchor: CGPoint
-            let scale: CGFloat
+            let mapping: DesktopGeometry.SurfaceMapping?
             if let target {
                 window = target
                 anchor = CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height)
-                scale = 1 // TrackpadGestures supplies the existing target pixel gain.
+                mapping = nil // TrackpadGestures supplies the existing target pixel gain.
             } else {
                 guard let desktop, case .content(let id, let local) = desktop.hitTest(desktop.cursor, windows: session.windows),
                       let found = session.windows[id] else { return }
                 window = found
                 anchor = local
-                scale = desktop.pixelsPerPoint
+                guard let selected = desktop.inputMapping(for: found, windows: session.windows) else { return }
+                mapping = selected
             }
             let directTarget = target
             let originalDesktop = desktop
+            let originalFrame = window.frame
+            let epoch = session.epoch
+            let connection = (session as? CabooseDisplaySession)?.connections
             scrolling = true
             session.resetScroll()
             scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta in
                 guard let self, let session, let window, self.window != nil,
                       self.inputEnabled, self.pointerEnabled, self.session === session,
-                      session.state == .ready, session.windows[window.id] === window else { return false }
+                      session.state == .ready, session.windows[window.id] === window,
+                      session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection else { return false }
                 if let directTarget {
-                    guard self.target === directTarget else { return false }
+                    guard self.target === directTarget, window.frame == originalFrame else { return false }
                 } else {
                     guard self.target == nil, let desktop = originalDesktop, self.desktop === desktop,
+                          desktop.inputMapping(for: window, windows: session.windows) == mapping,
                           case .content(let id, _) = desktop.hitTest(desktop.cursor, windows: session.windows), id == window.id else { return false }
                 }
-                session.scroll(in: window, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                let mapped = mapping?.delta(delta) ?? delta
+                session.scroll(in: window, dx: mapped.x, dy: mapped.y, at: anchor)
                 return true
             }
         }
@@ -362,7 +365,7 @@ final class TrackpadSurface: RemoteTextInputView {
             model.quickSwitch.cancel()
             (desktop ?? model.desktop).launchpadOpen = false
         case .left, .right:
-            let windows = model.appWindows.sorted { $0.id < $1.id }
+            let windows = model.workspaceWindows.sorted { $0.id < $1.id }
             guard !windows.isEmpty else { return }
             let current = focusedWindow?.id
             let index = windows.firstIndex { $0.id == current } ?? 0
@@ -390,8 +393,9 @@ final class TrackpadSurface: RemoteTextInputView {
                 try? await Task.sleep(for: .milliseconds(50))
                 guard !Task.isCancelled, let self, let target, let session,
                       self.inputEnabled, self.focusedWindow === target, self.session === session, self.window != nil else { return }
-                if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial, isText: session.cursorIsText) {
-                    self.prefersProse = self.autocorrectChoice ?? !RemoteWindowView.isCodeApp(target)
+                if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
+                                                    isText: session.cursorIsText, keyboardVisible: self.model?.keyboardVisible == true) {
+                    self.followField(purpose: session.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
                     self.model?.keyboardVisible = wanted
                     return
                 }

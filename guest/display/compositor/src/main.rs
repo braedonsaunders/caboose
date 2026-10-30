@@ -1,6 +1,7 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
 mod audio;
+mod devices;
 mod clipboard;
 mod config;
 mod control;
@@ -19,6 +20,7 @@ mod stream;
 mod text_input;
 mod video;
 mod windows;
+mod x11_focus;
 mod xauth;
 mod xwm;
 
@@ -117,6 +119,29 @@ fn launch_env(
         if let Some(a) = xauthority {
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
+    }
+    // Agent application state and IPC must follow its private home on every launch.
+    // The owner keeps the existing environment contract.
+    if std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") {
+        for key in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "CABOOSE_SEAT",
+            "MOZ_NO_REMOTE",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "VSCODE_PORTABLE",
+            "CHROME_CONFIG_HOME",
+            "CHROME_USER_DATA_DIR",
+            "PATH",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                env.push((key.into(), value));
+            }
+        }
+        env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the
@@ -273,6 +298,7 @@ fn run(config: Config) -> Result<(), String> {
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
+    smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
     let mut seat_state = smithay::input::SeatState::new();
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
@@ -301,6 +327,14 @@ fn run(config: Config) -> Result<(), String> {
         .insert_source(audio_rx, |event, _, state: &mut State| {
             if let ChannelEvent::Msg(packet) = event {
                 state.on_audio_packet(packet);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (devices_tx, devices_rx) = channel::<caboose_display_protocol::Message>();
+    handle
+        .insert_source(devices_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(message) = event {
+                state.on_device_message(message);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -378,6 +412,7 @@ fn run(config: Config) -> Result<(), String> {
         xwayland_shell,
         seat,
         xwm: None,
+        x11_foreground: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -394,6 +429,8 @@ fn run(config: Config) -> Result<(), String> {
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
         audio_tx,
+        devices: None,
+        devices_tx,
         generation: 0,
         epoch: session::new_epoch(),
         stats: Default::default(),
@@ -404,6 +441,22 @@ fn run(config: Config) -> Result<(), String> {
     if state.config.audio {
         let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
         state.audio = audio::Audio::start(&state.config.instance_dir(&runtime_dir));
+    }
+    if state.config.devices {
+        match std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from) {
+            Some(runtime_dir) => {
+                let config = devices::Config {
+                    pulse_server: state.audio.as_ref().map(|a| a.server_address()),
+                    state_dir: state.config.instance_dir(&runtime_dir),
+                    status_file: runtime_dir.join("caboose-devices.json"),
+                };
+                match devices::Hub::spawn(config, state.devices_tx.clone()) {
+                    Ok(hub) => state.devices = Some(hub),
+                    Err(e) => tracing::warn!("no phone devices: {e}"),
+                }
+            }
+            None => tracing::info!("no phone devices: XDG_RUNTIME_DIR is not set"),
+        }
     }
     match video::server::socket_path() {
         Some(path) => match video::server::Videos::listen(&path, &handle) {
@@ -470,7 +523,7 @@ fn run(config: Config) -> Result<(), String> {
             std::process::Stdio::inherit(),
             |_| (),
         ) {
-            Ok((x, client)) => Some((x, client, prepared.authority)),
+            Ok((x, client)) => Some((x, client, prepared.authority, prepared.cookie)),
             Err(e) => {
                 tracing::error!("cannot start Xwayland on :{number}: {e}; continuing without X11");
                 None
@@ -478,13 +531,16 @@ fn run(config: Config) -> Result<(), String> {
         }
     });
     match spawned {
-        Some((xwayland, client, authority)) => {
+        Some((xwayland, client, authority, cookie)) => {
             handle
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
                             Ok(wm) => {
                                 state.xwm = Some(wm);
+                                if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
+                                    tracing::error!("X11 foreground initialization: {error}");
+                                }
                                 ready(state, Some(display_number), Some(&authority));
                             }
                             Err(e) => {

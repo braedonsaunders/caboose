@@ -36,6 +36,12 @@ public enum DisplayProtocol {
         case clipboard = 0x30
         case notification = 0x31
         case audio = 0x40
+        // The phone's hardware as devices (docs/devices.md).
+        case deviceStatus = 0x60
+        case deviceOpen = 0x61
+        case deviceClose = 0x62
+        case deviceRumble = 0x63
+        case deviceKeyframe = 0x64
         case pong = 0x7E
         case bye = 0x7F
     }
@@ -59,6 +65,15 @@ public enum DisplayProtocol {
         case gameDecline = 0x97
         case webviewDecline = 0x98
         case clipboard = 0xA0
+        case devices = 0xB0
+        case deviceCamera = 0xB1
+        case deviceDepth = 0xB2
+        case deviceAudio = 0xB3
+        case deviceMotion = 0xB4
+        case deviceGamepad = 0xB5
+        case deviceButton = 0xB6
+        case deviceBattery = 0xB7
+        case deviceError = 0xB8
         case ping = 0xFE
     }
 }
@@ -430,6 +445,16 @@ public enum ServerMessage: Sendable {
     case gpuData(id: Int, offset: UInt64, data: Data)
     /// The stream ended; `reason` says why when the computer could not go on (`spool-limit`).
     case gpuDestroy(id: Int, reason: String?)
+    /// What each offered device became in the computer.
+    case deviceStatus([DeviceState])
+    /// A computer application started using `device`; `rateHz` for motion.
+    case deviceOpen(device: String, rateHz: Double?)
+    /// The last application using `device` stopped.
+    case deviceClose(device: String)
+    /// Rumble gamepad `device` (0…1 each) for `ms`; 0 stops it.
+    case deviceRumble(device: String, strong: Double, weak: Double, ms: Int)
+    /// Send a camera keyframe next.
+    case deviceKeyframe(device: String)
     case unknown(type: UInt8)
     /// A known type whose fields are missing or of the wrong kind.
     case malformed(type: UInt8)
@@ -497,6 +522,16 @@ public enum ServerMessage: Sendable {
                 parsed = nil
             }
         case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0, reason: body["reason"]?.string) }
+        case .deviceStatus: parsed = body["devices"]?.array.map { .deviceStatus($0.compactMap(DeviceState.init)) }
+        case .deviceOpen: parsed = body["device"]?.string.map { .deviceOpen(device: $0, rateHz: body["rate_hz"]?.double) }
+        case .deviceClose: parsed = body["device"]?.string.map { .deviceClose(device: $0) }
+        case .deviceRumble:
+            if let device = body["device"]?.string, let strong = body["strong"]?.double, let weak = body["weak"]?.double, let ms = body["ms"]?.int {
+                parsed = .deviceRumble(device: device, strong: strong, weak: weak, ms: ms)
+            } else {
+                parsed = nil
+            }
+        case .deviceKeyframe: parsed = body["device"]?.string.map { .deviceKeyframe(device: $0) }
         }
         self = parsed ?? .malformed(type: frame.type)
     }
@@ -622,9 +657,10 @@ public enum ClientMessage: Sendable {
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     /// `copy`: the client applies `frame.copy` (`"copy": true`); the key is absent otherwise.
+    /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
                audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
-               copy: Bool = false)
+               copy: Bool = false, devices: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -649,6 +685,20 @@ public enum ClientMessage: Sendable {
     /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
     case gameDecline(id: Int, reason: String)
     case webviewDecline(id: Int, reason: String)
+    /// The complete set of devices the phone offers now.
+    case devices([DeviceDescriptor])
+    /// One H.264 access unit of a camera, Annex-B, with SPS and PPS on keyframes.
+    case deviceCamera(device: String, seq: UInt64, keyframe: Bool, micros: UInt64, data: Data)
+    /// `width × height` little-endian u16 distances in millimetres, row by row.
+    case deviceDepth(device: String, micros: UInt64, width: Int, height: Int, data: Data)
+    /// One 20 ms Opus packet, 48 kHz mono.
+    case deviceAudio(device: String, micros: UInt64, data: Data)
+    case deviceMotion(device: String, samples: [MotionSample])
+    case deviceGamepad(device: String, GamepadReport)
+    case deviceButton(device: String, key: DeviceKey, pressed: Bool)
+    case deviceBattery(device: String, BatteryReport)
+    /// The phone cannot run a device it was asked to open; the reason is cut to 200 UTF-8 bytes.
+    case deviceError(device: String, reason: String)
 
     public var frame: DisplayFrame {
         typealias T = DisplayProtocol.ClientType
@@ -660,7 +710,7 @@ public enum ClientMessage: Sendable {
         }
         switch self {
         case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview,
-                    let copy):
+                    let copy, let devices):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -671,7 +721,35 @@ public enum ClientMessage: Sendable {
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("copy", copy ? CBOR(true) : nil),
+                ("devices", devices ? CBOR(true) : nil),
             ]))
+        case .devices(let devices):
+            return DisplayFrame(type: T.devices.rawValue, body: map([("devices", .array(devices.map(\.cbor)))]))
+        case .deviceCamera(let device, let seq, let keyframe, let micros, let data):
+            return DisplayFrame(type: T.deviceCamera.rawValue, body: map([
+                ("device", CBOR(device)), ("seq", CBOR(seq)), ("keyframe", CBOR(keyframe)), ("t_us", CBOR(micros)), ("data", .bytes(data)),
+            ]))
+        case .deviceDepth(let device, let micros, let width, let height, let data):
+            return DisplayFrame(type: T.deviceDepth.rawValue, body: map([
+                ("device", CBOR(device)), ("t_us", CBOR(micros)), ("size", [CBOR(width), CBOR(height)]), ("data", .bytes(data)),
+            ]))
+        case .deviceAudio(let device, let micros, let data):
+            return DisplayFrame(type: T.deviceAudio.rawValue, body: map([("device", CBOR(device)), ("t_us", CBOR(micros)), ("data", .bytes(data))]))
+        case .deviceMotion(let device, let samples):
+            return DisplayFrame(type: T.deviceMotion.rawValue, body: map([("device", CBOR(device)), ("samples", .array(samples.map(\.cbor)))]))
+        case .deviceGamepad(let device, let report):
+            return DisplayFrame(type: T.deviceGamepad.rawValue, body: map([
+                ("device", CBOR(device)), ("buttons", CBOR(report.buttons)), ("axes", .array(report.axes.map { CBOR($0) })),
+            ]))
+        case .deviceButton(let device, let key, let pressed):
+            return DisplayFrame(type: T.deviceButton.rawValue, body: map([("device", CBOR(device)), ("key", CBOR(key.rawValue)), ("pressed", CBOR(pressed))]))
+        case .deviceBattery(let device, let battery):
+            return DisplayFrame(type: T.deviceBattery.rawValue, body: map([
+                ("device", CBOR(device)), ("level", CBOR(battery.level)), ("charging", CBOR(battery.charging)), ("full", CBOR(battery.full)),
+                ("low_power", CBOR(battery.lowPower)), ("thermal", CBOR(battery.thermal.rawValue)),
+            ]))
+        case .deviceError(let device, let reason):
+            return DisplayFrame(type: T.deviceError.rawValue, body: map([("device", CBOR(device)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .videoAck(let video, let seq):
             return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
         case .videoKeyframe(let video):

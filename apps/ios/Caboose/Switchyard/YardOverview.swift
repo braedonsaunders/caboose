@@ -53,8 +53,8 @@ struct YardOverview: View {
                                 Image(systemName: "plus")
                                     .font(.title2.weight(.semibold))
                                     .frame(width: max(64, 120 * scale * 2), height: max(64, metrics.columnHeight * scale))
-                                    .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+                                    .background(.white.opacity(0.1), in: ConcentricRectangle(cornerRadius: 12))
+                                    .overlay(ConcentricRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.white)
@@ -94,9 +94,9 @@ private struct OverviewCard: View {
         VStack(spacing: 6) {
             RemoteWindowPreview(window: window)
                 .frame(width: size.width, height: size.height)
-                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                .clipShape(ConcentricRectangle(cornerRadius: radius))
                 .overlay {
-                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    ConcentricRectangle(cornerRadius: radius)
                         .strokeBorder(focused ? AnyShapeStyle(YardStyle.ring) : AnyShapeStyle(.white.opacity(0.18)), lineWidth: focused ? 1.5 : 0.75)
                 }
                 .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
@@ -190,7 +190,7 @@ struct YardLauncher: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(maxWidth: 560, maxHeight: inline ? 420 : 520)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .glassEffect(.regular, in: ConcentricRectangle(cornerRadius: 26))
             }
             .padding(16)
         }

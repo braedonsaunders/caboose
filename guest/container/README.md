@@ -87,7 +87,7 @@ owner's session and printing begin on interactive promotion.
 | --- | --- |
 | `start-files` | Starts the file service as `caboose` and waits until port 14700 listens. |
 | `start` | Starts CUPS and configures the `iPhone` queue; starts the owner's session bus (`/run/user/1000/bus`), its notification monitor and endpoint, and the owner's Caboose Display: port 14600, Wayland socket `wayland-caboose-0`, Xwayland `:110`, its own PulseAudio, launch environment in `/run/caboose/display.env`. |
-| `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, then starts its accessibility bus. |
+| `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, publishes its display variables to its session bus, then starts its accessibility bus. |
 | `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
 Both displays check the token the host writes to `/run/caboose/display-token` before
@@ -179,8 +179,8 @@ Other checks for this image:
   commands and printer; it consumes pending handoffs.
 - `docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh` checks game
   handoff against a private display instance.
-- `guest/notifications/check-container.sh` checks the notification monitor and separate
-  session buses in a disposable container.
+- `guest/notifications/check-container.sh` checks the owner's notification endpoint, its
+  actions and replies, and the separate session buses in a disposable container.
 - `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
   accessibility helper in Docker.
 
@@ -192,9 +192,19 @@ match that architecture. The release tag selects the matching image automaticall
 The session bus is probed before reuse. A socket left behind by a stopped container is
 replaced only when connecting reports missing or refused; other errors stop startup.
 Run `python3 guest/container/test-session-bus.py` from the repository root to check the probe.
+`python3 guest/container/test-seat-ready.py` checks that both seats publish their own
+display environment only after readiness, and that an activation failure is reported.
+The five-second activation update precedes accessibility and application launches, so
+D-Bus-activated Flatpak portal processes receive the current Xwayland and Wayland displays.
 
 The system bus is probed before reuse, because `/run` survives a container stop. Only a
 missing or refused socket with no live recorded PID permits removing the stale socket and
 pidfile. Other failures require operator attention. Existing-computer component updates
 install the current `caboose-session` script for container computers. Run
 `python3 guest/container/test-system-bus.py` to check the recovery policy.
+
+Agent display and session-bus processes start through `agent-profile.py` with persistent
+private GUI state. The agent bus uses the dedicated credential activation configuration;
+its live daemon must already use that configuration or startup requests an explicit
+restart. Owner session state is unchanged. See [agent GUI profiles](../desktop-mcp/README.md#persistent-agent-gui-profiles)
+and [credential routing](../keyring/README.md#agent-credential-routing).

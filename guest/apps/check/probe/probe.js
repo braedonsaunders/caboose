@@ -48,6 +48,34 @@ results.stream = { ...(await echo.exited), out }
 // A program that must end when this page is replaced.
 results.sleeper = (await caboose.spawn(['bash', '-c', `exec -a caboose-check-sleeper-${load} sleep 600`])).pid
 
+// The network origin, against a server that allows no cross-origin reads.
+if (load === 1) {
+  await caboose.spawn(['python3', `${caboose.app.dir}/upstream.py`, '18081'])
+  for (let i = 0; i < 50; i++) {
+    if ((await caboose.exec(['python3', '-c', 'import socket; socket.create_connection(("127.0.0.1", 18081), 1)'])).code === 0) break
+    await sleep(100)
+  }
+  results.directFetch = await fetch('http://127.0.0.1:18081/echo').then(() => 'read', error => error.name)
+  const echoed = await caboose.fetch('http://127.0.0.1:18081/echo', {
+    method: 'POST', body: 'hi', headers: { 'X-Probe': '1', 'User-Agent': 'probe-agent', Cookie: 'c=1' },
+  })
+  results.net = { status: echoed.status, url: echoed.headers.get('X-Caboose-Url'), ...(await echoed.json()) }
+  const pixel = new Image()
+  pixel.src = caboose.net.url('http://127.0.0.1:18081/pixel.png')
+  results.netImage = await pixel.decode().then(() => pixel.naturalWidth, error => String(error))
+  results.netRefused = await caboose.fetch('http://127.0.0.1:9/').then(response => response.status, error => error.name)
+  // A media element streams through it too; loading its metadata needs no sound device.
+  const audio = new Audio()
+  audio.preload = 'metadata'
+  results.netAudio = await new Promise(resolve => {
+    audio.addEventListener('loadedmetadata', () => resolve(Math.round(audio.duration)), { once: true })
+    audio.addEventListener('error', () => resolve(`error ${audio.error?.code}`), { once: true })
+    setTimeout(() => resolve('timeout'), 10000)
+    audio.src = caboose.net.url('http://127.0.0.1:18081/tone.wav')
+  })
+
+}
+
 // Navigation away by script is refused; the page stays.
 location.assign('https://example.com/')
 await sleep(800)

@@ -1,0 +1,51 @@
+#!/usr/bin/python3
+"""Answers an owner notification from the phone, as caboose:
+
+    caboose-notify respond ID --action=KEY     invoke one of its actions (`default` opens it)
+    caboose-notify respond ID --reply=TEXT     send an inline reply
+
+ID is the record ID the owner's endpoint (daemon.py --owner) wrote to the queue. The endpoint
+emits ActionInvoked or NotificationReplied to the application and then closes the
+notification unless it is resident. Prints one JSON line, {"result": R}, R being
+`responded`, `unknown-notification` (closed, replaced by an endpoint restart, or the owner's
+display is not running) or `unknown-action`.
+"""
+import json
+import os
+import sys
+
+import notifycore as core
+
+try:
+    record_id, kind, value = core.respond_arguments(sys.argv[1:])
+except ValueError as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+
+from gi.repository import Gio, GLib  # noqa: E402
+
+BUS = os.environ.get('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/run/user/1000/bus')
+# The endpoint, not D-Bus activation, owns the name: a missing endpoint means the notification is gone.
+GONE = {'org.freedesktop.DBus.Error.ServiceUnknown', 'org.freedesktop.DBus.Error.NameHasNoOwner',
+        'org.freedesktop.DBus.Error.UnknownMethod', 'org.freedesktop.DBus.Error.UnknownObject',
+        'org.freedesktop.DBus.Error.UnknownInterface'}
+try:
+    flags = Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION
+    connection = Gio.DBusConnection.new_for_address_sync(BUS, flags, None, None)
+except GLib.Error:
+    result = 'unknown-notification'
+else:
+    try:
+        reply = connection.call_sync('org.freedesktop.Notifications', '/org/caboose/Notifications', 'org.caboose.Notifications', 'Respond',
+                                     GLib.Variant('(sss)', (record_id, kind, value)), GLib.VariantType('(s)'),
+                                     Gio.DBusCallFlags.NO_AUTO_START, 10000, None)
+        result = reply.unpack()[0]
+    except GLib.Error as error:
+        if Gio.DBusError.get_remote_error(error) not in GONE:
+            print('caboose-notify:', error.message, file=sys.stderr)
+            sys.exit(1)
+        result = 'unknown-notification'
+if result not in ('responded', 'unknown-notification', 'unknown-action'):
+    print('caboose-notify: unexpected answer', file=sys.stderr)
+    sys.exit(1)
+print(json.dumps({'result': result}))

@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Real Debian Secret Service check; only creates/deletes a uniquely tagged synthetic item."""
 import hashlib
+import json
 import importlib.machinery
 import importlib.util
 import re
@@ -19,7 +20,13 @@ before = k.Keyring()
 for _ in range(2):
     result = subprocess.run(['/usr/bin/python3', '/opt/caboose/keyring/caboose-keyring'],
                             input=password, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=45)
-    if result.returncode != 0: raise SystemExit('Keyring preparation failed')
+    if result.returncode != 0:
+        try:
+            state = json.loads(result.stdout).get('state')
+        except (ValueError, AttributeError):
+            state = None
+        state = state if state in ('migration-required', 'unavailable') else 'invalid-response'
+        raise SystemExit('Keyring preparation failed: ' + state)
 backend = k.Keyring()
 assert before.owner == backend.owner, 'Provisioning replaced the daemon'
 collection = backend.alias('default')

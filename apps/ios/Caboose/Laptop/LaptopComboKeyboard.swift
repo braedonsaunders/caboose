@@ -1,3 +1,4 @@
+import CabooseKit
 import SwiftUI
 import UIKit
 
@@ -36,7 +37,10 @@ struct LaptopComboKeyboard: View {
                         page = page == .letters ? .numbers : .letters
                     }
                     .frame(width: unit * 1.4)
-                    Button(action: onNativeKeyboard) {
+                    Button {
+                        KeyboardFeedback.press()
+                        onNativeKeyboard()
+                    } label: {
                         Image(systemName: "globe")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -45,7 +49,7 @@ struct LaptopComboKeyboard: View {
                     .frame(width: unit * 1.1)
                     key("space", label: "Space") { type(" ") }
                     characterKey(".").frame(width: unit)
-                    Button { onKey("Return") } label: {
+                    Button { KeyboardFeedback.press(); onKey("Return") } label: {
                         Image(systemName: "return")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -61,6 +65,7 @@ struct LaptopComboKeyboard: View {
         .background(Color(uiColor: .systemGray5))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Compact keyboard")
+        .onAppear { KeyboardFeedback.prepare() }
     }
 
     private var firstRow: [String] {
@@ -94,6 +99,7 @@ struct LaptopComboKeyboard: View {
             .accessibilityValue(capsLock ? "Caps Lock on" : (shift ? "On" : "Off"))
             .accessibilityHint("Capitalizes the next letter. Use the Toggle Caps Lock action to lock capitals.")
             .accessibilityAction(named: "Toggle Caps Lock") {
+                KeyboardFeedback.press()
                 capsLock.toggle()
                 shift = false
                 lastShiftTap = 0
@@ -117,7 +123,10 @@ struct LaptopComboKeyboard: View {
     }
 
     private func key(_ title: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button {
+            KeyboardFeedback.press()
+            action()
+        } label: {
             Text(title)
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
@@ -133,6 +142,7 @@ struct LaptopComboKeyboard: View {
     }
 
     private func toggleShift() {
+        KeyboardFeedback.press()
         let now = ProcessInfo.processInfo.systemUptime
         if capsLock {
             capsLock = false
@@ -204,19 +214,24 @@ private final class ComboDeleteButton: UIButton {
     }
 
     override func accessibilityActivate() -> Bool {
-        action()
+        activate()
         return true
+    }
+
+    private func activate() {
+        KeyboardFeedback.press()
+        action()
     }
 
     @objc private func startRepeating() {
         stopRepeating()
-        action()
+        activate()
         let timer = Timer(timeInterval: 0.42, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.action()
+                self.activate()
                 let repeating = Timer(timeInterval: 0.075, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.action() }
+                    MainActor.assumeIsolated { self?.activate() }
                 }
                 self.repeatTimer = repeating
                 RunLoop.main.add(repeating, forMode: .common)

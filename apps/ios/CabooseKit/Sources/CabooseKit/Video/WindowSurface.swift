@@ -50,6 +50,14 @@ public final class WindowSurface: @unchecked Sendable {
         return backing
     }
 
+    /// Capture dimensions and generation from the same backing store. A decode-queue
+    /// resize must not pair the preceding texture with its successor's generation.
+    public func presentation() -> (texture: MTLTexture, generation: UInt64)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let backing else { return nil }
+        return (backing, generation)
+    }
+
     /// Resizes the backing store, preserving the overlapping top-left content.
     public func resize(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }

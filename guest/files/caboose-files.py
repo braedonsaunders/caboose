@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Private, token-authenticated filesystem service. All path operations use dirfds."""
 import ctypes
+import event_stream
 import errno
 import hashlib
 import hmac
@@ -27,6 +28,7 @@ rootfd = os.open(ROOT, DIR)
 lock = threading.RLock()
 keyring_lock = threading.Lock()
 bridge_slots = threading.BoundedSemaphore(20)
+event_slots = threading.BoundedSemaphore(2)
 BRIDGE_MAX = 96 * 1024 * 1024
 BRIDGE_RUNTIME = os.environ.get('CABOOSE_BRIDGE_RUNTIME', f'/run/user/{os.getuid()}')
 
@@ -140,6 +142,7 @@ class Changes:
         self.sequence = 0
         self.guard = threading.Lock()
         self.events = []
+        self.wake_read, self.wake_write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
         self.healthy = True
         libc = ctypes.CDLL(None, use_errno=True)
         self.add = libc.inotify_add_watch
@@ -174,7 +177,7 @@ class Changes:
         self.epoch = secrets.token_hex(16); self.sequence = 0; self.events = []
     def run(self):
         while True:
-            ready, _, _ = select.select([self.fd], [], [], 2)
+            ready, _, _ = select.select([self.fd], [], [], None if self.healthy else 2)
             if not ready:
                 if not self.healthy:
                     try:
@@ -194,6 +197,7 @@ class Changes:
                 if os.fsdecode(raw).startswith('.caboose-upload-'): continue
                 path = os.path.relpath(os.path.join(base, os.fsdecode(raw)), ROOT)
                 if path == '.': path = ''
+                if path == '.cache/caboose/bridge/present': continue
                 if mask & 0x40000000: rescan = True
                 if mask & (0x00000400 | 0x00000800): invalid = True
                 changed.append({'path': path, 'removed': bool(mask & (0x00000040 | 0x00000200)), 'cookie': cookie})
@@ -203,10 +207,17 @@ class Changes:
                     self.sequence += 1
                     self.events.append((self.sequence, changed))
                     self.events = self.events[-10000:]
+            if changed or invalid:
+                try: os.write(self.wake_write, b'x')
+                except BlockingIOError: pass
             if rescan or invalid:
                 try:
                     self.scan()
-                    with self.guard: self.healthy = True
+                    with self.guard:
+                        self.healthy = True
+                        self.invalidate()
+                    try: os.write(self.wake_write, b'x')
+                    except BlockingIOError: pass
                 except OSError:
                     with self.guard:
                         self.invalidate()
@@ -227,6 +238,7 @@ class Changes:
 
 
 changes = None
+events = event_stream.Events(directory)
 
 
 def trash(path):
@@ -272,9 +284,9 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in (headers or {}).items(): self.send_header(k, str(v))
         self.end_headers()
         if data: self.wfile.write(data)
-    def body(self):
+    def body(self, limit=65536):
         n = int(self.headers.get('Content-Length', '0'))
-        if n > 65536: raise ValueError('body too large')
+        if n < 0 or n > limit: raise ValueError('body too large')
         return json.loads(self.rfile.read(n))
     def handle_request(self):
         try:
@@ -283,6 +295,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self.reply(401, {'error': 'unauthorized'})
             u = urlsplit(self.path); q = parse_qs(u.query, keep_blank_values=True)
+            if self.command == 'GET' and u.path == '/event-capabilities':
+                return self.reply(200, {'version': 2})
+            if self.command == 'POST' and u.path == '/events/presence':
+                return self.reply(200 if events.lease(self.body()) else 409, {'ok': True})
+            if self.command == 'POST' and u.path == '/events':
+                if self.headers.get('Transfer-Encoding') or not self.headers.get('Content-Length'):
+                    raise ValueError('event body length required')
+                self.connection.settimeout(25)
+                def authorized():
+                    with open(TOKEN, 'rb') as current:
+                        return hmac.compare_digest(token, current.read().decode())
+                if not event_slots.acquire(blocking=False):
+                    return self.reply(429, {'error': 'event capacity'})
+                try: return events.serve(self, self.body(256 * 1024), changes, authorized)
+                finally: event_slots.release()
+
             bridge = re.fullmatch(r'/webview/([0-9a-f]{32})', u.path)
             if bridge:
                 length = self.headers.get('Content-Length', '')
@@ -482,6 +510,21 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = handle_request
     do_DELETE = handle_request
 
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    slots = threading.BoundedSemaphore(64)
+    def process_request(self, connection, address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(connection)
+            return
+        connection.settimeout(25)
+        try: super().process_request(connection, address)
+        except BaseException: self.slots.release(); raise
+    def process_request_thread(self, connection, address):
+        try: super().process_request_thread(connection, address)
+        finally: self.slots.release()
+
+
 if __name__ == '__main__':
     changes = Changes()
-    ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+    Server(('0.0.0.0', PORT), Handler).serve_forever()

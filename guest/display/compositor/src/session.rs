@@ -37,6 +37,8 @@ pub struct Session {
     pub scaled_motion: bool,
     /// The client applies `frame.copy`, and this server sends them.
     pub copy: bool,
+    /// The client offers its hardware and this instance accepts it (docs/devices.md).
+    pub devices: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -144,6 +146,11 @@ impl State {
     }
 
     fn end_session(&mut self) {
+        if self.session.as_ref().is_some_and(|s| s.devices) {
+            if let Some(hub) = &self.devices {
+                hub.disconnected();
+            }
+        }
         self.video_session_ended();
         if let Some(a) = self.audio.as_mut() {
             a.stop_capture();
@@ -229,6 +236,23 @@ impl State {
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
             Message::Pencil(p) => self.pencil(&p),
+            Message::Devices { devices } => {
+                if let (Some(hub), true) = (&self.devices, self.session.as_ref().is_some_and(|s| s.devices)) {
+                    hub.offer(devices);
+                }
+            }
+            m @ (Message::DeviceCamera(_)
+            | Message::DeviceDepth(_)
+            | Message::DeviceAudio(_)
+            | Message::DeviceMotion(_)
+            | Message::DeviceGamepad(_)
+            | Message::DeviceButton { .. }
+            | Message::DeviceBattery(_)
+            | Message::DeviceError { .. }) => {
+                if let (Some(hub), true) = (&self.devices, self.session.as_ref().is_some_and(|s| s.devices)) {
+                    hub.phone(m);
+                }
+            }
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
         }
     }
@@ -278,6 +302,7 @@ impl State {
         let webview = webview_grant.is_some();
         // Copies come from the software encoders' record of what the client shows.
         let copy = hello.copy && self.config.copy && matches!(backend, Backend::Software(_));
+        let devices = hello.devices && self.devices.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -301,6 +326,9 @@ impl State {
                     if copy {
                         supported.push("copy".into());
                     }
+                    if devices {
+                        supported.push("devices".into());
+                    }
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
@@ -322,6 +350,7 @@ impl State {
             gpu,
             scaled_motion: hello.scaled_motion,
             copy,
+            devices,
         });
         self.games_session_changed();
         if audio {
@@ -370,8 +399,14 @@ impl State {
         let change = self.displays.replace(&self.dh, displays);
         let fallback = self.displays.primary().info.id;
         let ids = self.windows.ids();
+        let mut resized = Vec::new();
         for id in &ids {
             if let Some(w) = self.windows.get_mut(*id) {
+                if (w.fullscreen || w.maximized)
+                    && (change.changed.contains(&w.display) || change.removed.contains(&w.display))
+                {
+                    resized.push(*id);
+                }
                 if change.removed.contains(&w.display) {
                     w.display = fallback;
                 }
@@ -379,6 +414,13 @@ impl State {
         }
         for id in ids {
             self.assign_output(id);
+            // Output modes and origins can change without replacing their ids. Keep
+            // monitor-owned windows on the new output rectangle, through the same
+            // native/X11 configure path as an application's fullscreen request.
+            // A removed output was remapped above, so it needs the same treatment.
+            if resized.contains(&id) {
+                self.configure_window(&proto::Configure { id, ..Default::default() });
+            }
         }
         // sync_windows (next tick) sends the resulting window.update messages.
     }
@@ -679,6 +721,13 @@ impl State {
             channels: Some(crate::audio::CHANNELS),
             data: packet.data,
         });
+        self.net.send(conn, &message);
+    }
+
+    /// A device message for the phone (docs/devices.md). The hub speaks for the session it
+    /// was offered by; one from before a reconnect is answered again by the next offer.
+    pub fn on_device_message(&mut self, message: Message) {
+        let Some(conn) = self.session.as_ref().filter(|s| s.ready && s.devices).map(|s| s.conn) else { return };
         self.net.send(conn, &message);
     }
 

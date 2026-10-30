@@ -10,7 +10,7 @@ use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::WindowSurfaceType;
 use smithay::input::keyboard::{FilterResult, Keycode};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
@@ -115,9 +115,16 @@ impl State {
     pub fn pointer(&mut self, m: &proto::Pointer) {
         let Some((location, under)) = self.locate(m.id, m.x, m.y) else { return };
         let Some(pointer) = self.seat.get_pointer() else { return };
-        let time = self.now_ms();
+        let utime = self.now_us();
+        let time = (utime / 1000) as u32;
         let serial = self.next_serial();
-        pointer.motion(self, under, &MotionEvent { location, serial, time });
+        let delta = location - pointer.current_location();
+        pointer.motion(self, under.clone(), &MotionEvent { location, serial, time });
+        // Pair the virtual pointer's absolute position with relative motion in the
+        // same frame. Xwayland otherwise alternates its absolute and relative X
+        // devices for motion and axes, resetting XI2 clients' scroll baselines.
+        // Both vectors are identical: this virtual device adds no acceleration.
+        pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel: delta, utime });
         let changed = self.input.pointer_buttons ^ m.buttons;
         if changed & m.buttons != 0 {
             self.press_focus(m.id);

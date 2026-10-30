@@ -37,7 +37,10 @@ address, the setup link while unclaimed, how to read the owner token, and a pair
 | Docker volumes `caddy-data`, `caddy-config` | Caddy's certificates and ACME account. |
 
 Only Caddy publishes ports (80, 443, and 443/udp for HTTP/3). The host listens only on the
-compose network. Caddy passes WebSockets and streams through unbuffered, and adds HSTS.
+compose network, `172.31.250.0/24`, and believes Caddy's forwarding headers from it
+(`CABOOSE_TRUSTED_PROXIES`): sign-in attempts are counted per client address, not per
+proxy, and the console's origin is `https://<domain>`. Caddy passes WebSockets and streams
+through unbuffered, and adds HSTS.
 
 ## Settings
 
@@ -54,6 +57,7 @@ Edit `/opt/caboose-server/.env`, then run `docker compose -f /opt/caboose-server
 | `CABOOSE_DISK_SIZE` | `400G` | The largest the computers' disk image may grow, when the state directory is not on XFS or Btrfs. |
 | `CABOOSE_HOST_IMAGE` | the release | Run another host image, for instance one built from a checkout. |
 | `CABOOSE_HTTP_PORT`, `CABOOSE_HTTPS_PORT` | `80`, `443` | The ports Caddy publishes. Let's Encrypt needs 80 and 443 to reach it. |
+| `CABOOSE_PROXY_NETWORK` | `172.31.250.0/24` | The compose network's subnet, which the host trusts Caddy's forwarding headers from (`CABOOSE_TRUSTED_PROXIES`). Change it only if it collides with a network the server uses. |
 
 mDNS is off on a server. Guests reach only the public internet (docs/architecture.md, Network
 fencing).
@@ -84,6 +88,8 @@ the owner token reaches everything (docs/architecture.md, Computers and Authenti
   the server, its private networks, nor cloud metadata addresses.
 - Treat the owner token as the server's root password. Phones get their own revocable tokens
   through pairing codes, and no link or QR code ever carries a token.
+- Wrong passwords are counted per client address, which Caddy forwards from the compose
+  network; the host trusts no other peer's forwarding headers.
 
 ## Checks
 

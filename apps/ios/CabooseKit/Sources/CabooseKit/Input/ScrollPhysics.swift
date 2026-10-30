@@ -36,7 +36,9 @@ public struct ScrollPhysics {
 
     /// A pause before lifting stops the fling. UIKit pans may supply their measured
     /// release velocity; raw touch surfaces use the filtered sample velocity.
-    public mutating func end(at time: TimeInterval, velocity measured: CGPoint? = nil, coast: Bool = true) {
+    public mutating func end(at time: TimeInterval, velocity measured: CGPoint? = nil, coast: Bool = true, remainingContacts: Int = 0) {
+        // A partial lift cancels the sequence, including movement awaiting a frame.
+        guard remainingContacts == 0 else { cancel(); return }
         guard tracking else { return }
         tracking = false
         if let measured, measured.x.isFinite, measured.y.isFinite { velocity = measured }
@@ -51,7 +53,16 @@ public struct ScrollPhysics {
     }
 
     public mutating func frame(elapsed: TimeInterval) -> CGPoint {
-        guard elapsed.isFinite, elapsed >= 0, elapsed <= 0.1 else { cancel(); return .zero }
+        guard elapsed.isFinite, elapsed >= 0 else { cancel(); return .zero }
+        if elapsed > 0.1 {
+            // Drop stale movement after a rendering stall, but keep accepting a
+            // finger that is still down. Cancelling tracking here strands the
+            // recognizer's remaining changed events until the user lifts.
+            pending = .zero
+            velocity = .zero
+            isCoasting = false
+            return .zero
+        }
         var result = pending
         pending = .zero
         guard isCoasting else { return result }

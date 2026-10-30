@@ -4,6 +4,81 @@ set -eu
 cat <<'CHECK'
 Open Chromium, Thunar and a terminal on a signed device paired to a real computer.
 
+Native container corners (iOS 26 and 27, iPhone/iPad/external display):
+1. In Tablet/Tiled, put one window across the workspace. Its straight top and left
+   edges meet the workspace with no wallpaper strip. Scroll to the last column:
+   its trailing edge is flush. Two/three columns and stacked tiles retain resize gaps.
+2. Check the physical corner as well as the screenshot. Close/Full Screen/menu
+   controls remain completely visible and tappable. Repeat Free mode maximized,
+   restored, snapped and dragged near each corner. Pointer hit targets match controls.
+3. Rotate/fold, move the sidebar, show the keyboard, and use iPad window resizing.
+   Check Home cards, Agents panels, Terminal controls, trackpad, dock and sheets:
+   boundary corners follow their container; interior cards retain their design radius.
+4. Verify app-card fullscreen aspect, popup/input alignment, hinge division and DPI
+   are unchanged. Repeat with VoiceOver and large text. No device radius is inferred
+   from a safe-area height. Record device/OS/mode and before/after screenshots.
+
+Switchyard snap chooser (Tablet Desktop tab, Tiled, no external display):
+1. Open four ordinary windows. Drag the full-width tile's title from near its left,
+   center and right ends. The small carried picture retains the grab position, and
+   the chooser is visible above stationary windows but below the carried window.
+   Select each half, quarter, third and
+   complementary two-thirds region. The highlighted destination must equal the
+   released tile, including title bar and interior resize gaps.
+2. Start after scrolling several columns right. Hover the two repeated left-third
+   choices: only the actual region is highlighted; its companions form the depicted
+   three-column or two-column layout on release. Unchosen windows remain on the track.
+3. Enter application fullscreen, then carry from its top pull-tab. Hover, change
+   choices and cancel by leaving Desktop or backgrounding. Fullscreen and original
+   layout return; repeat with rotation and reconnect. A valid drop exits fullscreen
+   only at release. Observe configure traffic: hovering sends no geometry requests.
+4. Release over a disabled region, palette gap, or outside the workspace: no layout
+   change. Close a participant during the drag: the stale proposal cannot commit.
+   Repeat with one, two and three windows: every fitting quarter remains selectable,
+   empty slots stay vacant and no fake dock/Overview windows appear. With a 1024x640
+   minimum-size window, every slot remains selectable: Linux keeps valid content size
+   and the complete picture fits the slot. Check controls at the center and corners
+   for matching input coordinates. Repeat in portrait and landscape, selecting every
+   visible region from its center and just inside each border; no target sticks on Full.
+5. Move outside the chooser onto another tile's upper/lower quarter, middle and
+   outer fifth. Stack, swap and column previews remain visible above opaque tiles;
+   edge scrolling and the final scroll position agree with the preview.
+6. Repeat with pointer, touch and Reduce Motion. Verify existing VoiceOver title/menu
+   width and fullscreen actions. Verify content scroll, fullscreen input alignment,
+   native corner controls and the black Laptop hinge with no new input interception.
+
+Floating desktop snap chooser (iPad Free/Tablet and external display):
+1. Drag an app by its title bar beyond twelve points. A translucent chooser appears
+   above the windows. Sweep across full screen, halves, all four quarters, thirds,
+   and both two-thirds/one-third layouts. The preview matches the selected region.
+2. Release on each region. Check the resulting window bounds and app controls.
+   Place three windows into thirds and two into complementary two-thirds/one-third
+   regions: they meet without gaps or overlap. Pull them out to restore free sizing.
+3. Move out of the chooser and release in the desktop interior: no snap. Move to
+   an edge: existing half/corner/maximize snapping works. A minimum-size app cannot
+   select a dimmed destination. Dragging content or a resize corner shows no chooser.
+4. Repeat by touch and trackpad, with Reduce Motion, after rotation and relaunch.
+   Release or leave Desktop during a drag: no chooser remains on the next visit.
+
+Monitor/window/presentation contract (record results; this script does not claim a pass):
+1. Record xrandr --current and xdpyinfo for the owner display. Show/hide the keyboard,
+   open/close app cards: monitor dimensions/DPI stay unchanged while ordinary windows
+   reflow. Rotate Tablet portrait -> landscape -> Laptop -> Tablet: monitor dimensions
+   follow the physical window or upper panel, never an old square or keyboard-shortened
+   viewport. DPI and render scale stay as selected. Repeat with a saved old square mode,
+   and while connecting/disconnecting an external display (external dimensions win).
+2. Use a fixed-size dialog and a window with declared minimum/maximum hints; check
+   xprop WM_NORMAL_HINTS on X11. Narrow the viewport: requests respect the hints, the
+   committed picture fits without cropping, and menu/submenu targets stay aligned.
+3. Enter application fullscreen. Keyboard changes leave its monitor size stable;
+   fold/rotation transitions reconfigure the output and fullscreen surface to the measured
+   physical mode. Check center/corners by touch and desktop trackpad, including
+   a nested menu. Letterboxing does not activate the app or hidden desktop items.
+   A scroll fling stops when the shown/committed geometry changes. A captured drag
+   still releases on its original target. Exit explicitly and verify ordinary fitting.
+4. Record an explicit monitor/DPI change separately. Wine assertions or misplaced input
+   fail this check; policy unit tests do not establish live Wine/device compatibility.
+
 Portrait/landscape shell (Tablet mode, no external display):
 1. Keep the actual Desktop tab open with Chrome focused. Rotate the opened Duo
    landscape -> portrait -> landscape, with native rail on either side. Portrait
@@ -27,6 +102,12 @@ Portrait/landscape shell (Tablet mode, no external display):
    remain intact with no extra portrait button, then return to Tablet and repeat.
 
 Switchyard (Desktop tab, no external display):
+0. Use a resizable app whose minimum width exceeds a portrait tile. Record its size
+   hints and committed geometry. Its requested height grows with the required width,
+   and after redraw the complete picture fills the tile without a large empty lower
+   region. Repeat in an app card and a permitted desktop snap. Check corner taps,
+   scrolling, menus and drops against the same picture. A genuinely fixed-size dialog
+   keeps its aspect and may retain padding; it must not be stretched or cropped.
 1. On a closed/upright phone, move between columns using the dock. Open the Duo or
    rotate a large phone: two columns fit; an iPad offers thirds. Drag a gap and
    stack two tiles. The complete Chrome tab strip, address bar and refresh button
@@ -161,6 +242,37 @@ Record which device/orientation/display and checks passed; a build alone is not 
 CHECK
 
 cat <<'CHECK'
+Linux windows in iPad windows (iPad with Stage Manager on, hardware keyboard to hand):
+1. Open VS Code (or Mousepad) on the Desktop tab, then Open in New Window from its tile's
+   menu (Tiled), the dock app's menu (Free) and Home's window tile menu. Each opens one
+   iPadOS window titled like the Linux window; choosing it again brings that window forward
+   instead of opening another. The Desktop's tiles and floating desktop no longer show it.
+   Drag the Home tile out past the app's edge and drop it: the same window opens there.
+2. Resize the iPadOS window from each corner: the app redraws at the new size, with the
+   picture stretched only briefly, and its menu bar is whole below the window's bar. Open a
+   fixed-minimum window (a preferences dialog's parent, or GIMP): the iPadOS window cannot be
+   made smaller than it. Rename a file or switch editor tabs: App Exposé and the window menu
+   show the new title.
+3. Click between the Caboose shell and the Linux window: typing on the hardware keyboard
+   goes to the window in front each time. Open a menu, a context menu and a Save dialog in
+   the window: each appears inside it and takes input; none appears on the Desktop tab.
+   Tap a text field without a hardware keyboard: the software keyboard comes and goes.
+4. Window Options -> Move to Desktop: the iPadOS window closes, Caboose comes forward on
+   Desktop with the window focused at its old place. Open it in a new window again and close
+   the iPadOS window with its own close button: the Linux window is still running on the
+   Desktop. Open it again and close the Linux window from Window Options (or File > Quit):
+   the iPadOS window closes.
+5. With a Linux window in its own window, put the shell's window away (another Stage
+   Manager set) and keep using the Linux window: the display stays connected. Send every
+   Caboose window to the background, wait, and return: the window reconnects with its picture.
+6. Quit Caboose from the app switcher with a Linux window open in its own window and
+   relaunch: it shows the same Linux window once the computer is back. Restart the computer
+   from Computer settings: the window closes. Relaunch with a restored window whose Linux
+   window has gone: it says so and Close closes it. Switch computers: these windows close.
+7. In Stage Manager and the Dock, each such window carries Caboose's icon.
+CHECK
+
+cat <<'CHECK'
 Direct touch on mouse-only windows:
 - In an X11 paint app, select a paintable layer and draw with one finger: a continuous
   stroke begins at the contact point. In a text editor, drag to select; in a file manager,
@@ -171,3 +283,16 @@ Direct touch on mouse-only windows:
 - Native Wayland browser swipes, canvas gestures, sliders and pinch remain native.
   With a hardware mouse/trackpad, primary drag and precise scrolling still work.
 CHECK
+
+cat <<'KEYBOARD_CHECK'
+Retained-picture keyboard transition (Desktop/Tablet and app card):
+  Open an ordinary browser window and repeatedly focus a text field, hide the software
+  keyboard, and reopen it during dismissal. Repeat in portrait and landscape, with a
+  minimum-sized window and with app fullscreen. Check circular icons remain circular
+  throughout; retained pixels may letterbox while the guest catches up, never stretch.
+  During keyboard motion, click toolbar controls and open a popup: pointer targets,
+  text drops and popup roots must follow the fitted picture. Repeat in Laptop with the
+  globe keyboard: upper content stays above occlusion and the hinge stays fixed.
+  Confirm physical monitor dimensions/DPI are unchanged by keyboard show/hide; rotate
+  with the keyboard visible and verify fullscreen centering and restored tablet size.
+KEYBOARD_CHECK

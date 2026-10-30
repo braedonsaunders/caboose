@@ -1,3 +1,4 @@
+import { containerUsage, dockerEndpointSelection } from './container-usage.js'
 import { execFile } from 'node:child_process'
 import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
@@ -264,7 +265,16 @@ export function createContainerController(config: Config, dependencies: { docker
     return { state: 'running', display: { path: '/v1/display', token: displayToken, protocol: 'caboose-display' }, computer: { name: settings().name, image: gpu === 'none' ? 'Debian 13' : 'Debian 13 · GPU', ...size } }
   }
 
+  let socketPromise: Promise<string> | undefined
+  const usage = containerUsage(name, place.home, () => socketPromise ??= (async () => {
+    const selected = dockerEndpointSelection(process.env)
+    const endpoint = selected.endpoint ?? (await docker(selected.args, 4000)).trim()
+    if (!endpoint.startsWith('unix://')) throw new Error('Usage requires a local Docker socket')
+    return endpoint.slice(7)
+  })().catch(error => { socketPromise = undefined; throw error }))
   const controller: Controller = {
+    usageCounters: usage.counters,
+    usageStorage: usage.storage,
     componentsMode: 'container',
     componentsWarning: () => filesPortWarning,
     get displayUrl() { return `ws://127.0.0.1:${place.ports.display}/` },

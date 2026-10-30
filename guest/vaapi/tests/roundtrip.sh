@@ -104,8 +104,11 @@ for codec in $codecs; do
   while IFS='|' read -r name src enc ext; do
     case $name in ''|'#'*) continue ;; esac
     name=$(echo "$name" | xargs) src=$(echo "$src" | xargs) enc=$(echo "$enc" | xargs) ext=$(echo "$ext" | xargs)
+    if [ -n "${CBVA_CASES:-}" ]; then
+      case " $CBVA_CASES " in *" $name "*) ;; *) continue ;; esac
+    fi
     run_case "$name" "$src" "$enc" "$ext"
   done < "$cases"
 done
 echo "roundtrip: $pass passed, $fail failed (work: $work)"
-[ "$fail" -eq 0 ]
+[ "$fail" -eq 0 ] && [ "$pass" -gt 0 ]

@@ -64,11 +64,12 @@ COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
+COPY devices /tmp/bundle/devices
 COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 COPY game /tmp/bundle/game
 COPY gpu /tmp/bundle/gpu
-COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff

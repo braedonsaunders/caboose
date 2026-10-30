@@ -360,13 +360,16 @@ struct OnScreenGamepadTests {
         settings.labels = .playstation
         settings.sticks = .fixed
         settings.games = .keys
+        settings.windows = .controller
         settings.keys["start"] = "p"
         #expect(Pad.Settings.decode(settings.encoded) == settings)
+        // Settings saved before the Linux controller existed keep pressing keys.
+        #expect(Pad.Settings().windows == .keys)
         #expect(Pad.Settings.decode(nil) == Pad.Settings())
         #expect(Pad.Settings.decode(Data("nope".utf8)) == Pad.Settings())
         let partial = Pad.Settings.decode(Data(#"{"left":"stick","showsRightStick":true,"scale":9,"keys":{"south":"x"},"appStyles":{"a":"retro","b":"hologram"}}"#.utf8))
         #expect(partial.scale == 1.2 && partial.keys == ["south": "x"] && partial.style == .modern)
-        #expect(partial.appStyles == ["a": .retro])
+        #expect(partial.appStyles == ["a": .retro] && partial.windows == .keys)
     }
 
     @Test func eachAppRemembersItsController() {

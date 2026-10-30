@@ -1,7 +1,14 @@
+import { GuestEvents } from './guest-events.js'
+import { UsageHistory } from './computer-usage.js'
+import type { UsageCounters, ComputerStorage as UsageStorage } from '../../../packages/capacity/types.js'
+import { CapacitySampler, capacityFor } from './capacity.js'
+import { recoveryRoute } from './recovery.js'
+import { AccountSocketFence } from './identity/socket-fence.js'
 import { computerSizes, expandSize } from './sizes.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
+import { COMMAND_LIMITS, CommandStore, ComputerCommands, commandJob, commandSummary, commandView, parseCommandRequest, parseWait } from './commands.js'
 import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
 import type { ParkedFilesView } from './parked-files-store.js'
 import { serveParkedFiles } from './parked-files-reader.js'
@@ -11,8 +18,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { NOT_FOUND, json, noContent, readJson } from './http.js'
+import { NOT_FOUND, RequestTooLargeError, json, noContent, readJson } from './http.js'
 import { createDesktopShortcut, parseAppLaunch, type AppAction } from './guest-apps.js'
+import { crossSite } from './cross-site.js'
+import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import type { Architecture } from './app-catalog-data.js'
@@ -22,7 +31,7 @@ import { replaceGuestFile } from './guest-private-file.js'
 import type { SmitheryCatalog } from './smithery.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
-import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest } from './agents.js'
+import { AgentConflictError, AgentIdentityError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentTasks, AgentUnavailableError, type AgentGuest, type AgentProfileSnapshot } from './agents.js'
 import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWNLOADS } from './files.js'
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { tieredController, type SnapshotTierOptions } from './snapshot-tier-controller.js'
@@ -46,7 +55,7 @@ import type { ComputerStorage } from './storage.js'
 import type { SharedStorageStatus } from './shared-storage.js'
 import type { RestoredDisk } from './restore-journal.js'
 import { ReachUnavailableError, type ReachService } from './reach.js'
-import { DesktopNotifications } from './desktop-notifications.js'
+import { DesktopNotifications, NOTIFICATION_ID, parseNotificationResponse, respondToNotification } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
 import type { AgentEvent } from './agents.js'
@@ -54,8 +63,9 @@ import { ScreenElementGoneError, screenAct, screenElements, screenKeys, screenTy
 import { agentAutomation } from './agent-automation.js'
 import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journal.js'
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
-import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
+import { AgentProfiles, prepareProfileStart, profileContext } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
+import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU } from './gpu-relay.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -65,6 +75,8 @@ export interface Controller extends ComputerDriver<Session> {
   parkedFilesView?(): Promise<ParkedFilesView | undefined>
   componentsMode?: ComponentsMode
   componentsWarning?(): string | undefined
+  usageCounters?(): Promise<UsageCounters>
+  usageStorage?(): Promise<UsageStorage>
   stats(): unknown
   apps(): Promise<App[]>
   /** Starts an entry, opening a home-relative file with it or running one of its actions. */
@@ -92,6 +104,8 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
+/** `POST /v1/files` holds its whole file in memory as base64; larger files stream through `PUT /v1/fs/content`. */
+const FILE_BODY_LIMIT = 16 * 1024 * 1024
 
 
 /** Who a request is from: the owner (the host's own token), or a phone signed in to one computer. */
@@ -102,7 +116,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -120,6 +134,19 @@ export function withAdmission(controller: Controller, admit: () => Promise<void>
     return controller.wake(mode)
   }
   return gated
+}
+
+/** Ordinary chats use their agent's default identity on this computer; an archived one is restored by the owner, never implicitly. */
+export function defaultIdentity(profiles: AgentProfiles, changed: () => void): (agent: string, agentName: string) => Promise<AgentProfileSnapshot> {
+  return async (agent, agentName) => {
+    let result
+    try { result = await profiles.ensureDefault(agent, agentName) } catch (error) {
+      throw new AgentIdentityError(`Cannot create the ${agentName} identity for memory and routines: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (result.created) changed()
+    if (result.profile.archived) throw new AgentIdentityError(`${result.profile.name}, the identity of ${agentName} chats, is archived. Restore it in agent profiles to use its memories and routines.`)
+    return { id: result.profile.id, instructions: profileContext(result.profile) }
+  }
 }
 
 /** The Library's host-wide parts, shared by every computer. */
@@ -140,11 +167,18 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const foregroundClients = new Set<WebSocket>()
   const backgroundControls = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
+  /** Phone sockets whose app answers scan requests (`?scan=1`). */
+  const scanControls = new Set<WebSocket>()
   /** Open terminals by who opened them (a phone, or the owner), for the per-client cap. */
   const terminals = new Map<WebSocket, string>()
   /** Terminal upgrades waiting for a wake, counted against the same cap. */
   const pendingTerminals = new Map<string, number>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
+  const gpuWss = new WebSocketServer({ noServer: true, maxPayload: GPU_MAX_MESSAGE, perMessageDeflate: false,
+    handleProtocols: protocols => protocols.size === 1 && protocols.has(GPU_PROTOCOL) ? GPU_PROTOCOL : false })
+  const gpuSockets = new Set<WebSocket>()
+  const pendingGPUSockets = new Map<Duplex, string | undefined>()
+  let gpuReservation: object | undefined
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -187,6 +221,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     ? pieces.openToolJournal(agentAutomation(pieces.profiles, () => routinesReady, () => broadcast({ type: 'agent.profiles.changed' })))
       .catch(error => { toolsError = error instanceof Error ? error.message : String(error); console.error('Cannot open agent tools:', error); return null })
     : Promise.resolve(null)
+  const guestEvents = new GuestEvents(() => controller.fileService?.(), () => agents.eventTasks())
   const agents: AgentTasks = new AgentTasks(() => controller.guest(), event => {
     broadcast(event)
     if (push) void push.event(event as AgentEvent, foregroundClients.size > 0).catch(error => console.error('Push event failed:', error))
@@ -194,6 +229,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (job && activities) void activities.job(job, event.type === 'agent.task.started' || event.type === 'agent.task.replied', foregroundClients.size > 0).catch(error => console.error('Live Activity event failed:', error))
   }, () => computer.acquire(), {
     ...(pieces.openToolJournal ? { toolJournal: async () => { const journal = await toolJournalReady; if (!journal) throw new AgentConflictError(toolsError ?? 'Agent tools are unavailable'); return journal } } : {}),
+    ...(pieces.openToolJournal && pieces.profiles ? { defaultIdentity: defaultIdentity(pieces.profiles, () => broadcast({ type: 'agent.profiles.changed' })) } : {}),
+    subscribe: guestEvents.subscribe, eventsChanged: () => guestEvents.refresh(),
     resolver: catalog, home, craftServers: async () => craftMcpServers((await appCatalog.list()).apps), ...(mcp ? { mcpLibrary: () => mcp.sync(true) } : {}), pollMs: 1000, ensureSeat: () => controller.ensureAgentSeat(), ...(shared.agentIdleMs !== undefined ? { idleMs: shared.agentIdleMs } : {}),
   })
   let routineError: string | null = null
@@ -236,7 +273,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const desktopNotifications = new DesktopNotifications(() => controller.guest(), event => {
     broadcast({ type: 'notification', ...event })
     if (push) void push.desktop(event, foregroundClients.size > 0).catch(error => console.error('Desktop push failed:', error))
-  })
+  }, guestEvents.subscribe)
   computer.setBeforeFreeze(async () => {
     await Promise.all([desktopNotifications.quiesce(), agents.drainToolWork(), location.quiesce()])
     // A detached terminal can still run a foreground child. Until the service can prove it
@@ -248,67 +285,52 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   })
   let craftBusy = 0
   const craftJobs = new Set<string>()
-  const media = new MediaHandoff(() => controller.guest(), broadcast)
+  const media = new MediaHandoff(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   let fileAnchor: string | undefined
-  let filePoll: ReturnType<typeof setInterval> | undefined
-  let filePollGeneration = 0
-  let pollingFiles: number | undefined
+  let stopFiles: (() => void) | undefined
   function syncFiles(): void {
     const active = computer.state === 'running' && controls.size > 0 && controller.fileService
     if (!active) {
-      if (filePoll) clearInterval(filePoll)
-      filePoll = undefined
-      filePollGeneration++
-      pollingFiles = undefined
-      // Freeze preserves the guest epoch. Keep the last observed anchor for the first
-      // poll after thaw, but discard it when the guest or all observers have gone away.
+      stopFiles?.(); stopFiles = undefined
       if (computer.state !== 'frozen' || controls.size === 0) fileAnchor = undefined
       return
     }
-    if (filePoll) return
-    const poll = async () => {
-      if (pollingFiles !== undefined || !controller.fileService || computer.state !== 'running') return
-      const generation = filePollGeneration
-      pollingFiles = generation
-      try {
-        const service = controller.fileService()
-        const url = new URL('/changes', service.url)
-        if (fileAnchor) url.searchParams.set('anchor', fileAnchor)
-        const response = await fetch(url, { headers: { authorization: `Bearer ${service.token}` }, signal: AbortSignal.timeout(5000) })
-        if (!response.ok) throw new Error('File change feed unavailable')
-        const change = await response.json() as { anchor: string; changed: boolean }
-        if (generation !== filePollGeneration) return
-        if (fileAnchor && change.changed) broadcast({ type: 'fs.changed', anchor: change.anchor })
-        fileAnchor = change.anchor
-      } catch { /* Retry with the previous anchor so missed changes trigger a rescan. */ }
-      finally { if (pollingFiles === generation) pollingFiles = undefined }
-    }
-    void poll()
-    filePoll = setInterval(() => { void poll() }, 1000)
-    filePoll.unref()
+    if (stopFiles) return
+    stopFiles = guestEvents.subscribe('fs', value => {
+      const change = value as { anchor?: unknown }
+      if (!change || typeof change.anchor !== 'string' || change.anchor.length > 128) return
+      if (fileAnchor && fileAnchor !== change.anchor) broadcast({ type: 'fs.changed', anchor: change.anchor })
+      fileAnchor = change.anchor
+    })
   }
 
   const phone = new PhoneHandoff(() => controller.guest(), event => {
     const message = JSON.stringify(event)
     for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
-  })
-  /** File chooser requests go to phone sockets only; an answered one is withdrawn from the other phones. */
-  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string) => {
+  }, 1000, guestEvents.subscribe)
+  /**
+   * File chooser requests go to phone sockets only, scan requests only to those that scan; an
+   * answered one is withdrawn from the other phones.
+   */
+  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string, scanners?: boolean) => {
     const message = JSON.stringify(event)
     for (const socket of phoneControls) {
       if (exceptPhone !== undefined && phoneSockets.get(socket) === exceptPhone) continue
+      if (scanners && !scanControls.has(socket)) continue
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
-  })
+  }, 1000, Date.now, guestEvents.subscribe)
+  bridge.canScan = () => [...scanControls].some(socket => phoneControls.has(socket) && !backgroundControls.has(socket) && socket.readyState === WebSocket.OPEN)
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
-  const nowPlaying = new NowPlaying(() => controller.guest(), broadcast)
+  const nowPlaying = new NowPlaying(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
     const watching = computer.state === 'running' && sockets.size - controls.size - terminals.size > 0
     media.setActive(watching)
     nowPlaying.setActive(watching)
     const phones = computer.state === 'running' && [...phoneControls].some(socket => !backgroundControls.has(socket))
+    guestEvents.setPhone(phones)
     phone.setActive(phones)
     bridge.setActive(phones)
   }
@@ -354,7 +376,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     return {
       state: computer.state, settings: desired, limits: settings.limits, sizes: computerSizes(shared.gpuEnabled), activeResources: active,
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
-      clients: { display: sockets.size - controls.size - terminals.size, control: controls.size, terminal: terminals.size },
+      clients: { display: sockets.size - controls.size - terminals.size - gpuSockets.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!push },
       upgrade, keyring,
@@ -376,7 +398,34 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     } finally { release() }
   }
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
-  function closeSockets(): void { for (const socket of sockets) socket.terminate() }
+  function closeSockets(): void {
+    for (const socket of sockets) socket.terminate()
+    for (const socket of pendingGPUSockets.keys()) socket.destroy()
+  }
+  const commands = new ComputerCommands(pieces.commands ?? CommandStore.memory(), {
+    guest: () => controller.guest(),
+    writeFile: async (relative, data) => {
+      const service = controller.fileService?.()
+      if (!service) throw new AgentUnavailableError()
+      await replaceGuestFile(service, relative, data)
+    },
+    acquire: () => computer.acquire(),
+    wake: () => computer.wakeAndRun(() => ensureFilesReady(), 'headless'),
+    progress: (record, phase, { waited, long }) => {
+      const job = commandJob(record)
+      broadcast({ type: 'job.progress', job })
+      const foreground = foregroundClients.size > 0
+      // A Live Activity only for a long run; a notification only when nobody waits for the result.
+      if (activities && (phase === 'long' || (phase === 'finished' && long))) void activities.job(job, phase === 'long', foreground).catch(error => console.error('Command activity failed:', error))
+      if (push && phase === 'finished' && !waited) void push.command(record, foreground).catch(error => console.error('Command push failed:', error))
+    },
+  })
+  /** Aborts when the client goes away, so a long-polling request stops counting as waiting. */
+  function closed(response: ServerResponse): AbortSignal {
+    const abort = new AbortController()
+    response.once('close', () => abort.abort())
+    return abort.signal
+  }
   let previousState = computer.state
   computer.subscribe(state => {
     const resumed = state === 'running' && previousState === 'frozen'
@@ -404,9 +453,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         }).finally(() => { upgrading = false; release() })
       }
     }
-    if (state === 'running') { agents.resume(); if (!resumed) bridgeWake() }
-    else if (state === 'frozen') agents.pause()
-    else { agents.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
+    guestEvents.setRunning(state === 'running')
+    if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
+    else if (state === 'frozen') { agents.pause(); commands.pause() }
+    else { agents.pause(); commands.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
     syncMedia()
     syncFiles()
     desktopNotifications.setActive(state === 'running')
@@ -426,8 +476,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await stage?.()
     })
     agents.computerRestarted()
+    await commands.computerRestarted()
     broadcastSettings()
   }
+  // Commands a previous host process left running are finished on a woken computer.
+  commands.recover()
 
   async function handle(request: IncomingMessage, response: ServerResponse, path: string, principal: Principal): Promise<unknown> {
     if (path === '/v1/agent/routines' || path.startsWith('/v1/agent/routines/')) {
@@ -507,7 +560,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyWebview(controller.fileService(), webviewBridge[1]!, request, response)
-      })
+      }, 'headless')
     }
     if (path.startsWith('/v1/fs/')) {
       if (request.method === 'GET' && controller.parkedFilesView && computer.state === 'parked') {
@@ -526,7 +579,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyFiles(controller.fileService(), request, response)
-      })
+      }, 'headless')
     }
     if (path === '/v1/activities' && request.method === 'POST') {
       if (!activities) return json(response, 503, { error: 'Live Activities unavailable' })
@@ -561,6 +614,27 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const job = parseJob(body.job)
       await activities.job(job, body.start, foregroundClients.size > 0)
       return json(response, 200, { sent: true })
+    }
+    if (path === '/v1/commands' && request.method === 'GET') return json(response, 200, { commands: commands.list().map(commandSummary) })
+    if (path === '/v1/commands' && request.method === 'POST') {
+      const input = parseCommandRequest(await readJson(request, COMMAND_LIMITS.bodyBytes))
+      const started = await computer.wakeAndRun(async () => {
+        await ensureFilesReady()
+        if (!controller.fileService || !controller.guest()) throw new AgentUnavailableError()
+        return commands.start(input)
+      }, 'headless')
+      return json(response, 201, commandView(await commands.wait(started.id, input.wait, closed(response))))
+    }
+    const commandRoute = /^\/v1\/commands\/([^/]+)(\/cancel)?$/.exec(path)
+    if (commandRoute?.[1] && !commandRoute[2] && request.method === 'GET') {
+      const wait = parseWait(new URL(request.url ?? '/', 'http://localhost').searchParams.get('wait'))
+      return json(response, 200, commandView(await commands.wait(commandRoute[1], wait, closed(response))))
+    }
+    if (commandRoute?.[1] && commandRoute[2] && request.method === 'POST') {
+      const id = commandRoute[1]
+      if (commands.get(id).status !== 'running') throw new AgentConflictError('the command has already finished')
+      await computer.wakeAndRun(() => commands.cancel(id), 'headless')
+      return json(response, 200, commandView(await commands.wait(id, 10, closed(response))))
     }
     if (path === '/v1/devices/push' && request.method === 'POST') {
       if (!push) return json(response, 503, { error: 'push unavailable' })
@@ -600,7 +674,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await confirmedRestart()
       return json(response, 200, managementStatus())
     }
-    if (path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+    if (path === '/v1/recovery' || path.startsWith('/v1/recovery/') || path === '/v1/backup' || path.startsWith('/v1/backup/')) {
+      if (path.startsWith('/v1/recovery') && principal.kind === 'phone') return json(response, 403, { error: 'Only administrators manage host captures' })
+      if (path.startsWith('/v1/recovery') && !pieces.storage) return recoveryRoute(undefined, request, response, path, principal, {} as never)
       if (!pieces.storage) return json(response, 404, { error: 'This computer cannot be backed up to a phone' })
       return pieces.storage.backups(request, response, path, principal, {
         restart: confirmedRestart,
@@ -618,6 +694,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'POST' && path === '/v1/session/park') {
       if (upgrading) throw new ComputerConflictError('Caboose components are updating')
       if (appCatalog.busy || craftBusy) throw new ComputerConflictError('An application operation is in progress')
+      if (commands.busy) throw new ComputerConflictError('A command is running; cancel it or wait for it to finish')
       await computer.park(closeSockets)
       return json(response, 200, { state: computer.state })
     }
@@ -693,7 +770,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       craftJobs.add(input.job)
       craftBusy++
       try {
-        await computer.wake()
+        await computer.wake('headless')
         return await leased(async () => {
           const listing = await appCatalog.list()
           const app = listing.apps.find(item => item.id === id)
@@ -874,7 +951,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
     if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
     if (request.method === 'POST' && path === '/v1/files') {
-      const input = await readJson(request, Number.MAX_SAFE_INTEGER)
+      const input = await readJson(request, FILE_BODY_LIMIT)
       if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
       if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
       const data = decodeBase64(input.data, 'data')
@@ -898,6 +975,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           return { path }
         }
       }))
+    }
+    const notificationAnswer = /^\/v1\/notifications\/([^/]+)\/respond$/.exec(path)
+    if (request.method === 'POST' && notificationAnswer?.[1]) {
+      const id = notificationAnswer[1]
+      if (!NOTIFICATION_ID.test(id)) throw new AgentInputError('Invalid notification id')
+      const answer = parseNotificationResponse(await readJson(request))
+      // A parked computer resumes with its applications, whose notifications are still live.
+      return json(response, 200, await computer.wakeAndRun(() => respondToNotification(controller.guest(), id, answer), 'headless'))
     }
     if (request.method === 'POST' && path === '/v1/open') {
       const input = await readJson(request)
@@ -960,8 +1045,52 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }).catch(() => socket.destroy())
   }
 
+  function connectGPU(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, principal: Principal): void {
+    const refuse = (status: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`) }
+    const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
+    // No agent route, arbitrary destination, client-supplied executor or query credentials.
+    if (url.search || offered.length !== 1 || offered[0] !== GPU_PROTOCOL) return refuse('400 Bad Request')
+    if (!computer.acceptsConnections || gpuReservation) return refuse('409 Conflict')
+    const reservation = {}
+    gpuReservation = reservation
+    const release = computer.acquire()
+    let upgraded = false
+    const finish = () => {
+      if (gpuReservation !== reservation) return
+      gpuReservation = undefined
+      pendingGPUSockets.delete(socket)
+      release()
+    }
+    pendingGPUSockets.set(socket, principal.phoneId)
+    socket.once('close', () => { pendingGPUSockets.delete(socket); if (!upgraded) finish() })
+    void computer.wake().then(session => {
+      if (socket.destroyed) return finish()
+      if (!computer.acceptsConnections || session.display.protocol !== 'caboose-display') {
+        refuse('409 Conflict'); finish(); return
+      }
+      try {
+        gpuWss.handleUpgrade(request, socket, head, client => {
+          upgraded = true
+          pendingGPUSockets.delete(socket)
+          sockets.add(client)
+          gpuSockets.add(client)
+          if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
+          client.on('error', () => client.terminate())
+          client.once('close', () => { sockets.delete(client); gpuSockets.delete(client); phoneSockets.delete(client) })
+          // Only trusted host identities and the guest's current per-wake token cross
+          // this boundary. The guest authenticates before trusting these headers.
+          try {
+            void relayGPU(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
+              computer: id, executor: randomUUID() }).then(finish, () => { client.terminate(); finish() })
+          } catch { client.terminate(); finish() }
+        })
+      } catch { socket.destroy(); finish() }
+    }, () => { refuse('502 Bad Gateway'); finish() })
+  }
+
   function connect(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, path: string, principal: Principal): void {
     if (path === '/v1/terminal') return connectTerminal(request, socket, head, url, principal)
+    if (path === '/v1/gpu') return connectGPU(request, socket, head, url, principal)
     if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
@@ -980,12 +1109,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           if (url.searchParams.get('foreground') === '0') backgroundControls.add(client)
           if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
           if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+          if (url.searchParams.get('phone') === '1' && url.searchParams.get('scan') === '1') scanControls.add(client)
           if (background) release()
         }
         syncMedia()
         syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
+        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); scanControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
@@ -1011,14 +1141,17 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
 
   function disconnectPhone(phoneId: string): void {
     for (const [socket, phone] of phoneSockets) if (phone === phoneId) socket.terminate()
+    for (const [socket, phone] of pendingGPUSockets) if (phone === phoneId) socket.destroy()
   }
 
   async function shutdown(): Promise<void> {
     await tiering?.close()
     pieces.storage?.close()
     clearInterval(autoUpdates)
+    guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
+    commands.pause()
     await agents.drainToolWork()
     await (await toolJournalReady)?.drain()
     await upgradeWork
@@ -1031,6 +1164,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    */
   async function destroy(): Promise<void> {
     clearInterval(autoUpdates)
+    guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
     await agents.drainToolWork()
@@ -1039,15 +1173,16 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await computer.retire(async () => {
       closeSockets()
       agents.computerRestarted()
+      await commands.computerRestarted()
       if (!controller.destroy) throw new ComputerConflictError('This runtime cannot delete a computer')
       await controller.destroy()
       await pieces.storage?.destroy()
     })
   }
 
-  return { id, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /** What someone started on the computer that deleting it would cut short, if anything. */
-    operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : null,
+    operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : commands.busy > 0 ? 'A command is running on this computer' : null,
   }
 }
 
@@ -1085,6 +1220,9 @@ export function createCabooseServer(options: ComputerPieces & {
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
   machine?: () => Promise<MachineResources>
+  /** Image filesystem for read-only capacity sampling. */
+  capacityRoot?: string
+  usageHistoryFile?: string
   /** Shared storage's totals, for `GET /v1/health`; null when it is off. */
   sharedStorage?: () => SharedStorageStatus | null
   /** How phones find and reach this host, for `/v1/host/reach`. */
@@ -1092,10 +1230,17 @@ export function createCabooseServer(options: ComputerPieces & {
   fleet?: Fleet
   /** Accounts and tenants. Without it the owner token and phones are the only principals. */
   identity?: Identity
+  /** Reverse proxies whose forwarding headers are believed (`CABOOSE_TRUSTED_PROXIES`); loopback always is. */
+  trustedProxies?: TrustedProxies
+  /** `CABOOSE_PUBLIC_URL`: an origin the console is served at besides the one in `Host`. */
+  publicUrl?: string | null
 }) {
+  const capacitySampler = new CapacitySampler(options.capacityRoot, options.host?.runtime)
+  const usage = new UsageHistory(options.usageHistoryFile)
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
-  const throttle = new SignInThrottle()
+  const trustedProxies = options.trustedProxies ?? []
+  const throttle = new SignInThrottle({ trustedProxies })
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
     gpuEnabled: options.host?.runtime === 'container' && options.host.gpu !== null && options.host.gpu !== 'none',
@@ -1159,6 +1304,29 @@ export function createCabooseServer(options: ComputerPieces & {
     }
   }
   const deleting = new Set<string>()
+  let usageCursor = 0
+  let usageStopped = false, usageWork: Promise<void> | undefined
+  // One sequential collector, no overlap; slow fleets explicitly lose interval coverage.
+  function collectUsage() {
+    if (usageStopped || usageWork) return
+    usageWork = (async () => {
+      const deadline = Date.now() + 45_000
+      const all = [...runtimes.values()]
+      const ordered = [...all.slice(usageCursor), ...all.slice(0, usageCursor)]
+      for (const runtime of ordered) {
+        if (usageStopped) break
+        if (deleting.has(runtime.id)) continue
+        const inBudget = Date.now() < deadline
+        const sample = inBudget ? await runtime.controller.usageCounters?.().catch(() => null) ?? null : null
+        if (inBudget) usageCursor = (all.indexOf(runtime) + 1) % Math.max(1, all.length)
+        if (runtimes.get(runtime.id) === runtime && !deleting.has(runtime.id)) await usage.record(runtime.id, sample, Date.now(), !runtime.controller.usageCounters ? 'This runtime does not expose per-computer host resource counters' : !inBudget ? 'Collector fleet deadline reached' : 'Docker counters unavailable, stopped, or stale')
+      }
+      await usage.save([...runtimes.keys()].filter(id => !deleting.has(id)))
+    })().catch(() => console.error('Usage history could not be saved')).finally(() => { usageWork = undefined })
+  }
+  const usageTimer = options.usageHistoryFile ? setInterval(collectUsage, 60_000) : undefined
+  usageTimer?.unref()
+
   const pairing = new PairingCodes()
 
   async function principalOf(request: IncomingMessage): Promise<Principal | undefined> {
@@ -1248,11 +1416,13 @@ export function createCabooseServer(options: ComputerPieces & {
       await options.library?.depot?.forget(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
       runtimes.delete(runtime.id)
+      await usage.save([...runtimes.keys()]).catch(() => console.error('Deleted usage history could not be persisted'))
     } finally { deleting.delete(runtime.id) }
   }
 
   const server = createServer((request, response) => {
     void (async () => {
+      dropUntrustedForwarding(request, trustedProxies)
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
         // Until the host is claimed, its setup page requires the one-time setup code.
@@ -1279,6 +1449,38 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
+      // A session cookie proves who the browser is, not which page sent the request.
+      if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl })) return json(response, 403, { error: 'cross-site request refused' })
+      const capacityTenant = /^\/v1\/tenants\/([0-9a-f-]{36})\/capacity$/.exec(path)
+      if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
+        const result = await capacityFor({
+          sampler: capacitySampler,
+          usage: id => usage.get(id),
+          computers: () => [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
+          quotas: async id => { if (!identity) throw new AgentNotFoundError('tenant not found'); return (await identity.tenant(id)).quotas },
+          queued: () => { const stats = options.controller.stats() as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
+        }, principal, capacityTenant?.[1])
+        response.setHeader('cache-control', 'no-store')
+        return json(response, result.status, result.body)
+      }
+      const usageRoute = /^\/v1\/computers\/([^/]+)\/usage(\/storage)?$/.exec(path)
+      if (usageRoute) {
+        if (!principal) return json(response, 401, { error: 'unauthorized' })
+        if (principal.kind === 'phone') return json(response, 403, { error: 'forbidden' })
+        const runtime = runtimes.get(usageRoute[1]!)
+        if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
+        response.setHeader('cache-control', 'no-store')
+        if (!usageRoute[2] && request.method === 'GET') return json(response, 200, usage.get(runtime.id))
+        if (usageRoute[2] && request.method === 'POST') {
+          const result = runtime.controller.usageStorage
+            ? await runtime.controller.usageStorage().catch(() => { throw new ComputerConflictError('Another storage measurement is in progress') })
+            : { sampledAt: Date.now(), vm: await capacitySampler.storage([runtime.id]) }
+          const current = await principalOf(request)
+          if (!current || current.kind === 'phone' || runtimes.get(runtime.id) !== runtime || deleting.has(runtime.id) || !manages(current, runtime.id)) return json(response, 404, { error: 'computer not found' })
+          return json(response, 200, result)
+        }
+        return json(response, 405, { error: 'method not allowed' })
+      }
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
       if (!principal) return json(response, 401, { error: 'unauthorized' })
       const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
@@ -1333,6 +1535,7 @@ export function createCabooseServer(options: ComputerPieces & {
             input.person = selected.name
           }
           await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
+          await accountSockets.revalidate()
           return json(response, 200, describe(runtime))
         }
         if (!phones && request.method === 'DELETE') {
@@ -1367,6 +1570,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
+      if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })
       if (error instanceof PairingRateLimitError || error instanceof BridgeRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
@@ -1375,17 +1579,37 @@ export function createCabooseServer(options: ComputerPieces & {
     })
   })
 
+  const accountSockets = new AccountSocketFence()
+  const unsubscribeAuthorization = identity?.onAuthorizationChange(() => accountSockets.revalidate())
+  server.once('listening', () => { if (options.usageHistoryFile) collectUsage() })
+  server.once('close', () => { usageStopped = true; clearInterval(usageTimer); unsubscribeAuthorization?.(); accountSockets.dispose() })
+
   server.on('upgrade', (request, socket, head) => void (async () => {
+    dropUntrustedForwarding(request, trustedProxies)
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+    if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (principal.kind === 'admin') {
+      const remove = accountSockets.add(async () => {
+        const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
+        return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
+      }, () => socket.destroy())
+      socket.once('close', remove)
+      // Fence a revocation racing the initial upgrade authorization.
+      await accountSockets.revalidate()
+      if (socket.destroyed) return
+    }
     routed.runtime.connect(request, socket, head, url, routed.path, principal)
   })())
 
   async function shutdown(): Promise<void> {
+    usageStopped = true; clearInterval(usageTimer); await usageWork
+    unsubscribeAuthorization?.()
+    accountSockets.dispose()
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }

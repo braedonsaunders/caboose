@@ -173,18 +173,10 @@ class Portal:
         elif pending['absentSince'] is None:
             pending['absentSince'] = time.monotonic()
         elif time.monotonic() - pending['absentSince'] > core.ABSENT_SECONDS:
-            self.withdraw(ident)
+            core.withdraw(ident)
             self.hand_back(handle)
             return False
         return True
-
-    def withdraw(self, ident):
-        (core.REQUESTS / f'{ident}.json').unlink(missing_ok=True)
-        claimed = core.CLAIMED / f'{ident}.json'
-        if claimed.exists():
-            claimed.unlink(missing_ok=True)
-            core.prepare()
-            (core.CANCELS / ident).touch(mode=0o600)
 
     def finish(self, handle, raw):
         pending = self.open[handle]
@@ -223,7 +215,7 @@ class Portal:
         if pending['delegated']:
             self.bus.call(GTK, handle, REQUEST, 'Close', None, None, Gio.DBusCallFlags.NONE, -1, None, None, None)
             return
-        self.withdraw(pending['request']['id'])
+        core.withdraw(pending['request']['id'])
         self.reply(handle, 2, {})
 
     def reply(self, handle, response, results):

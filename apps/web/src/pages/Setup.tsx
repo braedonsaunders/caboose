@@ -3,6 +3,7 @@ import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, Ca
 import { CabooseClient } from '../api.js'
 import { Wordmark } from '../brand/Logo.js'
 import { errorMessage } from '../components/common.js'
+import { SetupPairingStep } from './SetupPairing.js'
 import { useSearchParam } from '../navigation.js'
 
 /**
@@ -15,6 +16,7 @@ export function Setup({ onDone }: { onDone: () => void }) {
   const client = React.useMemo(() => new CabooseClient(() => ''), [])
   const [status, setStatus] = React.useState<{ claimed: boolean; codeRequired: boolean } | null>(null)
   const [form, setForm] = React.useState({ name: '', email: '', password: '', confirm: '', tenantName: 'Home' })
+  const [pairing, setPairing] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
@@ -30,7 +32,9 @@ export function Setup({ onDone }: { onDone: () => void }) {
     setError(null)
     try {
       await client.setUp({ name: form.name.trim(), email: form.email.trim(), password: form.password, tenantName: form.tenantName.trim(), ...(code ? { code } : {}) })
-      onDone()
+      setForm(current => ({ ...current, password: '', confirm: '' }))
+      window.history.replaceState(null, '', '/setup')
+      setPairing(true)
     } catch (failure) {
       setError(errorMessage(failure))
     } finally {
@@ -44,12 +48,12 @@ export function Setup({ onDone }: { onDone: () => void }) {
         <CardHeader>
           <CardTitle className="mb-3"><Wordmark height={52} motion="intro" /></CardTitle>
           <CardDescription>
-            Set up this host. Your account runs it: you can make computers, give them to the people who use them,
-            and invite other administrators.
+            {pairing ? 'Your account is ready. Connect your phone to your computer.' : <>Set up this host. Your account runs it: you can make computers, give them to the people who use them,
+            and invite other administrators.</>}
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {!status ? (<Alert variant={error ? "destructive" : "info"}><AlertDescription>{error ?? "Checking setup status…"}</AlertDescription></Alert>) : status.claimed ? (
+          {pairing ? <SetupPairingStep client={client} onDone={onDone} /> : !status ? (<Alert variant={error ? "destructive" : "info"}><AlertDescription>{error ?? "Checking setup status…"}</AlertDescription></Alert>) : status.claimed ? (
             <Alert variant="info"><AlertDescription>This host is already set up. Sign in instead.</AlertDescription></Alert>
           ) : status?.codeRequired && !code ? (
             <Alert variant="warning"><AlertDescription>Open the setup link the host printed when it started; it carries the setup code.</AlertDescription></Alert>

@@ -18,6 +18,16 @@ public final class RemoteWindow: Identifiable {
     /// Position and size in the server's pixel space. Position may follow an in-flight
     /// placement request; size remains the size reported by the server.
     public internal(set) var frame: CGRect
+    /// The last drawable's coordinate space, independent of configure metadata.
+    /// Observed by content, drop targets and popup roots as one presentation size.
+    private var retainedPictureSize: CGSize?
+    public var presentationSize: CGSize { retainedPictureSize ?? frame.size }
+
+    func adoptPictureSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0, retainedPictureSize != size else { return }
+        retainedPictureSize = size
+    }
+
     public internal(set) var minimumSize: CGSize?
     public internal(set) var maximumSize: CGSize?
     public internal(set) var icon: CGImage?
@@ -48,6 +58,9 @@ public final class RemoteWindow: Identifiable {
         self.frame = frame
         self.isOverrideRedirect = overrideRedirect
         self.surface = surface
+        if let texture = surface.texture {
+            retainedPictureSize = CGSize(width: texture.width, height: texture.height)
+        }
     }
 
     /// Popups, menus, tooltips and dialogs belong to a parent window rather than standing alone.

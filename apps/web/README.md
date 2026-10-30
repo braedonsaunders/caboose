@@ -8,10 +8,13 @@ iPhone app's job, and the people who use the computers need no account. Launchin
 tasks and choosing a default agent live in the app, and the console does not repeat them.
 
 - **Setup** (`/setup`) — on a new host, from the link it prints: your name, email, password
-  and first household or team. That account is the operator's.
+  and first household or team. That account is the operator's. The next screen pairs the
+  iPhone with a single-use, ten-minute QR code, detects a newly connected phone, shows
+  computer image download status, and offers Tailscale HTTPS when Tailscale is signed in.
+  Continue to console leaves pairing optional; Phones can create another code later.
 - **Sign in** — email and password. The owner token works too, kept for the tab only.
 - **Invitation** (`/invite?token=…`) — a new administrator chooses a name and password; one
-  with an account confirms it with their password.
+  with an account signs in, completing their authenticator challenge if enabled.
 
 - **Overview** — for the operator, the host at a glance: what all the computers are given
   between them of the machine's memory and CPUs, free disk for their disks and snapshots,
@@ -79,8 +82,8 @@ forms, tables, dialogs, progress, confirm and prompt dialogs and toasts, and
 storage and is sent as `Authorization: Bearer`, never in a URL. Status and health are polled
 over HTTP, which holds no lease, so an open console never keeps a computer awake.
 
-Limitations: the host sends no email, so invitations are links to copy; there is no password
-reset yet (the owner token still opens the console); phones signed in with the owner token
+Limitations: invitations are links to copy. Password recovery requires configured email
+delivery; phones signed in with the owner token
 rather than a pairing code are not listed, and only changing the token signs them out; a single large upload shows which file
 is uploading but not its progress (the browser's `fetch` reports none); push registrations
 are listed by fingerprint only; Live Activity registrations are not shown.
@@ -136,3 +139,24 @@ remain on the host.
 
 Computer creation and settings offer host-provided sizes alongside custom CPU and memory.
 GPU access uses the host GPU and is shared; availability reflects host configuration.
+
+The computer Backups panel shows management recovery metadata, retention and operation
+results, captures a coherent parked disk on request, and requires typed confirmation before
+replacing its disk. It explains the distinction between local recovery, device-encrypted
+phone backups and independent whole-server backups. The panel uses the scoped management
+recovery API and AppKit controls.
+### Capacity and usage
+
+The `Capacity` view uses AppKit dashboard primitives and reads an authorized host
+or tenant snapshot every thirty seconds while visible. It acquires no computer
+leases. See [capacity and usage](../../docs/capacity.md) for metric semantics and tests.
+
+
+Administrator password recovery, authenticator enrollment and session management are
+documented in [account security](../../docs/account-security.md).
+
+Usage and computer overview show measured container RAM and CPU separately from
+provisioned limits, with rolling CPU seconds and coverage. Computer overview's Measure
+storage action requests a cached, bounded measurement; it does not wake the computer.
+Unavailable counters remain explicit. See [capacity and usage](../../docs/capacity.md).
+The rendering checks run with `pnpm exec vitest run src/computer-usage.test.tsx`.

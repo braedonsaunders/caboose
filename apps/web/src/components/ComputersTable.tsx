@@ -1,10 +1,12 @@
-import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@braedonsaunders/appkit-ui'
+import { Monitor } from 'lucide-react'
+import { Badge, EmptyState, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@braedonsaunders/appkit-ui'
 import { formatIdleDuration, formatMemoryMb, type ComputerSummary, type Tenant } from '../api.js'
 import { navigate, routeHref } from '../navigation.js'
 import { stateLabel, stateTone } from '../state.js'
 
 /** Every computer on the host, each row opening that computer's page. Each row shows its ownership chain. */
 export function ComputersTable({ computers, tenants }: { computers: ComputerSummary[]; tenants: Tenant[] }) {
+  if (!computers.length) return <EmptyState icon={<Monitor className="size-6" aria-hidden />} title="No computers yet" description="Create a computer to give someone a persistent workspace for their apps and files." />
   const tenantName = (id: string | null) => tenants.find(tenant => tenant.id === id)?.name ?? 'Assignment required'
   return (
     <Table containerClassName="border-0 shadow-none">
@@ -25,8 +27,8 @@ export function ComputersTable({ computers, tenants }: { computers: ComputerSumm
           return (
             <TableRow key={computer.id} className="cursor-pointer" onClick={() => navigate(href)}>
               <TableCell>
-                <a href={href} className="font-medium hover:underline" onClick={event => { event.preventDefault(); event.stopPropagation(); navigate(href) }}>
-                  {computer.settings.name}
+                <a href={href} className="inline-flex items-start gap-3 font-medium hover:underline" onClick={event => { event.stopPropagation(); if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); navigate(href) }}>
+                  <span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-bg-subtle text-fg-muted"><Monitor className="size-4" aria-hidden /></span><span className="min-w-0 break-words">{computer.settings.name}<span className="mt-1 block text-xs font-normal leading-relaxed text-fg-muted sm:hidden">{computer.person || 'Assignment required'}<br />{formatMemoryMb(computer.settings.memoryMb)} · {computer.settings.vcpus} vCPUs{computer.restartRequired ? ' · Restart to apply' : ''}</span></span>
                 </a>
               </TableCell>
               <TableCell className="hidden text-sm sm:table-cell">{computer.personId ? computer.person : <span className="text-fg-muted">Assignment required</span>}</TableCell>

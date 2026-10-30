@@ -85,6 +85,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
 | Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
+| Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
@@ -197,6 +198,52 @@ for byte.
   picture's layout and input coordinates until the app reports a new size; fixed-size
   windows may decline a request without sending another geometry update. Placement can
   move immediately, but an in-flight placement never suppresses a reported size change.
+- Monitor dimensions are independent of a window's presentation viewport. The iOS client
+  saves its initial full-device output and the DPI chosen on device attachment, including
+  an active desktop's UI scale. A validated per-computer local preference restores the
+  device mode/DPI/render scale before start or resume. Without one, Home announces an
+  empty display set, retaining the server's current/default output until a real measured
+  device attachment. A view with no assigned output paces the retained hello's primary
+  ID during that bootstrap; explicit pacing IDs are never redirected. Pictures and
+  acknowledgements do not depend on the client selecting a replacement output.
+  Card, keyboard and stage changes resize ordinary window requests without changing that
+  output. Physical scene-window measurements update monitor dimensions at the retained
+  DPI/render scale: full bounds in Tablet mode and the upper panel in Laptop mode. Rotation
+  and leaving Laptop use the current scene bounds, independently of keyboard avoidance.
+  External monitors use their own mode and
+  DPI without overwriting the device preference; explicit owner zoom can change DPI.
+  An unchanged monitor sends no `displays` message. Desktop content uses the model's
+  shown rectangle directly for rendering and input, without a second inner fit.
+- Ordinary card and dialog requests respect positive per-axis minimum/maximum hints;
+  inconsistent maxima cannot override minima. Fullscreen geometry belongs to the
+  compositor's monitor and is not fitted by a card request. Its complete reported picture
+  uses the same aspect-fit transform for presentation and input. Explicit fullscreen exit
+  resumes ordinary window fitting. No application-specific or fixed minimum output mode
+  is inferred from a small phone viewport.
+- An output mode/origin change reconfigures existing fullscreen and maximized windows
+  through the common Wayland/X11 configure path, preserving their state flags. Removed
+  outputs first remap to the primary output. Unchanged outputs and ordinary windows do
+  not receive a geometry configure from this reconciliation. Fullscreen pictures fit
+  centered in the client viewport without transient stretching; pointer/touch input,
+  text drops and popup roots use the same fitted rectangle. Ordinary constrained tiles
+  retain their top-aligned fit, including pending keyboard and tile resizes. Configure
+  metadata can precede decoded pixels: presentation retains the picture dimensions
+  until Metal adopts its successor, without animating picture bounds between aspects.
+  The slot may animate, but its picture scale remains uniform. Popup roots, drops and
+  input use the same fitted rectangle.
+- The session applies size hints at the common configure boundary for every layout.
+  Layout-owned tile, card and snap requests preserve the viewport aspect when
+  satisfying minimum or maximum sizes permits it: a larger minimum width grows
+  the requested height proportionally. Conflicting aspect constraints and genuinely
+  fixed-size windows retain per-axis sizing and fit their committed picture. Free
+  window resizing continues to clamp each axis independently. Switchyard reasserts
+  its target after an app changes size, with the same bounded correction policy as
+  cards; the last sent request alone does not count as an accepted size.
+  Text drops in cards and tiles invert the same fitted rectangle, including its
+  padding, rather than assuming the viewport is the surface's natural size.
+  Desktop pointer positions and scroll deltas use the shown surface rectangle and
+  committed remote size. An active desktop trackpad scroll cancels when that mapping
+  changes; a captured pointer drag still releases its original target at the surface edge.
 - `frame.rect` is window-local display pixels (origin = the window's geometry origin).
   `frame.crop` is the visible part of the decoded picture in picture pixels (encoders pad,
   for example NVENC 2160 → 2176). When the two sizes differ the client scales, which also
@@ -225,7 +272,7 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `copy`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
+`cursor-named`, `tiles`, `copy`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
@@ -233,7 +280,9 @@ plays sound; `tiles` unless tiles are turned off; `copy` when the client's hello
 `copy: true`, its windows are coded with libx264 or libx265, and copies are not turned off
 (`--no-copy`); `wasm` when it hands games off (the
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
-streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff.
+streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff; and `devices` when
+the owner's display accepts the phone's hardware ([devices.md](devices.md)) and the client's
+hello says `devices: true`.
 
 ### Pacing and flow control
 
@@ -298,10 +347,15 @@ Server → client (`0x01`–`0x7F`):
 | `0x1E` | `frame.copy` | `id`, `src: rect`, `dst: [x, y]` (picture pixels) |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
-| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
+| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (text-input-v3 content purpose: `normal`, `alpha`, `digits`, `number`, `phone`, `url`, `email`, `name`, `password`, `pin`, `date`, `time`, `datetime`, `terminal`), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
+| `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]` ([devices.md](devices.md#protocol)) |
+| `0x61` | `device.open` | `device`, `rate_hz?: float` |
+| `0x62` | `device.close` | `device` |
+| `0x63` | `device.rumble` | `device`, `strong: float`, `weak: float`, `ms: uint` |
+| `0x64` | `device.keyframe` | `device` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
 | `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"\|"replaced"` (another client took over the display) |
 
@@ -309,7 +363,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `copy?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `copy?: bool`, `devices?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -327,9 +381,25 @@ Client → server (`0x81`–`0xFF`):
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0xB0` | `devices` | `devices: [device]` ([devices.md](devices.md#protocol)) |
+| `0xB1` | `device.camera` | `device`, `seq`, `keyframe: bool`, `t_us`, `data: bytes` (H.264, Annex-B) |
+| `0xB2` | `device.depth` | `device`, `t_us`, `size: [w, h]`, `data: bytes` (u16 LE millimetres) |
+| `0xB3` | `device.audio` | `device`, `t_us`, `data: bytes` (20 ms Opus, 48 kHz mono) |
+| `0xB4` | `device.motion` | `device`, `samples: [{ t_us, accel?, gyro?, magnet?, rotation?, pressure? }]` |
+| `0xB5` | `device.gamepad` | `device`, `buttons: uint`, `axes: [float × 6]` |
+| `0xB6` | `device.button` | `device`, `key: "volume-up"\|"volume-down"\|"camera"\|"action"`, `pressed: bool` |
+| `0xB7` | `device.battery` | `device`, `level`, `charging`, `full`, `low_power`, `thermal` |
+| `0xB8` | `device.error` | `device`, `reason: text` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.
+
+Each pointer message positions the virtual pointer, pairs that absolute motion with
+`relative-pointer-v1` motion for clients that bind it, then delivers buttons and scroll
+axes in the same frame. The relative vector is the change in logical pointer position;
+the guest applies no acceleration. The two motion timestamps share one monotonic sample
+(milliseconds for `wl_pointer`, microseconds for relative motion). This does not change
+the pointer message's pixel coordinates or its precise-pixel versus wheel-click units.
 
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
   one temporal unit of low-overhead OBUs with the sequence header on keyframes.
@@ -352,7 +422,9 @@ A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: f
   fields hinted sensitive or hidden, whose text never leaves the computer.
 - Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
-  apps turn a touch drag into a selection.
+  apps turn a touch drag into a selection. Emulated pans retain one gesture owner;
+  a finger-count change cancels that pan. Card and free-desktop scroll delivery,
+  including momentum, stops when its connection or coordinate mapping changes.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png`; `frame.copy` only for a window whose picture
@@ -365,6 +437,36 @@ the app through the host, from [guest/notifications](../guest/notifications)). I
 into proximity of the surface under it), `down` and `up` are the tip's contact, `leave` and
 `cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
 degrees. The clipboard carries text (`text/plain;charset=utf-8`).
+
+### Direct content scroll units
+
+The iOS direct-content pan negates finger movement for natural direction, integrates
+tracking and inertia in view points, then maps each axis by reported guest size divided
+by presented surface size. It applies a reference gain of 1/12 before sending precise
+pointer deltas. Hardware wheel/trackpad input, dedicated phone trackpads, native
+`wl_touch` gestures and the guest's paired relative/absolute pointer motion are unchanged.
+The precise wire values remain scaled pixel units; they do not guarantee content pixels.
+The guest divides them by output scale and sends `wl_pointer.axis` with source `finger`.
+Ordinary wheel clicks still use axis value 15 and value120 120 per click.
+
+[Xwayland's scroll dispatch](https://gitlab.freedesktop.org/xorg/xserver/-/blob/xwayland-24.1.6/hw/xwayland/xwayland-input.c)
+converts an axis value to XI2 increments by dividing by 10. The reference
+[Chromium X11 consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/events/x/events_x_utils.cc)
+uses 120 units per wheel increment; its
+[native Wayland consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/ozone/platform/wayland/host/wayland_pointer.cc)
+also converts axis values by 120/10. These explain the reference gain of 12; they do
+not establish a particular Steam build's embedded Chromium version. Newer Chromium
+has an unscaled-touchpad path, and other toolkits choose different steps or acceleration.
+No application identity selects the phone's calibration.
+
+For one axis, finger distance `d`, presented extent `V`, guest extent `P`, output scale
+`s`, and client response `g`, the phone sends `-d * P / V / 12`, the guest sends
+`-d * P / V / 12 / s`, and reference content moves by that amount times `g`.
+Rendering back into the presented surface multiplies by `s * V / P`, leaving
+`-d * g / 12`. Thus the reference `g = 12` follows finger distance independently of
+rotation, fitting and output scale, including 1.5; other responses remain proportional.
+Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
+model. The client does not infer or compensate for per-application response differences.
 
 ### Audio
 
@@ -382,17 +484,31 @@ shared audio timeline, and an idle live video renderer cannot hold audio preroll
 
 ### Video streams
 
-The iOS app omits `video_decoders`, so passthrough streams return to server decoding. It
+The iOS app omits `video_decoders`. Independently, the compositor requests server
+decode for all marker streams: codec support alone does not prove correct foreground
+composition (see [composition admission](codec-passthrough.md#composition-admission)). It
 advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
-The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator. Rate corrections change only the rendering
-rate, without resetting the timebase position; explicit time/host anchors are used only
-when playback starts or restarts.
+Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
+payload. Excess or empty packets are rejected before dispatch, counted as
+`ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
+After rejection, the next admitted packet retains its server timestamp instead of joining
+across the missing duration; the Opus decoder remains alive, with no synthetic concealment
+packet or replay. Packet loss can therefore be audible. Existing playout thresholds govern
+any rebuffer. Stop and interruption invalidate old jobs without releasing their memory
+budget until those jobs exit.
+Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
+packets do not write the synchronizer rate. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone serializes cleanup of surviving
+buffers with enqueue, without resetting the clock or rate; discarded audio is not replayed.
+Renderer-specific notification generations are invalidated on stop and interruption.
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Stopping playback clears
+the clock anchor; explicit time/host anchors are used only when playback starts or
+restarts. There is no continuous sample-clock correction: sustained source/host clock
+mismatch can require rebuffering, and hardware/host clock drift can accumulate between
+explicit rebufferings.
 
 
 A video stream is layered into a window (`window`) by the client: it decodes it with its
@@ -552,3 +668,13 @@ glyph coded as a picture is 6.4 ms at 1179×2556 and 18.5 ms at 3840×2160, whic
 tiles avoid. Sharpening 30 typed glyphs at 1080p is one 1.7 kB picture; the first
 sharpening of a whole window after its keyframe is the largest (a full screen of dense
 text: 470 kB, 15 ms).
+
+### Agent application profile environment
+
+When the compositor starts with `CABOOSE_SEAT=agent`, its launch file additionally
+publishes the inherited HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME,
+XDG_STATE_HOME, CABOOSE_SEAT, MOZ_NO_REMOTE, DBUS_SESSION_BUS_ADDRESS, VSCODE_PORTABLE,
+CHROME_CONFIG_HOME, CHROME_USER_DATA_DIR and PATH. VSCODE_IPC_HOOK_CLI is empty to avoid
+reusing an inherited editor instance. The guest agent-profile launcher supplies these
+values; the owner compositor's environment contract is unchanged. This changes no display
+wire messages. See [persistent agent profiles](../guest/desktop-mcp/README.md#persistent-agent-gui-profiles).

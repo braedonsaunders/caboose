@@ -1,0 +1,8 @@
+{
+  "name": "device-error",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "device.error", "type_id": 184, "fields": {"device": "camera-back", "reason": "Camera access is off in Settings"}}
+  ],
+  "hex": "b83d000000a2666465766963656b63616d6572612d6261636b66726561736f6e782043616d65726120616363657373206973206f666620696e2053657474696e6773"
+}

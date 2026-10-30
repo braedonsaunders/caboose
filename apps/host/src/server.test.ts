@@ -310,9 +310,23 @@ it('relays phone events only to authenticated phone controls and serves staged f
     if (args.includes('read')) return 'YWJj'
     return ''
   }) }
+  let acknowledged = false
+  const files = createServer(async (request, response) => {
+    if (request.headers.authorization !== 'Bearer files-test') { response.writeHead(401).end(); return }
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    if (request.url === '/events/presence') { response.end('{}'); return }
+    if (body.acks.includes('phone-receipt')) acknowledged = true
+    const records = !acknowledged && body.channels.includes('phone') ? [{ channel: 'phone', receipt: 'phone-receipt', record: event }] : []
+    const timer = setTimeout(() => response.end(JSON.stringify({ cursor: 'fixture', records })), 20)
+    response.on('close', () => clearTimeout(timer))
+  })
+  files.listen(0, '127.0.0.1'); await once(files, 'listening')
+  close.push(() => new Promise(resolve => { files.closeAllConnections(); files.close(() => resolve()) }))
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
-    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest, fileService: () => ({ url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'files-test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
@@ -333,10 +347,73 @@ it('relays phone events only to authenticated phone controls and serves staged f
   await once(phone, 'open')
   await vi.waitFor(() => expect(received).toContainEqual(event))
   expect(seen).not.toContainEqual(event)
+  await vi.waitFor(() => expect(acknowledged).toBe(true))
+  expect(drains).toBe(0)
   expect(await (await fetch(`${base}/v1/phone/files/${id}`, { headers: auth })).json()).toEqual({ data: 'YWJj' })
   expect((await fetch(`${base}/v1/phone/files/bad`, { headers: auth })).status).toBe(400)
   phone.close(); control.close()
   await Promise.all([once(phone, 'close'), once(control, 'close')])
+})
+
+it('delivers scan requests only to phone controls that scan, and hands them back without one', async () => {
+  const scan = (id: string) => ({
+    id, type: 'scan', app: '', title: '', acceptLabel: '', multiple: false, directory: false,
+    filters: [{ name: 'PDF', patterns: ['*.pdf'], mimeTypes: ['application/pdf'] }], currentFilter: 0, currentName: '', currentFolder: '', created: 1,
+  })
+  const first = 'a'.repeat(32), second = 'b'.repeat(32)
+  const queued = new Map<string, unknown>([[first, scan(first)]])
+  const acknowledged = new Set<string>()
+  const answers: unknown[] = []
+  const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+    if (!args.includes('/usr/local/bin/caboose-bridge')) return args.includes('drain') ? '[]' : ''
+    if (args.includes('drain')) throw new Error('scan events must not use exec polling')
+    if (args.includes('respond')) { answers.push(JSON.parse(args.at(-1)!)); return '{"answered":true}' }
+    return ''
+  }) }
+  const files = createServer(async (request, response) => {
+    if (request.headers.authorization !== 'Bearer scan-fixture') { response.writeHead(401).end(); return }
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    if (request.url === '/events/presence') { response.end('{}'); return }
+    for (const receipt of body.acks) acknowledged.add(receipt)
+    const records = body.channels.includes('bridge.request')
+      ? [...queued].filter(([id]) => !acknowledged.has(id)).map(([id, record]) => ({ channel: 'bridge.request', receipt: id, record })) : []
+    const timer = setTimeout(() => response.end(JSON.stringify({ cursor: 'scan-fixture', records })), 20)
+    response.on('close', () => clearTimeout(timer))
+  })
+  files.listen(0, '127.0.0.1'); await once(files, 'listening')
+  close.push(() => new Promise(resolve => { files.closeAllConnections(); files.close(() => resolve()) }))
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest, fileService: () => ({ url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'scan-fixture' }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const auth = { authorization: 'Bearer owner' }
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: auth })).status).toBe(200)
+  const listen = (query: string) => {
+    const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?' + query, { headers: auth })
+    const requests: string[] = []
+    socket.on('message', data => { const event = JSON.parse(String(data)); if (event.type === 'bridge.request') requests.push(event.request.id) })
+    return { socket, requests }
+  }
+  // An app that does not scan: the scan goes straight back as `computer`.
+  const older = listen('foreground=1&phone=1')
+  await once(older.socket, 'open')
+  await vi.waitFor(() => expect(answers).toEqual([{ id: first, response: 'computer' }]), { timeout: 3000 })
+  // One that does gets the next one; the older app does not.
+  const scanner = listen('foreground=1&phone=1&scan=1')
+  await once(scanner.socket, 'open')
+  queued.set(second, scan(second))
+  await vi.waitFor(() => expect(scanner.requests).toEqual([second]), { timeout: 3000 })
+  expect(older.requests).toEqual([])
+  expect(answers).toHaveLength(1)
+  await vi.waitFor(() => expect([...acknowledged]).toEqual([first, second]))
+  older.socket.close(); scanner.socket.close()
+  await Promise.all([once(older.socket, 'close'), once(scanner.socket, 'close')])
 })
 
 it('runs only a whitelisted installed Craft app and publishes job progress', async () => {
@@ -374,6 +451,69 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   expect(await response.json()).toEqual({ job, outputs: [`.caboose-jobs/${job}/output-0.png`], warnings: [] })
   await vi.waitFor(() => expect(events.filter(e => e.type === 'job.progress').map(e => e.job?.status)).toEqual(['running', 'succeeded']))
   socket.close(); await once(socket, 'close')
+})
+
+it('runs owner commands detached from the request, refuses parking under them and cancels them', async () => {
+  const written = new Map<string, string>()
+  const fileServer = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const chunks: Buffer[] = []
+    req.on('data', chunk => chunks.push(chunk))
+    req.on('end', () => {
+      if (url.pathname === '/stat') { res.writeHead(404); res.end(); return }
+      if (url.pathname === '/content' && req.method === 'PUT' && req.headers['if-none-match'] === '*') written.set(url.searchParams.get('path')!, Buffer.concat(chunks).toString())
+      res.writeHead(201); res.end()
+    })
+  })
+  fileServer.listen(0, '127.0.0.1'); await once(fileServer, 'listening')
+  close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
+  const states = new Map<string, 'running' | 'succeeded' | 'cancelled'>()
+  const guest = { run: vi.fn(async (command: string, args: string[]) => {
+    const python = command === '/usr/sbin/runuser' ? args.slice(3) : [command, ...args]
+    if (python[0] !== '/usr/bin/python3' || python[1] !== '-c') return ''
+    const mode = python[3], request = JSON.parse(python[4] ?? '{}')
+    const state = states.get(request.id)
+    if (mode === 'start') { states.set(request.id, request.timeout === 5 ? 'succeeded' : 'running'); return '{}' }
+    if (mode === 'poll') return JSON.stringify(Object.fromEntries(request.ids.map((id: string) => [id, states.get(id) === 'running' ? 'running' : 'done'])))
+    if (mode === 'result') return JSON.stringify({ status: state, exitCode: state === 'succeeded' ? 0 : null, signal: state === 'cancelled' ? 'SIGTERM' : null, error: null, truncated: { stdout: false, stderr: false }, outputs: state === 'succeeded' ? ['out.txt'] : [] })
+    if (mode === 'read') return request.stream === 'stdout' && state === 'succeeded' ? Buffer.from('hello\n').toString('base64') : ''
+    if (mode === 'cancel') { states.set(request.id, 'cancelled'); return '{"finished": false}' }
+    return '{}'
+  }) }
+  const wake = vi.fn(async (_mode?: string) => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest,
+    fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const call = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { authorization: 'Bearer owner' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  expect((await call('/v1/commands', 'POST', { script: 'ls', shell: 'zsh' })).status).toBe(400)
+  expect((await call('/v1/commands', 'POST', { script: 'ls', wait: 61 })).status).toBe(400)
+  expect(wake).not.toHaveBeenCalled()
+  // The request wakes a parked computer without its display and waits for the result.
+  const quick = await call('/v1/commands', 'POST', { script: 'echo hello > "$CABOOSE_OUT/out.txt"', stdin: 'in', timeout: 5, wait: 10 })
+  expect(quick.status).toBe(201)
+  const done = await quick.json()
+  expect(done).toMatchObject({ status: 'succeeded', exitCode: 0, stdout: 'hello\n', outputs: ['out.txt'], directory: `.caboose-jobs/cmd-${done.id}` })
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(written.get(`.caboose-jobs/cmd-${done.id}/command.sh`)).toBe('echo hello > "$CABOOSE_OUT/out.txt"')
+  expect(written.get(`.caboose-jobs/cmd-${done.id}/stdin`)).toBe('in')
+  expect(await (await call(`/v1/commands/${done.id}`)).json()).toEqual(done)
+  expect((await call('/v1/commands/0123456789abcdef0123456789abcdef')).status).toBe(404)
+  expect((await call(`/v1/commands/${done.id}?wait=99`)).status).toBe(400)
+  expect((await call(`/v1/commands/${done.id}/cancel`, 'POST')).status).toBe(409)
+
+  const slow = await (await call('/v1/commands', 'POST', { script: 'sleep 600' })).json()
+  expect(slow.status).toBe('running')
+  expect((await call(`/v1/commands/${slow.id}?wait=1`).then(response => response.json())).status).toBe('running')
+  expect((await call('/v1/session/park', 'POST')).status).toBe(409)
+  expect((await (await call('/v1/commands')).json()).commands.map((item: { id: string; status: string }) => [item.id, item.status])).toEqual([[slow.id, 'running'], [done.id, 'succeeded']])
+  const cancelled = await call(`/v1/commands/${slow.id}/cancel`, 'POST')
+  expect(cancelled.status).toBe(200)
+  expect(await cancelled.json()).toMatchObject({ id: slow.id, status: 'cancelled', signal: 'SIGTERM' })
+  expect((await call('/v1/session/park', 'POST')).status).toBe(200)
 })
 
 it('serves the MCP Library to an authorized client without ever returning its keys', async () => {
@@ -416,4 +556,51 @@ it('serves the MCP Library to an authorized client without ever returning its ke
   expect((await req('/v1/mcp/icons/../../etc')).status).toBe(404)
   expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
   expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
+})
+
+it('answers desktop notifications through the guest, waking a parked computer without its display', async () => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const answers: string[] = []
+  const run = vi.fn(async (_command: string, _args: string[]) => `{"result": "${answers.shift() ?? 'responded'}"}\n`)
+  const session = { state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const wake = vi.fn(async () => session)
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => ({ run }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const post = (path: string, body: unknown, token = 'owner') => fetch(base + path, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: JSON.stringify(body) })
+  expect((await post(`/v1/notifications/${id}/respond`, { action: 'default' }, 'wrong')).status).toBe(401)
+  expect((await post('/v1/notifications/not-an-id/respond', { action: 'default' })).status).toBe(400)
+  expect((await post(`/v1/notifications/${id}/respond`, { action: 'default', reply: 'x' })).status).toBe(400)
+  expect(wake).not.toHaveBeenCalled()
+  const answered = await post(`/v1/notifications/${id}/respond`, { reply: 'On my way' })
+  expect(answered.status).toBe(200)
+  expect(await answered.json()).toEqual({ responded: true })
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(run.mock.calls.at(-1)?.[1].slice(-3)).toEqual(['respond', id, '--reply=On my way'])
+  answers.push('unknown-notification')
+  const stale = await post(`/v1/notifications/${id}/respond`, { action: 'read' })
+  expect(stale.status).toBe(404)
+  expect(await stale.json()).toEqual({ error: 'The notification is no longer on the computer' })
+})
+
+it('refuses a legacy file upload beyond 16 MiB with 413 before waking anything', async () => {
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  const oversized = await fetch(`${base}/v1/files`, { method: 'POST', headers, body: JSON.stringify({ name: 'big.bin', data: 'A'.repeat(16 * 1024 * 1024) }) })
+  expect(oversized.status).toBe(413)
+  expect((await oversized.json()).error).toMatch(/too large/)
+  expect(wake).not.toHaveBeenCalled()
+  // The rest of the body was let through unread, so the host still answers.
+  expect((await fetch(`${base}/v1/health`, { headers })).status).toBe(200)
 })

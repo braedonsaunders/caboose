@@ -25,8 +25,10 @@ struct ComputerSettingsView: View {
                     form(status)
                 } else if let loadError {
                     Form {
+                        ShortcutsSettingsSection()
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        DeviceSettingsSection()
                         connectionAddressSection
                         Section {
                             ContentUnavailableView {
@@ -40,8 +42,10 @@ struct ComputerSettingsView: View {
                     }
                 } else {
                     Form {
+                        ShortcutsSettingsSection()
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        DeviceSettingsSection()
                         connectionAddressSection
                         Section { ProgressView() }
                     }
@@ -92,8 +96,10 @@ struct ComputerSettingsView: View {
     private func form(_ status: HostClient.ComputerStatus) -> some View {
         let limits = status.limits
         Form {
+            ShortcutsSettingsSection()
             FilesSettingsSection()
             NativeBridgeSettingsSection(bridge: model.bridge)
+            DeviceSettingsSection()
             connectionAddressSection
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {

@@ -38,6 +38,7 @@ add_subdirectory("${GFXRECON_SOURCE_DIR}" gfxreconstruct EXCLUDE_FROM_ALL)
 # GFXReconstruct's application layer, with layer_window.mm in place of its AppKit
 # MetalContext and MetalWindow.
 add_library(caboose_gpu_stream STATIC
+    src/capabilities.mm
     src/player.mm
     src/layer_window.mm
     "${GFXRECON_SOURCE_DIR}/framework/application/application.cpp"
