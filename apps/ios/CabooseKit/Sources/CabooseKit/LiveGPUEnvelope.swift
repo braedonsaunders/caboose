@@ -9,7 +9,9 @@ struct LiveGPUEnvelope: Equatable {
         case session = 1, sessionReady, processOpen, processReady, streamOpen, streamReady
         case data, fin, processStop, processRetired, revoke, revoked, executorDrain
         case surfaceBind = 16, surfaceBound, surfaceQuery, surfaceCaps, present, presentResult, sourceReleased, surfaceRetire, surfaceRetired
-        var isSurface: Bool { rawValue >= 16 && rawValue <= 24 }
+        case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest
+        var isSurface: Bool { rawValue >= 16 && rawValue <= 35 }
+        var isIndexed: Bool { rawValue >= 25 && rawValue <= 35 }
     }
     let kind: Kind
     let executor: Data
@@ -28,6 +30,11 @@ struct LiveGPUEnvelope: Equatable {
         func require(_ ok: Bool) throws { if !ok { throw LiveGPUBindingError.protocolViolation("invalid envelope scope or length") } }
         try require(executor.count == 16 && executor.contains(where: { $0 != 0 }) && generation > 0 && sequence > 0)
         try require(length <= Self.maxPayload && length >= 0)
+        if kind.isSurface {
+            try require(process > 0 && stream == 0)
+            try LiveGPUSurfaceMessage.validateLength(length, kind: kind)
+            return
+        }
         switch kind {
         case .session, .sessionReady, .revoke, .revoked, .executorDrain: try require(process == 0 && stream == 0)
         case .processOpen, .processReady, .processStop, .processRetired, .surfaceBind, .surfaceBound, .surfaceQuery, .surfaceCaps, .present, .presentResult, .sourceReleased, .surfaceRetire, .surfaceRetired: try require(process > 0 && stream == 0)

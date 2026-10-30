@@ -68,6 +68,7 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         case sourceReleased(serial: UInt64)
         case retire
         case retired(LiveGPUSurfaceStatus)
+        case swapchain(LiveGPUSwapchainMessage)
     }
     let identity: LiveGPUSurfaceIdentity
     let body: Body
@@ -83,11 +84,13 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         case .sourceReleased: return .sourceReleased
         case .retire: return .surfaceRetire
         case .retired: return .surfaceRetired
+        case .swapchain(let value): return value.kind
         }
     }
 
     /// Header validation rejects impossible sizes before retaining any body bytes.
     static func validateLength(_ length: Int, kind: LiveGPUEnvelope.Kind) throws {
+        if kind.isIndexed { try LiveGPUSwapchainMessage.validateLength(length, kind: kind); return }
         let valid: Bool
         switch kind {
         case .surfaceBind: valid = length == 64
@@ -108,6 +111,10 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         let identity = LiveGPUSurfaceIdentity(epoch: try r.bytes(16), grant: try r.bytes(16), generation: try r.u64())
         try require(identity.epoch.contains { $0 != 0 } && identity.grant.contains { $0 != 0 } && identity.generation > 0,
                     "surface identity")
+        if kind.isIndexed {
+            return .init(identity: identity, body: .swapchain(try LiveGPUSwapchainMessage.decode(
+                kind: kind, fields: Data(payload.dropFirst(40)))))
+        }
         let body: Body
         switch kind {
         case .surfaceBind:
@@ -204,6 +211,7 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
             w.u64(serial); w.status(status); w.u32(disposition.rawValue); w.u32(event.rawValue)
         case let .sourceReleased(serial): w.u64(serial)
         case .retire: break
+        case .swapchain(let value): w.data.append(try value.encodedFields())
         }
         // One parser defines the accepted wire shape for both directions.
         let decoded = try Self.decode(kind: kind, payload: w.data)
