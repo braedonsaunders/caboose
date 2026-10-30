@@ -31,6 +31,44 @@ docker run --rm --network none --cpus 2 --memory 3g -v "$WORK:/work" caboose-dec
   timeout 30 /work/build/caboose_gfxstream_lifecycle /usr/lib/x86_64-linux-gnu/libvulkan.so.1
 ```
 
+## Private phone diagnostic broker
+
+`phone_broker.py` bridges one authenticated phone TLS connection and one local
+same-UID Unix connection without interpreting or manufacturing Vulkan results.
+It is a finite diagnostic, not a production relay. The phone pins the DER leaf
+certificate SHA-256. TLS 1.3 is required; the 64-byte authentication record is
+`CBGTLS01`, a nonzero 16-byte session ID, big-endian uint64 generation and a random
+32-byte token. The broker compares the complete record in constant time and
+returns zero only on acceptance. The raw `CBGLREF1` stream follows unchanged.
+
+The command requires an explicit private/VPN bind address, private certificate
+key and token files, and an owned mode-0700 socket directory. It creates the
+mode-0600 Unix socket only after authentication, refuses existing socket paths,
+accepts one same-UID local process, and removes its socket on exit. Total duration
+is at most 90 seconds; cumulative transferred bytes are capped at 128 MiB, with
+at most 64 KiB queued in either direction. EOF closes this single-use bridge; it
+does not implement production stream resumption or multiple guest threads.
+
+`python3 phone_broker.py --help` lists the explicit paths and identity arguments.
+Token values are read from a private binary file and are never command arguments
+or log fields. Session IDs and certificate pins are identifiers, not credentials.
+The caller owns certificate/token creation and deletion and an outer process
+deadline. No endpoint is started by importing the module.
+
+The socket-pair and real loopback TLS tests run with:
+
+```sh
+python3 -m unittest discover -s apps/ios/GPUStream/gfxstream/linux-reference \
+  -p 'test_phone_broker*.py' -v
+```
+
+The TLS tests create a temporary certificate with `openssl`, or copy an explicitly
+supplied ephemeral fixture certificate from `CABOOSE_TEST_CERT_DIR`. Run them in
+a disposable Linux network namespace without published ports. They check correct
+and rejected authentication, fragmented duplex traffic, deadlines, byte budgets,
+private paths and owned-process/socket cleanup. They do not invoke Vulkan or an
+iPhone and do not establish the native decoder's safety for hostile input.
+
 The container's Mesa software ICD can supply Vulkan without a GPU. The loader
 remains open for the process lifetime. Upstream desktop GL dependencies remain
 linked. This lifecycle fixture is not a production endpoint.
