@@ -27,6 +27,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const MAX_UNACKED: usize = 2;
+/// Surface Atlas (`surface.batch`) encodes in sub-millisecond deltas and CopyRects;
+/// a deeper in-flight window prevents network RTT from capping 120 Hz scroll/playback at ~30 fps.
+pub const MAX_ATLAS_UNACKED: usize = 12;
 
 /// A picture for the worker to encode.
 pub struct Job {
@@ -710,12 +713,22 @@ impl Stream {
     /// Room for another picture under the flow-control limit (of the window stream and
     /// of its motion stream).
     pub fn can_send(&self) -> bool {
-        !self.encoding && self.in_flight.len() < MAX_UNACKED && self.motion_in_flight() < MAX_UNACKED
+        self.can_send_for(false)
+    }
+
+    pub fn can_send_for(&self, atlas: bool) -> bool {
+        let limit = if atlas { MAX_ATLAS_UNACKED } else { MAX_UNACKED };
+        !self.encoding && self.in_flight.len() < limit && self.motion_in_flight() < limit
     }
 
     /// Whether frame callbacks may be released now.
     pub fn can_release_callbacks(&self) -> bool {
-        self.in_flight.len().max(self.motion_in_flight()) + (self.encoding as usize) < MAX_UNACKED
+        self.can_release_callbacks_for(false)
+    }
+
+    pub fn can_release_callbacks_for(&self, atlas: bool) -> bool {
+        let limit = if atlas { MAX_ATLAS_UNACKED } else { MAX_UNACKED };
+        self.in_flight.len().max(self.motion_in_flight()) + (self.encoding as usize) < limit
     }
 
     fn motion_in_flight(&self) -> usize {

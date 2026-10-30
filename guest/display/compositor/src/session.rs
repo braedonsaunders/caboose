@@ -197,12 +197,23 @@ impl State {
             Message::Ack { id, pts_us, decoded_us } => {
                 let now = self.now_us();
                 let mut reset_epoch = None;
+                let mut release_cb = false;
+                let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
                 if let Some(w) = self.windows.get_mut(id) {
+                    let display = w.display;
+                    let paced = self
+                        .session
+                        .as_ref()
+                        .and_then(|s| s.last_vsync.get(&display))
+                        .is_some_and(|t| t.elapsed() < VSYNC_STALE);
                     if w.stream.ack(pts_us) {
                         tracing::trace!(
                             "window {id}: frame {pts_us} acked after {} µs (decode {decoded_us} µs)",
                             now.saturating_sub(pts_us)
                         );
+                        if paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(atlas) {
+                            release_cb = true;
+                        }
                     }
                     if decoded_us < 0 {
                         w.stream.need_keyframe = true;
@@ -211,6 +222,9 @@ impl State {
                             reset_epoch = Some(s.atlas_cache.lock().unwrap().reset());
                         }
                     }
+                }
+                if release_cb {
+                    self.release_frame_callbacks(id);
                 }
                 if let Some(epoch) = reset_epoch {
                     for w in self.windows.iter_mut() {
@@ -477,13 +491,14 @@ impl State {
     }
 
     fn on_vsync(&mut self, display: u32) {
+        let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
         if let Some(s) = self.session.as_mut() {
             s.last_vsync.insert(display, Instant::now());
         }
         let ids: Vec<u64> = self
             .windows
             .iter()
-            .filter(|w| w.display == display && w.stream.callbacks_pending && w.stream.can_release_callbacks())
+            .filter(|w| w.display == display && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(atlas))
             .map(|w| w.id)
             .collect();
         for id in ids {
@@ -493,6 +508,7 @@ impl State {
 
     /// Once a second: frame callbacks for windows nothing paces, and connection upkeep.
     pub fn slow_tick(&mut self) {
+        let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
         let stale: Vec<u64> = self
             .windows
             .iter()
@@ -502,7 +518,7 @@ impl State {
                     .as_ref()
                     .and_then(|s| s.last_vsync.get(&w.display))
                     .is_some_and(|t| t.elapsed() < VSYNC_STALE);
-                !paced && w.stream.callbacks_pending && w.stream.can_release_callbacks()
+                !paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(atlas)
             })
             .map(|w| w.id)
             .collect();
@@ -578,7 +594,7 @@ impl State {
                     continue;
                 }
             }
-            if w.announced.is_none() || !w.stream.dirty || !w.stream.can_send() {
+            if w.announced.is_none() || !w.stream.dirty || !w.stream.can_send_for(atlas) {
                 continue;
             }
             let Some(root) = w.surface.wl_surface() else { continue };

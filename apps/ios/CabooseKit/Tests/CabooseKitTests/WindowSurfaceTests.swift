@@ -119,4 +119,53 @@ import Testing
         #expect(pixel(image, 2, 1) == [0, 0, 0, 0], "a transparent tile pixel stays transparent")
         #expect(pixel(image, 0, 0) == [0, 0, 0, 0])
     }
+
+    @Test func atlasGpuCopyRectAndLocalScrollOffsetAreConsumedAtomically() throws {
+        let cache = TileAtlasCache(capacity: 16)
+        let renderer = SurfaceAtlasRenderer()
+        let surface = WindowSurface()
+
+        // Batch 1: 128x128 keyframe with top chrome (y: 0..<32 = red) and content viewport (y: 32..<128 = blue)
+        let batch1 = SurfaceBatch(
+            window: 9,
+            seq: 1,
+            ptsMicros: 1000,
+            size: CGSize(width: 128, height: 128),
+            rect: CGRect(x: 0, y: 0, width: 128, height: 128),
+            keyframe: true,
+            fills: [
+                SurfaceFill(rect: CGRect(x: 0, y: 0, width: 128, height: 32), rgba: 0xFF00_00FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 32, width: 128, height: 64), rgba: 0x00FF_00FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 96, width: 128, height: 32), rgba: 0x0000_FFFF),
+            ]
+        )
+        #expect(renderer.applyAndUpload(batch1, cache: cache, to: surface))
+        surface.addLocalScroll(dx: 0, dy: -24, at: 10.0)
+        #expect(surface.scrollOffset == CGPoint(x: 0, y: -24))
+
+        // Batch 2: scroll content viewport (y: 32..<128) up by 16 px (dy = -16) and fill exposed bottom strip (y: 112..<128)
+        let batch2 = SurfaceBatch(
+            window: 9,
+            seq: 2,
+            ptsMicros: 2000,
+            size: CGSize(width: 128, height: 128),
+            rect: CGRect(x: 0, y: 0, width: 128, height: 128),
+            keyframe: false,
+            copies: [SurfaceCopy(dx: 0, dy: -16, rect: CGRect(x: 0, y: 32, width: 128, height: 96))],
+            fills: [SurfaceFill(rect: CGRect(x: 0, y: 112, width: 128, height: 16), rgba: 0xFFFF_00FF)]
+        )
+        #expect(renderer.applyAndUpload(batch2, cache: cache, to: surface))
+        let state = try #require(surface.presentationState())
+        // Local scroll offset (-24) atomically absorbed the -16 CopyRect delta -> -8 remaining
+        #expect(state.scrollOffset == CGPoint(x: 0, y: -8))
+        #expect(state.scrollViewport == CGRect(x: 0, y: 32, width: 128, height: 96))
+
+        let img = try #require(surface.snapshot())
+        // Top header chrome (y=10) stayed red (BGRA: [0, 0, 255, 255])
+        #expect(pixel(img, 10, 10) == [0, 0, 255, 255])
+        // Shifted blue band moved from y=96..<128 to y=80..<112 (BGRA: [255, 0, 0, 255] at y=88)
+        #expect(pixel(img, 10, 88) == [255, 0, 0, 255])
+        // Newly exposed bottom strip y=112..<128 is yellow (RGBA 0xFFFF00FF -> BGRA [0, 255, 255, 255])
+        #expect(pixel(img, 10, 120) == [0, 255, 255, 255])
+    }
 }

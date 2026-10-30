@@ -413,8 +413,9 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         return windows[id]?.bytes
     }
 
-    /// Applies `batch` in exact protocol order (`copies` -> `fills` -> `refs` -> `tiles`) and uploads
-    /// only the dirty BGRA region directly to `surface` without intermediate `CGContext` allocations.
+    /// Applies `batch` in exact protocol order (`copies` -> `fills` -> `refs` -> `tiles`),
+    /// executes `SurfaceCopy` blits on the GPU, and uploads only the newly exposed dirty
+    /// BGRA strip directly to `surface`.
     public func applyAndUpload(_ batch: SurfaceBatch, cache: TileAtlasCache, to surface: WindowSurface) -> Bool {
         let w = Int(batch.size.width)
         let h = Int(batch.size.height)
@@ -451,11 +452,13 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         }
 
         let surfaceNeedsResize = surface.pixelSize != CGSize(width: w, height: h)
+        let fullReplacement = isNewBuf || batch.keyframe || surfaceNeedsResize
         guard let dirty = applyToBuffer(
             batch,
             cache: cache,
             buf: &buf,
-            fullSurfaceDirty: isNewBuf || batch.keyframe || surfaceNeedsResize
+            fullSurfaceDirty: fullReplacement,
+            markCopiesDirty: fullReplacement
         ) else {
             if let existing {
                 windows[batch.window] = existing
@@ -467,20 +470,14 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         if surfaceNeedsResize {
             surface.resize(width: w, height: h)
         }
-        if dirty.width > 0 && dirty.height > 0 {
-            buf.bgraBytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                if let base = raw.baseAddress {
-                    let offset = (dirty.y * w + dirty.x) * 4
-                    surface.upload(
-                        bgra: base.advanced(by: offset),
-                        rowBytes: w * 4,
-                        x: dirty.x,
-                        y: dirty.y,
-                        width: dirty.width,
-                        height: dirty.height
-                    )
-                }
-            }
+        buf.bgraBytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            surface.applyAtlasBatch(
+                copies: batch.copies,
+                dirtyRect: dirty.width > 0 && dirty.height > 0 ? dirty : nil,
+                bgraBase: raw.baseAddress,
+                rowBytes: w * 4,
+                fullReplacement: fullReplacement
+            )
         }
 
         windows[batch.window] = buf
@@ -512,7 +509,13 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
             isNewBuf = true
         }
 
-        guard applyToBuffer(batch, cache: cache, buf: &buf, fullSurfaceDirty: isNewBuf || batch.keyframe) != nil else {
+        guard applyToBuffer(
+            batch,
+            cache: cache,
+            buf: &buf,
+            fullSurfaceDirty: isNewBuf || batch.keyframe,
+            markCopiesDirty: true
+        ) != nil else {
             if let existing {
                 windows[batch.window] = existing
             }
@@ -545,7 +548,8 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         _ batch: SurfaceBatch,
         cache: TileAtlasCache,
         buf: inout WindowBuffer,
-        fullSurfaceDirty: Bool
+        fullSurfaceDirty: Bool,
+        markCopiesDirty: Bool
     ) -> (x: Int, y: Int, width: Int, height: Int)? {
         let w = buf.width
         let h = buf.height
@@ -627,7 +631,9 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
                             }
                         }
                     }
-                    markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
+                    if markCopiesDirty {
+                        markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
+                    }
                 }
             } else {
                 let prevRgba = buf.bytes
@@ -661,7 +667,9 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
                                         dstRgba.advanced(by: dOff).update(from: srcRgba.advanced(by: sOff), count: copyByteCount)
                                         dstBgra.advanced(by: dOff).update(from: srcBgra.advanced(by: sOff), count: copyByteCount)
                                     }
-                                    markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
+                                    if markCopiesDirty {
+                                        markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
+                                    }
                                 }
                             }
                         }

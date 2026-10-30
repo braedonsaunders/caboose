@@ -3,6 +3,7 @@ import CoreVideo
 import Foundation
 import Metal
 import MetalPerformanceShaders
+import QuartzCore
 
 /// Shared Metal objects for every window surface.
 public final class SurfaceRenderer: @unchecked Sendable {
@@ -37,9 +38,17 @@ public final class WindowSurface: @unchecked Sendable {
     private let renderer = SurfaceRenderer.shared
     private let lock = NSLock()
     private var backing: MTLTexture?
+    private var copyScratch: MTLTexture?
     public private(set) var pixelSize: CGSize = .zero
     /// Incremented by every applied draw; presenters redraw when it changes.
     public private(set) var generation: UInt64 = 0
+    /// Immediate 120 Hz local scroll offset (in window pixels) applied on the iPhone before
+    /// Linux's `SurfaceCopy` delta arrives and is atomically absorbed into `backing`.
+    public private(set) var scrollOffset: CGPoint = .zero
+    /// Scrollable content viewport inside the window (learned from `SurfaceCopy.rect`, or nil for
+    /// the whole window), so fixed window chrome (like browser tab/address bars) stays stationary.
+    public private(set) var scrollViewportRect: CGRect?
+    private var lastScrollInputTime: CFTimeInterval = 0
 
     public init() {}
 
@@ -54,6 +63,56 @@ public final class WindowSurface: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let backing else { return nil }
         return (backing, generation)
+    }
+
+    /// Atomic presentation snapshot including any active 120 Hz iPhone-master scroll offset.
+    public func presentationState() -> (texture: MTLTexture, generation: UInt64, scrollOffset: CGPoint, scrollViewport: CGRect?)? {
+        lock.lock(); defer { lock.unlock() }
+        guard let backing else { return nil }
+        return (backing, generation, scrollOffset, scrollViewportRect)
+    }
+
+    /// Applies an immediate 120 Hz scroll translation on the iPhone (in window pixel coordinates).
+    /// Positive `(dx, dy)` shifts existing content by `(dx, dy)` on screen, matching `SurfaceCopy`.
+    public func addLocalScroll(dx: CGFloat, dy: CGFloat, at now: CFTimeInterval = CACurrentMediaTime()) {
+        guard dx != 0 || dy != 0 else { return }
+        lock.lock()
+        let maxX = max(64, (backing.map { CGFloat($0.width) } ?? 1280) * 0.45)
+        let maxY = max(64, (backing.map { CGFloat($0.height) } ?? 800) * 0.45)
+        scrollOffset.x = min(maxX, max(-maxX, scrollOffset.x + dx))
+        scrollOffset.y = min(maxY, max(-maxY, scrollOffset.y + dy))
+        lastScrollInputTime = now
+        generation &+= 1
+        lock.unlock()
+    }
+
+    /// Smoothly decays any unconsumed local scroll offset back to zero once scroll input stops
+    /// (e.g., if the page reached its top or bottom boundary and Linux emitted no `SurfaceCopy`).
+    public func decayLocalScrollIfIdle(now: CFTimeInterval = CACurrentMediaTime()) {
+        lock.lock()
+        guard scrollOffset != .zero else {
+            lock.unlock()
+            return
+        }
+        guard now - lastScrollInputTime > 0.045 else {
+            lock.unlock()
+            return
+        }
+        scrollOffset.x *= 0.72
+        scrollOffset.y *= 0.72
+        if abs(scrollOffset.x) < 0.5 { scrollOffset.x = 0 }
+        if abs(scrollOffset.y) < 0.5 { scrollOffset.y = 0 }
+        generation &+= 1
+        lock.unlock()
+    }
+
+    public func resetLocalScroll() {
+        lock.lock()
+        if scrollOffset != .zero {
+            scrollOffset = .zero
+            generation &+= 1
+        }
+        lock.unlock()
     }
 
     /// Resizes the backing store, preserving the overlapping top-left content. The rest of
@@ -85,8 +144,135 @@ public final class WindowSurface: @unchecked Sendable {
         }
         commands.commit()
         backing = next
+        copyScratch = nil
+        scrollOffset = .zero
+        scrollViewportRect = nil
         pixelSize = CGSize(width: width, height: height)
         generation &+= 1
+    }
+
+    /// Applies a `SurfaceBatch`'s `SurfaceCopy` blits on the GPU and uploads only the newly exposed
+    /// dirty subrect (`fills + refs + tiles`), while atomically consuming any matching local 120 Hz
+    /// scroll offset in the same lock/generation update.
+    public func applyAtlasBatch(
+        copies: [SurfaceCopy],
+        dirtyRect: (x: Int, y: Int, width: Int, height: Int)?,
+        bgraBase: UnsafeRawPointer?,
+        rowBytes: Int,
+        fullReplacement: Bool
+    ) {
+        lock.lock()
+        guard let texture = backing else {
+            lock.unlock()
+            return
+        }
+        let w = texture.width, h = texture.height
+        let useGpuCopies = !fullReplacement && !copies.isEmpty
+        var scratchTexture: MTLTexture?
+        if useGpuCopies {
+            if let existing = copyScratch, existing.width == w, existing.height == h {
+                scratchTexture = existing
+            } else {
+                let desc = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .bgra8Unorm, width: w, height: h, mipmapped: false)
+                desc.usage = [.shaderRead, .shaderWrite]
+                desc.storageMode = .private
+                scratchTexture = renderer.device.makeTexture(descriptor: desc)
+                copyScratch = scratchTexture
+            }
+        }
+        lock.unlock()
+
+        var stagingBuffer: MTLBuffer?
+        var clampedDirty: MTLRegion?
+        if let dirty = dirtyRect, dirty.width > 0, dirty.height > 0, let bgraBase,
+           let region = clamp(x: dirty.x, y: dirty.y, width: dirty.width, height: dirty.height, in: texture) {
+            let offset = region.origin.y * rowBytes + region.origin.x * 4
+            let length = (region.size.height - 1) * rowBytes + region.size.width * 4
+            stagingBuffer = renderer.device.makeBuffer(
+                bytes: bgraBase.advanced(by: offset),
+                length: length,
+                options: .storageModeShared
+            )
+            clampedDirty = region
+        }
+
+        guard (useGpuCopies && scratchTexture != nil) || (stagingBuffer != nil && clampedDirty != nil) else {
+            return
+        }
+        guard let commands = renderer.queue.makeCommandBuffer(),
+              let blit = commands.makeBlitCommandEncoder() else { return }
+
+        if useGpuCopies, let scratch = scratchTexture {
+            blit.copy(
+                from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+                sourceSize: MTLSize(width: w, height: h, depth: 1),
+                to: scratch, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin()
+            )
+            for copy in copies {
+                let dstX0 = Int(copy.rect.minX)
+                let dstY0 = Int(copy.rect.minY)
+                let cw = Int(copy.rect.width)
+                let ch = Int(copy.rect.height)
+                let colStart = max(0, max(-dstX0, copy.dx - dstX0))
+                let colEnd = min(cw, min(w - dstX0, w + copy.dx - dstX0))
+                let rowStart = max(0, max(-dstY0, copy.dy - dstY0))
+                let rowEnd = min(ch, min(h - dstY0, h + copy.dy - dstY0))
+                guard colStart < colEnd, rowStart < rowEnd else { continue }
+                let dx0 = dstX0 + colStart
+                let dy0 = dstY0 + rowStart
+                let sx0 = dx0 - copy.dx
+                let sy0 = dy0 - copy.dy
+                let copyW = colEnd - colStart
+                let copyH = rowEnd - rowStart
+                blit.copy(
+                    from: scratch, sourceSlice: 0, sourceLevel: 0,
+                    sourceOrigin: MTLOrigin(x: sx0, y: sy0, z: 0),
+                    sourceSize: MTLSize(width: copyW, height: copyH, depth: 1),
+                    to: texture, destinationSlice: 0, destinationLevel: 0,
+                    destinationOrigin: MTLOrigin(x: dx0, y: dy0, z: 0)
+                )
+            }
+        }
+
+        if let staging = stagingBuffer, let region = clampedDirty {
+            blit.copy(
+                from: staging, sourceOffset: 0, sourceBytesPerRow: rowBytes,
+                sourceBytesPerImage: rowBytes * region.size.height, sourceSize: region.size,
+                to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin
+            )
+        }
+
+        blit.endEncoding()
+        commands.commit()
+
+        lock.lock()
+        if fullReplacement {
+            scrollOffset = .zero
+        } else if let copy = copies.first {
+            let vp = copy.rect.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+            if vp.width >= CGFloat(w) * 0.4 && vp.height >= CGFloat(h) * 0.25 {
+                scrollViewportRect = vp
+            }
+            let cdx = CGFloat(copy.dx)
+            let cdy = CGFloat(copy.dy)
+            if cdx != 0, scrollOffset.x != 0, (scrollOffset.x > 0) == (cdx > 0) {
+                if abs(cdx) >= abs(scrollOffset.x) {
+                    scrollOffset.x = 0
+                } else {
+                    scrollOffset.x -= cdx
+                }
+            }
+            if cdy != 0, scrollOffset.y != 0, (scrollOffset.y > 0) == (cdy > 0) {
+                if abs(cdy) >= abs(scrollOffset.y) {
+                    scrollOffset.y = 0
+                } else {
+                    scrollOffset.y -= cdy
+                }
+            }
+        }
+        generation &+= 1
+        lock.unlock()
     }
 
     /// Uploads tightly or loosely packed BGRA pixels into a region, staged through a buffer
