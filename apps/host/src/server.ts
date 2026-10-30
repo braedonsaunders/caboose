@@ -511,7 +511,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyWebview(controller.fileService(), webviewBridge[1]!, request, response)
-      })
+      }, 'headless')
     }
     if (path.startsWith('/v1/fs/')) {
       if (request.method === 'GET' && controller.parkedFilesView && computer.state === 'parked') {
@@ -530,7 +530,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         await ensureFilesReady()
         if (!controller.fileService) throw new AgentUnavailableError()
         await proxyFiles(controller.fileService(), request, response)
-      })
+      }, 'headless')
     }
     if (path === '/v1/activities' && request.method === 'POST') {
       if (!activities) return json(response, 503, { error: 'Live Activities unavailable' })
@@ -699,7 +699,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       craftJobs.add(input.job)
       craftBusy++
       try {
-        await computer.wake()
+        await computer.wake('headless')
         return await leased(async () => {
           const listing = await appCatalog.list()
           const app = listing.apps.find(item => item.id === id)
