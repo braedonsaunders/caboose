@@ -718,7 +718,17 @@ class Broker:
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
             session.send(Kind.SESSION, payload=session.hello)
-            await asyncio.wait_for(session.session_ready.wait(), 10)
+            ready_wait = asyncio.create_task(session.session_ready.wait())
+            try:
+                done, _ = await asyncio.wait((ready_wait, receiver), timeout=10, return_when=asyncio.FIRST_COMPLETED)
+                if receiver in done:
+                    receiver.result()
+                    raise ConnectionError('executor closed before ready')
+                if ready_wait not in done:
+                    raise asyncio.TimeoutError('executor readiness timeout')
+            finally:
+                if not ready_wait.done(): ready_wait.cancel()
+                await asyncio.gather(ready_wait, return_exceptions=True)
             await self.report_lifecycle(session, 4)
             self.lease.ready(executor.bytes, generation)
             self.session = session

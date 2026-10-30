@@ -21,13 +21,19 @@ EXECUTOR = bytes.fromhex('00112233445566778899aabbccddeeff')
 
 async def main():
     draining = '--drain' in sys.argv[1:]
+    indexed = '--indexed' in sys.argv[1:]
+    reject_v3 = '--reject-v3' in sys.argv[1:]
+    if reject_v3 and not indexed: raise ValueError('--reject-v3 requires --indexed')
+    hello = (HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]) if indexed else HELLO
     with tempfile.TemporaryDirectory(prefix='gpu-loopback-', dir=os.environ['GPU_TRIAL_DIR']) as d:
         root = Path(d); token = root / 'token'; token.write_bytes(b'test-token')
         path = root / 'gpu.sock'
         parent, child = socket.socketpair(type=socket.SOCK_SEQPACKET)
+        command = [sys.executable, str(Path(__file__).with_name('caboose-gpu-broker')),
+                   '--control-fd=0', '--token-file', str(token), '--socket', str(path)]
+        if indexed: command.extend(('--surface-socket', str(root / 'surface.sock'), '--private-indexed'))
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, str(Path(__file__).with_name('caboose-gpu-broker')),
-            '--control-fd=0', '--token-file', str(token), '--socket', str(path),
+            *command,
             stdin=child, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         child.close()
         listener = socket.socket(); listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -63,8 +69,16 @@ async def main():
             response = await asyncio.wait_for(phone_reader.readuntil(b'\r\n\r\n'), 5)
             if not response.startswith(b'HTTP/1.1 101 '): raise RuntimeError('upgrade failed')
             first = await receive(Kind.SESSION)
-            if first.payload != HELLO: raise RuntimeError('session hello mismatch')
-            await send(Kind.SESSION_READY, payload=HELLO)
+            if first.payload != hello: raise RuntimeError('session hello mismatch')
+            if reject_v3:
+                await send(Kind.SESSION_READY, payload=HELLO)
+                if await asyncio.wait_for(phone_reader.read(), 5) != b'': raise RuntimeError('mismatched hello accepted')
+                if path.exists() or (root / 'surface.sock').exists(): raise RuntimeError('socket published on mismatched hello')
+                parent.shutdown(socket.SHUT_RDWR); parent.close()
+                if await asyncio.wait_for(proc.wait(), 10): raise RuntimeError('broker failed to exit')
+                print('PASS fake executor: v4 rejects v3 before local socket publication')
+                return
+            await send(Kind.SESSION_READY, payload=hello)
             ready_record = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 80), 5)
             if control_protocol.decode(ready_record, 0) != control_protocol.ExecutorLifecycle(4, EXECUTOR, 1):
                 raise RuntimeError('missing actual session-ready control')
@@ -73,12 +87,12 @@ async def main():
                 await asyncio.sleep(.02)
             if not path.exists(): raise RuntimeError('local socket not ready')
             local_reader, local_writer = await asyncio.open_unix_connection(str(path))
-            local_writer.write(HELLO); await local_writer.drain()
+            local_writer.write(hello); await local_writer.drain()
             process = await receive(Kind.PROCESS_OPEN)
             await send(Kind.PROCESS_READY, process=process.process)
             stream = await receive(Kind.STREAM_OPEN)
             await send(Kind.STREAM_READY, process=process.process, stream=stream.stream)
-            if await asyncio.wait_for(local_reader.readexactly(48), 5) != HELLO: raise RuntimeError('local hello mismatch')
+            if await asyncio.wait_for(local_reader.readexactly(48), 5) != hello: raise RuntimeError('local hello mismatch')
             local_writer.write(b'guest-wire'); await local_writer.drain()
             data = await receive(Kind.DATA)
             if data.payload != b'guest-wire': raise RuntimeError('guest bytes changed')
@@ -112,8 +126,9 @@ async def main():
                 await receive(Kind.REVOKE); await send(Kind.REVOKED)
             code = await asyncio.wait_for(proc.wait(), 10)
             err = (await proc.stderr.read()).decode(errors='replace')
-            if code or path.exists(): raise RuntimeError(f'broker cleanup exit={code} stderr={err}')
-            print('PASS fake executor: mode=' + ('drain' if draining else 'eof') + ', 101, CGLV receipts, ordered bytes, retirement, revoke, cleanup')
+            if code or path.exists() or (indexed and (root / 'surface.sock').exists()):
+                raise RuntimeError(f'broker cleanup exit={code} stderr={err}')
+            print('PASS fake executor: version=' + ('v4' if indexed else 'v3') + ', mode=' + ('drain' if draining else 'eof') + ', 101, CGLV receipts, ordered bytes, retirement, revoke, cleanup')
         finally:
             if local_writer:
                 local_writer.close()
