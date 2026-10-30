@@ -50,17 +50,18 @@ For an isolated checkout whose `HEAD` is exactly the candidate Mesa revision,
 `python3 guest/gpu/gfxstream/prepare_mesa.py /path/to/mesa` checks SHA-256 of
 all eight changed upstream files before applying the integration. It refuses an
 already patched or different tree. For an isolated Linux build environment with
-the required Mesa build dependencies already installed, the proposed minimal
-headless configuration is:
+the required Mesa build dependencies available, the headless configuration is:
 
 ```sh
-meson setup /path/to/build /path/to/mesa -Dplatforms= -Dgallium-drivers= -Dvulkan-drivers=gfxstream -Dbuildtype=release
-ninja -C /path/to/build
+meson setup /path/to/build /path/to/mesa --wrap-mode=nodownload -Dplatforms= -Dgallium-drivers= -Dvulkan-drivers=gfxstream -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dbuildtype=release
+ninja -C /path/to/build -j2
 ```
 
-This command has not been compiled or validated, and the complete source and
-dependency download sizes are not measured. No source fetch, build or install is
-performed by the preparation script. Do not use the output as a working ICD.
+The build produces `src/gfxstream/guest/vulkan/libvulkan_gfxstream.so` and a
+development ICD manifest. The manifest contains the build-time absolute path;
+it must be adjusted for the environment that loads the library. No source fetch,
+build or install is performed by the preparation script. Socket mode remains
+gated and is not a working ICD.
 
 ## Non-direct memory transfer at the pinned revisions
 
@@ -102,8 +103,8 @@ must perform the required Vulkan barriers, fence waits, flushes and invalidates.
 This experiment requires a genuinely non-coherent host-visible type, which the
 selected device may not provide. Coherent allocations are rejected; because
 Vulkan requires a coherent type, this cannot be exposed as a usable device.
-The Vulkan initialization gate remains in place. The source has not been
-compiled or tested with a decoder.
+The Vulkan initialization gate remains in place; this path has not been tested
+with a decoder.
 
 The socket shadow records one active map range per allocation, validates map
 bounds, mapped flush/invalidate bounds and non-coherent atom alignment, and
@@ -123,9 +124,9 @@ converted; the socket ICD gate remains closed.
 
 For a later isolated Linux build, the pinned Mesa `meson.build` requires Meson
 1.4.0 or later, C11 and C++17 compilers, Python 3.10 or later with Mako 0.8.0
-or later and `packaging` or `distutils`; its Linux libdrm baseline is 2.4.109,
+or later, PyYAML, and `packaging` or `distutils`; its Linux libdrm baseline is 2.4.109,
 and it probes zlib 1.2.3 or later. Check the actual selected configuration's
 Meson log for further requirements. Use `--wrap-mode=nodownload` on the
 headless setup command above to prevent unplanned dependency downloads. The
-checkout and dependency sizes are unmeasured; no fetch or build is authorized
-by this file.
+dependency availability depends on the build environment; this file does not
+fetch or install dependencies.
