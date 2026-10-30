@@ -224,7 +224,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -11928,0 +12088,14 @@
+@@ -11940,0 +12100,14 @@
 +VkResult VkDecoderGlobalState::acquireCaboosePresentationObjects(
 +    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkQueue boxedQueue,
 +    VkImage boxedImage, VkFormat format, uint32_t width, uint32_t height, uint32_t queueFamily,
