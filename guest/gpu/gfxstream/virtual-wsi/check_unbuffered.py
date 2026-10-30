@@ -28,10 +28,10 @@ def client_frame(payload):
     return header + mask + bytes(value ^ mask[i % 4] for i, value in enumerate(payload))
 
 
-async def stop(proc):
+async def stop(proc, timeout=5):
     if proc and proc.returncode is None:
         proc.terminate()
-        try: await asyncio.wait_for(proc.wait(), 5)
+        try: await asyncio.wait_for(proc.wait(), timeout)
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
@@ -166,7 +166,10 @@ async def main(args):
             if writer:
                 writer.close()
                 with contextlib.suppress(OSError, asyncio.TimeoutError): await asyncio.wait_for(writer.wait_closed(), 2)
-            await stop(client); await stop(probe); await stop(compositor)
+            await stop(client); await stop(probe)
+            # The supervisor allows its broker twelve seconds to exit and
+            # reaps it before compositor shutdown completes.
+            await stop(compositor, timeout=15)
             log.close()
 
 
@@ -177,4 +180,11 @@ if __name__ == '__main__':
     parser.add_argument('--client', required=True)
     parser.add_argument('--scratch', required=True)
     parser.add_argument('--output', required=True)
-    asyncio.run(main(parser.parse_args()))
+    args = parser.parse_args()
+    async def run():
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        loop.add_signal_handler(signal.SIGTERM, task.cancel)
+        try: await main(args)
+        finally: loop.remove_signal_handler(signal.SIGTERM)
+    asyncio.run(run())
