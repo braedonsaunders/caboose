@@ -21,7 +21,13 @@
 +++ b/host/vulkan/vk_decoder_global_state.h
 @@ -24,0 +25 @@
 +#include "caboose_presentation_lifetime.h"
-@@ -56,0 +58,17 @@
+@@ -56,0 +58,23 @@
++// Internal surface lifetime: the decoder instance remains alive while leased.
++struct CaboosePresentationInstance {
++    caboose::gpuv2::PresentationLease lease;
++    VkInstance instance = VK_NULL_HANDLE;
++};
++
 +// Internal validated native handles; lease must outlive all GPU references.
 +struct CaboosePresentationObjects {
 +    caboose::gpuv2::PresentationLease lease;
@@ -39,8 +45,10 @@
 +    VulkanDispatch* vk = nullptr;
 +};
 +
-@@ -78,0 +97,8 @@
+@@ -78,0 +103,10 @@
 +
++    VkResult acquireCaboosePresentationInstance(uint32_t contextId, VkInstance boxedInstance,
++        std::unique_ptr<CaboosePresentationInstance>* out);
 +    // Authenticated context and boxed handles only. This validates ownership,
 +    // format and lifetime; it does not validate layout or perform presentation.
 +    VkResult acquireCaboosePresentationObjects(uint32_t contextId, VkInstance boxedInstance,
@@ -50,7 +58,29 @@
 +        std::unique_ptr<CaboosePresentationObjects>* out);
 --- a/host/vulkan/vk_decoder_global_state.cpp
 +++ b/host/vulkan/vk_decoder_global_state.cpp
-@@ -320,0 +321,87 @@
+@@ -320,0 +321,109 @@
++
++    VkResult acquireCaboosePresentationInstance(uint32_t contextId, VkInstance boxedInstance,
++        std::unique_ptr<CaboosePresentationInstance>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedInstance) return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CaboosePresentationInstance>();
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkInstance instance = try_unbox_VkInstance(boxedInstance);
++        auto* info = gfxstream::base::find(mInstanceInfo, instance);
++        if (!info || info->boxed != boxedInstance || info->contextId != contextId ||
++            !result->lease.acquire(info->cabooseLifetime)) return VK_ERROR_INITIALIZATION_FAILED;
++        auto hasExtension = [&](const char* name) {
++            return std::find(info->enabledExtensionNames.begin(), info->enabledExtensionNames.end(),
++                             name) != info->enabledExtensionNames.end();
++        };
++        if (!hasExtension(VK_KHR_SURFACE_EXTENSION_NAME) ||
++            !hasExtension("VK_EXT_metal_surface")) return VK_ERROR_EXTENSION_NOT_PRESENT;
++        result->instance = instance;
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
 +
 +    VkResult acquireCaboosePresentationObjects(uint32_t contextId, VkInstance boxedInstance,
 +        VkDevice boxedDevice, VkQueue boxedQueue, VkImage boxedImage, VkFormat format,
@@ -138,7 +168,7 @@
 +        *out = std::move(result);
 +        return VK_SUCCESS;
 +    }
-@@ -1533,0 +1621,9 @@
+@@ -1533,0 +1643,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -148,7 +178,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3251 +3347,9 @@
+@@ -3251 +3369,9 @@
 -
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
@@ -159,16 +189,16 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3253 +3356,0 @@
+@@ -3253 +3378,0 @@
 -
-@@ -3382,0 +3486,6 @@
+@@ -3382,0 +3508,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3399,0 +3509,8 @@
+@@ -3399,0 +3531,8 @@
 +        }
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
@@ -177,7 +207,7 @@
 +                auto* info = gfxstream::base::find(mMemoryInfo, pBindInfos[i].memory);
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
-@@ -3645,0 +3763,9 @@
+@@ -3645,0 +3785,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -187,14 +217,14 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3716,0 +3843,6 @@
+@@ -3716,0 +3865,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3813,0 +3946,9 @@
+@@ -3813,0 +3968,9 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -204,7 +234,7 @@
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
 +        }
-@@ -4562,0 +4704,9 @@
+@@ -4562,0 +4726,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -214,7 +244,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -7527,0 +7678,9 @@
+@@ -7527,0 +7700,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -224,7 +254,13 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -11940,0 +12100,14 @@
+@@ -11940,0 +12122,20 @@
++VkResult VkDecoderGlobalState::acquireCaboosePresentationInstance(
++    uint32_t contextId, VkInstance boxedInstance, std::unique_ptr<CaboosePresentationInstance>* out) {
++    try { return mImpl->acquireCaboosePresentationInstance(contextId, boxedInstance, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++
 +VkResult VkDecoderGlobalState::acquireCaboosePresentationObjects(
 +    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkQueue boxedQueue,
 +    VkImage boxedImage, VkFormat format, uint32_t width, uint32_t height, uint32_t queueFamily,

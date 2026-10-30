@@ -156,6 +156,18 @@ extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64
 }
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
 namespace caboose::gpuv2 {
+VkResult acquirePresentationInstance(caboose_gfx_registry* registry, uint64_t token,
+    uint64_t boxedInstance, std::unique_ptr<gfxstream::host::vk::CaboosePresentationInstance>* out) {
+    static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "64-bit boxed Vulkan handles required");
+    if (!out) return VK_ERROR_INITIALIZATION_FAILED;
+    out->reset();
+    if (!registry || !token || !boxedInstance) return VK_ERROR_INITIALIZATION_FAILED;
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto it = registry->processes.find(token);
+    if (it == registry->processes.end() || it->second->stopped) return VK_ERROR_INITIALIZATION_FAILED;
+    return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCaboosePresentationInstance(
+        it->second->context, (VkInstance)(uintptr_t)boxedInstance, out);
+}
 VkResult acquirePresentationObjects(caboose_gfx_registry* registry,
     uint64_t boxedInstance, const caboose_gpu_present_info& info,
     std::unique_ptr<gfxstream::host::vk::CaboosePresentationObjects>* out) {
