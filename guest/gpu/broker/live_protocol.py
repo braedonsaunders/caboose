@@ -27,6 +27,7 @@ class Kind(IntEnum):
     PROCESS_RETIRED = 10
     REVOKE = 11
     REVOKED = 12
+    EXECUTOR_DRAIN = 13
 
 
 class ProtocolError(ValueError):
@@ -57,7 +58,7 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
         raise ProtocolError("invalid resource identity")
     if not 0 <= length <= MAX_PAYLOAD:
         raise ProtocolError("payload limit")
-    if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED):
+    if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN):
         if process or stream:
             raise ProtocolError("session message has resource identity")
     elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED):
