@@ -973,7 +973,7 @@ instead of accumulating jobs. I/O failures do not affect playback. Invalid nonfi
 records are omitted. Disable the preference or remove the launch override to stop
 recording; the existing cache file remains available for collection or deletion.
 
-Each record has `kind` (`interval` or `restart`), monotonic seconds, Unix wall-clock
+Each record has `kind` (`interval`, `restart` or `startup`), monotonic seconds, Unix wall-clock
 seconds, counters, rates, media-clock values and available renderer status/sample-frame
 counts. Interval durations are seconds and are maxima, not averages; restart stage fields
 ending in `MS` are milliseconds. Restart clock values precede the flush, while
