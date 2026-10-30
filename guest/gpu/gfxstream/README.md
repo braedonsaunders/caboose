@@ -200,3 +200,12 @@ proof of the public ICD, coherent memory, drawing, or phone execution. The
 memory flags printed by these probes are the guest-visible types returned by the
 decoder; they are not necessarily the physical backend's memory flags. Both
 probes require a supervised private receiver and a strict external timeout.
+
+`caboose_gfxstream_draw_probe` uses the same compute shader and guest shadow,
+validates the five GPU-written words, changes the indirect draw arguments on the
+CPU, flushes them, and submits an offscreen draw followed by image readback.
+Invocation is `draw_probe SOCKET SEED COMPUTE_SPV SHADER_DIR OUTPUT_RGBA`; SEED
+must be a uint32 congruent to 3 modulo 4. Its JSON output and actual RGBA bytes
+are checked with the existing `guest/gpu/emulation-check/verify.py` and
+`expected.json` `compute_cpu_feedback` case. This private result is not evidence
+of a physical-phone executor or a working public ICD.

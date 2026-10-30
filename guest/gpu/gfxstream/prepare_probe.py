@@ -29,6 +29,7 @@ executable(
 base = TARGET
 TARGET += base.replace('caboose_gfxstream_encoder_probe', 'caboose_gfxstream_buffer_probe').replace('encoder_probe.cpp', 'buffer_probe.cpp')
 TARGET += base.replace('caboose_gfxstream_encoder_probe', 'caboose_gfxstream_compute_probe').replace('encoder_probe.cpp', 'compute_probe.cpp')
+TARGET += base.replace('caboose_gfxstream_encoder_probe', 'caboose_gfxstream_draw_probe').replace('encoder_probe.cpp', 'draw_probe.cpp')
 
 
 def apply(root):
@@ -37,10 +38,10 @@ def apply(root):
     data = meson.read_bytes()
     if hashlib.sha256(data).hexdigest() != EXPECTED:
         raise ValueError('unexpected Mesa Vulkan meson.build')
-    for name in ('encoder_probe.cpp', 'buffer_probe.cpp', 'compute_probe.cpp'):
+    for name in ('encoder_probe.cpp', 'buffer_probe.cpp', 'compute_probe.cpp', 'draw_probe.cpp'):
         if (target / name).exists():
             raise FileExistsError(target / name)
-    for name in ('encoder_probe.cpp', 'buffer_probe.cpp', 'compute_probe.cpp'):
+    for name in ('encoder_probe.cpp', 'buffer_probe.cpp', 'compute_probe.cpp', 'draw_probe.cpp'):
         shutil.copyfile(HERE / name, target / name)
     meson.write_bytes(data + TARGET.encode())
 
