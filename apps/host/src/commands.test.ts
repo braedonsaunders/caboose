@@ -212,6 +212,26 @@ it('turns guest refusals into input and conflict errors without notifying', asyn
   expect(leases()).toBe(0)
 })
 
+it('retains and collects a started command when its acknowledgement is lost', async () => {
+  const { commands, fake, leases } = harness()
+  const run = fake.guest.run.getMockImplementation()!
+  fake.guest.run.mockImplementation(async (command, args) => {
+    const result = await run(command, args)
+    if (command === '/usr/sbin/runuser') throw new Error('transport closed after launch')
+    return result
+  })
+  const record = await commands.start(parseCommandRequest({ id: ID, script: 'sleep 1' }))
+  expect(record.status).toBe('running')
+  expect(leases()).toBe(1)
+  await commands.poll()
+  expect(commands.get(ID).status).toBe('running')
+  fake.finish(ID, { status: 'succeeded' }, { stdout: 'completed once' })
+  await commands.poll()
+  expect(commands.get(ID)).toMatchObject({ status: 'succeeded', stdout: 'completed once' })
+  expect(leases()).toBe(0)
+  expect(fake.calls.filter(call => call.mode === 'start')).toHaveLength(1)
+})
+
 it('fails a command whose result is malformed', async () => {
   const { commands, fake } = harness()
   const { id } = await commands.start(parseCommandRequest({ script: 'ls' }))

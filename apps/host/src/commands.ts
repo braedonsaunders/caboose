@@ -359,11 +359,16 @@ export class ComputerCommands {
         await guest.run('/usr/sbin/runuser', ['-u', 'caboose', '--', '/usr/bin/python3', '-c', source, 'start',
           JSON.stringify({ id, cwd: input.cwd, timeout: input.timeout, stdin: input.stdin !== undefined, inputs: input.inputs })], 60_000)
       } catch (error) {
-        // A refused start leaves no command; the caller hears why in its response.
-        this.leases.get(id)?.()
-        this.leases.delete(id)
-        await this.store.remove(id)
-        throw guestError(error)
+        const failure = guestError(error)
+        if (failure instanceof AgentInputError || failure instanceof AgentConflictError) {
+          // Explicit validation refusals precede the guest's fork.
+          this.leases.get(id)?.()
+          this.leases.delete(id)
+          await this.store.remove(id)
+          throw failure
+        }
+        // The supervisor may already be running when its acknowledgement is lost.
+        // Keep its durable ID and lease; polling resolves the outcome without replay.
       }
       this.hooks.progress(record, 'started', { waited: false, long: false })
       const timer = setTimeout(() => {

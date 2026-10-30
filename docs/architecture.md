@@ -1415,6 +1415,8 @@ type Command = {
   for idleness under it, and an explicit park answers 409. A restart or deleting the computer
   fails running commands with "Stopped when the computer restarted."; a supervisor gone
   without a result fails its command with "The command stopped without a result.".
+  A lost start acknowledgment retains the command ID and lease while the host checks the
+  supervisor; it does not replay the script or forget a possibly running command.
 - **Progress.** Control sockets get `job.progress` (`kind: "command"`) when a command starts,
   after 10 s, and when it ends. After 10 s the command is published to Live Activities with
   its title and detail `Running`, and its end updates and ends the activity. When it ends with
