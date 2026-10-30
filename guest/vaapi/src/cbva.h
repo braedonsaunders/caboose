@@ -83,8 +83,9 @@ typedef struct {
     int (*picture)(cb_context *c, const cb_picture *p, uint32_t seq);
     void (*flush)(cb_context *c);
     /* Optional: data that decodes the held-back picture's pixels now, for the
-     * local decoder only (it is decoded again, exactly, when emitted). */
-    int (*provisional)(cb_context *c, cb_buf *out, uint32_t *seq);
+     * local decoder only (it is decoded again, exactly, when emitted).
+     * A nonmatching requested seq must not consume the held picture. */
+    int (*provisional)(cb_context *c, cb_buf *out, uint32_t seq);
     /* Optional: the surface the app presents the picture in, when it is not the
      * decode target (AV1 film grain); it carries the marker and the pixels. */
     VASurfaceID (*display)(cb_context *c, const cb_picture *p);
