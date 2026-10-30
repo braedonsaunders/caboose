@@ -115,6 +115,11 @@ The image contains:
   `guest/devices`, so the phone's hardware becomes the computer's devices
   ([devices.md](devices.md)). Container computers expose the microphone only; shared host input, camera and
   UHID devices are not passed through to computers.
+  On iOS, microphone capture and dictation hold temporary audio-session category leases,
+  including route-sharing policy. AirPlay and media category changes retire older leases;
+  releasing a recorder cannot overwrite a later owner or deactivate shared playback.
+  Capture rebuilds after route or media-service changes, resumes interruptions only when
+  iOS permits, and reports failures. Physical-device echo suppression remains unverified.
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
