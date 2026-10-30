@@ -34,7 +34,6 @@ pub fn entry(number: u32, cookie: &[u8; 16]) -> Vec<u8> {
 
 /// What the Xwayland launch needs.
 pub struct Prepared {
-    pub cookie: [u8; 16],
     /// Environment for the Xwayland process.
     pub env: Vec<(OsString, OsString)>,
     /// The Xauthority file applications use.
@@ -86,7 +85,6 @@ pub fn prepare(dir: &Path, number: u32) -> std::io::Result<Prepared> {
             (AUTH_ENV.into(), authority.clone().into_os_string()),
         ],
         authority,
-        cookie,
     })
 }
 
