@@ -1,3 +1,6 @@
+import type { ComputerUsage, ComputerStorage } from '../../../packages/capacity/types.js'
+import type { Capacity } from '../../../packages/capacity/types.js'
+import type { RecoveryStatus } from './recovery.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'
@@ -347,6 +350,10 @@ export class CabooseClient {
     readonly computerId?: string,
   ) {}
 
+  recovery(): Promise<RecoveryStatus> { return this.request('GET', '/v1/recovery') }
+  captureRecovery(): Promise<RecoveryStatus> { return this.request('POST', '/v1/recovery/capture', { timeoutMs: 3_600_000 }) }
+  restoreRecovery(id: string): Promise<RecoveryStatus> { return this.request('POST', `/v1/recovery/captures/${encodeURIComponent(id)}/restore`, { body: { confirm: id }, timeoutMs: 3_600_000 }) }
+
   /** The same client, with its computer routes sent to `/v1/computers/<id>/…`. */
   forComputer(id: string): CabooseClient {
     return new CabooseClient(this.getToken, this.baseUrl, this.fetchImpl, id)
@@ -412,6 +419,16 @@ export class CabooseClient {
       }
       throw new CabooseApiError(0, error instanceof Error ? error.message : 'Network error')
     }
+  }
+
+  computerUsage(id: string): Promise<ComputerUsage> {
+    return this.request('GET', `/v1/computers/${encodeURIComponent(id)}/usage`)
+  }
+  computerStorage(id: string): Promise<ComputerStorage | { sampledAt: number; vm: Capacity['storage'] }> {
+    return this.request('POST', `/v1/computers/${encodeURIComponent(id)}/usage/storage`, { timeoutMs: 20_000 })
+  }
+  capacity(tenantId?: string): Promise<Capacity> {
+    return this.request<Capacity>('GET', tenantId === undefined ? '/v1/host/capacity' : `/v1/tenants/${encodeURIComponent(tenantId)}/capacity`, { timeoutMs: 15_000 })
   }
 
   private async request<T>(

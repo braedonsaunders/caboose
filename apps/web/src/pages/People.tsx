@@ -1,9 +1,7 @@
+import { PageHeader, DashboardPanel } from '../components/console-ui.js'
 import * as React from 'react'
-import { DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
-import {
-  Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, PageContainer, PageHeader, Select, Spinner,
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, promptDialog, toast,
-} from '@braedonsaunders/appkit-ui'
+
+import { Alert, AlertDescription, AlertTitle, Badge, Button, EmptyState, PageContainer, Select, Spinner, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, promptDialog, toast,  } from '@braedonsaunders/appkit-ui'
 import { Mail, ShieldCheck, Users } from 'lucide-react'
 import {
   CabooseApiError, buildInviteLink, type Administrator, type CabooseClient, type Me, type PendingInvite, type Person, type ComputerSummary,
@@ -117,7 +115,7 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
       <div className="space-y-6">
         <PageHeader
           title="People"
-          description="People own computers. Administrator access is managed separately below."
+          description="Manage computer owners, administrator access and invitations."
           actions={
             <div className="flex flex-wrap items-center gap-2">
               {me.tenants.length > 1 ? (
@@ -227,7 +225,7 @@ export function People({ client, me, onUnauthorized }: { client: CabooseClient; 
         ) : null}
 
         {tenantId && invites?.length ? (
-          <DashboardPanel title="Invitations waiting" icon={<Mail className="size-4" aria-hidden />}>
+          <DashboardPanel title="Pending invitations" icon={<Mail className="size-4" aria-hidden />}>
             <Table containerClassName="border-0 shadow-none">
               <TableHeader>
                 <TableRow noAnimate>

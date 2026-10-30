@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import { AgentNotFoundError, AgentOperationError, AgentUnavailableError, type AgentGuest } from './agents.js'
 
 /**
@@ -191,7 +192,7 @@ export function parseLocation(input: Record<string, unknown>): SharedLocation {
  * those of the phone `exceptPhone` when given.
  */
 export class BridgeRelay {
-  private timer: ReturnType<typeof setInterval> | undefined
+  private timer: (() => void) | undefined
   private polling = false
   private readonly outstanding = new Map<string, Outstanding>()
   /** Bumped when the computer stops: work begun before then must not touch what follows. */
@@ -204,16 +205,17 @@ export class BridgeRelay {
     private readonly emit: (event: BridgeEvent, exceptPhone?: string) => void,
     private readonly pollMs = 1000,
     private readonly now: () => number = Date.now,
+    private readonly subscribe?: EventSubscribe,
   ) {}
 
   /** Draining runs while `active`: the computer is running and a phone socket is connected. */
   setActive(active: boolean): void {
     if (active && !this.timer) {
-      this.timer = setInterval(() => { void this.poll() }, this.pollMs)
-      this.timer.unref()
-      void this.poll()
+      const request = this.subscribe?.('bridge.request', record => this.accept({ requests: [record], cancels: [] }))
+      const cancel = this.subscribe?.('bridge.cancel', record => this.accept({ requests: [], cancels: [record] }))
+      this.timer = () => { request?.(); cancel?.() }
     } else if (!active && this.timer) {
-      clearInterval(this.timer)
+      this.timer()
       this.timer = undefined
     }
   }
@@ -244,6 +246,14 @@ export class BridgeRelay {
       if (generation !== this.generation) return
       let parsed: unknown
       try { parsed = JSON.parse(output) } catch { return }
+      await this.accept(parsed)
+    } finally { this.polling = false }
+  }
+
+  async accept(parsed: unknown): Promise<void> {
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const generation = this.generation
       const drained = record(parsed)
       if (!drained) return
       const { requests, cancels } = drained
@@ -253,8 +263,8 @@ export class BridgeRelay {
         const request = parseBridgeRequest(raw)
         if (request) {
           if (this.outstanding.has(request.id)) continue
-          this.outstanding.set(request.id, { type: request.type, multiple: request.multiple, directory: request.directory, filters: request.filters.length, deliveredAt: this.now() })
           this.emit({ type: 'bridge.request', request })
+          this.outstanding.set(request.id, { type: request.type, multiple: request.multiple, directory: request.directory, filters: request.filters.length, deliveredAt: this.now() })
           continue
         }
         // A claimed request the phone cannot be shown goes to the computer's own dialog now,
@@ -262,14 +272,15 @@ export class BridgeRelay {
         const id = record(raw)?.id
         if (typeof id === 'string' && BRIDGE_ID.test(id)) {
           await bridgeCommand(guest, ['respond', JSON.stringify({ id, response: 'computer' })])
-            .catch(error => console.error('Could not return a malformed bridge request to the computer:', message(error)))
           if (generation !== this.generation) return
         }
       }
       for (const id of cancels) {
-        if (typeof id === 'string' && BRIDGE_ID.test(id) && this.outstanding.delete(id)) this.emit({ type: 'bridge.cancel', id })
+        if (typeof id === 'string' && BRIDGE_ID.test(id) && this.outstanding.has(id)) {
+          this.emit({ type: 'bridge.cancel', id })
+          this.outstanding.delete(id)
+        }
       }
-    } finally { this.polling = false }
   }
 
   /**

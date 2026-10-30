@@ -1,0 +1,8 @@
+{
+  "name": "device-motion",
+  "description": "Two samples of a phone lying face up: the first from every sensor, the second accelerometer and gyroscope only.",
+  "messages": [
+    {"direction": "client", "type": "device.motion", "type_id": 180, "fields": {"device": "motion", "samples": [{"gyro": [{"$float": 0.0}, {"$float": 0.0}, {"$float": 0.0}], "t_us": 77000000000, "accel": [{"$float": 0.0}, {"$float": 0.0}, {"$float": 9.80665}], "magnet": [{"$float": 21.5}, {"$float": -4.25}, {"$float": -40.0}], "pressure": {"$float": 101.325}, "rotation": [{"$float": 0.0}, {"$float": 0.0}, {"$float": 0.0}, {"$float": 1.0}]}, {"gyro": [{"$float": 0.01}, {"$float": -0.02}, {"$float": 0.5}], "t_us": 77000010000, "accel": [{"$float": 0.125}, {"$float": -0.5}, {"$float": 9.75}]}]}}
+  ],
+  "hex": "b41f010000a266646576696365666d6f74696f6e6773616d706c657382a6646779726f83fb0000000000000000fb0000000000000000fb000000000000000064745f75731b00000011ed8ec20065616363656c83fb0000000000000000fb0000000000000000fb40239d013a92a305666d61676e657483fb4035800000000000fbc011000000000000fbc044000000000000687072657373757265fb405954cccccccccd68726f746174696f6e84fb0000000000000000fb0000000000000000fb0000000000000000fb3ff0000000000000a3646779726f83fb3f847ae147ae147bfbbf947ae147ae147bfb3fe000000000000064745f75731b00000011ed8ee91065616363656c83fb3fc0000000000000fbbfe0000000000000fb4023800000000000"
+}

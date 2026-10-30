@@ -6,8 +6,16 @@ public enum DesktopChrome {
     /// The dock clears the home indicator. A descendant's safe area can include the
     /// software keyboard even when its proposed height has already been shortened.
     /// Only the part belonging to the window's system chrome can become dock padding.
-    public static func dockBottomPadding(contentInset: CGFloat, windowInset: CGFloat) -> CGFloat {
-        max(6, min(max(0, contentInset), max(0, windowInset)) - 10)
+    public static func dockBottomPadding(contentInset: CGFloat, windowInset: CGFloat,
+                                         verticalBar: Bool = false, keyboardVisible: Bool = false) -> CGFloat {
+        let inset = verticalBar && !keyboardVisible ? windowInset : min(contentInset, windowInset)
+        return max(6, max(0, inset) - 10)
+    }
+
+    /// Navigation content already clears the window safe area; the edge-to-edge dock
+    /// does not. Both meet the native vertical bar ten points below that safe edge.
+    public static func composerBottomPadding(verticalBar: Bool, keyboardVisible: Bool) -> CGFloat {
+        verticalBar && !keyboardVisible ? -10 : 8
     }
 
     /// Fullscreen Linux content stays inside Desktop's workspace. Only Laptop supplies

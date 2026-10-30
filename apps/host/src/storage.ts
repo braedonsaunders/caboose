@@ -1,3 +1,4 @@
+import { recoveryRoute } from './recovery.js'
 import { spawn, spawnSync } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
@@ -100,6 +101,7 @@ export function openStorage(deployment: Config, env: NodeJS.ProcessEnv): Promise
         },
         backups: (request, response, path, principal, context) => {
           if (!backups) throw new Error('Backups are not attached')
+          if (path === '/v1/recovery' || path.startsWith('/v1/recovery/')) return recoveryRoute(backups, request, response, path, principal, context)
           return backups.handle(request, response, path, principal, context)
         },
         close: () => backups?.close(),

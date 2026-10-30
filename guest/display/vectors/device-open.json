@@ -1,0 +1,8 @@
+{
+  "name": "device-open",
+  "description": "Motion opened at 100 Hz.",
+  "messages": [
+    {"direction": "server", "type": "device.open", "type_id": 97, "fields": {"device": "motion", "rate_hz": {"$float": 100.0}}}
+  ],
+  "hex": "6120000000a266646576696365666d6f74696f6e67726174655f687afb4059000000000000"
+}

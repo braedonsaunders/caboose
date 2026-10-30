@@ -1,0 +1,17 @@
+#!/bin/sh
+# Apply the Btrfs policy before local-bottom creates split-system upper dirs.
+# Existing ext4 disks keep their mount options and filesystem unchanged.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+# Supplied by initramfs-tools.
+# shellcheck disable=SC1091
+. /scripts/functions
+: "${rootmnt:?}"
+while read -r _device target filesystem _options _rest; do
+  if [ "$target" = "$rootmnt" ] && [ "$filesystem" = btrfs ]; then
+    mount -o remount,compress-force=zstd:1,discard=async,noatime "$_device" "$rootmnt" ||
+      panic 'Cannot enable Caboose root compression and discard'
+    break
+  fi
+done < /proc/mounts

@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pointer-fixture:loading</title>
+<style>
+html { background: #182234; color: white; font: 20px sans-serif; }
+body { margin: 0; height: 12000px; background: repeating-linear-gradient(#182234 0 99px, #567 100px); }
+</style>
+<script>
+const state = {ready: true, wheels: 0, down: 0, up: 0, moves: 0, dragMoves: 0, x: null, y: null, deltaX: 0, deltaY: 0, deltaMode: null};
+addEventListener('wheel', event => {
+  state.wheels++;
+  state.deltaX += event.deltaX;
+  state.deltaY += event.deltaY;
+  state.deltaMode = event.deltaMode;
+}, {passive: true});
+addEventListener('mousedown', () => state.down++);
+addEventListener('mouseup', () => state.up++);
+addEventListener('mousemove', event => {
+  state.moves++;
+  if (event.buttons & 1) state.dragMoves++;
+  state.x = event.clientX;
+  state.y = event.clientY;
+});
+setInterval(() => {
+  document.title = 'pointer-fixture:' + JSON.stringify({...state, scrollY});
+}, 40);
+</script>

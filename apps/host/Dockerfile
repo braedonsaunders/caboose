@@ -6,6 +6,7 @@ COPY apps/host/package.json apps/host/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY guest/agentd/package.json guest/agentd/package.json
 RUN pnpm install --frozen-lockfile
+COPY packages/capacity packages/capacity
 
 FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json
@@ -46,7 +47,7 @@ RUN cargo build --release --locked && cp target/release/caboose-disk /caboose-di
 FROM node:22-bookworm-slim
 ARG TARGETARCH
 RUN case "$TARGETARCH" in amd64) kernel=linux-image-amd64; qemu=qemu-system-x86 ;; arm64) kernel=linux-image-arm64; qemu=qemu-system-arm ;; *) exit 1 ;; esac && \
-    apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
+    apt-get update && apt-get install -y --no-install-recommends iproute2 iptables procps qemu-utils xfsprogs util-linux python3 python3-guestfs erofs-utils btrfs-progs attr guestfish supermin "$qemu" "$kernel" && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=vmm /desk-vmm /usr/local/lib/desk-vmm
 RUN ln -s /usr/local/lib/desk-vmm/cloud-hypervisor /usr/local/bin/cloud-hypervisor
@@ -66,13 +67,14 @@ COPY guest/keyring ./guest/keyring
 COPY guest/container/caboose-session ./guest/container/
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
+COPY guest/devices ./guest/devices
 COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
 COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/game ./guest/game
 COPY guest/gpu/install.sh guest/gpu/caboose-gpu-run guest/gpu/profile.json ./guest/gpu/
-COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
+COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/net.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json
 COPY guest/catalog/icons ./guest/catalog/icons

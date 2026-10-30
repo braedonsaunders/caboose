@@ -6,6 +6,7 @@ on:
       - '.github/workflows/check-host.yml'
       - 'apps/host/**'
       - 'apps/web/**'
+      - 'packages/capacity/**'
       - 'guest/components/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -32,7 +33,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter caboose-host typecheck
-      - run: pnpm --filter caboose-web typecheck
       - run: pnpm --filter caboose-host exec vitest run --maxWorkers=2 --no-file-parallelism
       - name: Check offline storage and appliance boundaries
         run: |
@@ -42,8 +42,27 @@ jobs:
           python3 apps/host/scripts/tests/test-migrate-disk.py
           python3 apps/host/scripts/tests/test-parked-appliance.py
           python3 apps/host/scripts/tests/check-host-lock.py
+          python3 apps/host/scripts/tests/test-offline-recovery.py
+
+  console:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter caboose-web typecheck
       - run: pnpm --filter caboose-web test
       - run: pnpm --filter caboose-web build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-dist
+          path: apps/web/dist
+          retention-days: 3
 
   disk:
     runs-on: ubuntu-24.04

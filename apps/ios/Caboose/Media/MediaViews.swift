@@ -1,3 +1,4 @@
+import CabooseKit
 import AVKit
 import SafariServices
 import SwiftUI
@@ -88,7 +89,7 @@ struct NativePlayer: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(position: $position) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? CabooseAudioSession.setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         let player = AVPlayer(url: url)
         player.allowsExternalPlayback = true
@@ -97,8 +98,8 @@ struct NativePlayer: UIViewControllerRepresentable {
         player.play()
         let controller = AVPlayerViewController()
         controller.player = player
-        // Picture in Picture needs the audio background mode, which would keep the Linux
-        // sound playing with the app in the background; it is left off.
+        // Picture in Picture is left off: the video returns to the computer's window, which
+        // only plays while Caboose is open.
         controller.allowsPictureInPicturePlayback = false
         return controller
     }

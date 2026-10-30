@@ -183,6 +183,7 @@ pub struct State {
     pub xwayland_shell: XWaylandShellState,
     pub seat: Seat<State>,
     pub xwm: Option<X11Wm>,
+    pub x11_foreground: Option<crate::x11_focus::Foreground>,
     pub text_inputs: TextInputs,
 
     pub windows: Windows,
@@ -202,6 +203,9 @@ pub struct State {
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
+    /// The phone's hardware as devices, on the owner's display (docs/devices.md).
+    pub devices: Option<crate::devices::Hub>,
+    pub devices_tx: smithay::reexports::calloop::channel::Sender<caboose_display_protocol::Message>,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
     /// Random for this process, sent in every hello: window ids are unique within it.
@@ -304,6 +308,9 @@ impl State {
         if focused {
             if let Some(previous) = self.focus_history.pop() {
                 self.focus_window(previous);
+            } else if let Some(keyboard) = self.seat.get_keyboard() {
+                let serial = self.next_serial();
+                keyboard.set_focus(self, None, serial);
             }
         }
         self.video_window_gone(id);
@@ -732,6 +739,7 @@ impl SeatHandler for State {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&KeyboardFocus>) {
+        self.sync_x11_foreground(focused);
         let surface = focused.and_then(|f| f.wl_surface()).map(|s| s.into_owned());
         let client = surface.as_ref().and_then(|s| self.dh.get_client(s.id()).ok());
         set_data_device_focus(&self.dh, seat, client.clone());
@@ -821,6 +829,7 @@ smithay::delegate_xdg_shell!(State);
 smithay::delegate_xdg_decoration!(State);
 smithay::delegate_kde_decoration!(State);
 smithay::delegate_seat!(State);
+smithay::delegate_relative_pointer!(State);
 smithay::delegate_data_device!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_output!(State);

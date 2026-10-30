@@ -13,7 +13,7 @@ EXCLUDES
 find /usr/share/doc -depth -type f ! -name copyright -delete
 find /usr/share/doc -depth -type d -empty -delete
 rm -rf /usr/share/info/* /usr/share/lintian/*
-case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-cloud-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-cloud-arm64 ;; *) exit 1 ;; esac
+case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-arm64 ;; *) exit 1 ;; esac
 printf 'deb https://deb.debian.org/debian trixie main contrib non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free-firmware\n' > /etc/apt/sources.list
 apt-get -o APT::Acquire::Queue-Mode=access update
 apt-get install -y --no-install-recommends ca-certificates curl gnupg
@@ -22,7 +22,7 @@ printf 'deb [arch=%s signed-by=/usr/share/keyrings/microsoft.gpg] https://packag
 curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /usr/share/keyrings/nodesource.gpg
 printf 'deb [signed-by=/usr/share/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
 apt-get -o APT::Acquire::Queue-Mode=access update
-apt-get install -y --no-install-recommends "$kernel" systemd-sysv dbus dbus-user-session initramfs-tools e2fsprogs sudo iproute2 socat python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi dbus-x11 libnotify-bin xauth xvfb x11-utils xdotool wmctrl xclip imagemagick ffmpeg x11vnc at-spi2-core gsettings-desktop-schemas xfce4-settings chromium firefox-esr code xfce4-terminal thunar mousepad libreoffice git ripgrep nodejs sassc libxml2-utils libglib2.0-bin libglib2.0-dev-bin fonts-inter fonts-jetbrains-mono fonts-noto-cjk fonts-noto-color-emoji qt5-gtk-platformtheme qt6-gtk-platformtheme python3-websockets
+apt-get install -y --no-install-recommends "$kernel" systemd-sysv dbus dbus-user-session initramfs-tools e2fsprogs btrfs-progs sudo iproute2 socat python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi dbus-x11 libnotify-bin xauth xvfb x11-utils xdotool wmctrl xclip imagemagick ffmpeg x11vnc at-spi2-core gsettings-desktop-schemas xfce4-settings chromium firefox-esr code xfce4-terminal thunar mousepad libreoffice git ripgrep nodejs sassc libxml2-utils libglib2.0-bin libglib2.0-dev-bin fonts-inter fonts-jetbrains-mono fonts-noto-cjk fonts-noto-color-emoji qt5-gtk-platformtheme qt6-gtk-platformtheme python3-websockets
 apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools
 for executable in gio xdotool wmctrl import; do
   command -v "$executable" >/dev/null || { echo "Missing required guest executable: $executable" >&2; exit 1; }
@@ -99,8 +99,9 @@ mkdir -p /etc/environment.d
 printf 'QT_QPA_PLATFORMTHEME=gtk3\n' > /etc/environment.d/90-caboose.conf
 chown -R caboose:caboose /home/caboose
 printf 'caboose\n' > /etc/hostname
-printf 'LABEL=caboose / ext4 defaults,noatime 0 1\ntmpfs /home/caboose/.cache tmpfs rw,nosuid,nodev,noatime,size=512M,uid=1000,gid=1000,mode=0700 0 0\n' > /etc/fstab
-printf 'virtio_blk\nvirtio_pci\nvirtio_net\n' >> /etc/initramfs-tools/modules
+printf 'LABEL=caboose / btrfs compress-force=zstd:1,discard=async,noatime 0 0\ntmpfs /home/caboose/.cache tmpfs rw,nosuid,nodev,noatime,size=512M,uid=1000,gid=1000,mode=0700 0 0\n' > /etc/fstab
+printf 'virtio_blk\nvirtio_pci\nvirtio_net\nbtrfs\next4\n' >> /etc/initramfs-tools/modules
+if [[ $arch == arm64 ]]; then printf 'virtio_mmio\n' >> /etc/initramfs-tools/modules; fi
 update-initramfs -u
 rm -f /etc/dpkg/dpkg.cfg.d/99-build-speed /etc/dpkg/dpkg.cfg.d/99-caboose-build
 apt-get clean

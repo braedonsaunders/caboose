@@ -41,6 +41,29 @@ import Testing
 
 /// Scheduling policy only: no renderer is attached and no sound is decoded or played.
 @Suite struct MediaClockSchedulingTests {
+    @Test func placementSamplesTheHostOnceEvenWhenTheThreadIsDelayed() {
+        var host: Int64 = 10_000_000
+        var reads = 0
+        var advanceOnRead: Int64 = 0
+        let clock = MediaClock(hostTime: {
+            reads += 1
+            defer { host += advanceOnRead }
+            return CMTime(value: host, timescale: 1_000_000)
+        })
+        let first: Int64 = 90_000_000_000
+        _ = clock.place(audio: first)
+        clock.start(at: first - PlayoutDelay.initial)
+        // Emulate descheduling after sampling the host. The packet is on time at
+        // that instant; a second host read would falsely classify it as late.
+        host += 20_000
+        advanceOnRead = 200_000
+        reads = 0
+        #expect(clock.place(audio: first + 20_000) == .play)
+        #expect(reads == 1)
+        #expect(clock.delay == PlayoutDelay.initial)
+        clock.stop()
+    }
+
     @Test func packetsUseTheRequestedAnchorBeforeTheRenderTimebaseCatchesUp() {
         var host: Int64 = 10_000_000
         let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
@@ -224,7 +247,12 @@ enum Tone {
         let peak = steady.map(abs).max() ?? 0
         #expect(peak > 0.4 && peak < 0.6, "peak \(peak)")
         // 1 kHz: two zero crossings a millisecond.
-        let crossings = zip(steady, steady.dropFirst()).filter { $0 < 0 && $1 >= 0 || $0 >= 0 && $1 < 0 }.count
+        var crossings = 0
+        for (before, after) in zip(steady, steady.dropFirst()) {
+            if (before < 0 && after >= 0) || (before >= 0 && after < 0) {
+                crossings += 1
+            }
+        }
         let perMillisecond = Double(crossings) / (Double(steady.count) / 48)
         #expect(abs(perMillisecond - 2) < 0.1, "\(perMillisecond) crossings/ms")
     }
@@ -362,52 +390,90 @@ enum Tone {
 }
 
 
-/// No renderer or sound: replay independent sample/host clocks and TCP delivery batches.
-@Suite struct AudioClockRecoveryTests {
-    @Test func aFastVirtualGuestDoesNotKeepFlushingItsSound() {
-        replay(rate: 1.083, batch: 140_000)
+/// The injected sink observes every production rate-write path without playing audio.
+@Suite struct UnityRatePlaybackTests {
+    @Test func steadyAndBatchedArrivalsDoNotWritePlaybackCorrections() {
+        replay(sourceRate: 1, batch: 20_000, expectDriftRestarts: false)
+        replay(sourceRate: 1, batch: 140_000, expectDriftRestarts: false)
     }
 
-    @Test func slowAndMatchedClocksStayBounded() {
-        replay(rate: 0.94, batch: 100_000)
-        replay(rate: 1, batch: 140_000)
+    @Test func sustainedClockMismatchUsesExplicitBoundedRebuffering() {
+        // Large synthetic mismatch intentionally re-buffers; no claim of continuous
+        // sample-clock correction. The real application's buffer limits are unchanged.
+        replay(sourceRate: 1.083, batch: 140_000, expectDriftRestarts: true)
+        replay(sourceRate: 0.94, batch: 100_000, expectDriftRestarts: true)
     }
 
-    private func replay(rate: Double, batch: Int64) {
+    private func replay(sourceRate: Double, batch: Int64, expectDriftRestarts: Bool) {
         var host: Int64 = 0
-        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })
-        var restarts = 0, lateRestarts = 0
-        var largestAhead: Int64 = 0
+        var writes: [Float] = []
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) },
+                               rateWriter: { rate, _, _ in writes.append(rate) })
+        var explicitStarts = 0, lateRestarts = 0
         for index in 0..<3000 {
             let media = Int64(index) * 20_000
-            let ideal = Int64(Double(media) / rate)
+            let ideal = Int64(Double(media) / sourceRate)
             host = ((ideal + batch - 1) / batch) * batch
             let pts = 1_000_000_000 + media
+            let countBefore = writes.count
             let placement = clock.place(audio: pts)
+            #expect(writes.count == countBefore, "placement must never write the renderer rate")
             switch placement {
-            case .start(let anchor): clock.start(at: anchor)
-            case .restart(let anchor):
-                restarts += 1
+            case .start(let time):
+                explicitStarts += 1
+                clock.start(at: time)
+            case .restart(let time):
+                explicitStarts += 1
                 if index > 1000 { lateRestarts += 1 }
-                clock.start(at: anchor)
+                clock.start(at: time)
             case .play: break
             }
-            if let now = clock.now { largestAhead = max(largestAhead, pts - now) }
+            #expect(clock.delay <= PlayoutDelay.maximum)
         }
-        #expect(restarts <= 4, "\(rate): \(restarts) resets")
-        #expect(lateRestarts == 0)
-        #expect(abs(clock.rate - rate) < 0.04)
-        #expect(largestAhead < 500_000)
-        clock.stop()
+        #expect(writes.count == explicitStarts)
+        #expect(writes.allSatisfy { $0 == 1 })
         #expect(clock.rate == 1)
+        if expectDriftRestarts { #expect(lateRestarts > 0) }
+        else {
+            #expect(lateRestarts == 0)
+            #expect(explicitStarts == 1)
+        }
+        clock.stop(reason: .sessionStop)
+        #expect(writes.last == 0 && writes.count == explicitStarts + 1)
+        #expect(clock.now == nil)
     }
 
-    @Test func gapsAndImplausibleRatesDoNotPoisonTheEstimate() {
-        var recovery = AudioClockRecovery()
-        for i in 0..<80 { _ = recovery.observe(pts: Int64(i) * 108_300, host: Int64(i) * 100_000, ahead: 120_000, target: 120_000) }
-        #expect(abs(recovery.frequency - 1.083) < 0.002)
-        #expect(recovery.observe(pts: 50_000_000, host: 50_000_000, ahead: 120_000, target: 120_000) == nil)
-        for i in 1..<50 { _ = recovery.observe(pts: 50_000_000 + Int64(i) * 300_000, host: 50_000_000 + Int64(i) * 100_000, ahead: 120_000, target: 120_000) }
-        #expect(abs(recovery.frequency - 1.083) < 0.002)
+    @Test func startRebufferStopAndResumeKeepSharedClockAndWriteOnlyOneOrZero() {
+        var host: Int64 = 10_000_000
+        var rates: [Float] = []
+        var times: [CMTime] = []
+        var hosts: [CMTime?] = []
+        let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) }, rateWriter: {
+            rates.append($0); times.append($1); hosts.append($2)
+        })
+        let first = clock.place(audio: 1_000_000)
+        #expect(first == .start(880_000))
+        clock.start(at: 880_000)
+        host += 20_000
+        #expect(clock.now == 900_000)
+        #expect(clock.time(for: 1_020_000) == CMTime(value: 1_020_000, timescale: 1_000_000))
+        let ordinary = clock.place(audio: 1_020_000)
+        #expect(ordinary == .play && rates == [1])
+        host += 300_000
+        let rebuffer = clock.place(audio: 1_040_000)
+        #expect(rebuffer == .restart(900_000))
+        clock.start(at: 900_000)
+        clock.stop(reason: .sessionStop)
+        #expect(clock.now == nil && clock.time(for: 1_040_000) == nil)
+        let resume = clock.place(audio: 2_000_000)
+        #expect(resume == .start(1_860_000))
+        clock.start(at: 1_860_000)
+        #expect(rates == [1, 1, 0, 1])
+        #expect(times[0] == CMTime(value: 880_000, timescale: 1_000_000))
+        #expect(times[1] == CMTime(value: 900_000, timescale: 1_000_000))
+        #expect(!times[2].isValid && hosts[2] == nil)
+        #expect(hosts[0] == CMTime(value: 10_000_000, timescale: 1_000_000))
+        #expect(hosts[1] == CMTime(value: 10_320_000, timescale: 1_000_000))
+        #expect(clock.now == 1_860_000)
     }
 }

@@ -50,6 +50,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
     /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
     public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// The phone's hardware offered to the computer as devices (docs/devices.md), attached
+    /// while a connection whose server accepts them is up. Set before `connect()`.
+    public var devices: DeviceCenter?
     /// How game surfaces reach the computer's files: the host behind the display URL, with its token.
     public private(set) var gameHost: GameHostAccess?
 
@@ -108,9 +111,9 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - displayURL: the host's `/v1/display` WebSocket.
     ///   - token: the host's bearer token.
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
-    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
+    public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: [DisplayInfo(capabilities)], decoders: Self.hardwareDecoders)
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
@@ -166,9 +169,10 @@ public final class CabooseDisplaySession: DisplaySession {
             case .opened:
                 Task { @MainActor in if self?.stream === stream { self?.sendHello() } }
             case .data(let data):
+                let receivedAt = ProcessInfo.processInfo.systemUptime
                 meter.receive(bytes: data.count, at: CACurrentMediaTime())
                 do {
-                    let others = try incoming.receive(data)
+                    let others = try incoming.receive(data, receivedAt: receivedAt)
                     if !others.isEmpty { Task { @MainActor in if self?.stream === stream { self?.handle(others) } } }
                 } catch {
                     stream.fail(error)
@@ -183,12 +187,12 @@ public final class CabooseDisplaySession: DisplaySession {
     /// of the host's addresses, perhaps) with the display token from a new `/v1/session`.
     /// The windows stay on screen with their last pictures; the server's hello decides
     /// whether they are still the same windows (see `resume(stream:password:displays:)`).
-    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities, computerIdentity: String? = nil) {
+    public func resume(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         guard isClosed, !isReplaced else { return }
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity ?? gameHost?.webviewComputerKey)
         for window in windows.values { window.game?.host = gameHost }
         resume(stream: { WebSocketStream(url: displayURL, token: token) }, password: password,
-               displays: [DisplayInfo(capabilities)])
+               displays: capabilities.map { [DisplayInfo($0)] } ?? [])
     }
 
     /// Reconnects a closed session. A window keeps its object, its picture and its place
@@ -236,7 +240,9 @@ public final class CabooseDisplaySession: DisplaySession {
         watchdog = nil
         if isClosed { return }
         closeCause = cause
-        // What a game held from the app's controls is released with the connection.
+        // What a game held from the app's controls is released with the connection, and the
+        // phone's hardware stops with it.
+        devices?.detach()
         gameHoldingInput?.releaseInput()
         gameHoldingInput = nil
         // State first: an observer that sees windows go while the state is still `.ready`
@@ -303,7 +309,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil))
     }
 
     // MARK: Server messages
@@ -365,6 +371,8 @@ public final class CabooseDisplaySession: DisplaySession {
                 } else {
                     endGPUStream(of: window)
                 }
+            case .deviceStatus, .deviceOpen, .deviceClose, .deviceRumble, .deviceKeyframe:
+                devices?.handle(message)
             case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
@@ -400,6 +408,15 @@ public final class CabooseDisplaySession: DisplaySession {
         announcedGames.removeAll()
         send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
+        attachDevices()
+    }
+
+    /// Offers the phone's hardware on this connection when its server accepts devices.
+    private func attachDevices() {
+        guard let devices else { return }
+        guard has("devices"), let stream else { return devices.detach() }
+        devices.attach(DeviceOutput(send: { message in stream.send(DisplayFraming.encode(message.frame)) },
+                                    backlog: { stream.sendBacklog }))
     }
 
     /// The hello's windows have all been announced: a kept window that was not is gone.
@@ -411,6 +428,8 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         retained.removeAll()
         for window in windows.values where window.game.map({ !announcedGames.contains($0.id) }) == true { endGame(of: window) }
+        // Every app this computer runs here is announced: a kept page none took ends.
+        if let computer = gameHost?.webviewComputerKey { AgentAppPages.shared.settled(computer: computer) }
         windowsAnnounced &+= 1
     }
 
@@ -624,6 +643,8 @@ public final class CabooseDisplaySession: DisplaySession {
             self.declineGame(game, reason: reason)
         }
         window.game = game
+        // The app's page kept playing while Caboose was away: it carries on as this game.
+        AgentAppPages.shared.adopt(game)
     }
 
     /// Asks the computer to run `game` itself (`game.decline`): only once its saves are
@@ -704,7 +725,18 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: Windows
 
     public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {
-        let rounded = frame.integral
+        let fullscreen = state["fullscreen"] ?? window.isFullscreen
+        // All layouts share this boundary. Fullscreen sizing belongs to the
+        // compositor; only explicit state transitions travel without geometry.
+        if fullscreen {
+            if state["fullscreen"] == true {
+                send(.configure(window: window.id, geometry: nil, fullscreen: true, maximized: state["maximized"]))
+                window.isFullscreen = true
+            }
+            return
+        }
+        guard let rounded = WindowSizePolicy.request(frame, minimum: window.minimumSize,
+            maximum: window.maximumSize, fullscreen: false) else { return }
         var geometry = rounded
         if var entry = placement[window.id] {
             if entry.kind != .toplevel, let parent = entry.parent.flatMap({ windows[$0] }) {
@@ -739,6 +771,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     /// A game window first waits, for up to five seconds, for the game's saves still on their way.
     public func close(_ window: RemoteWindow) {
+        CloseDiagnostics.record(window: window, connection: connections, epoch: epoch)
         guard let game = window.game else { return send(.close(window: window.id)) }
         guard let connection = stream else { return }
         let id = window.id
@@ -755,7 +788,9 @@ public final class CabooseDisplaySession: DisplaySession {
     public func refresh(_ window: RemoteWindow) { send(.requestKeyframe(window: window.id)) }
 
     public func reconfigure(_ capabilities: ClientCapabilities) {
-        displays = [DisplayInfo(capabilities)]
+        let next = [DisplayInfo(capabilities)]
+        guard displays != next else { return }
+        displays = next
         lastVsync.removeAll()
         // Before the hello, the new screen goes in the hello itself.
         if state == .ready || state == .authenticating { send(.displays(displays)) }
@@ -769,8 +804,12 @@ public final class CabooseDisplaySession: DisplaySession {
 
     // MARK: Pacing
 
-    public func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {
+    public func displayWillRefresh(_ displayID: Int?, targetTimestamp: CFTimeInterval) {
         guard state == .ready, has("vsync"), targetTimestamp > 0 else { return }
+        // Explicit IDs are never redirected. An unassigned view uses our announced
+        // primary, or the retained server primary only during empty-set bootstrap.
+        let ids = displays.isEmpty ? (server?.displays ?? []) : displays.map(\.id)
+        guard let display = displayID ?? ids.first, ids.contains(display) else { return }
         let micros = UInt64(targetTimestamp * 1_000_000)
         // Every window view on a screen ticks with the same timestamp; send each refresh once.
         if let last = lastVsync[display], micros < last + 1000 { return }
@@ -982,6 +1021,10 @@ public final class CabooseDisplaySession: DisplaySession {
             return textInput.enabled
         }
         guard let cursorName else { return nil }
+        // Xwayland supplies a cursor surface; the compositor currently represents
+        // that unclassified bitmap as "default", even when it draws an I-beam.
+        // It is not evidence that the focused X11 field rejects typing.
+        if cursorName == "default", let focusedWindow, xwaylandWindows.contains(focusedWindow) { return nil }
         return ["text", "vertical-text", "xterm", "ibeam"].contains(cursorName)
     }
 
@@ -1025,7 +1068,13 @@ private final class Incoming: @unchecked Sendable {
     }
 
     /// Everything that is not a picture, for the main actor.
-    func receive(_ data: Data) throws -> [ServerMessage] {
+    func receive(_ data: Data, receivedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) throws -> [ServerMessage] {
+        let incomingAt = ProcessInfo.processInfo.systemUptime
+        sound?.timing.update { $0.receive(at: receivedAt, incoming: incomingAt) }
+        defer {
+            let finishedAt = ProcessInfo.processInfo.systemUptime
+            sound?.timing.update { $0.finishIncoming(start: incomingAt, end: finishedAt) }
+        }
         var others: [ServerMessage] = []
         for frame in try parser.append(data) {
             let message = ServerMessage(frame)
@@ -1041,7 +1090,7 @@ private final class Incoming: @unchecked Sendable {
             case .videoPresent(let id, let seq, let pts):
                 videos[id]?.present(seq: seq, at: pts)
             case .audio(let packet):
-                sound?.play(packet)
+                sound?.play(packet, receivedAt: receivedAt)
             case .videoDestroy(let id):
                 // The server repainted the region into the window just before; the video goes once
                 // that picture is applied (and the view has shown it), never before.

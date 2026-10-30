@@ -310,9 +310,23 @@ it('relays phone events only to authenticated phone controls and serves staged f
     if (args.includes('read')) return 'YWJj'
     return ''
   }) }
+  let acknowledged = false
+  const files = createServer(async (request, response) => {
+    if (request.headers.authorization !== 'Bearer files-test') { response.writeHead(401).end(); return }
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = JSON.parse(Buffer.concat(chunks).toString())
+    if (request.url === '/events/presence') { response.end('{}'); return }
+    if (body.acks.includes('phone-receipt')) acknowledged = true
+    const records = !acknowledged && body.channels.includes('phone') ? [{ channel: 'phone', receipt: 'phone-receipt', record: event }] : []
+    const timer = setTimeout(() => response.end(JSON.stringify({ cursor: 'fixture', records })), 20)
+    response.on('close', () => clearTimeout(timer))
+  })
+  files.listen(0, '127.0.0.1'); await once(files, 'listening')
+  close.push(() => new Promise(resolve => { files.closeAllConnections(); files.close(() => resolve()) }))
   const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
-    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest, fileService: () => ({ url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'files-test' }) }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const app = createCabooseServer({ token: 'owner', settings, controller })
   app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
@@ -333,6 +347,8 @@ it('relays phone events only to authenticated phone controls and serves staged f
   await once(phone, 'open')
   await vi.waitFor(() => expect(received).toContainEqual(event))
   expect(seen).not.toContainEqual(event)
+  await vi.waitFor(() => expect(acknowledged).toBe(true))
+  expect(drains).toBe(0)
   expect(await (await fetch(`${base}/v1/phone/files/${id}`, { headers: auth })).json()).toEqual({ data: 'YWJj' })
   expect((await fetch(`${base}/v1/phone/files/bad`, { headers: auth })).status).toBe(400)
   phone.close(); control.close()
@@ -416,4 +432,22 @@ it('serves the MCP Library to an authorized client without ever returning its ke
   expect((await req('/v1/mcp/icons/../../etc')).status).toBe(404)
   expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
   expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
+})
+
+it('refuses a legacy file upload beyond 16 MiB with 413 before waking anything', async () => {
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  const oversized = await fetch(`${base}/v1/files`, { method: 'POST', headers, body: JSON.stringify({ name: 'big.bin', data: 'A'.repeat(16 * 1024 * 1024) }) })
+  expect(oversized.status).toBe(413)
+  expect((await oversized.json()).error).toMatch(/too large/)
+  expect(wake).not.toHaveBeenCalled()
+  // The rest of the body was let through unread, so the host still answers.
+  expect((await fetch(`${base}/v1/health`, { headers })).status).toBe(200)
 })

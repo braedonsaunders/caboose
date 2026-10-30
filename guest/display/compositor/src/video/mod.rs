@@ -290,6 +290,32 @@ mod tests {
     }
 
     #[test]
+    fn internal_binding_preserves_window_clip_and_decode_order() {
+        // Test-only stream construction: production OPEN always requests local decode.
+        let mut streams = Streams::default();
+        let s = streams.open(1, 7, Codec::H264, vec![100]).unwrap();
+        s.push(unit(40, true));
+        s.push(unit(41, false));
+        let rect = Rect::new(-80, 20, 640, 360);
+        let clip = Rect::new(0, 20, 560, 300);
+        let b = Binding { window: 123, rect, clip, announced: false };
+        let proto::Message::VideoCreate(create) = create_message(s, &b) else { panic!("video.create") };
+        assert_eq!(create.window, 123);
+        assert_eq!(create.rect, rect);
+        assert_eq!(create.clip, Some(clip));
+        assert_eq!(create.source, proto::VideoSource::Passthrough);
+        assert_eq!(s.resolve(41), None, "no present before a client receives frames");
+        s.first_sent = Some(40);
+        assert_eq!(s.resolve(41), Some(41));
+        s.first_sent = Some(42);
+        assert_eq!(s.resolve(41), None, "reconnect must not present an unreceived old frame");
+        let proto::Message::VideoFrame(frame) = frame_message(s.id, &s.gop[0]) else { panic!("video.frame") };
+        assert_eq!(frame.seq, 40);
+        assert!(frame.keyframe);
+        assert_eq!(frame.data, vec![40]);
+    }
+
+    #[test]
     fn repeated_client_failures_give_the_stream_up() {
         let mut streams = Streams::default();
         let s = streams.open(1, 7, Codec::Hevc, vec![]).unwrap();

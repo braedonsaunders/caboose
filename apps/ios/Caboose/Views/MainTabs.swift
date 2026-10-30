@@ -47,6 +47,7 @@ struct MainTabs: View {
         .environment(\.shellTabPlacement, placement)
         .environment(\.portraitDesktopChrome, portraitDesktop)
         .environment(\.shellBottomInset, windowBottomInset)
+        .environment(\.shellHasVerticalBar, placement == .system && barEdge != nil)
         .background { ShellWindowProbe(sizeChanged: { windowSize = $0 }, bottomInsetChanged: { windowBottomInset = $0 }).allowsHitTesting(false).accessibilityHidden(true) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .tint(Brand.amber)

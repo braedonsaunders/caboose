@@ -12,14 +12,17 @@ importers:
   apps/host:
     dependencies:
       '@braedonsaunders/appkit-auth':
-        specifier: ^0.1.6
-        version: 0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))
-      '@braedonsaunders/appkit-db':
         specifier: ^0.2.0
-        version: 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
+        version: 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))
+      '@braedonsaunders/appkit-db':
+        specifier: ^0.2.1
+        version: 0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
       '@braedonsaunders/appkit-desk':
         specifier: 0.11.0
         version: 0.11.0
+      '@braedonsaunders/appkit-emails':
+        specifier: 0.2.2
+        version: 0.2.2
       '@braedonsaunders/appkit-jobs':
         specifier: 0.3.0
         version: 0.3.0(@noble/hashes@2.4.0)
@@ -74,7 +77,7 @@ importers:
     dependencies:
       '@braedonsaunders/appkit-dashboard':
         specifier: ^4.0.0
-        version: 4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 4.0.0(@braedonsaunders/appkit-db@0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       '@braedonsaunders/appkit-tokens':
         specifier: ^0.2.0
         version: 0.2.0(tailwindcss@4.3.3)
@@ -396,11 +399,15 @@ packages:
     resolution: {integrity: sha512-H0gYz2CMTG1AF37n+uFpchtjBz8GOMOIqfhgBOGSEIcfL0U9LSeoOccvJNSApilTxUezOteLcOuBFJ1g+60wmg==}
     engines: {node: '>=22'}
 
-  '@braedonsaunders/appkit-auth@0.1.6':
-    resolution: {integrity: sha512-Pgtlftar/K6y6z7X5W3W94aSHeHrKwAuXcxd8S4d58UfhWr9AaYxZGaw3x82sbLpfvfvC6sRxUHEQWi/+lIJUg==}
+  '@braedonsaunders/appkit-auth@0.2.0':
+    resolution: {integrity: sha512-wqRjR+qdHvfuye3p3mFPbFtxDZKpp4dqW/B8KK1/VuRpRvpFIn1vkfaCHy4sNZiLx1Wd063DThFU2cxjRCTB6g==}
     engines: {node: '>=22'}
     peerDependencies:
       react: '>=18.2 <20'
+
+  '@braedonsaunders/appkit-crypto@0.3.0':
+    resolution: {integrity: sha512-7gpC5YjRpS8HzyOBpYNOCXFBZPbUbsabIWgPKV5OBTy0FUlVZEGl4RwiIFWSx+NrIwIimjBOZhhIQcltFZdbrw==}
+    engines: {node: '>=22'}
 
   '@braedonsaunders/appkit-dashboard@4.0.0':
     resolution: {integrity: sha512-6nAtmkpBTYJbhXs+j0QmFAJakp5YdhlU1k3Dd3VPdCnuTFAMRTv5tS9amgGa7/RQR/AQEMfqlpN7xGp3OXT9jQ==}
@@ -429,8 +436,8 @@ packages:
       react-grid-layout:
         optional: true
 
-  '@braedonsaunders/appkit-db@0.2.0':
-    resolution: {integrity: sha512-1oOjAFHSyWMF947dqzHeIorLh49nHhzFuMfP0LVlYcUys4RqOMT8XVKH8c8yrzpdB0cdhLjOvTpSTKJ40q8TBw==}
+  '@braedonsaunders/appkit-db@0.2.1':
+    resolution: {integrity: sha512-coJehiCDqcMeGWWsn6hsdIHmGgZDt89Q2dysdrUbNpm3Ogeor+Awu4LAHON5aeGUlUPAAXC47u5oIkO8g3Z9Gw==}
     engines: {node: '>=22'}
 
   '@braedonsaunders/appkit-desk@0.11.0':
@@ -443,6 +450,10 @@ packages:
 
   '@braedonsaunders/appkit-email-render@0.1.1':
     resolution: {integrity: sha512-ni9v1h+5FJDUHm7sjqAWw31bP6u2bwhQ6ESKP3CJXNdLj7S2hDlsp4Bw1oGLy6wM1p0aqmm/6OJnIOrGaKByaQ==}
+    engines: {node: '>=22'}
+
+  '@braedonsaunders/appkit-emails@0.2.2':
+    resolution: {integrity: sha512-6Z7pe6sjEG/ns6sxCjLC/nmo2Rc8qpcBvIoctWFQ1MBqyhoIJtL3NNtpl89n2d9mk9gpmxwFgazJzmv2kcCGEA==}
     engines: {node: '>=22'}
 
   '@braedonsaunders/appkit-jobs@0.3.0':
@@ -472,13 +483,6 @@ packages:
     engines: {node: '>=22'}
     peerDependencies:
       tailwindcss: ^4.0.0
-
-  '@braedonsaunders/appkit-ui@0.4.0':
-    resolution: {integrity: sha512-PBPADxpkKAhSbe9kVtWjNrQ+zuAAnOoaNjgQSOehlh28fe1xMS6ywNOVonZmN4WVNMObEoJqP/F1i/WLEB331Q==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      react: ^19.0.0
-      react-dom: ^19.0.0
 
   '@braedonsaunders/appkit-ui@0.4.1':
     resolution: {integrity: sha512-b0JlnsJz7kvPbSQbeA63PLKap79j5Rs7+TiqBQV492qzU+lFMeK5jHJdxVcnZ9ZpXhiXHff06aQGRg6bHFNSWA==}
@@ -1937,6 +1941,10 @@ packages:
     resolution: {integrity: sha512-OmO8+GM1JUZqXET720VrJCwkjUCXmCMQm0Z3UDDRbfNLHS4NEAvY60j5jiFv0tkKw2PNNlqOLhahVmwJIOLDIQ==}
     engines: {node: '>=18'}
 
+  nodemailer@10.3.1:
+    resolution: {integrity: sha512-uF0AFsJC07Y1vdW7p580DKAnh7rAO+4UPSSB3mDCPNDufoiaOebV6JmrzpxB14OjEEEiBsNdYoM2Y+fN8M7BBA==}
+    engines: {node: '>=20.0.0'}
+
   parse5@8.0.1:
     resolution: {integrity: sha512-z1e/HMG90obSGeidlli3hj7cbocou0/wa5HacvI3ASx34PecNjNQeaHNo5WIZpWofN9kgkqV1q5YvXe3F0FoPw==}
 
@@ -2713,10 +2721,10 @@ snapshots:
 
   '@braedonsaunders/appkit-analytics@0.2.0': {}
 
-  '@braedonsaunders/appkit-auth@0.1.6(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))':
+  '@braedonsaunders/appkit-auth@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(@types/react@19.3.0)(kysely@0.29.7)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))':
     dependencies:
-      '@braedonsaunders/appkit-db': 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
-      '@braedonsaunders/appkit-ui': 0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
+      '@braedonsaunders/appkit-db': 0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
+      '@braedonsaunders/appkit-ui': 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
       better-auth: 1.7.14(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(pg@8.23.1)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@3.2.7(@types/node@22.20.5)(jiti@2.7.0)(jsdom@29.1.1(@noble/hashes@2.4.0))(lightningcss@1.32.0)(tsx@4.23.15))
       drizzle-orm: 0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1)
       pg: 8.23.1
@@ -2769,18 +2777,20 @@ snapshots:
       - vitest
       - vue
 
-  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+  '@braedonsaunders/appkit-crypto@0.3.0': {}
+
+  '@braedonsaunders/appkit-dashboard@4.0.0(@braedonsaunders/appkit-db@0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7))(@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3))(drizzle-orm@0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1))(lucide-react@1.62.0(@types/react@19.3.0)(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
     dependencies:
       '@braedonsaunders/appkit-analytics': 0.2.0
     optionalDependencies:
-      '@braedonsaunders/appkit-db': 0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
+      '@braedonsaunders/appkit-db': 0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)
       '@braedonsaunders/appkit-ui': 0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)
       drizzle-orm: 0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1)
       lucide-react: 1.62.0(@types/react@19.3.0)(react@19.3.1)
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
 
-  '@braedonsaunders/appkit-db@0.2.0(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)':
+  '@braedonsaunders/appkit-db@0.2.1(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)':
     dependencies:
       drizzle-orm: 0.45.4(@electric-sql/pglite@0.5.13)(@types/pg@8.23.1)(kysely@0.29.7)(pg@8.23.1)
       pg: 8.23.1
@@ -2827,6 +2837,11 @@ snapshots:
       - '@noble/hashes'
       - canvas
 
+  '@braedonsaunders/appkit-emails@0.2.2':
+    dependencies:
+      '@braedonsaunders/appkit-crypto': 0.3.0
+      nodemailer: 10.3.1
+
   '@braedonsaunders/appkit-jobs@0.3.0(@noble/hashes@2.4.0)':
     dependencies:
       '@braedonsaunders/appkit-egress-proxy': 0.2.1
@@ -2854,21 +2869,6 @@ snapshots:
   '@braedonsaunders/appkit-tokens@0.2.0(tailwindcss@4.3.3)':
     dependencies:
       tailwindcss: 4.3.3
-
-  '@braedonsaunders/appkit-ui@0.4.0(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)':
-    dependencies:
-      '@braedonsaunders/appkit-tokens': 0.2.0(tailwindcss@4.3.3)
-      class-variance-authority: 0.7.1
-      clsx: 2.1.1
-      framer-motion: 12.43.0(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
-      lucide-react: 1.62.0(@types/react@19.3.0)(react@19.3.1)
-      react: 19.3.1
-      react-dom: 19.3.1(react@19.3.1)
-      tailwind-merge: 3.7.0
-    transitivePeerDependencies:
-      - '@emotion/is-prop-valid'
-      - '@types/react'
-      - tailwindcss
 
   '@braedonsaunders/appkit-ui@0.4.1(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(tailwindcss@4.3.3)':
     dependencies:
@@ -3967,6 +3967,8 @@ snapshots:
     optional: true
 
   node-releases@2.0.60: {}
+
+  nodemailer@10.3.1: {}
 
   parse5@8.0.1:
     dependencies:

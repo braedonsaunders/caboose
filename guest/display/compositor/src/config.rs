@@ -19,6 +19,7 @@ OPTIONS:
     --no-xwayland          do not start Xwayland
     --no-audio             do not run PulseAudio or send sound
     --no-games             do not listen for game launchers (the agent seat)
+    --no-devices           do not accept the phone's hardware as devices (the agent seat)
     --gpu-spool-limit BYTES  the most of one GPU stream kept on disk; a stream that outgrows
                            it ends [default: 2147483648]
     --audio-bitrate BPS    Opus bitrate [default: 128000]
@@ -88,6 +89,8 @@ pub struct Config {
     pub audio_bitrate: u32,
     /// Listen on the game socket and hand games off to clients that run them.
     pub games: bool,
+    /// Make the phone's hardware the computer's devices (docs/devices.md).
+    pub devices: bool,
     /// The most of one GPU stream kept in its spool (docs/gpu-stream.md).
     pub gpu_spool_limit: u64,
     pub env_file: Option<PathBuf>,
@@ -114,6 +117,7 @@ impl Default for Config {
             audio: true,
             audio_bitrate: 128_000,
             games: true,
+            devices: true,
             gpu_spool_limit: 2 << 30,
             env_file: None,
             renderer: RendererChoice::Pixman,
@@ -165,6 +169,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--no-xwayland" => config.x_display = None,
             "--no-audio" => config.audio = false,
             "--no-games" => config.games = false,
+            "--no-devices" => config.devices = false,
             "--gpu-spool-limit" => config.gpu_spool_limit = number(value(&mut args, &arg)?, &arg)?,
             "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
@@ -248,6 +253,8 @@ mod tests {
         assert_ne!(owner.instance_dir(runtime), agent.instance_dir(runtime));
         assert!(owner.games);
         assert!(!run(&["--no-games"]).games);
+        assert!(owner.devices);
+        assert!(!run(&["--no-devices"]).devices);
         assert_eq!(owner.gpu_spool_limit, 2 << 30);
         assert_eq!(run(&["--gpu-spool-limit", "1048576"]).gpu_spool_limit, 1 << 20);
     }

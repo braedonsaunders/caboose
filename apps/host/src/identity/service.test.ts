@@ -113,7 +113,7 @@ describe('tenants, administrators and invitations', () => {
     await expect(identity.tenant(family.id)).rejects.toThrow(/not found/)
   })
 
-  it('invites an administrator by link, once, and lets an existing account join with its password', async () => {
+  it('invites an administrator by link, once, and requires completed sign-in for an existing account', async () => {
     const team = await identity.createTenant({ name: 'Team' })
     const { token, invite } = await identity.invite(team.id, { email: 'Sam@Example.com' }, null)
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
@@ -130,8 +130,10 @@ describe('tenants, administrators and invitations', () => {
     // The owner joins too, with the password they already have.
     const second = await identity.invite(team.id, { email: 'owner@example.com' }, sam!.userId)
     expect((await identity.inspectInvite(second.token)).accountExists).toBe(true)
-    await expect(identity.acceptInvite(second.token, { password: 'not it at all' })).rejects.toThrow(/not the password/)
-    await identity.acceptInvite(second.token, { password: 'correct horse' })
+    await expect(identity.acceptInvite(second.token, { password: 'correct horse' })).rejects.toThrow(/Sign in/)
+    await expect(identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(signedIn) }))).rejects.toThrow(/Sign in/)
+    const ownerSession = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+    await identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(ownerSession) }))
     expect((await identity.administrators(team.id)).map(admin => admin.email)).toEqual(['sam@example.com', 'owner@example.com'])
 
     const revoked = await identity.invite(team.id, { email: 'late@example.com' }, null)
@@ -146,24 +148,63 @@ describe('tenants, administrators and invitations', () => {
 })
 
 describe('sign-in throttling', () => {
+  const request = (address: string, headers: Record<string, string> = {}) => ({ headers, socket: { remoteAddress: address } }) as never
+
   it('lets twenty attempts through in ten minutes from one address, then waits', async () => {
     const { SignInThrottle, isSignInAttempt } = await import('./routes.js')
     let now = 0
-    const throttle = new SignInThrottle(20, 600_000, () => now)
-    const from = (address: string) => ({ headers: {}, socket: { remoteAddress: address } }) as never
-    for (let attempt = 0; attempt < 20; attempt++) expect(throttle.allow(from('203.0.113.1'))).toBe(true)
-    expect(throttle.allow(from('203.0.113.1'))).toBe(false)
-    expect(throttle.allow(from('203.0.113.2'))).toBe(true)
+    const throttle = new SignInThrottle({ now: () => now })
+    for (let attempt = 0; attempt < 20; attempt++) expect(throttle.allow(request('203.0.113.1'))).toBe(true)
+    expect(throttle.allow(request('203.0.113.1'))).toBe(false)
+    expect(throttle.allow(request('203.0.113.2'))).toBe(true)
     // A remote client cannot dodge the count by inventing a forwarded address.
-    expect(throttle.allow({ headers: { 'x-forwarded-for': '198.51.100.7' }, socket: { remoteAddress: '203.0.113.1' } } as never)).toBe(false)
+    expect(throttle.allow(request('203.0.113.1', { 'x-forwarded-for': '198.51.100.7' }))).toBe(false)
     // Behind a proxy on this machine, the address the proxy saw is the client.
-    expect(throttle.allow({ headers: { 'x-forwarded-for': '198.51.100.7' }, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe(true)
+    expect(throttle.allow(request('127.0.0.1', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
     now += 600_000
-    expect(throttle.allow(from('203.0.113.1'))).toBe(true)
+    expect(throttle.allow(request('203.0.113.1'))).toBe(true)
     expect(isSignInAttempt('POST', '/v1/auth/sign-in/email')).toBe(true)
     expect(isSignInAttempt('POST', '/v1/invites/abc/accept')).toBe(true)
     expect(isSignInAttempt('POST', '/v1/setup')).toBe(true)
     expect(isSignInAttempt('GET', '/v1/setup')).toBe(false)
     expect(isSignInAttempt('POST', '/v1/auth/sign-out')).toBe(false)
   })
+
+  it('counts the forwarded client behind a trusted proxy, and the peer behind anyone else', async () => {
+    const { SignInThrottle } = await import('./routes.js')
+    const { parseTrustedProxies } = await import('../proxies.js')
+    const throttle = new SignInThrottle({ limit: 2, trustedProxies: parseTrustedProxies('172.31.250.0/24, 2001:db8::/32') })
+    // Caddy in another container: each internet client gets its own count.
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(false)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.8' }))).toBe(true)
+    // The same client through the proxy's IPv4-mapped socket, and through two of our proxies.
+    expect(throttle.allow(request('::ffff:172.31.250.4', { 'x-forwarded-for': '198.51.100.7, 172.31.250.3' }))).toBe(false)
+    // The client's own forwarded entries sit to the left of what the proxy appended.
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '10.9.9.9, 198.51.100.7' }))).toBe(false)
+    // An IPv6 proxy and an IPv6 client.
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(true)
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(true)
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(false)
+    // A peer outside the ranges is its own client, whatever it forwards.
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.9' }))).toBe(true)
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.10' }))).toBe(false)
+    expect(throttle.allow(request('2001:db9::1', { 'x-forwarded-for': '198.51.100.11' }))).toBe(true)
+  })
+})
+
+
+it('socket authorization reads do not refresh session lifetime', async () => {
+  const signedIn = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+  const headers = new Headers({ cookie: cookieFrom(signedIn) })
+  const principal = await identity.principal(headers)
+  const expires = new Date(Date.now() + 60 * 60 * 1000)
+  await database.pool.query("UPDATE sessions SET expires_at=$1, updated_at=now()-interval '2 days' WHERE user_id=$2", [expires, principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeDefined()
+  const rows = await database.pool.query('SELECT expires_at FROM sessions WHERE user_id=$1', [principal!.userId])
+  expect(rows.rows.every(row => row.expires_at.getTime() === expires.getTime())).toBe(true)
+  await database.pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE user_id=$1", [principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeUndefined()
 })

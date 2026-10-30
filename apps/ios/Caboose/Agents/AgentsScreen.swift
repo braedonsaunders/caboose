@@ -276,7 +276,7 @@ private struct NewChat: View {
                             .frame(minHeight: 44)
                         }
                         .buttonStyle(.plain)
-                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+                        .glassEffect(.regular.interactive(), in: .surface(cornerRadius: 16))
                     }
                 }
                 .frame(maxWidth: 420)
@@ -314,7 +314,7 @@ private struct SetupCard: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .rect(cornerRadius: 22))
+        .glassEffect(.regular.tint(Brand.amber.opacity(0.10)), in: .surface(cornerRadius: 22))
         .padding(.top, 12)
     }
 }

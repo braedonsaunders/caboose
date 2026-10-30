@@ -1,9 +1,9 @@
 import * as React from 'react'
 import type { SidebarNavGroup } from '@braedonsaunders/appkit-ui'
-import { Building2, Gauge, Monitor, Server, Users } from 'lucide-react'
+import { Building2, Gauge, Monitor, Server, ShieldCheck, ChartNoAxesCombined, Users } from 'lucide-react'
 
 /** The computer's page is split into tabs, each with its own address. */
-export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'settings'
+export type ComputerTab = 'overview' | 'files' | 'apps' | 'phones' | 'backups' | 'settings'
 
 export type Route =
   | { page: 'overview' }
@@ -12,6 +12,9 @@ export type Route =
   | { page: 'people' }
   | { page: 'tenants' }
   | { page: 'host' }
+  | { page: 'usage' }
+  | { page: 'security' }
+  | { page: 'recover' }
   /** Pages outside the console: setting the host up, and accepting an invitation. */
   | { page: 'setup' }
   | { page: 'invite' }
@@ -21,6 +24,7 @@ export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
   { key: 'files', label: 'Files' },
   { key: 'apps', label: 'Apps' },
   { key: 'phones', label: 'Phones' },
+  { key: 'backups', label: 'Backups' },
   { key: 'settings', label: 'Settings' },
 ]
 
@@ -40,15 +44,17 @@ const icon = (Icon: typeof Server) => React.createElement(Icon, { className: 'si
  * Tenants and Host are the operator's; a tenant's administrators see their own computers and
  * people.
  */
-export function navigationGroups(operator: boolean): SidebarNavGroup[] {
+export function navigationGroups(operator: boolean, account = false): SidebarNavGroup[] {
   return [
     { href: '/', label: 'Overview', icon: icon(Gauge), exact: true, mobile: true },
     { href: '/computers', label: 'Computers', icon: icon(Monitor), mobile: true },
+    { href: '/usage', label: 'Usage', icon: icon(ChartNoAxesCombined), mobile: true },
     { href: '/people', label: 'People', icon: icon(Users), mobile: true },
     ...(operator ? [
       { href: '/tenants', label: 'Tenants', icon: icon(Building2), mobile: true },
       { href: '/host', label: 'Host', icon: icon(Server), mobile: true },
     ] : []),
+    ...(account ? [{ href: '/security', label: 'Account security', icon: icon(ShieldCheck), mobile: true }] : []),
   ].map(item => ({ id: item.href === '/' ? 'overview' : item.href.slice(1), label: item.label, items: [item] }))
 }
 
@@ -60,6 +66,9 @@ export function parseRoute(raw: string): Route {
   const clean = raw.split('?')[0]?.replace(/\/+$/, '') || '/'
   if (clean === '/host' || clean === '/system' || clean.startsWith('/system/')) return { page: 'host' }
   if (clean === '/computers') return { page: 'computers' }
+  if (clean === '/usage') return { page: 'usage' }
+  if (clean === '/security') return { page: 'security' }
+  if (clean === '/recover') return { page: 'recover' }
   if (clean === '/people') return { page: 'people' }
   if (clean === '/tenants') return { page: 'tenants' }
   if (clean === '/setup') return { page: 'setup' }
@@ -76,6 +85,9 @@ export function routeHref(route: Route): string {
     case 'overview': return '/'
     case 'computers': return '/computers'
     case 'host': return '/host'
+    case 'usage': return '/usage'
+    case 'security': return '/security'
+    case 'recover': return '/recover'
     case 'people': return '/people'
     case 'tenants': return '/tenants'
     case 'setup': return '/setup'

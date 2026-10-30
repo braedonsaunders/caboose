@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { Alert, AlertDescription, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Label } from '@braedonsaunders/appkit-ui'
 import { CabooseApiError, CabooseClient } from '../api.js'
+import { securityRequest } from '../security-api.js'
 import { Wordmark } from '../brand/Logo.js'
 import { errorMessage } from '../components/common.js'
 
@@ -9,7 +10,11 @@ import { errorMessage } from '../components/common.js'
  * the installers and for a host whose accounts are out of reach; it is checked against the
  * host before it is kept, only for this tab, and never put in a URL.
  */
-export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } | { kind: 'token'; token: string }) => void }) {
+export function SignIn({ onSignIn, accountOnly = false }: { accountOnly?: boolean; onSignIn: (session: { kind: 'account' } | { kind: 'token'; token: string }) => void }) {
+  const [challenge, setChallenge] = React.useState(false)
+  const [recoveryCode, setRecoveryCode] = React.useState(false)
+  const [code, setCode] = React.useState('')
+  const [recoveryAvailable, setRecoveryAvailable] = React.useState(false)
   const [mode, setMode] = React.useState<'account' | 'token'>('account')
   const [email, setEmail] = React.useState('')
   const [password, setPassword] = React.useState('')
@@ -19,6 +24,7 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
   const [unclaimed, setUnclaimed] = React.useState(false)
 
   React.useEffect(() => {
+    void securityRequest<{ recoveryAvailable: boolean }>('security-config').then(value => setRecoveryAvailable(value.recoveryAvailable)).catch(() => {})
     new CabooseClient(() => '').setupStatus().then(
       status => setUnclaimed(!status.claimed),
       () => setUnclaimed(false),
@@ -32,7 +38,12 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
     try {
       if (mode === 'account') {
         const client = new CabooseClient(() => '')
-        await client.signIn(email.trim(), password)
+        if (challenge) await securityRequest(recoveryCode ? 'two-factor/verify-backup-code' : 'two-factor/verify-totp', { code, trustDevice: false })
+        else {
+          const result = await securityRequest<{ twoFactorRedirect?: boolean }>('sign-in/email', { email: email.trim(), password })
+          setPassword('')
+          if (result.twoFactorRedirect) { setChallenge(true); return }
+        }
         await client.me()
         onSignIn({ kind: 'account' })
       } else {
@@ -72,7 +83,7 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
             </Alert>
           ) : null}
           <form className="space-y-4" onSubmit={submit}>
-            {mode === 'account' ? (
+            {mode === 'account' && challenge ? (<div className="space-y-2"><Label htmlFor="mfa-code">{recoveryCode ? 'Recovery code' : 'Authenticator code'}</Label><Input id="mfa-code" autoComplete="one-time-code" value={code} onChange={event => setCode(event.target.value)} /><Button type="button" variant="ghost" onClick={() => { setRecoveryCode(!recoveryCode); setCode('') }}>{recoveryCode ? 'Use authenticator' : 'Use a recovery code'}</Button></div>) : mode === 'account' ? (
               <>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
@@ -97,18 +108,19 @@ export function SignIn({ onSignIn }: { onSignIn: (session: { kind: 'account' } |
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : null}
-            <Button type="submit" className="w-full" disabled={checking || (mode === 'account' ? !email.trim() || !password : !token.trim())}>
+            <Button type="submit" className="w-full" disabled={checking || (mode === 'account' ? challenge ? !code : !email.trim() || !password : !token.trim())}>
               {checking ? 'Signing in…' : 'Sign in'}
             </Button>
           </form>
-          <Button
+          {recoveryAvailable && <a className="block text-sm text-primary" href="/recover">Forgot password?</a>}
+          {!accountOnly && <Button
             variant="ghost"
             size="sm"
             className="w-full"
-            onClick={() => { setMode(mode === 'account' ? 'token' : 'account'); setError(null) }}
+            onClick={() => { setMode(mode === 'account' ? 'token' : 'account'); setChallenge(false); setCode(''); setError(null) }}
           >
             {mode === 'account' ? 'Use the owner token instead' : 'Sign in with an account instead'}
-          </Button>
+          </Button>}
         </CardContent>
       </Card>
     </main>

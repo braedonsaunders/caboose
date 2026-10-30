@@ -93,6 +93,12 @@ public struct TypingBuffer: Equatable, Sendable {
         replace(marked ?? selection, with: string)
     }
 
+    /// AutoFill of a whole value (a password, a one-time code): it replaces everything the
+    /// buffer holds, as filling a field replaces its text, and leaves the caret after it.
+    public mutating func fill(_ string: String) -> [Edit] {
+        replace(NSRange(location: 0, length: length), with: string)
+    }
+
     /// The delete key. With nothing to delete locally it still deletes remotely, since
     /// the remote field has text from before the buffer began.
     public mutating func deleteBackward() -> [Edit] {

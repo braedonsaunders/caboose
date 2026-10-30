@@ -108,3 +108,36 @@ targets:
         PRODUCT_NAME: CabooseWidgets
         INFOPLIST_FILE: Widgets/Info.plist
         SKIP_INSTALL: YES
+
+  CabooseGeometryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: GeometryTests
+    dependencies:
+      - target: Caboose
+      - package: CabooseKit
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Caboose.app/Caboose
+        BUNDLE_LOADER: $(TEST_HOST)
+        PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.geometry-tests
+
+schemes:
+  Caboose:
+    build:
+      targets:
+        Caboose: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  CabooseGeometry:
+    build:
+      targets:
+        Caboose: all
+        CabooseGeometryTests: [test]
+    test:
+      targets:
+        - CabooseGeometryTests

@@ -185,6 +185,7 @@ impl Hello {
 
 /// `mode` with its header. `declined` (sent only true) says the client could not run the game
 /// it was given, so a launcher with a native build runs it now.
+#[cfg(test)]
 pub fn mode_message(mode: Mode, window: Option<u64>, declined: bool) -> Vec<u8> {
     mode_message_with_grant(mode, window, declined, None)
 }

@@ -87,6 +87,16 @@ check 'script navigation away refused' yes "$(py "d['stayed']" "$probe")"
 check 'classic script and UTF-8 in a page without meta charset' yes "$(py "d['frameTitle'] == 'Grüße ✓'" "$probe")"
 check 'frame request ignored' test ! -e "$files/frame-mark"
 check 'console log written' test -f "$home/.local/share/caboose/apps/runtime-check/console.log"
+detail="$(py "d.get('net')" "$probe")"
+check 'page fetch without CORS consent fails' yes "$(py "d['directFetch'] == 'TypeError'" "$probe")"
+check 'caboose.fetch reads it with method, body and headers' yes "$(py "d['net']['status'] == 200 and d['net']['method'] == 'POST' and d['net']['body'] == 'hi' and d['net']['headers'].get('x-probe') == '1'" "$probe")"
+check 'reserved headers reach the server' yes "$(py "d['net']['headers'].get('user-agent') == 'probe-agent' and d['net']['headers'].get('cookie') == 'c=1'" "$probe")"
+check 'the final URL is reported' yes "$(py "d['net']['url'] == 'http://127.0.0.1:18081/echo'" "$probe")"
+detail="$(py "d.get('netImage')" "$probe")"
+check 'an image loads through caboose.net.url' yes "$(py "d['netImage'] == 1" "$probe")"
+detail="$(py "d.get('netAudio')" "$probe")"
+check 'an audio element streams through caboose.net.url' yes "$(py "d['netAudio'] == 30" "$probe")"
+check 'an unreachable server is a 502' yes "$(py "d['netRefused'] == 502" "$probe")"
 check 'sleeper of load 1 running' running 1
 check 'exec with blocked input of load 1 running' pgrep -f '^caboose-check-stuck-1' >/dev/null
 

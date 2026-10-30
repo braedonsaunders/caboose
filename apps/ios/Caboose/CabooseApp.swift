@@ -8,6 +8,27 @@ struct CabooseApp: App {
     @State private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        #if DEBUG && canImport(CabooseGPUStream)
+        if ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPABILITIES"] == "1" {
+            Task.detached(priority: .utility) {
+                let directory = URL.cachesDirectory.appending(path: "CabooseDiagnostics", directoryHint: .isDirectory)
+                do {
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let output = directory.appending(path: "gpu-capabilities.json")
+                    if FileManager.default.fileExists(atPath: output.path) {
+                        try FileManager.default.removeItem(at: output)
+                    }
+                    let report = try GPUDeviceCapabilities.queryJSON()
+                    try report.write(to: output, options: .atomic)
+                } catch {
+                    NSLog("GPU capability diagnostic failed: %@", String(describing: error))
+                }
+            }
+        }
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -58,6 +79,11 @@ struct RootView: View {
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .overlay(alignment: .top) { if model.phase == .ready { ConnectionBanner() } }
         .animation(.snappy, value: model.link.status)
+        .overlay(alignment: .bottom) {
+            // Which of the phone's hardware a computer app is using now (docs/devices.md).
+            if model.phase == .ready { DeviceInUseIndicator(devices: model.devices).padding(.bottom, 6).allowsHitTesting(false) }
+        }
+        .animation(.snappy, value: model.devices.inUse)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }
@@ -262,10 +288,10 @@ struct SetupView: View {
             VStack(spacing: 12) {
                 NativeTextInput("Computer address — https://…", text: $host, keyboard: .URL, capitalization: .none, correction: false, contentType: .URL)
                     .padding(14)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .glassEffect(.regular, in: .surface(cornerRadius: 14))
                 NativeTextInput("Pairing code or sign-in token", text: $token, secure: true, capitalization: .none, correction: false)
                     .padding(14)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 14))
+                    .glassEffect(.regular, in: .surface(cornerRadius: 14))
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading)
                 }

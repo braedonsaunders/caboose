@@ -15,7 +15,7 @@ SRC := src/driver.c src/surface.c src/sink.c src/local.c src/bits.c src/marker.c
        src/h264.c src/hevc.c src/vp9.c src/av1.c
 OBJ := $(SRC:src/%.c=$(BUILD)/%.o)
 
-all: $(BUILD)/caboose_drv_video.so $(BUILD)/unit $(BUILD)/cbva-capture $(BUILD)/cbva-detect
+all: $(BUILD)/caboose_drv_video.so $(BUILD)/unit $(BUILD)/av1-state $(BUILD)/cbva-capture $(BUILD)/cbva-detect
 
 $(BUILD)/%.o: src/%.c src/*.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -c $< -o $@
@@ -25,6 +25,9 @@ $(BUILD)/caboose_drv_video.so: $(OBJ)
 
 $(BUILD)/unit: tests/unit.c $(BUILD)/bits.o $(BUILD)/marker.o
 	$(CC) $(ALL_CFLAGS) -Isrc -o $@ $^ -lm
+
+$(BUILD)/av1-state: tests/av1-state.c src/av1.c src/*.h $(BUILD)/bits.o
+	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/av1-state.c $(BUILD)/bits.o
 
 $(BUILD)/cbva-capture: tools/cbva-capture.c src/proto.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -Isrc -o $@ $<
@@ -37,6 +40,7 @@ $(BUILD):
 
 check: all
 	$(BUILD)/unit
+	$(BUILD)/av1-state
 	CBVA_BUILD=$(BUILD) tests/roundtrip.sh
 
 install: $(BUILD)/caboose_drv_video.so

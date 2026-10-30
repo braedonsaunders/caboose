@@ -26,9 +26,9 @@ ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
 
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils zerofree ca-certificates curl && rm -rf /var/lib/apt/lists/*
-COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh /builder/
-COPY image/initramfs/caboose-system /builder/caboose-system
+RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils btrfs-progs ca-certificates curl && rm -rf /var/lib/apt/lists/*
+COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh image/storage-layout.sh /builder/
+COPY image/initramfs/caboose-system image/initramfs/caboose-storage /builder/
 COPY components /builder/components
 COPY template/caboose-template.py template/caboose-template.target /builder/template/
 COPY keyring /builder/keyring
@@ -39,11 +39,12 @@ COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 
 COPY phone /builder/phone
+COPY devices /builder/devices
 COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
 COPY game /builder/game
 COPY gpu /builder/gpu
-COPY apps/install.sh apps/caboose-app apps/appcore.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
+COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY --from=gpu /out/caboose-gpu /builder/display/caboose-gpu
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/

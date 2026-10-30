@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
+import { ThemeProvider } from '@braedonsaunders/appkit-ui'
 import { App } from './App.js'
 import { theme } from './theme.js'
 
@@ -15,7 +16,7 @@ try {
           : 'light'
         : theme.defaultTheme
   document.documentElement.classList.toggle('dark', resolved === 'dark')
-  document.documentElement.style.colorScheme = resolved
+  document.documentElement.classList.toggle('light', resolved === 'light')
 } catch {
   // Keep default dark class when localStorage is unavailable.
 }
@@ -27,6 +28,6 @@ if (!container) {
 
 createRoot(container).render(
   <React.StrictMode>
-    <App />
+    <ThemeProvider {...theme}><App /></ThemeProvider>
   </React.StrictMode>,
 )

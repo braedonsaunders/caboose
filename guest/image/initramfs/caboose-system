@@ -5,6 +5,15 @@ prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
 . /scripts/functions
 [ -e "$rootmnt/etc/caboose-split-system" ] || exit 0
+# Migration can install this hook alone on an existing ext4 root. Apply the
+# policy here as well as caboose-storage, without requiring that newer hook.
+while read -r _device target filesystem _options _rest; do
+  if [ "$target" = "$rootmnt" ] && [ "$filesystem" = btrfs ]; then
+    mount -o remount,compress-force=zstd:1,discard=async,noatime "$_device" "$rootmnt" ||
+      panic 'Cannot enable Caboose root compression and discard'
+    break
+  fi
+done < /proc/mounts
 modprobe erofs || panic 'Caboose system: erofs module unavailable'
 modprobe overlay || panic 'Caboose system: overlay module unavailable'
 # The immutable system image is the first extra virtio block device.

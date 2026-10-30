@@ -5,8 +5,9 @@ import UIKit
 /// The on-screen controller: below Laptop's hinge in Gamepad mode, and across the whole phone
 /// while a display shows the desktop. It drives the window the keyboard would type into. A
 /// game this device runs gets it as a controller through its Gamepad API; any other window gets
-/// the keys assigned in Customize, held while the control is. Each app keeps the controller type
-/// last chosen for it.
+/// the keys assigned in Customize, held while the control is, or the computer's gamepad device
+/// for it when the owner chooses a Linux controller. Each app keeps the controller type last
+/// chosen for it.
 struct GamepadPanel: View {
     @Environment(AppModel.self) private var model
     @AppStorage("caboose.laptop.gamepad") private var stored = Data()
@@ -59,7 +60,7 @@ struct GamepadPanel: View {
                     .allowsHitTesting(false)
                 GamepadTouchArea(layout: layout, sticks: settings.sticks, enabled: enabled && !customizing, ownership: ownership) { state, centers in
                     stickCenters = centers
-                    driver.apply(state, to: target(), session: model.session, settings: settings)
+                    driver.apply(state, to: target(), session: model.session, settings: settings, devices: model.devices)
                 }
                 hud(style: style, app: app, window: current, settings: settings)
                     .frame(width: max(0, layout.hud.width), height: max(0, layout.hud.height))
@@ -79,7 +80,12 @@ struct GamepadPanel: View {
         .onChange(of: destination(current)) { letGo() }
         .onChange(of: stored) { letGo() }
         .onChange(of: customizing) { _, open in if open { letGo() } }
-        .onDisappear { driver.release() }
+        // The computer has a gamepad for the pad while it shows with the Linux controller output.
+        .onChange(of: settings.windows, initial: true) { _, route in model.devices.setScreenGamepad(route == .controller) }
+        .onDisappear {
+            driver.release()
+            model.devices.setScreenGamepad(false)
+        }
     }
 
     /// The pad's own strip: the controller type, where the pad goes, Customize and, for a pad
@@ -102,7 +108,8 @@ struct GamepadPanel: View {
             }
             .accessibilityLabel("Controller type")
             .accessibilityValue(style.title)
-            Text(driver.destination(of: window, settings: settings, name: window.map { model.appName(for: $0) }))
+            Text(driver.destination(of: window, settings: settings, name: window.map { model.appName(for: $0) },
+                                    linux: model.devices.screenGamepadOffered))
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -136,6 +143,8 @@ final class GamepadDriver {
     @ObservationIgnored private weak var window: RemoteWindow?
     @ObservationIgnored private weak var session: (any DisplaySession)?
     @ObservationIgnored private weak var game: RemoteGame?
+    /// Where the pad reaches the computer as a gamepad, while it does.
+    @ObservationIgnored private weak var devices: DeviceCenter?
     /// What the keys held in `window` were pressed for.
     @ObservationIgnored private var keyState = GameGamepadState()
     @ObservationIgnored private var keySettings = OnScreenGamepad.Settings()
@@ -154,14 +163,16 @@ final class GamepadDriver {
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
-    /// What the strip says the pad drives.
-    func destination(of window: RemoteWindow?, settings: OnScreenGamepad.Settings, name: String?) -> String {
+    /// What the strip says the pad drives; `linux` when the computer has the pad's gamepad.
+    func destination(of window: RemoteWindow?, settings: OnScreenGamepad.Settings, name: String?, linux: Bool) -> String {
         guard let window else { return "Choose a window to play" }
         let title = window.title.isEmpty ? (name ?? "this window") : window.title
-        return window.game.map { $0.webview == nil } == true && settings.games == .controller ? "Controller for \(title)" : "Keys to \(title)"
+        if window.game.map({ $0.webview == nil }) == true && settings.games == .controller { return "Controller for \(title)" }
+        return settings.windows == .controller && linux ? "Linux controller for \(title)" : "Keys to \(title)"
     }
 
-    func apply(_ new: GameGamepadState, to target: RemoteWindow?, session: (any DisplaySession)?, settings: OnScreenGamepad.Settings) {
+    func apply(_ new: GameGamepadState, to target: RemoteWindow?, session: (any DisplaySession)?, settings: OnScreenGamepad.Settings,
+               devices: DeviceCenter) {
         if target !== window || session !== self.session || settings != keySettings {
             release()
             window = target
@@ -183,6 +194,11 @@ final class GamepadDriver {
             game.gamepad = new
             return
         }
+        if settings.windows == .controller, devices.screenGamepadOffered {
+            self.devices = devices
+            devices.screenGamepad(new)
+            return
+        }
         for change in OnScreenGamepad.keyChanges(from: keyState, to: new, settings: settings) {
             guard let stroke = OnScreenGamepad.stroke(for: change.name) else { continue }
             session.key(stroke, pressed: change.pressed, in: target)
@@ -194,6 +210,8 @@ final class GamepadDriver {
     func release() {
         game?.gamepad = nil
         game = nil
+        devices?.screenGamepad(GameGamepadState())
+        devices = nil
         if let window, let session, session.state == .ready, session.windows[window.id] === window {
             for change in OnScreenGamepad.keyChanges(from: keyState, to: GameGamepadState(), settings: keySettings) {
                 guard let stroke = OnScreenGamepad.stroke(for: change.name) else { continue }

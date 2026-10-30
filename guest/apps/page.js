@@ -3,6 +3,8 @@
 // capability the app's manifest does not declare are refused by the runtime.
 (() => {
   const app = Object.freeze(__CABOOSE_APP__)
+  // The app's network origin (net.py on the computer, AgentAppNet on a device), or null.
+  const netBase = __CABOOSE_NET__
   const pending = new Map()
   const processes = new Map()
   let next = 1
@@ -99,6 +101,44 @@
     remove: (path, options = {}) => call('files.remove', { path, recursive: options.recursive === true }),
   })
 
+  // Names a page's script may not set on a request; caboose.fetch sends them under
+  // X-Caboose-Header-<name>, which the network origin renames.
+  const reserved = /^(accept-charset|accept-encoding|connection|content-length|cookie2?|date|dnt|expect|host|keep-alive|origin|referer|te|trailer|transfer-encoding|upgrade|user-agent|via|proxy-.*|sec-.*)$/i
+
+  /** The URL of any http or https resource through the app's network origin. */
+  function netURL(target) {
+    if (netBase === null) {
+      throw new Error('This app does not declare the "net" capability in app.json; add it and start the app again')
+    }
+    const url = new URL(String(target), location.href)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new TypeError('caboose.net reaches http and https URLs')
+    if (url.username || url.password) throw new TypeError('Send credentials in a header, not in the URL')
+    return `${netBase}${url.protocol.slice(0, -1)}/${encodeURIComponent(url.host)}${url.pathname}${url.search}`
+  }
+
+  /** fetch, for any http or https URL: no CORS, any headers, streamed. */
+  async function netFetch(input, init = {}) {
+    const request = input instanceof Request ? input : null
+    const headers = new Headers()
+    for (const [name, value] of new Headers(init.headers ?? request?.headers ?? {})) {
+      headers.append(reserved.test(name) ? `X-Caboose-Header-${name}` : name, value)
+    }
+    let body = init.body
+    if (body === undefined && request && request.method !== 'GET' && request.method !== 'HEAD') body = await request.arrayBuffer()
+    return fetch(netURL(request ? request.url : input), {
+      method: init.method ?? request?.method ?? 'GET',
+      headers,
+      body,
+      signal: init.signal ?? request?.signal,
+      cache: init.cache ?? 'no-store',
+      credentials: 'omit',
+      redirect: 'follow',
+      referrerPolicy: 'no-referrer',
+    })
+  }
+
+  const net = Object.freeze({ url: netURL, fetch: netFetch })
+
   Object.defineProperty(window, 'caboose', {
     value: Object.freeze({
       app,
@@ -107,6 +147,8 @@
       files,
       notify: (title, body = '') => call('notify', typeof title === 'object' ? title : { title, body }),
       open: target => call('open', { target }),
+      fetch: netFetch,
+      net,
     }),
   })
 })()

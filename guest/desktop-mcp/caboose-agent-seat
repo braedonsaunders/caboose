@@ -6,5 +6,7 @@ flock 9
 if [ -x /usr/local/bin/caboose-session ]; then
   exec /usr/local/bin/caboose-session start-agent
 fi
+systemctl start caboose-agent-bus.service
+runuser -u caboose -- python3 /opt/caboose/keyring/secret-forwarder.py --check-bus
 systemctl start caboose-display-agent.service
 caboose-display-ready 60 14601
