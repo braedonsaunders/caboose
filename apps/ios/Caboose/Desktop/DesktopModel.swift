@@ -662,7 +662,13 @@ final class DesktopModel {
     }
 
     private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {
-        guard let frame = placedFrame(window), window.frame != frame else { return }
+        guard var frame = placedFrame(window) else { return }
+        if layout.snap(of: window.id) != nil {
+            guard let fitted = WindowSizePolicy.fitting(frame, minimum: window.minimumSize,
+                maximum: window.maximumSize, fullscreen: window.isFullscreen) else { return }
+            frame = fitted
+        }
+        guard window.frame != frame else { return }
         session.configure(window, frame: frame, state: ["maximized": false])
     }
 

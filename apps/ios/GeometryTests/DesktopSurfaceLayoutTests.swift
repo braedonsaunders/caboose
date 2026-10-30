@@ -7,6 +7,28 @@ import QuartzCore
 
 @MainActor
 final class DesktopSurfaceLayoutTests: XCTestCase {
+    func testTileWithWideMinimumFillsTallViewportAfterCommit() throws {
+        let viewport = CGSize(width: 500, height: 800)
+        let committed = try XCTUnwrap(WindowSizePolicy.fitting(CGRect(origin: .zero, size: viewport),
+            minimum: CGSize(width: 862, height: 600), maximum: nil, fullscreen: false))
+        let remote = RemoteWindow(id: 1, frame: committed, overrideRedirect: false, surface: WindowSurface())
+        let content = RemoteWindowView(session: nil, window: remote)
+        let tile = YardSurfaceView(content: content)
+        tile.natural = committed.size
+        tile.frame = CGRect(origin: .zero, size: viewport)
+        tile.setNeedsLayout()
+        tile.layoutIfNeeded()
+        XCTAssertEqual(content.frame.minX, 0, accuracy: 1)
+        XCTAssertEqual(content.frame.minY, 0, accuracy: 1)
+        XCTAssertEqual(content.frame.maxX, viewport.width, accuracy: 1)
+        XCTAssertEqual(content.frame.maxY, viewport.height, accuracy: 1)
+        // UIKit's inverse transform and the remote input geometry agree.
+        let center = content.convert(CGPoint(x: viewport.width / 2, y: viewport.height / 2), from: tile)
+        XCTAssertEqual(center.x, committed.width / 2, accuracy: 0.01)
+        XCTAssertEqual(center.y, committed.height / 2, accuracy: 0.01)
+        content.attach(nil)
+    }
+
     /// This hosts the production representable, rather than testing the fit formula.
     /// A newer remote aspect ratio must not refit inside the previous parent rectangle.
     func testStaleParentBoundsAndNewCommittedSizeHaveNoSecondFit() throws {

@@ -2918,6 +2918,14 @@ one-second burst so a refused size does not cause a configure loop; a later app 
 viewport change starts a new burst. App-requested fullscreen retains compositor-owned
 monitor geometry and aspect-fit presentation/input until an explicit exit.
 
+Switchyard tiles, app cards and desktop snap placement share viewport-aspect sizing in
+`WindowSizePolicy`: when a minimum width requires a larger remote surface, its height
+grows proportionally if the size hints permit it. Fixed-size or conflicting constraints
+fall back to independent axis limits. Ordinary floating-window resizing keeps independent
+axes. Switchyard uses the card's bounded reconciliation after app-driven size changes;
+sending a target does not imply the app accepted it. Presentation and input continue to
+use the reported surface until the replacement size arrives.
+
 The device's virtual monitor retains its initial full-screen mode, chosen DPI and
 render scale in a validated local preference keyed by the existing computer identity.
 Start/resume restores that selection before announcing outputs. Uncached Home sends an

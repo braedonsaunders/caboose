@@ -50,6 +50,9 @@ final class YardModel {
 
     /// The geometry each window was last sent, in Linux pixels, so nothing is sent twice.
     private var sent: [Int: CGRect] = [:]
+    /// The same bounded resize reconciliation used by cards. A client's later
+    /// size change must not be hidden by the last-request deduplication cache.
+    private var fitting: [Int: CardWindowFit] = [:]
     /// Windows asked for a new size whose picture may not have caught up yet: their last
     /// picture is stretched over the tile meanwhile.
     private var settling: [Int: UUID] = [:]
@@ -125,6 +128,7 @@ final class YardModel {
             }
         }
         sent = sent.filter { windows[$0.key] != nil }
+        fitting = fitting.filter { windows[$0.key] != nil }
         settling = settling.filter { windows[$0.key] != nil }
         if let zoomed, windows[zoomed] == nil {
             self.zoomed = nil
@@ -161,9 +165,12 @@ final class YardModel {
     }
 
     private func send(_ window: RemoteWindow, _ proposed: CGRect, _ session: any DisplaySession) {
-        guard let target = WindowSizePolicy.request(proposed, minimum: window.minimumSize,
+        guard let target = WindowSizePolicy.fitting(proposed, minimum: window.minimumSize,
             maximum: window.maximumSize, fullscreen: window.isFullscreen) else { return }
-        guard sent[window.id] != target else { return }
+        let changed = sent[window.id] != target
+        let correction = fitting[window.id, default: CardWindowFit()].shouldCorrect(
+            frame: window.frame, target: target, now: ProcessInfo.processInfo.systemUptime)
+        guard changed || correction else { return }
         sent[window.id] = target
         guard window.frame != target else { return }
         if window.frame.size != target.size { settle(window.id) }
@@ -198,6 +205,7 @@ final class YardModel {
     /// The display was reconnected or reconfigured: everything is sent afresh.
     func invalidate() {
         sent.removeAll()
+        fitting.removeAll()
         placedDialogs.removeAll()
     }
 

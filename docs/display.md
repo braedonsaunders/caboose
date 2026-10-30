@@ -219,6 +219,13 @@ for byte.
   resumes ordinary window fitting. No application-specific or fixed minimum output mode
   is inferred from a small phone viewport.
 - The session applies size hints at the common configure boundary for every layout.
+  Layout-owned tile, card and snap requests preserve the viewport aspect when
+  satisfying minimum or maximum sizes permits it: a larger minimum width grows
+  the requested height proportionally. Conflicting aspect constraints and genuinely
+  fixed-size windows retain per-axis sizing and fit their committed picture. Free
+  window resizing continues to clamp each axis independently. Switchyard reasserts
+  its target after an app changes size, with the same bounded correction policy as
+  cards; the last sent request alone does not count as an accepted size.
   Desktop pointer positions and scroll deltas use the shown surface rectangle and
   committed remote size. An active desktop trackpad scroll cancels when that mapping
   changes; a captured pointer drag still releases its original target at the surface edge.

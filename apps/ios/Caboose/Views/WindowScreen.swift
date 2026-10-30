@@ -352,7 +352,7 @@ struct WindowScreen: View {
         guard model.presentedWindowID == window.id, size.width > 0, size.height > 0, let session = model.session else { return }
         model.windowCardResized(to: size)
         session.focus(window)
-        guard let target = WindowSizePolicy.request(
+        guard let target = WindowSizePolicy.fitting(
             DeviceViewport.guestFrame(size: size, pixelsPerPoint: model.pixelsPerPoint),
             minimum: window.minimumSize, maximum: window.maximumSize, fullscreen: window.isFullscreen)
         else { return }

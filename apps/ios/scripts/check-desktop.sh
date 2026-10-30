@@ -73,6 +73,12 @@ Portrait/landscape shell (Tablet mode, no external display):
    remain intact with no extra portrait button, then return to Tablet and repeat.
 
 Switchyard (Desktop tab, no external display):
+0. Use a resizable app whose minimum width exceeds a portrait tile. Record its size
+   hints and committed geometry. Its requested height grows with the required width,
+   and after redraw the complete picture fills the tile without a large empty lower
+   region. Repeat in an app card and a permitted desktop snap. Check corner taps,
+   scrolling, menus and drops against the same picture. A genuinely fixed-size dialog
+   keeps its aspect and may retain padding; it must not be stretched or cropped.
 1. On a closed/upright phone, move between columns using the dock. Open the Duo or
    rotate a large phone: two columns fit; an iPad offers thirds. Drag a gap and
    stack two tiles. The complete Chrome tab strip, address bar and refresh button
