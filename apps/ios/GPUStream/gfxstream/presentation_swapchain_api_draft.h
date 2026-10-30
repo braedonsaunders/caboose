@@ -103,8 +103,8 @@ int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
 int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
     const uint64_t* boxed_images, uint32_t image_count);
 
-// Begin leases the original synchronization objects before admission; does not
-// signal them or call the provider. Poll makes one real zero-timeout provider
+// Begin leases the original synchronization objects and may create an internal
+// fence; it does not acquire an image or signal the guest objects. Poll makes one real zero-timeout provider
 // acquire, without holding the decoder global lock across it. NOT_READY has no
 // index and no signal; success owns the actual returned index and provider's
 // original semaphore/fence signal operation. A caller implements a monotonic
@@ -112,7 +112,10 @@ int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
 // A guest-facing Vulkan timeout is VK_NOT_READY for a zero timeout or VK_TIMEOUT
 // after an expired finite timeout, only after cancellation serializes with any
 // in-flight poll and proves no successful acquire raced the deadline.
-// Poll/cancel serialize with each other and native swapchain host operations.
+// Begin may return a nonzero integer when a real internal fence-creation call
+// fails; status then has errno zero and the actual provider VkResult. Local
+// failures have positive status errno and no provider result. Poll/cancel
+// serialize with each other and native swapchain host operations.
 // The owner serializes request release against all calls using that pointer.
 int caboose_gpu_acquire_begin(caboose_gpu_virtual_swapchain* swapchain,
     const caboose_gpu_acquire_info* info, caboose_gpu_acquire_request** out,

@@ -810,7 +810,10 @@ extern "C" int caboose_gpu_acquire_begin(caboose_gpu_virtual_swapchain* swapchai
         r = PresentationAcquire::create(std::move(sync), swapchain->handle, swapchain->lifetime,
                                          swapchain->hostMutex, &request->operation, &provider);
         if (r != VK_SUCCESS) {
-            if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
+            if (provider.present) {
+                status->has_vulkan_result = 1; status->vulkan_result = provider.value;
+                return errorFor(r); // API failure; raw provider status has errno zero
+            }
             return fail(errorFor(r));
         }
         request->swapchain = swapchain;
