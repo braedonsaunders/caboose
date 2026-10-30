@@ -7,7 +7,7 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Devices/` | Computer settings' hardware section (`DeviceSettings`: which devices each computer may use) and the indicator shown while a computer app uses the camera, microphone or motion. |
@@ -505,8 +505,13 @@ its tools; remove a server; disconnect and see the servers go.
   `…` menu moves playback to AVKit (with AirPlay), or to Safari's in-app browser for a
   stream the page builds itself; **Back to Computer** continues the computer's copy.
 - **Shortcuts, Siri and Spotlight.** Shortcuts wake or park the computer, open a Linux app
-  or URL, start an agent task, open, get or save computer files, and run the Craft apps'
-  conversions. Spotlight indexes the computer's apps and its 200 most recently modified files.
+  or URL, start an agent task, open, get or save computer files, run the Craft apps'
+  conversions, and run a Bash script on the computer (**Run Command on Computer**: input
+  text and files in, output, errors and the files it writes to `$CABOOSE_OUT` back). A
+  command still running when the shortcut stops waiting keeps running; its notification,
+  Live Activity and `caboose://command/<id>` link open it in the app (`Caboose/Views/CommandView`),
+  where it can be followed, cancelled and its files saved to `~/Downloads`. Spotlight indexes
+  the computer's apps and its 200 most recently modified files.
 - **Widgets and controls.** A Computer widget (state and running agents), a Favourite Linux
   App widget, and Control Center controls for power, opening an app and asking an agent.
 - **The phone's hardware.** While Caboose is open, Linux apps use the phone's cameras, depth
@@ -521,8 +526,9 @@ its tools; remove a server; disconnect and see the servers go.
   both as one event. The **Press Computer Action Key** shortcut, assigned to the Action
   button, presses the computer's Action key.
 - **Notifications and Live Activities.** With APNs configured on the host, the device can
-  receive approval, finished-task and desktop alerts (approvals can be answered from the
-  notification), and running agent tasks show on the Lock Screen and Dynamic Island.
+  receive approval, finished-task (and finished-command) and desktop alerts (approvals can be
+  answered from the notification), and running agent tasks and commands that run longer than
+  10 seconds show on the Lock Screen and Dynamic Island.
 
 ## Home and the tabs
 
@@ -667,6 +673,14 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Shortcuts, widgets and Spotlight.** Run each shortcut and check its input and output
   files; configure and tap the widgets and controls; create, rename and delete a nested file
   and check Spotlight; sign out and verify the entries disappear.
+- **Run Command on Computer.** Share a video page's URL to a shortcut that runs
+  `yt-dlp -o "$CABOOSE_OUT/%(title)s.%(ext)s" "$(cat)"` with the URL as input text, then
+  `ffmpeg -i "$CABOOSE_IN"/* -vn "$CABOOSE_OUT/audio.m4a"` on the downloaded file: the files
+  come back to the shortcut and the job directory moves to Trash. Run `sleep 600; echo done`
+  with a 25-second wait and lock the phone: the shortcut returns the command's link, the Live
+  Activity appears after 10 seconds, and the finished notification opens the command with
+  its output. Cancel a running command from the app, and save a finished one's files to
+  Downloads.
 - **Game handoff.** Install The Powder Toy from Library and open it. Its window shows the
   game running on the device, with sound, touch, a hardware keyboard and a game controller;
   nothing it draws comes from the computer. Draw something and save it in the game, close the

@@ -376,6 +376,69 @@ it('runs only a whitelisted installed Craft app and publishes job progress', asy
   socket.close(); await once(socket, 'close')
 })
 
+it('runs owner commands detached from the request, refuses parking under them and cancels them', async () => {
+  const written = new Map<string, string>()
+  const fileServer = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const chunks: Buffer[] = []
+    req.on('data', chunk => chunks.push(chunk))
+    req.on('end', () => {
+      if (url.pathname === '/stat') { res.writeHead(404); res.end(); return }
+      if (url.pathname === '/content' && req.method === 'PUT' && req.headers['if-none-match'] === '*') written.set(url.searchParams.get('path')!, Buffer.concat(chunks).toString())
+      res.writeHead(201); res.end()
+    })
+  })
+  fileServer.listen(0, '127.0.0.1'); await once(fileServer, 'listening')
+  close.push(() => new Promise(resolve => fileServer.close(() => resolve())))
+  const states = new Map<string, 'running' | 'succeeded' | 'cancelled'>()
+  const guest = { run: vi.fn(async (command: string, args: string[]) => {
+    const python = command === '/usr/sbin/runuser' ? args.slice(3) : [command, ...args]
+    if (python[0] !== '/usr/bin/python3' || python[1] !== '-c') return ''
+    const mode = python[3], request = JSON.parse(python[4] ?? '{}')
+    const state = states.get(request.id)
+    if (mode === 'start') { states.set(request.id, request.timeout === 5 ? 'succeeded' : 'running'); return '{}' }
+    if (mode === 'poll') return JSON.stringify(Object.fromEntries(request.ids.map((id: string) => [id, states.get(id) === 'running' ? 'running' : 'done'])))
+    if (mode === 'result') return JSON.stringify({ status: state, exitCode: state === 'succeeded' ? 0 : null, signal: state === 'cancelled' ? 'SIGTERM' : null, error: null, truncated: { stdout: false, stderr: false }, outputs: state === 'succeeded' ? ['out.txt'] : [] })
+    if (mode === 'read') return request.stream === 'stdout' && state === 'succeeded' ? Buffer.from('hello\n').toString('base64') : ''
+    if (mode === 'cancel') { states.set(request.id, 'cancelled'); return '{"finished": false}' }
+    return '{}'
+  }) }
+  const wake = vi.fn(async (_mode?: string) => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest,
+    fileService: () => ({ url: `http://127.0.0.1:${(fileServer.address() as AddressInfo).port}`, token: 'test' }) }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.unshift(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const call = (path: string, method = 'GET', body?: unknown) => fetch(base + path, { method, headers: { authorization: 'Bearer owner' }, ...(body ? { body: JSON.stringify(body) } : {}) })
+  expect((await call('/v1/commands', 'POST', { script: 'ls', shell: 'zsh' })).status).toBe(400)
+  expect((await call('/v1/commands', 'POST', { script: 'ls', wait: 61 })).status).toBe(400)
+  expect(wake).not.toHaveBeenCalled()
+  // The request wakes a parked computer without its display and waits for the result.
+  const quick = await call('/v1/commands', 'POST', { script: 'echo hello > "$CABOOSE_OUT/out.txt"', stdin: 'in', timeout: 5, wait: 10 })
+  expect(quick.status).toBe(201)
+  const done = await quick.json()
+  expect(done).toMatchObject({ status: 'succeeded', exitCode: 0, stdout: 'hello\n', outputs: ['out.txt'], directory: `.caboose-jobs/cmd-${done.id}` })
+  expect(wake).toHaveBeenCalledWith('headless')
+  expect(written.get(`.caboose-jobs/cmd-${done.id}/command.sh`)).toBe('echo hello > "$CABOOSE_OUT/out.txt"')
+  expect(written.get(`.caboose-jobs/cmd-${done.id}/stdin`)).toBe('in')
+  expect(await (await call(`/v1/commands/${done.id}`)).json()).toEqual(done)
+  expect((await call('/v1/commands/0123456789abcdef0123456789abcdef')).status).toBe(404)
+  expect((await call(`/v1/commands/${done.id}?wait=99`)).status).toBe(400)
+  expect((await call(`/v1/commands/${done.id}/cancel`, 'POST')).status).toBe(409)
+
+  const slow = await (await call('/v1/commands', 'POST', { script: 'sleep 600' })).json()
+  expect(slow.status).toBe('running')
+  expect((await call(`/v1/commands/${slow.id}?wait=1`).then(response => response.json())).status).toBe('running')
+  expect((await call('/v1/session/park', 'POST')).status).toBe(409)
+  expect((await (await call('/v1/commands')).json()).commands.map((item: { id: string; status: string }) => [item.id, item.status])).toEqual([[slow.id, 'running'], [done.id, 'succeeded']])
+  const cancelled = await call(`/v1/commands/${slow.id}/cancel`, 'POST')
+  expect(cancelled.status).toBe(200)
+  expect(await cancelled.json()).toMatchObject({ id: slow.id, status: 'cancelled', signal: 'SIGTERM' })
+  expect((await call('/v1/session/park', 'POST')).status).toBe(200)
+})
+
 it('serves the MCP Library to an authorized client without ever returning its keys', async () => {
   const { SmitheryCatalog } = await import('./smithery.js')
   const { listing } = await import('./smithery.test.js')

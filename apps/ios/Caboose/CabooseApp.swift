@@ -108,6 +108,12 @@ struct RootView: View {
                 .toolbar { Button("Done") { model.notificationTaskID = nil } }
             }
         }
+        .sheet(item: Binding(get: { model.notificationCommandID.map(NotificationCommand.init) }, set: { model.notificationCommandID = $0?.id })) { destination in
+            NavigationStack {
+                CommandView(id: destination.id)
+                    .toolbar { Button("Done") { model.notificationCommandID = nil } }
+            }
+        }
         .sheet(isPresented: Bindable(model).showAgentSettings) {
             NavigationStack {
                 AgentsView()
@@ -309,3 +315,4 @@ struct SetupView: View {
 }
 
 private struct NotificationTask: Identifiable { let id: String }
+private struct NotificationCommand: Identifiable { let id: String }

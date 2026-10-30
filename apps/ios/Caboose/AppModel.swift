@@ -26,6 +26,8 @@ final class AppModel {
     private(set) var phase: Phase
     private(set) var agents = AgentCenter()
     var notificationTaskID: String?
+    /// A command to show, from its link, notification or Live Activity.
+    var notificationCommandID: String?
     var askFocusRequested = false
     private(set) var catalog = CatalogCenter()
     /// The computer's MCP Library: Tools, on the Agents tab.
@@ -300,6 +302,7 @@ final class AppModel {
         openingFileSince = nil
         launchFailure = nil
         notificationTaskID = nil
+        notificationCommandID = nil
         settingsPresented = false
         recentFiles = []
         selectedTab = .home
@@ -1300,6 +1303,7 @@ final class AppModel {
         switch link {
         case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
+        case .command(let id): notificationCommandID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }
     }

@@ -719,10 +719,11 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
-- The owner's computer's `caboose.json` (settings), `push-devices.json` and
-  `activities.json` at the root, where a host from before several computers kept them.
-- Every other computer's own `caboose.json`, `push-devices.json` and `activities.json`
-  in `computers/<id>/`.
+- The owner's computer's `caboose.json` (settings), `push-devices.json`,
+  `activities.json` and `commands/` (one `<id>.json` per command, directory mode 0700) at the
+  root, where a host from before several computers kept them.
+- Every other computer's own `caboose.json`, `push-devices.json`, `activities.json` and
+  `commands/` in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
 - Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
@@ -750,7 +751,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
 | `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
-| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
@@ -841,7 +842,7 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
 - **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
-  tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
+  tasks, catalog operations, Craft jobs, running commands, agent installs and sign-ins, and each `/v1/fs`
   request until its response completes. Control sockets marked `foreground=0` do not hold a
   lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
   `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
@@ -1009,7 +1010,7 @@ guest answer 409 while it is not running.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/session` | **Wakes.** → `{ state: "running", display: { path: "/v1/display", token, protocol: "caboose-display" }, computer: { name, image, memoryMb, vcpus } }`. `image` is `"Debian 13"`, or `"Debian 13 · GPU"` for a container with a GPU |
-| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation or Craft job runs |
+| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
 | `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
@@ -1046,7 +1047,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
 | `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
-| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
+| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job (`kind: "craft"`) or command (`kind: "command"`, see [Commands](#commands)) starts, is still running after 10 s (commands only), or ends |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
 | `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
@@ -1346,6 +1347,79 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
   than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
   kept only in its 256 KiB replay.
 
+### Commands
+
+A command is a Bash script that runs in the computer as `caboose`, detached from the request
+that starts it: it keeps running when the phone, the request or the host goes away, and its
+result stays with the host. Commands are for the same callers as `/v1/terminal`, which already
+gives them a shell as `caboose`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/commands` | **Wakes** (headless). `{ script, id?, stdin?, inputs?, cwd?, timeout?, wait? }` → 201 `Command` once it ends or after `wait` seconds, whichever is first. 400 when an input or `cwd` is missing in the computer (no command is kept); 409 when the id exists or 4 commands already run on the computer |
+| `GET` | `/v1/commands` | `{ commands: [{ id, title, status, exitCode, createdAt, finishedAt }] }`, newest first. Never wakes |
+| `GET` | `/v1/commands/:id?wait=` | `Command`, now or once it ends within `wait` seconds (0–60). Never wakes; 404 for an unknown id |
+| `POST` | `/v1/commands/:id/cancel` | **Wakes** (headless). Stops a running command → `Command` once it has ended, or after 10 s; 409 when it has already ended |
+
+The request body may be 4 MiB; unknown fields answer 400.
+
+- `script`: not blank, at most 64 KiB of UTF-8, without NUL.
+- `id`: 32 lowercase hex digits, chosen by the client so it can stage inputs first; the host
+  makes one when absent.
+- `stdin`: text of at most 1 MiB, the script's standard input; otherwise it reads `/dev/null`.
+- `inputs`: at most 100 distinct file names the client uploaded to `.caboose-jobs/cmd-<id>/in/`
+  through `/v1/fs` before starting (requires `id`); each must be a regular file there. A name
+  is one path component of 1–255 bytes without control characters, not `.` or `..`, and not
+  beginning `.caboose-upload-`.
+- `cwd`: an existing home-relative directory (`""` is the home); the job directory when absent.
+- `timeout`: seconds, 1–86400, default 3600. `wait`: seconds, 0–60, default 0.
+
+```ts
+type Command = {
+  id: string,
+  title: string,              // the script's first line that is not a #! line, at most 100 characters
+  script: string, cwd: string | null, inputs: string[], timeout: number,
+  status: 'running' | 'succeeded' | 'failed' | 'timed-out' | 'cancelled',
+  exitCode: number | null,    // null when a signal or the host ended it
+  signal: string | null,      // the signal that ended the shell, e.g. "SIGTERM"
+  error: string | null,       // why the host ended it, e.g. "Stopped when the computer restarted."
+  stdout: string, stderr: string,              // UTF-8; invalid bytes are replaced
+  truncated: { stdout: boolean, stderr: boolean },
+  outputs: string[],          // file names in the job's out/
+  createdAt: string, finishedAt: string | null,  // ISO 8601
+  directory: string,          // ".caboose-jobs/cmd-<id>", home-relative
+}
+```
+
+- **Running.** The host creates `~/.caboose-jobs/cmd-<id>/` with `in/` and `out/`, opening
+  each directory without following symlinks, and writes the script to `command.sh` and the
+  input to `stdin` through the file service, so neither passes on a command line. A supervisor
+  started as `caboose` through `runuser` (entering `caboose-workloads.slice` where the guest
+  has it) runs `bash --login command.sh` in its own session and process group, in `cwd`, with
+  `HOME`, `USER`, `LANG=C.UTF-8`, `XDG_RUNTIME_DIR`, the session bus when it runs,
+  `CABOOSE_COMMAND_ID`, `CABOOSE_JOB` (the job directory), `CABOOSE_IN` and `CABOOSE_OUT`; the
+  login shell sets `PATH` from the owner's profile.
+- **Bounds.** `stdout` keeps its first 1 MiB and `stderr` its last 1 MiB; `truncated` says
+  which lost bytes. At `timeout`, or on cancel, the supervisor sends SIGTERM to the script's
+  process group and SIGKILL 5 s later. When the script ends, what it left in its process group
+  is killed; a process that started its own session keeps running. The time limit counts
+  while the computer runs. `outputs` lists the regular files directly in `out/` (not
+  symlinks or directories) by name, at most 100. At most 4 commands run at once on a computer.
+- **Results.** The supervisor writes `result.json`, `stdout` and `stderr` in the job
+  directory. The host polls once a second while a command runs, checks the result field by
+  field and keeps it in `commands/` in the host state: every running command, and the 50 most
+  recent finished ones for 7 days. The job directory stays in the home until a client removes
+  it. A host that starts with commands still running wakes the computer headless, holds their
+  leases again and collects them.
+- **Lifecycle.** A running command holds a lease, so the computer neither freezes nor parks
+  for idleness under it, and an explicit park answers 409. A restart or deleting the computer
+  fails running commands with "Stopped when the computer restarted."; a supervisor gone
+  without a result fails its command with "The command stopped without a result.".
+- **Progress.** Control sockets get `job.progress` (`kind: "command"`) when a command starts,
+  after 10 s, and when it ends. After 10 s the command is published to Live Activities with
+  its title and detail `Running`, and its end updates and ends the activity. When it ends with
+  no request waiting for it, it sends a `task` push (§ Push notifications).
+
 ### MCP Library routes
 
 Per computer, authorized like the catalog's; none wakes the computer (§ MCP Library).
@@ -1557,10 +1631,11 @@ background; other control clients do not suppress alerts.
 | --- | --- | --- | --- |
 | `approval` | `agent.task.approval` | "Approval requested", the request summary; category `AGENT_APPROVAL` | `taskId`, `approvalId` |
 | `task` | `agent.task.finished` with `succeeded` or `failed` | "Task finished" or "Task failed", the summary | `taskId` |
+| `task` | A command ends, other than by cancelling, while no request waits for it | "Command finished", "Command failed" or "Command timed out", its title and how it ended | `commandId` |
 | `desktop` | a desktop notification | its summary (or app), its body | none |
 
 Alert bodies are at most 700 characters. Alerts for a task share the thread
-`task-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
+`task-<id>`, and a command's alert has the thread `command-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
 registered again while the request was in flight. Provider tokens are refreshed after 50
 minutes, and each request times out after 15 s. Delivery is best effort.
 
@@ -1586,8 +1661,9 @@ The activity's attributes are `JobAttributes { jobID, kind, title }` and its con
 dismissal date one hour later and removes the registration once delivered. A `start`
 event goes to every push-to-start token when a job starts while no foreground control
 socket is connected. Agent tasks publish themselves (`kind: "agent"`) as they start, reply,
-pause, resume and finish; Craft jobs publish with `kind: "craft"`. The registrations and
-the latest 200 job states are stored in `activities.json`.
+pause, resume and finish; Craft jobs publish with `kind: "craft"`. A command publishes with
+`kind: "command"` once it has run for 10 s, and again when it ends ([Commands](#commands)).
+The registrations and the latest 200 job states are stored in `activities.json`.
 
 ## 4. Display
 
@@ -2436,7 +2512,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
 The phone reads the system clipboard only for an explicit paste, not when entering the
@@ -2707,7 +2784,8 @@ The control socket's `notification` events become local notifications while the 
 When the host has APNs configured, Computer settings offers per-device switches for
 approvals, task results and desktop notifications. Enabling them requests permission and
 registers the device's APNs token (`POST /v1/devices/push`). Approval notifications carry
-actions that call the approval route; task notifications open the task. Signing out
+actions that call the approval route; task notifications open the task, and command
+notifications the command. Signing out
 unregisters the device.
 
 ### Live Activities and widgets
@@ -2716,7 +2794,7 @@ The app starts a Live Activity for each running agent task and registers its upd
 with `POST /v1/activities`, and registers the device's push-to-start token with
 `POST /v1/activities/start-token`. It also updates or ends an activity while in the
 foreground, and unregisters both on sign-out. The widget extension renders the Lock Screen
-and Dynamic Island presentations and opens the agent task on tap.
+and Dynamic Island presentations and opens the agent task or command on tap.
 
 The WidgetKit extension reads the pairing from the shared Keychain access group and fetches
 the computer's state and running agent count without waking it; WidgetKit schedules its
@@ -2728,8 +2806,8 @@ that wakes or parks the computer.
 
 App Intents wake or park the computer, open a Linux app or run one of its desktop actions
 (New Private Window, a new document), open a URL on the computer, ask a computer agent (an approval-gated task, returning a task link), open, get or save computer
-files, and run the four Craft operations. App shortcuts offer phrases to Siri and
-Shortcuts. App and file entities use the authenticated host API. File paths are relative to
+files, run the four Craft operations, and run a command on the computer. App shortcuts offer
+phrases to Siri and Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
 
 Computer settings > Shortcuts opens Caboose’s page in Apple Shortcuts or a new shortcut
@@ -2744,6 +2822,20 @@ Craft intents stage their inputs under `.caboose-jobs/<job>` through `/v1/fs`, c
 `POST /v1/catalog/:id/run`, download the outputs, and move the job directory to Trash after
 success. A failed or interrupted job's directory is kept for inspection. CLI warnings are
 returned to the shortcut.
+
+Run Command on Computer takes a script, optional input text (standard input, at most 1 MiB)
+and input files, whether to wait for the result and for how long (default 25 s), and a time
+limit in minutes (default 60). It uploads the files to `.caboose-jobs/cmd-<id>/in/` under their
+own names (made plain and distinct: `photo.jpg`, `photo (2).jpg`), calls `POST /v1/commands`,
+then long-polls `GET /v1/commands/:id` until the command ends or the wait is over. It returns a
+Command Result with the output, errors, status, whether it finished, exit code, a
+`caboose://command/<id>` link and the files from `out/`, downloaded. A succeeded command's job
+directory then moves to Trash; a failed one's stays. A non-zero exit is a result, not an
+error, so a shortcut can branch on it. A command still running when the wait ends keeps
+running: the shortcut gets its link, and the Live Activity and notification report its end.
+The link opens the command in the app, which follows it until it ends, shows its output and
+errors, cancels it, and saves its files to `~/Downloads` (moving them, then the job directory
+to Trash).
 
 File search lists the home recursively through `/v1/fs`, skipping unreadable or removed
 directories and the top-level `.caboose-jobs` directory, and sorts by modification time.
@@ -2897,7 +2989,11 @@ phone's location while Caboose is open. Computer settings has the switches. See
   validated and bounded, and the host never relays a guest-supplied file path.
 - **Guest commands.** The host passes arguments, never shell strings built from client
   input; Craft jobs and catalog operations run fixed argument vectors, and catalog MCP
-  commands are restricted to plain words.
+  commands are restricted to plain words. `/v1/commands` runs a client's script as
+  `caboose`, which adds no authority: the same owner, administrator and phone tokens already
+  open a shell as `caboose` through `/v1/terminal`. The script and its input reach the
+  computer as files through the file service, never as arguments, and the supervisor's result
+  is checked field by field before it is stored or returned.
 - **Privileged host container.** The Compose deployment (`deploy/compose.yaml`) runs the
   host in a privileged container for KVM, loop mounts and TAP networking. Its TAP,
   forwarding and NAT rules live in the container's network namespace, and the guest can
