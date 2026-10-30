@@ -163,6 +163,8 @@ public final class LiveGPUPresentationOwners {
 @MainActor
 private final class LiveGPULayerView: UIView {
     private(set) var pixelExtent: CGSize
+    private var configuringExtent = false
+    private var extentQuarantined = false
     let metal = CAMetalLayer()
     init(frame: CGRect, pixelExtent: CGSize) {
         self.pixelExtent = pixelExtent
@@ -180,15 +182,24 @@ private final class LiveGPULayerView: UIView {
         super.layoutSubviews()
         applyDrawableExtent()
     }
-    func adoptPresentationExtent(_ size: CGSize) {
-        pixelExtent = size
-        applyDrawableExtent()
+    func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
+        guard !configuringExtent, !extentQuarantined else { return EBUSY }
+        // A native transaction commit may synchronously invoke UIKit layout.
+        // Keep that layout from restoring the previous buffer extent mid-mutation.
+        configuringExtent = true
+        let code = configure(metal)
+        if code == 0 { pixelExtent = size }
+        else if code == EIO { extentQuarantined = true }
+        configuringExtent = false
+        if code == 0 { applyDrawableExtent() }
+        return code
     }
     func fit(in target: CGRect) {
         frame = target
         applyDrawableExtent()
     }
     func applyDrawableExtent() {
+        guard !configuringExtent, !extentQuarantined else { return }
         // A separate layer avoids UIKit rescaling a view's backing Metal layer.
         // MoltenVK observes these real bounds * contentsScale as its natural extent.
         CATransaction.begin()
@@ -223,9 +234,7 @@ final class LiveGPULayerLease: @unchecked Sendable {
     @MainActor func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
         guard isValid, let content = content as? LiveGPULayerView else { return ECANCELED }
         guard LiveGPUDrawableGeometry.extent(serverPixels: size, visibleBounds: content.bounds.size) != nil else { return EINVAL }
-        let code = configure(content.metal)
-        if code == 0 { content.adoptPresentationExtent(size) }
-        return code
+        return content.configurePresentationExtent(size, configure: configure)
     }
     private let lock = NSLock()
     private var valid = true
