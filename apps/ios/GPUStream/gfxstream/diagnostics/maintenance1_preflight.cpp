@@ -73,12 +73,13 @@ int main(int argc, char** argv) {
     auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(get(instance, "vkDestroyInstance"));
     auto physicals = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(get(instance, "vkEnumeratePhysicalDevices"));
     auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(get(instance, "vkGetPhysicalDeviceProperties"));
+    auto memoryProperties = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(get(instance, "vkGetPhysicalDeviceMemoryProperties"));
     auto deviceExtensions = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(get(instance, "vkEnumerateDeviceExtensionProperties"));
     auto features = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(get(instance, "vkGetPhysicalDeviceFeatures2"));
     auto queues = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(get(instance, "vkGetPhysicalDeviceQueueFamilyProperties"));
     auto createDevice = reinterpret_cast<PFN_vkCreateDevice>(get(instance, "vkCreateDevice"));
     auto getDevice = reinterpret_cast<PFN_vkGetDeviceProcAddr>(get(instance, "vkGetDeviceProcAddr"));
-    if (!destroyInstance || !physicals || !properties || !deviceExtensions || !features || !queues || !createDevice || !getDevice) {
+    if (!destroyInstance || !physicals || !properties || !memoryProperties || !deviceExtensions || !features || !queues || !createDevice || !getDevice) {
         std::puts("UNSUPPORTED missing instance/device entrypoints");
         if (destroyInstance) destroyInstance(instance, nullptr);
         return 77;
@@ -97,6 +98,18 @@ int main(int argc, char** argv) {
     for (VkPhysicalDevice physical : devices) {
         VkPhysicalDeviceProperties props{}; properties(physical, &props);
         std::printf("physical_device=%s vendor=%u device=%u api=%u\n", props.deviceName, props.vendorID, props.deviceID, props.apiVersion);
+        VkPhysicalDeviceMemoryProperties memory{};
+        memoryProperties(physical, &memory);
+        std::printf("memory_types=%u heaps=%u\n", memory.memoryTypeCount, memory.memoryHeapCount);
+        if (memory.memoryTypeCount > VK_MAX_MEMORY_TYPES || memory.memoryHeapCount > VK_MAX_MEMORY_HEAPS) {
+            std::puts("invalid_provider_memory_counts"); outcome = 1; break;
+        }
+        for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+            std::printf("memory_type[%u] flags=0x%x heap=%u\n", i, memory.memoryTypes[i].propertyFlags,
+                        memory.memoryTypes[i].heapIndex);
+        for (uint32_t i = 0; i < memory.memoryHeapCount; ++i)
+            std::printf("memory_heap[%u] size=%llu flags=0x%x\n", i,
+                        static_cast<unsigned long long>(memory.memoryHeaps[i].size), memory.memoryHeaps[i].flags);
         std::vector<VkExtensionProperties> supported;
         if (!enumerate([&](uint32_t* c, VkExtensionProperties* p) { return deviceExtensions(physical, nullptr, c, p); },
                        &supported, "device_extensions")) { outcome = 1; break; }
