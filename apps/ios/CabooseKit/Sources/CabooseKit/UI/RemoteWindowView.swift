@@ -760,6 +760,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             session.resetScroll()
             move(to: gesture.location(in: self))
             scrollUsesDirectTouch = gesture.numberOfTouches > 0
+            let directContent = scrollUsesDirectTouch
             let anchor = lastPointer
             let scale = pixelsPerPoint
             let geometry = bounds
@@ -774,8 +775,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                       session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
                       self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
                 else { return false }
-                session.scroll(in: remoteWindow, dx: delta.x * size.width / max(1, geometry.width),
-                               dy: delta.y * size.height / max(1, geometry.height), at: anchor)
+                let mapped = CGPoint(x: delta.x * size.width / max(1, geometry.width),
+                                     y: delta.y * size.height / max(1, geometry.height))
+                let precise = DirectScrollCalibration.preciseDelta(mapped, directContent: directContent)
+                session.scroll(in: remoteWindow, dx: precise.x, dy: precise.y, at: anchor)
                 return true
             }
             appendScroll(gesture, at: now)

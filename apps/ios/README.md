@@ -434,14 +434,21 @@ clicks and right-clicks precisely.
 
 Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
 coalesced once per display frame, and release velocity decays independently of refresh
-rate. Desktop content scrolling and the phone trackpad use the same inertia. New
+rate. `DirectScrollCalibration` applies a 1/12 reference gain after mapping direct
+content pans to guest pixels, including inertia. Hardware scrolling and dedicated phone
+trackpads bypass it. The [unit trace](../../docs/display.md#direct-content-scroll-units)
+defines the reference response and its limits. Desktop content scrolling and the phone
+trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
 client inertia; native Wayland touch keeps the application's own fling behavior. A display
 stall drops old movement and momentum while continuing to accept the finger's new movement.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. `swift test --filter ScrollGestureOwnershipTests` checks
-recognizer ownership and cancellation on finger-count changes. Card and free-desktop
+recognizer ownership and cancellation on finger-count changes.
+`swift test --filter DirectScrollCalibrationTests` checks the reference content distance
+through portrait, landscape, fitted/stretched surfaces, scales 1/1.5/3, fractional input,
+inertia and the hardware bypass. These pure checks do not measure an application's gain. Card and free-desktop
 scrolling retain their original connection and coordinate mapping through momentum.
 On a real host, check slow and fast swipes in a native
 Wayland app and one- and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm

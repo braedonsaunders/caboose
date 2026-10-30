@@ -499,6 +499,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 scrolling = true
                 session.resetScroll()
                 guard let mapping = desktop.inputMapping(for: target, windows: session.windows) else { return }
+                let directContent = fingers.allSatisfy { $0.type == .direct }
                 let epoch = session.epoch
                 let connection = (session as? CabooseDisplaySession)?.connections
                 scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
@@ -509,7 +510,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
                           desktop.inputMapping(for: target, windows: session.windows) == mapping,
                           case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
                     guard let remoteDelta = mapping.delta(delta) else { return false }
-                    session.scroll(in: target, dx: remoteDelta.x, dy: remoteDelta.y, at: anchor)
+                    let precise = DirectScrollCalibration.preciseDelta(remoteDelta, directContent: directContent)
+                    session.scroll(in: target, dx: precise.x, dy: precise.y, at: anchor)
                     return true
                 }
             }

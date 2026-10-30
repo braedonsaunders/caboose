@@ -401,6 +401,36 @@ into proximity of the surface under it), `down` and `up` are the tip's contact, 
 `cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
 degrees. The clipboard carries text (`text/plain;charset=utf-8`).
 
+### Direct content scroll units
+
+The iOS direct-content pan negates finger movement for natural direction, integrates
+tracking and inertia in view points, then maps each axis by reported guest size divided
+by presented surface size. It applies a reference gain of 1/12 before sending precise
+pointer deltas. Hardware wheel/trackpad input, dedicated phone trackpads, native
+`wl_touch` gestures and the guest's paired relative/absolute pointer motion are unchanged.
+The precise wire values remain scaled pixel units; they do not guarantee content pixels.
+The guest divides them by output scale and sends `wl_pointer.axis` with source `finger`.
+Ordinary wheel clicks still use axis value 15 and value120 120 per click.
+
+[Xwayland's scroll dispatch](https://gitlab.freedesktop.org/xorg/xserver/-/blob/xwayland-24.1.6/hw/xwayland/xwayland-input.c)
+converts an axis value to XI2 increments by dividing by 10. The reference
+[Chromium X11 consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/events/x/events_x_utils.cc)
+uses 120 units per wheel increment; its
+[native Wayland consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/ozone/platform/wayland/host/wayland_pointer.cc)
+also converts axis values by 120/10. These explain the reference gain of 12; they do
+not establish a particular Steam build's embedded Chromium version. Newer Chromium
+has an unscaled-touchpad path, and other toolkits choose different steps or acceleration.
+No application identity selects the phone's calibration.
+
+For one axis, finger distance `d`, presented extent `V`, guest extent `P`, output scale
+`s`, and client response `g`, the phone sends `-d * P / V / 12`, the guest sends
+`-d * P / V / 12 / s`, and reference content moves by that amount times `g`.
+Rendering back into the presented surface multiplies by `s * V / P`, leaving
+`-d * g / 12`. Thus the reference `g = 12` follows finger distance independently of
+rotation, fitting and output scale, including 1.5; other responses remain proportional.
+Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
+model. The client does not infer or compensate for per-application response differences.
+
 ### Audio
 
 The computer's sound is one Opus stream: each `audio` message is one 20 ms packet (960

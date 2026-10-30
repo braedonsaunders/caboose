@@ -32,7 +32,10 @@ def main():
     parser.add_argument('--compositor-pid', type=int, required=True)
     parser.add_argument('--token-file', required=True)
     parser.add_argument('--port', type=int, default=15499)
+    parser.add_argument('--scale', type=float, default=1.5)
+    parser.add_argument('--precise-delta', type=float, default=24.0)
     args = parser.parse_args()
+    assert 0 < args.scale <= 4 and 0 < args.precise_delta <= 120
     runtime = Path(os.environ['XDG_RUNTIME_DIR']).resolve()
     control = Path(args.control).resolve()
     authority = Path(os.environ['XAUTHORITY']).resolve()
@@ -125,7 +128,7 @@ def main():
     deadline = time.monotonic() + 17
     try:
         send(0x81, dict(version=0, token=token.read_text().strip(), decoders=['h264'],
-                       displays=[dict(id=0, width=1200, height=900, scale=1.5, refresh_hz=60.0, hdr=False)]))
+                       displays=[dict(id=0, width=1200, height=900, scale=args.scale, refresh_hz=60.0, hdr=False)]))
         reader.start()
         for backend in ('x11', 'wayland'):
             profile = runtime / ('chromium-' + backend)
@@ -148,7 +151,7 @@ def main():
                     if not title.startswith('pointer-fixture:{'):
                         return w, None
                     assert bool(w['x11']) == (backend == 'x11')
-                    assert w['scale'] == 1.5
+                    assert w['scale'] == args.scale
                     return w, json.loads(title.removeprefix('pointer-fixture:'))
 
                 def wait_for(predicate, seconds=1.5):
@@ -186,10 +189,11 @@ def main():
                     time.sleep(.08)
                 _, wheeled = wait_for(lambda _w, s: s['scrollY'] > clicked['scrollY'] and s['wheels'] > clicked['wheels'])
                 for n in range(3):
-                    pointer(160 + n * 3, 176 + n * 2, scroll=dict(dx=0.0, dy=24.0, precise=True))
+                    pointer(160 + n * 3, 176 + n * 2, scroll=dict(dx=0.0, dy=args.precise_delta, precise=True))
                     time.sleep(.08)
                 _, precise = wait_for(lambda _w, s: s['scrollY'] > wheeled['scrollY'] and s['wheels'] > wheeled['wheels'])
                 print(json.dumps(dict(backend=backend, id=identifier, scale=window['scale'],
+                                      precise_input=dict(samples=3, dy=args.precise_delta),
                                       moved=moved, moved_again=moved_again, clicked=clicked,
                                       wheel=wheeled, precise=precise)), flush=True)
                 print('PASS: ' + backend + ' content scrolls for wheel and precise input; motion/buttons preserved', flush=True)

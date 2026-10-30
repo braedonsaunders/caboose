@@ -454,6 +454,18 @@ oracle; the page does not implement scrolling itself. Run in the private network
 container under a 20-second process deadline. The script closes its session and browser
 process groups, and the harness reaps its compositor and entire container.
 
+`--scale` selects the output scale (default 1.5); `--precise-delta` selects each of
+three precise samples (default 24). The result includes these inputs, DOM wheel delta
+sums/mode and actual `scrollY`. On a fresh private seat for each run, compare
+`--precise-delta 24` with `--precise-delta 2` to exercise the phone's direct-content
+calibration, then repeat at scales 1 and 3. Subtract the `wheel` snapshot from `precise`
+for both DOM deltas and content displacement. The X11 and native Wayland results are
+reported separately; acceptance requires movement, not a universal pixel gain.
+The [phone unit trace](../../docs/display.md#direct-content-scroll-units) describes
+how to map the measured content distance back through a presented surface. Retain
+image digest, compositor hash and Chromium version alongside results. This fixture
+uses protocol pointer input; native `wl_touch` scrolling remains a separate device check.
+
 ### Fullscreen output resize regression
 
 `scripts/check-output-resize.py` checks native Wayland and X11 GTK3 windows on a

@@ -2616,7 +2616,11 @@ and restores its dock.
   retain direct dragging. The free desktop uses the same finger pan/hold convention for
   content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
-  phone trackpad. A new touch, context action, target change, detach or app backgrounding
+  phone trackpad. Direct content pans map local points through the presented surface to
+  guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
+  scrolling and dedicated phone trackpads retain their existing gain. This calibrates
+  the Xwayland/Chromium reference response; other applications retain their own scroll
+  interpretation (see [scroll units](display.md#direct-content-scroll-units)). A new touch, context action, target change, detach or app backgrounding
   stops client inertia. Card and free-desktop scroll delivery is fenced to the original
   connection and geometry. Changing the finger count during an emulated pan cancels
   that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without
