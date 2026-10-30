@@ -118,6 +118,10 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         // Do not close/reuse descriptors until every running bridge/decoder task exits.
         dispatch_group_wait(self->_workers, DISPATCH_TIME_FOREVER);
+        if (self->_connection) {
+            nw_connection_set_state_changed_handler(self->_connection, nullptr);
+            self->_connection = nullptr;
+        }
         if (self->_decoderFd >= 0) { close(self->_decoderFd); self->_decoderFd = -1; }
         if (self->_bridgeFd >= 0) { close(self->_bridgeFd); self->_bridgeFd = -1; }
         if (self->_diagnostic) {
