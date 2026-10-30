@@ -35,6 +35,19 @@ Release-only waits can expire without closing the connection; they send no
 request and create no uncertain submission. `waitAnyReleased` can poll with an
 already expired deadline. Other operation deadlines terminate the transport.
 
+The indexed client also encodes CREATE/MAP/ACQUIRE/CANCEL/RETIRE/PRESENT controls
+and validates the native count and returned indices. It preserves an acquire that
+wins a cancellation race and keeps the platform errno separate from the explicit
+local completion reason. Owner revocation stops new admission without discarding
+an in-flight acquire result. Request IDs share a surface-wide counter; native
+swapchain IDs and present serials use monotonic admission high-water marks.
+
+Indexed source-release proof remains available in a bounded per-image ledger.
+Active frame bookkeeping is removed only after matching submission, source release
+and final `PRESENT_RETIRED` (kind 36). A rejected-without-submission result removes
+its frame record; uncertain work remains reserved. Late native failure events are
+retained until final retirement. None of these records signals a guest semaphore.
+
 `../prepare_virtual_wsi_surface.py` installs the native Wayland instance and
 physical-device query overrides from `mesa_surface.inc` into a separately prepared
 private Mesa tree. It checks the exact pinned upstream blobs and each insertion
@@ -55,11 +68,11 @@ The private device advertises no swapchain or dependent presentation extensions,
 and surface support returns false: the implemented swapchain path is absent.
 Other surface-platform extensions are disabled for this private path. The query
 values are unmodified actual provider properties, not claims of a usable device.
-This source provides no swapchain, acquire synchronization, coherent memory support
-or game presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
-Vulkan swapchain acquisition or semaphore/fence signaling. The current record set
-has no native swapchain create/acquire operation, source-to-provider-index mapping
-or acquire semaphore/fence ownership contract.
+The Mesa device swapchain entrypoints are not installed. This source provides no
+active swapchain, acquire synchronization, coherent memory support or game
+presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
+Vulkan swapchain acquisition or semaphore/fence signaling. The indexed control
+client does not activate a v4 handshake or advertise the native indexed feature.
 
 The Mesa check is syntax-only against the retained generated headers and compiler
 command. `check_mesa_surface.py COMPILE_COMMANDS_JSON TRANSLATED_DEVICE_CPP`
@@ -77,6 +90,9 @@ With an existing C++17 toolchain in an isolated Linux environment:
 c++ -std=c++17 -Wall -Wextra -Werror client.cpp test_client.cpp -o /tmp/test-wsi
 timeout 15 /tmp/test-wsi
 python3 check_vectors.py /tmp/test-wsi
+c++ -std=c++17 -Wall -Wextra -Werror client.cpp test_indexed.cpp -o /tmp/test-indexed
+timeout 15 /tmp/test-indexed
+python3 check_vectors.py /tmp/test-wsi ../../broker/live-swapchain-vectors.json
 ```
 
 The test executable uses temporary Unix sockets and reaps its fake peer children.
@@ -85,3 +101,7 @@ and checks terminal EOF without retirement. The vector check reads the independe
 frozen CGLV surface vectors from `guest/gpu/broker`, wraps their receiver records
 in CGLS, and exercises every truncated prefix and invalid header. These are
 transport tests, not real compositor, Vulkan or physical-phone evidence.
+The indexed fixture checks 130 frames, cancellation racing actual acquisition,
+foreign-platform timeout provenance, owner revocation during acquire, and an index
+outside the provider's actual count. Additional frozen vector paths are explicit
+arguments to `check_vectors.py`.

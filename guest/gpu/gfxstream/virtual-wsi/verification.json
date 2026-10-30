@@ -11,19 +11,22 @@
   "results": {
     "compileExit": 0,
     "seqpacketLifecycleScenarios": 6,
-    "independentVectorAndMalformedChecks": 764,
-    "containerRemoved": true
+    "independentVectorAndMalformedChecks": 1601,
+    "containerRemoved": true,
+    "indexedScenarios": 5,
+    "indexedFrameCount": 130
   },
   "sha256": {
-    "client.h": "0de57174cfdac1d625968b3b739aedada7d16f9d00e06f323ce010971ca722f5",
-    "wire.h": "529764a212b9fc1b60e6dfbd683ac806224e09cb28d408d165e5f9b847317c62",
-    "client.cpp": "a915a9b0c7b84cb013c5d85b096cb2e00d485f2ff787f278931e4b01a1dac83a",
+    "client.h": "a0bf5c4ccf62a7a304eb93e62aea2d9e7918be5e9abc2dbd452edeedfcc3731d",
+    "wire.h": "65e29bd79a5b38123f5fd490f8a86c60db408e99b164eebcd38671b9ac984662",
+    "client.cpp": "fa9621e19d49fbf413d900423d76b851c67bc4e57f2370b56ada0a6ec9d53340",
     "test_client.cpp": "31a4fc1b188694bf9b00e44f04bb03b386a25e4bec253b954951ddbca8afbb9f",
-    "check_vectors.py": "7c281ec7c1ac9ca3eeb08f3ee88a7e5575172b63f8d033aacbbc00f487d2a2e4",
+    "check_vectors.py": "c1f62da25e9b99491cb3187e9bcda1c52b9c8c598b56412f94b6292c5bd9068b",
     "../../broker/live-surface-vectors.json": "463f422473d7994fef3eab55717c68b6931619e02752eba41060a547bd520cde",
     "mesa_surface.inc": "6e9cd7d1f31d9398c4969191b9dbf3a8af5715672d2d1b51ecf17504c6c74be8",
     "check_mesa_surface.py": "eb638311250b8c87d5d06c8944733d4a585efa843d57c63e286daf615847f0e5",
-    "../prepare_virtual_wsi_surface.py": "a4c484c0cdfc0879d95363c3fd597efb042b19a4e2c2283a520c7dfc773c778c"
+    "../prepare_virtual_wsi_surface.py": "a4c484c0cdfc0879d95363c3fd597efb042b19a4e2c2283a520c7dfc773c778c",
+    "test_indexed.cpp": "8d1d077519011460044a766a816a33d814b669315b49d536a034064e8f83fdfc"
   },
   "mesaSurfaceSyntax": {
     "scope": "one device translation unit, syntax only, no link or runtime evidence",
@@ -39,6 +42,11 @@
     "exit": 0,
     "containerRemoved": true,
     "sourceSha256": "a2e5d0adbb0676769ca3629b36e30edd2b77f955fcf58aa5ebe03c15f1688e20",
-    "compilerArgvSha256": "b6b3155b333ff072681c32f4e4e5d0801c6aa0a13835185c90813c2acc5bc0cc"
+    "compilerArgvSha256": "b6b3155b333ff072681c32f4e4e5d0801c6aa0a13835185c90813c2acc5bc0cc",
+    "testedSourceCommit": "913205f6"
+  },
+  "indexedVectors": {
+    "commit": "4e42e5cf",
+    "sha256": "547959c7397970487aea3704a7902e0ad41838df928d77c6e5498b0182a91d6b"
   }
 }

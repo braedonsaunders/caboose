@@ -51,7 +51,8 @@ inline Record decode(const Bytes& b) {
         require(p.size()==16); const auto s=status(p,0);
         require(s.nativeError && !s.hasVk); return r;
     }
-    require(r.kind==17 || r.kind==19 || r.kind==21 || r.kind==22 || r.kind==24);
+    require(r.kind==17 || r.kind==19 || r.kind==21 || r.kind==22 || r.kind==24 ||
+            r.kind==26 || r.kind==28 || r.kind==30 || r.kind==33 || r.kind==35 || r.kind==36);
     identity(p,r.kind==17 ? 8 : 0);
     if (r.kind==17) { require(p.size()==64 && u64(p,0)); status(p,48); }
     if (r.kind==24) { require(p.size()==56); status(p,40); }
@@ -75,6 +76,24 @@ inline Record decode(const Bytes& b) {
             require(std::find(seen.begin(),seen.end(),family)==seen.end() && u32(p,n+8) && u32(p,n+12)<=1);
             seen.push_back(family);
         }
+    }
+    if (r.kind==35) require(p.size()==40);
+    if (r.kind==36) require(p.size()==56 && u64(p,40) && u64(p,48));
+    if (r.kind==26) {
+        require(p.size()==80 && u64(p,40) && !u32(p,76));
+        auto s=status(p,56);
+        if (s.success() && s.hasVk) require(u64(p,48) && u32(p,72)>=1 && u32(p,72)<=256);
+        else require((s.nativeError || (s.hasVk && s.vk)) && !u64(p,48) && !u32(p,72));
+    }
+    if (r.kind==28 || r.kind==33) { require(p.size()==64 && u64(p,40)); status(p,48); }
+    if (r.kind==30) {
+        require(p.size()==88 && u64(p,40) && u64(p,48));
+        auto s=status(p,56);
+        bool success=!s.nativeError && s.hasVk && (s.vk==0 || s.vk==1000001003);
+        require(u32(p,72)==uint32_t(success) && (success ? u32(p,76)<256 : !u32(p,76)));
+        auto reason=u32(p,80);
+        require(reason<=3 && !u32(p,84) && (s.nativeError || s.hasVk));
+        require((!reason && !s.nativeError) || (reason && s.nativeError && !s.hasVk));
     }
     return r;
 }

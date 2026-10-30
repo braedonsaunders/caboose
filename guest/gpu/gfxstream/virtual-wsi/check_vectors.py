@@ -7,12 +7,14 @@ import subprocess
 import sys
 
 vectors = json.loads((Path(__file__).resolve().parents[2] / 'broker/live-surface-vectors.json').read_text())
+for extra in sys.argv[2:]:
+    vectors.extend(json.loads(Path(extra).read_text()))
 packets = []
 expected = []
 for vector in vectors:
     raw = bytes.fromhex(vector['wire'])
     kind = struct.unpack_from('<H', raw, 6)[0]
-    if kind not in (17, 19, 21, 22, 24):
+    if kind not in (17, 19, 21, 22, 24, 26, 28, 30, 33, 35, 36):
         continue
     body = bytes.fromhex(vector['payload'])
     if kind == 17:
