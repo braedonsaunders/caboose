@@ -6,7 +6,7 @@
 #include <cerrno>
 #include <new>
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
-#include "memory_audit.h"
+#include "frame_buffer.h"
 #include "layer_extent_diagnostic.h"
 #include <cstdio>
 #endif
@@ -23,8 +23,10 @@ uint32_t extentExceptionCategory(NSException* exception) {
     return 4;
 }
 bool extentAuditEnabled() {
-    caboose_gpu_memory_features features{};
-    return caboose_gpu_runtime_memory_features(&features) == 0;
+    // The attached surface retains its initialized decoder instance. Features
+    // are immutable after startup; do not acquire the runtime mutex on main.
+    const auto* fb = gfxstream::host::FrameBuffer::getFB();
+    return fb && fb->getFeatures().CabooseMemoryAudit.enabled();
 }
 void traceExtent(bool enabled, CAMetalLayer* layer, uint32_t width, uint32_t height,
                  uint32_t stage, uint32_t event = 0, uint32_t exception = 0) {
