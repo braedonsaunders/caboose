@@ -14,6 +14,8 @@ typedef struct caboose_gpu_memory_receipt {
     uint32_t host_index;
     uint32_t guest_flags;
     uint32_t host_flags;
+    uint32_t guest_flags_valid;
+    uint32_t host_flags_valid;
     uint32_t external_import; // emulated ColorBuffer/Buffer import path
     uint32_t has_pnext;       // nonzero if guest allocation supplied extensions
     uint64_t guest_size;

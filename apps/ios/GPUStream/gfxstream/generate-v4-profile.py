@@ -17,10 +17,10 @@ PATCHED_INPUTS = {
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }
 AUDIT_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'a8b46388e081a92bba6b24724e9641f13a7e700660e5c1a2c47886ddf17e9823',
+    'host/vulkan/vk_decoder_global_state.cpp': 'ba594d68a0537772cfc7d44f83be386f9f78c9614de8eccf64086909ece7bc2f',
     'host/vulkan/vk_decoder_global_state.h': 'e82d4d3ab823d8ea4b963392b36de0889c07476a06ca2045233d89336ef8935a',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
-    'host/vulkan/caboose_memory_audit.h': '79c054eeb80ef61226180379ea285206096c746e8c713cac7a1800c8f9ac6fe9',
+    'host/vulkan/caboose_memory_audit.h': 'b5222fb3c27e924694ee064352104a38aa733dd545fabe432ed53bf39b28970d',
 }
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
               'vkQueueBindSparse', 'vkQueueWaitIdle'}

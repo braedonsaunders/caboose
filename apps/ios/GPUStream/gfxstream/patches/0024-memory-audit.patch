@@ -7,26 +7,32 @@
 +        if (!contextId || !count || !m_vkEmulation->getFeatures().CabooseMemoryAudit.enabled()) return false;
 +        return mCabooseMemoryAudit.read(contextId, out, capacity, count);
 +    }
-@@ -7599,0 +7606,3 @@
+@@ -7599,0 +7606,4 @@
 +        VkPhysicalDeviceMemoryProperties auditHostProperties{};
 +        uint32_t auditGuestFlags = 0;
++        bool auditGuestFlagsValid = false;
 +        const bool auditMemory = m_vkEmulation->getFeatures().CabooseMemoryAudit.enabled();
-@@ -7623,0 +7633,6 @@
+@@ -7623,0 +7634,8 @@
 +            if (auditMemory) {
 +                auditHostProperties = physicalDeviceInfo->memoryPropertiesHelper->getHostMemoryProperties();
 +                const auto& guest = physicalDeviceInfo->memoryPropertiesHelper->getGuestMemoryProperties();
-+                if (!importEmulatedExternalMemory && pAllocateInfo->memoryTypeIndex < guest.memoryTypeCount)
++                if (!importEmulatedExternalMemory && pAllocateInfo->memoryTypeIndex < guest.memoryTypeCount) {
 +                    auditGuestFlags = guest.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags;
++                    auditGuestFlagsValid = true;
++                }
 +            }
-@@ -7884,0 +7900,15 @@
+@@ -7884,0 +7903,18 @@
 +        if (auditMemory) {
 +            caboose_gpu_memory_receipt receipt{};
 +            receipt.context_id = virtioGpuContextId;
 +            receipt.guest_index = pAllocateInfo->memoryTypeIndex;
 +            receipt.host_index = localAllocInfo.memoryTypeIndex;
 +            receipt.guest_flags = auditGuestFlags;
-+            if (receipt.host_index < auditHostProperties.memoryTypeCount)
++            receipt.guest_flags_valid = auditGuestFlagsValid ? 1u : 0u;
++            if (receipt.host_index < auditHostProperties.memoryTypeCount) {
 +                receipt.host_flags = auditHostProperties.memoryTypes[receipt.host_index].propertyFlags;
++                receipt.host_flags_valid = 1;
++            }
 +            receipt.external_import = importEmulatedExternalMemory ? 1u : 0u;
 +            receipt.has_pnext = pAllocateInfo->pNext ? 1u : 0u;
 +            receipt.guest_size = pAllocateInfo->allocationSize;
@@ -34,9 +40,9 @@
 +            receipt.provider_result = static_cast<int32_t>(result);
 +            mCabooseMemoryAudit.record(receipt);
 +        }
-@@ -12277,0 +12308 @@
+@@ -12277,0 +12314 @@
 +    caboose::gpuv2::MemoryAuditRing mCabooseMemoryAudit;
-@@ -12478,0 +12510,5 @@
+@@ -12478,0 +12516,5 @@
 +bool VkDecoderGlobalState::readCabooseMemoryAudit(uint32_t contextId,
 +    caboose_gpu_memory_receipt* out, size_t capacity, size_t* count) {
 +    return mImpl->readCabooseMemoryAudit(contextId, out, capacity, count);
@@ -58,7 +64,7 @@
 +    };
 --- /dev/null
 +++ b/host/vulkan/caboose_memory_audit.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,74 @@
 +// Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 +#pragma once
 +#include <stddef.h>
@@ -75,6 +81,8 @@
 +    uint32_t host_index;
 +    uint32_t guest_flags;
 +    uint32_t host_flags;
++    uint32_t guest_flags_valid;
++    uint32_t host_flags_valid;
 +    uint32_t external_import; // emulated ColorBuffer/Buffer import path
 +    uint32_t has_pnext;       // nonzero if guest allocation supplied extensions
 +    uint64_t guest_size;
