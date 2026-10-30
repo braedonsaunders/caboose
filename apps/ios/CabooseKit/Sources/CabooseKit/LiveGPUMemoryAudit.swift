@@ -71,6 +71,14 @@ enum LiveGPUMemoryAudit {
         }
         terminal(fields)
     }
+    static func surfaceConfigured(width: UInt32, height: UInt32, code: Int32) {
+        terminal(["kind": "surfaceConfigured", "width": width, "height": height, "errno": code])
+    }
+    static func swapchainCreated(_ status: LiveGPUSurfaceStatus, count: UInt32) {
+        var fields: [String: Any] = ["kind": "swapchainCreated", "errno": status.nativeErrno, "imageCount": count]
+        if let result = status.vkResult { fields["vkResult"] = result }
+        terminal(fields)
+    }
     static func surfaceBind(_ status: LiveGPUSurfaceStatus) {
         var fields: [String: Any] = ["kind": "surfaceBind", "errno": status.nativeErrno]
         if let result = status.vkResult { fields["vkResult"] = result }

@@ -122,6 +122,9 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
                 }
             }
         } catch { return (.init(nativeErrno: EIO, vkResult: nil), nil) }
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.surfaceConfigured(width: request.width, height: request.height, code: configured)
+        #endif
         guard configured == 0 else { return (.init(nativeErrno: configured > 0 ? configured : EIO, vkResult: nil), nil) }
         guard lease.isValid else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
         var info = caboose_gpu_swapchain_create_info()
@@ -140,6 +143,9 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
             return caboose_gpu_virtual_swapchain_create(pointer, &info, &output, &id, &count, &status)
         }
         let actual = indexedStatus(status)
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.swapchainCreated(actual, count: count)
+        #endif
         let value = output.map { LinkedLiveGPUIndexedSwapchain(pointer: $0, id: id, count: count,
                                                              identity: bind.identity, parent: self) }
         if code != 0 && actual.querySucceeded { return (.init(nativeErrno: EIO, vkResult: nil), value) }
