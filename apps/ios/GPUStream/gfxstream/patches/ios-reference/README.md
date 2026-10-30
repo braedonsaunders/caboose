@@ -7,7 +7,10 @@ GPU execution, stream compatibility, coherent memory or physical-phone behavior.
 
 Prepare a private gfxstream copy at pinned commit
 `f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be`, and apply the loader patch 0001 and
-headless patches 0002, 0003, 0004 in that order with `git apply --unidiff-zero`.
+headless patches 0002 through 0008, then 0010 in that order with
+`git apply --unidiff-zero`. Patch 0009 independently propagates compositor pipeline
+creation failure and is required for runtime acceptance; it is not included in
+the retained link-only result.
 Keep a separate private snapshot of the Caboose gfxstream adapter. Use an iOS arm64
 MoltenVK 1.4.2 archive from the verified stock release; the archive used for this
 probe has SHA-256 `245e7e05926c55ae97ace1b1822190139d87bda5aaefbcfd2f5156e1287f448b`.
@@ -30,6 +33,6 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cmake --build \
 
 The executable references actual framebuffer, process registry, decoder connection,
 loader injection and MoltenVK entrypoints so the final link must resolve them. No
-stub window, replacement decoder or fake GPU implementation is linked. Compiler
-and link errors remain possible until this target has been exercised; no success
-is implied by this recipe.
+stub window, replacement decoder or fake GPU implementation is linked. The arm64 iOS 26 link succeeds with these patches and the pinned archive. It
+does not execute Vulkan, validate shaders on a device, or prove decoder runtime
+correctness.

@@ -1,0 +1,34 @@
+--- a/host/vulkan/compositor_vk.cpp
++++ b/host/vulkan/compositor_vk.cpp
+@@ -379,21 +379,27 @@
+     const auto fragShaderMod = createShaderModule(m_vk, m_vkDevice, fragSpvBuff);
+ 
+     // Setup the pipeline for all non-YCbCr formats (GfxstreamFormat::UNKNOWN):
+-    setUpGraphicsPipeline(vertShaderMod, fragShaderMod, GfxstreamFormat::UNKNOWN);
++    bool success =
++        setUpGraphicsPipeline(vertShaderMod, fragShaderMod, GfxstreamFormat::UNKNOWN);
+ 
+     // Setup the pipeline for all YCbCr formats:
+     //
+     // TODO(b/389646068): Current descriptor management in the compositor doesn't allow on demand
+     // format addition and this exploits a pre-warmed sampler pool to support ycbcr format. We need
+     // to get it running on-demand to be able to support other formats
+-    for (GfxstreamFormat format : m_ycbcrSamplerPool->getAllFormats()) {
+-        setUpGraphicsPipeline(vertShaderMod, fragShaderMod, format);
++    if (success) {
++        for (GfxstreamFormat format : m_ycbcrSamplerPool->getAllFormats()) {
++            if (!setUpGraphicsPipeline(vertShaderMod, fragShaderMod, format)) {
++                success = false;
++                break;
++            }
++        }
+     }
+ 
+     m_vk.vkDestroyShaderModule(m_vkDevice, vertShaderMod, nullptr);
+     m_vk.vkDestroyShaderModule(m_vkDevice, fragShaderMod, nullptr);
+ 
+-    return true;
++    return success;
+ }
+ 
+ bool CompositorVk::setUpRenderPasses() {

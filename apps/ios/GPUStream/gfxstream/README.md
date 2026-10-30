@@ -3,7 +3,9 @@
 This directory contains experimental source adapters. It is not connected to the
 shipping player or display handshake and does not provide a working iOS virtual
 GPU. The [macOS reference](macos-reference/README.md) contains a real-backend build
-recipe and lifecycle fixture; the full target remains uncompiled and untested.
+recipe and lifecycle fixture. The Linux reference executes the private Mesa
+compute/CPU/indirect-draw oracle on lavapipe; the iOS reference links the real
+backend and stock MoltenVK. Neither establishes physical-phone execution.
 
 ## Pinned source
 
@@ -59,7 +61,8 @@ c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
 
 The standalone framing fixture passes on macOS with assertions enabled. It does
 not invoke the upstream decoder or validate arbitrary Vulkan command fields;
-the changed decoder wiring still requires an integrated build and runtime check.
+the integrated Linux receiver also exercises the decoder. Arbitrary payload and
+handle validation is not established by these checks.
 
 ## Process lifetime
 
@@ -73,8 +76,8 @@ registry destruction and framebuffer finalization against every API call. A run
 call uses one socket on its calling thread. Stop revokes admission, signals guest
 process death and shuts down active sockets. Finish rejects processes with active
 runs; destruction waits for upstream asynchronous cleanup. A connection error is
-returned to its caller and does not stop unrelated processes. The registry passes a macOS syntax check against the pinned upstream headers;
-linking and runtime behavior remain unverified.
+returned to its caller and does not stop unrelated processes. The registry is linked into the iOS reference and its two-process lifecycle is
+exercised by the Linux reference. Physical-device cleanup remains unverified.
 
 ## Real backend and loader
 
@@ -94,20 +97,28 @@ must complete before framebuffer finalization.
 
 The adapter CMake target requires upstream backend targets. The macOS reference
 retains the real GL-capable desktop backend and its AppKit dependencies. The
-patches in `patches/` contain uncompiled GLES-disabled factoring; their remaining
-Apple symbol issues are recorded in [the source audit](patches/apple-source-audit.md).
-Patch application is not evidence of an iOS linkable target.
+patches in `patches/` provide the GLES-disabled iOS reference. Its static link
+includes the real framebuffer, Vulkan decoder and stock MoltenVK; native surfaces
+and GL readback remain unsupported. The [source audit](patches/apple-source-audit.md)
+describes these boundaries.
 
 ## Memory and proof boundary
 
 The decoder's non-direct flush/invalidate path carries actual mapped memory bytes.
 The experimental Mesa patches add explicit non-coherent shadows but keep driver
-initialization disabled. Mandatory coherent memory, complete schema validation,
-malformed-input handling and end-to-end feedback are not implemented or proven by
-these adapters. No feature bits or existing game settings are changed.
+initialization disabled. Mandatory coherent memory, complete schema validation and hostile-input safety
+remain unimplemented or unproven. Explicit non-coherent GPU feedback and a
+CPU-dependent indirect draw pass through the private Linux receiver. No feature bits or existing game settings are changed.
 
 The [compute acceptance fixtures](../../../../guest/gpu/emulation-check/README.md)
 require actual GPU words and a CPU-dependent second draw. A physical-phone run of
 that live path, along with lifecycle and synchronization tests, is absent. The
 macOS lifecycle fixture sends startup flags and EOF only; it is not compute or
 readback evidence.
+
+`0009-propagate-compositor-pipeline-failure.patch` returns pipeline creation
+failure to `CompositorVk::create` after releasing its temporary shader modules.
+The upstream emulation initializer treats that failure as fatal. The macOS
+reference currently fails on a MoltenVK argument-buffer shader conversion error;
+a successful process exit without checking those pipeline failures is not a
+valid backend acceptance result.
