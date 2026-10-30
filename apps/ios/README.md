@@ -1100,3 +1100,18 @@ sleep through the skipped silence, use libopus as its encoder, or establish phon
 quality. Run it with `swift test --jobs 1 --filter OpusStartupContinuityTests`.
 `AudioStartupDiagnosticsTests` covers window/generation boundaries, timestamp ordering,
 metadata schema, single-read placement and shared writer caps without playing audio.
+
+
+### Configure Shortcuts
+
+Open **Computer settings > Shortcuts** to browse Caboose’s actions or create a shortcut
+in Apple Shortcuts. Add **Export Files**, choose an app, files and an output format,
+and connect its output to Save File, Share or another action. Parameters can use an
+earlier action’s output or Ask Each Time. PhotoCraft converts 1–20 images, LightCraft
+develops one photo, and FilmCraft exports one project; install the selected app in
+Library first. **Combine PDFs** is a separate action. The settings screen also explains
+app launch and file actions and remains available when the host is offline.
+
+Run `swift test --filter FileExportTests` in `CabooseKit` for export validation. On a
+paired phone, follow `sh scripts/check-shortcuts.sh` to verify the system editor and
+end-to-end file results.

@@ -2732,6 +2732,14 @@ files, and run the four Craft operations. App shortcuts offer phrases to Siri an
 Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
 
+Computer settings > Shortcuts opens Caboose’s page in Apple Shortcuts or a new shortcut
+editor, including while the host is unavailable. Users choose actions and configure their
+parameters in Apple Shortcuts. The advertised actions include Export Files and Combine
+PDFs. Export Files takes an app (PhotoCraft, LightCraft or FilmCraft), files, and a format;
+the format options follow the selected app. It validates format and input count before
+staging files. The selected app must be installed on the computer. The three individual
+export intents remain executable for saved shortcuts but are hidden from action discovery.
+
 Craft intents stage their inputs under `.caboose-jobs/<job>` through `/v1/fs`, call
 `POST /v1/catalog/:id/run`, download the outputs, and move the job directory to Trash after
 success. A failed or interrupted job's directory is kept for inspection. CLI warnings are
