@@ -63,6 +63,8 @@ final class AppModel {
     private(set) var computer: HostClient.Session.Computer?
     private(set) var apps: [HostClient.App] = []
     private(set) var appIcons: [String: UIImage] = [:]
+    private let appListCache = AppListCache()
+    private var appsLoadedRevision: Int?
     /// The window shown full screen, if any.
     var presentedWindowID: Int? {
         didSet {
@@ -142,6 +144,7 @@ final class AppModel {
         credentials = saved
         phase = saved == nil ? .needsSetup : .waking
         shortcuts = Self.loadShortcuts(for: saved)
+        restoreCachedApps(for: saved)
         bindConnectionCenters()
         registerFiles()
         link.attempt = { [weak self] in await self?.wake(quiet: true) }
@@ -253,6 +256,7 @@ final class AppModel {
         self.credentials = saved
         savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
         shortcuts = Self.loadShortcuts(for: saved)
+        restoreCachedApps(for: saved)
         addingComputer = false
         phase = .waking
         registerFiles(name: saved.displayName)
@@ -291,6 +295,7 @@ final class AppModel {
         computerStatus = nil
         apps = []
         appIcons = [:]
+        appsLoadedRevision = nil
         clearFrameCache()
         lastDisplay = nil
         sessionIdentity = nil
@@ -325,8 +330,10 @@ final class AppModel {
     }
 
     func signOut() {
+        let oldPairing = credentials?.fileDomainIdentifier
         do { try Credentials.clear() }
         catch { pairingFailure = error.localizedDescription; return }
+        if let oldPairing { Task { await appListCache.remove(pairing: oldPairing) } }
         resetConnection()
         credentials = nil
         savedComputers = (try? Credentials.loadCollection().computers) ?? []
@@ -1045,15 +1052,17 @@ final class AppModel {
     func refreshApps() async {
         guard let host else { return }
         let revision = connectionRevision
+        let pairing = credentials?.fileDomainIdentifier
         for attempt in 0 ..< 10 {
             guard revision == connectionRevision else { return }
             do {
                 let list = try await host.apps()
                 guard revision == connectionRevision else { return }
                 ComputerSearch.indexApps(list)
-                apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                for app in list where appIcons[app.id] == nil {
-                    if let data = app.iconData, let image = UIImage(data: data) { appIcons[app.id] = image }
+                appsLoadedRevision = revision
+                applyApps(list)
+                if let pairing, let data = try? JSONEncoder().encode(list) {
+                    try? await appListCache.write(data, pairing: pairing)
                 }
                 return
             } catch HostClient.Failure.notRunning {
@@ -1062,6 +1071,27 @@ final class AppModel {
                 return
             }
         }
+    }
+
+    private func restoreCachedApps(for credentials: Credentials?) {
+        guard let pairing = credentials?.fileDomainIdentifier else { return }
+        let revision = connectionRevision
+        Task {
+            guard let data = await appListCache.read(pairing: pairing),
+                  revision == connectionRevision, appsLoadedRevision != revision,
+                  self.credentials?.fileDomainIdentifier == pairing,
+                  let list = try? JSONDecoder().decode([HostClient.App].self, from: data) else { return }
+            applyApps(list)
+        }
+    }
+
+    private func applyApps(_ list: [HostClient.App]) {
+        apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        var icons: [String: UIImage] = [:]
+        for app in list {
+            if let data = app.iconData, let image = UIImage(data: data) { icons[app.id] = image }
+        }
+        appIcons = icons
     }
 
     /// Real applications, and desktop settings panels and system utilities apart from them.

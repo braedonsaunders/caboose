@@ -313,6 +313,33 @@ of `vkcube --use_staging` against the Khronos mock driver (`GFXRECON_CAPTURE_FIL
 `GFXRECON_CAPTURE_COMPRESSION_TYPE=NONE`, `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct`)
 has 300 frames.
 
+`GPUDeviceCapabilities.queryJSON()` reports capabilities from the MoltenVK linked into
+the running app, without creating a Vulkan device or surface. It returns schema-versioned
+JSON with every physical device's core features, relevant limits, extension versions and
+all sixteen BC formats' sampled-image support, including the image-format query result.
+The query does not alter the guest profile. Rebuild the xcframework after changing this
+native API; an older binary lacks its symbols.
+
+The opt-in real-device check writes a report and verifies that an advertised BC feature
+agrees with all BC formats' sampled-image support. Run from `CabooseKit` after building
+the macOS slice:
+
+```sh
+CABOOSE_GPU_CAPABILITIES=/tmp/caboose-gpu-capabilities.json swift test --filter GPUDeviceCapabilities
+```
+
+For evidence from a signed iOS app, call the same API in the app process on that device,
+off the UI thread, and save the returned data to an app-accessible diagnostic file:
+
+```swift
+let report = try await Task.detached { try GPUDeviceCapabilities.queryJSON() }.value
+try report.write(to: diagnosticURL, options: .atomic)
+```
+
+A simulator or macOS report describes that host's GPU, not the phone. The report is a
+feature query, not a rendering test or a complete Khronos profile. Game compatibility
+still requires a real replay with the reported features.
+
 - **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
   replays at a time; a player started while another replays waits until that one stops.
 - **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
@@ -554,6 +581,13 @@ keyboard, as the system's vertical bar does. Desktop keeps its navigation and do
 when a Linux app requests fullscreen; that app fills the workspace above the dock. Where the system
 draws its vertical bar (iPhone Duo, iOS 27.1), and on iPad, the system's tab bar is used,
 except wide portrait Desktop, whose controls and navigation share the compact dock-side panel.
+With the native vertical bar, Ask, the Agent composer and the tiled Desktop dock end on
+the same bottom baseline. Check all three tabs on the closed Duo and after rotation;
+show the keyboard in Agents and confirm the composer still clears it.
+The last installed-app response (including icons, at most 16 MiB) is cached per pairing.
+Relaunch the phone app after its first successful app scan: Home and the dock retain their
+icons while the host refreshes. Switching computers never displays another pairing's apps;
+signing out removes its cache. Removed apps disappear on the next successful refresh.
 
 ## Computer settings
 

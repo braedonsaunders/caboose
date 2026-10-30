@@ -84,6 +84,21 @@ a11y_bus() {
     echo "No accessibility bus for the display in $envfile" >&2
 }
 
+# Publish only the seat's display variables, after display readiness. Portal processes
+# can start before the bridge's file watcher has observed the new display environment.
+activation_environment() {
+  local envfile=$1 bus=$2
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+    timeout 5 /bin/sh -c 'set -a; . "$0"; exec dbus-update-activation-environment DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR' "$envfile"
+}
+
+seat_ready() {
+  local port=$1 envfile=$2 bus=$3
+  caboose-display-ready 120 "$port" || return
+  activation_environment "$envfile" "$bus" || return
+  a11y_bus "$envfile" "$bus"
+}
+
 # A caboose-display instance (docs/display.md). Its launch environment goes to ENVFILE once
 # it is ready, and video passthrough uses VIDEO_SOCKET; extra arguments select the instance
 # (port, sockets, X display).
@@ -153,8 +168,8 @@ start_printing() {
 
 case ${1:-} in
   start) start_printing || echo "Printing unavailable" >&2; start_owner ;;
-  ready) caboose-display-ready 120 14600 && a11y_bus /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
-  start-agent) start_agent; caboose-display-ready 120 14601 && a11y_bus /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
+  ready) seat_ready 14600 /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
+  start-agent) start_agent; seat_ready 14601 /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py

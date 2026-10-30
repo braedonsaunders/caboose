@@ -58,7 +58,7 @@ struct ChatComposer: View {
         }
         .padding(12)
         .glassEffect(.regular, in: .rect(cornerRadius: 26))
-        .padding(.horizontal, 14).padding(.bottom, 8)
+        .padding(.horizontal, 14).shellComposerBottomPadding()
         .frame(maxWidth: 760)
         .frame(maxWidth: .infinity)
         .photosPicker(isPresented: $showingPhotos, selection: $photos, maxSelectionCount: max(1, 4 - draft.files.count), matching: .images)

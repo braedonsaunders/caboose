@@ -181,6 +181,9 @@ same installer to update computers whose disks predate the host:
   exact service script; readiness requires that process to own its listening socket.
   Container service startup also ensures the system and owner session buses are available
   for credential preparation, including on headless wakes, without starting a display.
+  Interactive seat readiness publishes that seat's current display variables to its
+  session bus before accessibility and applications start; D-Bus-activated portals use
+  the same display as directly launched applications.
 - `GET /v1/computer` reports `upgrade: null | { state, version?, message? }`, and
   `/v1/control` sends `computer.upgrade` with `state` `checking`, `updating`, `succeeded` or
   `failed`.
@@ -2393,7 +2396,21 @@ still goes to the computer. One stream replays at a time: a later stream's windo
 waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
 `gpu.destroy` with a reason leaves the window saying why its stream ended.
 
+`GPUDeviceCapabilities.queryJSON()` exposes an on-demand diagnostic of the same linked
+MoltenVK: physical devices, core features, relevant limits, extensions and BC format
+support. The C API returns schema-versioned JSON and owns no device or surface. Callers
+run the synchronous query off the UI thread. It does not change the display handshake,
+the computer's static profile or the renderer's advertised capabilities.
+
 ### Shell
+
+With the native vertical tab bar, Home's Ask field, the Agent composer and the tiled
+Desktop dock share a bottom baseline relative to the shell window's system safe area.
+The composer grows upward; showing the software keyboard restores its eight-point clearance.
+The phone keeps the last successful installed-app list and icons in a bounded, pairing-scoped
+cache. Home and the dock can draw while the host refreshes; a successful response replaces
+the cache, including an empty list. Sign-out removes that pairing's cache. Launches still
+resolve against the host's current installed apps.
 
 The app is a system tab view (SwiftUI `TabView` with `Tab`). Outside wide portrait Desktop,
 where the system draws a vertical bar, and on iPad, the tabs are the system's. On an iPhone whose bars are horizontal

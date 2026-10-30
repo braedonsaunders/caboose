@@ -63,6 +63,14 @@ while its window shows nothing.
 
 While a client renders a window's stream, the window sends no pictures.
 
+## Device diagnostics
+
+`GPUDeviceCapabilities.queryJSON()` queries the app's linked MoltenVK for each physical
+device's core Vulkan features, relevant limits, extensions and BC sampled-image format
+support. It creates an instance, but no device, surface or renderer. This diagnostic does
+not modify the computer's profile or establish that a game renders correctly. The device
+check and signed-app invocation are documented in [the iOS README](../apps/ios/README.md#gpu-streams).
+
 ## Limits
 
 - **The driver answers, not the client's GPU.** Fences and semaphores signal at once, and
