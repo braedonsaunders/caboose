@@ -165,17 +165,18 @@ Build it with `ninja -C /path/to/build -j2
     src/gfxstream/guest/vulkan/caboose_gfxstream_encoder_probe`. Invoke the
 result with the receiver's private Unix socket path and an external timeout.
 The probe uses Mesa's generated `VkEncoder::vkEnumerateInstanceVersion` and
-prints the actual Vulkan result and returned API version. It does not open the
+prints the actual Vulkan result, returned API version and instance extension count after querying the returned properties. It does not open the
 public ICD or exercise coherent memory, compute, readback or presentation.
 Transport loss in this probe can still terminate its process through upstream
 encoder reads; run it only as a supervised private child.
 
 Before Mesa's native zero client flags, the socket exchanges exactly 48 bytes:
-`CBGLREF1`, little-endian uint32 version 1, little-endian uint32 feature mask,
-and a 32-byte SHA-256 source-tuple fingerprint. The client expects mask zero;
+`CBGLREF1`, little-endian uint32 version 2, little-endian uint32 feature mask,
+and a 32-byte SHA-256 source-tuple fingerprint. The client expects mask `0x10`;
 the receiver checks its actual immutable configuration and echoes the hello
 only on an exact match. Mask bits 0, 1, 2 and 3 describe seqno, direct memory,
-VirtioGpuNext and ExternalBlob respectively. Unknown or mismatched bits fail
+VirtioGpuNext and ExternalBlob respectively; bit 4 selects the upstream
+null-optional-strings wire format. Unknown or mismatched bits fail
 before raw commands. Both peers require little-endian hosts. The fingerprint
 is SHA-256 of the following exact UTF-8 bytes including the final newline:
 
@@ -220,7 +221,7 @@ options above. Without that compile-time option, both socket gates remain in
 place. The diagnostic ICD must be selected only through a private loader
 manifest and must not be installed or advertised as a usable Vulkan device.
 
-In the diagnostic build, a socket-selected instance uses the validated zero-mask
+In the diagnostic build, a socket-selected instance uses the validated version 2
 private handshake and does not query VirtGpu caps, render control or VirtGpu
 metadata. The receiver/broker must authenticate and bind all streams from the
 client to the same process context; this association is outside the raw stream.

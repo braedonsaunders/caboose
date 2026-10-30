@@ -33,6 +33,10 @@ int main(int argc, char** argv) {
     if (tracker->getStreamFeatures() != 0 || tracker->usingDirectMapping()) return 1;
     auto* stream = new CabooseSocketStream(1024 * 1024);
     if (stream->connect(argv[1]) != 0) { std::perror("socket handshake"); stream->decRef(); return 1; }
+    // Enable the upstream wire bit only after the v2 hello was validated.
+    GfxStreamVkFeatureInfo features = {};
+    features.hasVulkanNullOptionalStrings = true;
+    gfxstream::vk::ResourceTracker::get()->setupFeatures(&features);
     const uint32_t flags = 0;
     if (stream->writeFully(&flags, sizeof(flags)) != 0) { stream->decRef(); return 1; }
     {

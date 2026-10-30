@@ -46,8 +46,11 @@ def apply(root):
         '    gfxstream::vk::ResourceTracker::get()->setupCaps(gNoRenderControlEnc);',
         '''#ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
     if (std::getenv("CABOOSE_GFXSTREAM_SOCKET")) {
-        // The validated private hello only permits feature mask zero. This is
-        // not a GPU capability declaration; Vulkan queries provide those.
+        // getConnectionManager validated the private v2 feature handshake.
+        // This is a wire-format feature, not a Vulkan hardware capability.
+        struct GfxStreamVkFeatureInfo features = {};
+        features.hasVulkanNullOptionalStrings = true;
+        gfxstream::vk::ResourceTracker::get()->setupFeatures(&features);
         gNoRenderControlEnc = 1;
     } else
 #endif

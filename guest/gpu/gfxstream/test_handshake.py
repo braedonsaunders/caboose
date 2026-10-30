@@ -16,7 +16,7 @@ class HandshakeFixture(unittest.TestCase):
         expected_source = (b'caboose-gfxstream-private-v1\n'
                            b'gfxstream=f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be\n'
                            b'mesa=541c56aa3fd24027ed46ae350287d21dcd56c901\n')
-        self.assertEqual(data, b'CBGLREF1' + struct.pack('<II', 1, 0) + hashlib.sha256(expected_source).digest())
+        self.assertEqual(data, b'CBGLREF1' + struct.pack('<II', 2, 0x10) + hashlib.sha256(expected_source).digest())
 
 
 if __name__ == '__main__':
