@@ -11,7 +11,8 @@ bool initializeHeadlessFramebuffer(const gfxstream::host::FeatureSet& features) 
     // Direct mapping assumes shared physical memory absent from socket transport.
     if (FrameBuffer::getFB() || !features.Vulkan.enabled() ||
         !features.GuestVulkanOnly.enabled() || features.VulkanNativeSwapchain.enabled() ||
-        features.GlDirectMem.enabled() || features.VirtioGpuNext.enabled()) return false;
+        features.GlDirectMem.enabled() || features.VirtioGpuNext.enabled() ||
+        features.ExternalBlob.enabled() || features.VulkanSnapshots.enabled()) return false;
     if (!FrameBuffer::initialize(1, 1, features, false)) return false;
     if (!FrameBuffer::getFB() || !FrameBuffer::getFB()->hasEmulationVk()) {
         FrameBuffer::finalize();

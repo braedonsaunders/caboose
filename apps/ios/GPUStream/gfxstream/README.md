@@ -178,3 +178,15 @@ Even with bounded packet buffering, upstream generated unmarshalling is not vali
 against hostile malformed fields, and incomplete multi-range flush retries may
 already have copied earlier ranges. These fixtures do not establish adversarial
 safety; the app feature remains disabled.
+
+`patches/0002-headless-target-draft.patch` is a source-audit starting point, not a
+buildable closure. It proposes a GLES-disabled target with the real framebuffer and
+Vulkan compositor, rejects native subwindows, and replaces macOS-only AppKit/IOKit
+CPU accounting with the existing Mach thread-accounting implementation on iOS. It
+applies with `git apply --check --unidiff-zero` to the pinned tree. Further source
+factoring is necessary: the upstream framebuffer still owns an `EmulationGl` object
+and contains GLES-dependent declarations and methods outside the guarded blocks.
+The target's exact symbol and Apple SDK link closure remains unverified. Upstream
+VM map/unmap callbacks default to no-ops; they cannot implement guest mappings. The
+experimental initializer therefore rejects direct mapping, VirtioGpuNext,
+ExternalBlob, and snapshot support. This does not supply coherent memory semantics.
