@@ -93,6 +93,11 @@ if(TARGET gfxstream_backend_static)
             if(NOT CABOOSE_SYNCHRONOUS_PROOF)
                 message(FATAL_ERROR "Indexed WSI requires the synchronous proof feature patch")
             endif()
+            file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/vulkan/vk_decoder_global_state.h"
+                CABOOSE_COMMAND_BUFFER_QUARANTINE REGEX "cabooseShouldSkipCmd")
+            if(NOT CABOOSE_COMMAND_BUFFER_QUARANTINE)
+                message(FATAL_ERROR "Indexed WSI requires the command buffer quarantine patch")
+            endif()
         endif()
         file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/features/include/gfxstream/host/features.h"
             CABOOSE_VIRTUAL_WSI_FEATURE REGEX "BoolFeatureInfo CabooseVirtualWsi")
