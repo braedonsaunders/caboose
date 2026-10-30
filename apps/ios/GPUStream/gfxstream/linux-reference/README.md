@@ -46,7 +46,9 @@ key and token files, and an owned mode-0700 socket directory. It creates the
 mode-0600 Unix socket only after authentication, refuses existing socket paths,
 accepts one same-UID local process, and removes its socket on exit. Total duration
 is at most 90 seconds; cumulative transferred bytes are capped at 128 MiB, with
-at most 64 KiB queued in either direction. EOF closes this single-use bridge; it
+at most 64 KiB queued in either direction. Each direction drains independently: guest input EOF
+sends TLS close-notify while decoder replies continue to flow back, and phone
+output EOF half-closes the guest read side after queued replies drain. It
 does not implement production stream resumption or multiple guest threads.
 
 `python3 phone_broker.py --help` lists the explicit paths and identity arguments.

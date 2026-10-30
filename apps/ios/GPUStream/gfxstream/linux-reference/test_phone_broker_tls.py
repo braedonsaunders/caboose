@@ -66,11 +66,15 @@ class TLSBrokerTests(unittest.TestCase):
                                 request = b"real byte transport\x00\xff" * 4000
                                 reply = bytes(range(256)) * 300
                                 guest.sendall(request)
+                                guest.shutdown(socket.SHUT_WR)
                                 self.assertEqual(receive_exact(phone, len(request), time.monotonic() + 5), request)
+                                self.assertEqual(phone.recv(1), b"")
+                                # A reply produced only after guest input EOF
+                                # must still traverse the opposite direction.
                                 for offset in range(0, len(reply), 1021):
                                     phone.sendall(reply[offset:offset + 1021])
                                 self.assertEqual(receive_exact(guest, len(reply), time.monotonic() + 5), reply)
-                                guest.shutdown(socket.SHUT_WR)
+                                phone.unwrap()
                                 completed = event()
                                 self.assertEqual(completed, {"event": "finished", "guest_bytes": len(request), "phone_bytes": len(reply)})
                         else:

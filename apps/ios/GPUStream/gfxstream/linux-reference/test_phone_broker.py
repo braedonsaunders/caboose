@@ -80,6 +80,7 @@ class BrokerTests(unittest.TestCase):
             for worker in workers:
                 worker.start()
             app.sendall(request)
+            app.shutdown(socket.SHUT_WR)
             received = bytearray()
             while len(received) < len(response):
                 chunk = app.recv(min(733, len(response) - len(received)))

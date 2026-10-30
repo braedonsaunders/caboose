@@ -45,7 +45,11 @@ def relay(guest, phone, deadline, max_bytes=MAX_BYTES):
     phone.setblocking(False)
     to_phone, to_guest = bytearray(), bytearray()
     counts = [0, 0]
-    ended = False
+    guest_eof = phone_eof = False
+    guest_write_closed = False
+    tls_shutdown_started = False
+    tls_shutdown_needs_write = False
+    tls_unwrapped = False
     while True:
         if time.monotonic() >= deadline:
             raise TimeoutError("relay deadline")
@@ -64,28 +68,65 @@ def relay(guest, phone, deadline, max_bytes=MAX_BYTES):
                 tls_write_needed = True
             except (ssl.SSLWantReadError, BlockingIOError):
                 pass
-        if not ended:
-            for index, source, pending in ((0, guest, to_phone), (1, phone, to_guest)):
-                if len(pending) == CHUNK:
-                    continue
-                try:
-                    data = source.recv(CHUNK - len(pending))
-                    if not data:
-                        ended = True
-                        break
-                    counts[index] += len(data)
-                    if sum(counts) > max_bytes:
-                        raise ValueError("diagnostic byte budget exceeded")
-                    pending.extend(data)
+        for index, source, pending, ended in ((0, guest, to_phone, guest_eof), (1, phone, to_guest, phone_eof)):
+            if ended or len(pending) == CHUNK:
+                continue
+            try:
+                data = source.recv(CHUNK - len(pending))
+                if not data:
+                    if index == 0:
+                        guest_eof = True
+                    else:
+                        phone_eof = True
                     progressed = True
+                    continue
+                counts[index] += len(data)
+                if sum(counts) > max_bytes:
+                    raise ValueError("diagnostic byte budget exceeded")
+                pending.extend(data)
+                progressed = True
+            except ssl.SSLWantWriteError:
+                tls_write_needed = True
+            except ssl.SSLZeroReturnError:
+                if index != 1:
+                    raise
+                phone_eof = True
+                progressed = True
+            except (ssl.SSLWantReadError, BlockingIOError):
+                pass
+        if phone_eof and not to_guest and not guest_write_closed:
+            guest.shutdown(socket.SHUT_WR)
+            guest_write_closed = True
+        if guest_eof and not to_phone and (not tls_shutdown_started or tls_shutdown_needs_write):
+            tls_shutdown_started = True
+            if isinstance(phone, ssl.SSLSocket):
+                # A nonblocking unwrap sends close_notify, then may need reads
+                # while the peer drains its independent output direction.
+                try:
+                    phone.unwrap()
+                    tls_shutdown_needs_write = False
+                    tls_unwrapped = True
+                    phone_eof = True
+                except ssl.SSLWantReadError:
+                    tls_shutdown_needs_write = False
                 except ssl.SSLWantWriteError:
+                    tls_shutdown_needs_write = True
                     tls_write_needed = True
-                except (ssl.SSLWantReadError, BlockingIOError):
-                    pass
-        if ended and not to_phone and not to_guest:
+            else:
+                phone.shutdown(socket.SHUT_WR)
+        if guest_eof and phone_eof and not to_phone and not to_guest:
+            if isinstance(phone, ssl.SSLSocket) and not tls_unwrapped:
+                try:
+                    phone.unwrap()
+                except ssl.SSLWantReadError:
+                    select.select([phone], [], [], min(0.05, max(0, deadline - time.monotonic())))
+                    continue
+                except ssl.SSLWantWriteError:
+                    select.select([], [phone], [], min(0.05, max(0, deadline - time.monotonic())))
+                    continue
             return {"guest_bytes": counts[0], "phone_bytes": counts[1]}
         if not progressed:
-            readers = [] if ended else [s for s, p in ((guest, to_phone), (phone, to_guest)) if len(p) < CHUNK]
+            readers = [s for s, p, ended in ((guest, to_phone, guest_eof), (phone, to_guest, phone_eof)) if not ended and len(p) < CHUNK]
             # SSL writes can require an incoming TLS control record.
             if to_phone and phone not in readers:
                 readers.append(phone)
