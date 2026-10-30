@@ -132,9 +132,6 @@ start_owner() {
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
-  # The phone's controllers, motion and buttons are made through /dev/uinput (passed in when
-  # the host has it); this container's node is the owner's display's to use.
-  if [ -c /dev/uinput ]; then chgrp caboose /dev/uinput && chmod 0660 /dev/uinput; fi
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
   bridge_daemon "$bus"
 }

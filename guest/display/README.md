@@ -400,3 +400,9 @@ debug compositor first (`cargo build` in the dev container). The dev image inclu
 PyGObject and GTK 3 introspection for this check. After deploying a new compositor,
 reopen a CLI launcher such as OpenCode: the phone supplies its single window header,
 while the terminal menu remains usable. Existing app processes must be reopened.
+
+Device checks accept `--token-file` and `--display-env` for isolated test instances,
+and `--expect-no-devices` verifies the agent seat omits capability and ignores offers.
+They reject unknown check names, bound helper processes, and open input/video nodes as
+`caboose` to check the owner's actual access before exercising them as root. Containers
+support the private microphone only; kernel input, camera and UHID checks require a VM.

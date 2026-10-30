@@ -139,8 +139,8 @@ TYPES = {"hello": 0x81, "ping": 0xFE, "devices": 0xB0, "device.camera": 0xB1, "d
 class Phone:
     """A phone on the owner's display: sends messages and collects the device ones."""
 
-    def __init__(self, port):
-        token = open(TOKEN).read().strip()
+    def __init__(self, port, token_file=TOKEN, expect_devices=True):
+        token = open(token_file).read().strip()
         self.ws = connect(f"ws://127.0.0.1:{port}/", subprotocols=["binary"], max_size=None, open_timeout=10)
         self.buffer = b""
         self.messages = []
@@ -153,7 +153,8 @@ class Phone:
         threading.Thread(target=self.read, daemon=True).start()
         threading.Thread(target=self.keepalive, daemon=True).start()
         hello = self.wait(lambda m: m[0] == "hello", 10)
-        if "devices" not in hello[1].get("features", []):
+        if ("devices" in hello[1].get("features", [])) != expect_devices:
+            self.close()
             raise Failed(f"the display does not accept devices (features {hello[1].get('features')})")
 
     def send(self, name, fields):
@@ -247,11 +248,10 @@ def read_events(fd, seconds, want):
 
 
 def check_mode(node):
-    st = os.stat(node)
-    import grp
-    group = grp.getgrgid(st.st_gid).gr_name
-    if group != "caboose" and st.st_mode & 0o006 != 0o006:
-        raise Failed(f"{node} is {oct(st.st_mode & 0o777)} {group}: the owner's applications cannot open it")
+    # Actually open as the owner: root's stat/access cannot prove ACLs and membership.
+    subprocess.run(["runuser", "-u", "caboose", "--", "python3", "-c",
+                    "import os,sys; fd=os.open(sys.argv[1], os.O_RDWR|os.O_NONBLOCK); os.close(fd)",
+                    node], check=True, timeout=5, capture_output=True)
 
 
 # ---- the checks ----
@@ -402,7 +402,7 @@ def h264_test_picture(size):
     w, h = size
     out = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size={w}x{h}:rate=30",
                           "-frames:v", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-bsf:v", "h264_mp4toannexb",
-                          "-f", "h264", "-"], check=True, capture_output=True)
+                          "-f", "h264", "-"], check=True, capture_output=True, timeout=15)
     return out.stdout
 
 
@@ -427,6 +427,7 @@ def check_camera(phone, status):
     finally:
         if reader.poll() is None:
             reader.kill()
+        reader.communicate(timeout=3)
     frame = out[-320 * 240 * 2:]
     if len(frame) < 320 * 240 * 2:
         raise Failed(f"ffmpeg read {len(out)} bytes: {err.decode().strip()}")
@@ -438,6 +439,7 @@ def check_camera(phone, status):
 
 def check_depth(phone, status):
     path = node(status, "check-depth", "/dev/video")
+    check_mode(path)
     reader = grab(path, "gray16le")
     try:
         phone.device_message("device.open", "check-depth", 5)
@@ -450,6 +452,7 @@ def check_depth(phone, status):
     finally:
         if reader.poll() is None:
             reader.kill()
+        reader.communicate(timeout=3)
     frame = out[-256 * 192 * 2:]
     if frame != depth:
         raise Failed(f"the depth picture did not arrive unchanged ({len(out)} bytes; {err.decode().strip()})")
@@ -460,7 +463,7 @@ def opus_packets(seconds, frequency):
     """20 ms mono Opus packets of a tone, taken out of ffmpeg's Ogg."""
     ogg = subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", f"sine=f={frequency}:r=48000",
                           "-t", str(seconds), "-ac", "1", "-c:a", "libopus", "-frame_duration", "20", "-f", "ogg", "-"],
-                         check=True, capture_output=True).stdout
+                         check=True, capture_output=True, timeout=15).stdout
     packets, partial, i = [], b"", 0
     while i + 27 <= len(ogg) and ogg[i:i + 4] == b"OggS":
         segments = ogg[i + 26]
@@ -482,8 +485,9 @@ def check_microphone(phone, status):
     for line in open(DISPLAY_ENV):
         if line.startswith("PULSE_SERVER="):
             env["PULSE_SERVER"] = line.split("=", 1)[1].strip().strip("'\"")
+    recording = tempfile.TemporaryFile()
     recorder = subprocess.Popen(["parec", f"--device={source}", "--raw", "--format=s16le", "--rate=48000",
-                                 "--channels=1", "--latency-msec=20"], stdout=subprocess.PIPE, env=env)
+                                 "--channels=1", "--latency-msec=20"], stdout=recording, env=env)
     try:
         phone.device_message("device.open", "check-microphone", 5)
         start = time.monotonic()
@@ -493,7 +497,14 @@ def check_microphone(phone, status):
         time.sleep(0.3)
     finally:
         recorder.terminate()
-    pcm = array.array("h", recorder.stdout.read())
+        try:
+            recorder.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            recorder.kill()
+            recorder.wait(timeout=3)
+        recording.seek(0)
+        pcm = array.array("h", recording.read())
+        recording.close()
     phone.device_message("device.close", "check-microphone", 5)
     loudest = max((abs(s) for s in pcm), default=0)
     if loudest < 4000:
@@ -519,32 +530,49 @@ CHECKS = [("gamepad", check_gamepad), ("buttons", check_buttons), ("motion", che
 
 
 def main():
+    global DISPLAY_ENV
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--expect-no-devices", action="store_true", help="verify an agent seat rejects devices")
+    parser.add_argument("--token-file", default=TOKEN)
+    parser.add_argument("--display-env", default=DISPLAY_ENV)
     parser.add_argument("--port", type=int, default=14600)
     parser.add_argument("--only", default="")
     parser.add_argument("--allow-unavailable", default="", help="kinds whose unavailability is not a failure")
     args = parser.parse_args()
     only = set(filter(None, args.only.split(",")))
     allowed = set(filter(None, args.allow_unavailable.split(",")))
+    known = {name for name, _ in CHECKS}
+    unknown = (only | allowed) - known
+    if unknown:
+        parser.error(f"unknown checks: {', '.join(sorted(unknown))}")
     if os.geteuid() != 0:
         sys.exit("run as root: the check enables IIO buffers and reads the token")
-    phone = Phone(args.port)
-    phone.send("devices", {"devices": DEVICES})
-    status = status_of(phone)
-    failures = 0
-    for name, check in CHECKS:
-        if only and name not in only:
-            continue
-        try:
-            check(phone, status)
-            print(f"PASS {name}")
-        except Unavailable as e:
-            print(f"{'SKIP' if name in allowed else 'FAIL'} {name}: unavailable: {e}")
-            failures += name not in allowed
-        except (Failed, OSError, subprocess.SubprocessError) as e:
-            print(f"FAIL {name}: {e}")
-            failures += 1
-    if not phone.closed:
+    DISPLAY_ENV = args.display_env
+    phone = Phone(args.port, args.token_file, not args.expect_no_devices)
+    try:
+        phone.send("devices", {"devices": DEVICES})
+        if args.expect_no_devices:
+            try:
+                phone.wait(lambda m: m[0].startswith("device."), 2)
+            except Failed:
+                print("PASS no-devices: capability absent and offers ignored")
+                return
+            raise Failed("agent seat responded to a device offer")
+        status = status_of(phone)
+        failures = 0
+        for name, check in CHECKS:
+            if only and name not in only:
+                continue
+            try:
+                check(phone, status)
+                print(f"PASS {name}")
+            except Unavailable as e:
+                print(f"{'SKIP' if name in allowed else 'FAIL'} {name}: unavailable: {e}")
+                failures += name not in allowed
+            except (Failed, OSError, subprocess.SubprocessError) as e:
+                print(f"FAIL {name}: {e}")
+                failures += 1
+    finally:
         phone.close()
     sys.exit(1 if failures else 0)
 

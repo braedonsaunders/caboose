@@ -214,7 +214,7 @@ pub enum Input {
 
 /// A camera's worker: decodes and writes pictures until its channel closes.
 pub struct Worker {
-    pub tx: mpsc::Sender<Input>,
+    pub tx: mpsc::SyncSender<Input>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -227,7 +227,7 @@ impl Worker {
         fps: u32,
         out: Sender<Message>,
     ) -> io::Result<Self> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(2);
         let thread = std::thread::Builder::new()
             .name(format!("camera {device}"))
             .spawn(move || run(device, fd, format, size, fps, rx, out))?;
@@ -238,7 +238,7 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         // Closing the channel ends the worker.
-        let (dead, _) = mpsc::channel();
+        let (dead, _) = mpsc::sync_channel(2);
         self.tx = dead;
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -358,13 +358,13 @@ fn run(device: String, fd: OwnedFd, format: Format, size: Size, fps: u32, rx: mp
                     }
                 }
             }
-            Some(Input::Depth { size: got, data }) if attached => {
-                if got.w > 0 && got.h > 0 && got.w <= 3840 && got.h <= 2160 && data.len() == format.picture_len(got) {
-                    picture = scale_depth(&data, got, size);
-                    write(&picture);
-                    last_new = Instant::now();
-                    last_written = last_new;
-                }
+            Some(Input::Depth { size: got, data })
+                if attached && got.w > 0 && got.h > 0 && got.w <= 3840 && got.h <= 2160
+                    && data.len() == format.picture_len(got) => {
+                picture = scale_depth(&data, got, size);
+                write(&picture);
+                last_new = Instant::now();
+                last_written = last_new;
             }
             Some(Input::Unit { .. } | Input::Depth { .. }) => {}
             Some(Input::Detach) => {

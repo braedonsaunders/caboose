@@ -11,13 +11,13 @@ component prepares the kernel and the device nodes it uses.
 | `70-caboose-devices.rules` | `/etc/udev/rules.d/` | Gives the `caboose` group `/dev/uinput`, `/dev/uhid` and `/dev/v4l2loopback`, and the event devices made from the phone (physical path `caboose/phone`). |
 | (generated) | `/etc/modules-load.d/caboose-devices.conf` | Loads `uinput`, `uhid` and `v4l2loopback` at boot. |
 | (generated) | `/etc/modprobe.d/caboose-v4l2loopback.conf` | `devices=0`: the display adds a loopback device per camera the phone offers. |
-| `70-caboose-phone-host.rules` | on a container host, `/etc/udev/rules.d/` | Lets a container computer's applications open the event devices it makes from the phone, which appear in the host's `/dev/input`. |
 
 The microVM image uses Debian's generic kernel (`linux-image-amd64`, `linux-image-arm64`),
 which has `uinput`, `uhid`, the HID sensor drivers, IIO and V4L2; Debian's cloud kernel has
-none of them. In the container runtime the computer shares its host's kernel: the host
-needs `uinput` loaded and `70-caboose-phone-host.rules` installed, and gives the container
-`/dev/uinput` and its `/dev/input` (apps/host, `phoneDeviceArgs`).
+none of them. Container computers do not receive the host's kernel device nodes or
+input directory: those interfaces do not isolate devices between tenants. Only the
+private PulseAudio microphone is supported in containers; other phone devices report
+unavailability.
 
 ## Install
 

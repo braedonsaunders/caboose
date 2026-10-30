@@ -42,7 +42,7 @@ supports and reports the rest to the phone as unavailable (`device.status` below
 
 | Needs | Kernel | microVM image | Container runtime |
 | --- | --- | --- | --- |
-| Controllers, motion evdev, buttons | `uinput` | Yes | When the host has `/dev/uinput` |
+| Controllers, motion evdev, buttons | `uinput` | Yes | No |
 | Sensors (IIO), battery | `uhid`, `hid-sensor-hub` and the `hid-sensor-*` drivers, `industrialio` | Yes | No |
 | Cameras, depth | `videodev`, `v4l2loopback` | Yes (v4l2loopback built with DKMS) | No |
 | Microphone | none | Yes | Yes |
@@ -54,14 +54,11 @@ physical path `caboose/phone`. The image's udev rules give the `caboose` group
 `/dev/uinput`, `/dev/uhid` and `/dev/v4l2loopback`, and the event devices with that path
 (`guest/devices`).
 
-A container computer shares its host's kernel. When the host has `/dev/uinput`, the host
-passes it to new containers, mounts the host's `/dev/input` so the event devices the
-computer makes appear inside, and allows input character devices (`c 13:* rmw`); the host
-needs `uinput` loaded and `guest/devices/70-caboose-phone-host.rules` installed for the
-computer's applications to open them. Devices made through UHID or v4l2loopback would
-belong to the host's kernel, outside the container, so a container computer has no IIO
-sensors, battery or cameras; they report so in `device.status`. A container created before
-its host had `/dev/uinput` gets it when it is created again.
+A container computer shares its host's kernel. Kernel input, UHID and camera devices
+are unavailable: the host does not pass its global `/dev/input`, `/dev/uinput`, `/dev/uhid`
+or `/dev/v4l2loopback` into computers. These interfaces do not isolate devices between
+tenants. Unavailable devices report errors in `device.status`; the microphone uses the
+computer's private PulseAudio and remains available.
 
 ## Consent and lifetime
 
@@ -167,6 +164,11 @@ offers nothing):
 }
 ```
 
+The hub admits at most 32 MiB of queued camera, depth and microphone payloads; excess
+media is dropped without blocking the compositor. Each decoder queue holds at most two
+messages. Device withdrawal and disconnect retain ordered delivery independently of
+media admission.
+
 ### Cameras and depth
 
 Each camera and the depth sensor is a v4l2loopback device the compositor adds through
@@ -239,8 +241,7 @@ on a device that also has an input, so it declares a mute key, which is never pr
 - **Microphone.** `AVAudioEngine`'s input with voice processing, converted to 48 kHz mono
   and encoded to Opus by AudioToolbox in 20 ms packets. Voice processing cancels the echo
   only of sound the engine itself plays; the computer's sound plays through its own
-  renderer, so during a call on the computer with the phone's speaker, the far end hears
-  itself. Headphones avoid it.
+  renderer. Speakerphone echo cancellation has not been verified on a physical device.
 - **Motion.** `CMMotionManager` device motion (attitude, rotation rate, calibrated magnetic
   field, and acceleration as gravity plus user acceleration) at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
   batched every 20 ms.

@@ -4,7 +4,7 @@
 
 use ffmpeg_next as ff;
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -26,11 +26,30 @@ fn pactl(server: &str) -> Command {
 }
 
 fn run(mut c: Command) -> Result<String, String> {
-    let out = c.output().map_err(|e| format!("pactl: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("pactl exited with {}", out.status));
+    let mut child = c.stdout(Stdio::piped()).spawn().map_err(|e| format!("pactl: {e}"))?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.take(1024 * 1024 + 1).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(format!("pactl did not complete: {result:?}"));
+            }
+        }
+    };
+    let bytes = reader.join().map_err(|_| "pactl reader failed".to_owned())?
+        .map_err(|e| format!("pactl output: {e}"))?;
+    if !status?.success() || bytes.len() > 1024 * 1024 {
+        return Err("pactl failed or produced excessive output".into());
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The PulseAudio source: loaded on creation, unloaded (and the previous default source
@@ -91,12 +110,17 @@ impl Source {
 
 impl Drop for Source {
     fn drop(&mut self) {
+        let restore = run({
+            let mut c = pactl(&self.server);
+            c.arg("get-default-source");
+            c
+        }).is_ok_and(|current| current.trim() == SOURCE);
         let _ = run({
             let mut c = pactl(&self.server);
             c.args(["unload-module", &self.module.to_string()]);
             c
         });
-        if let Some(previous) = &self.previous_default {
+        if let Some(previous) = self.previous_default.as_ref().filter(|_| restore) {
             let _ = run({
                 let mut c = pactl(&self.server);
                 c.args(["set-default-source", previous]);
@@ -285,13 +309,13 @@ pub enum Input {
 
 /// Writes the source's pipe every 20 ms until its channel closes.
 pub struct Writer {
-    pub tx: mpsc::Sender<Input>,
+    pub tx: mpsc::SyncSender<Input>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Writer {
     pub fn spawn(fifo: OwnedFd) -> std::io::Result<Self> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(2);
         let thread = std::thread::Builder::new().name("microphone".into()).spawn(move || write_loop(fifo, rx))?;
         Ok(Self { tx, thread: Some(thread) })
     }
@@ -299,7 +323,7 @@ impl Writer {
 
 impl Drop for Writer {
     fn drop(&mut self) {
-        let (dead, _) = mpsc::channel();
+        let (dead, _) = mpsc::sync_channel(2);
         self.tx = dead;
         if let Some(t) = self.thread.take() {
             let _ = t.join();

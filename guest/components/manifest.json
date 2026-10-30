@@ -79,6 +79,5 @@
   "apps/guide.md",
   "apps/apps-mcp.mjs",
   "devices/install.sh",
-  "devices/70-caboose-devices.rules",
-  "devices/70-caboose-phone-host.rules"
+  "devices/70-caboose-devices.rules"
 ]

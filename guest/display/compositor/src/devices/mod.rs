@@ -19,7 +19,25 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+// Media admission is byte-bounded before the compositor hands ownership to the hub.
+// Control and input edges keep their ordered delivery, including withdrawal/disconnect.
+const MEDIA_BYTES: usize = 32 * 1024 * 1024;
+fn media_size(message: &Message) -> usize {
+    match message {
+        Message::DeviceCamera(m) => m.data.len(),
+        Message::DeviceDepth(m) => m.data.len(),
+        Message::DeviceAudio(m) => m.data.len(),
+        _ => 0,
+    }
+}
+
+fn reserve_media(budget: &AtomicUsize, bytes: usize) -> bool {
+    budget.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+        |used| used.checked_add(bytes).filter(|&next| next <= MEDIA_BYTES)).is_ok()
+}
 
 /// Where the hub finds the display's sound server and keeps its files.
 pub struct Config {
@@ -44,6 +62,7 @@ enum Input {
 struct Inbox {
     tx: mpsc::Sender<Input>,
     wake: Arc<OwnedFd>,
+    media_bytes: Arc<AtomicUsize>,
 }
 
 impl Inbox {
@@ -70,7 +89,7 @@ impl Hub {
         // SAFETY: a new descriptor nothing else owns.
         let wake = Arc::new(unsafe { OwnedFd::from_raw_fd(wake) });
         let (tx, rx) = mpsc::channel();
-        let inbox = Inbox { tx, wake: wake.clone() };
+        let inbox = Inbox { tx, wake: wake.clone(), media_bytes: Arc::new(AtomicUsize::new(0)) };
         let hub_inbox = inbox.clone();
         let thread = std::thread::Builder::new().name("devices".into()).spawn(move || {
             let mut state = State::new(config, out, hub_inbox, rx, wake);
@@ -87,6 +106,9 @@ impl Hub {
 
     /// A device message from the phone.
     pub fn phone(&self, message: Message) {
+        if !reserve_media(&self.inbox.media_bytes, media_size(&message)) {
+            return;
+        }
         self.inbox.send(Input::Phone(message));
     }
 
@@ -385,7 +407,10 @@ impl State {
     fn input(&mut self, input: Input) {
         match input {
             Input::Offer(devices) => self.offer(devices),
-            Input::Phone(message) => self.phone(message),
+            Input::Phone(message) => {
+                self.inbox.media_bytes.fetch_sub(media_size(&message), Ordering::Relaxed);
+                self.phone(message);
+            },
             Input::Disconnected => self.disconnected(),
             Input::MicRecording(on) => {
                 if let Some(i) = self.entries.iter().position(|e| matches!(e.linux, Linux::Microphone(_))) {
@@ -624,19 +649,19 @@ impl State {
         match message {
             Message::DeviceCamera(m) => {
                 if let Some(Entry { linux: Linux::Camera(c), .. }) = self.entry(&m.device).map(|i| &self.entries[i]) {
-                    let _ = c.worker.tx.send(camera::Input::Unit { data: m.data, keyframe: m.keyframe });
+                    let _ = c.worker.tx.try_send(camera::Input::Unit { data: m.data, keyframe: m.keyframe });
                 }
             }
             Message::DeviceDepth(m) => {
                 if let Some(Entry { linux: Linux::Camera(c), .. }) = self.entry(&m.device).map(|i| &self.entries[i]) {
-                    let _ = c.worker.tx.send(camera::Input::Depth { size: m.size, data: m.data });
+                    let _ = c.worker.tx.try_send(camera::Input::Depth { size: m.size, data: m.data });
                 }
             }
             Message::DeviceAudio(m) => {
                 if let Some(Entry { linux: Linux::Microphone(mic), .. }) =
                     self.entry(&m.device).map(|i| &self.entries[i])
                 {
-                    let _ = mic.writer.tx.send(mic::Input::Opus(m.data));
+                    let _ = mic.writer.tx.try_send(mic::Input::Opus(m.data));
                 }
             }
             Message::DeviceMotion(m) => {
@@ -1021,6 +1046,27 @@ fn status_json(e: &Entry, nodes: &[String]) -> String {
 mod tests {
     use super::*;
     use caboose_display_protocol::{CameraPosition, Size};
+
+    #[test]
+    fn media_budget_releases_capacity_and_preserves_disconnect() {
+        let budget = AtomicUsize::new(0);
+        assert!(reserve_media(&budget, MEDIA_BYTES));
+        assert!(!reserve_media(&budget, 1));
+        assert!(!reserve_media(&budget, usize::MAX));
+        budget.fetch_sub(1024, Ordering::Relaxed);
+        assert!(reserve_media(&budget, 1024));
+        assert_eq!(budget.load(Ordering::Relaxed), MEDIA_BYTES);
+        // Disconnect travels on the control channel independently of media admission.
+        let (tx, rx) = mpsc::channel();
+        // SAFETY: eventfd creates a descriptor owned only by this test.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        assert!(fd >= 0);
+        // SAFETY: the successful eventfd above transferred ownership.
+        let wake = Arc::new(unsafe { OwnedFd::from_raw_fd(fd) });
+        let hub = Hub { inbox: Inbox { tx, wake, media_bytes: Arc::new(budget) }, thread: None };
+        hub.disconnected();
+        assert!(matches!(rx.try_recv(), Ok(Input::Disconnected)));
+    }
 
     fn camera(w: i32, h: i32, fps: f64) -> Device {
         Device {

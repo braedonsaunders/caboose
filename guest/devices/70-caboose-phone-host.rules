@@ -1,5 +1,0 @@
-# For a host that runs computers as containers (docs/devices.md, "Kernel support"): the
-# event devices a computer makes from the phone's hardware appear in the host's /dev/input,
-# which the container mounts; let the computer's applications open them. Nothing else on
-# the host carries this physical path.
-SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="caboose/phone", MODE="0666"
