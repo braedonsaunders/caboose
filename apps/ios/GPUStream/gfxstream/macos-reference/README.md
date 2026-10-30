@@ -2,7 +2,8 @@
 
 This source-only fixture configures the existing upstream macOS desktop backend,
 not the iOS target. It adds the Caboose connection and registry libraries and a
-manual lifecycle executable. It has not been configured, compiled, linked or run.
+manual lifecycle executable. The offline configure and four adapter syntax checks
+pass on macOS; the full target has not been compiled, linked or run.
 It does not validate the decoder wire schema, GPU compute, readback, recovery,
 coherent memory or physical-phone viability.
 
