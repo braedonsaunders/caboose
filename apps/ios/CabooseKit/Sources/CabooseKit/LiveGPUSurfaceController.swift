@@ -97,7 +97,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
     private struct Entry {
         let process: UInt64
         let identity: LiveGPUSurfaceIdentity
-        let resource: any LiveGPUSurfaceResource
+        let resource: (any LiveGPUSurfaceResource)?
         var lastSerial: UInt64 = 0
         var lastRequest: UInt64 = 0
         var indexed: LiveGPUIndexedSurface?
@@ -120,11 +120,19 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
                  output: @escaping Output, failed: @escaping @Sendable (Error) -> Void) throws {
         let identity = message.identity
         let emit: @Sendable (LiveGPUSurfaceMessage.Body) throws -> Void = { body in
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            if case .bound(let status) = body { LiveGPUMemoryAudit.surfaceBind(status) }
+            #endif
             try output(process, LiveGPUSurfaceMessage(identity: identity, body: body))
         }
         if case let .bind(window, instance, width, height) = message.body {
             guard entries[identity.grant] == nil else { throw violation("duplicate grant") }
-            guard entries.count < limit else {
+            // Every replied-to bind keeps its authenticated identity until retirement,
+            // even when no native resource was created. Bound rejected identities
+            // as well as native resources; exhaustion terminates admission.
+            guard entries.count < 256 else { throw violation("grant capacity") }
+            entries[identity.grant] = Entry(process: process, identity: identity, resource: nil, retiring: true)
+            guard entries.count <= limit else {
                 try emit(.bound(.init(nativeErrno: ENOSPC, vkResult: nil))); return
             }
             do {
@@ -146,6 +154,14 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         }
         guard var entry = entries[identity.grant], entry.identity == identity, entry.process == process else {
             throw violation("unknown or foreign grant")
+        }
+        guard let resource = entry.resource else {
+            // The backend either never acquired a resource or completed its cleanup
+            // before returning failure. Only the exact retained identity may retire.
+            guard case .retire = message.body else { throw violation("work after failed bind") }
+            entries.removeValue(forKey: identity.grant)
+            try emit(.retired(.init(nativeErrno: 0, vkResult: nil)))
+            return
         }
         if entry.revokeRequested, !entry.retiring {
             // Peer work already in transit may cross the local revoke request.
@@ -199,7 +215,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
                 }
             }
             if entry.indexed == nil {
-                guard let resource = entry.resource as? any LiveGPUIndexedSurfaceResource else {
+                guard let resource = resource as? any LiveGPUIndexedSurfaceResource else {
                     throw violation("indexed native API unavailable")
                 }
                 entry.indexed = LiveGPUIndexedSurface(resource: resource, budget: workBudget, acquireBudget: acquireBudget, emit: emit, failed: failed)
@@ -209,13 +225,13 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         case .query(let request, let physical):
             guard !entry.retiring, request > entry.lastRequest else { throw violation("query during retirement or stale request") }
             entry.lastRequest = request; entries[identity.grant] = entry
-            let (status, capabilities) = entry.indexed?.query(physicalDevice: physical) ?? entry.resource.query(physicalDevice: physical)
+            let (status, capabilities) = entry.indexed?.query(physicalDevice: physical) ?? resource.query(physicalDevice: physical)
             guard status.querySucceeded == (capabilities != nil) else { throw violation("incomplete native query") }
             try emit(.capabilities(request: request, status: status, value: capabilities))
         case .present(let request):
             guard !entry.retiring, request.serial > entry.lastSerial else { throw violation("stale present") }
             let receipts = LiveGPUPresentReceipts(serial: request.serial, emit: emit, failed: failed)
-            let result = entry.resource.present(request) { receipts.receive($0) }
+            let result = resource.present(request) { receipts.receive($0) }
             entry.lastSerial = request.serial
             // Native joins and destroys the previous frame before a new QUEUED
             // or UNCERTAIN return. REJECTED does not establish that boundary.
@@ -224,7 +240,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             try receipts.submit(result)
         case .retire:
             entry.retiring = true; entries[identity.grant] = entry
-            do { try entry.indexed?.retire(); try entry.resource.retire() }
+            do { try entry.indexed?.retire(); try entry.resource?.retire() }
             catch let error as LiveGPUBindingError {
                 if case .native(_, let code) = error, code > 0 {
                     try emit(.retired(.init(nativeErrno: code, vkResult: nil))); return
@@ -253,7 +269,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         var firstError: Error?
         for (grant, var entry) in entries where entry.process == process {
             entry.retiring = true; entries[grant] = entry
-            do { try entry.indexed?.retire(); try entry.resource.retire(); entries.removeValue(forKey: grant) }
+            do { try entry.indexed?.retire(); try entry.resource?.retire(); entries.removeValue(forKey: grant) }
             catch { if firstError == nil { firstError = error } }
         }
         if let firstError { throw firstError }

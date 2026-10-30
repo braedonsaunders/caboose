@@ -40,9 +40,15 @@ private final class SurfaceRuntime: LiveGPURuntimeBackend, @unchecked Sendable {
 private final class TestSurfaceBackend: LiveGPUSurfaceBackend, @unchecked Sendable {
     let resource = TestSurfaceResource()
     var bindings: [(UInt64, UInt64)] = []
+    var bindError: Int32 = 0
+    var throwsBindError = false
+    var retainsFailedResource = false
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
               instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
-        bindings.append((processToken, window)); return .init(status: .init(nativeErrno: 0, vkResult: nil), resource: resource)
+        bindings.append((processToken, window))
+        if throwsBindError { throw LiveGPUBindingError.native(operation: "bind", code: bindError) }
+        return .init(status: .init(nativeErrno: bindError, vkResult: nil),
+                     resource: bindError == 0 || retainsFailedResource ? resource : nil)
     }
 }
 final class LiveGPUSurfaceControllerTests: XCTestCase {
@@ -61,6 +67,68 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     }
     private func bind(_ controller: LiveGPUSurfaceController, _ output: SurfaceOutput) throws {
         try consume(controller, .bind(window: 7, instance: 8, width: 800, height: 600), output: output)
+    }
+    func testProtocolDiagnosticDoesNotEchoArbitraryText() {
+        XCTAssertEqual(LiveGPUProtocolDiagnostic.reason("surface unknown or foreign grant"), "surfaceUnknownGrant")
+        XCTAssertEqual(LiveGPUProtocolDiagnostic.reason("surface unknown or foreign grant secret"), "other")
+        XCTAssertEqual(LiveGPUProtocolDiagnostic.reason("user payload or path"), "other")
+    }
+    func testFailedBindRetainsOnlyExactIdentityUntilRetirement() throws {
+        for throwsError in [false, true] {
+            let backend = TestSurfaceBackend(), output = SurfaceOutput()
+            backend.bindError = EAGAIN; backend.throwsBindError = throwsError
+            let controller = LiveGPUSurfaceController(backend: backend)
+            try bind(controller, output)
+            XCTAssertEqual(output.messages.last?.body, .bound(.init(nativeErrno: EAGAIN, vkResult: nil)))
+            XCTAssertEqual(controller.retainedCount, 1)
+            XCTAssertThrowsError(try bind(controller, output))
+            XCTAssertThrowsError(try consume(controller, .retire, output: output, process: 2))
+            let stale = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: identity.grant, generation: 2)
+            XCTAssertThrowsError(try consume(controller, .retire, output: output, identity: stale))
+            XCTAssertThrowsError(try consume(controller, .query(request: 1, physicalDevice: 2), output: output))
+            XCTAssertEqual(controller.retainedCount, 1)
+            try consume(controller, .retire, output: output)
+            XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: 0, vkResult: nil)))
+            XCTAssertEqual(controller.retainedCount, 0)
+            XCTAssertEqual(backend.resource.retired, 0)
+            XCTAssertThrowsError(try consume(controller, .retire, output: output))
+            backend.bindError = 0; backend.throwsBindError = false
+            let fresh = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: 3, count: 16), generation: 2)
+            try consume(controller, .bind(window: 7, instance: 8, width: 800, height: 600), output: output, identity: fresh)
+            XCTAssertEqual(controller.retainedCount, 1)
+            try controller.retireProcess(1)
+            XCTAssertEqual(backend.resource.retired, 1)
+        }
+    }
+    func testFailedBindWithResourceStillRequiresActualRetirement() throws {
+        let backend = TestSurfaceBackend(), output = SurfaceOutput()
+        backend.bindError = EIO; backend.retainsFailedResource = true
+        backend.resource.retirementError = ETIMEDOUT
+        let controller = LiveGPUSurfaceController(backend: backend)
+        try bind(controller, output)
+        try consume(controller, .retire, output: output)
+        XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: ETIMEDOUT, vkResult: nil)))
+        XCTAssertEqual(controller.retainedCount, 1)
+        backend.resource.retirementError = 0
+        try consume(controller, .retire, output: output)
+        XCTAssertEqual(controller.retainedCount, 0)
+    }
+    func testRejectedGrantRetentionIsBounded() throws {
+        let backend = TestSurfaceBackend(), output = SurfaceOutput()
+        let controller = LiveGPUSurfaceController(backend: backend, limit: 1)
+        backend.bindError = EAGAIN
+        for n in 0..<256 {
+            var grant = Data(repeating: 0, count: 16); grant[0] = UInt8(n); grant[1] = 1
+            let id = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: grant, generation: 1)
+            try consume(controller, .bind(window: 7, instance: 8, width: 800, height: 600), output: output, identity: id)
+        }
+        XCTAssertEqual(controller.retainedCount, 256)
+        XCTAssertEqual(backend.bindings.count, 1)
+        XCTAssertThrowsError(try bind(controller, output))
+        XCTAssertEqual(controller.retainedCount, 256)
+        try controller.retireProcess(1)
+        XCTAssertEqual(controller.retainedCount, 0)
+        XCTAssertEqual(backend.resource.retired, 0)
     }
     func testSynchronousFenceReceiptFollowsSubmissionAndLaterDeviceLossSurvives() throws {
         let backend = TestSurfaceBackend(), output = SurfaceOutput()
@@ -224,5 +292,9 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         try consume(controller, .bind(window: 8, instance: 8, width: 800, height: 600), output: output, identity: next)
         XCTAssertEqual(output.messages.last?.body, .bound(.init(nativeErrno: ENOSPC, vkResult: nil)))
         XCTAssertEqual(backend.bindings.count, 1)
+        XCTAssertEqual(controller.retainedCount, 2)
+        try consume(controller, .retire, output: output, identity: next)
+        XCTAssertEqual(controller.retainedCount, 1)
+        XCTAssertEqual(backend.resource.retired, 0)
     }
 }

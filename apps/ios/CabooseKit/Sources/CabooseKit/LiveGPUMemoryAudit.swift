@@ -32,12 +32,20 @@ enum LiveGPUMemoryAudit {
             switch value {
             case .native(_, let code): fields["category"] = "native"; fields["errno"] = code
             case .system(_, let code): fields["category"] = "system"; fields["errno"] = code
-            case .protocolViolation: fields["category"] = "protocol"
+            case .protocolViolation(let reason):
+                fields["category"] = "protocol"
+                fields["reason"] = LiveGPUProtocolDiagnostic.reason(reason)
             case .outputRejected: fields["category"] = "outputRejected"
             }
         case is LiveGPUError: fields["category"] = "transportOrSession"
         default: fields["category"] = "other"
         }
+        terminal(fields)
+    }
+
+    static func surfaceBind(_ status: LiveGPUSurfaceStatus) {
+        var fields: [String: Any] = ["kind": "surfaceBind", "errno": status.nativeErrno]
+        if let result = status.vkResult { fields["vkResult"] = result }
         terminal(fields)
     }
 

@@ -2543,12 +2543,19 @@ local cancellation. Independent acquire observers release signal leases without
 waiting behind surface work. The private Mesa swapchain path and physical
 presentation validation remain incomplete; default app sessions do not activate
 this driver.
+
+Private GPU bind failures retain their authenticated grant identity until matching
+retirement, including failures that created no native surface. The app rejects
+work on those grants and stale or foreign retirement messages. Native resources
+remain fenced until actual cleanup succeeds. A controller retains at most 256
+grants including failed admissions; exhausting that bound ends admission.
+
 An explicitly selected diagnostic package exposes a separate memory-audit module.
 Its debug launch opt-in records immutable decoder feature flags and bounded allocation
 mapping receipts before process cleanup; it never records memory contents or credentials.
-The same opt-in records at most 64 native-run/session-stop metadata events per app
+The same opt-in records at most 64 native-run/session-stop/surface-bind metadata events per app
 process, followed by one overflow marker. These include native errno and fixed failure
-categories, without error descriptions, command payloads or object addresses.
+categories and allowlisted protocol reason labels, without error descriptions, command payloads or object addresses.
 These receipts describe allocation decisions, not proof of transferred bytes or coherence.
 
 ### Shell
