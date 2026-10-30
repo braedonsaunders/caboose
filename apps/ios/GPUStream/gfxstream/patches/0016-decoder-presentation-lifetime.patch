@@ -21,11 +21,18 @@
 +++ b/host/vulkan/vk_decoder_global_state.h
 @@ -24,0 +25 @@
 +#include "caboose_presentation_lifetime.h"
-@@ -56,0 +58,35 @@
+@@ -56,0 +58,42 @@
 +// Internal surface lifetime: the decoder instance remains alive while leased.
 +struct CaboosePresentationInstance {
 +    caboose::gpuv2::PresentationLease lease;
 +    VkInstance instance = VK_NULL_HANDLE;
++};
++
++// Surface capability queries retain the owning instance and actual physical device.
++struct CaboosePresentationPhysicalDevice {
++    caboose::gpuv2::PresentationLease lease;
++    VkInstance instance = VK_NULL_HANDLE;
++    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 +};
 +
 +// Long-lived surface/swapchain ownership, independent of image frame leases.
@@ -57,13 +64,15 @@
 +    VulkanDispatch* vk = nullptr;
 +};
 +
-@@ -78,0 +115,13 @@
+@@ -78,0 +122,15 @@
 +
 +    VkResult acquireCaboosePresentationInstance(uint32_t contextId, VkInstance boxedInstance,
 +        std::unique_ptr<CaboosePresentationInstance>* out);
 +    VkResult acquireCaboosePresentationDevice(uint32_t contextId, VkInstance boxedInstance,
 +        VkDevice boxedDevice, VkQueue boxedQueue, uint32_t queueFamily,
 +        std::unique_ptr<CaboosePresentationDevice>* out);
++    VkResult acquireCaboosePresentationPhysicalDevice(uint32_t contextId, VkInstance boxedInstance,
++        VkPhysicalDevice boxedPhysicalDevice, std::unique_ptr<CaboosePresentationPhysicalDevice>* out);
 +    // Authenticated context and boxed handles only. This validates ownership,
 +    // format and lifetime; it does not validate layout or perform presentation.
 +    VkResult acquireCaboosePresentationObjects(uint32_t contextId, VkInstance boxedInstance,
@@ -73,7 +82,7 @@
 +        std::unique_ptr<CaboosePresentationObjects>* out);
 --- a/host/vulkan/vk_decoder_global_state.cpp
 +++ b/host/vulkan/vk_decoder_global_state.cpp
-@@ -320,0 +321,142 @@
+@@ -320,0 +321,162 @@
 +
 +    VkResult acquireCaboosePresentationInstance(uint32_t contextId, VkInstance boxedInstance,
 +        std::unique_ptr<CaboosePresentationInstance>* out) {
@@ -93,6 +102,26 @@
 +        if (!hasExtension(VK_KHR_SURFACE_EXTENSION_NAME) ||
 +            !hasExtension("VK_EXT_metal_surface")) return VK_ERROR_EXTENSION_NOT_PRESENT;
 +        result->instance = instance;
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
++
++    VkResult acquireCaboosePresentationPhysicalDevice(uint32_t contextId, VkInstance boxedInstance,
++        VkPhysicalDevice boxedPhysicalDevice, std::unique_ptr<CaboosePresentationPhysicalDevice>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedInstance || !boxedPhysicalDevice) return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CaboosePresentationPhysicalDevice>();
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkInstance instance = try_unbox_VkInstance(boxedInstance);
++        VkPhysicalDevice physical = try_unbox_VkPhysicalDevice(boxedPhysicalDevice);
++        auto* inst = gfxstream::base::find(mInstanceInfo, instance);
++        auto* phys = gfxstream::base::find(mPhysdevInfo, physical);
++        if (!inst || !phys || inst->boxed != boxedInstance || inst->contextId != contextId ||
++            phys->boxed != boxedPhysicalDevice || phys->instance != instance ||
++            !result->lease.acquire(inst->cabooseLifetime)) return VK_ERROR_INITIALIZATION_FAILED;
++        result->instance = instance;
++        result->physicalDevice = physical;
 +        *out = std::move(result);
 +        return VK_SUCCESS;
 +    }
@@ -216,7 +245,7 @@
 +        *out = std::move(result);
 +        return VK_SUCCESS;
 +    }
-@@ -1533,0 +1676,9 @@
+@@ -1533,0 +1696,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -226,7 +255,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3251 +3402,9 @@
+@@ -3251 +3422,9 @@
 -
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
@@ -237,16 +266,16 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3253 +3411,0 @@
+@@ -3253 +3431,0 @@
 -
-@@ -3382,0 +3541,6 @@
+@@ -3382,0 +3561,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3399,0 +3564,8 @@
+@@ -3399,0 +3584,8 @@
 +        }
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
@@ -255,7 +284,7 @@
 +                auto* info = gfxstream::base::find(mMemoryInfo, pBindInfos[i].memory);
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
-@@ -3645,0 +3818,9 @@
+@@ -3645,0 +3838,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -265,14 +294,14 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -3716,0 +3898,6 @@
+@@ -3716,0 +3918,6 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
 +            auto* info = gfxstream::base::find(mMemoryInfo, memory);
 +            if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +        }
-@@ -3813,0 +4001,9 @@
+@@ -3813,0 +4021,9 @@
 +        caboose::gpuv2::PresentationMutation mutation;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -282,7 +311,7 @@
 +                if (!info || !mutation.acquire(info->cabooseLifetime)) return VK_ERROR_FEATURE_NOT_PRESENT;
 +            }
 +        }
-@@ -4562,0 +4759,9 @@
+@@ -4562,0 +4779,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -292,7 +321,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -7527,0 +7733,9 @@
+@@ -7527,0 +7753,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -302,10 +331,18 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -11940,0 +12155,28 @@
+@@ -11940,0 +12175,36 @@
 +VkResult VkDecoderGlobalState::acquireCaboosePresentationInstance(
 +    uint32_t contextId, VkInstance boxedInstance, std::unique_ptr<CaboosePresentationInstance>* out) {
 +    try { return mImpl->acquireCaboosePresentationInstance(contextId, boxedInstance, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++
++VkResult VkDecoderGlobalState::acquireCaboosePresentationPhysicalDevice(
++    uint32_t contextId, VkInstance boxedInstance, VkPhysicalDevice boxedPhysicalDevice,
++    std::unique_ptr<CaboosePresentationPhysicalDevice>* out) {
++    try { return mImpl->acquireCaboosePresentationPhysicalDevice(contextId, boxedInstance,
++        boxedPhysicalDevice, out); }
 +    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
 +}
 +

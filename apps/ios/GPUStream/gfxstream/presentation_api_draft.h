@@ -44,6 +44,38 @@ typedef void (*caboose_gpu_present_callback)(void* context, uint64_t present_ser
 int caboose_gpu_surface_prepare(const caboose_gpu_surface_bind_info* bind,
                                 caboose_gpu_surface** out);
 
+// Worker only, after main attach and before guest swapchain creation. Validates
+// boxed physical device ownership against this surface's decoder instance.
+// The complete bounded provider query is made available through the result;
+// all lists are immutable until caller releases this snapshot. Actual provider
+// properties and the product's supported subset must be kept distinct.
+typedef struct caboose_gpu_surface_capabilities caboose_gpu_surface_capabilities;
+typedef struct caboose_gpu_surface_format {
+    uint32_t format, color_space;
+    uint32_t linear_features, optimal_features, buffer_features;
+    uint32_t properties_queried; // zero for VK_FORMAT_UNDEFINED
+} caboose_gpu_surface_format;
+typedef struct caboose_gpu_surface_queue_family {
+    uint32_t queue_flags, queue_count, present_supported;
+} caboose_gpu_surface_queue_family;
+typedef struct caboose_gpu_surface_capabilities_view {
+    uint32_t min_image_count, max_image_count;
+    uint32_t current_width, current_height, min_width, min_height, max_width, max_height;
+    uint32_t max_image_array_layers, supported_transforms, current_transform;
+    uint32_t supported_composite_alpha, supported_usage_flags;
+    uint32_t format_count, present_mode_count, queue_family_count;
+    const caboose_gpu_surface_format* formats;
+    const uint32_t* present_modes;
+    const caboose_gpu_surface_queue_family* queue_families;
+} caboose_gpu_surface_capabilities_view;
+int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t boxed_physical_device,
+                              caboose_gpu_surface_capabilities** out);
+// Pointers in this view remain valid until capabilities_release; no partial
+// view is returned on provider error or an oversized result.
+const caboose_gpu_surface_capabilities_view* caboose_gpu_surface_capabilities_get(
+    const caboose_gpu_surface_capabilities* capabilities);
+void caboose_gpu_surface_capabilities_release(caboose_gpu_surface_capabilities* capabilities);
+
 // Worker only; copies request and its semaphore array before return. Reject stale
 // generation, unsupported format/layout/ownership, duplicate serial and invalid
 // waits before queueing; a submitted-but-uncertain outcome is never retried. On
