@@ -38,6 +38,13 @@ ARCHIVES = (
     "upstream/common/utils/libgfxstream_common_utils.a",
     "upstream/host/tracing/libgfxstream_host_tracing.a",
 )
+PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h")
+REQUIRED_NATIVE = {
+    "caboose_gpu_runtime_start_virtual_wsi", "caboose_gpu_surface_prepare",
+    "caboose_gpu_surface_attach", "caboose_gpu_surface_query",
+    "caboose_gpu_surface_capabilities_get", "caboose_gpu_surface_capabilities_release",
+    "caboose_gpu_surface_present", "caboose_gpu_surface_retire", "caboose_gpu_surface_detach",
+}
 REQUIRED_EXPORTS = {"vkGetInstanceProcAddr", "vkGetDeviceProcAddr", "vkCreateInstance",
                     "vkDestroyInstance", "vkCreateDevice", "vkDestroyDevice"}
 
@@ -90,6 +97,32 @@ extern "C" int caboose_gpu_live_start_v3(void) {
 '''
 
 
+def swift_link_probe():
+    # Link the actual callable ABI, including ObjC layer types and query status.
+    # This executable is never run: it proves symbol/ABI closure, not GPU results.
+    return """import QuartzCore
+import CabooseGPULive
+@main struct LinkProbe {
+    @MainActor static func main() {
+        _ = caboose_gpu_live_start_v3()
+        var surface: OpaquePointer?
+        var bind = caboose_gpu_surface_bind_info()
+        _ = caboose_gpu_surface_prepare(&bind, &surface)
+        _ = caboose_gpu_surface_attach(surface, CAMetalLayer())
+        var snapshot: OpaquePointer?
+        var status = caboose_gpu_query_status()
+        _ = caboose_gpu_surface_query(surface, 0, &snapshot, &status)
+        _ = caboose_gpu_surface_capabilities_get(snapshot)
+        caboose_gpu_surface_capabilities_release(snapshot)
+        var present = caboose_gpu_present_info()
+        _ = caboose_gpu_surface_present(surface, &present, nil, nil)
+        _ = caboose_gpu_surface_retire(surface)
+        _ = caboose_gpu_surface_detach(&surface)
+    }
+}
+"""
+
+
 def run(argv, **kwargs):
     return subprocess.run(argv, check=True, timeout=90, **kwargs)
 
@@ -128,8 +161,9 @@ def main():
         if archs != "arm64":
             parser.error(f"expected one arm64 slice: {archive}")
     native_symbols = run(["xcrun", "nm", "-gjU", str(archives[0])], capture_output=True, text=True).stdout.splitlines()
-    if "_caboose_gpu_runtime_start_virtual_wsi" not in native_symbols:
-        parser.error("native runtime lacks the real virtual-WSI initializer required by live protocol v3")
+    missing_native = sorted(REQUIRED_NATIVE - {name.removeprefix("_") for name in native_symbols})
+    if missing_native:
+        parser.error("native runtime lacks required v3 surface API: " + ", ".join(missing_native))
     registry = args.vulkan_headers / "registry/vk.xml"
     symbols = run(["xcrun", "nm", "-gjU", str(args.provider)], capture_output=True, text=True).stdout
     names = provider_commands(symbols, registry)
@@ -141,6 +175,9 @@ def main():
         headers = work / "headers"
         headers.mkdir()
         (headers / public_header.name).write_bytes(public_header.read_bytes())
+        for header in PRESENTATION_HEADERS:
+            (headers / header).write_bytes((adapter / header).read_bytes())
+        header_hashes = {path.name: digest(path) for path in headers.iterdir()}
         (headers / "module.modulemap").write_text(
             'module CabooseGPULive { header "caboose_gpu_live.h" export * }\n')
         sdk = run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], capture_output=True, text=True).stdout.strip()
@@ -156,8 +193,7 @@ def main():
         # the public module in Swift and link the actual start path into an iOS
         # executable. Never run this executable or install it on a device.
         probe = work / "LinkProbe.swift"
-        probe.write_text('import CabooseGPULive\n@main struct LinkProbe { '
-                         'static func main() { _ = caboose_gpu_live_start_v3() } }\n')
+        probe.write_text(swift_link_probe())
         run(["xcrun", "--sdk", "iphoneos", "swiftc", "-parse-as-library",
              "-target", "arm64-apple-ios26.0", "-sdk", sdk,
              "-I", str(headers), "-L", str(work), "-lCabooseGPULive", "-lc++", "-lz",
@@ -175,6 +211,7 @@ def main():
                    "inputs": input_hashes, "swiftImportAndLink": "passed",
                    "linkProbeSHA256": digest(work / "LinkProbe"),
                    "registrySHA256": digest(registry), "headerSHA256": digest(public_header),
+                   "publicHeaders": header_hashes, "surfaceAPILink": "passed (not executed)",
                    "providerSourceSHA256": digest(source), "exports": names,
                    "archiveSHA256": digest(merged)}
         (framework / "provenance.json").write_text(json.dumps(receipt, indent=2) + "\n")

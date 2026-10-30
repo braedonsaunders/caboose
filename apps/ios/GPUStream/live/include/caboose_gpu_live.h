@@ -2,6 +2,10 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#ifdef __OBJC__
+#import <QuartzCore/CAMetalLayer.h>
+#endif
+#include "presentation_api_draft.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -16,7 +20,9 @@ int caboose_gpu_runtime_open(uint64_t* token);
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);
 int caboose_gpu_runtime_stop(uint64_t token);
 // Call off UI/network threads after all run calls return. Waits for upstream
-// process cleanup; presentation resources require their own retirement barrier.
+// process cleanup. First retire all GPU surface work on a worker and detach
+// each surface on main, releasing its decoder-instance lease; otherwise cleanup
+// waits for that lease and cannot finish.
 int caboose_gpu_runtime_finish(uint64_t token);
 
 #ifdef __cplusplus

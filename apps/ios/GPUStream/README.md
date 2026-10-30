@@ -27,9 +27,11 @@ python3 scripts/test_package_live_gpu.py
 
 The package contains an iOS arm64 slice, the C module `CabooseGPULive`, and a
 provenance receipt with all archive hashes. Existing output is refused. The
-packager compiles a Swift module import and links the actual start path into an
-iOS executable to check the complete static dependency closure; it never runs or
-installs that executable. Input hashes are rechecked before publication. The
+packager compiles a Swift module import and links the actual start, surface
+prepare/attach/query/present/retire/detach APIs into an iOS executable to check
+the complete static dependency closure, including the Objective-C Metal-layer
+interface. It never runs or installs that executable. The receipt includes the
+public presentation-header hashes. Input hashes are rechecked before publication. The
 generated provider address table retains only real exports with Vulkan registry
 declarations. It resolves dispatch to this statically linked provider without a
 process-wide dynamic-symbol search; it does not advertise Vulkan capabilities.
@@ -38,7 +40,10 @@ off the main thread. The versioned symbol rejects older native packages at link
 time; packaging requires the real virtual-WSI initializer and records the exact
 v3/0x30 hello contract. It does not enable an unsupported device feature.
 The public header also exposes process open, run, stop and finish. `run` blocks;
-`finish` waits for upstream process cleanup after every stream returns.
+`finish` waits for upstream process cleanup after every stream returns. Surface
+retirement on a worker and layer detachment on main must complete first: they
+release decoder-instance leases that upstream cleanup waits for. A failed
+retirement retains the reservation and layer; it does not permit replacement.
 
 CabooseKit conditionally links this package on iOS. Its manifest rejects the
 simultaneous presence of the replay `CabooseGPUStream.xcframework`, which contains
