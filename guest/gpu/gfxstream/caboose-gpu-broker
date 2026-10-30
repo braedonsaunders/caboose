@@ -82,6 +82,8 @@ class Session:
             process['retired'].set(); return
         stream = self.streams.get(frame.stream)
         if stream is None or stream['process'] != frame.process: raise ValueError('unknown stream')
+        bound_process, _identity = self.bindings.identity(self.binding_generation, frame.stream)
+        if bound_process != frame.process: raise ValueError('stream identity mismatch')
         if frame.kind == Kind.STREAM_READY:
             if stream['ready'].is_set(): raise ValueError('duplicate stream receipt')
             stream['ready'].set(); return
@@ -151,7 +153,12 @@ class Session:
             await asyncio.wait_for(stream['ready'].wait(), 10)
             writer.write(HELLO); await writer.drain()
             while True:
-                payload = await reader.read(65536)
+                self.bindings.identity(self.binding_generation, stream_id)
+                try:
+                    payload = await asyncio.wait_for(reader.read(65536), 1)
+                except asyncio.TimeoutError:
+                    continue
+                self.bindings.identity(self.binding_generation, stream_id)
                 if not payload: break
                 self.send(Kind.DATA, process_id, stream_id, payload)
             self.send(Kind.FIN, process_id, stream_id)

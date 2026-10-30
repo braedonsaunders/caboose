@@ -58,6 +58,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         ready, retired, stream_ready, remote_fin = (asyncio.Event() for _ in range(4))
         session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}}
         writer = Writer()
+        session.bindings.identity = lambda _generation, _stream: (1, (1000, 42, 123))
         session.streams[2] = {'process': 1, 'writer': writer, 'ready': stream_ready, 'remote_fin': remote_fin}
         with self.assertRaises(ValueError):
             await session.message(Envelope(Kind.DATA, b'a' * 16, 1, 1, 2, 1, b'early'))
