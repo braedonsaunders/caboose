@@ -5,11 +5,12 @@ import CoreGraphics
 /// Column widths are fractions of the screen, chosen from ⅓, ½, ⅔ and full. A preset is
 /// offered only where its column is at least `minimumTile` wide and two halves fit, so an
 /// iPhone held upright offers full width alone, a Duo opened out or a phone on its side adds
-/// halves and two thirds, and an iPad adds thirds. The gap between tiles is the same at the screen's edges.
+/// halves and two thirds, and an iPad adds thirds. Resize gaps separate tiles; the outer edges meet the workspace.
 public struct YardMetrics: Equatable, Sendable {
     /// The space for the yard, in points.
     public var size: CGSize
     public var gap: CGFloat
+    public var outerGap: CGFloat
 
     /// The narrowest a tile is made: about what a Linux app can lay out in at the yard's
     /// density, and narrow enough that an iPhone Duo opened out takes two side by side.
@@ -18,8 +19,9 @@ public struct YardMetrics: Equatable, Sendable {
 
     public static let fractions: [CGFloat] = [1.0 / 3, 0.5, 2.0 / 3, 1]
 
-    public init(size: CGSize, gap: CGFloat? = nil) {
+    public init(size: CGSize, gap: CGFloat? = nil, outerGap: CGFloat = 0) {
         self.size = size
+        self.outerGap = max(0, outerGap)
         self.gap = gap ?? Self.gap(forWidth: size.width)
     }
 
@@ -30,7 +32,7 @@ public struct YardMetrics: Equatable, Sendable {
     /// content.
     public var cornerRadius: CGFloat { size.width < 500 ? 10 : 12 }
 
-    public var columnHeight: CGFloat { max(0, size.height - 2 * gap) }
+    public var columnHeight: CGFloat { max(0, size.height - 2 * outerGap) }
 
     /// The title bar at the top of every tile: Close and Full Screen, then the title. A tiled
     /// window has no minimized state, so there is no Minimize.
@@ -48,14 +50,14 @@ public struct YardMetrics: Equatable, Sendable {
     public var maxStack: Int { size.height < 500 || size.width < 500 ? 2 : 3 }
 
     /// A column `fraction` of the screen wide, in points. Fractions add up: two halves and
-    /// their three gaps fill the screen exactly.
+    /// their interior gap and outer margins fill the screen exactly.
     public func points(forFraction fraction: CGFloat) -> CGFloat {
-        max(0, fraction * (size.width - gap) - gap)
+        max(0, fraction * (size.width - 2 * outerGap + gap) - gap)
     }
 
     public func fraction(forPoints points: CGFloat) -> CGFloat {
-        guard size.width > gap else { return 1 }
-        return (points + gap) / (size.width - gap)
+        guard size.width - 2 * outerGap + gap > 0 else { return 1 }
+        return (points + gap) / (size.width - 2 * outerGap + gap)
     }
 
     /// The narrowest fraction that still makes a tile `minimumTile` wide. A screen too narrow

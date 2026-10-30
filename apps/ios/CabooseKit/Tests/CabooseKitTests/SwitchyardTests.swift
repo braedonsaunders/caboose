@@ -36,14 +36,27 @@ struct SwitchyardTests {
         #expect(YardMetrics(size: CGSize(width: 540, height: 400)).presets == [1])
     }
 
+    @Test func outerMarginsAreIndependentOfResizeGaps() {
+        for margin in [CGFloat(0), 8] {
+            let metrics = YardMetrics(size: CGSize(width: 1000, height: 700), outerGap: margin)
+            var layout = YardLayout()
+            layout.insert(1, in: metrics)
+            let frame = layout.frames(in: metrics)[1]!
+            #expect(frame.minX == margin && frame.minY == margin)
+            #expect(frame.maxY == metrics.size.height - margin)
+            #expect(metrics.points(forFraction: 1) == metrics.size.width - 2 * margin)
+            #expect(abs(2 * metrics.points(forFraction: 0.5) + metrics.gap + 2 * margin - metrics.size.width) < 0.001)
+        }
+    }
+
     @Test func fractionsTileTheScreenExactly() {
         for metrics in [duo, pad] {
             let half: CGFloat = metrics.points(forFraction: 0.5)
-            let filled: CGFloat = 2 * half + 3 * metrics.gap
+            let filled: CGFloat = 2 * half + metrics.gap + 2 * metrics.outerGap
             #expect(abs(filled - metrics.size.width) < 0.001)
         }
         let thirdWide: CGFloat = pad.points(forFraction: third)
-        let filled: CGFloat = 3 * thirdWide + 4 * pad.gap
+        let filled: CGFloat = 3 * thirdWide + 2 * pad.gap + 2 * pad.outerGap
         #expect(abs(filled - pad.size.width) < 0.001)
         #expect(abs(pad.fraction(forPoints: thirdWide) - third) < 0.0001)
     }
@@ -73,9 +86,9 @@ struct SwitchyardTests {
     @Test func onAPhoneEveryColumnIsFullWidth() {
         let layout = layout([1, 2, 3], in: phone)
         let frames = layout.frames(in: phone)
-        for id in [1, 2, 3] { #expect(frames[id]?.width == phone.size.width - 2 * phone.gap) }
-        #expect(frames[2]?.minX == phone.size.width)
-        #expect(layout.restingScrolls(in: phone) == [0, 437, 874])
+        for id in [1, 2, 3] { #expect(frames[id]?.width == phone.size.width - 2 * phone.outerGap) }
+        #expect(frames[2]?.minX == phone.size.width + phone.gap)
+        #expect(layout.restingScrolls(in: phone) == [0, 443, 886])
     }
 
     @Test func closingAWindowGivesItsSpaceBack() {
@@ -116,7 +129,7 @@ struct SwitchyardTests {
         #expect(ok1)
         let frames = layout.frames(in: duo)
         let top = frames[1]!, bottom = frames[2]!
-        #expect(top.minY == duo.gap && bottom.maxY == duo.size.height - duo.gap)
+        #expect(top.minY == duo.outerGap && bottom.maxY == duo.size.height - duo.outerGap)
         #expect(bottom.minY - top.maxY == duo.gap)
         #expect(abs(top.height - bottom.height) <= 1)
         layout.remove(1, in: duo)
@@ -190,7 +203,7 @@ struct SwitchyardTests {
         let ids = layout.columns.map(\.id)
         let folded = YardMetrics(size: CGSize(width: 400, height: 760))
         #expect(layout.columns.map(\.id) == ids)
-        #expect(layout.frames(in: folded)[1]!.width == folded.size.width - 2 * folded.gap)
+        #expect(layout.frames(in: folded)[1]!.width == folded.size.width - 2 * folded.outerGap)
         #expect(layout.frames(in: duo)[1]!.width == duo.points(forFraction: 0.5))
     }
 
@@ -290,7 +303,7 @@ struct SwitchyardTests {
         let frames = layout.columnFrames(in: pad)
         let fourth = frames[layout.columns[3].id]!
         let scroll = layout.scroll(revealing: 4, from: 0, in: pad)
-        #expect(scroll == fourth.maxX + pad.gap - pad.size.width)
+        #expect(scroll == fourth.maxX + pad.outerGap - pad.size.width)
         #expect(layout.scroll(revealing: 2, from: scroll, in: pad) == scroll)
         #expect(layout.scroll(revealing: 1, from: scroll, in: pad) == 0)
         #expect(layout.visibleColumns(at: scroll, in: pad) == layout.columns.dropFirst().map(\.id))
@@ -299,8 +312,8 @@ struct SwitchyardTests {
     @Test func aFlickRestsOnAColumnEdge() {
         let layout = layout([1, 2, 3], in: phone)
         #expect(layout.restingScroll(from: 120, in: phone) == 0)
-        #expect(layout.restingScroll(from: 120, velocity: 900, in: phone) == 437)
-        #expect(layout.restingScroll(from: 2000, in: phone) == 874)
+        #expect(layout.restingScroll(from: 120, velocity: 900, in: phone) == 443)
+        #expect(layout.restingScroll(from: 2000, in: phone) == 886)
     }
 
     @Test func handlesSitInTheGaps() {
@@ -370,5 +383,164 @@ struct SwitchyardTests {
         // A tile shorter than its bar leaves the window no height rather than a negative one.
         #expect(pad.content(ofTile: CGRect(x: 0, y: 0, width: 300, height: 20)).height == 0)
         #expect(YardMetrics.titleBar.controls == [.close, .zoom])
+    }
+}
+
+struct YardSnapTests {
+    private let metrics = YardMetrics(size: CGSize(width: 1024, height: 768))
+
+    @Test func everyPaletteRegionProducesAnOrdinaryYardWithoutMutatingTheSource() throws {
+        var original = YardLayout()
+        for id in 1...6 { original.insert(id, in: metrics) }
+        let before = original
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size))
+        for region in palette.regions {
+            let result = try #require(original.snapping(3, to: region.snap, layout: region.layout, in: metrics))
+            #expect(original == before)
+            #expect(result.focused == 3)
+            #expect(Set(result.windows) == Set(original.windows))
+            #expect(result.windows.count == original.windows.count)
+            let frame = try #require(result.frames(in: metrics)[3])
+            let slot = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+            #expect(abs(frame.width - metrics.points(forFraction: slot.width / 6)) < 0.001)
+            #expect(abs(frame.height - (slot.height == 6 ? metrics.columnHeight : (metrics.columnHeight - metrics.gap) / 2)) <= 1)
+            #expect(palette.selection(at: CGPoint(x: region.frame.midX, y: region.frame.midY)) == region.snap)
+            let all = Array(result.frames(in: metrics).values)
+            for i in all.indices {
+                for j in all.indices where j > i { #expect(!all[i].intersects(all[j])) }
+            }
+        }
+    }
+
+    @Test func quarterSupportsVacanciesOnNarrowWorkspaces() {
+        let slots: [FreeDesktopLayout.Snap] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        var yard = YardLayout()
+        for id in 1...3 { yard.insert(id, in: metrics) }
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
+        yard.insert(4, in: metrics)
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
+        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
+        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) != nil)
+    }
+
+    @Test func repeatedThirdChoicesRetainTheirOwnCompanionLayout() throws {
+        var yard = YardLayout()
+        for id in 1...3 { yard.insert(id, in: metrics) }
+        let thirds = try #require(yard.snapping(1, to: .leftThird,
+            layout: [.leftThird, .centerThird, .rightThird], in: metrics))
+        let pair = try #require(yard.snapping(1, to: .leftThird,
+            layout: [.leftThird, .rightTwoThirds], in: metrics))
+        #expect(thirds.columns.filter { $0.pinned }.count == 3)
+        #expect(pair.columns.filter { $0.pinned }.count == 2)
+        #expect(pair.columns.contains { abs($0.width - 2.0 / 3) < 0.001 })
+    }
+
+    @Test func disabledPaletteRegionsCannotSelectOrFallThrough() {
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size),
+            allows: { snap, _ in snap == .maximized })
+        for region in palette.regions {
+            let point = CGPoint(x: region.frame.midX, y: region.frame.midY)
+            #expect(palette.frame.contains(point))
+            #expect(palette.selection(at: point) == (region.snap == .maximized ? .maximized : nil))
+        }
+    }
+}
+
+
+extension YardSnapTests {
+    @Test func oneWindowCanReachEveryPaletteSlotWithoutInventingWindows() throws {
+        var yard = YardLayout()
+        yard.insert(1, in: metrics)
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size))
+        for region in palette.regions {
+            let result = try #require(yard.snapping(1, to: region.snap, layout: region.layout, in: metrics))
+            #expect(result.windows == [1])
+            #expect(result.columns.count == 1)
+            #expect(abs(result.trackWidth(in: metrics) - metrics.size.width) < 0.001)
+            let frame = try #require(result.frames(in: metrics)[1])
+            let slot = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+            let stride = metrics.size.width + metrics.gap
+            #expect(abs(frame.minX - slot.minX / 6 * stride) < 0.001)
+            #expect(abs(frame.width - metrics.points(forFraction: slot.width / 6)) < 0.001)
+            if slot.height == 3 {
+                #expect(abs(frame.height - (metrics.size.height - metrics.gap) / 2) <= 1)
+                if slot.minY == 3 { #expect(frame.maxY == metrics.size.height) }
+                else { #expect(frame.minY == 0) }
+            } else { #expect(frame.height == metrics.size.height) }
+            let data = try JSONEncoder().encode(result)
+            let restored = try JSONDecoder().decode(YardLayout.self, from: data)
+            #expect(restored == result)
+            #expect(restored.frames(in: metrics) == result.frames(in: metrics))
+        }
+    }
+
+    @Test func sparseQuarterAcceptsAStackAndKeepsItsSlotOnNarrowRotation() throws {
+        var yard = YardLayout()
+        yard.insert(1, in: metrics)
+        var snapped = try #require(yard.snapping(1, to: .bottomRight,
+            layout: [.topLeft, .topRight, .bottomLeft, .bottomRight], in: metrics))
+        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
+        #expect(snapped.frames(in: phone)[1]?.width == phone.points(forFraction: 0.5))
+        #expect(snapped.frames(in: phone)[1]?.minX == (phone.size.width + phone.gap) / 2)
+        #expect(snapped.trackWidth(in: phone) == 390)
+        let inserted = snapped.insert(2, below: 1, in: metrics)
+        #expect(inserted)
+        #expect(snapped.columns[0].halfSlot == nil)
+        let frames = snapped.frames(in: metrics)
+        #expect(frames[1]?.minY == 0)
+        #expect(frames[2]?.maxY == metrics.size.height)
+        #expect(!frames[1]!.intersects(frames[2]!))
+    }
+}
+
+
+extension YardSnapTests {
+    @Test func largeMinimumContentFitsEveryVisiblePortraitAndLandscapeSnapRegion() throws {
+        // Steam-sized hints are guest pixels, not a native tile's minimum dimensions.
+        let minimum = CGSize(width: 1024, height: 640)
+        let density: CGFloat = 2
+        for size in [CGSize(width: 610, height: 820), CGSize(width: 1024, height: 620),
+                     CGSize(width: 390, height: 700)] {
+            let metrics = YardMetrics(size: size)
+            for count in [1, 4] {
+                var yard = YardLayout()
+                for id in 1...count { yard.insert(id, in: metrics) }
+                let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: size),
+                    allows: { snap, slots in yard.snapping(1, to: snap, layout: slots, in: metrics) != nil })
+                #expect(palette.regions.count == 14)
+                for region in palette.regions {
+                    #expect(region.enabled)
+                    #expect(palette.frame.contains(region.frame))
+                    // The view draws two points inside these authoritative hit rectangles.
+                    let visible = region.frame.insetBy(dx: 2, dy: 2)
+                    for point in [CGPoint(x: visible.minX, y: visible.minY),
+                                  CGPoint(x: visible.midX, y: visible.midY),
+                                  CGPoint(x: visible.maxX, y: visible.maxY)] {
+                        #expect(palette.selection(at: point) == region.snap)
+                        #expect(palette.regions.first { $0.frame.contains(point) }?.layout == region.layout)
+                    }
+                    let result = try #require(yard.snapping(1, to: region.snap, layout: region.layout, in: metrics))
+                    #expect(Set(result.windows) == Set(yard.windows))
+                    let tile = try #require(result.frames(in: metrics)[1])
+                    let unit = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+                    #expect(abs(tile.width - metrics.points(forFraction: unit.width / 6)) < 0.001)
+                    let viewport = metrics.content(ofTile: tile)
+                    let pixels = CGRect(x: viewport.minX * density, y: viewport.minY * density,
+                                        width: viewport.width * density, height: viewport.height * density)
+                    let committed = try #require(WindowSizePolicy.fitting(pixels, minimum: minimum,
+                        maximum: nil, fullscreen: false))
+                    #expect(committed.width >= minimum.width && committed.height >= minimum.height)
+                    let natural = CGSize(width: committed.width / density, height: committed.height / density)
+                    let shown = DesktopGeometry.surfaceFrame(natural: natural, available: viewport.size, resizing: false)
+                    // Multiplication by the fitting scale can exceed an edge by a floating-point ULP.
+                    #expect(shown.width <= viewport.width + 0.0001 && shown.height <= viewport.height + 0.0001)
+                    #expect(abs(shown.width / natural.width - shown.height / natural.height) < 0.0001)
+                    // The native surface inverse transform maps both view corners to the
+                    // valid committed guest rectangle; hints never enlarge the target tile.
+                    #expect(abs(shown.width / (shown.width / natural.width) * density - committed.width) < 0.001)
+                    #expect(abs(shown.height / (shown.height / natural.height) * density - committed.height) < 0.001)
+                }
+            }
+        }
     }
 }

@@ -27,6 +27,16 @@ extern "C" {
 
 typedef struct cgpu_player cgpu_player;
 
+/**
+ * Queries this library's linked MoltenVK without creating a device, surface, or player.
+ * Returns UTF-8 JSON (schemaVersion 1): physical devices, core features, limits,
+ * extensions and BC format support, or an error string. No profile is changed.
+ * May take time to initialize Metal; call off the UI thread. NULL means allocation
+ * failed. Free the returned string with cgpu_device_capabilities_free.
+ */
+CGPU_API char *cgpu_device_capabilities_json(void);
+CGPU_API void cgpu_device_capabilities_free(char *json);
+
 typedef enum cgpu_state {
     /** Replaying, or waiting for more of the stream. */
     CGPU_STATE_RUNNING = 0,

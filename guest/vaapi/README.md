@@ -1,9 +1,8 @@
 # caboose_drv_video.so: the codec passthrough VA-API driver
 
-A libva driver that does not decode. Players (Chromium, Firefox, mpv, VLC, GStreamer,
+A libva driver with bitstream reconstruction and local decode fallback. Players (Chromium, Firefox, mpv, VLC, GStreamer,
 FFmpeg) decode through it as through any hardware decoder; it rebuilds each picture's
-compressed bitstream from the VA buffers and sends it to caboose-display, which forwards
-it to the phone or TV to decode in hardware. The surfaces the player gets back hold a
+compressed bitstream from the VA buffers and sends it to caboose-display, which currently requests local decode for correct application composition. The surfaces the player gets back hold a
 marker that tells the compositor where on screen, and when, each frame is shown. When a
 stream cannot be passed through, the driver decodes it itself with libavcodec.
 
@@ -11,6 +10,10 @@ The contract with caboose-display (socket, marker, binding, fallback, limits) is
 [docs/codec-passthrough.md](../../docs/codec-passthrough.md); the design it serves is
 "Video, for every app" in [docs/display.md](../../docs/display.md). The driver is
 written in C and links libva, libdrm, libavcodec and libavutil.
+
+The compositor currently requests local decode for every stream because marker pixels
+cannot establish foreground alpha or occlusion. The experimental capture path remains
+available; codec advertisement does not enable production passthrough.
 
 ## Layout
 
@@ -25,6 +28,7 @@ written in C and links libva, libdrm, libavcodec and libavutil.
 | `src/bits.c` | Bit writer and reader, Exp-Golomb, NAL escaping |
 | `tools/cbva-capture.c` | `split` a capture into elementary streams; `serve` a stub caboose-display |
 | `tools/cbva-detect.c` | Run the detector on a screenshot |
+| `tests/av1-state.c` | Source-level AV1 OBU/reference-state checks, including a paused held picture requested after an older surface |
 | `tests/unit.c` | Unit tests: bit I/O, escaping, the marker code, the detector on synthetic screens |
 | `tests/roundtrip.sh`, `tests/cases/` | Bit-exact round trips per codec through `ffmpeg -hwaccel vaapi` |
 | `tests/e2e.sh` | mpv, Chromium and GStreamer on a GPU, with the stub compositor and the detector |
@@ -150,12 +154,39 @@ in libavcodec only (see `src/hevc.c`).
 
 Behaviours to know:
 
-- AV1 pictures are held until the next one shows their `refresh_frame_flags`. A paused AV1
-  video shows the client the picture before the one the app is showing until playback
-  resumes or the app closes its decoder.
+- Experimental AV1 passthrough holds pictures until the next one reveals their
+  `refresh_frame_flags`, so it can show the previous picture at pause. Local decode
+  supplies held pixels on sync/export/readback without refreshing reference slots;
+  requests for another sequence do not consume that provisional picture.
 - HEVC `no_output_of_prior_pics_flag` is cleared, so the client may decode pictures the app
   never shows (the compositor never presents them); a CRA that the app treated as the start
   of a sequence is sent as BLA.
 - Local decoding starts from the key frame before last that the driver kept. Pictures from
   earlier GOPs that an app reads back late keep their marker, and so do the RASL pictures
   of an HEVC CRA when the switch lands on it.
+
+### Bounded state and bitstream checks
+
+`make -j1 build/unit build/av1-state` and then `build/unit && build/av1-state`
+check marker/bit primitives and the AV1 provisional sequence contract. The AV1 fixture
+uses synthetic tile bytes and checks headers and reference state; it is not a decoder
+conformance test. `make check` also runs it before the codec roundtrips.
+`CBVA_CASES` selects space-separated exact case names for `tests/roundtrip.sh`;
+a selection running no cases fails. For example:
+
+```sh
+CBVA_CASES='av1-aom-realtime av1-aom-altref' tests/roundtrip.sh av1
+```
+
+Roundtrips compare software-decoded pixels and readback, including the final frame.
+They do not establish paused native VideoToolbox output or foreground composition.
+
+The source-owned [composition and pause fixture](tests/acceptance.md) covers the
+remaining visual/native acceptance gates and records the limits of automated checks.
+
+The hosted `Check video fallback and bitstreams` workflow builds this directory's
+Dockerfile (including FFmpeg and Xvfb) and runs `h264-cbp`, `hevc-default`,
+`av1-aom-realtime`, and `av1-aom-altref` with a 300-second test bound. Its admission job
+builds the compositor and probe from the checked source before exercising local-decode
+admission. The workflow is source-owned; a passing run is required evidence, not implied
+by the presence of its configuration.

@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Video composition acceptance fixture</title>
+<style>
+body { background:#ddd; color:#111; font:18px sans-serif; margin:24px }
+.stage { position:relative; width:640px; height:360px; margin:24px 0; overflow:hidden; background:black }
+video { width:100%; height:100%; object-fit:cover }
+.subtitle { position:absolute; bottom:60px; width:100%; text-align:center; color:white;
+ text-shadow:2px 2px black; pointer-events:none }
+.pill { position:absolute; top:30px; left:32px; padding:16px; background:#ffffff80; color:#111 }
+.marker { position:absolute; top:100px; left:32px; background:#101010; color:#383838; border:2px solid #383838 }
+details { position:absolute; top:30px; right:20px; background:#eee; padding:10px }
+.small { width:420px; height:250px }
+.cover { position:absolute; right:0; bottom:0; width:150px; height:120px; background:#227; color:white }
+</style>
+<h1>Video controls, overlays and pause</h1>
+<p>Select a locally generated H.264, HEVC or AV1 clip. This fixture makes no network requests.
+Both videos use that file. Native controls, translucent white, exact marker grays,
+subtitles and an opaque occluder must remain visible. Test each player separately and together.</p>
+<input id="file" type="file" accept="video/*">
+<button id="pause">Pause both</button><button id="resume">Resume both</button>
+<p id="state">No clip loaded</p>
+<div class="stage">
+ <video controls muted loop></video>
+ <div class="subtitle">Subtitle: white text and shadow over moving pixels</div>
+ <div class="pill">50% white translucent control</div>
+ <button class="marker">Marker-colored control</button>
+ <details><summary>Menu</summary><p>Opaque menu above video</p><button>Menu action</button></details>
+</div>
+<div class="stage small">
+ <video controls muted loop></video>
+ <div class="subtitle">Scaled and cropped second video</div>
+ <div class="cover">Opaque occlusion</div>
+</div>
+<pre id="frames"></pre>
+<script>
+const videos = [...document.querySelectorAll('video')];
+let url;
+document.querySelector('#file').onchange = event => {
+ if (url) URL.revokeObjectURL(url);
+ const file = event.target.files[0]; if (!file) return;
+ url = URL.createObjectURL(file);
+ videos.forEach(video => video.src = url);
+ document.querySelector('#state').textContent = file.name;
+};
+document.querySelector('#pause').onclick = () => videos.forEach(video => video.pause());
+document.querySelector('#resume').onclick = () => videos.forEach(video => video.play().catch(error => {
+ document.querySelector('#state').textContent = error.message;
+}));
+const stamps = ['not presented', 'not presented'];
+videos.forEach((video, index) => {
+ const frame = (_, metadata) => {
+  stamps[index] = `player ${index + 1}: mediaTime=${metadata.mediaTime}, presentedFrames=${metadata.presentedFrames}`;
+  document.querySelector('#frames').textContent = stamps.join('\n');
+  video.requestVideoFrameCallback(frame);
+ };
+ if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frame);
+});
+</script>

@@ -67,4 +67,58 @@ class Control(unittest.TestCase):
         backend.alias('login')
         self.assertEqual(backend.call.call_args.args[2], 'org.freedesktop.Secret.Service')
 
+class Preparation(unittest.TestCase):
+    def backend(self, default='/', login='/', collections=()):
+        backend = k.Keyring.__new__(k.Keyring)
+        backend.owner = ':1.42'
+        backend.GLib = MagicMock()
+        backend.alias = MagicMock(side_effect=lambda name: {'default': default, 'login': login}[name])
+        backend.property = MagicMock(side_effect=lambda path, interface, name: list(collections) if name == 'Collections' else True)
+        backend.call = MagicMock()
+        return backend
+
+    def test_existing_state_never_creates_or_changes_password(self):
+        for default, login, collections, files in [('/', '/', [], ['orphan.keyring']),
+                ('/', '/login', ['/login'], []), ('/other', '/login', ['/other', '/login'], []),
+                ('/', '/', ['/other'], [])]:
+            with self.subTest(default=default, login=login, files=files):
+                backend = self.backend(default, login, collections)
+                with patch.object(k.Path, 'exists', return_value=True), patch.object(k.Path, 'iterdir', return_value=iter(files)), patch.object(backend, 'create_login') as create, patch.object(k, 'unlock') as unlock:
+                    with self.assertRaises(k.MigrationRequired): backend.ensure(b'a' * 64)
+                create.assert_not_called()
+                unlock.assert_not_called()
+                backend.call.assert_not_called()
+
+    def test_creation_race_closes_session_without_creating(self):
+        backend = self.backend('/login', '/login', ['/login'])
+        backend.call.return_value = ('', '/session')
+        with patch.object(k.Path, 'exists', return_value=False):
+            with self.assertRaises(k.MigrationRequired): backend.create_login(b'a' * 64)
+        self.assertEqual([call.args[3] for call in backend.call.call_args_list], ['OpenSession', 'Close'])
+
+    def test_fresh_creation_uses_registered_dbus_path_and_closes_session(self):
+        backend = self.backend()
+        backend.alias.side_effect = ['/', '/', k.ROOT + '/collection/login']
+        backend.call.side_effect = [('', '/session'), (k.ROOT + '/collection/login',), ()]
+        with patch.object(k.Path, 'exists', return_value=False): backend.create_login(b'a' * 64)
+        self.assertEqual([call.args[3] for call in backend.call.call_args_list], ['OpenSession', 'CreateWithMasterPassword', 'Close'])
+        create = backend.call.call_args_list[1].args
+        self.assertEqual(create[1], k.ROOT)
+        self.assertEqual(create[4], '(a{sv}(oayays))')
+        self.assertEqual(create[5][1], ('/session', [], list(b'a' * 64), 'text/plain'))
+
+    def test_creation_error_closes_session_without_fallback(self):
+        backend = self.backend()
+        backend.call.side_effect = [('', '/session'), RuntimeError('backend'), ()]
+        with patch.object(k.Path, 'exists', return_value=False):
+            with self.assertRaises(RuntimeError): backend.create_login(b'a' * 64)
+        self.assertEqual([call.args[3] for call in backend.call.call_args_list], ['OpenSession', 'CreateWithMasterPassword', 'Close'])
+
+    def test_wrong_password_on_existing_store_never_creates(self):
+        backend = self.backend('/login', '/login', ['/login'])
+        backend.call.side_effect = [('/runtime',), (42,)]
+        with patch.object(k.Path, 'exists', return_value=False), patch.object(k.Path, 'is_socket', return_value=True), patch.object(backend, 'create_login') as create, patch.object(k, 'unlock', side_effect=k.MigrationRequired):
+            with self.assertRaises(k.MigrationRequired): backend.ensure(b'a' * 64)
+        create.assert_not_called()
+
 if __name__ == '__main__': unittest.main()

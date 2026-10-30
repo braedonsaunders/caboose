@@ -59,10 +59,13 @@ struct DeviceViewportTests {
             #expect(frame.minY == 0)
             #expect(frame.width == size.width)
             #expect(frame.maxY + 32 + 8 + 76 + 10 == size.height)
-            // A fresh frame still fills the full content rect while Chrome redraws.
+            // The retained picture fits the content rect proportionally while the app redraws.
             let surface = DesktopGeometry.surfaceFrame(natural: landscape,
                 available: frame.size, resizing: true)
-            #expect(surface.size == frame.size)
+            #expect(surface.maxX <= frame.width && surface.maxY <= frame.height)
+            #expect(abs(surface.width / surface.height - landscape.width / landscape.height) < 0.000001)
+            #expect(surface == DesktopGeometry.surfaceFrame(natural: landscape,
+                available: frame.size, resizing: false))
         }
         #expect(viewport.desktopSize == landscape)
     }

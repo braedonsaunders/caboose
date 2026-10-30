@@ -14,6 +14,10 @@ import Testing
         let prompt = AppRequest("a timer for my sourdough").prompt
         #expect(prompt.hasPrefix("Make me a Caboose app: a timer for my sourdough\n\n"))
         for step in ["app_guide", "app_publish", "app_open"] { #expect(prompt.contains(step)) }
+        for check in ["primary action", "text entry", "scrolling", "saved-state reload",
+                      "test-owned data", "preserve existing app data", "phone touch checks you could not run"] {
+            #expect(prompt.contains(check))
+        }
         #expect(!prompt.contains("\\"))
     }
 }

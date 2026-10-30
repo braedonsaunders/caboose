@@ -6,7 +6,7 @@ import WebKit
 @MainActor
 final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
     static let world = WKContentWorld.world(name: "caboose")
-    private weak var game: RemoteGame?
+    private(set) weak var game: RemoteGame?
     private weak var webView: WKWebView?
     private var origin: GameOrigin?
     private var document: String?
@@ -15,6 +15,12 @@ final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var polling: Task<Void, Never>?
     private var ended = false
     private var closing = false
+    /// Kept while Caboose is away (`AgentAppPages`): calls fail until the page is adopted.
+    private var parked = false
+    /// What the app's manifest declares, as the computer reported it when the page opened.
+    private var capabilities: Set<String> = []
+    /// The app's network origin on this device, for an app that declares `net`.
+    private var network: AgentAppNetServer?
     var onFailure: (() -> Void)?
     var onReload: (() -> Void)?
 
@@ -68,12 +74,48 @@ final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
         guard let info else { throw BridgeError("The app bridge is unavailable") }
         document = token
+        capabilities = Set((info as? [String: Any])?["capabilities"] as? [String] ?? [])
+        var netBase = "null"
+        if capabilities.contains("net") {
+            let appOrigin = "http://\(origin.authority)"
+            if network?.appOrigin != appOrigin {
+                network?.stop()
+                network = AgentAppNetServer(appOrigin: appOrigin)
+            }
+            if let base = try await network?.start(),
+               let encoded = try? JSONSerialization.data(withJSONObject: base.absoluteString, options: .fragmentsAllowed) {
+                netBase = String(decoding: encoded, as: UTF8.self)
+            }
+        }
         guard JSONSerialization.isValidJSONObject(info),
               let data = try? JSONSerialization.data(withJSONObject: info),
               let text = String(data: data, encoding: .utf8),
               let url = Bundle.module.url(forResource: "AgentAppPage", withExtension: "js"),
               let page = try? String(contentsOf: url, encoding: .utf8) else { throw BridgeError("The app API is unavailable") }
-        return page.replacingOccurrences(of: "__CABOOSE_APP__", with: text)
+        // The network base first: the app's own text never becomes a placeholder.
+        return page.replacingOccurrences(of: "__CABOOSE_NET__", with: netBase).replacingOccurrences(of: "__CABOOSE_APP__", with: text)
+    }
+
+    /// The network origin listens again after the system took its socket in the background.
+    func resume() { network?.resume() }
+
+    /// The display closed but the page is kept: its link to the computer stops, and its
+    /// network origin, which needs no computer, stays.
+    func park() {
+        parked = true
+        polling?.cancel()
+        polling = nil
+        opening?.cancel()
+        opening = nil
+        document = nil
+        epoch += 1
+    }
+
+    /// The kept page carries on as `game`: it registers again over the new grant.
+    func adopt(_ game: RemoteGame) {
+        self.game = game
+        parked = false
+        Task { [weak webView] in _ = try? await webView?.evaluateJavaScript("__cabooseReconnect()", in: nil, contentWorld: Self.world) }
     }
 
     static func worldScript() throws -> String {
@@ -105,6 +147,7 @@ final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) async -> (Any?, String?) {
+        guard !parked else { return (nil, "Caboose is not connected to the computer") }
         guard !ended, !closing, message.frameInfo.isMainFrame, message.webView === webView,
               let origin, let url = message.frameInfo.request.url, origin.contains(url),
               let raw = message.body as? String, raw.utf8.count <= 96 * 1024 * 1024,
@@ -160,6 +203,8 @@ final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
     func end() {
         guard !closing, !ended else { return }
         closing = true
+        network?.stop()
+        network = nil
         let previous = document
         polling?.cancel()
         polling = nil

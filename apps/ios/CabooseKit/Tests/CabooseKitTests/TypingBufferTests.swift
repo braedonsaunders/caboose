@@ -158,6 +158,43 @@ import Testing
         _ = buffer.setMarked("ka", selectedRange: NSRange(location: 2, length: 0))
         #expect(adopt(&buffer, "other") == false)
     }
+
+    @Test func autoFillTypesTheWholeValueIntoAnEmptyField() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        #expect(buffer.fill("correct horse battery staple") == [.type("correct horse battery staple")])
+        #expect(buffer.text == "correct horse battery staple")
+        #expect(buffer.selection == NSRange(location: 28, length: 0))
+    }
+
+    @Test func autoFillReplacesWhatWasTyped() {
+        var buffer = TypingBuffer(marksAsPreedit: true)
+        _ = buffer.insert("x")
+        _ = buffer.insert("y")
+        #expect(buffer.fill("hunter2") == [.backspace(2), .type("hunter2")])
+        #expect(buffer.text == "hunter2")
+        // A code whose first digits were already typed sends only the rest.
+        var code = TypingBuffer()
+        _ = code.insert("4")
+        _ = code.insert("8")
+        #expect(code.fill("481516") == [.type("1516")])
+        #expect(code.text == "481516")
+    }
+
+    @Test func autoFillAfterMovingTheCaretStillReplacesEverything() {
+        var buffer = TypingBuffer()
+        _ = buffer.insert("abc")
+        buffer.select(NSRange(location: 1, length: 0))
+        #expect(buffer.fill("pw") == [.backspace(3), .type("pw")])
+        #expect(buffer.selection == NSRange(location: 2, length: 0))
+    }
+
+    @Test func insertingAWholeValueAfterTypedTextKeepsIt() {
+        // Paste is literal: the value lands after the typed text, nothing is deleted.
+        var buffer = TypingBuffer()
+        _ = buffer.insert("ab")
+        #expect(buffer.insert("hunter2") == [.type("hunter2")])
+        #expect(buffer.text == "abhunter2")
+    }
 }
 
 private func adopt(_ buffer: inout TypingBuffer, _ text: String) -> Bool { buffer.adopt(beforeCaret: text) }

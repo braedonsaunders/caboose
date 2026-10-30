@@ -7,5 +7,5 @@ After=user@1000.service
 Slice=caboose-workloads.slice
 User=caboose
 Group=caboose
-ExecStart=/usr/bin/dbus-daemon --session --address=unix:path=/run/user/1000/agent-bus --nofork
+ExecStart=/usr/bin/python3 /opt/caboose/agent-profile.py exec /usr/bin/dbus-daemon --config-file=/opt/caboose/keyring/agent-bus.conf --nofork
 Restart=on-failure

@@ -8,7 +8,7 @@ test('coalesces concurrent seat starts and retries after failure', async () => {
   const start = seatStarter(async (command, args) => {
     calls.push([command, args])
     if (command === 'sudo' && fail) { fail = false; throw new Error('unavailable') }
-    return { stdout: command === '/bin/sh' ? 'DISPLAY=:101\0WAYLAND_DISPLAY=wayland-agent\0' : '' }
+    return { stdout: command === '/usr/bin/python3' ? 'DISPLAY=:101\0WAYLAND_DISPLAY=wayland-agent\0' : '' }
   })
   await assert.rejects(start(), /unavailable/)
   const [a, b] = await Promise.all([start(), start()])

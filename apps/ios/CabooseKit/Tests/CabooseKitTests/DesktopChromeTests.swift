@@ -3,6 +3,18 @@ import Testing
 @testable import CabooseKit
 
 struct DesktopChromeTests {
+    @Test func bottomControlsMeetTheVerticalBarWithoutReducingKeyboardClearance() {
+        let safeArea: CGFloat = 34
+        let composer = safeArea + DesktopChrome.composerBottomPadding(verticalBar: true, keyboardVisible: false)
+        let dock = DesktopChrome.dockBottomPadding(contentInset: 0, windowInset: safeArea, verticalBar: true)
+        #expect(composer == dock)
+        #expect(dock == 24)
+        #expect(DesktopChrome.composerBottomPadding(verticalBar: true, keyboardVisible: true) == 8)
+        #expect(DesktopChrome.composerBottomPadding(verticalBar: false, keyboardVisible: false) == 8)
+        #expect(DesktopChrome.dockBottomPadding(contentInset: 430, windowInset: safeArea,
+                                               verticalBar: true, keyboardVisible: true) == 24)
+    }
+
     @Test func keyboardSafeAreaNeverBecomesDockPadding() {
         let visible = CGSize(width: 930, height: 380)
         for keyboardInset in [CGFloat(0), 34, 290, 430] {

@@ -3,7 +3,7 @@
 //! the markers the encode workers find.
 
 use super::ipc::{self, CompositorMessage, DriverMessage, Framer};
-use super::{codec_of, create_message, frame_message, lineage, marker, Binding, Streams, Unit, MISSES_TO_UNBIND};
+use super::{create_message, frame_message, lineage, marker, Binding, Streams, Unit, MISSES_TO_UNBIND};
 use crate::state::State;
 use caboose_display_protocol::{self as proto, Codec, Message, Rect};
 use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
@@ -222,28 +222,15 @@ impl State {
                     c.program = program;
                 }
             }
-            DriverMessage::Open { stream, codec, width, height, bit_depth, .. } => {
-                let lineage = self.videos.conns.get(&conn).map(|c| c.lineage.clone()).unwrap_or_default();
-                let codec = codec_of(codec);
-                // Without a client the stream is accepted: nothing decodes it until one
-                // connects, and that client can still ask for local decoding.
-                let playable = codec.is_some_and(|c| self.client_video_decoders().is_none_or(|d| d.contains(&c)));
-                let reply = match codec {
-                    Some(c) if playable => match self.videos.streams.open(conn, stream, c, lineage) {
-                        Some(s) => {
-                            tracing::info!(
-                                "video stream {} ({} {width}x{height} {bit_depth}-bit) passed through with tag {}",
-                                s.id,
-                                c.as_str(),
-                                s.tag
-                            );
-                            CompositorMessage::Accept { stream, tag: s.tag, mode: ipc::mode::PASSTHROUGH }
-                        }
-                        None => CompositorMessage::Decode { stream, reason: ipc::decode_reason::NO_TAG },
-                    },
-                    _ => CompositorMessage::Accept { stream, tag: 0, mode: ipc::mode::DECODE },
-                };
-                self.send_driver(conn, reply);
+            DriverMessage::Open { stream, codec, .. } => {
+                // A flattened marker identifies geometry, not foreground alpha or
+                // occlusion. Even exact marker-colored controls are ambiguous.
+                // No current driver message supplies independent composition planes,
+                // so decoder support cannot authorize replacing this rectangle.
+                // Decode before the application composites its controls/subtitles,
+                // including when no phone is connected.
+                tracing::debug!(stream, codec, "video uses local decode: marker has no composition provenance");
+                self.send_driver(conn, CompositorMessage::Accept { stream, tag: 0, mode: ipc::mode::DECODE });
             }
             DriverMessage::Frame { stream, seq, flags, data, .. } => {
                 let Some(s) = self.videos.streams.by_driver(conn, stream) else { return };

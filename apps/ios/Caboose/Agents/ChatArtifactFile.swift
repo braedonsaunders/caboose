@@ -146,7 +146,7 @@ struct ChatArtifactImage: View {
                 Button("Retry") { Task { await load() } }
             }
         }
-        .padding(12).background(.thinMaterial, in: .rect(cornerRadius: 16))
+        .padding(12).background(.thinMaterial, in: .surface(cornerRadius: 16))
         .task(id: destination) { await load() }
         .sheet(isPresented: $preview) { if let file { ChatFilePreview(file: file) } }
     }

@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import appcore as apps  # noqa: E402
@@ -251,6 +252,50 @@ class Content(unittest.TestCase):
             self.assertNotIn('manifest', result)
             self.assertEqual(len(result['errors']), 1)
             self.assertTrue(result['errors'][0].startswith(os.path.join('sub', 'p.htm') + ' line 1: event handler'))
+
+    def test_viewport_warnings_preserve_existing_apps(self):
+        with tempfile.TemporaryDirectory() as home:
+            directory = os.path.join(home, 'Apps', 'x')
+            os.makedirs(os.path.join(directory, 'ui'))
+            with open(os.path.join(directory, 'app.json'), 'w') as handle:
+                json.dump({'name': 'X', 'entry': 'ui/main.html'}, handle)
+            entry = os.path.join(directory, 'ui', 'main.html')
+            source = '<!doctype html><button>Working desktop app</button>'
+            with open(entry, 'w') as handle:
+                handle.write(source)
+            places = apps.Places(home)
+            result = apps.publish(places, 'x')
+            self.assertTrue(result['published'])
+            self.assertIn('viewport', result['warnings'][0])
+            self.assertTrue(result['warnings'][0].startswith('ui/main.html:'))
+            self.assertEqual(apps.list_apps(places)[0]['warnings'], result['warnings'])
+            with open(entry) as handle:
+                self.assertEqual(handle.read(), source)
+            good = '<META NAME="viewport" CONTENT="width=device-width, initial-scale=1">'
+            cases = [
+                (good, []),
+                (good.replace('initial-scale=1', 'initial-scale=1.00'), []),
+                ('<!-- ' + good + ' -->', ['add <meta']),
+                ('<script type="application/json">"' + good + '"</script>', ['add <meta']),
+                ('<template>' + good + '</template>', ['add <meta']),
+                (good + good, ['one viewport']),
+                ('<meta name="viewport" content="width=980, initial-scale=0.5">', ['width=device-width']),
+                (good.replace('initial-scale=1', 'initial-scale=1; user-scalable=no'), ['zoom']),
+                (good.replace('initial-scale=1', 'initial-scale=1, maximum-scale=1'), ['zoom']),
+            ]
+            for html, expected in cases:
+                with self.subTest(html=html):
+                    with open(entry, 'w') as handle:
+                        handle.write(html)
+                    warnings = apps.entry_input_warnings(directory, 'ui/main.html')
+                    self.assertEqual(len(warnings), len(expected))
+                    for warning, fragment in zip(warnings, expected):
+                        self.assertIn(fragment, warning)
+            os.symlink(entry, os.path.join(directory, 'link.html'))
+            self.assertIn('could not be read', apps.entry_input_warnings(directory, 'link.html')[0])
+            with patch.object(apps, 'MAX_PAGE', 16):
+                self.assertIn('within 16 bytes', apps.entry_input_warnings(directory, 'ui/main.html')[0])
+
 
     def test_csp_meta(self):
         meta = f'<meta http-equiv="Content-Security-Policy" content="{apps.CSP}">'.encode()

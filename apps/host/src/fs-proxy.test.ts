@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { createServer, request as httpRequest, type ServerResponse } from 'node:http'
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WebSocket } from 'ws'
@@ -11,12 +11,53 @@ import { SettingsStore, settingsLimits } from './settings.js'
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
 
+// Hold event requests until the test supplies authoritative state, like a long poll.
+// Keep transport traffic separate from public file/bridge operations.
+function eventFixture(token: string) {
+  const polls: Array<{ body: { cursor: string; generation: number; channels: string[] }; res: ServerResponse }> = []
+  function handle(req: IncomingMessage, res: ServerResponse): boolean {
+    if (req.url !== '/events' && req.url !== '/events/presence') return false
+    expect(req.method).toBe('POST')
+    expect(req.headers.authorization).toBe(`Bearer ${token}`)
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', () => {
+      const value = JSON.parse(body)
+      expect(value.session).toMatch(/^[0-9a-f]{32}$/)
+      expect(Number.isSafeInteger(value.generation)).toBe(true)
+      if (req.url === '/events/presence') { res.writeHead(204); res.end(); return }
+      expect(value.channels).toBeInstanceOf(Array)
+      expect(typeof value.cursor).toBe('string')
+      polls.push({ body: value, res })
+    })
+    return true
+  }
+  async function next(cursor?: string) {
+    let poll: typeof polls[number] | undefined
+    await vi.waitFor(() => {
+      poll = polls.find(p => !p.res.destroyed && !p.res.writableEnded && p.body.channels.includes('fs')
+        && (cursor === undefined || p.body.cursor === cursor))
+      expect(poll).toBeDefined()
+    })
+    return poll!
+  }
+  function reply(poll: typeof polls[number], cursor: string, anchor: string) {
+    poll.res.writeHead(200, { 'content-type': 'application/json' })
+    poll.res.end(JSON.stringify({ cursor, records: [{ channel: 'fs', record: { anchor } }] }))
+  }
+  return { handle, next, reply }
+}
+
 it('wakes for parked reads and writes, and authenticates before waking', async () => {
-  const requests: Array<{ method?: string; range?: string; match?: string }> = []
+  const transport = eventFixture('private')
+  const requests: Array<{ method?: string; range?: string; match?: string; body: string }> = []
   const upstream = createServer((req, res) => {
-    requests.push({ method: req.method, range: req.headers.range, match: req.headers['if-match'] })
-    req.resume()
-    req.on('end', () => { res.writeHead(req.method === 'GET' ? 206 : 200, { etag: '"v1"', 'content-range': 'bytes 0-0/1' }); res.end(req.method === 'GET' ? 'x' : '') })
+    if (transport.handle(req, res)) return
+    expect(req.url).toBe('/content?path=a')
+    expect(req.headers.authorization).toBe('Bearer private')
+    let body = ''
+    req.on('data', chunk => { body += chunk })
+    req.on('end', () => { requests.push({ method: req.method, range: req.headers.range, match: req.headers['if-match'], body }); res.writeHead(req.method === 'GET' ? 206 : 200, { etag: '"v1"', 'content-range': 'bytes 0-0/1' }); res.end(req.method === 'GET' ? 'x' : '') })
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
   cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
@@ -39,7 +80,7 @@ it('wakes for parked reads and writes, and authenticates before waking', async (
   expect((await fetch(base + '/v1/session/park', { method: 'POST', headers })).status).toBe(200)
   expect((await fetch(base + '/v1/fs/content?path=a', { method: 'PUT', headers: { ...headers, 'if-match': '"v1"' }, body: 'y' })).status).toBe(200)
   expect(wake).toHaveBeenCalledTimes(2)
-  expect(requests).toEqual([{ method: 'GET', range: 'bytes=0-0', match: '"v1"' }, { method: 'PUT', range: undefined, match: '"v1"' }])
+  expect(requests).toEqual([{ method: 'GET', range: 'bytes=0-0', match: '"v1"', body: '' }, { method: 'PUT', range: undefined, match: '"v1"', body: 'y' }])
 })
 
 it('releases the lifecycle queue when a file client disconnects during wake', async () => {
@@ -116,7 +157,7 @@ it('keeps a transfer alive while bytes continue to flow', async () => {
     res.end()
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   const app = createServer((req, res) => { void proxyFiles({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'test' }, req, res, 100) })
   app.listen(0, '127.0.0.1'); await once(app, 'listening')
   cleanup.unshift(() => new Promise(resolve => { app.closeAllConnections(); app.close(() => resolve()) }))
@@ -150,7 +191,7 @@ it('streams a chunked upload and a large response intact', async () => {
     })
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   const app = createServer((req, res) => { void proxyFiles({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'test' }, req, res) })
   app.listen(0, '127.0.0.1'); await once(app, 'listening')
   cleanup.unshift(() => new Promise(resolve => { app.closeAllConnections(); app.close(() => resolve()) }))
@@ -165,7 +206,9 @@ it('streams a chunked upload and a large response intact', async () => {
 }, 15_000) // Exercise backpressure without treating shared-runner throughput as a deadline.
 
 it('wakes, authenticates and streams a range through the guest relay', async () => {
+  const transport = eventFixture('wake-token')
   const upstream = createServer((req, res) => {
+    if (transport.handle(req, res)) return
     expect(req.headers.authorization).toBe('Bearer wake-token')
     expect(req.url).toBe('/content?path=Documents%2Ftest')
     expect(req.headers.range).toBe('bytes=2-3')
@@ -173,7 +216,7 @@ it('wakes, authenticates and streams a range through the guest relay', async () 
     res.end('cd')
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   let wakes = 0
   const controller: Controller = {
     wake: async () => { wakes++; return { state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } },
@@ -196,14 +239,10 @@ it('wakes, authenticates and streams a range through the guest relay', async () 
 })
 
 it('signals control clients when the guest change anchor advances', async () => {
-  let polls = 0
-  const upstream = createServer((_req, res) => {
-    polls++
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ anchor: polls === 1 ? 'epoch:1' : 'epoch:2', changed: polls > 1, reset: false, events: [] }))
-  })
+  const transport = eventFixture('wake-token')
+  const upstream = createServer((req, res) => { expect(transport.handle(req, res)).toBe(true) })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   const controller: Controller = {
     wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
@@ -220,22 +259,23 @@ it('signals control clients when the guest change anchor advances', async () => 
   const events: Array<{ type: string; anchor?: string }> = []
   socket.on('message', data => events.push(JSON.parse(data.toString())))
   await once(socket, 'open')
+  cleanup.unshift(async () => { socket.terminate() })
+  transport.reply(await transport.next(''), 'cursor-1', 'epoch:1')
+  const changed = await transport.next('cursor-1')
+  expect(events.filter(event => event.type === 'fs.changed')).toEqual([])
+  transport.reply(changed, 'cursor-2', 'epoch:2')
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }), { timeout: 3000 })
   socket.terminate()
 })
 
 it('keeps a background control anchor across freeze and resets it on park', async () => {
-  let version = 1
-  let held: ServerResponse | undefined
-  const anchors: Array<string | null> = []
+  const transport = eventFixture('test')
   const upstream = createServer((req, res) => {
-    const url = new URL(req.url!, 'http://localhost')
+    if (transport.handle(req, res)) return
+    expect(req.url).toBe('/sessions')
+    expect(req.headers.authorization).toBe('Bearer test')
     res.writeHead(200, { 'content-type': 'application/json' })
-    if (url.pathname === '/sessions') return res.end(JSON.stringify({ sessions: [] }))
-    const anchor = url.searchParams.get('anchor')
-    anchors.push(anchor)
-    if (version === 1 && anchor && !held) { held = res; return }
-    res.end(JSON.stringify({ anchor: `epoch:${version}`, changed: anchor !== null && anchor !== `epoch:${version}`, reset: false, events: [] }))
+    res.end(JSON.stringify({ sessions: [] }))
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
   cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
@@ -243,7 +283,7 @@ it('keeps a background control anchor across freeze and resets it on park', asyn
   const service = () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'test' })
   const controller: Controller = {
     wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
-    canFreeze: () => true, freeze: async () => { version = 2 }, thaw: async () => {}, park: async () => {},
+    canFreeze: () => true, freeze: async () => {}, thaw: async () => {}, park: async () => {},
     stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => guest,
     activeResources: () => null, hasSavedState: () => false, fileService: service, terminalService: service,
   }
@@ -258,26 +298,41 @@ it('keeps a background control anchor across freeze and resets it on park', asyn
   const events: Array<{ type: string; anchor?: string; state?: string }> = []
   socket.on('message', data => events.push(JSON.parse(data.toString())))
   await once(socket, 'open')
-  await vi.waitFor(() => expect(anchors).toContain(null))
-  await vi.waitFor(() => expect(held).toBeDefined(), { timeout: 2500 })
+  cleanup.unshift(async () => { socket.terminate() })
+  transport.reply(await transport.next(''), 'cursor-1', 'epoch:1')
+  const held = await transport.next('cursor-1')
+  expect(events.filter(event => event.type === 'fs.changed')).toEqual([])
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'computer.state', state: 'frozen' }), { timeout: 6000 })
-  const beforeThaw = anchors.length
   await fetch(base + '/v1/session', { method: 'POST', headers })
+  const thawed = await transport.next('')
+  expect(thawed.body.generation).toBeGreaterThan(held.body.generation)
+  transport.reply(thawed, 'cursor-2', 'epoch:2')
   await vi.waitFor(() => expect(events).toContainEqual({ type: 'fs.changed', anchor: 'epoch:2' }))
-  expect(anchors[beforeThaw]).toBe('epoch:1')
-  held!.end(JSON.stringify({ anchor: 'epoch:1', changed: false, reset: false, events: [] }))
-  const afterLateResponse = anchors.length
-  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(afterLateResponse), { timeout: 2500 })
-  expect(anchors[afterLateResponse]).toBe('epoch:2')
+  const current = await transport.next('cursor-2')
+  // A response from the canceled pre-freeze receiver must not roll back the baseline.
+  transport.reply(held, 'stale-cursor', 'epoch:1')
+  transport.reply(current, 'cursor-3', 'epoch:2')
+  const latest = await transport.next('cursor-3')
+  transport.reply(latest, 'cursor-4', 'epoch:3')
+  await vi.waitFor(() => expect(events.filter(event => event.type === 'fs.changed')).toEqual([
+    { type: 'fs.changed', anchor: 'epoch:2' }, { type: 'fs.changed', anchor: 'epoch:3' },
+  ]))
   const closed = once(socket, 'close')
   await fetch(base + '/v1/session/park', { method: 'POST', headers, body: '{}' })
   await closed
   await fetch(base + '/v1/session', { method: 'POST', headers })
-  const beforeReconnect = anchors.length
   const next = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?foreground=0', { headers })
+  cleanup.unshift(async () => { next.terminate() })
+  const nextEvents: Array<{ type: string; anchor?: string }> = []
+  next.on('message', data => nextEvents.push(JSON.parse(data.toString())))
   await once(next, 'open')
-  await vi.waitFor(() => expect(anchors.length).toBeGreaterThan(beforeReconnect))
-  expect(anchors[beforeReconnect]).toBeNull()
+  transport.reply(await transport.next(''), 'new-cursor-1', 'new-epoch:1')
+  const newBaseline = await transport.next('new-cursor-1')
+  expect(nextEvents.filter(event => event.type === 'fs.changed')).toEqual([])
+  transport.reply(newBaseline, 'new-cursor-2', 'new-epoch:2')
+  await vi.waitFor(() => expect(nextEvents.filter(event => event.type === 'fs.changed')).toEqual([
+    { type: 'fs.changed', anchor: 'new-epoch:2' },
+  ]))
   next.terminate()
 }, 10_000)
 
@@ -300,7 +355,7 @@ it('relays only a bounded bridge POST with the guest credential', async () => {
     req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}') })
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   const service = { url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'guest' }
   const app = createServer((req, res) => { void proxyWebview(service, req.url!.slice(1), req, res) })
   app.listen(0, '127.0.0.1'); await once(app, 'listening')
@@ -316,13 +371,15 @@ it('relays only a bounded bridge POST with the guest credential', async () => {
 })
 
 it('authorizes the app bridge through the selected computer', async () => {
+  const transport = eventFixture('guest')
   const upstream = createServer((req, res) => {
+    if (transport.handle(req, res)) return
     expect(req.url).toBe(`/webview/${'a'.repeat(32)}`)
     expect(req.headers.authorization).toBe('Bearer guest')
     req.resume(); req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}') })
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
-  cleanup.push(() => new Promise(resolve => upstream.close(() => resolve())))
+  cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
   const controller: Controller = {
     wake: async () => ({ state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
     park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
