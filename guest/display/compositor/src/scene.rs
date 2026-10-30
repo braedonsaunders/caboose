@@ -110,7 +110,8 @@ pub fn coalesce_scroll(
     true
 }
 
-impl SceneServer {\n    pub fn listen(path: &Path, handle: &LoopHandle<'static, State>) -> io::Result<Self> {
+impl SceneServer {
+    pub fn listen(path: &Path, handle: &LoopHandle<'static, State>) -> io::Result<Self> {
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
         use std::os::unix::fs::PermissionsExt;
