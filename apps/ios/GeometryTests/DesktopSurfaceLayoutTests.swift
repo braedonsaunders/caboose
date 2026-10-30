@@ -181,21 +181,28 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
                 host.view.layoutIfNeeded()
                 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
                 let format = UIGraphicsImageRendererFormat()
-                format.scale = 1
+                // Inspect native pixels: a 1x drawHierarchy snapshot resamples the
+                // device's backing store and blends the exact hinge boundary rows.
+                format.scale = window.screen.scale
+                format.preferredRange = .standard
                 let rendered = UIGraphicsImageRenderer(size: size, format: format).image { _ in
                     host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
                 }
                 let cg = try XCTUnwrap(rendered.cgImage)
                 // Normalize the snapshot to known RGBA bytes before inspecting boundaries.
-                var bytes = [UInt8](repeating: 0, count: Int(size.width * size.height) * 4)
+                let pixelWidth = cg.width, pixelHeight = cg.height
+                var bytes = [UInt8](repeating: 0, count: pixelWidth * pixelHeight * 4)
                 try bytes.withUnsafeMutableBytes { buffer in
-                    let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: Int(size.width), height: Int(size.height),
-                        bitsPerComponent: 8, bytesPerRow: Int(size.width) * 4,
-                        space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-                    context.draw(cg, in: CGRect(origin: .zero, size: size))
+                    let context = try XCTUnwrap(CGContext(data: buffer.baseAddress, width: pixelWidth, height: pixelHeight,
+                        bitsPerComponent: 8, bytesPerRow: pixelWidth * 4,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                    context.interpolationQuality = .none
+                    context.draw(cg, in: CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
                 }
                 func pixel(_ y: Int) -> ArraySlice<UInt8> {
-                    let offset = (y * Int(size.width) + 100) * 4
+                    let xPixel = Int(100.5 * format.scale)
+                    let yPixel = Int((CGFloat(y) + 0.5) * format.scale)
+                    let offset = (yPixel * pixelWidth + xPixel) * 4
                     return bytes[offset..<(offset + 3)]
                 }
                 XCTAssertEqual(Array(pixel(Int(frames.screen.maxY) - 1)), hasWindow ? [255, 0, 0] : [0, 255, 0])
