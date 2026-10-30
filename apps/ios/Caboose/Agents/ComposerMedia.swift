@@ -1,3 +1,4 @@
+import CabooseKit
 import AVFoundation
 import Observation
 import PhotosUI
@@ -60,13 +61,7 @@ final class AgentDictation {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var hasTap = false
     private var audioActive = false
-    private struct PlaybackConfiguration {
-        let category: AVAudioSession.Category
-        let mode: AVAudioSession.Mode
-        let policy: AVAudioSession.RouteSharingPolicy
-        let options: AVAudioSession.CategoryOptions
-    }
-    private var previousAudio: PlaybackConfiguration?
+    private var audioLease: UUID?
     private var generation = UUID()
 
     func start(update: @escaping @MainActor (String) -> Void) async {
@@ -91,9 +86,8 @@ final class AgentDictation {
         }
         do {
             let audio = AVAudioSession.sharedInstance()
-            previousAudio = PlaybackConfiguration(category: audio.category, mode: audio.mode,
-                                                  policy: audio.routeSharingPolicy, options: audio.categoryOptions)
-            try audio.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            audioLease = try CabooseAudioSession.acquire(.init(.playAndRecord, mode: .measurement,
+                options: [.defaultToSpeaker, .allowBluetoothHFP]))
             try audio.setActive(true)
             audioActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
@@ -132,14 +126,10 @@ final class AgentDictation {
         recognition?.cancel()
         request = nil; recognition = nil
         listening = false
-        if let previous = previousAudio {
-            let audio = AVAudioSession.sharedInstance()
-            do {
-                if audioActive { try audio.setActive(false, options: .notifyOthersOnDeactivation) }
-                try audio.setCategory(previous.category, mode: previous.mode, policy: previous.policy, options: previous.options)
-                if previous.category == .playback { try audio.setActive(true) }
-            } catch { self.error = "Could not restore playback after dictation: \(error.localizedDescription)" }
-            previousAudio = nil
+        if let lease = audioLease {
+            audioLease = nil
+            do { try CabooseAudioSession.release(lease) }
+            catch { self.error = "Could not restore playback after dictation: \(error.localizedDescription)" }
             audioActive = false
         }
     }

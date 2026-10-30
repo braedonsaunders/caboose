@@ -553,6 +553,7 @@ fn run(args: Args) -> Result<bool, String> {
     send(
         &mut ws,
         &Message::ClientHello(proto::ClientHello {
+            devices: false,
             version: proto::VERSION,
             token: args.token.clone(),
             decoders: args.decoders.clone(),

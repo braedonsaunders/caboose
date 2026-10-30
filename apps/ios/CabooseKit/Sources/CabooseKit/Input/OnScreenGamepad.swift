@@ -7,7 +7,8 @@ import Foundation
 ///
 /// A game handed off to this device sees the controller through its Gamepad API
 /// (`RemoteGame.gamepad`). Any other window gets keys: each control presses the key the owner
-/// assigned to it for as long as it is held. No controller device exists on the computer.
+/// assigned to it for as long as it is held; or, when the owner chooses `WindowRoute.controller`,
+/// the computer's gamepad device for the on-screen controller (docs/devices.md).
 /// `layout(in:style:settings:)` places a type's controls and `Tracker` turns fingers into
 /// `GameGamepadState`.
 public enum OnScreenGamepad {
@@ -181,6 +182,14 @@ public enum OnScreenGamepad {
         case keys
     }
 
+    /// What a window that is not a game on this device receives.
+    public enum WindowRoute: String, Codable, CaseIterable, Sendable {
+        /// The keys assigned below.
+        case keys
+        /// The on-screen controller as a gamepad on the computer (docs/devices.md).
+        case controller
+    }
+
     /// The keys a stick or the d-pad presses past half its travel.
     public enum StickKeys: String, Codable, CaseIterable, Sendable {
         case arrows, wasd, none
@@ -209,6 +218,7 @@ public enum OnScreenGamepad {
         public var scale = 1.0
         public var haptics = true
         public var games: GameRoute = .controller
+        public var windows: WindowRoute = .keys
         /// Each button's key by `Button` name; a missing or empty one presses nothing.
         public var keys: [String: String] = OnScreenGamepad.defaultKeys
         public var dpadKeys: StickKeys = .arrows
@@ -256,6 +266,7 @@ public enum OnScreenGamepad {
             scale = min(Self.scaleRange.upperBound, max(Self.scaleRange.lowerBound, value(.scale, defaults.scale)))
             haptics = value(.haptics, defaults.haptics)
             games = value(.games, defaults.games)
+            windows = value(.windows, defaults.windows)
             keys = value(.keys, defaults.keys)
             dpadKeys = value(.dpadKeys, defaults.dpadKeys)
             leftStickKeys = value(.leftStickKeys, defaults.leftStickKeys)

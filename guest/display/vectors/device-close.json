@@ -1,0 +1,8 @@
+{
+  "name": "device-close",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "device.close", "type_id": 98, "fields": {"device": "camera-back"}}
+  ],
+  "hex": "6214000000a1666465766963656b63616d6572612d6261636b"
+}

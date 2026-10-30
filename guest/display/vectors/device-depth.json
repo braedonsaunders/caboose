@@ -1,0 +1,8 @@
+{
+  "name": "device-depth",
+  "description": "A 2x2 depth picture: 1 m, 1.5 m, no reading, 4 m.",
+  "messages": [
+    {"direction": "client", "type": "device.depth", "type_id": 178, "fields": {"data": {"$bytes": "e803dc050000a00f"}, "size": [2, 2], "t_us": 77000066666, "device": "depth"}}
+  ],
+  "hex": "b232000000a4646461746148e803dc050000a00f6473697a6582020264745f75731b00000011ed8fc66a66646576696365656465707468"
+}

@@ -158,6 +158,18 @@ describe('GPU selection', () => {
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
   })
 
+  it('does not expose shared host input devices to a computer', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController({ ...settings, gpu: 'none' }, {
+      fence: async () => {}, docker: fake.docker, exists: () => true,
+    })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!
+    expect(run).not.toContain('/dev/uinput')
+    expect(run).not.toContain('/dev/input:/dev/input')
+    expect(run).not.toContain('c 13:* rmw')
+  })
+
   it('uses a configured GPU over detection', async () => {
     const fake = fakeDocker('missing')
     const controller = createContainerController({ ...settings, gpu: 'none' }, { fence: async () => {}, docker: fake.docker, exists: () => true })

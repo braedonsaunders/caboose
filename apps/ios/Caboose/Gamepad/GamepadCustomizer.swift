@@ -57,8 +57,12 @@ struct GamepadCustomizer: View {
                         Text("A controller").tag(OnScreenGamepad.GameRoute.controller)
                         Text("Keys").tag(OnScreenGamepad.GameRoute.keys)
                     }
+                    Picker("Other windows get", selection: $settings.windows) {
+                        Text("Keys").tag(OnScreenGamepad.WindowRoute.keys)
+                        Text("A Linux controller").tag(OnScreenGamepad.WindowRoute.controller)
+                    }
                 } footer: {
-                    Text("A game running on this device sees a standard controller through its Gamepad API. Every other window receives the keys below, held for as long as the control is. The computer gets no controller device.")
+                    Text("A game running on this device sees a standard controller through its Gamepad API. Every other window receives the keys below, held for as long as the control is, or, as a Linux controller, a gamepad on the computer that Steam and SDL games use. The Linux controller needs Controllers on in the computer's hardware settings; without it the keys are pressed.")
                 }
 
                 Section {

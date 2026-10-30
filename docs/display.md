@@ -84,6 +84,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
 | Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
+| Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
@@ -224,13 +225,15 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`. A feature is listed only
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
 plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
-streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff.
+streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff; and `devices` when
+the owner's display accepts the phone's hardware ([devices.md](devices.md)) and the client's
+hello says `devices: true`.
 
 ### Pacing and flow control
 
@@ -285,6 +288,11 @@ Server → client (`0x01`–`0x7F`):
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
+| `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]` ([devices.md](devices.md#protocol)) |
+| `0x61` | `device.open` | `device`, `rate_hz?: float` |
+| `0x62` | `device.close` | `device` |
+| `0x63` | `device.rumble` | `device`, `strong: float`, `weak: float`, `ms: uint` |
+| `0x64` | `device.keyframe` | `device` |
 | `0x7E` | `pong` | `t_us` (echoed from `ping`) |
 | `0x7F` | `bye` | `reason: "auth"\|"version"\|"shutdown"\|"protocol"\|"replaced"` (another client took over the display) |
 
@@ -292,7 +300,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -310,6 +318,15 @@ Client → server (`0x81`–`0xFF`):
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0xB0` | `devices` | `devices: [device]` ([devices.md](devices.md#protocol)) |
+| `0xB1` | `device.camera` | `device`, `seq`, `keyframe: bool`, `t_us`, `data: bytes` (H.264, Annex-B) |
+| `0xB2` | `device.depth` | `device`, `t_us`, `size: [w, h]`, `data: bytes` (u16 LE millimetres) |
+| `0xB3` | `device.audio` | `device`, `t_us`, `data: bytes` (20 ms Opus, 48 kHz mono) |
+| `0xB4` | `device.motion` | `device`, `samples: [{ t_us, accel?, gyro?, magnet?, rotation?, pressure? }]` |
+| `0xB5` | `device.gamepad` | `device`, `buttons: uint`, `axes: [float × 6]` |
+| `0xB6` | `device.button` | `device`, `key: "volume-up"\|"volume-down"\|"camera"\|"action"`, `pressed: bool` |
+| `0xB7` | `device.battery` | `device`, `level`, `charging`, `full`, `low_power`, `thermal` |
+| `0xB8` | `device.error` | `device`, `reason: text` |
 | `0xFE` | `ping` | `t_us`, answered by `pong` for round-trip time |
 
 A `display` is `{ id: uint, width: int, height: int, scale: float, refresh_hz: float, hdr: bool }`.

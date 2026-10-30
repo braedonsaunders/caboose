@@ -202,6 +202,9 @@ pub struct State {
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
+    /// The phone's hardware as devices, on the owner's display (docs/devices.md).
+    pub devices: Option<crate::devices::Hub>,
+    pub devices_tx: smithay::reexports::calloop::channel::Sender<caboose_display_protocol::Message>,
     /// Bumped per client session; stale encoder results are discarded.
     pub generation: u64,
     /// Random for this process, sent in every hello: window ids are unique within it.

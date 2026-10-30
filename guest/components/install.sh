@@ -56,6 +56,7 @@ sh "$root/game/install.sh"
 sh "$root/gpu/install.sh"
 sh "$root/agentd/install.sh"
 sh "$root/apps/install.sh"
+bash "$root/devices/install.sh" "$mode"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session

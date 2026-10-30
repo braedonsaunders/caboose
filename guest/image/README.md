@@ -64,7 +64,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
 
 ## What the image contains
 
-- **System.** Debian 13 from its signed repositories, the `linux-image-cloud-amd64` or `linux-image-arm64` kernel,
+- **System.** Debian 13 from its signed repositories, the `linux-image-amd64` or `linux-image-arm64` kernel
+  (Debian's generic kernel, whose uinput, UHID, HID sensor, IIO and V4L2 drivers the phone's
+  devices use; see [guest/devices](../devices/README.md)),
   systemd, D-Bus with a user session, the `caboose` user (uid 1000, passwordless `sudo`,
   lingering enabled so its user manager runs at boot), Node 22 from NodeSource and VS Code
   from Microsoft's repository.
@@ -110,7 +112,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
     iPhone** action and the `iPhone` CUPS queue (`cups.service` and
     `caboose-phone-printer.service`, enabled);
   - [`guest/game`](../game/README.md): `caboose-game-run` and the game bundles Caboose ships,
-    in `/usr/local/share/caboose/games`.
+    in `/usr/local/share/caboose/games`;
+  - [`guest/devices`](../devices/README.md): udev rules and modules for the phone's devices,
+    `iio-sensor-proxy`, and `v4l2loopback` built for the image's kernel with DKMS.
 - **Appearance.** WhiteSur GTK, icon and cursor themes at pinned commits (dark), Inter and
   JetBrains Mono as the default fonts with Noto CJK and colour emoji as fallbacks, and
   `QT_QPA_PLATFORMTHEME=gtk3`.
