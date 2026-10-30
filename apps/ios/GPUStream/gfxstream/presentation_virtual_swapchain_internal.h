@@ -10,7 +10,8 @@ namespace caboose::gpuv2 {
 // The function rejects unsupported guest parameters, never substitutes them.
 VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& device,
     VkSurfaceKHR surface, const caboose_gpu_swapchain_create_info& info,
-    VkSwapchainKHR* out, std::vector<VkImage>* images, PresentationProviderResult* provider);
+    VkSwapchainKHR* out, std::vector<VkImage>* images, PresentationProviderResult* provider,
+    bool requireExactExtent = false);
 VkResult validateVirtualPresentQueue(gfxstream::host::vk::CaboosePresentationDevice& device,
     VkSurfaceKHR surface, PresentationProviderResult* provider);
 // Caller serializes swapchain access, proves each index is acquired and unused,

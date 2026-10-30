@@ -8,7 +8,8 @@
 namespace caboose::gpuv2 {
 VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& device,
     VkSurfaceKHR surface, const caboose_gpu_swapchain_create_info& info,
-    VkSwapchainKHR* out, std::vector<VkImage>* images, PresentationProviderResult* provider) {
+    VkSwapchainKHR* out, std::vector<VkImage>* images, PresentationProviderResult* provider,
+    bool requireExactExtent) {
     if (provider) *provider = {};
     if (!out || !images) return VK_ERROR_INITIALIZATION_FAILED;
     *out = VK_NULL_HANDLE; images->clear();
@@ -60,7 +61,7 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
             (caps.maxImageCount && info.min_image_count > caps.maxImageCount) ||
             info.width < caps.minImageExtent.width || info.width > caps.maxImageExtent.width ||
             info.height < caps.minImageExtent.height || info.height > caps.maxImageExtent.height ||
-            (caps.currentExtent.width != UINT32_MAX &&
+            ((requireExactExtent || caps.currentExtent.width != UINT32_MAX) &&
              (caps.currentExtent.width != info.width || caps.currentExtent.height != info.height)) ||
             caps.currentTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ||
             !(caps.supportedTransforms & info.pre_transform) ||

@@ -15,4 +15,9 @@ int createMetalSurface(VkInstance instance, void* metalLayer, MetalSurface** out
 // decoder-owned instance must still be alive. Clears *surface on success.
 int destroyMetalSurface(MetalSurface** surface);
 VkSurfaceKHR metalSurfaceHandle(const MetalSurface* surface);
+// Main only, no swapchain/GPU use. Checks exact retained layer, sets actual
+// natural/drawable pixel extent without changing its position or transform.
+int configureMetalSurfaceExtent(MetalSurface* surface, void* trustedLayer,
+                                uint32_t width, uint32_t height);
+bool metalSurfaceMatchesLayer(const MetalSurface* surface, void* trustedLayer);
 }

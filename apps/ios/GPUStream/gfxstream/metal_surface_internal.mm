@@ -52,4 +52,34 @@ int destroyMetalSurface(MetalSurface** surface) {
 VkSurfaceKHR metalSurfaceHandle(const MetalSurface* surface) {
     return surface ? surface->surface : VK_NULL_HANDLE;
 }
+int configureMetalSurfaceExtent(MetalSurface* surface, void* trustedLayer,
+                                uint32_t width, uint32_t height) {
+    if (![NSThread isMainThread]) return EPERM;
+    if (!surface || !trustedLayer || surface->layer != (__bridge CAMetalLayer*)trustedLayer ||
+        !width || !height) return EINVAL;
+    @try {
+        [CATransaction begin];
+        @try {
+            [CATransaction setDisableActions:YES];
+            CGRect bounds = surface->layer.bounds;
+            bounds.size = CGSizeMake(width, height);
+            surface->layer.bounds = bounds;
+            surface->layer.contentsScale = 1;
+            surface->layer.drawableSize = bounds.size;
+        } @finally {
+            [CATransaction commit];
+        }
+        const CGSize natural = surface->layer.bounds.size;
+        const CGSize drawable = surface->layer.drawableSize;
+        if (surface->layer.contentsScale != 1 || natural.width != width || natural.height != height ||
+            drawable.width != width || drawable.height != height) return EIO;
+        return 0;
+    } @catch (NSException* exception) {
+        (void)exception;
+        return EIO;
+    }
+}
+bool metalSurfaceMatchesLayer(const MetalSurface* surface, void* trustedLayer) {
+    return surface && trustedLayer && surface->layer == (__bridge CAMetalLayer*)trustedLayer;
+}
 }

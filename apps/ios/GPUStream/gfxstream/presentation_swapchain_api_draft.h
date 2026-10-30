@@ -19,6 +19,16 @@ typedef struct caboose_gpu_acquire_request caboose_gpu_acquire_request;
 int caboose_gpu_surface_query_indexed(caboose_gpu_surface* surface, uint64_t boxed_physical_device,
     caboose_gpu_surface_capabilities** out, caboose_gpu_query_status* status);
 
+// Worker only; first opt-in requires no live swapchain/acquire/frame. Later
+// capability queries remain available during a live swapchain without changing
+// configured extent or permitting resize. Explicitly selects variable
+// buffer extent for this surface: current_width/current_height are UINT32_MAX;
+// min/max remain actual provider limits. The raw and fixed indexed queries are
+// unchanged. A successful query does not configure an extent or authorize CREATE.
+int caboose_gpu_surface_query_variable_extent(caboose_gpu_surface* surface,
+    uint64_t boxed_physical_device, caboose_gpu_surface_capabilities** out,
+    caboose_gpu_query_status* status);
+
 // Per index, track acquisition (UNACQUIRED/ACQUIRED), source-copy fence and
 // present-fence records independently: after a real queued present the index
 // may be reacquired while earlier retirement records still exist. A new acquire
@@ -146,4 +156,27 @@ int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchain** swapcha
                                          caboose_gpu_query_status* status);
 #ifdef __cplusplus
 }
+#endif
+
+#ifdef __OBJC__
+@class CAMetalLayer;
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Main only after successful variable-extent query, before CREATE. Requires the
+// exact retained layer and full bound identity. No live swapchain (including a
+// quarantined one), acquisition, frame, or callback worker may exist. Try-locks;
+// EBUSY never blocks main. Sets actual bounds.size/contentsScale=1/drawableSize,
+// preserving position/transform; verifies readback before recording the extent.
+// Caller keeps its layer layout policy consistent with this size on success.
+// Failed/uncertain mutation quarantines CREATE; normal retirement/detach is still
+// required. Calls, including dispatched main work, must be externally serialized
+// to completion; a timed-out dispatch must not be abandoned to execute later.
+// Bound identity and authenticated display/window geometry never change here.
+int caboose_gpu_surface_configure_extent(caboose_gpu_surface* surface,
+    const caboose_gpu_surface_identity* identity, CAMetalLayer* trusted_layer,
+    uint32_t width, uint32_t height);
+#ifdef __cplusplus
+}
+#endif
 #endif

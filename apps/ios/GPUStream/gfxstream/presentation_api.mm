@@ -12,6 +12,7 @@
 #include "presentation_acquire_internal.h"
 #include "presentation_swapchain_api_draft.h"
 #include "presentation_index_state.h"
+#include "presentation_extent_state.h"
 #include "presentation_virtual_swapchain_internal.h"
 #endif
 #include "process_registry_presentation.h"
@@ -133,6 +134,7 @@ struct caboose_gpu_surface {
 #ifdef CABOOSE_GPU_INDEXED_WSI
     uint64_t nextSwapchainId = 1;
     caboose_gpu_virtual_swapchain* indexed = nullptr;
+    PresentationExtentState extent;
 #endif
 };
 namespace {
@@ -407,7 +409,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
             if (!s->attached || s->revoked || !s->physical || p->present_serial <= s->lastSerial)
                 return rejected(EBUSY);
 #ifdef CABOOSE_GPU_INDEXED_WSI
-            if (s->indexed) return rejected(EBUSY);
+            if (s->indexed || s->extent.enabled()) return rejected(EBUSY);
 #endif
             if (s->frame && !s->frameDone) return rejected(EBUSY);
         }
@@ -588,6 +590,55 @@ extern "C" int caboose_gpu_surface_query_indexed(caboose_gpu_surface* surface, u
         return 0;
     } catch (const std::bad_alloc&) { return fail(ENOMEM); }
 }
+extern "C" int caboose_gpu_surface_query_variable_extent(caboose_gpu_surface* surface,
+    uint64_t physical, caboose_gpu_surface_capabilities** out, caboose_gpu_query_status* status) {
+    if (!status) return EINVAL;
+    *status = {};
+    auto fail = [status](int error) { *status = {}; status->native_error = error; return error; };
+    if (!out) return fail(EINVAL);
+    *out = nullptr;
+    if (!surface || [NSThread isMainThread]) return fail(EINVAL);
+    caboose_gpu_surface_capabilities* raw = nullptr;
+    int result = caboose_gpu_surface_query_indexed(surface, physical, &raw, status);
+    if (result) return result;
+    std::unique_ptr<caboose_gpu_surface_capabilities> snapshot(raw);
+    std::lock_guard<std::mutex> operation(surface->operations);
+    std::lock_guard<std::mutex> lock(surface->mutex);
+    if (!surface->attached || surface->revoked || surface->retired || surface->swapchain ||
+        surface->physicalBox != physical || surface->extent.quarantined()) return fail(EBUSY);
+    auto& view = snapshot->view;
+    const bool idle = !surface->indexed && !surface->frame && !surface->worker.joinable();
+    if (!surface->extent.enabled() && !idle) return fail(EBUSY);
+    // Live queries do not reset the configured extent or its admission state.
+    // Refresh configuration limits only at the no-resource boundary.
+    if (idle && !surface->extent.enable(view.min_width, view.min_height, view.max_width, view.max_height))
+        return fail(ENOTSUP);
+    view.current_width = UINT32_MAX;
+    view.current_height = UINT32_MAX;
+    *out = snapshot.release();
+    return 0;
+}
+
+extern "C" int caboose_gpu_surface_configure_extent(caboose_gpu_surface* surface,
+    const caboose_gpu_surface_identity* identity, CAMetalLayer* layer, uint32_t width, uint32_t height) {
+    if (!surface || !identity || !layer || ![NSThread isMainThread] ||
+        !same(surface->bind.identity, *identity)) return EINVAL;
+    std::unique_lock<std::mutex> operation(surface->operations, std::try_to_lock);
+    if (!operation.owns_lock()) return EBUSY;
+    std::unique_lock<std::mutex> lock(surface->mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return EBUSY;
+    if (!surface->attached || surface->revoked || surface->retired || !surface->physical ||
+        surface->swapchain || surface->indexed || surface->frame || surface->worker.joinable()) return EBUSY;
+    if (!metalSurfaceMatchesLayer(surface->metal, (__bridge void*)layer) ||
+        !surface->extent.accepts(width, height)) return EINVAL;
+    if (!surface->extent.begin(width, height)) return EINVAL;
+    const int result = configureMetalSurfaceExtent(surface->metal, (__bridge void*)layer, width, height);
+    surface->extent.complete(result == 0);
+    // All validation above precedes mutation. Any subsequent failure is an
+    // uncertain layer state, never a reusable EINVAL/EBUSY rejection.
+    return result ? EIO : 0;
+}
+
 extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
     const caboose_gpu_swapchain_create_info* info, caboose_gpu_virtual_swapchain** out,
     uint64_t* swapchainId, uint32_t* imageCount, caboose_gpu_query_status* status) {
@@ -597,8 +648,7 @@ extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface
     if (!out || !swapchainId || !imageCount) return fail(EINVAL);
     *out = nullptr; *swapchainId = 0; *imageCount = 0;
     if (!surface || !info || !same(surface->bind.identity, info->identity) ||
-        !info->boxed_device || info->width != surface->bind.width ||
-        info->height != surface->bind.height) return fail(EINVAL);
+        !info->boxed_device) return fail(EINVAL);
     std::lock_guard<std::mutex> operation(surface->operations);
     auto* registry = indexedWsiRegistry();
     if (!registry) return fail(ENODEV);
@@ -607,6 +657,11 @@ extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface
             std::lock_guard<std::mutex> lock(surface->mutex);
             if (!surface->attached || surface->revoked || !surface->physical ||
                 surface->swapchain || surface->indexed) return fail(EBUSY);
+            if (surface->extent.enabled()) {
+                if (!surface->extent.matches(info->width, info->height)) return fail(EINVAL);
+            } else if (info->width != surface->bind.width || info->height != surface->bind.height) {
+                return fail(EINVAL);
+            }
         }
         if (!surface->nextSwapchainId) return fail(EOVERFLOW);
         auto result = std::make_unique<caboose_gpu_virtual_swapchain>();
@@ -622,7 +677,8 @@ extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface
         if (result->device->physicalDevice != surface->physical) return fail(EINVAL);
         PresentationProviderResult provider{};
         r = createVirtualSwapchain(*result->device, metalSurfaceHandle(surface->metal), *info,
-                                   &result->handle, &result->nativeImages, &provider);
+                                   &result->handle, &result->nativeImages, &provider,
+                                   surface->extent.enabled());
         if (r != VK_SUCCESS) {
             if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
             return fail(errorFor(r));

@@ -207,9 +207,30 @@ synthetic geometry. Expiry returns `EAGAIN`, and executor cancellation returns
 the consumer worker waits; main continues processing display and layout events.
 The broker preserves this pair;
 it pins the first authenticated compositor BIND epoch to the executor and rejects
-subsequent mismatches. CAPS reports the attached
+subsequent mismatches. The fixed-extent query reports the attached
 provider's actual extent. A server pixel-size change revokes the generation and requires retirement
 and detachment before replacement.
+
+The native indexed interface also exposes an explicit variable-buffer-extent
+query. It retains actual provider min/max limits and the supported format/mode
+intersection, and reports `UINT32_MAX` for both current-extent components. The
+raw query remains available for the actual attached surface. First opt-in requires
+no live swapchain, acquisition, frame or callback worker; later capability queries
+do not change an existing swapchain or its configured extent.
+
+Before CREATE on that path, `caboose_gpu_surface_configure_extent` runs on main
+with the full bound identity and the exact retained owner layer. It rejects a
+live or quarantined swapchain and uses nonblocking locks. A valid extent within
+the queried limits changes the dedicated layer's actual pixel bounds,
+contents scale and drawable size, preserving its placement transform. Failed
+validation leaves the layer unchanged; uncertain mutation fences CREATE until
+retirement and detachment. Successful readback records buffer dimensions
+separately from authenticated display geometry. The worker then validates the
+decoder device against the queried physical device and re-queries real provider
+capabilities: its current extent must exactly equal the requested size before
+creating the real swapchain. This does not resize an in-use swapchain or implement
+old-swapchain replacement. Owner layout must retain the configured buffer extent;
+fitting the view does not modify it.
 
 Capability success contains the thirteen uint32 members of
 `VkSurfaceCapabilitiesKHR` in specification order, followed by three uint32 counts
