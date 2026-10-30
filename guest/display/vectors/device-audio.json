@@ -1,0 +1,8 @@
+{
+  "name": "device-audio",
+  "description": "One 20 ms mono Opus packet (a valid silence frame).",
+  "messages": [
+    {"direction": "client", "type": "device.audio", "type_id": 179, "fields": {"data": {"$bytes": "f8fffe"}, "t_us": 77000020000, "device": "microphone"}}
+  ],
+  "hex": "b32a000000a3646461746143f8fffe64745f75731b00000011ed8f1020666465766963656a6d6963726f70686f6e65"
+}

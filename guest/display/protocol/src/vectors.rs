@@ -442,6 +442,28 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A decodable 20 ms stereo Opus packet (a 440 Hz tone, libopus), as the server sends: channels 2.",
             Message::Audio(Audio { codec: "opus".into(), pts_us: 1_234_600_000, channels: Some(2), data: media.opus_stereo.clone() }),
         ),
+        one(
+            "device-status",
+            "The camera became /dev/video4; the computer's kernel has no UHID for the battery.",
+            Message::DeviceStatus {
+                devices: vec![
+                    DeviceState { id: "camera-back".into(), nodes: vec!["/dev/video4".into()], error: None },
+                    DeviceState {
+                        id: "battery".into(),
+                        nodes: vec![],
+                        error: Some("This computer's kernel has no UHID".into()),
+                    },
+                ],
+            },
+        ),
+        one("device-open", "Motion opened at 100 Hz.", Message::DeviceOpen { device: "motion".into(), rate_hz: Some(100.0) }),
+        one("device-close", "", Message::DeviceClose { device: "camera-back".into() }),
+        one(
+            "device-rumble",
+            "",
+            Message::DeviceRumble(DeviceRumble { device: "gamepad-1".into(), strong: 1.0, weak: 0.25, ms: 250 }),
+        ),
+        one("device-keyframe", "", Message::DeviceKeyframe { device: "camera-back".into() }),
         one("pong", "", Message::Pong { t_us: 98_765_432_100 }),
         one("bye-auth", "Sent before closing on a token mismatch.", Message::Bye { reason: ByeReason::Auth }),
         one(
@@ -463,6 +485,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false,
             }),
         ),
         one(
@@ -470,7 +493,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A client accepts half-resolution motion without enabling passthrough video.",
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false,
             }),
         ),
         one(
@@ -487,6 +510,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false,
             }),
         ),
         one(
@@ -503,6 +527,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false,
             }),
         ),
         one(
@@ -519,6 +544,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: true,
                 scaled_motion: false,
+                devices: false,
             }),
         ),
         one(
@@ -535,6 +561,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false,
             }),
         ),
         one(
@@ -544,7 +571,164 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
+                devices: false,
             }),
+        ),
+        one(
+            "client-hello-devices",
+            "client-hello-audio from a phone that offers its hardware as devices.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
+                scaled_motion: false, devices: true,
+            }),
+        ),
+        one(
+            "devices",
+            "A phone offering a camera, its depth sensor, microphone, motion sensors, a controller, buttons and battery.",
+            Message::Devices {
+                devices: vec![
+                    Device {
+                        position: Some(CameraPosition::Back),
+                        size: Some(Size { w: 1280, h: 720 }),
+                        fps: Some(30.0),
+                        ..Device::new("camera-back", DeviceKind::Camera, "iPhone Back Camera")
+                    },
+                    Device {
+                        position: Some(CameraPosition::Back),
+                        size: Some(Size { w: 256, h: 192 }),
+                        fps: Some(15.0),
+                        ..Device::new("depth", DeviceKind::Depth, "iPhone Depth")
+                    },
+                    Device::new("microphone", DeviceKind::Microphone, "iPhone Microphone"),
+                    Device {
+                        sensors: Some(vec![
+                            MotionSensor::Accelerometer,
+                            MotionSensor::Gyroscope,
+                            MotionSensor::Magnetometer,
+                            MotionSensor::Rotation,
+                            MotionSensor::Pressure,
+                        ]),
+                        ..Device::new("motion", DeviceKind::Motion, "iPhone Motion Sensors")
+                    },
+                    Device { rumble: Some(true), ..Device::new("gamepad-1", DeviceKind::Gamepad, "DualSense Wireless Controller") },
+                    Device {
+                        keys: Some(vec![DeviceKey::VolumeUp, DeviceKey::VolumeDown, DeviceKey::Camera, DeviceKey::Action]),
+                        ..Device::new("buttons", DeviceKind::Buttons, "iPhone Buttons")
+                    },
+                    Device::new("battery", DeviceKind::Battery, "iPhone Battery"),
+                ],
+            },
+        ),
+        Vector {
+            name: "liberal-devices-future",
+            description: "Not canonical: a device of a kind this version does not know and a sensor name it does not know. The unknown device is skipped and the unknown sensor dropped.",
+            entries: vec![Entry::Liberal {
+                type_id: type_id::DEVICES,
+                payload: cbor::encode(&Value::Map(vec![(
+                    "devices".into(),
+                    Value::Array(vec![
+                        Value::Map(vec![
+                            ("id".into(), Value::Text("lidar-mesh".into())),
+                            ("kind".into(), Value::Text("mesh".into())),
+                            ("name".into(), Value::Text("iPhone Scene".into())),
+                        ]),
+                        Value::Map(vec![
+                            ("id".into(), Value::Text("motion".into())),
+                            ("kind".into(), Value::Text("motion".into())),
+                            ("name".into(), Value::Text("iPhone Motion Sensors".into())),
+                            ("sensors".into(), Value::Array(vec![Value::Text("accelerometer".into()), Value::Text("lux".into())])),
+                        ]),
+                    ]),
+                )])),
+                decodes_to: Message::Devices {
+                    devices: vec![Device {
+                        sensors: Some(vec![MotionSensor::Accelerometer]),
+                        ..Device::new("motion", DeviceKind::Motion, "iPhone Motion Sensors")
+                    }],
+                },
+            }],
+        },
+        one(
+            "device-camera",
+            "A camera keyframe: the 64x64 H.264 keyframe with its SPS and PPS.",
+            Message::DeviceCamera(DeviceCamera {
+                device: "camera-back".into(),
+                seq: 0,
+                keyframe: true,
+                t_us: 77_000_033_333,
+                data: media.h264_keyframe.clone(),
+            }),
+        ),
+        one(
+            "device-depth",
+            "A 2x2 depth picture: 1 m, 1.5 m, no reading, 4 m.",
+            Message::DeviceDepth(DeviceDepth {
+                device: "depth".into(),
+                t_us: 77_000_066_666,
+                size: Size { w: 2, h: 2 },
+                data: [1000u16, 1500, 0, 4000].iter().flat_map(|d| d.to_le_bytes()).collect(),
+            }),
+        ),
+        one(
+            "device-audio",
+            "One 20 ms mono Opus packet (a valid silence frame).",
+            Message::DeviceAudio(DeviceAudio { device: "microphone".into(), t_us: 77_000_020_000, data: vec![0xf8, 0xff, 0xfe] }),
+        ),
+        one(
+            "device-motion",
+            "Two samples of a phone lying face up: the first from every sensor, the second accelerometer and gyroscope only.",
+            Message::DeviceMotion(DeviceMotion {
+                device: "motion".into(),
+                samples: vec![
+                    MotionSample {
+                        t_us: 77_000_000_000,
+                        accel: Some([0.0, 0.0, 9.80665]),
+                        gyro: Some([0.0, 0.0, 0.0]),
+                        magnet: Some([21.5, -4.25, -40.0]),
+                        rotation: Some([0.0, 0.0, 0.0, 1.0]),
+                        pressure: Some(101.325),
+                    },
+                    MotionSample {
+                        t_us: 77_000_010_000,
+                        accel: Some([0.125, -0.5, 9.75]),
+                        gyro: Some([0.01, -0.02, 0.5]),
+                        ..Default::default()
+                    },
+                ],
+            }),
+        ),
+        one(
+            "device-gamepad",
+            "A held, the left stick pushed up and right, the right trigger half pulled.",
+            Message::DeviceGamepad(DeviceGamepad {
+                device: "gamepad-1".into(),
+                buttons: gamepad_buttons::SOUTH,
+                axes: [0.5, 1.0, 0.0, 0.0, 0.0, 0.5],
+            }),
+        ),
+        one(
+            "device-button",
+            "Volume up pressed while a camera streams.",
+            Message::DeviceButton { device: "buttons".into(), key: DeviceKey::VolumeUp, pressed: true },
+        ),
+        one(
+            "device-battery",
+            "",
+            Message::DeviceBattery(DeviceBattery {
+                device: "battery".into(),
+                level: 0.75,
+                charging: true,
+                full: false,
+                low_power: false,
+                thermal: ThermalState::Fair,
+            }),
+        ),
+        one(
+            "device-error",
+            "",
+            Message::DeviceError { device: "camera-back".into(), reason: "Camera access is off in Settings".into() },
         ),
         one("vsync", "", Message::Vsync { display: 1, t_us: 5_000_008_333 }),
         one("ack", "", Message::Ack { id: 7, pts_us: 1_234_567_890, decoded_us: 2150 }),

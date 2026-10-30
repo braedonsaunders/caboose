@@ -1,0 +1,8 @@
+{
+  "name": "device-gamepad",
+  "description": "A held, the left stick pushed up and right, the right trigger half pulled.",
+  "messages": [
+    {"direction": "client", "type": "device.gamepad", "type_id": 181, "fields": {"axes": [{"$float": 0.5}, {"$float": 1.0}, {"$float": 0.0}, {"$float": 0.0}, {"$float": 0.0}, {"$float": 0.5}], "device": "gamepad-1", "buttons": 1}}
+  ],
+  "hex": "b557000000a3646178657386fb3fe0000000000000fb3ff0000000000000fb0000000000000000fb0000000000000000fb0000000000000000fb3fe0000000000000666465766963656967616d657061642d3167627574746f6e7301"
+}
