@@ -48,6 +48,9 @@ pub enum Rendered {
 pub struct Canvas {
     size: Size<i32, Physical>,
     scale: f64,
+    /// The picture keeps the window's alpha (a popup): the image is ARGB over
+    /// transparent instead of XRGB over black.
+    alpha: bool,
     damage: OutputDamageTracker,
     /// The image the damage tracker's history refers to. A different image (after a
     /// resize, or a new one) starts from a full redraw.
@@ -56,8 +59,9 @@ pub struct Canvas {
 }
 
 impl Canvas {
-    pub fn new(size: Size<i32, Physical>, scale: f64) -> Self {
-        Self { size, scale, damage: OutputDamageTracker::new(size, scale, Transform::Normal), image_id: 0, age: 0 }
+    pub fn new(size: Size<i32, Physical>, scale: f64, alpha: bool) -> Self {
+        let damage = OutputDamageTracker::new(size, scale, Transform::Normal);
+        Self { size, scale, alpha, damage, image_id: 0, age: 0 }
     }
 
     /// Forgets the image's history (it was written by something else), so the next
@@ -66,13 +70,14 @@ impl Canvas {
         self.age = 0;
     }
 
-    pub fn matches(&self, size: Size<i32, Physical>, scale: f64) -> bool {
-        self.size == size && self.scale == scale
+    pub fn matches(&self, size: Size<i32, Physical>, scale: f64, alpha: bool) -> bool {
+        self.size == size && self.scale == scale && self.alpha == alpha
     }
 
     /// Renders `surface`'s tree, with the window geometry origin at `geometry_origin`
     /// (surface-local logical coordinates), into `image`, whose top-left `size` region
-    /// receives the picture.
+    /// receives the picture: XRGB over black, or premultiplied ARGB over transparent for
+    /// a canvas with alpha.
     pub fn render(
         &mut self,
         renderer: &mut Renderer,
@@ -94,11 +99,16 @@ impl Canvas {
             Renderer::Pixman(r) => {
                 let elements: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> =
                     render_elements_from_surface_tree(r, surface, location, self.scale, 1.0, Kind::Unspecified);
+                let (format, clear) = if self.alpha {
+                    (pixman::FormatCode::A8R8G8B8, Color32F::TRANSPARENT)
+                } else {
+                    (pixman::FormatCode::X8R8G8B8, Color32F::BLACK)
+                };
                 // SAFETY: the image's buffer outlives this pixman image, which is dropped
                 // at the end of this block, and nothing else touches the buffer meanwhile.
                 let mut target = unsafe {
                     pixman::Image::from_raw_mut(
-                        pixman::FormatCode::X8R8G8B8,
+                        format,
                         self.size.w as usize,
                         self.size.h as usize,
                         image.data.as_mut_ptr() as *mut u32,
@@ -110,7 +120,7 @@ impl Canvas {
                 let mut framebuffer = r.bind(&mut target).map_err(|e| e.to_string())?;
                 let result = self
                     .damage
-                    .render_output(r, &mut framebuffer, self.age, &elements, Color32F::BLACK)
+                    .render_output(r, &mut framebuffer, self.age, &elements, clear)
                     .map_err(|e| format!("{e:?}"))?;
                 let damage: Vec<_> = result
                     .damage

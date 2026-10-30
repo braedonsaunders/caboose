@@ -1794,6 +1794,11 @@ text-input-v3 and the keyboard, and sends sound as Opus on the same clock as vid
 composition; marker-based passthrough is fenced because it cannot preserve arbitrary
 foreground alpha and occlusion.
 
+Popups advertise alpha and use lossless RGBA PNG tiles over a transparent canvas,
+including the first picture and keyframe requests. They have no codec frames,
+sharpening or motion stream. The app keeps their layer and newly resized backing
+pixels transparent, preserving rounded corners and shadows over underlying windows.
+
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
   little-endian length and one canonical CBOR map), the hello and display token, pacing and
   acknowledgement, every message, audio and video streams. `guest/display/vectors/` pins
