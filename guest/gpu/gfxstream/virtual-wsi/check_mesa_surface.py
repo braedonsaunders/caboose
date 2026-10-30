@@ -7,7 +7,9 @@ import shlex
 import subprocess
 import sys
 
-database, source = map(Path, sys.argv[1:])
+if len(sys.argv) not in (3,4) or (len(sys.argv)==4 and sys.argv[3]!='--indexed'):
+    raise SystemExit('usage: check_mesa_surface.py COMPILE_COMMANDS SOURCE [--indexed]')
+database, source = map(Path, sys.argv[1:3])
 entries = [entry for entry in json.loads(database.read_text())
            if entry['file'].endswith('/vulkan/gfxstream_vk_device.cpp')]
 if len(entries) != 1:
@@ -38,6 +40,8 @@ if replaced != 1:
 args += ['-fsyntax-only', '-I' + str(source.resolve().parent),
          '-DGFXSTREAM_VK_WAYLAND', '-DVK_USE_PLATFORM_WAYLAND_KHR',
          '-DCABOOSE_GFXSTREAM_PRIVATE_LIVE']
+if len(sys.argv)==4:
+    args.append('-DCABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI')
 print(json.dumps({'compiler_argv': args, 'cwd': entry['directory'],
                   'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest()}, indent=2), flush=True)
 subprocess.run(args, cwd=entry['directory'], check=True, timeout=60)

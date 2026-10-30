@@ -90,7 +90,9 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
             auto found=sources_.find(frame);
             if (found==sources_.end() || found->second.swapchain!=id ||
                 !found->second.result || !found->second.released) fail(EPROTO);
-            sources_.erase(found); continue;
+            sources_.erase(found);
+            if (kind==36) return r;
+            continue;
         }
         if (r.kind==21 && u32(r.body,68)!=0) {
             auto found=sources_.find(u64(r.body,40));
@@ -190,6 +192,12 @@ void Client::consumeRelease(uint64_t serial) {
     }
     for (auto& item:swapchains_)
         for (auto& value:item.second.releasedSerial) if (value==serial) value=0;
+}
+void Client::waitPresentationIdle(Deadline deadline) {
+    require(bound_);
+    while (std::any_of(sources_.begin(),sources_.end(),[](const auto& entry) {
+        return entry.second.swapchain!=0;
+    })) await(36,0,deadline);
 }
 Record Client::retire(Deadline deadline) {
     if (retired_) return retirement_;

@@ -17,16 +17,18 @@
     "indexedFrameCount": 130
   },
   "sha256": {
-    "client.h": "a0bf5c4ccf62a7a304eb93e62aea2d9e7918be5e9abc2dbd452edeedfcc3731d",
+    "client.h": "b13f2a0b61d15a4ed987580fad9f0e665dbfced4cf7ef2bb285b040f23de5546",
     "wire.h": "65e29bd79a5b38123f5fd490f8a86c60db408e99b164eebcd38671b9ac984662",
-    "client.cpp": "fa9621e19d49fbf413d900423d76b851c67bc4e57f2370b56ada0a6ec9d53340",
+    "client.cpp": "3d8da060ceb0b51d69a9635765f26dfb8bc5f923349d095690db0c080d536820",
     "test_client.cpp": "31a4fc1b188694bf9b00e44f04bb03b386a25e4bec253b954951ddbca8afbb9f",
     "check_vectors.py": "c1f62da25e9b99491cb3187e9bcda1c52b9c8c598b56412f94b6292c5bd9068b",
     "../../broker/live-surface-vectors.json": "463f422473d7994fef3eab55717c68b6931619e02752eba41060a547bd520cde",
-    "mesa_surface.inc": "6e9cd7d1f31d9398c4969191b9dbf3a8af5715672d2d1b51ecf17504c6c74be8",
-    "check_mesa_surface.py": "eb638311250b8c87d5d06c8944733d4a585efa843d57c63e286daf615847f0e5",
-    "../prepare_virtual_wsi_surface.py": "a4c484c0cdfc0879d95363c3fd597efb042b19a4e2c2283a520c7dfc773c778c",
-    "test_indexed.cpp": "8d1d077519011460044a766a816a33d814b669315b49d536a034064e8f83fdfc"
+    "mesa_surface.inc": "f6a720fe0c231219f7d3be5cc31fb2721285ff930c3272801a27cefc53d35391",
+    "check_mesa_surface.py": "e643ebb4edfb73f5b7aafe433ae9365003f8beb66347640424323be418ef82ae",
+    "../prepare_virtual_wsi_surface.py": "9ca0911608acbe5405ce1ebe194c6e0a792d404f88f3f2447fb8e13e1b2666eb",
+    "test_indexed.cpp": "4bd83cf66870b47aec510a4602066d7fdf0f9c38d440ade81e302e5fdce919b2",
+    "mesa_swapchain.inc": "032a78b4842dd390046d5fc6e63c9d36ea992b74db8ced60f1e1eff206d69f95",
+    "relink_private.py": "e99e632524bc2d03b0767e2f4a214b53e9be822158a63ff4b03440670f9ec808"
   },
   "mesaSurfaceSyntax": {
     "scope": "one device translation unit, syntax only, no link or runtime evidence",
@@ -48,5 +50,39 @@
   "indexedVectors": {
     "commit": "4e42e5cf",
     "sha256": "547959c7397970487aea3704a7902e0ad41838df928d77c6e5498b0182a91d6b"
-  }
+  },
+  "mesaIndexedSyntax": {
+    "scope": "one device translation unit, syntax only; no linked ICD or runtime evidence",
+    "image": "sha256:c399c64a346a153efe58afd3733f19005a5b6231924b01b4188dee7d90e40340",
+    "canonicalSocketCommit": "6dfa6e45",
+    "resources": {
+      "network": "none",
+      "cpus": 1,
+      "memoryMiB": 1024,
+      "pids": 64
+    },
+    "timeoutSeconds": 60,
+    "exit": 0,
+    "containerRemoved": true,
+    "sourceSha256": "af384e2c55d109056757c8e6f4f09b898a7e1c8c43c93257f4f47af0ec0c3ba9",
+    "compilerArgvSha256": "314e8e2fb7f07e87fa0311c78eb95576a9a4334e62758613aa38a52d22005125",
+    "sourceSnapshot": "05 including image metadata and final-retirement backpressure"
+  },
+  "indexedBackpressureRegression": {
+    "image": "sha256:b94dd0452b1d2164d52115722c333cbb51f903e736fa7e7e782d21c52cf40442",
+    "resources": {
+      "network": "none",
+      "cpus": 1,
+      "memoryMiB": 512,
+      "pids": 64
+    },
+    "compileTimeoutSeconds": 60,
+    "testTimeoutSeconds": 15,
+    "exit": 0,
+    "scenarios": 5,
+    "frames": 130,
+    "sourceReleaseDoesNotOpenAdmission": true,
+    "containerRemoved": true
+  },
+  "fullClientFixtureTestedCommit": "820f74a8"
 }

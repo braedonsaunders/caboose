@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
+#include <poll.h>
 #include <unistd.h>
 using namespace caboose::wsi;
 static Bytes identityBytes() { Bytes b(40,0); b[0]=1; b[16]=2; b[32]=3; return b; }
@@ -59,6 +60,11 @@ static void exercise(int scenario) {
             auto result=identityBytes(); put64(result,frame); statusBytes(result); put32(result,1); put32(result,0);
             transmit(fd,21,result);
             auto released=identityBytes(); put64(released,frame); transmit(fd,22,released);
+            if (frame==1) {
+                pollfd pending{fd,POLLIN,0};
+                // SOURCE_RELEASED alone must not let the next request through.
+                assert(poll(&pending,1,10)==0);
+            }
             auto final=identityBytes(); put64(final,111); put64(final,frame); transmit(fd,36,final);
         }
         receive(fd,32); auto retiredSwap=identityBytes(); put64(retiredSwap,111); statusBytes(retiredSwap); transmit(fd,33,retiredSwap);
@@ -87,6 +93,7 @@ static void exercise(int scenario) {
         if (scenario==1) client.cancelAcquire(111,2,deadline); // completed cancel emits no duplicate
         client.presentIndexed(111,frame,13,(frame-1)%2,0,{19,23},deadline);
         client.waitReleased(frame,deadline); client.consumeRelease(frame); assert(!client.released(frame));
+        client.waitPresentationIdle(deadline);
     }
     if (scenario==4) assert(invalidIndexRejected && !client.retired());
     else if (scenario!=3) { client.retireSwapchain(111,deadline); client.retire(deadline); assert(client.retired()); }

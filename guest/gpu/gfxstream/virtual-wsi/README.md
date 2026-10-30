@@ -55,32 +55,55 @@ anchor before writing, refuses duplicate application, and leaves `prepare_mesa.p
 unchanged. `--check` validates the tree without writing. The overrides require
 both private build defines and a Wayland build; the ordinary diagnostic is unchanged.
 
-The private surface wrapper comes from Mesa's actual Wayland WSI allocator.
-Binding uses `wl_proxy_get_id` on the supplied `wl_surface`, an explicit
-`CABOOSE_GFXSTREAM_SURFACE_SOCKET`, and a ten-second bind deadline. Query replies
-populate the base capabilities, format and mode enumeration APIs, including their
-base `*2` forms. Unknown extension chains fail explicitly. Local transport errors
-map to the WSI API's surface-loss result; they never become claimed provider
-device-loss results. Uncertain bind or retirement retains the bounded wrapper and
-instance lease. Destruction completes only after actual native retirement.
+The private surface wrapper is a standard `VkIcdSurfaceWayland` containing the
+actual display and surface pointers, allocated with Mesa's Vulkan allocator.
+It does not need a common Wayland backend or create a Linux presentation buffer.
+Binding uses `wl_proxy_get_id`, an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
+and a ten-second deadline. Provider replies populate base capabilities, formats
+and modes, including the base `*2` forms. Unknown extension chains fail explicitly.
+Uncertain binding or retirement retains the bounded wrapper and instance lease.
 
-The private device advertises no swapchain or dependent presentation extensions,
-and surface support returns false: the implemented swapchain path is absent.
-Other surface-platform extensions are disabled for this private path. The query
-values are unmodified actual provider properties, not claims of a usable device.
-The Mesa device swapchain entrypoints are not installed. This source provides no
-active swapchain, acquire synchronization, coherent memory support or game
-presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
-Vulkan swapchain acquisition or semaphore/fence signaling. The indexed control
-client does not activate a v4 handshake or advertise the native indexed feature.
+`mesa_swapchain.inc` supplies the separate indexed device candidate under
+`CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI`. It requires the current socket's exact
+v4/0x70 handshake and a read-only check of Mesa's actual synchronous feature
+selection. The canonical socket implementation is guest-owner commit `6dfa6e45`.
+The diagnostic v2 and query-only v3 paths retain their existing behavior; v3
+advertises no swapchain. The indexed path exposes basic KHR_swapchain only;
+unsupported presentation extensions, device groups and host-image-copy features
+are disabled or rejected before native device creation.
 
-The Mesa check is syntax-only against the retained generated headers and compiler
-command. `check_mesa_surface.py COMPILE_COMMANDS_JSON TRANSLATED_DEVICE_CPP`
-removes compiler output/dependency flags, enables the private Wayland query guard,
-prints the exact argv and source hash, and gives the single compiler sixty seconds.
-It does not link an ICD or validate runtime compositor integration. The current
-toolchain image is identified in `verification.json`; its historical use for the
-retained build is not established.
+CREATE forwards actual creation fields, obtains the provider image count,
+allocates decoder-owned images with real compatible memory requirements and
+maps the exact ordered array. ACQUIRE forwards the original boxed binary
+semaphore/fence and returns only the actual acquired index. Image reuse also
+requires the prior source-release proof. PRESENT intercepts the original wait
+set before Mesa common prewait; multiple swapchains are rejected before consuming
+waits. Native capacity is one frame per surface, so the next presentation waits
+for actual kind 36. Native ordering fix `dc151a3c` is required: capacity becomes
+available before its final callback is observable. Source release alone does not
+open presentation admission or signal an acquire semaphore.
+
+Unknown creation or retirement completion quarantines allocations and prevents
+device destruction. Source images are freed only after real swapchain or surface
+retirement. App-issued idle calls remain unchanged; the native decoder owns the
+observed completion proof for acquired-but-unused images. The source allocator
+uses compatible noncoherent types and does not alter application memory-property
+queries. Guest-visible flags are decoder-projected properties, not raw Apple
+provider flags. General coherent memory and actual game execution are unproven.
+
+The syntax check uses retained generated headers and compiler commands.
+`check_mesa_surface.py COMPILE_COMMANDS_JSON TRANSLATED_DEVICE_CPP --indexed`
+prints the exact argv and source hash and gives one compiler sixty seconds.
+`relink_private.py` describes an isolated incremental link: it recompiles the
+changed device, socket, connection-manager and CGLS client translation units,
+rebuilds the five-member connection archive, and reuses identified retained
+objects read-only. `--plan` prints exact commands without compiling. The caller
+bounds the whole invocation and mounts only a fresh output directory writable.
+Its manifest hashes input files and thin-archive members. This is not a clean
+rebuild or proof that retained objects match unrelated uncommitted source.
+The toolchain image and completed checks are recorded in `verification.json`;
+the historical image used for the retained build is not established. No phone,
+compositor or Vulkan execution is established by syntax or transport fixtures.
 
 ## Focused Linux verification
 

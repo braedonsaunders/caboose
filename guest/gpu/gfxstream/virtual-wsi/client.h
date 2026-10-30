@@ -20,6 +20,7 @@ public:
     void waitReleased(uint64_t serial, Deadline deadline);
     uint64_t waitAnyReleased(Deadline deadline);
     void consumeRelease(uint64_t serial);
+    void waitPresentationIdle(Deadline deadline);
     Record retire(Deadline deadline);
     bool retired() const { return retired_; }
     bool revoked() const { return revoked_; }
