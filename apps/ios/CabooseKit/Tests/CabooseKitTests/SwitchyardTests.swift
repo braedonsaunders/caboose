@@ -412,17 +412,15 @@ struct YardSnapTests {
         }
     }
 
-    @Test func quarterSupportsVacanciesAndRespectsEveryParticipantsMinimum() {
+    @Test func quarterSupportsVacanciesOnNarrowWorkspaces() {
         let slots: [FreeDesktopLayout.Snap] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
         var yard = YardLayout()
         for id in 1...3 { yard.insert(id, in: metrics) }
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
         yard.insert(4, in: metrics)
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
-        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics,
-                              minimums: [2: CGSize(width: 600, height: 200)]) == nil)
         let phone = YardMetrics(size: CGSize(width: 390, height: 700))
-        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) == nil)
+        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) != nil)
     }
 
     @Test func repeatedThirdChoicesRetainTheirOwnCompanionLayout() throws {
@@ -476,14 +474,14 @@ extension YardSnapTests {
         }
     }
 
-    @Test func sparseQuarterAcceptsAStackAndCollapsesOnNarrowRotation() throws {
+    @Test func sparseQuarterAcceptsAStackAndKeepsItsSlotOnNarrowRotation() throws {
         var yard = YardLayout()
         yard.insert(1, in: metrics)
         var snapped = try #require(yard.snapping(1, to: .bottomRight,
             layout: [.topLeft, .topRight, .bottomLeft, .bottomRight], in: metrics))
         let phone = YardMetrics(size: CGSize(width: 390, height: 700))
-        #expect(snapped.frames(in: phone)[1]?.width == 390)
-        #expect(snapped.frames(in: phone)[1]?.minX == 0)
+        #expect(snapped.frames(in: phone)[1]?.width == phone.points(forFraction: 0.5))
+        #expect(snapped.frames(in: phone)[1]?.minX == (phone.size.width + phone.gap) / 2)
         #expect(snapped.trackWidth(in: phone) == 390)
         let inserted = snapped.insert(2, below: 1, in: metrics)
         #expect(inserted)
@@ -492,5 +490,56 @@ extension YardSnapTests {
         #expect(frames[1]?.minY == 0)
         #expect(frames[2]?.maxY == metrics.size.height)
         #expect(!frames[1]!.intersects(frames[2]!))
+    }
+}
+
+
+extension YardSnapTests {
+    @Test func largeMinimumContentFitsEveryVisiblePortraitAndLandscapeSnapRegion() throws {
+        // Steam-sized hints are guest pixels, not a native tile's minimum dimensions.
+        let minimum = CGSize(width: 1024, height: 640)
+        let density: CGFloat = 2
+        for size in [CGSize(width: 610, height: 820), CGSize(width: 1024, height: 620),
+                     CGSize(width: 390, height: 700)] {
+            let metrics = YardMetrics(size: size)
+            for count in [1, 4] {
+                var yard = YardLayout()
+                for id in 1...count { yard.insert(id, in: metrics) }
+                let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: size),
+                    allows: { snap, slots in yard.snapping(1, to: snap, layout: slots, in: metrics) != nil })
+                #expect(palette.regions.count == 14)
+                for region in palette.regions {
+                    #expect(region.enabled)
+                    #expect(palette.frame.contains(region.frame))
+                    // The view draws two points inside these authoritative hit rectangles.
+                    let visible = region.frame.insetBy(dx: 2, dy: 2)
+                    for point in [CGPoint(x: visible.minX, y: visible.minY),
+                                  CGPoint(x: visible.midX, y: visible.midY),
+                                  CGPoint(x: visible.maxX, y: visible.maxY)] {
+                        #expect(palette.selection(at: point) == region.snap)
+                        #expect(palette.regions.first { $0.frame.contains(point) }?.layout == region.layout)
+                    }
+                    let result = try #require(yard.snapping(1, to: region.snap, layout: region.layout, in: metrics))
+                    #expect(Set(result.windows) == Set(yard.windows))
+                    let tile = try #require(result.frames(in: metrics)[1])
+                    let unit = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+                    #expect(abs(tile.width - metrics.points(forFraction: unit.width / 6)) < 0.001)
+                    let viewport = metrics.content(ofTile: tile)
+                    let pixels = CGRect(x: viewport.minX * density, y: viewport.minY * density,
+                                        width: viewport.width * density, height: viewport.height * density)
+                    let committed = try #require(WindowSizePolicy.fitting(pixels, minimum: minimum,
+                        maximum: nil, fullscreen: false))
+                    #expect(committed.width >= minimum.width && committed.height >= minimum.height)
+                    let natural = CGSize(width: committed.width / density, height: committed.height / density)
+                    let shown = DesktopGeometry.surfaceFrame(natural: natural, available: viewport.size, resizing: false)
+                    #expect(shown.width <= viewport.width && shown.height <= viewport.height)
+                    #expect(abs(shown.width / natural.width - shown.height / natural.height) < 0.0001)
+                    // The native surface inverse transform maps both view corners to the
+                    // valid committed guest rectangle; hints never enlarge the target tile.
+                    #expect(abs(shown.width / (shown.width / natural.width) * density - committed.width) < 0.001)
+                    #expect(abs(shown.height / (shown.height / natural.height) * density - committed.height) < 0.001)
+                }
+            }
+        }
     }
 }

@@ -38,7 +38,7 @@ struct SwitchyardView: View {
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
                     cover(window, screen: area)
-                        .zIndex(4)
+                        .zIndex(yard.carry?.window == id ? 10 : 4)
                 }
                 popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
                        size: area)
@@ -59,21 +59,6 @@ struct SwitchyardView: View {
                 QuickSwitchStrip(owner: .yard, height: area.height, space: .global)
                     .frame(width: proxy.size.width, height: area.height)
                     .zIndex(7)
-                if let carry = yard.carry, let preview = carry.preview {
-                    RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
-                        .fill(.white.opacity(0.1))
-                        .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
-                        .frame(width: preview.width, height: preview.height)
-                        .offset(x: preview.minX, y: preview.minY)
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                        .zIndex(8)
-                }
-                if let palette = yard.snapPalette {
-                    DesktopSnapPalette(palette: palette, selected: yard.carry?.snap, ui: 1, selectedRegion: yard.carry?.regionFrame)
-                        .allowsHitTesting(false)
-                        .zIndex(9)
-                }
                 YardKeyCommands(yard: yard)
             }
             .coordinateSpace(name: Self.space)
@@ -113,13 +98,29 @@ struct SwitchyardView: View {
                         .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
                                 y: carried ? yard.carry!.rect.minY : rect.minY)
                         .shadow(color: .black.opacity(carried ? 0.45 : 0), radius: 24, y: 14)
-                        .zIndex(carried ? 2 : 0)
+                        .zIndex(carried ? 10 : 0)
                         .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
                                                 removal: .scale(scale: 0.86).combined(with: .opacity)))
                 }
             }
             handles
             edges
+            if let carry = yard.carry, let preview = carry.preview {
+                RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.1))
+                    .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: preview.width, height: preview.height)
+                    .offset(x: preview.minX, y: preview.minY)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .zIndex(8)
+            }
+            if let palette = yard.snapPalette {
+                DesktopSnapPalette(palette: palette, selected: yard.carry?.snap, ui: 1, selectedRegion: yard.carry?.regionFrame)
+                    .allowsHitTesting(false)
+                    .zIndex(9)
+            }
+
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()

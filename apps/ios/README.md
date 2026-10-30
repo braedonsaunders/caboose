@@ -172,7 +172,11 @@ palette. Its hit regions select a proposed `YardLayout`; the visible destination
 release use that same layout and scroll position. Nearby windows fill its columns and
 stacks, while other windows remain on the track. A single window can occupy any slot;
 unfilled slots reserve space in the existing columns, without synthetic windows.
-All participants must fit their minimum sizes; invalid choices are dimmed. Outside the palette, existing column/stack/swap drops remain available.
+Explicit slots retain their selected fractions across rotation. App minimum sizes
+constrain the guest content through `WindowSizePolicy.fitting`; the native surface
+fits that valid content into the slot with matching input coordinates. Only slots
+without space for native chrome and positive content are disabled. The carried
+window remains above the chooser and placement highlight. Outside the palette, existing column/stack/swap drops remain available.
 Cancellation restores the track without changing the guest or exiting fullscreen;
 rotation, connection invalidation and leaving Desktop cancel an active carry.
 

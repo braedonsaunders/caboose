@@ -2340,11 +2340,15 @@ the app card, and a detached view releases its layers.
   quarters, thirds and complementary one-third/two-thirds arrangements. Each choice
   places the carried window in ordinary Yard columns and stacks, with nearby real
   windows filling the other slots. Unfilled slots reserve space in those columns;
-  they create no synthetic windows. A choice is disabled when a participating tile
-  cannot fit its minimum size.
+  they create no synthetic windows. Explicit snap slots keep their selected fractions
+  in portrait and landscape, independently of the ordinary column-width presets.
+  App minimum sizes constrain the guest content request through `WindowSizePolicy.fitting`,
+  not the slot: larger content fits into the slot with the same transform for rendering
+  and input. Only slots without space for native chrome and positive content are disabled.
   The palette's region rectangles are also its hit targets. The highlighted destination
   comes from the proposed Yard layout and scroll position that release commits, above
-  the existing tiles. Palette gaps and disabled regions do not select tiles beneath them.
+  the existing tiles. The carried window stays above both the highlight and chooser;
+  selection uses the drag position, so these overlays do not intercept the gesture. Palette gaps and disabled regions do not select tiles beneath them.
   Hover changes neither the saved layout nor guest geometry; cancellation restores the
   track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full

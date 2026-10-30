@@ -39,15 +39,8 @@ final class YardModel {
     var snapPalette: FreeDesktopLayout.SnapPalette? {
         guard let carry else { return nil }
         return FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size), allows: { snap, slots in
-            self.layout.snapping(carry.window, to: snap, layout: slots, in: self.metrics,
-                                 minimums: self.snapMinimums) != nil
+            self.layout.snapping(carry.window, to: snap, layout: slots, in: self.metrics) != nil
         })
-    }
-    private var snapMinimums: [Int: CGSize] {
-        (session?.windows ?? [:]).mapValues { window in
-            CGSize(width: (window.minimumSize?.width ?? 0) / pixelsPerPoint,
-                   height: (window.minimumSize?.height ?? 0) / pixelsPerPoint + metrics.titleBar.height)
-        }
     }
     func cancelCarry() {
         guard carry != nil else { return }
@@ -449,7 +442,7 @@ final class YardModel {
         let palette = snapPalette
         let region = palette?.regions.first { $0.enabled && $0.frame.contains(point) }
         let proposal = region.flatMap { layout.snapping(window, to: $0.snap, layout: $0.layout,
-                                                        in: metrics, minimums: snapMinimums) }
+                                                        in: metrics) }
         // Palette gaps and disabled choices never fall through to the underlying tiles.
         let overPalette = palette?.frame.contains(point) == true
         if !overPalette {
@@ -563,8 +556,10 @@ final class YardModel {
     func exitAppFullscreen(_ window: Int) {
         guard let session, let remote = session.windows[window], let tile = contents[window] else { return }
         let scale = pixelsPerPoint
-        let target = CGRect(x: tile.minX * scale, y: tile.minY * scale,
-                            width: tile.width * scale, height: tile.height * scale).integral
+        let viewport = CGRect(x: tile.minX * scale, y: tile.minY * scale,
+                              width: tile.width * scale, height: tile.height * scale).integral
+        guard let target = WindowSizePolicy.fitting(viewport, minimum: remote.minimumSize,
+            maximum: remote.maximumSize, fullscreen: false) else { return }
         session.exitFullscreen(remote, frame: target)
         zoomed = nil
         coverProgress = 0

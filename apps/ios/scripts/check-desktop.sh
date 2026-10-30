@@ -21,7 +21,8 @@ Native container corners (iOS 26 and 27, iPhone/iPad/external display):
 Switchyard snap chooser (Tablet Desktop tab, Tiled, no external display):
 1. Open four ordinary windows. Drag the full-width tile's title from near its left,
    center and right ends. The small carried picture retains the grab position, and
-   the chooser is visible above all windows. Select each half, quarter, third and
+   the chooser is visible above stationary windows but below the carried window.
+   Select each half, quarter, third and
    complementary two-thirds region. The highlighted destination must equal the
    released tile, including title bar and interior resize gaps.
 2. Start after scrolling several columns right. Hover the two repeated left-third
@@ -34,8 +35,11 @@ Switchyard snap chooser (Tablet Desktop tab, Tiled, no external display):
 4. Release over a disabled region, palette gap, or outside the workspace: no layout
    change. Close a participant during the drag: the stale proposal cannot commit.
    Repeat with one, two and three windows: every fitting quarter remains selectable,
-   empty slots stay vacant and no fake dock/Overview windows appear. With minimum-size
-   hints, a companion that cannot fit disables that choice too. Repeat in portrait.
+   empty slots stay vacant and no fake dock/Overview windows appear. With a 1024x640
+   minimum-size window, every slot remains selectable: Linux keeps valid content size
+   and the complete picture fits the slot. Check controls at the center and corners
+   for matching input coordinates. Repeat in portrait and landscape, selecting every
+   visible region from its center and just inside each border; no target sticks on Full.
 5. Move outside the chooser onto another tile's upper/lower quarter, middle and
    outer fifth. Stack, swap and column previews remain visible above opaque tiles;
    edge scrolling and the final scroll position agree with the preview.
