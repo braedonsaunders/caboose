@@ -136,6 +136,42 @@ CONTROL_HEADROOM_BYTES = 65536
 CONTROL_HEADROOM_MESSAGES = 8
 
 
+class LocalSocketReader:
+    """No userspace read-ahead: reserve payload credit only after readability."""
+    def __init__(self, writer):
+        # Called synchronously by connection_made, before asyncio arms its reader.
+        # The transport remains the sole writer; this duplicate owns only reads.
+        writer.transport.pause_reading()
+        self.socket = writer.get_extra_info('socket').dup()
+        self.socket.setblocking(False)
+        self.loop = asyncio.get_running_loop()
+
+    async def wait_readable(self):
+        ready = self.loop.create_future()
+        fd = self.socket.fileno()
+        def readable():
+            if not ready.done(): ready.set_result(None)
+        self.loop.add_reader(fd, readable)
+        try:
+            await ready
+        finally:
+            self.loop.remove_reader(fd)
+
+    async def read(self, count):
+        return await self.loop.sock_recv(self.socket, count)
+
+    async def readexactly(self, count):
+        data = bytearray()
+        while len(data) < count:
+            chunk = await self.read(count - len(data))
+            if not chunk: raise asyncio.IncompleteReadError(bytes(data), count)
+            data.extend(chunk)
+        return bytes(data)
+
+    def close(self):
+        self.socket.close()
+
+
 class DataCredit:
     def __init__(self, owner):
         self.owner = owner
@@ -545,7 +581,14 @@ class Session:
             writer.write(self.hello); await writer.drain()
             while True:
                 credit = None
+                readable = False
                 try:
+                    # An idle socket retains no payload credit and no read-ahead
+                    # bytes. Readability also reports EOF, so a dead creator can
+                    # finish its retirement-only stream without admitting data.
+                    async with asyncio.timeout(1):
+                        await reader.wait_readable()
+                    readable = True
                     # Same task: no child-result handoff between reservation and assignment.
                     async with asyncio.timeout(1):
                         credit = await self.reserve_data()
@@ -563,7 +606,7 @@ class Session:
                     # Waiting for credit is not an idle peer read: EOF may be
                     # queued behind backpressure after a legitimate creator exit.
                     self.bindings.identity(self.binding_generation, stream_id,
-                                           require_alive=credit is not None)
+                                           require_alive=not readable or credit is not None)
                 finally:
                     if credit is not None: credit.release()
             await asyncio.wait_for(stream['remote_fin'].wait(), 10)
@@ -576,6 +619,7 @@ class Session:
             self.writer.close()
         finally:
             if peer is not None: peer.close()
+            reader.close()
             if not await close_owned_writer(writer, abort=self.draining or self.failed or (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False))):
                 self.failed = True
             if stream_id is not None and not self.draining:
@@ -862,10 +906,19 @@ class Broker:
                 raise PermissionError('unsafe local socket directory or existing path')
             def start_local(local_reader, local_writer):
                 if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
-                    local_writer.close(); return
-                task = asyncio.create_task(session.local(local_reader, local_writer))
+                    local_writer.transport.abort(); return
+                try:
+                    raw_reader = LocalSocketReader(local_writer)
+                except OSError:
+                    local_writer.transport.abort(); return
+                task = asyncio.create_task(session.local(raw_reader, local_writer))
                 session.local_tasks.add(task)
-                task.add_done_callback(session.local_tasks.discard)
+                def finished(local_task):
+                    session.local_tasks.discard(local_task)
+                    # Cancellation may precede the coroutine's first instruction.
+                    raw_reader.close()
+                    if not local_writer.is_closing(): local_writer.transport.abort()
+                task.add_done_callback(finished)
             server = await asyncio.start_unix_server(start_local, path=str(self.socket_path))
             os.chmod(self.socket_path, 0o600)
             owned_socket = self.socket_path.lstat().st_ino

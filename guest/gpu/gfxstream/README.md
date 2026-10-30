@@ -122,7 +122,10 @@ The Python range and reply fixtures are reference cases, not native tests.
 [bounded transfer path](bounded-memory/README.md) after socket/shadow preparation.
 It sends ordinary synchronous encoder calls, preserves memory-type indices, and
 leaves public and direct-mapping paths unchanged. The broker reserves outbound
-queue credit before reading local payload bytes and releases queued credit only
+queue credit after socket readability and before reading local payload bytes. Idle
+streams keep bytes in the kernel, hold no payload credit, and use no automatic
+userspace read-ahead. FIFO admission prevents ready streams from losing their turn.
+The broker releases queued credit only
 after the writer drains. Cancellation of a local read releases its reservation.
 
 ## Flush and invalidate disconnection handling

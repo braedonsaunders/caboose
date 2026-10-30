@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from test_live_broker import broker, Writer, Kind, Decoder, Envelope, mock
+from test_live_broker import broker, Writer, Kind, Decoder, Envelope, mock, ReadyReader
 
 
 class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
@@ -134,7 +134,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             def alive(self): return True
             def close(self): pass
         session.session_ready.set()
-        reader=asyncio.StreamReader(); reader.feed_data(broker.HELLO)
+        reader=ReadyReader(); reader.feed_data(broker.HELLO + b'x')
         decoder=Decoder(b'a'*16,1)
         acquired=[]
         original=session.reserve_data

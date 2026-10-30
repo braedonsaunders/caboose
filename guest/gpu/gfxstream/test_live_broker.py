@@ -34,6 +34,14 @@ class Writer:
     async def wait_closed(self): pass
 
 
+class ReadyReader(asyncio.StreamReader):
+    """In-memory test boundary matching the no-read-ahead production interface."""
+    async def wait_readable(self):
+        if not self._buffer and not self._eof:
+            await self._wait_for_data('test readiness')
+    def close(self): pass
+
+
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
     def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -157,7 +165,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self): self.open = True
             def alive(self): return self.open
             def close(self): self.open = False
-        reader, writer = asyncio.StreamReader(), Writer()
+        reader, writer = ReadyReader(), Writer()
         reader.feed_data(broker.HELLO + b'guest request'); reader.feed_eof()
         decoder = Decoder(b'a' * 16, 1)
         async def next_frame(kind):
@@ -226,7 +234,12 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                     os.close(control_r); os.close(ready_w)
                     accepted, _ = listener.accept(); listener.close()
                     accepted.setblocking(False)
-                    reader, writer = await asyncio.open_connection(sock=accepted)
+                    connected = asyncio.get_running_loop().create_future()
+                    def connected_local(unused_reader, local_writer):
+                        connected.set_result((broker.LocalSocketReader(local_writer), local_writer))
+                    await asyncio.get_running_loop().connect_accepted_socket(
+                        lambda: asyncio.StreamReaderProtocol(asyncio.StreamReader(), connected_local), accepted)
+                    reader, writer = await connected
                     task = asyncio.create_task(session.local(reader, writer))
                     reaped = False
                     try:
@@ -372,7 +385,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         class Peer:
             def close(self): pass
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
-        reader, writer = asyncio.StreamReader(), HeldWriter()
+        reader, writer = ReadyReader(), HeldWriter()
         with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
             task = asyncio.create_task(session.local(reader, writer))
             await asyncio.sleep(0)
