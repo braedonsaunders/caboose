@@ -64,6 +64,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Parse desktop JavaScript before compiling the guest
+        shell: bash
+        run: |
+          for file in guest/desktop-mcp/*.mjs guest/desktop-mcp/check/*.mjs; do
+            node --check "$file"
+          done
       - name: Run bounded Linux display and AT-SPI acceptance
         shell: bash
         run: |

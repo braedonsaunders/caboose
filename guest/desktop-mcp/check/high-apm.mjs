@@ -17,7 +17,7 @@ async function call(name, args = {}) {
   let timer
   const result = (await Promise.race([answer, new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`high-APM request ${key} (${name}) did not answer in 45s`)), 45_000)
-  })]).result
+  })])).result
   clearTimeout(timer)
   console.log(`high-APM response ${key}: ${name}`)
   assert.ok(!result.isError, JSON.stringify(result))
