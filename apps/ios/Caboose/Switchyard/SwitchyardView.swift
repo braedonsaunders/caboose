@@ -34,8 +34,8 @@ struct SwitchyardView: View {
                     cover(window, screen: area)
                         .zIndex(4)
                 }
-                popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
-                       size: area)
+                // Menus and dialogs of a window in its own iPadOS window appear there instead.
+                popups(model.desktopWindows, keyTarget: yard.keyTarget(in: model.desktopWindows), size: area)
                     .zIndex(4.5)
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
@@ -65,7 +65,7 @@ struct SwitchyardView: View {
 
     /// The tiles on their track, in the space above the dock.
     private func tracks(size: CGSize) -> some View {
-        let windows = model.session?.windows ?? [:]
+        let windows = model.desktopWindows
         let tiles = yard.tiles
         let live = yard.liveWindows
         let keyTarget = yard.keyTarget(in: windows)
@@ -118,7 +118,7 @@ struct SwitchyardView: View {
     /// toward its tile under the finger, rounding its corners as it goes; let go, it settles
     /// into the tile or springs back.
     private func cover(_ window: RemoteWindow, screen: CGSize) -> some View {
-        let keyTarget = yard.keyTarget(in: model.session?.windows ?? [:])
+        let keyTarget = yard.keyTarget(in: model.desktopWindows)
         let p = yard.coverProgress
         let rect = coverFrame(window.id, screen: screen)
         return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),

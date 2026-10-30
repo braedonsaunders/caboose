@@ -97,7 +97,10 @@ final class AppModel {
 
     /// A TV or monitor is showing the desktop; the phone is its trackpad.
     private(set) var externalDisplayActive = false
-    private(set) var desktop = DesktopModel(pixelsPerPoint: 1)
+    private(set) var desktop = DesktopModel(pixelsPerPoint: 1) {
+        // A new desktop leaves out the windows in iPadOS windows of their own from the start.
+        didSet { desktop.detached = appliedDetached }
+    }
     private var externalSize: CGSize = .zero
     private var placedWindowIDs = Set<Int>()
     /// Last frames of the computer's windows, by window id, for instant resume: reduced
@@ -225,6 +228,21 @@ final class AppModel {
 
     func window(_ id: Int?) -> RemoteWindow? { id.flatMap { session?.windows[$0] } }
 
+    /// Application windows the in-app desktop, its tiles and app cards show: every one but
+    /// those in iPadOS windows of their own, most recently raised first.
+    var workspaceWindows: [RemoteWindow] {
+        let detached = detachedWindowIDs
+        return detached.isEmpty ? appWindows : appWindows.filter { !detached.contains($0.id) }
+    }
+
+    /// The session's windows the in-app desktop and its tiles lay out, menus and dialogs
+    /// included: every one but those in iPadOS windows of their own, and what belongs to them.
+    var desktopWindows: [Int: RemoteWindow] {
+        guard let windows = session?.windows else { return [:] }
+        let detached = detachedWindowIDs
+        return detached.isEmpty ? windows : windows.filter { !detached.contains($0.key) }
+    }
+
     // MARK: Setup
 
     /// Signs in with a pairing link or typed code: the host trades it once for this phone's own token.
@@ -308,6 +326,7 @@ final class AppModel {
         selectedTab = .home
         deviceDesktopActive = false
         deviceViewport = DeviceViewport()
+        appliedDetached = []
         desktop = DesktopModel(pixelsPerPoint: 1)
         yard.invalidate()
         filesRegistrationRevision += 1
@@ -445,6 +464,22 @@ final class AppModel {
         if case .lost(let last) = link.status { phase = .failed(last) }
     }
 
+    /// The app's phase across all its scenes (SwiftUI's App-level `scenePhase`): active while
+    /// any scene is, background only once every scene is, so a Linux window in an iPadOS
+    /// window of its own keeps the display connected while the shell is in the background.
+    /// Each window group reports it, so the same phase can arrive more than once.
+    private var appPhase: ScenePhase?
+
+    func appPhaseChanged(_ phase: ScenePhase) {
+        guard phase != appPhase else { return }
+        appPhase = phase
+        switch phase {
+        case .active: sceneBecameActive()
+        case .background: sceneEnteredBackground()
+        default: break
+        }
+    }
+
     func sceneBecameActive() {
         sceneActive = true
         registerFiles()
@@ -557,7 +592,7 @@ final class AppModel {
         session.onNotification = { note in if isCurrent() { Self.post(note) } }
         // A window raised on the desktop stays on the desktop; only the phone's cards follow it.
         session.onRaise = { [weak self] wid in
-            guard isCurrent(), let self else { return }
+            guard isCurrent(), let self, !self.detachedWindowIDs.contains(wid) else { return }
             if self.yardActive { self.yard.focus(wid) } else if !self.desktopActive { self.presentedWindowID = wid }
         }
         // A cached frame is shown only for the server epoch it came from; a computer that
@@ -639,6 +674,12 @@ final class AppModel {
 
     private func sessionChanged() {
         guard let session else { return }
+        // Windows in iPadOS windows of their own are laid out there alone; one coming back is
+        // placed on the desktop again.
+        let detached = detachedWindowIDs
+        placedWindowIDs.subtract(appliedDetached.subtracting(detached))
+        appliedDetached = detached
+        if desktop.detached != detached { desktop.detached = detached }
         switch session.state {
         case .ready:
             // Id-keyed placements belong to this compositor lifetime, not just its host.
@@ -687,12 +728,12 @@ final class AppModel {
         let added = current.subtracting(knownWindowIDs)
         knownWindowIDs = current
         if yardActive, deviceViewport.owner != .card {
-            yard.sync(session.windows) { $0.appClass?.name }
+            yard.sync(detached.isEmpty ? session.windows : session.windows.filter { !detached.contains($0.key) }) { $0.appClass?.name }
         } else if desktopActive, deviceViewport.owner != .card {
             desktop.sync(with: Array(session.windows.values), session: session)
             // Each window goes to the place the owner gave it, fitted to this desktop; a new
             // one gets a first place, which it keeps.
-            for (index, window) in appWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
+            for (index, window) in workspaceWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
                 let frame = desktop.place(window, index: index)
                 session.configure(window, frame: frame, state: ["maximized": false])
@@ -707,26 +748,27 @@ final class AppModel {
             if laptopDesktopActive, !externalDisplayActive { desktop.fillWorkArea(session) }
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.
-            for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect && !placedWindowIDs.contains(window.id) {
+            for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect
+                && !placedWindowIDs.contains(window.id) && !detached.contains(window.id) {
                 placedWindowIDs.insert(window.id)
                 let parent = window.transientFor.flatMap { session.windows[$0] }
                 session.configure(window, frame: desktop.centred(window, over: parent))
                 desktop.raise(window.id)
             }
         }
-        if let presented = presentedWindowID, !current.contains(presented) {
-            presentedWindowID = appWindows.first?.id
+        if let presented = presentedWindowID, !current.contains(presented) || detached.contains(presented) {
+            presentedWindowID = workspaceWindows.first?.id
         }
         for (id, attempt) in dockLaunches.pending {
             if let app = apps.first(where: { $0.id == id }), appWindows.contains(where: { matches($0, app) }) {
                 finishDockLaunch(id, token: attempt.token)
             }
         }
-        if let target = launching, let newest = appWindows.first(where: { matches($0, target) }) {
+        if let target = launching, let newest = workspaceWindows.first(where: { matches($0, target) }) {
             launching = nil
             if !desktopActive { presentedWindowID = newest.id }
         }
-        if let since = openingFileSince, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary }) {
+        if let since = openingFileSince, let newest = added.compactMap({ session.windows[$0] }).first(where: { !$0.isAuxiliary && !detached.contains($0.id) }) {
             openingFileSince = nil
             if Date().timeIntervalSince(since) < 30, !desktopActive { presentedWindowID = newest.id }
         }
@@ -739,7 +781,7 @@ final class AppModel {
            shared?.string(forKey: "document-open-domain") == credentials?.fileDomainIdentifier {
             let app = apps.first(where: { $0.id == id }) ?? HostClient.App(id: id, name: id, icon: "", categories: [], exec: "")
             if let window = appWindows.first(where: { matches($0, app) }) {
-                presentedWindowID = window.id
+                present(window.id)
                 shared?.removeObject(forKey: "document-open-desktop-id")
                 shared?.removeObject(forKey: "document-open-domain")
             }
@@ -896,7 +938,8 @@ final class AppModel {
         // Windows keep their place and size on screen: rescale their Linux geometry.
         if let session {
             let ratio = new / old
-            for window in session.windows.values where !window.isOverrideRedirect {
+            let detached = detachedWindowIDs
+            for window in session.windows.values where !window.isOverrideRedirect && !detached.contains(window.id) {
                 let f = window.frame
                 session.configure(window, frame: CGRect(x: f.minX * ratio, y: f.minY * ratio, width: f.width * ratio, height: f.height * ratio))
             }
@@ -1109,7 +1152,9 @@ final class AppModel {
 
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.
     func openOnDesktop(_ app: HostClient.App) {
-        let windows = appWindows.filter { matches($0, app) }
+        let windows = workspaceWindows.filter { matches($0, app) }
+        // An app whose only windows are in windows of their own goes to its latest one.
+        if windows.isEmpty, let own = appWindows.first(where: { matches($0, app) }), showWindowScene(for: own.id) { return }
         if !windows.isEmpty, let pending = dockLaunches.pending[app.id] { finishDockLaunch(app.id, token: pending.token) }
         if yardActive, let latest = windows.first {
             yard.focus(latest.id)
@@ -1208,8 +1253,10 @@ final class AppModel {
             openOnDesktop(app)
             return
         }
+        if workspaceWindows.first(where: { matches($0, app) }) == nil,
+           let own = appWindows.first(where: { matches($0, app) }), showWindowScene(for: own.id) { return }
         leaveDeviceDesktop()
-        if let existing = appWindows.first(where: { matches($0, app) }) {
+        if let existing = workspaceWindows.first(where: { matches($0, app) }) {
             presentedWindowID = existing.id
             return
         }
@@ -1272,6 +1319,7 @@ final class AppModel {
     var windowCardBorderless = false
 
     func show(windowID: Int, borderless: Bool = false) {
+        if showWindowScene(for: windowID) { return }
         windowCardBorderless = borderless
         if laptopDesktopActive {
             presentedWindowID = nil
@@ -1343,7 +1391,7 @@ final class AppModel {
 
     func showLaunchedDocument(_ app: CatalogApp) {
         let target = apps.first(where: { $0.id == app.desktopId }) ?? HostClient.App(id: app.desktopId, name: app.name, icon: "", categories: [], exec: "")
-        if let existing = appWindows.first(where: { matches($0, target) }) { presentedWindowID = existing.id }
+        if let existing = appWindows.first(where: { matches($0, target) }) { present(existing.id) }
         else { launching = target; launchStartedAt = Date() }
     }
 
@@ -1360,6 +1408,112 @@ final class AppModel {
         let exact = apps.first { names.contains($0.id.replacingOccurrences(of: ".desktop", with: "").lowercased()) }
         if let app = exact ?? apps.first(where: { matches(window, $0) }), let image = appIcons[app.id] { return image }
         return window.icon.map { UIImage(cgImage: $0) }
+    }
+
+    // MARK: Windows of their own
+
+    /// The Linux windows shown in iPadOS windows of their own (`LinuxWindowScene`), by scene.
+    private(set) var ownWindows = DetachedWindows()
+    /// The detached windows the desktop last left out, so one coming back is placed again.
+    private var appliedDetached = Set<Int>()
+    /// The shell's own scenes, by persistent identifier, so Move to Desktop can bring one forward.
+    private var shellScenes = Set<String>()
+
+    /// A Linux window can have an iPadOS window of its own: an iPad, which shows several.
+    var supportsWindowScenes: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad && UIApplication.shared.supportsMultipleScenes
+    }
+
+    /// What names `window` for a window of its own: this computer, the server's epoch and the
+    /// window. Nil where windows cannot have their own, or for a menu or dialog.
+    func windowRef(for window: RemoteWindow) -> LinuxWindowRef? {
+        guard supportsWindowScenes, !window.isAuxiliary, let session, session.windows[window.id] === window else { return nil }
+        return LinuxWindowRef(computer: credentials?.fileDomainIdentifier, epoch: session.epoch, window: window.id,
+                              title: window.title, app: appName(for: window))
+    }
+
+    /// Windows shown in iPadOS windows of their own, with the menus, popups and dialogs that
+    /// belong to them.
+    var detachedWindowIDs: Set<Int> {
+        guard let session else { return [] }
+        let held = ownWindows.windows(computer: credentials?.fileDomainIdentifier, epoch: session.epoch)
+            .filter { session.windows[$0] != nil }
+        guard !held.isEmpty else { return [] }
+        var parents: [Int: Int] = [:]
+        for window in session.windows.values { if let parent = window.transientFor { parents[window.id] = parent } }
+        return DetachedWindows.withDescendants(held, parents: parents)
+    }
+
+    /// Scene `scene` shows `ref`: the desktop, its tiles and an app card leave that window to
+    /// it. Returns the scene already showing the window, which keeps it.
+    func claimWindowScene(_ ref: LinuxWindowRef, scene: String) -> String? {
+        if ownWindows.claims[scene] == ref { return nil }
+        if let other = ownWindows.claim(ref, scene: scene) { return other }
+        ownWindowsChanged()
+        return nil
+    }
+
+    /// Scene `scene` closed or let its window go: the window is the desktop's again.
+    func releaseWindowScene(_ scene: String) {
+        guard ownWindows.claims[scene] != nil else { return }
+        ownWindows.release(scene: scene)
+        ownWindowsChanged()
+    }
+
+    private func ownWindowsChanged() {
+        yard.invalidate()
+        if let presented = presentedWindowID, detachedWindowIDs.contains(presented) { presentedWindowID = nil }
+        sessionChanged()
+    }
+
+    /// Brings forward the iPadOS window showing window `id`. False when none shows it.
+    @discardableResult
+    func showWindowScene(for id: Int) -> Bool {
+        guard let scene = ownWindows.scene(showing: id, computer: credentials?.fileDomainIdentifier, epoch: session?.epoch),
+              let sceneSession = Self.openSceneSession(scene) else { return false }
+        UIApplication.shared.activateSceneSession(for: UISceneSessionActivationRequest(session: sceneSession), errorHandler: nil)
+        return true
+    }
+
+    /// Goes to a window: its own iPadOS window when it has one, else an app card.
+    private func present(_ id: Int) {
+        if !showWindowScene(for: id) { presentedWindowID = id }
+    }
+
+    /// Returns a window from its own iPadOS window to the in-app desktop: that window closes,
+    /// and the shell comes forward on Desktop with the Linux window focused.
+    func moveToDesktop(_ id: Int) {
+        guard let scene = ownWindows.scene(showing: id, computer: credentials?.fileDomainIdentifier, epoch: session?.epoch) else { return }
+        let sceneSession = Self.openSceneSession(scene)
+        releaseWindowScene(scene)
+        if let sceneSession { UIApplication.shared.requestSceneSessionDestruction(sceneSession, options: nil, errorHandler: nil) }
+        selectedTab = .desktop
+        if yardActive { yard.focus(id) }
+        else if desktopActive { desktop.activate(id, session: session) }
+        else { session?.focus(window(id)) }
+        showShell()
+    }
+
+    /// A shell scene connected, so Move to Desktop can bring it forward. A scene iPadOS has let
+    /// go of stays in `openSessions` until it is closed, and is reconnected when activated.
+    func shellSceneConnected(_ id: String) { shellScenes.insert(id) }
+
+    /// Brings the shell forward: one of its windows, or a new one when none is open.
+    private func showShell() {
+        let open = UIApplication.shared.openSessions.first { shellScenes.contains($0.persistentIdentifier) }
+        let request = open.map { UISceneSessionActivationRequest(session: $0) }
+            ?? UISceneSessionActivationRequest(role: .windowApplication)
+        UIApplication.shared.activateSceneSession(for: request, errorHandler: nil)
+    }
+
+    /// Brings forward the iPadOS window with this scene identifier, if it is still open.
+    func bringForward(scene id: String) {
+        guard let sceneSession = Self.openSceneSession(id) else { return }
+        UIApplication.shared.activateSceneSession(for: UISceneSessionActivationRequest(session: sceneSession), errorHandler: nil)
+    }
+
+    private static func openSceneSession(_ id: String) -> UISceneSession? {
+        UIApplication.shared.openSessions.first { $0.persistentIdentifier == id }
     }
 
     // MARK: Clipboard and notifications

@@ -176,7 +176,7 @@ struct InputControls: View {
 
     private var windowSwitcher: some View {
         Menu {
-            ForEach(model.appWindows) { window in
+            ForEach(model.workspaceWindows) { window in
                 Button(window.title.isEmpty ? model.appName(for: window) : window.title) {
                     if isCard { model.presentedWindowID = window.id }
                     else { model.desktop.activate(window.id, session: model.session) }

@@ -137,6 +137,9 @@ final class DesktopModel {
     /// Back-to-front stacking order of window ids.
     private(set) var stacking: [Int] = []
     private(set) var minimized = Set<Int>()
+    /// Windows shown in iPadOS windows of their own, with their menus and dialogs: their
+    /// scenes lay them out, so this desktop neither draws, hit-tests nor places them.
+    var detached = Set<Int>()
     var dockFrames: [String: CGRect] = [:]
     var contextDockID: String?
     /// Launchpad: every app, in a grid over the desktop.
@@ -223,7 +226,7 @@ final class DesktopModel {
 
     /// Application windows, most recently used first.
     func recentWindows(_ session: any DisplaySession) -> [Int] {
-        session.windows.values.filter { !$0.isAuxiliary }.sorted { $0.raisedAt > $1.raisedAt }.map(\.id)
+        session.windows.values.filter { !$0.isAuxiliary && !detached.contains($0.id) }.sorted { $0.raisedAt > $1.raisedAt }.map(\.id)
     }
 
     /// Quick Switch on the floating desktop: the selection is drawn in front (`peek`), with no
@@ -270,7 +273,7 @@ final class DesktopModel {
         if layout != before { save() }
     }
 
-    func isVisible(_ id: Int) -> Bool { !minimized.contains(id) }
+    func isVisible(_ id: Int) -> Bool { !minimized.contains(id) && !detached.contains(id) }
 
     /// The window's content rect in desktop points.
     func contentRect(_ window: RemoteWindow) -> CGRect {
@@ -528,7 +531,7 @@ final class DesktopModel {
     /// Follows the app's own full-screen request: the window takes the whole display (in
     /// Linux pixels) and gets its old frame back when it leaves.
     func applyFullscreen(_ window: RemoteWindow, session: (any DisplaySession)?) {
-        guard let session else { return }
+        guard let session, !detached.contains(window.id) else { return }
         if window.isFullscreen {
             if windowedFrames[window.id] == nil { windowedFrames[window.id] = window.frame }
             let full = CGRect(x: 0, y: 0, width: size.width * pixelsPerPoint, height: size.height * pixelsPerPoint).integral
@@ -566,7 +569,7 @@ final class DesktopModel {
     /// frame, and focuses it.
     @discardableResult
     func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) -> Bool {
-        guard let window = session.windows[id], !window.isAuxiliary, app(window) != nil,
+        guard let window = session.windows[id], !window.isAuxiliary, !detached.contains(id), app(window) != nil,
               size.width > 0, size.height > 0 else { return false }
         if let snap, !FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) { return false }
         raise(id)
@@ -582,7 +585,7 @@ final class DesktopModel {
     /// Their Tablet places are another arrangement and stay as they were.
     func fillWorkArea(_ session: any DisplaySession) {
         guard size.width > 0, size.height > 0 else { return }
-        let candidates = session.windows.values.map { window in
+        let candidates = session.windows.values.filter { !detached.contains($0.id) }.map { window in
             FreeDesktopLayout.FillCandidate(id: window.id, app: app(window), minimum: minimumChrome(window),
                                             isAuxiliary: window.isAuxiliary, isFullscreen: window.isFullscreen)
         }
@@ -604,7 +607,7 @@ final class DesktopModel {
     /// laid out again from the place the owner chose, so nothing drifts or leaves the desktop.
     func relayout(session: (any DisplaySession)?) {
         guard let session else { return }
-        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen {
+        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && !detached.contains(window.id) {
             applyPlace(window, session)
         }
     }

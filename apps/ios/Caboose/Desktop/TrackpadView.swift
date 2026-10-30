@@ -358,7 +358,7 @@ final class TrackpadSurface: RemoteTextInputView {
             model.quickSwitch.cancel()
             (desktop ?? model.desktop).launchpadOpen = false
         case .left, .right:
-            let windows = model.appWindows.sorted { $0.id < $1.id }
+            let windows = model.workspaceWindows.sorted { $0.id < $1.id }
             guard !windows.isEmpty else { return }
             let current = focusedWindow?.id
             let index = windows.firstIndex { $0.id == current } ?? 0

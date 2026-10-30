@@ -2369,7 +2369,7 @@ the app card, and a detached view releases its layers.
   rotation and folding, replaces the guest display size; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
-  actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
+  actions, and on iPad Open in New Window or Move to Desktop for each window (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
   presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
   above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
   reconnecting and returning from another tab. A pull down from the small tab at its top
@@ -2389,10 +2389,41 @@ the app card, and a detached view releases its layers.
   an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
-- **Lifecycle.** The display socket closes when the app goes to the background; the
-  computer parks on idle and resumes on the next foreground. The last frame of every window
-  is cached with the server's `epoch`, and shown on reopening only when the new hello has
-  the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
+- **Windows of their own.** On iPad, a Linux window can have an iPadOS window of its own: a
+  scene of a second window group whose value is a `LinuxWindowRef` (`CabooseKit/Shell/WindowScenes`),
+  naming the paired computer, the server's `epoch` and the window id. Open in New Window (the
+  tile's menu, the app card's Window Options, the dock app menu and Home's tile menu) opens it,
+  or brings its window forward when it already has one, as does dragging a window's Home tile
+  out of the app, which carries the reference in an `NSUserActivity` so iPadOS opens the window
+  where it is dropped. The Linux window fills the scene below a bar with its title, Keyboard
+  and Window Options (Move to Desktop, Exit App Full Screen, Redraw, Close Window), with an app
+  card's touch, pointer, keyboard, text and Pencil input, and its menus and dialogs inside it.
+  The scene's content size is the window's geometry, at the display origin, sent at most about
+  eight times a second while the scene is resized, the last picture stretched until the new
+  one arrives. The window's minimum and maximum sizes, plus the bar, become the scene's
+  `sizeRestrictions` (a side of zero is no limit; `SceneSizeLimits`), and the scene's title
+  follows the Linux title in App Exposé and the window menu. The scene becoming active or its
+  window key focuses the Linux window, and with a hardware keyboard makes it the first
+  responder, so keys reach it. An app's own full screen takes the computer's display; its
+  picture is fitted to the scene. While a scene shows a window (`DetachedWindows`, one scene per
+  window), the in-app desktop, its tiles, app cards and Quick Switch leave out that window and
+  the menus and dialogs whose transient parents lead to it, so only the scene configures it;
+  Home still lists it, and a tap there or on its dock app brings its scene forward. Move to
+  Desktop closes the scene and brings the shell forward on Desktop with the window focused.
+  Closing the iPadOS window also returns the Linux window to the desktop, still open, where it
+  takes its place again; closing an iPadOS window never closes its Linux window. When the
+  Linux window closes (the session is ready and has announced its windows without it, or has
+  another epoch), its scene closes; signing out or switching computers closes every such scene
+  (one iPadOS has disconnected closes when it next connects). A scene restored after
+  a relaunch shows its window again once the session announces it, or says the window is no
+  longer open and offers Close. Every such window carries Caboose's icon in Stage Manager and
+  the Dock: iPadOS has no per-window app icon.
+- **Lifecycle.** The display socket closes when the app goes to the background: when every
+  one of its scenes is in the background (SwiftUI's App-level scene phase is all of them
+  together), so a Linux window in a window of its own keeps the display while the shell's
+  window is away. The computer parks on idle and resumes on the next foreground. The last
+  frame of every window is cached with the server's `epoch`, and shown on reopening only
+  when the new hello has the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
   off the main thread, most recently raised first within a 24 MiB budget. Home's kept
   pictures use a 640-pixel long edge. Cache generations discard late readbacks.
 - **Connection recovery.** While the app is in use, one display connection is open at a
