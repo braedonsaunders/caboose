@@ -79,6 +79,7 @@
   "gpu/caboose-gpu-broker-launcher",
   "gpu/gfxstream/caboose-gpu-broker",
   "gpu/broker/live_protocol.py",
+  "gpu/broker/live_compression.py",
   "gpu/broker/live_surface_protocol.py",
   "gpu/gfxstream/gpu_admission.py",
   "gpu/gfxstream/gpu_websocket.py",

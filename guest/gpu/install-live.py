@@ -15,6 +15,7 @@ def install(source: Path, destination: Path):
     private = libexec / "caboose-gpu"
     files = [(source / "gfxstream" / name, private / name, 0o644) for name in MODULES]
     files += [(source / "broker/live_surface_protocol.py", private / "live_surface_protocol.py", 0o644),
+              (source / "broker/live_compression.py", private / "live_compression.py", 0o644),
               (source / "broker/live_protocol.py", private / "live_protocol.py", 0o644),
               (source / "gfxstream/caboose-gpu-broker", private / "broker.py", 0o644),
               (source / "caboose-gpu-broker-launcher", libexec / "caboose-gpu-broker", 0o755)]

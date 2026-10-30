@@ -184,7 +184,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_uses_exact_hello_and_actual_ready(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.send(Kind.SESSION, payload=broker.HELLO)
-        frame = session.pending.get_nowait()
+        frame, _charge = session.pending.get_nowait()
         # The WebSocket binary payload must contain the real CGLV session.
         size = frame[1] & 127
         if size == 126: offset = 4
@@ -213,7 +213,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         reader.feed_data(broker.HELLO + b'guest request'); reader.feed_eof()
         decoder = Decoder(b'a' * 16, 1)
         async def next_frame(kind):
-            wire = await asyncio.wait_for(session.pending.get(), 1)
+            wire, _charge = await asyncio.wait_for(session.pending.get(), 1)
             offset = 4 if wire[1] == 126 else 10 if wire[1] == 127 else 2
             got = []; decoder.feed(wire[offset:], got.append)
             self.assertEqual(got[0].kind, kind)
@@ -249,7 +249,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.session_ready.set()
         decoder = Decoder(b'a' * 16, 1)
         async def next_frame(kind):
-            wire = await asyncio.wait_for(session.pending.get(), 2)
+            wire, _charge = await asyncio.wait_for(session.pending.get(), 2)
             offset = 4 if wire[1] == 126 else 10 if wire[1] == 127 else 2
             got = []; decoder.feed(wire[offset:], got.append)
             self.assertEqual(got[0].kind, kind)
@@ -759,6 +759,90 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 task.cancel(); await asyncio.gather(task, return_exceptions=True)
                 client.close(); session.bindings.finish(session.binding_generation)
+
+
+
+
+class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exact_opt_in_requires_v4_and_actual_two_receipts(self):
+        with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE': '1'}):
+            with self.assertRaises(ValueError): broker.Session(None,b'a'*16,1,None,Writer())
+            session=broker.Session(None,b'a'*16,1,None,Writer(),indexed=True)
+        try:
+            receipt=Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG)
+            with self.assertRaises(ValueError): await session.message(receipt)
+            self.assertFalse(session.session_ready.is_set())
+            await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,1,broker.HELLO_V4))
+            self.assertFalse(session.session_ready.is_set())
+            wire,charge=session.pending.get_nowait()
+            got=[]; Decoder(b'a'*16,1).feed(wire[2:],got.append)
+            self.assertEqual(got[0].kind,Kind.TRANSPORT_CONFIG)
+            self.assertEqual(got[0].payload,broker.TRANSPORT_CONFIG)
+            self.assertEqual(charge,len(wire))
+            for payload,process,stream in [(b'',0,0),(struct.pack('<II',1,65601),0,0),(broker.TRANSPORT_CONFIG,1,0),(broker.TRANSPORT_CONFIG,0,1)]:
+                with self.assertRaises(ValueError):
+                    await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,process,stream,2,payload))
+            await session.message(receipt)
+            self.assertTrue(session.session_ready.is_set())
+            self.assertTrue(session.deflate_enabled)
+            with self.assertRaises(ValueError): await session.message(receipt)
+            with self.assertRaises(ValueError):
+                await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,3,broker.HELLO_V4))
+        finally: session.bindings.finish(session.binding_generation)
+
+    async def test_default_v4_is_raw_and_unrequested_or_late_ack_fails(self):
+        for setting in ('', 'true', '0', '1'):
+            with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE':setting}):
+                session=broker.Session(None,b'a'*16,1,None,Writer(),indexed=True)
+            try:
+                await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,1,broker.HELLO_V4))
+                if setting == '1': session.draining=True
+                else:
+                    self.assertTrue(session.session_ready.is_set())
+                    session.send(Kind.DATA,1,1,b'x'*1024)
+                    wire,charge=session.pending.get_nowait()
+                    self.assertEqual(wire[4:8],b'CGLV')
+                    self.assertEqual(charge,len(wire))
+                with self.assertRaises(ValueError):
+                    await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG))
+            finally: session.bindings.finish(session.binding_generation)
+
+    async def test_remote_does_not_report_ready_or_publish_socket_before_transport_ack(self):
+        import uuid
+        acknowledged=asyncio.Event(); hello_received=asyncio.Event(); published=asyncio.Event()
+        class TestSession(broker.Session):
+            async def read_loop(self):
+                await self.message(Envelope(Kind.SESSION_READY,self.executor,1,0,0,1,broker.HELLO_V4))
+                hello_received.set()
+                await acknowledged.wait()
+                await self.message(Envelope(Kind.TRANSPORT_READY,self.executor,1,0,0,2,broker.TRANSPORT_CONFIG))
+                await asyncio.Future()
+        async def publish(*args,**kwargs):
+            published.set()
+            raise OSError('stop at publication boundary')
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); root.chmod(0o700); token=root/'token'; token.write_text('test')
+            instance=object.__new__(broker.Broker)
+            instance.token_file=token; instance.indexed=True; instance.lease=mock.Mock()
+            instance.lease.admit.return_value=1
+            instance.session=None; instance.socket_path=root/'gpu.sock'; instance.surface_path=None
+            instance.report_lifecycle=mock.AsyncMock()
+            reader=asyncio.StreamReader(); reader.feed_data(b'GET / HTTP/1.1\r\n\r\n')
+            with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE':'1'}), mock.patch.object(broker,'Session',TestSession), mock.patch.object(broker,'admit',return_value=(None,uuid.UUID(bytes=b'a'*16),b'upgrade')), mock.patch.object(asyncio,'open_connection',return_value=(reader,Writer())), mock.patch.object(asyncio,'start_unix_server',side_effect=publish):
+                task=asyncio.create_task(instance.remote(None))
+                try:
+                    await asyncio.wait_for(hello_received.wait(),1)
+                    instance.report_lifecycle.assert_not_awaited()
+                    instance.lease.ready.assert_not_called()
+                    self.assertFalse(published.is_set())
+                    self.assertFalse(instance.socket_path.exists())
+                    acknowledged.set()
+                    await asyncio.wait_for(task,1)
+                    self.assertTrue(published.is_set())
+                    self.assertEqual(instance.report_lifecycle.await_args_list[0].args[1],4)
+                    instance.lease.ready.assert_called_once()
+                finally:
+                    task.cancel(); await asyncio.gather(task,return_exceptions=True)
 
 
 if __name__ == '__main__': unittest.main()

@@ -26,6 +26,7 @@ from ipc_handoff import receive_record
 import control_protocol
 import surface_local_protocol as surface_wire
 from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
+from live_compression import CONFIG as TRANSPORT_CONFIG, compress_data
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
@@ -235,6 +236,12 @@ class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
+        self.deflate_requested = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1"
+        if self.deflate_requested and not indexed:
+            raise ValueError("private GPU DEFLATE requires indexed v4")
+        self.deflate_enabled = False
+        self.transport_requested = False
+        self.session_received = False
         self.indexed_enabled = indexed
         self.hello = HELLO_V4 if indexed else HELLO
         self.decoder = EnvelopeDecoder(executor, generation)
@@ -306,23 +313,29 @@ class Session:
             self.credit_waiters.remove(waiter)
             self.capacity_changed.set()
 
-    def enqueue_frame(self, frame, credit=None):
+    def enqueue_frame(self, frame, credit=None, *, charge=None):
+        charge = len(frame) if charge is None else charge
+        if charge < len(frame):
+            raise RuntimeError("invalid queue charge")
         if credit is not None:
-            if credit.owner is not self or not credit.active or len(frame) > DATA_CREDIT_BYTES:
+            if credit.owner is not self or not credit.active or charge > DATA_CREDIT_BYTES:
                 raise RuntimeError('invalid data credit')
             # No await between releasing the reservation and publishing its frame.
             credit.release()
-        if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
+        if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
-        self.pending.put_nowait(frame)
-        self.pending_bytes += len(frame)
+        self.pending.put_nowait((frame, charge))
+        self.pending_bytes += charge
         self.pending_count += 1
 
     def send(self, kind, process=0, stream=0, payload=b'', *, credit=None):
         if self.failed or self.closing_ws or self.sender_stopped: raise ConnectionError('session failed or closing')
         data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
         frame = server_frame(2, data)
-        self.enqueue_frame(frame, credit)
+        charge = len(frame)
+        if self.deflate_enabled and kind == Kind.DATA:
+            frame = server_frame(2, compress_data(data))
+        self.enqueue_frame(frame, credit, charge=charge)
         self.sequence += 1
         if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
             self.frame_timing.data_bytes += len(payload)
@@ -339,10 +352,10 @@ class Session:
     async def send_loop(self):
         try:
             while True:
-                data = await self.pending.get()
+                data, charge = await self.pending.get()
                 self.writer.write(data)
                 await self.writer.drain()
-                self.pending_bytes -= len(data)
+                self.pending_bytes -= charge
                 self.pending_count -= 1
                 self.pending.task_done()
                 self.capacity_changed.set()
@@ -358,8 +371,22 @@ class Session:
                 extent = struct.unpack_from('<II', frame.payload, 72)
         self.surface_progress("received_from_phone", frame.kind, extent)
         if frame.kind == Kind.SESSION_READY:
-            if self.session_ready.is_set() or frame.payload != self.hello: raise ValueError('bad session receipt')
-            self.session_ready.set(); return
+            if self.session_received or frame.payload != self.hello: raise ValueError('bad session receipt')
+            self.session_received = True
+            if self.deflate_requested:
+                self.transport_requested = True
+                self.send(Kind.TRANSPORT_CONFIG, payload=TRANSPORT_CONFIG)
+            else:
+                self.session_ready.set()
+            return
+        if frame.kind == Kind.TRANSPORT_READY:
+            if (not self.transport_requested or self.deflate_enabled or self.revoking or
+                    self.draining or self.failed or self.closing_ws or frame.process or frame.stream or
+                    frame.payload != TRANSPORT_CONFIG):
+                raise ValueError('unexpected transport receipt')
+            self.deflate_enabled = True
+            self.session_ready.set()
+            return
         if not self.session_ready.is_set(): raise ValueError('session not ready')
         if frame.kind == Kind.EXECUTOR_DRAIN:
             if self.draining: raise ValueError('duplicate drain')
@@ -688,6 +715,8 @@ class Session:
 
 class Broker:
     def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False):
+        if os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1" and not indexed:
+            raise ValueError("private GPU DEFLATE requires indexed v4")
         self.control, self.token_file, self.socket_path = control, token_file, socket_path
         self.surface_path = surface_path
         self.indexed = indexed

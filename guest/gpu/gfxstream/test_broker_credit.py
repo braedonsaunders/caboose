@@ -145,7 +145,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             return credit
         session.reserve_data=cancel_on_return
         async def next_frame(kind):
-            wire=await asyncio.wait_for(session.pending.get(),1)
+            wire, _charge=await asyncio.wait_for(session.pending.get(),1)
             offset=4 if wire[1]==126 else 10 if wire[1]==127 else 2
             got=[]; decoder.feed(wire[offset:],got.append)
             self.assertEqual(got[0].kind,kind)
@@ -179,4 +179,55 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
         session.bindings.finish(session.binding_generation)
 
 
-if __name__=='__main__': unittest.main()
+
+
+class CompressedCreditTests(unittest.IsolatedAsyncioTestCase):
+    async def test_compressed_wire_retains_full_logical_charge_until_drain(self):
+        import os
+        import zlib
+        class HeldWriter(Writer):
+            def __init__(self): super().__init__(); self.entered=asyncio.Event(); self.allowed=asyncio.Event()
+            async def drain(self): self.entered.set(); await self.allowed.wait()
+        writer=HeldWriter()
+        with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE':'1'}):
+            session=broker.Session(None,b'a'*16,1,None,writer,indexed=True)
+        await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,1,broker.HELLO_V4))
+        await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG))
+        sender=asyncio.create_task(session.send_loop())
+        try:
+            for _ in range(14):
+                credit=await session.reserve_data()
+                session.send(Kind.DATA,1,1,b'x'*65536,credit=credit)
+            logical=session.pending_bytes
+            waiting=asyncio.create_task(session.reserve_data()); await asyncio.sleep(0)
+            self.assertFalse(waiting.done())
+            self.assertGreater(logical,14*65536)
+            await asyncio.wait_for(writer.entered.wait(),1)
+            self.assertEqual(session.pending_bytes,logical)
+            writer.allowed.set()
+            credit=await asyncio.wait_for(waiting,1); credit.release()
+            await asyncio.wait_for(session.pending.join(),1)
+            self.assertEqual((session.pending_bytes,session.pending_count),(0,0))
+            # Server wire contains config then 14 independently decodable DATA frames.
+            wire=bytes(writer.data); payloads=[]
+            while wire:
+                size=wire[1]&127; offset=2
+                if size==126: size=int.from_bytes(wire[2:4],'big'); offset=4
+                elif size==127: size=int.from_bytes(wire[2:10],'big'); offset=10
+                payloads.append(wire[offset:offset+size]); wire=wire[offset+size:]
+            self.assertEqual(len(payloads),15)
+            parser=Decoder(b'a'*16,1); frames=[]
+            parser.feed(payloads[0],frames.append)
+            for payload in payloads[1:]:
+                self.assertEqual(payload[:4],b'CGLZ')
+                parser.feed(zlib.decompress(payload[16:],-15),frames.append)
+            self.assertEqual([f.sequence for f in frames],list(range(1,16)))
+            self.assertTrue(all(f.payload==b'x'*65536 for f in frames[1:]))
+        finally:
+            sender.cancel(); await asyncio.gather(sender,return_exceptions=True)
+            if 'waiting' in locals():
+                waiting.cancel(); await asyncio.gather(waiting,return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+
+if __name__ == '__main__': unittest.main()

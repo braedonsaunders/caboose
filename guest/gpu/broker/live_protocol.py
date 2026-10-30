@@ -50,6 +50,8 @@ class Kind(IntEnum):
     SWAPCHAIN_PRESENT = 34
     SURFACE_REVOKE_REQUEST = 35
     PRESENT_RETIRED = 36
+    TRANSPORT_CONFIG = 37
+    TRANSPORT_READY = 38
 
 
 class ProtocolError(ValueError):
@@ -87,17 +89,20 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
         raise ProtocolError("invalid resource identity")
     if not 0 <= length <= MAX_PAYLOAD:
         raise ProtocolError("payload limit")
-    if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN):
+    if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN, Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
         if process or stream:
             raise ProtocolError("session message has resource identity")
-    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or kind >= Kind.SURFACE_BIND:
+    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
         if not process or stream:
             raise ProtocolError("invalid process scope")
     elif not process or not stream:
         raise ProtocolError("invalid stream scope")
-    if kind >= Kind.SURFACE_BIND:
+    if Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
         if length < 40:
             raise ProtocolError("truncated surface control")
+    elif kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
+        if length != 8:
+            raise ProtocolError("invalid transport configuration size")
     elif kind in (Kind.SESSION, Kind.SESSION_READY):
         if length != 48:
             raise ProtocolError("invalid hello size")
@@ -109,11 +114,17 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
     return kind
 
 
+def _transport(kind, payload):
+    if kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY) and payload != struct.pack("<II", 1, 65600):
+        raise ProtocolError("invalid transport configuration")
+
+
 def encode(message: Envelope) -> bytes:
     kind = _validate(message.kind, message.executor, message.generation,
                      message.process, message.stream, message.sequence, len(message.payload))
-    if kind >= Kind.SURFACE_BIND:
+    if Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
         _surface(kind, message.payload)
+    _transport(kind, message.payload)
     return HEADER.pack(b"CGLV", 1, kind, len(message.payload), 0, message.executor,
                        message.generation, message.process, message.stream,
                        message.sequence) + message.payload
@@ -178,8 +189,9 @@ class Decoder:
                 _, _, kind, _, _, executor, generation, process, stream, sequence = self._header
                 frame = Envelope(Kind(kind), executor, generation, process, stream,
                                  sequence, bytes(self._buffer))
-                if frame.kind >= Kind.SURFACE_BIND:
+                if Kind.SURFACE_BIND <= frame.kind <= Kind.PRESENT_RETIRED:
                     _surface(frame.kind, frame.payload)
+                _transport(frame.kind, frame.payload)
                 self._header = None
                 self._buffer.clear()
                 self._sequence += 1
