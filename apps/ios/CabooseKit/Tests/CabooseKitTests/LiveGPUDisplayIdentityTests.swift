@@ -22,6 +22,18 @@ import Testing
         }
     }
 
+    @Test func independentGuestGoldenVectorMatchesTypedIdentity() throws {
+        let vector = try DisplayVectorTests.vector("server-hello-gpu-live")
+        var parser = DisplayFrameParser()
+        let frames = try parser.append(vector.wire)
+        let first = try #require(frames.first)
+        guard case .hello(let hello) = ServerMessage(first) else {
+            Issue.record("expected server hello"); return
+        }
+        #expect(hello.gpuLiveEpoch == Data(1...16))
+        #expect(hello.epoch == "5f3a9c01d2e4b678")
+    }
+
     @Test func identityUsesExactBytesAndParticipatesInHelloChanges() {
         var first = Data(repeating: 0, count: 16)
         first[15] = 1

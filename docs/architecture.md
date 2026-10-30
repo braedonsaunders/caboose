@@ -2484,6 +2484,11 @@ in the display hello. It accepts only 16 bytes with at least one nonzero byte. T
 identity is separate from the ordinary retained-picture epoch; parsing it alone does
 not activate native GPU rendering.
 
+The live executor closes through a session-scoped `EXECUTOR_DRAIN` request while
+keeping duplex transport active for native retirement and revocation receipts. A
+ten-second graceful deadline falls back to local abort and reports a drain timeout;
+local cleanup never proves that the guest released the previous executor lease.
+
 A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
 device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
 `gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the

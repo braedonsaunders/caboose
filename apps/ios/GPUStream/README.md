@@ -43,3 +43,27 @@ a different provider. Without either package, the portable app and tests build
 without a native GPU backend. Packaging alone does not activate a connection or
 establish presentation, coherent memory, or game compatibility. The live image
 lease and its presentation retirement barrier are separate from process cleanup.
+
+## Live connection retirement
+
+`LiveGPUSession` keeps the authenticated WebSocket open during normal `close()`.
+Its native consumer sends the session-scoped `EXECUTOR_DRAIN` request after
+negotiation. The broker stops admission, requests actual process retirement and
+then revokes the generation. The phone returns the existing retirement receipts
+only after native cleanup. The broker closes the transport after releasing its
+lease; local cleanup alone does not authorize a replacement.
+
+The graceful interval is bounded to ten seconds. A blocked decoder or missing
+peer response forces local revocation and reports `drainTimedOut`; it does not
+establish remote retirement. `abort()` immediately invokes that local teardown
+without a graceful request. Abrupt loss remains fenced at the broker. Neither
+path proves presentation-layer retirement.
+
+Run the portable transport, envelope and native-boundary policy tests from
+`apps/ios/CabooseKit` with the Xcode Swift toolchain:
+
+```sh
+swift test --jobs 1 --filter 'LiveGPUTransportTests|LiveGPUEnvelopeTests|LiveGPUNativeBindingTests|LiveGPUDisplayIdentityTests'
+```
+
+These tests use injected runtime operations and socketpairs, not phone GPU work.

@@ -133,6 +133,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
     private var started = false
     private var finished = false
     private var negotiated = false
+    private var drainRequested = false
+    private var drainSent = false
     private var peerRevoked = false
     private var identity: (Data, UInt64)?
     private var processes: [UInt64: LiveGPUProcess] = [:]
@@ -175,6 +177,18 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
         do { try decoder.feed(bytes) { try handle($0) } }
         catch { decodingFailed = true; fail(error); throw error }
     }
+    /// Serial consumer-worker operation. A close before SESSION is retained until
+    /// negotiation; no native work or socket is discarded to manufacture retirement.
+    public func requestDrain() throws {
+        guard lock.withLock({ started && !cancelled && !finished }) else { throw LiveGPUError.closed }
+        drainRequested = true
+        try sendDrainIfReady()
+    }
+    private func sendDrainIfReady() throws {
+        guard negotiated, drainRequested, !drainSent, !peerRevoked else { return }
+        try send(.executorDrain)
+        drainSent = true
+    }
     private func send(_ kind: LiveGPUEnvelope.Kind, process: UInt64 = 0, stream: UInt64 = 0, payload: Data = Data()) throws {
         try outputLock.withLock {
             let callback = try lock.withLock { () throws -> (@Sendable (Data) -> Bool) in
@@ -198,6 +212,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
             guard result == 0 else { throw LiveGPUBindingError.native(operation: "start", code: result) }
             identity = (frame.executor, frame.generation); negotiated = true
             try send(.sessionReady, payload: LiveGPUEnvelope.hello)
+            try sendDrainIfReady()
             return
         }
         switch frame.kind {

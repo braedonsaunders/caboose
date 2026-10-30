@@ -2,7 +2,7 @@ import Foundation
 
 public enum LiveGPUError: Error, Equatable, Sendable {
     case invalidEndpoint, invalidProtocol, compression, textMessage, messageTooLarge, overflow
-    case notOpen, closed, missingNativeBinding
+    case notOpen, closed, missingNativeBinding, drainTimedOut
 }
 
 /// One-shot transport. A reconnect always creates a new instance; no queued bytes survive it.

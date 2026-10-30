@@ -80,7 +80,7 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertTrue(consumer.output?(Data([4, 5])) ?? false)
         transport.emit(.bytes(Data([1])))
         XCTAssertEqual(consumer.entered.wait(timeout: .now() + 2), .success)
-        session.close()
+        session.abort()
         transport.emit(.opened)
         transport.emit(.bytes(Data([2])))
         wait(for: [ended], timeout: 2)
@@ -88,6 +88,54 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertFalse(consumer.output?(Data([9])) ?? true)
         session.start { _ in XCTFail("one-shot session restarted") }
         XCTAssertEqual(transport.opens, 1)
+    }
+
+    func testGracefulCloseKeepsTransportOpenUntilBrokerClose() throws {
+        let transport = GPUTransportProbe()
+        let consumer = GPUConsumerProbe()
+        let session = try LiveGPUSession(transport: transport, nativeBinding: consumer)
+        let ready = expectation(description: "opened")
+        let ended = expectation(description: "broker closed after retirement")
+        session.start {
+            switch $0 {
+            case .transportOpened: ready.fulfill()
+            case .ended(let cause, let cleanup):
+                XCTAssertNil(cause); XCTAssertNil(cleanup); ended.fulfill()
+            }
+        }
+        wait(for: [ready], timeout: 2)
+        session.close(); session.close()
+        XCTAssertEqual(consumer.drainEntered.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(consumer.history, ["start", "drain"])
+        XCTAssertEqual(transport.closes, 0)
+        XCTAssertTrue(consumer.output?(Data([7])) ?? false)
+        transport.emit(.closed(nil))
+        wait(for: [ended], timeout: 2)
+        XCTAssertEqual(consumer.history, ["start", "drain", "revoke", "finish"])
+        XCTAssertEqual(transport.closes, 1)
+    }
+
+    func testDrainDeadlineInterruptsBlockedConsumerWithoutClaimingPeerRetirement() throws {
+        let transport = GPUTransportProbe()
+        let consumer = GPUConsumerProbe()
+        let session = try LiveGPUSession(transport: transport, nativeBinding: consumer, drainTimeout: 0.05)
+        let ready = expectation(description: "opened")
+        let ended = expectation(description: "forced local cleanup")
+        session.start {
+            switch $0 {
+            case .transportOpened: ready.fulfill()
+            case .ended(let cause, let cleanup):
+                XCTAssertEqual(cause as? LiveGPUError, .drainTimedOut)
+                XCTAssertNil(cleanup); ended.fulfill()
+            }
+        }
+        wait(for: [ready], timeout: 2)
+        transport.emit(.bytes(Data([1])))
+        XCTAssertEqual(consumer.entered.wait(timeout: .now() + 2), .success)
+        session.close()
+        wait(for: [ended], timeout: 2)
+        XCTAssertEqual(consumer.history, ["start", "consume", "revoke", "returned", "finish"])
+        XCTAssertEqual(transport.closes, 1)
     }
 
     func testIngressOverflowCancelsBlockedConsumerAndReportsCleanupFailure() throws {
@@ -119,16 +167,20 @@ final class LiveGPUTransportTests: XCTestCase {
 private final class GPUTransportProbe: LiveGPUTransport, @unchecked Sendable {
     var event: (@Sendable (LiveGPUTransportEvent) -> Void)?
     var opens = 0
+    private let lock = NSLock()
+    private var closeCount = 0
+    var closes: Int { lock.withLock { closeCount } }
     func open(_ event: @escaping @Sendable (LiveGPUTransportEvent) -> Void) {
         opens += 1; self.event = event; event(.opened)
     }
     func send(_ bytes: Data) -> Bool { true }
-    func close() {}
+    func close() { lock.withLock { closeCount += 1 } }
     func emit(_ event: LiveGPUTransportEvent) { self.event?(event) }
 }
 
 private final class GPUConsumerProbe: LiveGPUByteConsumer, @unchecked Sendable {
     let entered = DispatchSemaphore(value: 0)
+    let drainEntered = DispatchSemaphore(value: 0)
     private let unblock = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var records: [String] = []
@@ -144,6 +196,7 @@ private final class GPUConsumerProbe: LiveGPUByteConsumer, @unchecked Sendable {
         _ = unblock.wait(timeout: .now() + 5)
         record("returned")
     }
+    func requestDrain() throws { record("drain"); drainEntered.signal() }
     func revoke() throws { record("revoke"); unblock.signal() }
     func finish() throws { record("finish"); if let finishError { throw finishError } }
 }

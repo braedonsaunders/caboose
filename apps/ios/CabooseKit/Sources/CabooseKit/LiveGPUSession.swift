@@ -19,6 +19,8 @@ public protocol LiveGPUByteConsumer: AnyObject, Sendable {
     func start(output: @escaping @Sendable (Data) -> Bool,
                failed: @escaping @Sendable (Error) -> Void) throws
     func consume(_ bytes: Data) throws
+    /// Serial worker: request peer retirement while the duplex transport stays open.
+    func requestDrain() throws
     func revoke() throws
     func finish() throws
 }
@@ -44,11 +46,18 @@ public final class LiveGPUSession: @unchecked Sendable {
     private var started = false
     private var stopping = false
     private var opened = false
+    private var draining = false
+    private var drainDeadline: DispatchWorkItem?
+    private let drainTimeout: TimeInterval
     private var event: (@Sendable (LiveGPUSessionEvent) -> Void)?
 
-    public init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?) throws {
+    public convenience init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?) throws {
+        try self.init(transport: transport, nativeBinding: nativeBinding, drainTimeout: 10)
+    }
+    init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?, drainTimeout: TimeInterval) throws {
         guard let nativeBinding else { throw LiveGPUError.missingNativeBinding }
-        self.transport = transport; consumer = nativeBinding
+        precondition(drainTimeout.isFinite && drainTimeout > 0)
+        self.transport = transport; consumer = nativeBinding; self.drainTimeout = drainTimeout
     }
 
     public func start(_ event: @escaping @Sendable (LiveGPUSessionEvent) -> Void) {
@@ -59,7 +68,27 @@ public final class LiveGPUSession: @unchecked Sendable {
         transport.open { [weak self] in self?.receive($0) }
     }
 
-    public func close() { stop(nil) }
+    /// Graceful close retains duplex IO for PROCESS_STOP/REVOKE receipts. A broker
+    /// close ends the session; expiration forces local cleanup but proves no remote
+    /// lease release. A blocked native decoder may prevent graceful retirement.
+    public func close() {
+        lock.lock()
+        guard !stopping, !draining else { lock.unlock(); return }
+        guard opened else { lock.unlock(); stop(nil); return }
+        draining = true
+        let deadline = DispatchWorkItem { [weak self] in self?.stop(LiveGPUError.drainTimedOut) }
+        drainDeadline = deadline
+        worker.async { [self] in
+            guard ingress.active else { return }
+            do { try consumer.requestDrain() } catch { stop(error) }
+        }
+        lock.unlock()
+        cleanup.asyncAfter(deadline: .now() + drainTimeout, execute: deadline)
+    }
+
+    /// Immediate local teardown, including when the caller cannot keep its transport
+    /// alive. Remote lease retirement is deliberately not inferred from this result.
+    public func abort() { stop(nil) }
 
     private func receive(_ incoming: LiveGPUTransportEvent) {
         switch incoming {
@@ -103,6 +132,7 @@ public final class LiveGPUSession: @unchecked Sendable {
         lock.lock()
         guard !stopping else { lock.unlock(); return }
         stopping = true; ingress.revoke()
+        drainDeadline?.cancel(); drainDeadline = nil
         lock.unlock()
         transport.close()
         // A blocked socketpair writer cannot prevent revocation from interrupting it.

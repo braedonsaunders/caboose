@@ -33,6 +33,28 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertEqual(runtime.received.values.reduce(0) { $0 + $1.count }, 12) // no hello/envelope leakage
         XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
     }
+    func testDrainWaitsForSessionThenEmitsOnceWithoutInventingRetirement() throws {
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.requestDrain(); try binding.requestDrain()
+        XCTAssertTrue(try output.frames().isEmpty)
+        XCTAssertEqual(runtime.starts, 0)
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.requestDrain()
+        XCTAssertEqual(try output.frames().map(\.kind), [.sessionReady, .executorDrain])
+        XCTAssertTrue(runtime.finishedTokens.isEmpty)
+        // A process already in flight still requires its genuine lifecycle receipts.
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        try binding.consume(wire(.processStop, sequence: 3, process: 1))
+        try binding.consume(wire(.revoke, sequence: 4))
+        XCTAssertEqual(try output.frames().map(\.kind),
+                       [.sessionReady, .executorDrain, .processReady, .processRetired, .revoked])
+        XCTAssertEqual(runtime.finishedTokens, [1])
+        try binding.finish()
+    }
+
     func testPrestartRevokeAndMissingModuleFailClosed() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)

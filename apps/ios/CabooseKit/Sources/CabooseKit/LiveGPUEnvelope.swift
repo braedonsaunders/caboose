@@ -7,7 +7,7 @@ struct LiveGPUEnvelope: Equatable {
     static let maxPayload = 262_080
     enum Kind: UInt16, CaseIterable {
         case session = 1, sessionReady, processOpen, processReady, streamOpen, streamReady
-        case data, fin, processStop, processRetired, revoke, revoked
+        case data, fin, processStop, processRetired, revoke, revoked, executorDrain
     }
     let kind: Kind
     let executor: Data
@@ -27,7 +27,7 @@ struct LiveGPUEnvelope: Equatable {
         try require(executor.count == 16 && executor.contains(where: { $0 != 0 }) && generation > 0 && sequence > 0)
         try require(length <= Self.maxPayload && length >= 0)
         switch kind {
-        case .session, .sessionReady, .revoke, .revoked: try require(process == 0 && stream == 0)
+        case .session, .sessionReady, .revoke, .revoked, .executorDrain: try require(process == 0 && stream == 0)
         case .processOpen, .processReady, .processStop, .processRetired: try require(process > 0 && stream == 0)
         default: try require(process > 0 && stream > 0)
         }
