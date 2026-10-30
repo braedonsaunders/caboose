@@ -12,8 +12,9 @@ import tempfile
 
 from live_protocol import Decoder, Envelope, Kind, encode
 from test_gpu_websocket import client_frame
+import control_protocol
 
-HELLO = (b'CBGLREF1' + bytes((2, 0, 0, 0, 16, 0, 0, 0)) + bytes.fromhex(
+HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 EXECUTOR = bytes.fromhex('00112233445566778899aabbccddeeff')
 
@@ -34,7 +35,7 @@ async def main():
         phone = socket.socket(); phone.connect(listener.getsockname())
         accepted, _ = listener.accept(); listener.close()
         parent.sendmsg([b'G'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [accepted.fileno()]))])
-        accepted.close(); phone.setblocking(False)
+        accepted.close(); phone.setblocking(False); parent.setblocking(False)
         phone_reader, phone_writer = await asyncio.open_connection(sock=phone)
         decoder = Decoder(EXECUTOR, 1); incoming_sequence = 1
         async def receive(expected):
@@ -64,6 +65,9 @@ async def main():
             first = await receive(Kind.SESSION)
             if first.payload != HELLO: raise RuntimeError('session hello mismatch')
             await send(Kind.SESSION_READY, payload=HELLO)
+            ready_record = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 80), 5)
+            if control_protocol.decode(ready_record, 0) != control_protocol.ExecutorLifecycle(4, EXECUTOR, 1):
+                raise RuntimeError('missing actual session-ready control')
             for _ in range(100):
                 if path.exists(): break
                 await asyncio.sleep(.02)
@@ -84,11 +88,17 @@ async def main():
                 # Explicit phone drain cancels active device work; native
                 # retirement and revoke acknowledgements remain mandatory.
                 await send(Kind.EXECUTOR_DRAIN)
+                lost_record = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 80), 5)
+                if control_protocol.decode(lost_record, 0) != control_protocol.ExecutorLifecycle(5, EXECUTOR, 1):
+                    raise RuntimeError('missing drain-lost control')
                 stopped = await receive(Kind.PROCESS_STOP)
                 await send(Kind.DATA, process=process.process, stream=stream.stream, payload=b'discarded-during-drain')
                 await send(Kind.FIN, process=process.process, stream=stream.stream)
                 await send(Kind.PROCESS_RETIRED, process=stopped.process)
                 await receive(Kind.REVOKE); await send(Kind.REVOKED)
+                retired_record = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 80), 5)
+                if control_protocol.decode(retired_record, 0) != control_protocol.ExecutorLifecycle(6, EXECUTOR, 1):
+                    raise RuntimeError('missing native-retired control')
                 if await asyncio.wait_for(local_reader.read(), 5) != b'': raise RuntimeError('local stream not cancelled')
                 parent.shutdown(socket.SHUT_RDWR); parent.close()
             else:

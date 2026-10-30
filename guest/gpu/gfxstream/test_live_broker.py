@@ -164,7 +164,9 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.bindings.identity = lambda _gen, _stream: (1, (1000, 42, 123))
         session.bindings.unbind_stream = mock.Mock()
         session.bindings.retire_process = mock.Mock()
+        session.broker = mock.Mock(report_lifecycle=mock.AsyncMock())
         await session.message(Envelope(Kind.EXECUTOR_DRAIN, b'a' * 16, 1, 0, 0, 1))
+        session.broker.report_lifecycle.assert_awaited_once_with(session, 5)
         self.assertTrue(session.drain_requested.is_set())
         task = asyncio.create_task(session.drain())
         await asyncio.sleep(0)
@@ -238,9 +240,11 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         broker_instance.next_bind = 0
         broker_instance.pending_binds = {}
         broker_instance.bind_send_lock = asyncio.Lock()
+        import process_binding
+        start = process_binding.process_start_ticks(Path(f'/proc/{os.getpid()}/stat').read_text())
         class Bindings:
             def duplicate_process_identity(self, generation, process):
-                return (1000, 42, 123), os.open('/dev/null', os.O_RDONLY)
+                return (os.getuid(), os.getpid(), start), os.pidfd_open(os.getpid())
         session = mock.Mock()
         session.draining = False
         session.binding_generation = 1
@@ -253,8 +257,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             data, ancillary, flags, _ = peer.recvmsg(80, socket.CMSG_SPACE(array.array('i').itemsize))
             record = control_protocol.decode(data, 1)
-            self.assertEqual(record, control_protocol.Bind(1, 3, 1000, 42, 123, 17))
-            fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize]); os.close(fds[0])
+            self.assertEqual(record, control_protocol.Bind(1, 3, os.getuid(), os.getpid(), start, 17))
+            fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize])
+            try:
+                self.assertEqual(broker.PeerIdentity.__module__, 'process_binding')
+                self.assertEqual(process_binding.pidfd_pid(fds[0]), os.getpid())
+            finally:
+                os.close(fds[0])
             broker_instance.pending_binds[1].set_result(control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 9, 1))
             result = await asyncio.wait_for(task, 1)
             self.assertEqual((result.window, result.generation), (9, 1))

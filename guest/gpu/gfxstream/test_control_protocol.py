@@ -7,7 +7,10 @@ class ControlProtocolTests(unittest.TestCase):
         values = [(p.Bind(1,2,1000,42,1234,17), p.encode_bind, 56, 1),
                   (p.BindResult(1,0,b'a'*16,b'b'*16,2,3), p.encode_result, 80, 0),
                   (p.BindResult(1,1,bytes(16),bytes(16),0,0), p.encode_result, 80, 0),
-                  (p.RevokeGrant(b'a'*16,b'b'*16,3), p.encode_revoke, 64, 0)]
+                  (p.RevokeGrant(b'a'*16,b'b'*16,3), p.encode_revoke, 64, 0),
+                  (p.ExecutorLifecycle(4, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(5, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0)]
         for value, encoder, length, fds in values:
             with self.subTest(value=value):
                 raw=encoder(value); self.assertEqual(len(raw), length)

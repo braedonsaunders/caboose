@@ -10,8 +10,15 @@
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
 // echoes this after verifying its actual immutable features and source pins.
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE) && !defined(CABOOSE_GFXSTREAM_PRIVATE_ICD)
+#error Private live transport requires the private diagnostic ICD build
+#endif
 static constexpr unsigned char kHello[48] = {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE)
+    'C','B','G','L','R','E','F','1', 3,0,0,0, 0x30,0,0,0,
+#else
     'C','B','G','L','R','E','F','1', 2,0,0,0, 0x10,0,0,0,
+#endif
     0x20,0xd3,0xbb,0x2e,0x30,0x33,0x7c,0xab,
     0xf0,0xfe,0xbb,0x00,0x6e,0xd1,0x02,0xab,
     0x25,0xcc,0xf6,0xd9,0xdd,0xbf,0xaf,0x62,

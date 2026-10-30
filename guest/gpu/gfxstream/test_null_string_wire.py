@@ -72,6 +72,7 @@ class NullStringWire(unittest.TestCase):
         socket = (HERE / 'SocketStream.cpp').read_text()
         self.assertIn('std::memcmp(reply, kHello, sizeof(kHello))', socket)
         self.assertIn("'C','B','G','L','R','E','F','1', 2,0,0,0, 0x10,0,0,0", socket)
+        self.assertIn("'C','B','G','L','R','E','F','1', 3,0,0,0, 0x30,0,0,0", socket)
         self.assertIn('errno = EPROTO', socket)
 
 

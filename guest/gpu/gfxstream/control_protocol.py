@@ -6,6 +6,7 @@ _HEADER = struct.Struct('<4sHHII')
 _BIND = struct.Struct('<4sHHIIQQIIQII')
 _RESULT = struct.Struct('<4sHHIIQII16s16sQQ')
 _REVOKE = struct.Struct('<4sHHII16s16sQQ')
+_LIFECYCLE = struct.Struct('<4sHHII16sQQ')
 
 
 class ControlError(ValueError):
@@ -36,6 +37,13 @@ class BindResult:
 class RevokeGrant:
     epoch: bytes
     grant: bytes
+    generation: int
+
+
+@dataclass(frozen=True)
+class ExecutorLifecycle:
+    kind: int  # 4 ready, 5 lost, 6 retired
+    executor: bytes
     generation: int
 
 
@@ -74,6 +82,16 @@ def encode_revoke(value):
         raise ControlError('revoke field out of range') from error
 
 
+def encode_lifecycle(value):
+    if value.kind not in (4, 5, 6) or not _nonzero(value.executor) or not value.generation:
+        raise ControlError('invalid executor lifecycle')
+    try:
+        return _LIFECYCLE.pack(b'CGB1', 1, value.kind, _LIFECYCLE.size, 0,
+                               value.executor, value.generation, 0)
+    except (struct.error, OverflowError) as error:
+        raise ControlError('lifecycle field out of range') from error
+
+
 def decode(data, fd_count):
     if data == b'G':
         if fd_count != 1: raise ControlError('handoff requires exactly one fd')
@@ -102,5 +120,12 @@ def decode(data, fd_count):
         if tail: raise ControlError('nonzero reserved field')
         value = RevokeGrant(epoch, grant, generation)
         encode_revoke(value)
+        return value
+    if kind in (4, 5, 6):
+        if length != _LIFECYCLE.size or fd_count: raise ControlError('invalid lifecycle record')
+        _, _, _, _, _, executor, generation, tail = _LIFECYCLE.unpack(data)
+        if tail: raise ControlError('nonzero reserved field')
+        value = ExecutorLifecycle(kind, executor, generation)
+        encode_lifecycle(value)
         return value
     raise ControlError('unknown control record')

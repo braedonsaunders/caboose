@@ -23,7 +23,7 @@ import control_protocol
 from process_binding import PeerIdentity, ProcessBindings, process_start_ticks
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 
-HELLO = (b'CBGLREF1' + bytes((2, 0, 0, 0, 16, 0, 0, 0)) + bytes.fromhex(
+HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 
 
@@ -57,6 +57,8 @@ class Session:
         self.revoked = asyncio.Event()
         self.revoking = False
         self.draining = False
+        self.ready_reported = False
+        self.lost_reported = False
         self.drain_requested = asyncio.Event()
         self.local_tasks = set()
         self.failed = False
@@ -89,6 +91,7 @@ class Session:
         if frame.kind == Kind.EXECUTOR_DRAIN:
             if self.draining: raise ValueError('duplicate drain')
             self.draining = True
+            await self.broker.report_lifecycle(self, 5)
             self.drain_requested.set()
             return
         if frame.kind == Kind.REVOKED:
@@ -277,21 +280,7 @@ class Broker:
         self.pending_binds[request] = future
         try:
             data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id))
-            loop = asyncio.get_running_loop()
-            async with self.bind_send_lock:
-                deadline = loop.time() + 5
-                while True:
-                    try:
-                        n = self.control.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [pidfd]))])
-                        if n != len(data): raise OSError('partial sequenced-packet bind')
-                        break
-                    except BlockingIOError:
-                        ready = loop.create_future()
-                        def writable():
-                            if not ready.done(): ready.set_result(None)
-                        loop.add_writer(self.control.fileno(), writable)
-                        try: await asyncio.wait_for(ready, max(0, deadline - loop.time()))
-                        finally: loop.remove_writer(self.control.fileno())
+            await self.send_control(data, pidfd)
             result = await asyncio.wait_for(future, 5)
             if result.status or result.epoch != expected_epoch:
                 raise PermissionError('surface bind denied or stale epoch')
@@ -299,6 +288,31 @@ class Broker:
         finally:
             os.close(pidfd)
             self.pending_binds.pop(request, None)
+
+    async def send_control(self, data, fd=None):
+        loop = asyncio.get_running_loop()
+        ancillary = [] if fd is None else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [fd]))]
+        async with self.bind_send_lock:
+            deadline = loop.time() + 5
+            while True:
+                try:
+                    n = self.control.sendmsg([data], ancillary)
+                    if n != len(data): raise OSError('partial sequenced-packet control record')
+                    return
+                except BlockingIOError:
+                    ready = loop.create_future()
+                    def writable():
+                        if not ready.done(): ready.set_result(None)
+                    loop.add_writer(self.control.fileno(), writable)
+                    try: await asyncio.wait_for(ready, max(0, deadline - loop.time()))
+                    finally: loop.remove_writer(self.control.fileno())
+
+    async def report_lifecycle(self, session, kind):
+        if kind == 5 and session.lost_reported: return
+        data = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(kind, session.executor, session.generation))
+        await self.send_control(data)
+        if kind == 4: session.ready_reported = True
+        if kind == 5: session.lost_reported = True
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -354,6 +368,7 @@ class Broker:
             receiver = asyncio.create_task(session.read_loop())
             session.send(Kind.SESSION, payload=HELLO)
             await asyncio.wait_for(session.session_ready.wait(), 10)
+            await self.report_lifecycle(session, 4)
             self.lease.ready(executor.bytes, generation)
             self.session = session
             directory = self.socket_path.parent
@@ -375,9 +390,12 @@ class Broker:
             done, _ = await asyncio.wait((sender, receiver, stop_wait, drain_wait), return_when=asyncio.FIRST_COMPLETED)
             if stop_wait in done or drain_wait in done:
                 server.close()
+                with contextlib.suppress(OSError, asyncio.TimeoutError):
+                    await self.report_lifecycle(session, 5)
                 self.lease.revoke(executor.bytes, generation)
                 await session.drain()
                 await server.wait_closed(); server = None
+                await self.report_lifecycle(session, 6)
                 self.lease.finished(executor.bytes, generation)
             else:
                 for task in done: task.result()
@@ -392,6 +410,9 @@ class Broker:
                 with contextlib.suppress(OSError):
                     if self.socket_path.lstat().st_ino == owned_socket: self.socket_path.unlink()
             if session:
+                if session.ready_reported and not session.lost_reported:
+                    with contextlib.suppress(OSError, asyncio.TimeoutError):
+                        await self.report_lifecycle(session, 5)
                 session.failed = True
                 for task in tuple(session.local_tasks): task.cancel()
                 if session.local_tasks:
