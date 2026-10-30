@@ -49,6 +49,7 @@ class Kind(IntEnum):
     SWAPCHAIN_RETIRED = 33
     SWAPCHAIN_PRESENT = 34
     SURFACE_REVOKE_REQUEST = 35
+    PRESENT_RETIRED = 36
 
 
 class ProtocolError(ValueError):

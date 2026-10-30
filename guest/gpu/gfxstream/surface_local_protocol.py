@@ -41,7 +41,7 @@ def encode_reply(kind, body):
         if len(body) != 64 or not struct.unpack_from('<Q', body)[0]:
             raise ValueError('invalid bind reply')
         validate_surface(kind, body[8:])
-    elif kind in (19, 21, 22, 24, 26, 28, 30, 33, 35):
+    elif kind in (19, 21, 22, 24, 26, 28, 30, 33, 35, 36):
         validate_surface(kind, body)
     elif kind == 0x7fff:
         if len(body) != 16:

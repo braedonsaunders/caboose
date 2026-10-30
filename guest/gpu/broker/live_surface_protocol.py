@@ -27,7 +27,7 @@ def validate_surface(kind: int, payload: bytes):
         require(has_vk == 1 or vk == 0, "absent Vulkan result")
         return error, has_vk, vk
 
-    require(16 <= kind <= 35, "unknown surface kind")
+    require(16 <= kind <= 36, "unknown surface kind")
     require(len(payload) >= 40, "truncated surface identity")
     require(payload[:16] != bytes(16) and payload[16:32] != bytes(16) and wide(32) != 0,
             "zero surface identity")
@@ -131,9 +131,9 @@ def validate_surface(kind: int, payload: bytes):
         require((reason == 0 and error == 0) or
                 (reason != 0 and error != 0 and has_vk == 0),
                 "acquire completion provenance")
-    elif kind == 31:
+    elif kind in (31, 36):
         exact(56)
-        require(wide(40) and wide(48), "invalid acquire cancellation")
+        require(wide(40) and wide(48), "invalid swapchain operation identity")
     elif kind == 32:
         exact(48)
         require(wide(40), "invalid swapchain retirement")

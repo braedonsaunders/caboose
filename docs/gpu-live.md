@@ -243,7 +243,7 @@ app link checks do not establish physical presentation or game compatibility.
 
 ## Indexed swapchain wire
 
-The structural codec also covers kinds 25–35, with complete independent records
+The structural codec also covers kinds 25–36, with complete independent records
 in `live-swapchain-vectors.json`. These controls are inactive: the native indexed
 swapchain implementation and the private Mesa path are not integrated. They are
 not an extension of the acquire-at-present behavior of kind 20. An executor must
@@ -271,6 +271,7 @@ structural parsing alone does not prove them.
 | 33 | SWAPCHAIN_RETIRED | swapchain ID (u64); status |
 | 34 | SWAPCHAIN_PRESENT | swapchain ID, serial, boxed queue (3 u64); image index, queue family, actual layout, wait count (4 u32); boxed binary waits (u64 each) |
 | 35 | SURFACE_REVOKE_REQUEST | no additional fields |
+| 36 | PRESENT_RETIRED | swapchain ID, present serial (2 u64) |
 
 The creation fields, in order, are flags, minimum image count, format, color
 space, width, height, array layers, usage, pre-transform, composite alpha,
@@ -316,6 +317,17 @@ reuse. The native path retains acquire-signal, copy and maintenance1 present
 fence records independently, including across reacquisition. Retirement releases
 unused acquired images only with the real enabled maintenance extension and
 proof their operations are safe; unknown completion quarantines the resources.
+
+PRESENT_RETIRED is a final per-frame receipt after the actual copy and maintenance1
+present fences succeed, frame resources are destroyed and the native frame record
+is removed. It is not display timing or a new acquisition. Native callback event
+4 is the last callback for that serial; the context remains valid until that
+callback returns. The adapter serializes any early callback after the submission
+result and source release before sending kind 36. The broker and guest can then
+remove the matching active record; a monotonic serial high-water mark rejects
+replay without retaining an unbounded history. A rejected unsubmitted frame is
+removed after its rejection. Device loss or uncertain retirement cannot produce
+kind 36, and source release alone cannot discard a possible later failure event.
 
 Kind 35 travels from the authenticated phone to the broker for an existing
 surface. The broker notifies its owning local WSI socket with CGLS kind 35 and
