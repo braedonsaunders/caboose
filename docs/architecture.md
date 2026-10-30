@@ -3550,3 +3550,5 @@ dedicated-home allocated file blocks and
 Docker logical layer sizes separately; shared/reflink bytes are never attributed as
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.
+
+Surface Atlas phone acceptance is explicitly enabled with `CABOOSE_SURFACE_ATLAS=1` at app launch. The normal display-session constructor leaves atlas and scene negotiation off and omits video passthrough decoders. The acceptance mode logs bounded numeric counts of received atlas batches, window video frames and passthrough frames; these counts do not establish pixel correctness.

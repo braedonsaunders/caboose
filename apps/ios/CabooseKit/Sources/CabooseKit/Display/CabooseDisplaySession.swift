@@ -117,10 +117,9 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
     public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders,
-                  videoDecoders: Self.hardwareDecoders)
-        rendersSurfaceAtlas = true
-        rendersSceneGraph = true
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
+        rendersSurfaceAtlas = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] == "1"
+        rendersSceneGraph = false
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
@@ -1064,6 +1063,22 @@ private final class Incoming: @unchecked Sendable {
     private let send: @Sendable (ClientMessage) -> Void
     private let tileCache = TileAtlasCache()
     private let fontCache = SceneFontCache()
+    // Socket-queue counters for an explicitly launched atlas acceptance run. No payloads.
+    private let atlasAudit = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] == "1"
+    private var atlasBatches: UInt64 = 0
+    private var windowVideoFrames: UInt64 = 0
+    private var passthroughVideoFrames: UInt64 = 0
+    private var atlasAuditLast: TimeInterval = 0
+    private var atlasAuditRows = 0
+
+    private func recordAtlasWire() {
+        guard atlasAudit, atlasAuditRows < 256 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard atlasAuditRows == 0 || now - atlasAuditLast >= 1 else { return }
+        atlasAuditLast = now
+        atlasAuditRows += 1
+        NSLog("CABOOSE_ATLAS_WIRE batches=%llu frames=%llu videoFrames=%llu", atlasBatches, windowVideoFrames, passthroughVideoFrames)
+    }
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
@@ -1095,12 +1110,16 @@ private final class Incoming: @unchecked Sendable {
             let message = ServerMessage(frame)
             switch message {
             case .frame(let picture):
+                windowVideoFrames &+= 1
+                recordAtlasWire()
                 guard let pipeline = pipelines[picture.window] else { continue }
                 echo.drew(picture.window)
                 pipeline.frame(picture)
             case .tile(let tile):
                 pipelines[tile.window]?.tile(tile)
             case .surfaceBatch(let batch):
+                atlasBatches &+= 1
+                recordAtlasWire()
                 echo.drew(batch.window)
                 pipelines[batch.window]?.surfaceBatch(batch, cache: tileCache)
             case .surfaceReset(let epoch):
@@ -1111,6 +1130,8 @@ private final class Incoming: @unchecked Sendable {
                 echo.drew(commit.window)
                 pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
             case .videoFrame(let frame):
+                passthroughVideoFrames &+= 1
+                recordAtlasWire()
                 videos[frame.video]?.frame(frame)
             case .videoPresent(let id, let seq, let pts):
                 videos[id]?.present(seq: seq, at: pts)
