@@ -296,6 +296,7 @@ and executor scheduling, and do not isolate GPU execution time.
 The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
 flush diagnostics. Up to 128 numeric call records and one limit marker report
 serialization time, first-reply buffered-write/wait time, remaining-reply wait
-time, byte counts and results. The first reply includes the IOStream buffer
+time, byte counts and results. The elapsed interval begins after validation and
+encoder-lock acquisition; it excludes those waits. The first reply includes the IOStream buffer
 commit; it is not a pure network round-trip measurement. Diagnostics preserve
 the eight-packet window and do not log handles, addresses or memory contents.
