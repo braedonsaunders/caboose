@@ -40,14 +40,17 @@ import Testing
         // Delayed queue execution alone must not start a new ingress generation.
         var delayed = packet(10.02); delayed.finished += 2
         _ = trace.observe(delayed)
-        let first = try #require(trace.observe(packet(11.02)))
+        let completed = trace.observe(packet(11.02))
+        let first = try #require(completed)
         #expect(first.generation == 1 && first.timing.packets == 2)
         #expect(first.timing.total > 2)
-        let resumed = try #require(trace.reset())
+        let resumedBucket = trace.reset()
+        let resumed = try #require(resumedBucket)
         #expect(resumed.generation == 2 && resumed.index == 0)
         #expect(resumed.rawStepMicros == nil && resumed.placedStepMicros == nil)
         _ = trace.observe(packet(11.03))
-        let stopped = try #require(trace.reset())
+        let stoppedBucket = trace.reset()
+        let stopped = try #require(stoppedBucket)
         #expect(stopped.generation == 3)
         let empty = trace.reset()
         #expect(empty == nil)
@@ -60,7 +63,8 @@ import Testing
         var second = packet(0.02, pts: 1_020_000)
         second.leadMicros = -13_525; second.copiedBytes = 7000
         _ = trace.observe(second)
-        let bucket = try #require(trace.finish())
+        let finished = trace.finish()
+        let bucket = try #require(finished)
         #expect(bucket.latePlacementCount == 1 && bucket.byteMismatchCount == 1)
         #expect(bucket.leadMicros == .init(minimum: -13_525, maximum: -13_525))
         let row = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(bucket)) as? [String: Any])
@@ -80,7 +84,8 @@ import Testing
         let stale = trace.observe(packet(9))
         let invalid = trace.observe(packet(.nan))
         #expect(stale == nil && invalid == nil)
-        let first = try #require(trace.finish())
+        let finished = trace.finish()
+        let first = try #require(finished)
         #expect(first.timing.packets == 1 && first.generation == 1)
     }
 
@@ -103,7 +108,8 @@ import Testing
         var buffer = AudioDiagnosticBuffer()
         var trace = AudioStartupAccumulator()
         _ = trace.observe(packet(0))
-        let bucket = try #require(trace.finish())
+        let finished = trace.finish()
+        let bucket = try #require(finished)
         func record(_ i: Int, startup: Bool) -> AudioDiagnosticRecord {
             .init(kind: startup ? .startup : .interval, monotonicSeconds: Double(i), wallUnixSeconds: 1_790_000_000,
                   packets: i, failures: 0, restarts: 0, delayMicros: 120_000, requestedRate: 1,
