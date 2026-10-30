@@ -6,7 +6,7 @@ target_include_directories(caboose_gpu_device_fixture PRIVATE
     "${CABOOSE_GFXSTREAM_SOURCE}/host/vulkan" "${CABOOSE_GFXSTREAM_SOURCE}/host/vulkan/cereal/common")
 target_link_libraries(caboose_gpu_device_fixture PRIVATE caboose_gfxstream_framebuffer
     caboose_gfxstream_connection gfxstream_backend_static)
-add_executable(CabooseGPUDiagnostic MACOSX_BUNDLE main.mm)
+add_executable(CabooseGPUDiagnostic MACOSX_BUNDLE "${CMAKE_CURRENT_LIST_DIR}/main.mm")
 target_compile_features(CabooseGPUDiagnostic PRIVATE cxx_std_17)
 target_compile_options(CabooseGPUDiagnostic PRIVATE -fobjc-arc -fblocks)
 target_include_directories(CabooseGPUDiagnostic PRIVATE "${CMAKE_CURRENT_LIST_DIR}/..")
