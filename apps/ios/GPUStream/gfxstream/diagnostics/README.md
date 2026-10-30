@@ -61,3 +61,21 @@ no certified recovery and must report device loss rather than fake completion.
    receipt is not GPU completion. Coherent memory, arbitrary extension payloads,
    untrusted-stream safety and crash recovery remain unproven even if this oracle
    passes. Linux lavapipe success is a control, not evidence of phone execution.
+
+## Compositor translation probes
+
+`compositor-layout.cpp` builds against Vulkan and the original generated shader
+headers from the pinned gfxstream source. Modes 0–3 compare the default layout,
+mutable sampler, and vertex-only layouts. Modes 4 and 5 use two- and three-plane
+YCbCr immutable samplers and exit 2 if the device lacks the required conversion,
+sampled-image or cosited-chroma support. Pipeline creation alone does not prove
+rendered output.
+
+`spirv-multiplane.cpp` builds against the core, GLSL and MSL libraries from
+SPIRV-Cross revision `6c09849fe88c48eaed08413aa022aaa136a3a057` and includes the
+unchanged gfxstream vertex shader header. Arguments are plane count (1–3),
+sampler registration first (0 or 1), descriptor count (1 or 2), and decoy
+(0 = matching, 1 = wrong stage, 2 = wrong set). Patch 0011 targets that exact
+SPIRV-Cross revision, not gfxstream. It only resolves scalar immutable YCbCr
+bindings; arrays retain their previous behavior. It has not been validated on
+Metal or a phone.
