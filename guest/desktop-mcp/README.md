@@ -265,3 +265,29 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
     `set-text` (twice, replacing) and `press` run the page's script; a `click` at the
     link's bounds follows it; `text` returns the page text and the followed link; and the
     server's `find` and `read_text` work against the page.
+
+### Persistent agent GUI profiles
+
+Agent GUI launches use a private home at
+`/home/caboose/.local/share/caboose/agent-seat/home`, with private XDG config, data,
+cache and state directories. Firefox's HOME-based state and Chromium/Code's XDG-based
+singleton locations therefore belong to the agent seat. The initializer serializes
+concurrent starts with a kernel file lock and atomically records its format version.
+A crash releases the lock; browser-owned locks are never removed. Existing version-1
+agent state is reused, while unknown versions fail with an explicit migration error.
+No owner profiles, SQLite databases, WAL files, cookies or extensions are copied.
+Agent sign-ins persist in the agent profile; owner browser sign-ins are not imported.
+
+The task runner retains its existing owner HOME and CLI authentication configuration.
+Its PATH starts with GUI wrappers for Chromium, Chrome, Firefox and Code. These start
+and read the agent seat, reject alternate profile arguments, clear inherited editor IPC,
+and launch the application with the isolated GUI environment. Desktop MCP applies this
+same environment before launching shell commands. Absolute application paths with their
+default profiles also inherit it inside desktop MCP. This is application routing under
+one Unix user, not a sandbox against arbitrary shell commands or explicit owner paths.
+
+Run `python3 guest/desktop-mcp/test_agent_profile.py` for synthetic concurrent startup,
+profile persistence, crash-lock release, unknown-version and redirection checks. The tests
+use disposable directories and synthetic sign-in bytes, never owner state. Real browser
+window routing and browser-specific crash recovery require a disposable Linux display
+check; these unit tests do not establish those outcomes.

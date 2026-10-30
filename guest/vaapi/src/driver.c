@@ -591,9 +591,8 @@ static void need_pixels(cb_driver *d, cb_surface *s, int readback)
         switch_to_decode(c, CB_CLOSE_READBACK);
     if (c->mode == CB_MODE_DECODE && c->local && c->codec->provisional && s->mark >= 0) {
         cb_buf b = { 0 };
-        uint32_t seq;
-        if (c->codec->provisional(c, &b, &seq) == 0 && seq == s->seq && b.len)
-            cb_local_decode(c->local, seq, b.data, b.len);
+        if (c->codec->provisional(c, &b, s->seq) == 0 && b.len)
+            cb_local_decode(c->local, s->seq, b.data, b.len);
         cb_buf_free(&b);
     }
 }

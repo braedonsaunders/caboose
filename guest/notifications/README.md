@@ -2,7 +2,7 @@
 
 Desktop notifications from the owner's apps, for the phone, and the phone's answers to them.
 Each display seat has its own D-Bus session bus and its own `org.freedesktop.Notifications`
-endpoint; only the owner's notifications are recorded. caboose-host drains the records while
+endpoint; only the owner's notifications are recorded. caboose-host accepts records through the Files event receiver while
 the computer runs and sends them as `notification` events on `/v1/control` and, with APNs
 configured, as pushes; the phone answers through `POST /v1/notifications/:id/respond`, which
 runs `caboose-notify` (`docs/architecture.md` § Desktop notifications).
@@ -87,9 +87,13 @@ same buses and endpoints as processes (see `guest/container/README.md`).
   separate bus (`check-agent-bus.sh`) and checks that it is not recorded. It needs no VM or
   APNs credentials.
 - `sudo bash check.sh`, inside a running computer with the owner's display up, runs
-  `check-respond.py` on the owner's bus. The host drains the queue every second while the
+  `check-respond.py` on the owner's bus. The Files event receiver delivers and acknowledges the queue while the
   computer runs and can consume a record before the check sees it; the notifications also
   reach the owner's phone.
 
 Delivery to a device needs a registered device and the host's `check-push.mjs`
 ([`apps/host`](../../apps/host/README.md#real-host-checks)).
+
+The agent bus reads `/opt/caboose/keyring/agent-bus.conf`. Its activation directory routes
+Secret Service to the canonical owner daemon and supplies installed system application
+activators except credential writers. It does not load owner-home service registrations or start a second keyring.

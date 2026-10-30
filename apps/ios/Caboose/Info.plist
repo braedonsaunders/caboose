@@ -24,7 +24,7 @@
 	<key>NSSupportsLiveActivities</key><true/>
 	<key>LSRequiresIPhoneOS</key><true/>
 	<key>NSAppTransportSecurity</key>
-	<dict><key>NSAllowsLocalNetworking</key><true/></dict>
+	<dict><key>NSAllowsArbitraryLoads</key><true/></dict>
 	<key>NSCameraUsageDescription</key><string>Take a photo to attach to your agent message, take photos and videos and scan documents for apps on your computer, and let apps on your computer use this camera while Caboose is open and you allow it.</string>
 	<key>NSMicrophoneUsageDescription</key><string>Dictate a message to your agent, record sound with videos you take for apps on your computer, and let apps on your computer use this microphone while Caboose is open and you allow it.</string>
 	<key>NSMotionUsageDescription</key><string>Apps on your computer read the barometer through Motion Sensors while Caboose is open.</string>
@@ -54,6 +54,6 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array><string>com.braedonsaunders.caboose.backup</string></array>
 	<key>UIBackgroundModes</key>
-	<array><string>processing</string></array>
+	<array><string>audio</string><string>processing</string></array>
 </dict>
 </plist>

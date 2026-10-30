@@ -74,7 +74,15 @@ Laptop layout — signed app on the paired physical Duo:
    Gamepad fills the phone with no status bar or tab bar; rotate it: the wide controller
    follows. Play a game on the monitor, then Done: the trackpad returns, nothing held.
    Disconnect the monitor with the gamepad open: it closes and releases everything.
-6. Check VoiceOver labels for Screen Layout, Switch Window, Type and Hide Keyboard;
+6. On an iPhone with haptic hardware, type in Keyboard and Keyboard & Trackpad:
+   letters, Space, Shift/caps lock, symbols, Return and Delete each give a light tick.
+   Hold Delete and an accessory arrow: repeats tick only while held; lift, drag out
+   or dismiss the panel and both repeating input and feedback stop. Repeat accessory
+   keys in Terminal, Agents, a remote app card and native form fields. The globe opens
+   the system keyboard, whose feedback follows iOS Keyboard Feedback settings; pasted
+   text and hardware typing do not add app-generated pulses. Verify VoiceOver activation
+   still emits one key and one tick, without starting a held-key timer.
+7. Check VoiceOver labels for Screen Layout, Switch Window, Type and Hide Keyboard;
    large text; native sidebar reveal/hide; hardware keyboard; fold/rotate during
    reconnect. Leaving Laptop mode preserves the app and restores the full viewport.
 CHECK

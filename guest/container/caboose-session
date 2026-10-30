@@ -68,12 +68,21 @@ with socket.socket(socket.AF_UNIX) as connection:
     except OSError as error:
         sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
 PY
-  then return; else
+  then
+    if [ "$bus" = "$XDG_RUNTIME_DIR/agent-bus" ]; then
+      runuser -u caboose -- python3 /opt/caboose/keyring/secret-forwarder.py --check-bus
+    fi
+    return
+  else
     local status=$?
     [ "$status" = 1 ] || return "$status"
   fi
   rm -f -- "$bus"
-  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+  if [ "$bus" = "$XDG_RUNTIME_DIR/agent-bus" ]; then
+    runuser -u caboose -- python3 /opt/caboose/agent-profile.py exec dbus-daemon --config-file=/opt/caboose/keyring/agent-bus.conf --fork
+  else
+    runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+  fi
 }
 
 # Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
@@ -84,6 +93,21 @@ a11y_bus() {
     echo "No accessibility bus for the display in $envfile" >&2
 }
 
+# Publish only the seat's display variables, after display readiness. Portal processes
+# can start before the bridge's file watcher has observed the new display environment.
+activation_environment() {
+  local envfile=$1 bus=$2
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
+    timeout 5 /bin/sh -c 'set -a; . "$0"; exec dbus-update-activation-environment DISPLAY WAYLAND_DISPLAY XDG_RUNTIME_DIR' "$envfile"
+}
+
+seat_ready() {
+  local port=$1 envfile=$2 bus=$3
+  caboose-display-ready 120 "$port" || return
+  activation_environment "$envfile" "$bus" || return
+  a11y_bus "$envfile" "$bus"
+}
+
 # A caboose-display instance (docs/display.md). Its launch environment goes to ENVFILE once
 # it is ready, and video passthrough uses VIDEO_SOCKET; extra arguments select the instance
 # (port, sockets, X display).
@@ -92,6 +116,8 @@ start_display() {
   if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
+  local wrapper=()
+  if [ "$port" = 14601 ]; then wrapper=(python3 /opt/caboose/agent-profile.py exec); fi
   local libs=
   if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
   local log="$CABOOSE_HOME/.cache/$name.log"
@@ -99,7 +125,7 @@ start_display() {
   touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" CABOOSE_VIDEO_SOCKET="$video_socket" \
-    setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
+    "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
 # A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].
@@ -153,8 +179,8 @@ start_printing() {
 
 case ${1:-} in
   start) start_printing || echo "Printing unavailable" >&2; start_owner ;;
-  ready) caboose-display-ready 120 14600 && a11y_bus /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
-  start-agent) start_agent; caboose-display-ready 120 14601 && a11y_bus /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
+  ready) seat_ready 14600 /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
+  start-agent) start_agent; seat_ready 14601 /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py

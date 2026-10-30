@@ -3,6 +3,36 @@ import CoreGraphics
 /// Desktop coordinates are in points. A normal window's frame starts at its title bar;
 /// its height counts only the remote content below that bar.
 public enum DesktopGeometry {
+    /// Snapshot this with a gesture's target. A changed snapshot cancels active or
+    /// inertial delivery rather than changing its gain/anchor halfway through.
+    public struct SurfaceMapping: Equatable {
+        public var shown: CGRect
+        public var remote: CGSize
+        public init(shown: CGRect, remote: CGSize) { self.shown = shown; self.remote = remote }
+
+        public func point(_ point: CGPoint, captured: Bool = false) -> CGPoint? {
+            DesktopGeometry.remotePoint(point, shown: shown, remote: remote, captured: captured)
+        }
+
+        /// Relative motion has the same scale as positions, without translation.
+        public func delta(_ delta: CGPoint) -> CGPoint? {
+            guard shown.width > 0, shown.height > 0, remote.width > 0, remote.height > 0,
+                  delta.x.isFinite, delta.y.isFinite else { return nil }
+            return CGPoint(x: delta.x * remote.width / shown.width, y: delta.y * remote.height / shown.height)
+        }
+    }
+
+    /// Inverse of the shown surface rectangle, shared by desktop pointer actions.
+    /// A new press cannot target letterboxing. An already captured drag can clamp
+    /// to the surface edge so its release always reaches the original window.
+    public static func remotePoint(_ point: CGPoint, shown: CGRect, remote: CGSize,
+                                   captured: Bool = false) -> CGPoint? {
+        guard shown.width > 0, shown.height > 0, remote.width > 0, remote.height > 0,
+              point.x.isFinite, point.y.isFinite, captured || shown.contains(point) else { return nil }
+        return CGPoint(x: min(remote.width, max(0, (point.x - shown.minX) * remote.width / shown.width)),
+                       y: min(remote.height, max(0, (point.y - shown.minY) * remote.height / shown.height)))
+    }
+
     /// Keep the external desktop's default render width bounded while respecting the screen scale.
     public static func externalPixelsPerPoint(width: CGFloat, scale: CGFloat, fullResolution: Bool) -> CGFloat {
         let full = max(1, scale)
@@ -90,16 +120,17 @@ public enum DesktopGeometry {
     }
 
     /// The entire remote picture stays visible, including while a new size is arriving.
-    /// During resize it stretches to the tile; otherwise minimum-size windows fit inside it.
-    public static func surfaceFrame(natural: CGSize, available: CGSize, resizing: Bool) -> CGRect {
+    /// Resize requests never change the aspect of retained pixels. Minimum-size
+    /// windows fit at the top. Fullscreen pictures keep their aspect and center.
+    public static func surfaceFrame(natural: CGSize, available: CGSize, resizing: Bool,
+                                    fullscreen: Bool = false) -> CGRect {
         guard natural.width > 0, natural.height > 0, available.width > 0, available.height > 0 else {
             return CGRect(origin: .zero, size: available)
         }
-        if resizing { return CGRect(origin: .zero, size: available) }
         let scale = min(1, available.width / natural.width, available.height / natural.height)
         let shown = CGSize(width: natural.width * scale, height: natural.height * scale)
         return CGRect(x: max(0, (available.width - shown.width) / 2),
-                      y: scale < 1 ? 0 : max(0, (available.height - shown.height) / 2),
+                      y: !fullscreen && scale < 1 ? 0 : max(0, (available.height - shown.height) / 2),
                       width: shown.width, height: shown.height)
     }
 }

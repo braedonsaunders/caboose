@@ -57,7 +57,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Make room for a 16 GiB disk
+      - name: Make room for the guest image
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - name: Build the native image
         run: OUT_DIR="$RUNNER_TEMP/disks" ./guest/image/build.sh
@@ -165,11 +165,46 @@ jobs:
       - name: Check the macOS installer
         if: matrix.os == 'darwin'
         run: bash deploy/macos/check.sh dist/release/caboose-host-darwin-arm64.tar.gz
+      - name: Package the self-installing Mac app
+        if: matrix.os == 'darwin'
+        run: bash deploy/macos/package-dmg.sh dist/release/caboose-host-darwin-arm64.tar.gz dist/release/Caboose-macos-arm64.dmg
       - uses: actions/upload-artifact@v4
         with: { name: 'bundle-${{ matrix.os }}-${{ matrix.arch }}', path: dist/release/ }
 
+  windows-rootfs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the dedicated WSL distribution
+        run: |
+          bash deploy/windows/build-rootfs.sh dist/windows
+          cp dist/windows/caboose-wsl-rootfs-amd64.tar.gz.sha256 dist/windows/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with: { name: bundle-windows-rootfs, path: dist/windows/ }
+
+  windows-app:
+    runs-on: windows-latest
+    env:
+      CABOOSE_VERSION: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the supervisor and self-contained installer
+        shell: pwsh
+        run: |
+          cargo build --release --manifest-path apps/windows/Cargo.toml --bin caboose-agent --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:CABOOSE_AGENT_PATH = (Resolve-Path apps/windows/target/release/caboose-agent.exe).Path
+          cargo build --release --manifest-path apps/windows/Cargo.toml --bin CabooseSetup --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Path dist/windows -Force | Out-Null
+          Copy-Item apps/windows/target/release/CabooseSetup.exe dist/windows/CabooseSetup-windows-x64.exe
+          $hash = (Get-FileHash dist/windows/CabooseSetup-windows-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  CabooseSetup-windows-x64.exe" | Set-Content dist/windows/SHA256SUMS -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with: { name: bundle-windows-app, path: dist/windows/ }
+
   publish-bundles:
-    needs: [bundles, image-indexes]
+    needs: [bundles, image-indexes, windows-rootfs, windows-app]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -195,7 +230,7 @@ jobs:
         run: |
           mkdir release
           for bundle in bundles/*; do
-            for archive in "$bundle"/*.tar.zst "$bundle"/*.tar.gz "$bundle"/*.sha256; do
+            for archive in "$bundle"/*.tar.zst "$bundle"/*.tar.gz "$bundle"/*.dmg "$bundle"/*.exe "$bundle"/*.sha256; do
               [[ ! -f $archive ]] || cp "$archive" release/
             done
             cat "$bundle/SHA256SUMS" >> release/SHA256SUMS

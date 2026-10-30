@@ -144,6 +144,37 @@ describe('parseAppearance and parseLocation', () => {
 })
 
 describe('BridgeRelay', () => {
+  it('retries a scan event after phone delivery fails without retaining a phantom request', async () => {
+    const fake = fakeGuest()
+    const events: BridgeEvent[] = []
+    let disconnected = true
+    const relay = new BridgeRelay(() => fake.guest, event => {
+      if (disconnected) throw new Error('phone disconnected')
+      events.push(event)
+    })
+    relay.canScan = () => true
+    const batch = { requests: [scan], cancels: [] }
+    await expect(relay.accept(batch)).rejects.toThrow('phone disconnected')
+    expect(relay.pending(scan.id)).toBe(false)
+    disconnected = false
+    await relay.accept(batch)
+    await relay.accept(batch)
+    expect(events).toEqual([{ type: 'bridge.request', request: scan }])
+    expect(relay.pending(scan.id)).toBe(true)
+  })
+
+  it('does not acknowledge a scan event until fallback to the guest succeeds', async () => {
+    const fake = fakeGuest()
+    const relay = new BridgeRelay(() => fake.guest, () => {})
+    fake.onRespond(() => { throw new Error('guest disconnected') })
+    const batch = { requests: [scan], cancels: [] }
+    await expect(relay.accept(batch)).rejects.toThrow()
+    expect(relay.pending(scan.id)).toBe(false)
+    fake.onRespond(() => '{"answered":true}')
+    await relay.accept(batch)
+    expect(fake.bridgeCalls('respond')).toHaveLength(2)
+  })
+
   it('delivers each request once, withdraws cancelled ones, and returns malformed ones to the computer', async () => {
     const fake = fakeGuest()
     const events: BridgeEvent[] = []
@@ -287,7 +318,7 @@ describe('BridgeRelay', () => {
     expect(fake.calls[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
   })
 
-  it('drains only while active', async () => {
+  it('does not fork idle drains while active', async () => {
     vi.useFakeTimers()
     try {
       const fake = fakeGuest()
@@ -295,7 +326,7 @@ describe('BridgeRelay', () => {
       relay.setActive(true)
       await vi.advanceTimersByTimeAsync(3000)
       const drains = fake.bridgeCalls('drain').length
-      expect(drains).toBeGreaterThanOrEqual(3)
+      expect(drains).toBe(0)
       relay.setActive(false)
       await vi.advanceTimersByTimeAsync(3000)
       expect(fake.bridgeCalls('drain')).toHaveLength(drains)

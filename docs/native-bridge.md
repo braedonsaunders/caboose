@@ -50,10 +50,10 @@ serves the computer's own dialogs and the default appearance, and never reaches 
 
 ### Phone presence
 
-`caboose-bridge drain` (below) touches `bridge/present`. The phone is **present** while that
-file's modification time is less than 3 seconds old by the guest's clock. The host drains
-every second exactly while a phone's foreground control socket is connected, so presence
-follows the phone being in the foreground and connected.
+The host renews the Files presence lease once per second while a foreground phone control
+socket is connected. Each renewal touches `bridge/present`. The phone is **present** while
+that file's modification time is less than 3 seconds old by the guest's clock. Lease
+generations fence stale requests, and missing renewals expire naturally.
 
 ### File chooser
 
@@ -198,13 +198,13 @@ requires `position` and calls `SetPosition` on the track.
 
 ### Bridge requests
 
-`apps/host/src/bridge.ts`. While the computer is running and at least one control socket
-opened with `?phone=1` is connected, the host runs `caboose-bridge drain` as `caboose` every
-second. It prints `{ requests: [...], cancels: [id...] }` (at most 16 of each), having moved
-each request it prints to `bridge/claimed/`. The host validates each request field by field
+`apps/host/src/bridge.ts`. While the computer is running and at least one foreground control
+socket opened with `?phone=1` is connected, the host subscribes to Files bridge events.
+Files claims complete requests into `bridge/claimed/` and retains them until a response.
+Transport disconnects do not delete pending records. The host validates each request field by field
 (the limits above; strings without control characters; a `scan` exactly as
-[Scan](#scan) describes it) and sends to those sockets, a `scan` only to sockets also opened
-with `?scan=1` (an app that answers scan requests):
+[Scan](#scan) describes it) and sends to those sockets. Scan requests go only to foreground
+sockets also opened with `?scan=1` (an app that answers scan requests):
 
 | Event | Payload |
 | --- | --- |
@@ -240,7 +240,7 @@ portal or GeoClue directly. `DELETE` and 30 minutes without an update remove the
 
 ### Now playing relay
 
-`apps/host/src/now-playing.ts` reads `now-playing.json` about once a second while the
+`apps/host/src/now-playing.ts` receives changed `now-playing.json` snapshots through Files while the
 computer is running and a display client is connected, ignoring a file whose daemon is not
 running, and extrapolates `position` as media handoff does. It broadcasts
 `now-playing.changed { nowPlaying }` on every change and `now-playing.stopped { id }`.

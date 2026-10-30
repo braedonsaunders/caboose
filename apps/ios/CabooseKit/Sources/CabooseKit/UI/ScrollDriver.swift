@@ -27,8 +27,8 @@ public final class ScrollDriver: NSObject {
         if physics.needsFrame { startLink() }
     }
 
-    public func end(at time: TimeInterval, velocity: CGPoint? = nil, coast: Bool = true) {
-        physics.end(at: time, velocity: velocity, coast: coast)
+    public func end(at time: TimeInterval, velocity: CGPoint? = nil, coast: Bool = true, remainingContacts: Int = 0) {
+        physics.end(at: time, velocity: velocity, coast: coast, remainingContacts: remainingContacts)
         if physics.needsFrame { startLink() }
         else { cancel() }
     }

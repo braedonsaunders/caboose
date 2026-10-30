@@ -228,6 +228,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park. |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach this host from anywhere, such as `https://caboose.example.com`; listed first in pairing links and used as the console auth base URL (auth defaults to loopback when unset). |
 | `CABOOSE_MDNS` | `on` | `off` stops advertising `_caboose._tcp` on the LAN. |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed: addresses or CIDR ranges separated by commas (loopback always is). List a proxy on another machine or in another container, or every client behind it shares one sign-in throttle. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
@@ -293,6 +294,15 @@ setup until this is done; existing computers and paired phones continue to work.
 from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
 Postgres database) with the disks. The owner token keeps working for the whole API.
+
+A session cookie changes something, or opens a WebSocket, only from the console's own
+origin: the browser's `Sec-Fetch-Site` or `Origin` header must name it (the origin in
+`Host`, or `CABOOSE_PUBLIC_URL`), or the host answers 403 `cross-site request refused`
+before the route runs. Reads pass from anywhere. The owner and phone tokens are bearer
+headers no other site can attach, so they are not checked. Behind a reverse proxy that
+terminates HTTPS on another machine or in another container, list the proxy in
+`CABOOSE_TRUSTED_PROXIES` so the host believes its `X-Forwarded-Proto` and counts sign-in
+attempts per client rather than per proxy.
 
 ## Computers
 
@@ -472,7 +482,7 @@ display's launch environment, which names its control socket.
 
 `src/media.ts` reads the video playing in the computer's Chromium from
 `/home/caboose/.cache/caboose/media.json` (written by
-[`guest/media-handoff`](../../guest/media-handoff/README.md)) about once a second, only
+[`guest/media-handoff`](../../guest/media-handoff/README.md)) through the private Files event receiver, only
 while the computer is running and a display client is connected, and broadcasts
 `media.playing` and `media.stopped` on `/v1/control`. `GET /v1/media` returns the current
 state (null unless running; it never wakes or leases the computer).
@@ -484,7 +494,7 @@ returns `{ "sent": true }`, or 409 while the computer is not running. The contra
 ## Notifications and Live Activities
 
 Desktop notifications from the owner's session (see
-[`guest/notifications`](../../guest/notifications/README.md)) are drained from the guest
+[`guest/notifications`](../../guest/notifications/README.md)) arrive through the private Files event receiver
 while it runs and sent as `notification` events and, with APNs configured, as pushes.
 `POST /v1/notifications/:id/respond` answers one with an action or a reply through the
 guest's `caboose-notify`, waking a parked computer headless (`docs/architecture.md` §
@@ -557,7 +567,7 @@ against real files, Bash and processes in a temporary directory (Python 3 and Ba
 ## iOS handoff
 
 The host relays validated guest `phone.open`, `phone.share` and `phone.print` events only to
-owner-authenticated `/v1/control?phone=1` sockets, and polls the guest only while one is
+owner-authenticated `/v1/control?phone=1` sockets, and subscribes to guest events only while one is
 connected. `GET /v1/phone/files/:id` reads a staged file through the guest command channel;
 it accepts no arbitrary guest path and never wakes the computer. The schema and delivery
 rules are in `docs/architecture.md` § Phone handoff; the guest side is
@@ -764,6 +774,17 @@ with no pins, it reports the directory to move aside before retrying. A source
 without a valid build receipt requires manual inspection. Never remove a source
 or child memory inode while a VMM may still map it.
 
+## Guest event receiver
+
+`src/guest-events.ts` owns one authenticated bounded Files long poll per running
+computer. It dispatches validated channel envelopes to the existing bridge, phone,
+media, notification and task adapters, then acknowledges accepted queue records.
+It stops on freeze, park, shutdown and deletion; reconnects request an authoritative
+snapshot. It does not fall back to idle guest exec polling on old components.
+The guest components must include the event endpoint. See [the contract](../../docs/guest-events.md).
+
+Run the focused transport tests with `pnpm exec vitest run src/guest-events.test.ts
+src/event-adapters.test.ts` from this directory.
 ## Console and whole-host recovery
 
 Administrators inspect and manually capture parked disks or confirm a local capture restore

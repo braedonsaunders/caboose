@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { once } from 'node:events'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -116,24 +117,27 @@ describe('MediaHandoff', () => {
     expect(media.current()?.position).toBe(162)
   })
 
-  it('polls only while active, and announces the state again when polling restarts', async () => {
+  it('subscribes while active without idle execs, and announces on resubscribe', async () => {
     vi.useFakeTimers()
     const fake = fakeGuest()
     const events: MediaEvent[] = []
-    const media = new MediaHandoff(() => fake.guest, event => events.push(event), 1000)
+    let accept: ((raw: unknown) => void | Promise<void>) | undefined
+    const media = new MediaHandoff(() => fake.guest, event => events.push(event), 1000, Date.now, (_channel, callback) => { accept = callback; return () => { accept = undefined } })
     fake.set(pageVideo)
     await vi.advanceTimersByTimeAsync(5_000)
     expect(fake.reads()).toBe(0)
     media.setActive(true)
     media.setActive(true)
     await vi.advanceTimersByTimeAsync(2_500)
-    expect(fake.reads()).toBe(3)
+    expect(fake.reads()).toBe(0)
+    await accept?.({ state: pageVideo, guestClockMs: Date.now() })
     expect(events).toHaveLength(1)
     media.setActive(false)
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(fake.reads()).toBe(3)
+    expect(fake.reads()).toBe(0)
     expect(media.watched()).toBeNull()
     media.setActive(true)
+    await accept?.({ state: pageVideo, guestClockMs: Date.now() })
     await vi.advanceTimersByTimeAsync(0)
     expect(events.map(event => event.type)).toEqual(['media.playing', 'media.playing'])
     expect(media.watched()?.id).toBe(pageVideo.id)
@@ -192,6 +196,18 @@ describe('media routes', () => {
     const upstream = new WebSocketServer({ port: 0 })
     await once(upstream, 'listening')
     close.push(() => new Promise(resolve => upstream.close(() => resolve())))
+    let eventState: unknown = pageVideo
+    const files = createServer(async (request, response) => {
+      if (request.url === '/events/presence') { response.end('{}'); return }
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString())
+      const timer = setTimeout(() => response.end(JSON.stringify({ cursor: '1', records: body.channels.includes('media')
+        ? [{ channel: 'media', record: { state: eventState, guestClockMs: Date.now() } }] : [] })), 25)
+      response.on('close', () => clearTimeout(timer))
+    })
+    files.listen(0, '127.0.0.1'); await once(files, 'listening')
+    close.push(() => new Promise(resolve => { files.closeAllConnections(); files.close(() => resolve()) }))
     let running = false
     const controller: Controller = {
       wake: vi.fn(async () => { running = true; return { state: 'running', display: { path: '/v1/display', token: 'display', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } }),
@@ -199,6 +215,7 @@ describe('media routes', () => {
       apps: async () => [], launch: async () => {}, ensureAgentSeat: async () => {},
       displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1',
       guest: () => running ? fake.guest : undefined,
+      fileService: () => ({ url: `http://127.0.0.1:${(files.address() as AddressInfo).port}`, token: 'events' }),
     }
     const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
     const app = createCabooseServer({ token: 'owner', settings, controller })
@@ -218,7 +235,7 @@ describe('media routes', () => {
       close.unshift(async () => { client.terminate() })
       return { client, messages }
     }
-    return { fake, controller, app, base, request, socket }
+    return { fake, controller, app, base, request, socket, setMedia: (value: unknown) => { eventState = value } }
   }
 
   it('never wakes a parked computer and validates control requests', async () => {
@@ -232,8 +249,8 @@ describe('media routes', () => {
     expect(fake.calls).toEqual([])
   })
 
-  it('polls only with a display client, emits media events, and relays commands', async () => {
-    const { request, socket, fake, app } = await fixture()
+  it('receives Files events with a display client and relays commands', async () => {
+    const { request, socket, fake, app, setMedia } = await fixture()
     await request('/v1/session', 'POST')
     const control = await socket('/v1/control')
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -250,7 +267,7 @@ describe('media routes', () => {
     expect(await (await request(`/v1/media/${pageVideo.id}/control`, 'POST', { action: 'play', position: 12 })).json()).toEqual({ sent: true })
     expect(fake.writes()).toEqual([expect.objectContaining({ id: pageVideo.id, action: 'play', position: 12 })])
 
-    fake.set('')
+    setMedia(null)
     await vi.waitFor(() => expect(control.messages.at(-1)).toEqual({ type: 'media.stopped', id: pageVideo.id }), { timeout: 3000 })
     display.client.close()
     await once(display.client, 'close')

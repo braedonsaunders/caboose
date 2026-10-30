@@ -161,7 +161,7 @@ const app = createCabooseServer({
   usageHistoryFile: join(deployment.imageRoot, 'usage-history.json'),
   machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
-  identity,
+  identity, trustedProxies: deployment.trustedProxies, publicUrl: deployment.publicUrl,
 })
 app.server.listen(deployment.port, deployment.host, () => {
   console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`)

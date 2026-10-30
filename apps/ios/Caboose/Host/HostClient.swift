@@ -18,7 +18,7 @@ struct HostClient: Sendable {
         var computer: Computer
     }
 
-    struct App: Decodable, Identifiable, Hashable, Sendable {
+    struct App: Codable, Identifiable, Hashable, Sendable {
         var id: String
         var name: String
         var icon: String
@@ -28,7 +28,7 @@ struct HostClient: Sendable {
         var actions: [Action]?
         var startupWMClass: String?
 
-        struct Action: Decodable, Hashable, Sendable {
+        struct Action: Codable, Hashable, Sendable {
             var id: String
             var name: String
         }

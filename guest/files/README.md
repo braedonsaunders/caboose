@@ -75,3 +75,25 @@ requires a bounded Content-Length and streams at most 96 MiB in each direction. 
 checks its display-session grant, document revision and declared capabilities. The host
 exposes only its separately authenticated bridge route, not this guest endpoint. Run
 `python3 guest/files/test_webview_endpoint.py` for authorization and request-bound checks.
+
+## Host event receiver
+
+`event_stream.py` serves the private authenticated `/events` long poll and
+`/events/presence` phone lease endpoint alongside the existing Files and app webview
+bridge routes. Queue records remain on disk until the host accepts them; bridge claims
+remain until their response. Active task IDs and offsets come from the host, with strict
+UUID and numeric validation and bounded output. See [guest events](../../docs/guest-events.md)
+for channels, bounds, replay and lifecycle semantics.
+
+Run `python3 -m unittest discover -s guest/files -p test_events.py` from the repository
+root. Linux exercises inotify and process-descriptor behavior; portable unit checks can
+run without starting Files or touching an owner's home.
+
+On an isolated Linux checkout, `python3 guest/files/check-events.py` runs the real Files
+service against a temporary synthetic home and token on loopback, checks delivery,
+acknowledgements, watch retirement and presence fencing, and reports two five-second
+idle samples plus publication latency. It terminates and waits for its own service in
+`finally`. CPU ticks have kernel clock granularity; main-thread context switches are not
+total wakeups. Instrumented select/poll wait completions report userspace wait wakeups
+(including HTTP accept timeouts), with the overhead of writing one byte per completion. CPython audit events count Python fork/spawn/exec attempts; native extension
+syscalls are outside that metric. No Docker or desktop session is required.

@@ -17,14 +17,20 @@ struct YardTile: View {
 
     var body: some View {
         let radius = yard.metrics.cornerRadius
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let shape = ConcentricRectangle(cornerRadius: radius)
+        let available = yard.metrics.content(ofTile: rect).size
+        let natural = DesktopGeometry.surfaceSize(
+            natural: CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint),
+            available: available, locallyRendered: window.game != nil)
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id),
+                                                  fullscreen: window.isFullscreen)
         VStack(spacing: 0) {
             YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
             ZStack {
                 YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard) {
                     if yard.layout.focused != window.id { yard.focus(window.id) }
                 }
-                .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint))
+                .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint, presentedFrame: shown))
                 // Tiles without the keyboard step back a little; their text stays sharp.
                 Color.black.opacity(focused ? 0 : 0.1).allowsHitTesting(false)
             }
@@ -32,6 +38,8 @@ struct YardTile: View {
         .frame(width: rect.width, height: rect.height)
         .background(Color(white: 0.06))
         .clipShape(shape)
+        // Keep the system container inherited by both the concentric clip and the
+        // title bar's corner-inset reader; a tile does not redefine screen geometry.
         // The bevel: light along the top edge, a little shade along the bottom, as glass has.
         .overlay {
             shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.07), .black.opacity(0.28)],
@@ -64,50 +72,72 @@ struct YardTitleBar: View {
     let focused: Bool
     let onAsk: (RemoteWindow) -> Void
 
+    @GestureState private var carrying = false
+
     private var title: String { window.title.isEmpty ? "Window" : window.title }
 
     var body: some View {
         let bar = yard.metrics.titleBar
-        HStack(spacing: 0) {
-            WindowControls(bar: bar, showsSymbols: true, title: title) { control in
-                switch control {
-                case .close: yard.close(window.id)
-                case .zoom: openCard()
-                case .minimize: break
+        GeometryReader { geometry in
+            HStack(spacing: 0) {
+                WindowControls(bar: bar, showsSymbols: true, title: title) { control in
+                    switch control {
+                    case .close: yard.close(window.id)
+                    case .zoom: openCard()
+                    case .minimize: break
+                    }
                 }
-            }
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .gesture(
-                    TapGesture(count: 2).onEnded { openCard() }
-                        .exclusively(before: TapGesture().onEnded { yard.focus(window.id) })
-                )
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
-                        .onChanged { value in yard.carry(window.id, by: value.translation) }
-                        .onEnded { _ in yard.drop() }
-                )
-                .contextMenu { menuContent }
-                .accessibilityLabel("Move \(title)")
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { yard.focus(window.id) }
-                .accessibilityAction(named: "Full Screen") { openCard() }
-            Menu { menuContent } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 40, height: bar.height)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .contentShape(Rectangle())
+                    .gesture(
+                        TapGesture(count: 2).onEnded { openCard() }
+                            .exclusively(before: TapGesture().onEnded { yard.focus(window.id) })
+                    )
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
+                            .updating($carrying) { _, active, _ in active = true }
+                            .onChanged { value in yard.carry(window.id, by: value.translation, at: value.location) }
+                            .onEnded { value in
+                                if yard.carry?.window == window.id {
+                                    yard.carry(window.id, by: value.translation, at: value.location)
+                                    yard.drop()
+                                }
+                                yard.finishCarryGesture()
+                            }
+                    )
+                    .contextMenu { menuContent }
+                    .accessibilityLabel("Move \(title)")
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityAction { yard.focus(window.id) }
+                    .accessibilityAction(named: "Full Screen") { openCard() }
+                Menu { menuContent } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 40, height: bar.height)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("\(title) options")
             }
-            .accessibilityLabel("\(title) options")
+            .padding(EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal))
+            .frame(height: bar.height)
         }
         .frame(height: bar.height)
         .foregroundStyle(.white.opacity(focused ? 0.92 : 0.6))
         .buttonStyle(.plain)
         .background(Color(white: focused ? 0.16 : 0.11))
+        .onChange(of: carrying) { _, active in
+            if !active {
+                // SwiftUI may reset GestureState before delivering onEnded. Let that
+                // callback commit first; a cancellation has no onEnded and restores here.
+                DispatchQueue.main.async {
+                    if !carrying { yard.finishCarryGesture() }
+                }
+            }
+        }
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.45)).frame(height: 0.5) }
     }
 
@@ -155,7 +185,7 @@ struct YardTitleBar: View {
 }
 
 /// The live window inside a tile. Linux draws it at the tile's size; until a new size
-/// arrives, its last picture is stretched over the tile so a resize never shows a seam. A
+/// arrives, its last picture fits proportionally inside the moving tile. A
 /// window that keeps a size of its own is shown at it, centred.
 struct YardSurface: UIViewRepresentable {
     @Environment(AppModel.self) private var model
@@ -184,8 +214,9 @@ struct YardSurface: UIViewRepresentable {
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
         view.stretch = stretch
+        view.fullscreen = window.isFullscreen
         view.locallyRendered = window.game != nil
-        view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
+        view.natural = CGSize(width: window.presentationSize.width / pixelsPerPoint, height: window.presentationSize.height / pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
@@ -199,6 +230,7 @@ final class YardSurfaceView: UIView {
     let content: RemoteWindowView
     var onTouch: (() -> Void)?
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
+    var fullscreen = false { didSet { if fullscreen != oldValue { setNeedsLayout() } } }
     var locallyRendered = false { didSet { if locallyRendered != oldValue { setNeedsLayout() } } }
     var natural: CGSize = .zero { didSet { if natural != oldValue { setNeedsLayout() } } }
     var laptopPoint: CGPoint? { didSet { if laptopPoint != oldValue { setNeedsLayout() } } }
@@ -209,6 +241,15 @@ final class YardSurfaceView: UIView {
         super.init(frame: .zero)
         clipsToBounds = true
         addSubview(content)
+        // Core Animation can retain the preceding drawable until the GPU presents.
+        // Keep that drawable proportional across the atomic picture-size handoff too.
+        content.layer.contentsGravity = .resizeAspect
+        content.onPictureSizeChanged = { [weak self] size in
+            guard let self else { return }
+            self.natural = CGSize(width: size.width / self.content.pixelsPerPoint,
+                                  height: size.height / self.content.pixelsPerPoint)
+            self.layoutIfNeeded()
+        }
         laptopCursor.tintColor = .white
         laptopCursor.isUserInteractionEnabled = false
         laptopCursor.layer.shadowColor = UIColor.black.cgColor
@@ -231,9 +272,13 @@ final class YardSurfaceView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = DesktopGeometry.surfaceSize(natural: natural, available: bounds.size, locallyRendered: locallyRendered)
-        content.transform = .identity
-        content.bounds = CGRect(origin: .zero, size: size)
-        let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch)
+        // A picture replacement changes the coordinate space atomically. Animating
+        // its bounds independently of the uniform fit would stretch the Metal pixels.
+        UIView.performWithoutAnimation {
+            content.bounds = CGRect(origin: .zero, size: size)
+        }
+        let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch,
+                                                  fullscreen: fullscreen)
         guard size.width > 0, size.height > 0 else { return }
         content.transform = CGAffineTransform(scaleX: shown.width / size.width, y: shown.height / size.height)
         content.center = CGPoint(x: shown.midX, y: shown.midY)

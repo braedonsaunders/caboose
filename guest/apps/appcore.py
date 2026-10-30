@@ -9,6 +9,7 @@ unit-tested without GTK or WebKit.
 import colorsys
 import errno
 import hashlib
+from html.parser import HTMLParser
 import json
 import mimetypes
 import os
@@ -24,7 +25,7 @@ SCHEME = 'caboose-app'
 ID = re.compile(r'[a-z][a-z0-9-]{0,47}')
 MANIFEST = 'app.json'
 MANIFEST_LIMIT = 64 * 1024
-CAPABILITIES = ('exec', 'files', 'notify', 'open')
+CAPABILITIES = ('exec', 'files', 'notify', 'open', 'net')
 # The Desktop Menu Specification's main categories.
 CATEGORIES = ('AudioVideo', 'Audio', 'Video', 'Development', 'Education', 'Game', 'Graphics',
               'Network', 'Office', 'Science', 'Settings', 'System', 'Utility')
@@ -490,7 +491,57 @@ def check(places, ident):
     result = {'id': ident, 'ok': not errors, 'errors': errors}
     if manifest:
         result['manifest'] = manifest
+        result['warnings'] = entry_input_warnings(app_dir, manifest['entry'])
     return result
+
+
+class _ViewportParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.viewports = []
+        self.template_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'template':
+            self.template_depth += 1
+        attrs = dict(attrs)
+        if not self.template_depth and tag == 'meta' and (attrs.get('name') or '').lower() == 'viewport':
+            self.viewports.append(attrs.get('content') or '')
+
+    def handle_endtag(self, tag):
+        if tag == 'template':
+            self.template_depth = max(0, self.template_depth - 1)
+
+
+def entry_input_warnings(app_dir, entry):
+    """Static hints, not proof of working controls. Never changes an existing app."""
+    try:
+        # Use the same bounded, symlink-safe file reader as the files bridge.
+        raw = read_file(app_dir, entry.split('/'), limit=MAX_PAGE)
+    except (OSError, ValueError):
+        return [f'{entry}: input layout was not checked; the entry could not be read within {MAX_PAGE} bytes']
+    parser = _ViewportParser()
+    parser.feed(raw.decode('utf-8', 'replace'))
+    if not parser.viewports:
+        return [f'{entry}: add <meta name="viewport" content="width=device-width, initial-scale=1"> for phone layout']
+    warnings = []
+    if len(parser.viewports) != 1:
+        warnings.append(f'{entry}: use one viewport meta element; multiple declarations can conflict')
+    for content in parser.viewports:
+        settings = {}
+        for part in re.split('[,;]', content.lower()):
+            key, separator, value = part.partition('=')
+            if separator:
+                settings[key.strip()] = value.strip()
+        try:
+            initial_scale = float(settings.get('initial-scale', ''))
+        except ValueError:
+            initial_scale = None
+        if settings.get('width') != 'device-width' or initial_scale != 1:
+            warnings.append(f'{entry}: use viewport width=device-width, initial-scale=1 for phone layout')
+        if settings.get('user-scalable') in ('no', '0') or 'maximum-scale' in settings:
+            warnings.append(f'{entry}: avoid restricting viewport zoom; keep accessibility zoom available')
+    return list(dict.fromkeys(warnings))
 
 
 def publish(places, ident):

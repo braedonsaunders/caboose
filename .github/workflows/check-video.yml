@@ -1,0 +1,52 @@
+name: Check video fallback and bitstreams
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/check-video.yml'
+      - 'guest/vaapi/**'
+      - 'guest/display/compositor/src/video/**'
+      - 'guest/display/scripts/video-admission.py'
+      - 'guest/display/scripts/check.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: video-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bitstreams:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the declared VAAPI test environment
+        run: docker build -t caboose-vaapi-dev guest/vaapi
+      - name: Check state and selected codec roundtrips
+        run: |
+          docker run --rm --init --network none --cpus 2 --memory 4g \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD/guest/vaapi:/src" -w /src caboose-vaapi-dev \
+            timeout 300s sh -ec 'make -j1 all; build/unit; build/av1-state; CBVA_CASES="h264-cbp hevc-default av1-aom-realtime av1-aom-altref" tests/roundtrip.sh h264 hevc av1'
+  admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the declared display test environment
+        run: docker build -t caboose-display-dev guest/display
+      - name: Build exact checked-source binaries and internal video tests
+        run: |
+          docker run --rm --init --cpus 2 --memory 4g \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD/guest/display:/src" -w /src caboose-display-dev \
+            timeout 600s sh -ec 'cargo test -p caboose-display video:: -j1; cargo build --workspace --bins -j1'
+      - name: Verify production admission using the exact built binaries
+        run: |
+          docker run --rm --init --network none --cpus 2 --memory 4g \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD/guest/display:/src" -w /src caboose-display-dev \
+            timeout 30s python3 scripts/check.py passthrough

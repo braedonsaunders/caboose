@@ -6,6 +6,19 @@ struct CardWindowFitTests {
     let portrait = CGRect(x: 0, y: 0, width: 523, height: 793)
     let viewport = CGRect(x: 0, y: 0, width: 951, height: 669)
 
+    @Test func tileReconcilesAnAppResizeEvenWhenLastSentTargetIsUnchanged() {
+        var fit = CardWindowFit()
+        let target = WindowSizePolicy.fitting(CGRect(x: 0, y: 41, width: 500, height: 800),
+            minimum: CGSize(width: 862, height: 600), maximum: nil, fullscreen: false)!
+        let accepted = fit.shouldCorrect(frame: target, target: target, now: 0)
+        let appResize = CGRect(x: 0, y: 41, width: 862, height: 710)
+        let correction = fit.shouldCorrect(frame: appResize, target: target, now: 1)
+        let second = fit.shouldCorrect(frame: appResize, target: target, now: 1.1)
+        let exhausted = fit.shouldCorrect(frame: appResize, target: target, now: 1.2)
+        #expect(!accepted)
+        #expect(correction && second && !exhausted)
+    }
+
     @Test func appResizeAfterOnboardingGetsTheViewportBack() {
         var fit = CardWindowFit()
         let check10 = fit.shouldCorrect(frame: portrait, target: viewport, now: 0)

@@ -159,7 +159,9 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     private func updateMenu() {
         let groups = groupTitles.enumerated().map { index, title in
             UIAction(title: title, state: selectedGroup == index ? .on : .off) { [weak self] _ in
-                self?.showGroup(index)
+                guard let self else { return }
+                KeyboardFeedback.press()
+                self.showGroup(index)
             }
         }
         // All actions remain accessible at every width, including long-press alternatives.
@@ -219,6 +221,7 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { stopRepeating() }
+        else { KeyboardFeedback.prepare() }
     }
 
     public func show(activeModifiers: Set<String>) {
@@ -283,13 +286,18 @@ public final class KeyBar: UIInputView, UIInputViewAudioFeedback {
 
     private func press(_ action: Action, repeating: Bool) {
         stopRepeating()
+        KeyboardFeedback.press()
         UIDevice.current.playInputClick()
         onAction?(action)
         guard repeating else { return }
         repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.onAction?(action) }
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        KeyboardFeedback.press()
+                        self.onAction?(action)
+                    }
                 }
             }
         }

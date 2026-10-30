@@ -59,6 +59,8 @@ def main():
         sys.exit(f"no ACCEPT: {reply!r}")
     stream, tag, mode = struct.unpack("<IBB", reply[5:11])
     print(f"ACCEPT stream {stream} tag {tag} mode {mode}", flush=True)
+    if mode != 0:
+        sys.exit("local decode requested: legacy marker fixture requires passthrough admission")
     page = f"file://{HERE}/pages/marker.html?tag={tag}&fps=30&x=100&y=80&w=640&h=360"
     browser = subprocess.Popen(sys.argv[2:] + [f"--app={page}"])
     start = time.time()

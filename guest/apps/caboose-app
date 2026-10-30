@@ -25,6 +25,7 @@ import time
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, HERE)
 import appcore as apps  # noqa: E402
+import net  # noqa: E402
 import remote  # noqa: E402
 
 HOME = os.environ.get('HOME') or os.path.expanduser('~')
@@ -157,8 +158,12 @@ def run(ident):
     if not any(name.startswith('renderD') for name in (os.listdir('/dev/dri') if os.path.isdir('/dev/dri') else [])):
         os.environ.setdefault('WEBKIT_DISABLE_DMABUF_RENDERER', '1')
 
+    # The network origin: any http or https URL, for an app that declares net.
+    network = net.NetOrigin(f'{apps.SCHEME}://{ident}') if 'net' in capabilities else None
     with open(os.path.join(HERE, 'page.js'), encoding='utf-8') as handle:
-        page_script = handle.read().replace('__CABOOSE_APP__', json.dumps(info))
+        # The network base first: the app's own text never becomes a placeholder.
+        page_script = handle.read().replace('__CABOOSE_NET__', json.dumps(network.base if network else None)) \
+            .replace('__CABOOSE_APP__', json.dumps(info))
     with open(os.path.join(HERE, 'world.js'), encoding='utf-8') as handle:
         world_script = handle.read()
     WORLD = 'caboose'
@@ -863,6 +868,8 @@ def run(ident):
         if state.get('remote_bridge') is not None:
             state['remote_bridge'].close()
         state['view'] = None
+        if network is not None:
+            network.close()
         children.stop()
 
     application.connect('activate', activate)
