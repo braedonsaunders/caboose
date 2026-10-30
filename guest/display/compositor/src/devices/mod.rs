@@ -15,7 +15,6 @@ use caboose_display_protocol::{
     Device, DeviceBattery, DeviceKind, DeviceRumble, DeviceState, Message, MotionSensor,
 };
 use smithay::reexports::calloop::channel::Sender;
-use std::collections::HashMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -142,9 +141,9 @@ struct Camera {
 
 struct Microphone {
     // Field order is drop order: the watcher and writer stop before the source unloads.
-    watcher: Option<mic::Watcher>,
+    _watcher: Option<mic::Watcher>,
     writer: mic::Writer,
-    source: mic::Source,
+    _source: mic::Source,
     recording: bool,
 }
 
@@ -472,7 +471,7 @@ impl State {
                 .map_err(|e| kernel_error("UHID", uhid::UHID, &e)),
             DeviceKind::Motion => self.create_motion(&d, &mut entry.error),
             DeviceKind::Camera => self.create_camera(&d, camera::Format::Yuyv),
-            DeviceKind::Depth => self.create_camera(&d, camera::Format::Z16),
+            DeviceKind::Depth => self.create_camera(&d, camera::Format::Depth),
             DeviceKind::Microphone => self.create_microphone(&d),
         };
         match made {
@@ -570,7 +569,7 @@ impl State {
                 None
             }
         };
-        Ok(Linux::Microphone(Microphone { watcher, writer, source, recording: false }))
+        Ok(Linux::Microphone(Microphone { _watcher: watcher, writer, _source: source, recording: false }))
     }
 
     /// Takes a device down; a camera or microphone in use is detached instead and kept
@@ -856,6 +855,11 @@ impl State {
         if self.refresh.first().is_some_and(|t| *t <= now) {
             self.refresh.remove(0);
             self.send_status();
+            // A report written while the kernel was still adding the battery is dropped;
+            // the charging flag arrives only in reports, so send it again.
+            if let Some(b) = self.battery.clone() {
+                self.battery_changed(b);
+            }
         }
     }
 

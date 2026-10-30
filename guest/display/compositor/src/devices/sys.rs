@@ -254,7 +254,8 @@ pub const fn fourcc(code: &[u8; 4]) -> u32 {
     code[0] as u32 | (code[1] as u32) << 8 | (code[2] as u32) << 16 | (code[3] as u32) << 24
 }
 pub const V4L2_PIX_FMT_YUYV: u32 = fourcc(b"YUYV");
-pub const V4L2_PIX_FMT_Z16: u32 = fourcc(b"Z16 ");
+/// 16-bit greyscale, little-endian: how v4l2loopback carries depth (it has no `Z16`).
+pub const V4L2_PIX_FMT_Y16: u32 = fourcc(b"Y16 ");
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -336,7 +337,7 @@ pub struct V4l2EventSubscription {
 
 /// `struct v4l2_event` (136 bytes on 64-bit).
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct V4l2Event {
     pub kind: u32,
     pub data: [u64; 8],
@@ -345,12 +346,6 @@ pub struct V4l2Event {
     pub timestamp: [i64; 2],
     pub id: u32,
     pub reserved: [u32; 8],
-}
-
-impl Default for V4l2Event {
-    fn default() -> Self {
-        Self { kind: 0, data: [0; 8], pending: 0, sequence: 0, timestamp: [0; 2], id: 0, reserved: [0; 8] }
-    }
 }
 
 pub const VIDIOC_S_FMT: u64 = iowr::<V4l2Format>(b'V', 5);

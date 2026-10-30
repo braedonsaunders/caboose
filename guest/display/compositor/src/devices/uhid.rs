@@ -99,6 +99,7 @@ impl Descriptor {
     pub fn feature(&mut self, flags: u8) -> &mut Self {
         self.item(0xB, MAIN, &[flags])
     }
+    #[cfg(test)]
     pub fn bytes(&self) -> &[u8] {
         &self.0
     }
@@ -181,10 +182,6 @@ const KINDS: [SensorKind; 5] = [
 ];
 
 impl SensorKind {
-    pub fn of(sensor: MotionSensor) -> Self {
-        *KINDS.iter().find(|k| k.sensor == sensor).expect("every sensor has a kind")
-    }
-
     /// The raw 32-bit values of a sample for this sensor, in the descriptor's scale.
     pub fn raw(&self, sample: &MotionSample) -> Option<Vec<i32>> {
         let scale = 10f64.powi(-self.exponent as i32);
@@ -577,7 +574,7 @@ mod tests {
             accel: Some([0.0, -1.5, 9.80665]),
             gyro: Some([0.000_001, 0.0, -2.0]),
             magnet: Some([21.5, 0.0, -40.0]),
-            rotation: Some([0.0, 0.0, 0.70710678, 0.70710678]),
+            rotation: Some([0.0, 0.0, std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2]),
             pressure: Some(101.325),
         };
         let words = |r: Vec<u8>| -> Vec<i32> {

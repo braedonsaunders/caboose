@@ -225,7 +225,7 @@ sudo python3 check-devices.py --only gamepad,motion --allow-unavailable camera,d
 | `iio` | the HID sensor hub became `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation` and `press`; enabling the accelerometer's buffer opens motion, and the sample reads 9.80665 m/s² through the IIO scale |
 | `battery` | the power supply reads 75%, Charging, scope Device |
 | `camera` | ffmpeg streaming from the camera's node opens it; the phone's H.264 test picture arrives as YUYV; stopping sends `device.close` |
-| `depth` | the depth node streams the phone's millimetres unchanged as `Z16` |
+| `depth` | the depth node streams the phone's millimetres unchanged as 16-bit greyscale (`Y16`) |
 | `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
 | `disconnect` | closing the connection removes the gamepad and the battery |
 

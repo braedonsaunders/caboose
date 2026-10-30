@@ -21,7 +21,7 @@ the same pull request as any code that changes it.
 | Phone hardware | iOS source | In the computer | Linux interface |
 | --- | --- | --- | --- |
 | Back cameras (wide, ultra wide, telephoto) and the front camera | `AVCaptureSession`, H.264 from VideoToolbox | `/dev/videoN`, one per camera, named "iPhone Back Camera", "iPhone Front Camera" … | V4L2 capture device (v4l2loopback), YUYV 4:2:2 |
-| LiDAR or TrueDepth | `AVCaptureDepthDataOutput` | `/dev/videoN`, "iPhone Depth" | V4L2 capture device, `Z16` (millimetres) |
+| LiDAR or TrueDepth | `AVCaptureDepthDataOutput` | `/dev/videoN`, "iPhone Depth" | V4L2 capture device, 16-bit greyscale `Y16` (millimetres; v4l2loopback has no `Z16`) |
 | Microphone | `AVAudioEngine` with voice processing, Opus | PulseAudio source `caboose_phone_microphone`, "iPhone Microphone", the default source while present | PulseAudio (and ALSA through it) |
 | Accelerometer, gyroscope, magnetometer, attitude, barometer | Core Motion, `CMAltimeter` | IIO devices `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation`, `press` | HID sensor hub over UHID: the kernel's `hid-sensor-*` drivers |
 | Motion, for games | Core Motion | evdev "iPhone Motion Sensors" (`INPUT_PROP_ACCELEROMETER`) | uinput |
@@ -172,7 +172,7 @@ offers nothing):
 Each camera and the depth sensor is a v4l2loopback device the compositor adds through
 `/dev/v4l2loopback` (`V4L2LOOPBACK_CTL_ADD`, `exclusive_caps`, the device's name as its
 card label) and removes when it is gone and unused. The compositor keeps the device's
-output side open with its format set (YUYV at the camera's `size` and `fps`; `Z16` for
+output side open with its format set (YUYV at the camera's `size` and `fps`; `Y16` for
 depth) and a black picture written, so applications list it as a camera before anything
 streams. It subscribes to v4l2loopback's client usage event: the first streaming reader
 sends `device.open`, the last one leaving sends `device.close`. Camera access units are
@@ -192,7 +192,7 @@ first one recording from the source sends `device.open`, the last one leaving se
 
 ### Sensors and battery
 
-The motion sensors are one UHID device, "iPhone Sensors", whose HID report descriptor is a
+The motion sensors are one UHID device, named as the motion device is, whose HID report descriptor is a
 sensor hub with a collection per sensor the phone has: accelerometer 3D, gyrometer 3D,
 compass 3D, device orientation (quaternion) and barometer, as the HID Sensor Usages
 specification defines them. The kernel's `hid-sensor-hub` binds it and its `hid-sensor-*`

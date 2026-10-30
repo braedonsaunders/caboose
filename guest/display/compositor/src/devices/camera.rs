@@ -19,15 +19,15 @@ pub const CONTROL: &str = "/dev/v4l2loopback";
 pub enum Format {
     /// YUYV 4:2:2, from the phone's H.264.
     Yuyv,
-    /// 16-bit depth in millimetres.
-    Z16,
+    /// 16-bit depth in millimetres, as 16-bit greyscale (`Y16`).
+    Depth,
 }
 
 impl Format {
     fn fourcc(self) -> u32 {
         match self {
             Format::Yuyv => V4L2_PIX_FMT_YUYV,
-            Format::Z16 => V4L2_PIX_FMT_Z16,
+            Format::Depth => V4L2_PIX_FMT_Y16,
         }
     }
     /// The bytes of one picture.
@@ -38,7 +38,7 @@ impl Format {
     pub fn blank(self, size: Size) -> Vec<u8> {
         match self {
             Format::Yuyv => [16u8, 128].repeat(size.w as usize * size.h as usize),
-            Format::Z16 => vec![0; self.picture_len(size)],
+            Format::Depth => vec![0; self.picture_len(size)],
         }
     }
 }
@@ -103,7 +103,7 @@ impl Output {
             sizeimage: w * h * 2,
             colorspace: match format {
                 Format::Yuyv => V4L2_COLORSPACE_SRGB,
-                Format::Z16 => V4L2_COLORSPACE_RAW,
+                Format::Depth => V4L2_COLORSPACE_RAW,
             },
             ..Default::default()
         });
@@ -305,6 +305,14 @@ fn run(device: String, fd: OwnedFd, format: Format, size: Size, fps: u32, rx: mp
     let mut streaming = false;
     let mut last_new = Instant::now();
     let mut last_written = Instant::now();
+    // Asking the phone for a keyframe, at most once a second while waiting for one.
+    let mut asked: Option<Instant> = None;
+    let ask_keyframe = |asked: &mut Option<Instant>| {
+        if asked.is_none_or(|t| t.elapsed() >= Duration::from_secs(1)) {
+            *asked = Some(Instant::now());
+            let _ = out.send(Message::DeviceKeyframe { device: device.clone() });
+        }
+    };
     let write = |data: &[u8]| {
         if let Err(e) = write_all(&fd, data) {
             if e.raw_os_error() != Some(libc::EAGAIN) {
@@ -321,10 +329,8 @@ fn run(device: String, fd: OwnedFd, format: Format, size: Size, fps: u32, rx: mp
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         match input {
-            Some(Input::Unit { data, keyframe }) if attached => {
-                if waiting_for_keyframe && !keyframe {
-                    continue;
-                }
+            Some(Input::Unit { keyframe: false, .. }) if attached && waiting_for_keyframe => ask_keyframe(&mut asked),
+            Some(Input::Unit { data, .. }) if attached => {
                 if decoder.is_none() {
                     match Decoder::new() {
                         Ok(d) => decoder = Some(d),
@@ -348,12 +354,12 @@ fn run(device: String, fd: OwnedFd, format: Format, size: Size, fps: u32, rx: mp
                         tracing::debug!("camera {device}: decode: {e}");
                         decoder = None;
                         waiting_for_keyframe = true;
-                        let _ = out.send(Message::DeviceKeyframe { device: device.clone() });
+                        ask_keyframe(&mut asked);
                     }
                 }
             }
             Some(Input::Depth { size: got, data }) if attached => {
-                if data.len() == format.picture_len(got) && got.w > 0 && got.h > 0 {
+                if got.w > 0 && got.h > 0 && got.w <= 3840 && got.h <= 2160 && data.len() == format.picture_len(got) {
                     picture = scale_depth(&data, got, size);
                     write(&picture);
                     last_new = Instant::now();
@@ -371,13 +377,17 @@ fn run(device: String, fd: OwnedFd, format: Format, size: Size, fps: u32, rx: mp
             Some(Input::Attach) => {
                 attached = true;
                 if streaming {
-                    let _ = out.send(Message::DeviceKeyframe { device: device.clone() });
+                    ask_keyframe(&mut asked);
                 }
             }
             Some(Input::Streaming(on)) => {
                 streaming = on;
                 if on {
                     waiting_for_keyframe = true;
+                    ask_keyframe(&mut asked);
+                } else {
+                    // The next reader never sees what the last one was shown.
+                    picture = blank.clone();
                 }
             }
             None => {}
@@ -469,6 +479,6 @@ mod tests {
     fn blank_pictures_are_black_and_empty() {
         let s = Size { w: 2, h: 1 };
         assert_eq!(Format::Yuyv.blank(s), vec![16, 128, 16, 128]);
-        assert_eq!(Format::Z16.blank(s), vec![0; 4]);
+        assert_eq!(Format::Depth.blank(s), vec![0; 4]);
     }
 }

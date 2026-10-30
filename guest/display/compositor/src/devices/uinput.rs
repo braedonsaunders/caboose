@@ -292,7 +292,7 @@ impl Device {
                                     weak: weak as f64 / 65535.0 * self.gain,
                                     // An effect without a length plays until stopped; the phone
                                     // is told a long one and the stop that follows.
-                                    ms: if length == 0 { 10_000 } else { length as u32 * e.value as u32 },
+                                    ms: if length == 0 { 10_000 } else { (length as u32).saturating_mul(e.value as u32).min(60_000) },
                                 });
                             }
                         } else {

@@ -64,7 +64,8 @@ impl Source {
                 "format=s16le".to_owned(),
                 format!("rate={RATE}"),
                 "channels=1".to_owned(),
-                format!("source_properties=device.description=\"{}\"", description.replace(['"', '\\'], "")),
+                // pactl joins its arguments with spaces: quote the whole value.
+                format!("source_properties='device.description=\"{}\"'", description.replace(['"', '\\', '\''], "")),
             ]);
             c
         })?
