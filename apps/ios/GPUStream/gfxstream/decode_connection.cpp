@@ -1,7 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "decode_connection.h"
 #include "socket_stream.h"
-#include "render_thread_info_vk.h"
+#include "render_thread_info.h"
 #include "vk_decoder_context.h"
 #include "gfxstream/host/GfxApiLogger.h"
 #include <cerrno>
@@ -12,11 +12,11 @@
 #include <vector>
 
 namespace caboose::gpuv2 {
-int decodeConnection(int fd, uint32_t context_id, size_t max_packet, size_t max_reply_buffer,
-                     std::shared_ptr<const gfxstream::host::ProcessResources> resources,
+int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
+                     gfxstream::host::RenderThreadInfo& thread_info,
                      std::atomic_bool& stop) {
-    if (fd < 0 || context_id == 0 || context_id == UINT32_MAX || max_packet < 8 || max_packet > 400u * 1024u * 1024u ||
-        max_reply_buffer < 4096 || !resources) return EINVAL;
+    if (fd < 0 || max_packet < 8 || max_packet > 400u * 1024u * 1024u ||
+        max_reply_buffer < 4096 || !thread_info.m_vkInfo || !thread_info.getProcessResources()) return EINVAL;
     SocketStream stream(fd, max_reply_buffer);
     uint32_t flags;
     if (!stream.readFully(&flags, sizeof(flags))) return stop ? 0 : stream.error();
@@ -26,10 +26,7 @@ int decodeConnection(int fd, uint32_t context_id, size_t max_packet, size_t max_
     gfxstream::host::vk::VkDecoderContext context{};
     context.gfxApiLogger = &logger;
     context.shouldExit = &stop;
-    if (gfxstream::host::vk::RenderThreadInfoVk::get()) return EBUSY;
-    gfxstream::host::vk::RenderThreadInfoVk thread_info;
-    thread_info.ctx_id = context_id;
-    thread_info.m_processResources = resources;
+
     try {
         std::vector<unsigned char> pending;
         auto readMore = [&](size_t request) -> bool {
@@ -51,8 +48,8 @@ int decodeConnection(int fd, uint32_t context_id, size_t max_packet, size_t max_
                 if (!readMore(length - pending.size())) return stop ? 0 : stream.error();
                 continue;
             }
-            const size_t consumed = thread_info.m_vkDec.decode(
-                pending.data(), pending.size(), &stream, resources.get(), context);
+            const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
+                pending.data(), pending.size(), &stream, thread_info.getProcessResources().get(), context);
             if (stream.error()) return stream.error();
             if (consumed > pending.size()) return EPROTO;
             if (consumed) {

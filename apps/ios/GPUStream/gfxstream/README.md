@@ -32,10 +32,8 @@ The existing `GPUStream/CMakeLists.txt` builds the diagnostic GFXReconstruct pla
 Add a separate `add_subdirectory(gfxstream)` only after the upstream target below
 exists; do not add gfxstream to the replay target. The new target should link the
 same process-wide nativeVulkan/MoltenVK provider as capability queries, not load
-another `libvulkan.dylib` or bundle another copy. A C API should accept an owned
-session context and connected duplex transport, expose readiness and a terminal
-error, and offer shutdown/join; schema and ownership must be agreed with the guest
-and broker before fixing signatures. No API should report completion on receipt.
+another `libvulkan.dylib` or bundle another copy. The experimental C API accepts broker process identity and connected duplex sockets;
+schema and ownership must be agreed with the guest and broker before hardening it. No API should report completion on receipt.
 
 At the pinned upstream revision the necessary changes are larger than removing
 framework flags:
@@ -62,7 +60,7 @@ framework flags:
   Both capability queries and decoding must use that same lifetime.
 
 An exact source/dependency hash manifest, build recipe, generated schema comparison,
-real decoder wrapper, process resources, memory mapping and Apple link closure remain
+verified decoder initialization, memory mapping and Apple link closure remain
 unimplemented. A successful static build and live Linux compute -> physical phone ->
 GPU readback -> CPU-dependent second draw are required before claiming viability.
 
@@ -71,8 +69,8 @@ GPU readback -> CPU-dependent second draw are required before claiming viability
 `decode_connection.*` is an uncompiled upstream decoder-loop integration, not a
 public API or a safe endpoint for untrusted bytes: upstream generated unmarshalling
 reads packet fields without proving each field stays inside the packet. Per connection,
-the wrapper creates upstream `RenderThreadInfoVk` TLS with the externally bound
-nonzero context ID and shared `ProcessResources`. `VkDecoderGlobalState` must already
+the registry creates upstream `RenderThreadInfo` and its Vulkan TLS with a locally
+allocated context ID and shared `ProcessResources`. `VkDecoderGlobalState` must already
 exist. `FrameBuffer::Impl::Create` constructs `VkEmulation` with its real `GlobalState`,
 initializes its features, and then initializes that singleton; it also requires a
 compositor. Factoring a real headless `GlobalState` and the paths it uses remains
@@ -143,3 +141,40 @@ and wait for upstream cleanup before finalization. The optional CMake target ret
 `gfxstream_backend_static` in full; that upstream target currently depends on desktop
 GL and native-window code, so this source is uncompiled and cannot yet build for iOS.
 It does not enable the unimplemented coherent socket memory model.
+
+## Process registry and fixture plan
+
+The C API in `process_registry.h` takes a broker-owned 64-bit PUID and maps it
+to a monotonically allocated nonzero 32-bit ID. The internal ID keys the real
+framebuffer process resources and both upstream TLS identities, so instance cleanup
+callback registration finds the same resources. No external ID is narrowed. The
+registry requires exclusive control of framebuffer process registration and process
+teardown; callers serialize registry destruction and framebuffer finalization against
+all API calls. One run call owns one existing socket on its calling thread. Stop
+revokes admission, signals upstream process death and shuts down active sockets.
+Finish requires all run calls to return; cleanup remains asynchronous, and registry
+destruction waits for pending upstream cleanup before framebuffer finalization.
+A failure on one connection is returned to its caller, which decides whether to stop
+that process; no other process is stopped. This source has not been compiled.
+
+When a build slot and compatible real backend are available, scripted fixtures need:
+
+1. Two 64-bit PUIDs with equal low 32 bits, independent framebuffer resources and
+   instance-cleanup callbacks; stop one while the other completes a real Vulkan call.
+2. Multiple concurrent TLS connections for one PUID; race stop with admission and
+   a blocked socket read and verify every run returns, then finish and destroy.
+3. Reopen the same external PUID after finish while old cleanup is pending; verify
+   distinct upstream IDs and no cross-generation callbacks or resources.
+4. Drive a real non-direct flush split across every header/payload boundary, then
+   invalidate and compare actual GPU-written bytes. Cover range offsets, whole-size
+   ranges, short replies, cancellation, and coherent CPU-observation boundaries.
+5. Exercise loader injection before first dispatch and attempted late replacement;
+   capability query and decoder must identify the same MoltenVK provider.
+6. Run the Linux compute to physical-phone readback and CPU-dependent second draw
+   oracle; missing, stale or zero data fails. These tests require the guest memory
+   work and schema verification and are not satisfied by replay or fake execution.
+
+Even with bounded packet buffering, upstream generated unmarshalling is not validated
+against hostile malformed fields, and incomplete multi-range flush retries may
+already have copied earlier ranges. These fixtures do not establish adversarial
+safety; the app feature remains disabled.
