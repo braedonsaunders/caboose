@@ -4,7 +4,7 @@ import types
 import unittest
 from unittest.mock import Mock
 sys.path.insert(0, os.path.dirname(__file__))
-from a11y import Tree
+from a11y import Tree, dispatch_accessibility_events
 
 
 class ValueTests(unittest.TestCase):
@@ -30,6 +30,22 @@ class ValueTests(unittest.TestCase):
     def test_numeric_zero_is_preserved(self):
         self.tree.text.return_value = ''
         self.assertEqual(self.tree.value(self.node, 'SLIDER', set()), '0')
+
+
+class EventDispatchTests(unittest.TestCase):
+    def test_processes_pending_updates_without_waiting(self):
+        context = Mock()
+        context.pending.side_effect = [True, True, False]
+        dispatch_accessibility_events(context)
+        self.assertEqual(context.iteration.call_count, 2)
+        context.iteration.assert_called_with(False)
+
+    def test_event_storm_cannot_starve_requests(self):
+        context = Mock()
+        context.pending.return_value = True
+        dispatch_accessibility_events(context)
+        self.assertEqual(context.iteration.call_count, 256)
+        self.assertTrue(all(call.args == (False,) for call in context.iteration.call_args_list))
 
 
 if __name__ == '__main__':

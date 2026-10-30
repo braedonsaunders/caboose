@@ -139,6 +139,7 @@ a11y.py serve    --display :101
 - `serve`: newline-delimited JSON requests on stdin with `op` (`elements`, `find`, `act`,
   `text`) and the corresponding CLI option names; one JSON response per request. The
   display is fixed for the worker lifetime. Python/GI and the AT-SPI connection stay warm;
+  queued accessibility events refresh the normal libatspi cache between requests;
   a bus fallback executes a bounded single-call helper against the next bus. Existing CLI
   commands and `act`'s `{ "ok": true }` response remain unchanged.
 

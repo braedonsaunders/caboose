@@ -720,8 +720,6 @@ class Bus:
         Atspi.init()
         Atspi.set_timeout(2000, 5000)
         self.desktop = Atspi.get_desktop(0)
-        if SERVING:
-            self.desktop.set_cache_mask(Atspi.Cache.NONE)
 
     def retry(self, display):
         """Re-run against the next bus that might hold the application; False if none."""
@@ -1497,6 +1495,14 @@ def main(argv):
     emit(result, code)
 
 
+def dispatch_accessibility_events(context, limit=256):
+    """Refresh libatspi's event-maintained cache without blocking for future events."""
+    for _ in range(limit):
+        if not context.pending():
+            break
+        context.iteration(False)
+
+
 def serve(display):
     global SERVING, ACTIVE_ARGS
     SERVING = True
@@ -1509,6 +1515,9 @@ def serve(display):
                 raise ValueError("invalid worker request")
             ACTIVE_ARGS = argparse.Namespace(command=op, display=display, query=request.get("query"),
                 role=request.get("role"), element=request.get("element"), action=request.get("action"), text=request.get("text"))
+            if WARM_BUS is not None:
+                _, GLib = _gio()
+                dispatch_accessibility_events(GLib.MainContext.default())
             # A native accessibility call can stall outside our tree-walk budget.
             # Capture its stack before the parent terminates the bounded request.
             faulthandler.dump_traceback_later(10)
