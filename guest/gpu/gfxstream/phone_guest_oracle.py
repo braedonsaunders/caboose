@@ -19,11 +19,11 @@ import sys
 import uuid
 
 IMAGE = 'sha256:b94dd0452b1d2164d52115722c333cbb51f903e736fa7e7e782d21c52cf40442'
-ICD = Path('/data/bb/caboose-private-icd-test/libvulkan_gfxstream.so')
+ICD = Path('/data/caboose-gpu-v2-receiver-6djgxaesxa/libvulkan_gfxstream-v2.so')
 BUILD = Path('/data/bb/caboose-gpu-v2-oracle/build')
 ORACLE = Path('/data/bb/caboose-gpu-v2-decoder/draw-oracle')
 EXPECTED = {
-    ICD: 'd65b75bb403410cd3f2d7bb974829f625d2105c7a03339a06ba7d71fde064b7f',
+    ICD: '2f4f90110adce824a17987446702839a944795d2fdad83cfe65f10904cb24f88',
     BUILD / 'caboose_vulkan_acceptance': 'ffc277e364b3995989ec33186dc89c97b0126d2ebff9cb065640fec4b00c556a',
     BUILD / 'shaders/feedback.comp.spv': '0444b44e058a2972eb44d8e0252b92cfcfbd49669e16c9132c9afb12ab637fb3',
     BUILD / 'shaders/control.vert.spv': '4fe83b763868e107b89e6cc83dcee7e8ff9197499e6e10c4dfbf053213d65d64',
