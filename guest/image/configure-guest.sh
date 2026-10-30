@@ -2,6 +2,17 @@
 set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive USER=root HOME=/root TERM=xterm
 arch=$(dpkg --print-architecture)
+# Packages' documentation (except each copyright notice), info pages and lintian overrides are
+# not installed, now or by later installs on the computer; manual pages and translations are.
+cat > /etc/dpkg/dpkg.cfg.d/caboose-excludes <<'EXCLUDES'
+path-exclude=/usr/share/doc/*
+path-include=/usr/share/doc/*/copyright
+path-exclude=/usr/share/info/*
+path-exclude=/usr/share/lintian/*
+EXCLUDES
+find /usr/share/doc -depth -type f ! -name copyright -delete
+find /usr/share/doc -depth -type d -empty -delete
+rm -rf /usr/share/info/* /usr/share/lintian/*
 case $arch in amd64) triplet=x86_64-linux-gnu; kernel=linux-image-amd64 ;; arm64) triplet=aarch64-linux-gnu; kernel=linux-image-arm64 ;; *) exit 1 ;; esac
 printf 'deb https://deb.debian.org/debian trixie main contrib non-free-firmware\ndeb https://security.debian.org/debian-security trixie-security main contrib non-free-firmware\n' > /etc/apt/sources.list
 apt-get -o APT::Acquire::Queue-Mode=access update

@@ -72,6 +72,11 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+Golden images omit info pages, lintian overrides and package documentation other
+than copyright notices. Persistent dpkg exclusions apply to later installs too; manual
+pages and translations remain available. The generic Debian kernel remains selected
+for phone-device drivers.
+
 New golden images have a 60 GiB sparse disk with a Btrfs root on partition 3, mounted
 with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers and
 snapshots keep their filesystem. Compression savings depend on the data; neither
