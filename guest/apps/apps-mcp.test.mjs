@@ -21,7 +21,7 @@ async function server(runtime = RUNTIME) {
   const home = join(root, `home-${Math.random().toString(16).slice(2)}`)
   await mkdir(home)
   const child = spawn(process.execPath, [SERVER], {
-    env: { ...process.env, HOME: home, CABOOSE_APP_RUNTIME: runtime, CABOOSE_AGENT_DISPLAY: ':101' },
+    env: { ...process.env, HOME: home, CABOOSE_APP_RUNTIME: runtime, CABOOSE_AGENT_DISPLAY: ':101', CABOOSE_DISPLAY_CONTROL: join(root, 'synthetic-control.sock') },
     stdio: ['pipe', 'pipe', 'inherit'],
   })
   const waiting = new Map()
@@ -102,9 +102,9 @@ describe('caboose-apps', () => {
   it('opens a valid app on the agent display', async () => {
     const log = join(root, 'launch.log')
     const stand = join(root, 'stand-in-runtime')
-    await writeFile(stand, `#!/bin/sh\nif [ "$1" = run ]; then printf '%s %s %s\\n' "$1" "$2" "$DISPLAY" > "${log}"; exit 0; fi\nexec "${RUNTIME}" "$@"\n`)
+    await writeFile(stand, `#!/bin/sh\nif [ "$1" = run ]; then printf '%s %s %s %s\\n' "$1" "$2" "$DISPLAY" "$HOME" > "${log}"; exit 0; fi\nexec "${RUNTIME}" "$@"\n`)
     await chmod(stand, 0o755)
-    const { call, app } = await server(stand)
+    const { call, app, home } = await server(stand)
     await app('clock', { name: 'Clock' })
     const result = await call('app_open', { id: 'clock' })
     assert.match(result.content[0].text, /^Opened Clock on your display/)
@@ -112,7 +112,7 @@ describe('caboose-apps', () => {
       if (await readFile(log, 'utf8').catch(() => '')) break
       await new Promise(resolve => setTimeout(resolve, 20))
     }
-    assert.equal(await readFile(log, 'utf8'), 'run clock :101\n')
+    assert.equal(await readFile(log, 'utf8'), `run clock :101 ${home}\n`)
     const missing = await call('app_open', { id: 'nothing' })
     assert.equal(missing.isError, true)
   })

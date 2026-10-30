@@ -211,8 +211,13 @@ before owner app, file and URL launches. `GET /v1/computer` and `computer.settin
 available.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
-The agent seat still has separate Secret Service activation against the shared home;
-concurrent credential-store access from both seats is unresolved.
+The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
+client has a separate upstream D-Bus identity, preserving session/object ownership; other
+agent bus traffic remains on the agent bus. GUI unlock prompts return an explicit
+interaction-required error for owner recovery. No second keyring writer, KWallet proxy,
+or automatic credential reset is selected. Existing agent buses require an explicit
+restart onto the private activation configuration before agent-seat startup succeeds.
+See [agent credential routing](../guest/keyring/README.md#agent-credential-routing).
 
 ### Runtimes
 
@@ -376,6 +381,13 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
 
+Agent GUI applications use a separate persistent home and XDG profile directories under
+`~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
+are independent of owner applications. No owner profile snapshot or sign-in import occurs.
+The task runner retains owner CLI authentication settings and selects the isolated GUI
+launch environment through browser/editor wrappers and desktop MCP. This is routing
+within the existing shared Unix user, not an arbitrary-command security boundary.
+
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
@@ -383,6 +395,8 @@ Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
 passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
+The agent launch environment also publishes `HOME`, its four XDG state directories,
+`CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
 The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
 any application: the accessibility bus of the seat's session bus, with its socket named

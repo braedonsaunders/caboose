@@ -582,3 +582,13 @@ glyph coded as a picture is 6.4 ms at 1179×2556 and 18.5 ms at 3840×2160, whic
 tiles avoid. Sharpening 30 typed glyphs at 1080p is one 1.7 kB picture; the first
 sharpening of a whole window after its keyframe is the largest (a full screen of dense
 text: 470 kB, 15 ms).
+
+### Agent application profile environment
+
+When the compositor starts with `CABOOSE_SEAT=agent`, its launch file additionally
+publishes the inherited HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_CACHE_HOME,
+XDG_STATE_HOME, CABOOSE_SEAT, MOZ_NO_REMOTE, DBUS_SESSION_BUS_ADDRESS, VSCODE_PORTABLE,
+CHROME_CONFIG_HOME, CHROME_USER_DATA_DIR and PATH. VSCODE_IPC_HOOK_CLI is empty to avoid
+reusing an inherited editor instance. The guest agent-profile launcher supplies these
+values; the owner compositor's environment contract is unchanged. This changes no display
+wire messages. See [persistent agent profiles](../guest/desktop-mcp/README.md#persistent-agent-gui-profiles).

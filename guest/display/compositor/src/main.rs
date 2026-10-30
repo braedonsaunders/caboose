@@ -19,8 +19,8 @@ mod stream;
 mod text_input;
 mod video;
 mod windows;
-mod xauth;
 mod x11_focus;
+mod xauth;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -118,6 +118,29 @@ fn launch_env(
         if let Some(a) = xauthority {
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
+    }
+    // Agent application state and IPC must follow its private home on every launch.
+    // The owner keeps the existing environment contract.
+    if std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") {
+        for key in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "CABOOSE_SEAT",
+            "MOZ_NO_REMOTE",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "VSCODE_PORTABLE",
+            "CHROME_CONFIG_HOME",
+            "CHROME_USER_DATA_DIR",
+            "PATH",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                env.push((key.into(), value));
+            }
+        }
+        env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the

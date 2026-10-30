@@ -208,3 +208,7 @@ the final URL, an image and an audio element's stream load through `caboose.net.
 an unreachable server is a 502; that a second
 launch raises the first; that quitting ends every program; and that storage survives a
 restart.
+
+The apps MCP keeps the task runner's HOME when opening a Caboose app on the agent seat,
+so `~/Apps` and each app's existing data remain shared. It still uses the agent display,
+session bus and GUI isolation environment; browser/editor profiles remain seat-specific.

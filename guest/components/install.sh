@@ -60,10 +60,15 @@ install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
 install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
-sh "$root/keyring/install.sh"
+install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.py
+install -d -m 0755 /usr/local/libexec/caboose-agent-seat-bin
+for app in chromium google-chrome google-chrome-stable firefox firefox-esr code; do
+  ln -sf /opt/caboose/agent-profile.py "/usr/local/libexec/caboose-agent-seat-bin/$app"
+done
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
+sh "$root/keyring/install.sh"
 sh "$root/flatpak/install.sh" "$mode"
 sh "$root/game/install.sh"
 sh "$root/gpu/install.sh"

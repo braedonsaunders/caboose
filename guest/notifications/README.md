@@ -45,3 +45,7 @@ same buses, monitor and endpoints as processes (see `guest/container/README.md`)
 
 Delivery to a device needs a registered device and the host's `check-push.mjs`
 ([`apps/host`](../../apps/host/README.md#real-host-checks)).
+
+The agent bus reads `/opt/caboose/keyring/agent-bus.conf`. Its activation directory routes
+Secret Service to the canonical owner daemon and supplies installed system application
+activators except credential writers. It does not load owner-home service registrations or start a second keyring.

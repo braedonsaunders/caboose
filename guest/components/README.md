@@ -91,3 +91,8 @@ to guest TCP when the bridge is unavailable.
 without KVM. On a running Linux microVM with Files ready, run
 `python3 apps/host/scripts/check-vsock-services.py /path/to/desk.vsock` as the socket owner;
 it checks the Cloud Hypervisor handshake and an HTTP response through the Files bridge.
+
+The bundle installs the agent GUI profile initializer/wrappers and the agent bus's private
+activation directory with the canonical Secret Service forwarder. It does not restart an
+existing agent bus or migrate browser credentials. The agent display unit and launch-environment
+publication come from the display image; deploying this contract requires the matching image.

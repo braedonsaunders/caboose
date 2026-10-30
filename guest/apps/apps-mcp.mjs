@@ -92,7 +92,7 @@ const handlers = {
   async app_open({ id: value }) {
     const result = await runtime('check', appId(value))
     if (!result.ok) throw new Error(`${value} cannot open:\n- ${(result.errors ?? []).join('\n- ')}`)
-    Object.assign(seatEnv, await ensureAgentSeat(), { DISPLAY: DISPLAY ?? ':101' })
+    Object.assign(seatEnv, await ensureAgentSeat(), { DISPLAY: DISPLAY ?? ':101', HOME: process.env.HOME })
     const child = spawn(RUNTIME, ['run', value], { env: seatEnv, detached: true, stdio: 'ignore' })
     child.unref()
     return [{ type: 'text', text: `Opened ${result.manifest.name} on your display. Use list_windows or screenshot to see it. `
