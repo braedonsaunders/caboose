@@ -1,3 +1,4 @@
+import type { ComputerUsage, ComputerStorage } from '../../../packages/capacity/types.js'
 import type { Capacity } from '../../../packages/capacity/types.js'
 import type { RecoveryStatus } from './recovery.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
@@ -420,6 +421,12 @@ export class CabooseClient {
     }
   }
 
+  computerUsage(id: string): Promise<ComputerUsage> {
+    return this.request('GET', `/v1/computers/${encodeURIComponent(id)}/usage`)
+  }
+  computerStorage(id: string): Promise<ComputerStorage | { sampledAt: number; vm: Capacity['storage'] }> {
+    return this.request('POST', `/v1/computers/${encodeURIComponent(id)}/usage/storage`, { timeoutMs: 20_000 })
+  }
   capacity(tenantId?: string): Promise<Capacity> {
     return this.request<Capacity>('GET', tenantId === undefined ? '/v1/host/capacity' : `/v1/tenants/${encodeURIComponent(tenantId)}/capacity`, { timeoutMs: 15_000 })
   }
