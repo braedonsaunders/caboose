@@ -254,7 +254,8 @@ package cannot supply it. Diagnostic version 2 remains separate.
 All records retain the common 40-byte surface identity and process envelope
 scope. Field sizes below exclude that identity. All integers are little-endian.
 Request IDs and present serials are nonzero, monotonic per surface and never
-reused. Native-created swapchain IDs are nonzero and never reused within a surface.
+reused. Native-created swapchain IDs are nonzero, strictly increasing and never
+reused within a surface; exhaustion fails rather than wrapping.
 The native state checks identities, actual image counts and operation ordering;
 structural parsing alone does not prove them.
 
