@@ -13,17 +13,25 @@ import Testing
 
     @Test func stalledWriterKeepsOnlyNewest64AndQueuesOneDrain() {
         var buffer = AudioDiagnosticBuffer()
-        #expect(buffer.append(record(0)))
+        let firstScheduled = buffer.append(record(0))
+        #expect(firstScheduled)
         let firstRevision = buffer.revision
-        for index in 1..<10_000 { #expect(!buffer.append(record(index))) }
+        for index in 1..<10_000 {
+            let scheduled = buffer.append(record(index))
+            #expect(!scheduled)
+        }
         #expect(buffer.records.count == 64)
         #expect(buffer.records.first?.packets == 9_936)
         #expect(buffer.records.last?.packets == 9_999)
-        #expect(!buffer.finish(revision: firstRevision))
+        let staleFinished = buffer.finish(revision: firstRevision)
+        #expect(!staleFinished)
         #expect(buffer.scheduled)
-        #expect(buffer.finish(revision: buffer.revision))
+        let currentRevision = buffer.revision
+        let latestFinished = buffer.finish(revision: currentRevision)
+        #expect(latestFinished)
         #expect(!buffer.scheduled)
-        #expect(buffer.append(record(10_000)))
+        let nextScheduled = buffer.append(record(10_000))
+        #expect(nextScheduled)
     }
 
     @Test func byteLimitIncludesPunctuationAndDropsOldest() throws {
