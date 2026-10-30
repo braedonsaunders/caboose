@@ -210,8 +210,11 @@ The password travels in a bounded request body and helper stdin, never in comman
 environment variables or logs. The public filesystem proxy permits only file operations.
 
 The helper activates or adopts the owner's GNOME Secret Service on `/run/user/1000/bus`.
-It unlocks through the daemon's control socket, checking the peer PID against the D-Bus
-service owner. Only an empty credential store is initialized; existing keyrings and browser
+It unlocks existing login keyrings through the daemon's control socket, checking the peer PID
+against the D-Bus service owner. For an empty store it uses GNOME's D-Bus
+`CreateWithMasterPassword` extension so the new login collection is exported immediately;
+the nonempty password travels in a private owner-bus Secret Service session, closed after
+creation. Only an empty credential store is initialized; existing keyrings and browser
 profiles are preserved. An existing locked keyring that does not accept the managed password
 requires its original password and an explicit operator migration. No reset, empty password
 or plaintext browser password store is selected. The host waits for this bounded preparation

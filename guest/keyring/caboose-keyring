@@ -95,6 +95,28 @@ class Keyring:
     def property(self, path, interface, name):
         return self.call(self.owner, path, 'org.freedesktop.DBus.Properties', 'Get', '(ss)', (interface, name))[0]
 
+    def create_login(self, password):
+        # GNOME 48's PAM creation does not export the new collection on D-Bus.
+        # Its D-Bus creation path does; use it only after the empty-store guard.
+        _, session = self.call(self.owner, ROOT, INTERFACE + '.Service', 'OpenSession',
+                               '(sv)', ('plain', self.GLib.Variant('s', '')))
+        try:
+            # Recheck after opening the session; never create alongside existing state.
+            directory = HOME / '.local/share/keyrings'
+            if action(self.alias('default'), self.alias('login'),
+                      self.property(ROOT, INTERFACE + '.Service', 'Collections'),
+                      list(directory.iterdir()) if directory.exists() else []) != 'create':
+                raise MigrationRequired()
+            internal = 'org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface'
+            created = self.call(self.owner, ROOT,
+                                internal, 'CreateWithMasterPassword', '(a{sv}(oayays))',
+                                ({INTERFACE + '.Collection.Label': self.GLib.Variant('s', 'login')},
+                                 (session, [], list(password), 'text/plain')))[0]
+            if created != ROOT + '/collection/login' or self.alias('login') != created:
+                raise MigrationRequired()
+        finally:
+            self.call(self.owner, session, INTERFACE + '.Session', 'Close')
+
     def ensure(self, password):
         default, login = self.alias('default'), self.alias('login')
         if default != '/' and not self.property(default, INTERFACE + '.Collection', 'Locked'):
@@ -102,14 +124,17 @@ class Keyring:
         directory = HOME / '.local/share/keyrings'
         files = list(directory.iterdir()) if directory.exists() else []
         operation = action(default, login, self.property(ROOT, INTERFACE + '.Service', 'Collections'), files)
-        # Address the daemon already serving this exact bus; do not replace it or start
-        # another daemon pointing at the same persistent keyring files.
-        control = self.call(self.owner, '/org/gnome/keyring/daemon', 'org.gnome.keyring.Daemon', 'GetControlDirectory')[0]
-        if not (Path(control) / 'control').is_socket():
-            raise RuntimeError('no control socket')
-        pid = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
-                        'GetConnectionUnixProcessID', '(s)', (self.owner,))[0]
-        unlock(control, password, pid)
+        if operation == 'create':
+            self.create_login(password)
+        else:
+            # Address the daemon already serving this exact bus; do not replace it or start
+            # another daemon pointing at the same persistent keyring files.
+            control = self.call(self.owner, '/org/gnome/keyring/daemon', 'org.gnome.keyring.Daemon', 'GetControlDirectory')[0]
+            if not (Path(control) / 'control').is_socket():
+                raise RuntimeError('no control socket')
+            pid = self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
+                            'GetConnectionUnixProcessID', '(s)', (self.owner,))[0]
+            unlock(control, password, pid)
         login = self.alias('login')
         if login == '/' or self.property(login, INTERFACE + '.Collection', 'Locked'):
             raise MigrationRequired()

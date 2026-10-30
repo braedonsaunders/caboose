@@ -3,8 +3,14 @@
 `caboose-keyring` initializes an empty GNOME Keyring store with a nonempty host-generated
 password, or unlocks the existing login collection with that password. It runs as uid 1000
 and uses the owner's persistent session bus. It adopts the existing Secret Service through
-standard D-Bus activation and sends GNOME’s PAM unlock request to its control socket after verifying the peer PID
-against the D-Bus owner. It never starts an unlock subprocess, replaces a daemon, deletes keyrings, changes a password,
+standard D-Bus activation. Existing login collections use GNOME’s PAM unlock request to
+its control socket after verifying the peer PID against the D-Bus owner. Empty stores use
+GNOME's `CreateWithMasterPassword` extension on that same daemon, with a fixed `login`
+label and the nonempty managed password in a private owner-bus Secret Service session.
+The session closes on success or failure; the helper verifies the login/default aliases
+and unlocked collection before reporting ready. This GNOME-specific internal API is
+required because GNOME 48's PAM creation path does not register the new collection on
+D-Bus. There is no fallback that creates another collection or restarts the daemon. It never starts an unlock subprocess, replaces a daemon, deletes keyrings, changes a password,
 or selects a plaintext browser password store. It does not persist the supplied password.
 
 The host supplies 32 random bytes encoded as 64 lowercase hex characters on stdin. One
@@ -135,3 +141,27 @@ the seat/keyring components inside each bounded test container before acceptance
 This avoids a Docker image commit and retains the same 180-second per-container cap.
 The source commit, source manifest, artifact hashes and base image ID identify the tested
 combination. It does not run the full component installer or stamp `components.version`.
+
+## Preparation-only diagnostic
+
+`python3 guest/keyring/check-preparation.py --image sha256:IMAGE_ID` uses an already
+installed immutable image with this directory's helper mounted read-only. It creates one
+network-disabled, 256 MiB/one-CPU container with an empty tmpfs home and runtime, without
+a display or browser. The 45-second container deadline leaves bounded cleanup time;
+removal and absence are verified. Only fixed state, stage and error-class values survive
+output validation; backend messages and credentials are suppressed. No volume is created.
+
+The GNOME 48 compatibility behavior follows its
+[daemon extension interface](https://github.com/GNOME/gnome-keyring/blob/48.0/daemon/dbus/org.gnome.keyring.InternalUnsupportedGuiltRiddenInterface.xml),
+[creation handler](https://github.com/GNOME/gnome-keyring/blob/48.0/daemon/dbus/gkd-secret-service.c), and
+[collection identifier construction](https://github.com/GNOME/gnome-keyring/blob/48.0/pkcs11/secret-store/gkm-secret-collection.c).
+Standard `Properties.Get` on `org.freedesktop.Secret.Collection.Locked` remains the
+readiness check; an alias alone does not prove that the collection is exported.
+
+`python3 guest/keyring/check-preparation-cold.py --image sha256:IMAGE_ID` runs three
+sequential containers at the same resource bounds with one newly created, test-owned
+home volume: fresh initialization and synthetic-item creation, cold verification, then
+a wrong-password rejection with byte-for-byte keyring preservation followed by recovery
+with the original test password. Each container has a 45-second deadline and verified
+removal; the volume is removed and checked absent on every path. It reports the installed
+GNOME package version and fixed pass/fail messages, never credential or keyring content.
