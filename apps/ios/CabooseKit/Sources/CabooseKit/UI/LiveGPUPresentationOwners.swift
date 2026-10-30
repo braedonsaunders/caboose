@@ -128,7 +128,7 @@ public final class LiveGPUPresentationOwners {
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
         LiveGPUMemoryAudit.ownerExtent(server: size, view: view.bounds.size)
         #endif
-        let content = LiveGPULayerView(frame: view.bounds)
+        let content = LiveGPULayerView(frame: view.bounds, pixelExtent: size)
         content.isUserInteractionEnabled = false
         content.isOpaque = true
         content.backgroundColor = .black
@@ -155,7 +155,24 @@ public final class LiveGPUPresentationOwners {
 
 @MainActor
 private final class LiveGPULayerView: UIView {
+    let pixelExtent: CGSize
     override class var layerClass: AnyClass { CAMetalLayer.self }
+    init(frame: CGRect, pixelExtent: CGSize) {
+        self.pixelExtent = pixelExtent
+        super.init(frame: frame)
+        applyDrawableExtent()
+    }
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        applyDrawableExtent()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        applyDrawableExtent()
+    }
+    func applyDrawableExtent() { (layer as! CAMetalLayer).drawableSize = pixelExtent }
 }
 
 /// Layer and view are touched only in main-dispatched stages. The registry keeps
@@ -167,7 +184,12 @@ final class LiveGPULayerLease: @unchecked Sendable {
     let extent: CGSize
     @MainActor weak var view: RemoteWindowView?
     @MainActor var content: UIView?
-    @MainActor var layer: CAMetalLayer? { content?.layer as? CAMetalLayer }
+    @MainActor var layer: CAMetalLayer? {
+        guard let content = content as? LiveGPULayerView else { return nil }
+        content.layoutIfNeeded()
+        content.applyDrawableExtent()
+        return content.layer as? CAMetalLayer
+    }
     private let lock = NSLock()
     private var valid = true
     var isValid: Bool { lock.withLock { valid } }
