@@ -532,7 +532,8 @@ extension YardSnapTests {
                     #expect(committed.width >= minimum.width && committed.height >= minimum.height)
                     let natural = CGSize(width: committed.width / density, height: committed.height / density)
                     let shown = DesktopGeometry.surfaceFrame(natural: natural, available: viewport.size, resizing: false)
-                    #expect(shown.width <= viewport.width && shown.height <= viewport.height)
+                    // Multiplication by the fitting scale can exceed an edge by a floating-point ULP.
+                    #expect(shown.width <= viewport.width + 0.0001 && shown.height <= viewport.height + 0.0001)
                     #expect(abs(shown.width / natural.width - shown.height / natural.height) < 0.0001)
                     // The native surface inverse transform maps both view corners to the
                     // valid committed guest rectangle; hints never enlarge the target tile.
