@@ -395,6 +395,45 @@ a disposable compositor: it creates windows and injects input into that private 
 This check covers ordinary wheel delivery; it does not measure a toolkit's response
 to precise scroll values.
 
+Add `--record-oracle` to validate the passive RECORD reader against that owned
+fixture. The check reads back the registered client and event ranges, then requires
+RECORD's core wheel type/button/time/recipient tuples to equal the tuples received
+by the fixture. `python3 scripts/test_x11_record.py` checks fixed 32-byte RECORD
+headers (including GenericEvents advertising a larger body), byte order, ABI layout,
+and exclusion of keys and unrelated generic extensions. The reader requires Xlib
+thread initialization before opening any display, as the fixture does. It records
+at most 256 pointer metadata entries and closes its context, thread and displays.
+
+`--xi2-oracle observe` additionally selects XI2 master pointer motion, buttons and
+device changes on the fixture's own child, requiring libXi. It preserves the core
+oracle first, then compares two consecutive compositor wheels: the actual vertical
+valuator delta must equal the source device's advertised scroll increment. It queries
+the X pointer position before and after, records device/source IDs and scroll classes,
+and compares received XI2 pointer headers against RECORD AllClients restricted to the
+owned child. RECORD does not contain the full valuator payload; the owned XI2 client
+supplies that independent oracle. No other application's XI selection is changed.
+
+The fixture also models a consumer that discards the first sample after a source-device
+switch, as Chromium's X11 event handling does. `--xi2-oracle switching` requires repeated
+source switches and zero consumed deltas despite an advancing valuator;
+`--xi2-oracle stable` requires no switch during the second wheel and one consumed
+increment. These are explicit negative/positive assertions, not automatic workarounds.
+`python3 scripts/test_x11_scroll_xi2.py` checks the LP64 Xlib/XInput2 layouts, packed
+valuator masks, scroll-class increments and both baseline-consumption sequences without
+opening a display. Bound the runtime fixture with `timeout --kill-after=2 20` on a
+private compositor; it does not change the compositor or any application settings.
+
+The consumer semantics are pinned to Chromium commit
+[`f0e7f7419b34`](https://github.com/chromium/chromium/tree/f0e7f7419b34b221aa949b302d6629c4dba8fb06):
+`ui/events/platform/x11/x11_event_source.cc` invalidates a source's scroll baseline
+on `SlaveSwitch`, and `ui/events/devices/x11/device_data_manager_x11.cc` consumes zero
+for its first sample. Xwayland 24.1.6's `hw/xwayland/xwayland-input.c` selects the
+absolute pointer for motion without a relative event and its relative pointer for
+scrolling; `dix/getevents.c::UpdateFromMaster` emits the source-switch notification.
+The official `xwayland-24.1.6.tar.xz` SHA-256 is
+`737e612ca36bbdf415a911644eb7592cf9389846847b47fa46dc705bd754d2d7`.
+This consumer fixture does not establish which Chromium revision an application embeds.
+
 ### Fullscreen output resize regression
 
 `scripts/check-output-resize.py` checks native Wayland and X11 GTK3 windows on a
