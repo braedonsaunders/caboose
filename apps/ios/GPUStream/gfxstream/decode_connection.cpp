@@ -13,8 +13,18 @@
 #include <limits>
 #include <new>
 #include <vector>
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+#include <chrono>
+#include <cstdio>
+#endif
 
 namespace caboose::gpuv2 {
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+namespace {
+std::atomic_uint64_t timingStreams{0};
+std::atomic_uint timingRecords{0};
+}
+#endif
 #ifdef CABOOSE_GPU_DECODER_TESTING
 namespace { thread_local DecodeDiagnostic testingDiagnostic; }
 DecodeDiagnostic lastDecodeDiagnosticForTesting() { return testingDiagnostic; }
@@ -75,6 +85,10 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         // This must be the same immutable feature used by VkDecoder at construction.
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+        const bool auditTiming = gfxstream::host::FrameBuffer::getFB()->getFeatures().CabooseMemoryAudit.enabled();
+        const uint64_t timingStream = auditTiming ? timingStreams.fetch_add(1) + 1 : 0;
+#endif
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
@@ -100,8 +114,38 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             }
             if (diagnostic) diagnostic->stage = DecodeStage::decoder;
             if (decoderEntries) ++*decoderEntries;
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            const auto decodeStart = auditTiming ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+#endif
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            if (auditTiming) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - decodeStart).count();
+                if (elapsed >= 50000) {
+                    unsigned ordinal = timingRecords.load();
+                    while (ordinal <= 64 && !timingRecords.compare_exchange_weak(ordinal, ordinal + 1)) {}
+                    if (ordinal < 64) {
+                        uint32_t opcode = 0;
+                        std::memcpy(&opcode, pending.data(), sizeof(opcode));
+                        // This pinned unsequenced command has two numeric ordering fields
+                        // after its opaque handle. Never record the handle or other payload.
+                        uint32_t needSync = 0, sequence = 0;
+                        const bool hostSync = !sequenced && opcode == 20324 && frame.size == 24;
+                        if (hostSync) {
+                            std::memcpy(&needSync, pending.data() + 16, 4);
+                            std::memcpy(&sequence, pending.data() + 20, 4);
+                        }
+                        std::fprintf(stderr, "CABOOSE_GPU_DECODE_TIMING stream=%llu opcode=%u elapsed_us=%lld host_sync=%u need_sync=%u sequence=%u\n",
+                            static_cast<unsigned long long>(timingStream), opcode,
+                            static_cast<long long>(elapsed), hostSync ? 1u : 0u, needSync, sequence);
+                    } else if (ordinal == 64) {
+                        std::fprintf(stderr, "CABOOSE_GPU_DECODE_TIMING limit=64\n");
+                    }
+                }
+            }
+#endif
             if (diagnostic) diagnostic->consumed = consumed;
             if (stream.error()) return finish(DecodeStage::decoder, stream.error());
             // Never retry a command after entering the decoder: a retry can

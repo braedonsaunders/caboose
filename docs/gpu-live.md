@@ -410,3 +410,5 @@ or computer replacement still drains the executor. CGLS requests for kinds
 25, 27, 29, 31, 32 and 34 omit the common identity; the authenticated broker adds
 it. Replies retain the full native payload. The CGLS parser does not activate
 these operations or imply that a native implementation exists.
+
+The opt-in memory-audit package records at most 64 decoder calls taking 50 ms or longer per runtime process. Each record contains a local stream ordinal, opcode and elapsed time; the pinned command-buffer host-sync call also includes its two numeric ordering fields. Handles, addresses and command contents are excluded. Execution and timeout behavior are unchanged.
