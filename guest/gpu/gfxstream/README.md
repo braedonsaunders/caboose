@@ -190,3 +190,13 @@ The fingerprint identifies the source tuple; it is not proof of complete wire
 compatibility. The broker authenticates and associates each connection with its
 process context separately. Hardware properties must come from Vulkan queries,
 not from the hello.
+
+The private `caboose_gfxstream_buffer_probe` performs explicit shadow flush,
+GPU buffer fill, fence wait and invalidate with a fresh 32-bit challenge.
+`caboose_gfxstream_compute_probe` runs the existing `feedback.comp` shader,
+checks the returned five words, derives new words on the CPU, flushes them,
+and verifies a second GPU copy. These are diagnostics using real commands, not
+proof of the public ICD, coherent memory, drawing, or phone execution. The
+memory flags printed by these probes are the guest-visible types returned by the
+decoder; they are not necessarily the physical backend's memory flags. Both
+probes require a supervised private receiver and a strict external timeout.
