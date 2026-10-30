@@ -22,9 +22,11 @@ leaf-certificate SHA-256 pin. Once TLS is ready, it writes exactly 64 bytes:
 The broker returns one byte: zero accepts, any other byte or EOF rejects. Only then
 are the guest's `CBGLREF1` handshake and upstream byte stream carried through a
 socketpair to the real decoder. Each direction permits at most one 16 KiB chunk
-in flight, preserving order and backpressure. A 90-second transport timer cancels
-and shuts down streams; actual Vulkan waits or upstream cleanup may outlive it and
-need the external root watchdog. This is one private guest encoder thread and does
+in flight, preserving order and backpressure. Once decoder output drains, the app
+enqueues a TLS final message and waits; send completion is not proof of peer receipt.
+After the independent guest oracle and broker finish, the operator can press Stop.
+A 90-second transport timer also cancels and shuts down streams; actual Vulkan waits
+or upstream cleanup may outlive it and need the external root watchdog. This is one private guest encoder thread and does
 not establish the multithreaded production transport.
 
 Starting from the reviewed private source and adapter with the iOS patches (plus
@@ -56,3 +58,17 @@ session, generation, decoder status and teardown alongside those guest artifacts
 Any missing/stale feedback, pixel mismatch, TLS/identity failure, shader pipeline
 failure, timeout or incomplete teardown is a failed or inconclusive diagnostic,
 not a pass. No coherent-memory or failure-recovery claim follows from this fixture.
+
+The source fixture `../tests/graceful_close_test.cpp` exercises input-first and
+output-first half-closes, duplicate output EOF and final-send failure. When a
+compiler slot is authorized, run it without a GPU or network using:
+
+```sh
+c++ -std=c++17 -I apps/ios/GPUStream/gfxstream/diagnostics/app \
+  apps/ios/GPUStream/gfxstream/diagnostics/tests/graceful_close_test.cpp \
+  -o /tmp/caboose-graceful-close-test
+/tmp/caboose-graceful-close-test
+```
+
+It tests local transition decisions only; a real broker/TLS test is required to
+prove end-to-end delivery and EOF behavior.

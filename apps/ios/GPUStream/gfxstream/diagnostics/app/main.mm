@@ -9,11 +9,13 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <cstdio>
 #include <dlfcn.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include "device_fixture.h"
+#include "graceful_close.h"
 
 namespace {
 NSData* parseHex(NSString* value, NSUInteger length) {
@@ -43,6 +45,10 @@ bool parseNumber(NSString* value, uint64_t* result) {
     *result = n;
     return n != 0;
 }
+struct StartGroupGuard {
+    dispatch_group_t group;
+    ~StartGroupGuard() { dispatch_group_leave(group); }
+};
 void* resolveVulkan(const char* name) { return dlsym(RTLD_DEFAULT, name); }
 bool certMatches(sec_trust_t trust, NSData* pin) {
     SecTrustRef ref = sec_trust_copy_ref(trust);
@@ -67,6 +73,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
 @interface DiagnosticRunner : NSObject
 - (instancetype)initWithReport:(void (^)(NSString*))report;
 - (void)start;
+- (void)stop;
 @end
 
 @implementation DiagnosticRunner {
@@ -82,6 +89,9 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     std::atomic_bool _authStarted;
     std::atomic_bool _finishing;
     std::atomic_int _decoderResult;
+    std::recursive_mutex _stateMutex;
+    std::mutex _closeMutex;
+    caboose::gpuv2::diagnostic::GracefulClose _closeState;
     NSData* _session;
     NSData* _token;
     NSData* _pin;
@@ -93,6 +103,9 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         _report = [report copy];
         _networkQueue = dispatch_queue_create("org.caboose.gpu-diagnostic.network", DISPATCH_QUEUE_SERIAL);
         _workers = dispatch_group_create();
+        // The explicit start is queued immediately after construction. Keep
+        // cleanup fenced even if Stop is pressed before that work begins.
+        dispatch_group_enter(_workers);
         _decoderFd = _bridgeFd = -1;
         _stopping = false; _started = false; _authStarted = false; _finishing = false; _decoderResult = 0;
     }
@@ -107,6 +120,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
 - (void)abort:(NSString*)reason {
     if (_stopping.exchange(true)) return;
     [self report:reason];
+    std::lock_guard<std::recursive_mutex> stateLock(_stateMutex);
     if (_connection) nw_connection_cancel(_connection);
     if (_bridgeFd >= 0) shutdown(_bridgeFd, SHUT_RDWR);
     if (_decoderFd >= 0) shutdown(_decoderFd, SHUT_RDWR);
@@ -131,6 +145,34 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         }
     });
 }
+- (void)noteInputEof {
+    {
+        std::lock_guard<std::mutex> lock(_closeMutex);
+        _closeState.inputEof();
+    }
+    if (!_stopping.load()) shutdown(_bridgeFd, SHUT_WR);
+}
+- (void)sendFinalAfterOutputDrained {
+    using caboose::gpuv2::diagnostic::CloseAction;
+    {
+        std::lock_guard<std::mutex> lock(_closeMutex);
+        if (_closeState.outputEof() != CloseAction::send_final) return;
+    }
+    if (_stopping.load()) return;
+    dispatch_group_enter(_workers);
+    nw_connection_send(_connection, nullptr, NW_CONNECTION_FINAL_MESSAGE_CONTEXT, true, ^(nw_error_t error) {
+        CloseAction action;
+        {
+            std::lock_guard<std::mutex> lock(self->_closeMutex);
+            action = self->_closeState.finalSendComplete(error != nil);
+        }
+        if (action == CloseAction::fail) [self abort:@"TLS final send failed."];
+        else if (!self->_stopping.load())
+            [self report:@"Decoder output drained; TLS final send queued. Check the guest oracle; this is not delivery confirmation."];
+        dispatch_group_leave(self->_workers);
+    });
+}
+- (void)stop { [self abort:@"Diagnostic stopped by operator; check guest oracle and teardown independently."]; }
 - (void)receiveFromBroker {
     if (_stopping.load()) return;
     dispatch_group_enter(_workers);
@@ -141,7 +183,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         const bool hasData = data && dispatch_data_get_size(data) != 0;
         if (!hasData) {
             if (error) [self abort:[NSString stringWithFormat:@"TLS receive failed: %d", errorCode]];
-            else if (complete) shutdown(self->_bridgeFd, SHUT_WR);
+            else if (complete) [self noteInputEof];
             else [self abort:@"TLS receive returned no data without EOF."];
             dispatch_group_leave(self->_workers); return;
         }
@@ -163,14 +205,15 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
             if (sendError) [self abort:[NSString stringWithFormat:@"Decoder input failed: %d", sendError]];
             else if (hadError) {
                 [self report:[NSString stringWithFormat:@"TLS receive failed after data: %d", errorCode]];
-                shutdown(self->_bridgeFd, SHUT_WR);
-            } else if (complete) shutdown(self->_bridgeFd, SHUT_WR);
+                [self noteInputEof];
+            } else if (complete) [self noteInputEof];
             else if (!self->_stopping.load()) [self receiveFromBroker];
             dispatch_group_leave(self->_workers);
         });
     });
 }
 - (void)beginBridge {
+    std::lock_guard<std::recursive_mutex> stateLock(_stateMutex);
     if (_stopping.load()) return;
     int sockets[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) { [self abort:@"Could not create local decoder stream."]; return; }
@@ -199,9 +242,10 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
             if (n <= 0) {
                 if (n < 0 && !self->_stopping.load())
                     [self abort:[NSString stringWithFormat:@"Decoder output receive failed: %d", errno]];
-                else {
+                else if (!self->_stopping.load()) {
                     const int result = self->_decoderResult.load();
-                    [self abort:[NSString stringWithFormat:@"Decoder stream ended: %d. Check guest oracle independently.", result]];
+                    [self report:[NSString stringWithFormat:@"Decoder stream ended: %d. Check guest oracle independently.", result]];
+                    [self sendFinalAfterOutputDrained];
                 }
                 break;
             }
@@ -257,6 +301,8 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
 }
 - (void)start {
     if (_started.exchange(true)) { [self report:@"Restart the diagnostic app for another attempt."]; return; }
+    StartGroupGuard startGuard{_workers};
+    if (_stopping.load()) return;
     NSDictionary* env = NSProcessInfo.processInfo.environment;
     NSString* host = env[@"CABOOSE_GPU_HOST"];
     NSString* port = env[@"CABOOSE_GPU_PORT"];
@@ -268,6 +314,8 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         !parseNumber(env[@"CABOOSE_GPU_GENERATION"], &_generation) || !parseNumber(env[@"CABOOSE_GPU_PROCESS"], &_process)) {
         [self abort:@"Missing or invalid private diagnostic configuration."]; return;
     }
+    std::lock_guard<std::recursive_mutex> stateLock(_stateMutex);
+    if (_stopping.load()) return;
     auto get = reinterpret_cast<PFN_vkGetInstanceProcAddr>(resolveVulkan("vkGetInstanceProcAddr"));
     if (!get || get != &vkGetInstanceProcAddr || !resolveVulkan("vkCreateInstance") || !resolveVulkan("vkDestroyInstance")) {
         [self abort:@"The shared MoltenVK loader exports are unavailable."]; return;
@@ -275,6 +323,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     int result = caboose_gpu_diagnostic_start(static_cast<const uint8_t*>(_session.bytes), _generation,
                                                _process, get, resolveVulkan, &_diagnostic);
     if (result) { [self abort:[NSString stringWithFormat:@"Decoder initialization failed: %d", result]]; return; }
+    if (_stopping.load()) return;
     caboose_gpu_device_info info{};
     result = caboose_gpu_diagnostic_device_info(_diagnostic, &info);
     if (result) { [self abort:[NSString stringWithFormat:@"Executor identity failed: %d", result]]; return; }
@@ -331,8 +380,15 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     button.frame = CGRectMake(24, 380, 240, 48); [button setTitle:@"Start diagnostic" forState:UIControlStateNormal];
     [button addTarget:self action:@selector(startDiagnostic) forControlEvents:UIControlEventTouchUpInside];
     [controller.view addSubview:button];
+    UIButton* stop = [UIButton buttonWithType:UIButtonTypeSystem];
+    stop.frame = CGRectMake(24, 440, 240, 48); [stop setTitle:@"Stop diagnostic" forState:UIControlStateNormal];
+    [stop addTarget:self action:@selector(stopDiagnostic) forControlEvents:UIControlEventTouchUpInside];
+    [controller.view addSubview:stop];
     self.window.rootViewController = controller; [self.window makeKeyAndVisible];
     return YES;
+}
+- (void)stopDiagnostic {
+    if (_runner) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ [self->_runner stop]; });
 }
 - (void)startDiagnostic {
     if (!_runner) {
