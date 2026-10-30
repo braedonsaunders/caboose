@@ -9,4 +9,13 @@
 <key>CFBundleVersion</key><string>1</string>
 <key>NSLocalNetworkUsageDescription</key><string>Connect to the explicitly configured private GPU diagnostic broker.</string>
 <key>UILaunchScreen</key><dict/>
+<key>UIApplicationSceneManifest</key><dict>
+  <key>UIApplicationSupportsMultipleScenes</key><false/>
+  <key>UISceneConfigurations</key><dict>
+    <key>UIWindowSceneSessionRoleApplication</key><array><dict>
+      <key>UISceneConfigurationName</key><string>Diagnostic</string>
+      <key>UISceneDelegateClassName</key><string>DiagnosticScene</string>
+    </dict></array>
+  </dict>
+</dict>
 </dict></plist>

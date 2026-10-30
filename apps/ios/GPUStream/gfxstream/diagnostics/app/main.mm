@@ -366,15 +366,21 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
 @end
 
 @interface DiagnosticApp : UIResponder <UIApplicationDelegate>
+@end
+@implementation DiagnosticApp
+@end
+
+@interface DiagnosticScene : UIResponder <UIWindowSceneDelegate>
 @property(nonatomic, strong) UIWindow* window;
 @end
-@implementation DiagnosticApp {
+@implementation DiagnosticScene {
     UILabel* _label;
     DiagnosticRunner* _runner;
 }
-- (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary*)options {
-    (void)application; (void)options;
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+- (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
+    (void)session; (void)options;
+    if (![scene isKindOfClass:UIWindowScene.class]) return;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
     UIViewController* controller = [UIViewController new];
     controller.view.backgroundColor = UIColor.systemBackgroundColor;
     _label = [[UILabel alloc] initWithFrame:CGRectMake(24, 120, self.window.bounds.size.width - 48, 240)];
@@ -389,16 +395,20 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     [stop addTarget:self action:@selector(stopDiagnostic) forControlEvents:UIControlEventTouchUpInside];
     [controller.view addSubview:stop];
     self.window.rootViewController = controller; [self.window makeKeyAndVisible];
-    return YES;
+}
+- (void)sceneDidDisconnect:(UIScene*)scene {
+    (void)scene;
+    DiagnosticRunner* runner = _runner;
+    if (runner) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ [runner stop]; });
 }
 - (void)stopDiagnostic {
     if (_runner) dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ [self->_runner stop]; });
 }
 - (void)startDiagnostic {
     if (!_runner) {
-        __weak DiagnosticApp* weakSelf = self;
+        __weak DiagnosticScene* weakSelf = self;
         _runner = [[DiagnosticRunner alloc] initWithReport:^(NSString* text) {
-            DiagnosticApp* strongSelf = weakSelf;
+            DiagnosticScene* strongSelf = weakSelf;
             if (strongSelf) strongSelf->_label.text = text;
         }];
     }
