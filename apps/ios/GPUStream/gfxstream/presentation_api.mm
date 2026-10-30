@@ -10,6 +10,7 @@
 #include "presentation_swapchain_internal.h"
 #ifdef CABOOSE_GPU_INDEXED_WSI
 #include "presentation_swapchain_api_draft.h"
+#include "presentation_index_state.h"
 #include "presentation_virtual_swapchain_internal.h"
 #endif
 #include "process_registry_presentation.h"
@@ -325,6 +326,9 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
             std::lock_guard<std::mutex> lock(s->mutex);
             if (!s->attached || s->revoked || !s->physical || p->present_serial <= s->lastSerial)
                 return rejected(EBUSY);
+#ifdef CABOOSE_GPU_INDEXED_WSI
+            if (s->indexed) return rejected(EBUSY);
+#endif
             if (s->frame && !s->frameDone) return rejected(EBUSY);
         }
         if (s->worker.joinable()) s->worker.join();
@@ -460,6 +464,7 @@ struct caboose_gpu_virtual_swapchain {
     VkSwapchainKHR handle = VK_NULL_HANDLE;
     std::vector<VkImage> nativeImages;
     std::vector<uint64_t> boxedImages;
+    std::unique_ptr<PresentationIndexState> indices;
     std::mutex mutex;
 };
 extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
@@ -498,6 +503,13 @@ extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface
         if (r != VK_SUCCESS) {
             if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
             return fail(errorFor(r));
+        }
+        try {
+            result->indices = std::make_unique<PresentationIndexState>(
+                static_cast<uint32_t>(result->nativeImages.size()));
+        } catch (const std::bad_alloc&) {
+            result->device->vk->vkDestroySwapchainKHR(result->device->device, result->handle, nullptr);
+            return fail(ENOMEM);
         }
         result->id = surface->nextSwapchainId++;
         *swapchainId = result->id;
