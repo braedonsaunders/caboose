@@ -8,6 +8,10 @@
 #include "presentation_copy_internal.h"
 #include "presentation_query_internal.h"
 #include "presentation_swapchain_internal.h"
+#ifdef CABOOSE_GPU_INDEXED_WSI
+#include "presentation_swapchain_api_draft.h"
+#include "presentation_virtual_swapchain_internal.h"
+#endif
 #include "process_registry_presentation.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
@@ -95,6 +99,10 @@ struct caboose_gpu_surface {
     std::unique_ptr<Frame> frame;
     std::thread worker;
     bool frameDone = false;
+#ifdef CABOOSE_GPU_INDEXED_WSI
+    uint64_t nextSwapchainId = 1;
+    caboose_gpu_virtual_swapchain* indexed = nullptr;
+#endif
 };
 namespace {
 void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
@@ -388,6 +396,9 @@ extern "C" int caboose_gpu_surface_retire(caboose_gpu_surface* s) {
         std::lock_guard<std::mutex> lock(s->mutex);
         s->revoked = true;
     }
+#ifdef CABOOSE_GPU_INDEXED_WSI
+    if (s->indexed) return EBUSY;
+#endif
     if (s->worker.joinable()) {
         if (s->worker.get_id() == std::this_thread::get_id()) return EDEADLK;
         s->worker.join();
@@ -436,3 +447,86 @@ extern "C" int caboose_gpu_surface_detach(caboose_gpu_surface** ptr) {
     delete s;
     return 0;
 }
+
+#ifdef CABOOSE_GPU_INDEXED_WSI
+// This incomplete private path is intentionally not enabled by any build target
+// until indexed acquire, present and retirement are implemented and reviewed.
+struct caboose_gpu_virtual_swapchain {
+    caboose_gpu_surface* surface = nullptr;
+    uint64_t id = 0;
+    caboose_gpu_swapchain_create_info info{};
+    std::unique_ptr<gfxstream::host::vk::CabooseSwapchainDevice> device;
+    std::unique_ptr<gfxstream::host::vk::CabooseMappedSources> sources;
+    VkSwapchainKHR handle = VK_NULL_HANDLE;
+    std::vector<VkImage> nativeImages;
+    std::vector<uint64_t> boxedImages;
+    std::mutex mutex;
+};
+extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
+    const caboose_gpu_swapchain_create_info* info, caboose_gpu_virtual_swapchain** out,
+    uint64_t* swapchainId, uint32_t* imageCount, caboose_gpu_query_status* status) {
+    if (!status) return EINVAL;
+    *status = {};
+    auto fail = [status](int error) { status->native_error = error; return error; };
+    if (!out || !swapchainId || !imageCount) return fail(EINVAL);
+    *out = nullptr; *swapchainId = 0; *imageCount = 0;
+    if (!surface || !info || !same(surface->bind.identity, info->identity) ||
+        !info->boxed_device || info->width != surface->bind.width ||
+        info->height != surface->bind.height) return fail(EINVAL);
+    std::lock_guard<std::mutex> operation(surface->operations);
+    auto* registry = virtualWsiRegistry();
+    if (!registry) return fail(ENODEV);
+    try {
+        {
+            std::lock_guard<std::mutex> lock(surface->mutex);
+            if (!surface->attached || surface->revoked || !surface->physical ||
+                surface->swapchain || surface->indexed) return fail(EBUSY);
+        }
+        if (!surface->nextSwapchainId) return fail(EOVERFLOW);
+        auto result = std::make_unique<caboose_gpu_virtual_swapchain>();
+        result->surface = surface;
+        result->info = *info;
+        // Supported exclusive mode has no retained queue family array.
+        result->info.queue_families = nullptr;
+        VkResult r = acquireSwapchainDevice(registry, info->identity.process_token,
+            surface->bind.boxed_instance, info->boxed_device, &result->device);
+        if (r != VK_SUCCESS) return fail(errorFor(r));
+        if (result->device->physicalDevice != surface->physical) return fail(EINVAL);
+        PresentationProviderResult provider{};
+        r = createVirtualSwapchain(*result->device, metalSurfaceHandle(surface->metal), *info,
+                                   &result->handle, &result->nativeImages, &provider);
+        if (r != VK_SUCCESS) {
+            if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
+            return fail(errorFor(r));
+        }
+        result->id = surface->nextSwapchainId++;
+        *swapchainId = result->id;
+        *imageCount = static_cast<uint32_t>(result->nativeImages.size());
+        status->has_vulkan_result = 1; status->vulkan_result = VK_SUCCESS;
+        surface->indexed = result.get();
+        *out = result.release();
+        return 0;
+    } catch (const std::bad_alloc&) { return fail(ENOMEM); }
+}
+extern "C" int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
+    const uint64_t* boxedImages, uint32_t imageCount) {
+    if (!swapchain || !boxedImages || !imageCount || imageCount != swapchain->nativeImages.size()) return EINVAL;
+    std::lock_guard<std::mutex> operation(swapchain->surface->operations);
+    std::lock_guard<std::mutex> lock(swapchain->mutex);
+    if (swapchain->surface->revoked || swapchain->sources) return EBUSY;
+    auto* registry = virtualWsiRegistry();
+    if (!registry) return ENODEV;
+    try {
+        std::vector<uint64_t> copied(boxedImages, boxedImages + imageCount);
+        std::unique_ptr<gfxstream::host::vk::CabooseMappedSources> sources;
+        const auto& info = swapchain->info;
+        VkResult r = acquireMappedSources(registry, info.identity.process_token,
+            swapchain->surface->bind.boxed_instance, info.boxed_device, info.vk_format,
+            info.width, info.height, info.image_usage, imageCount, copied.data(), &sources);
+        if (r != VK_SUCCESS) return errorFor(r);
+        swapchain->boxedImages = std::move(copied);
+        swapchain->sources = std::move(sources);
+        return 0;
+    } catch (const std::bad_alloc&) { return ENOMEM; }
+}
+#endif
