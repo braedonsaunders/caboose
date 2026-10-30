@@ -232,6 +232,7 @@ pub const UI_SET_KEYBIT: u64 = iow::<libc::c_int>(b'U', 101);
 pub const UI_SET_ABSBIT: u64 = iow::<libc::c_int>(b'U', 103);
 pub const UI_SET_MSCBIT: u64 = iow::<libc::c_int>(b'U', 104);
 pub const UI_SET_FFBIT: u64 = iow::<libc::c_int>(b'U', 107);
+pub const UI_SET_PHYS: u64 = iow::<*const libc::c_char>(b'U', 108);
 pub const UI_SET_PROPBIT: u64 = iow::<libc::c_int>(b'U', 110);
 pub const UI_BEGIN_FF_UPLOAD: u64 = iowr::<UinputFfUpload>(b'U', 200);
 pub const UI_END_FF_UPLOAD: u64 = iow::<UinputFfUpload>(b'U', 201);
@@ -421,6 +422,7 @@ mod tests {
         assert_eq!(UI_DEV_SETUP, 0x405c_5503);
         assert_eq!(UI_ABS_SETUP, 0x401c_5504);
         assert_eq!(UI_SET_EVBIT, 0x4004_5564);
+        assert_eq!(UI_SET_PHYS, 0x4008_556c);
         assert_eq!(UI_BEGIN_FF_UPLOAD, 0xc068_55c8);
         assert_eq!(UI_END_FF_ERASE, 0x400c_55cb);
         assert_eq!(VIDIOC_S_FMT, 0xc0d0_5605);

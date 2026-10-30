@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneDeviceArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -156,6 +156,13 @@ describe('GPU selection', () => {
     expect(gpuArgs('nvidia', path => path === '/dev/udmabuf')).toEqual(expect.arrayContaining(['--device', '/dev/udmabuf']))
     expect(gpuArgs('wsl', () => true)).not.toContain('/dev/udmabuf')
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
+  })
+
+  it('hands the container uinput and the host input devices when the host has uinput', () => {
+    expect(phoneDeviceArgs(path => path === '/dev/uinput')).toEqual([
+      '--device', '/dev/uinput', '-v', '/dev/input:/dev/input', '--device-cgroup-rule', 'c 13:* rmw',
+    ])
+    expect(phoneDeviceArgs(() => false)).toEqual([])
   })
 
   it('uses a configured GPU over detection', async () => {

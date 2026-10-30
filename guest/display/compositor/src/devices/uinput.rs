@@ -9,6 +9,9 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 pub const UINPUT: &str = "/dev/uinput";
+/// The physical path every device made from the phone's hardware carries; udev rules give
+/// the owner's applications its event nodes by it.
+pub const PHYS: &std::ffi::CStr = c"caboose/phone";
 
 /// What a uinput device is made of before it is created.
 pub struct Spec {
@@ -201,6 +204,7 @@ impl Device {
         for &p in &spec.props {
             bit(UI_SET_PROPBIT, p)?;
         }
+        ioctl_int(&fd, UI_SET_PHYS, PHYS.as_ptr() as libc::c_ulong)?;
         if spec.rumble {
             bit(UI_SET_EVBIT, EV_FF)?;
             bit(UI_SET_FFBIT, FF_RUMBLE)?;
