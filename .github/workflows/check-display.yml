@@ -16,6 +16,12 @@ on:
       - 'apps/host/Dockerfile'
       - 'apps/ios/CabooseKit/Sources/CabooseKit/Resources/AgentApp*.js'
   workflow_dispatch:
+    inputs:
+      desktop_apm:
+        description: Run only the bounded desktop MCP acceptance gate
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -26,6 +32,7 @@ concurrency:
 
 jobs:
   contracts:
+    if: github.event_name != 'workflow_dispatch' || inputs.desktop_apm != true
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -50,3 +57,43 @@ jobs:
           CABOOSE_DISPLAY_CPUS: '2'
           CABOOSE_DISPLAY_MEMORY: 4g
         run: guest/display/scripts/dev.sh cargo test --workspace
+
+  desktop-apm:
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop_apm == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Parse desktop JavaScript before compiling the guest
+        shell: bash
+        run: |
+          for file in guest/desktop-mcp/*.mjs guest/desktop-mcp/check/*.mjs; do
+            node --check "$file"
+          done
+      - name: Run bounded Linux display and AT-SPI acceptance
+        shell: bash
+        run: |
+          set -o pipefail
+          bash guest/desktop-mcp/check-bounded.sh 2>&1 | tee "$RUNNER_TEMP/desktop-apm.log"
+      - name: Verify cleanup and bound failure evidence
+        if: always()
+        shell: bash
+        run: |
+          # Fallback for cancellation: only this immutable checkout's test containers.
+          prefix="caboose-apm-${GITHUB_SHA:0:12}-"
+          docker ps -aq --filter "name=$prefix" | xargs -r docker rm -f
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            docker ps -a --filter "name=$prefix" --format '{{.Names}} {{.Status}}'
+            tail -c 2097152 "$RUNNER_TEMP/desktop-apm.log" 2>/dev/null || true
+          } > "$RUNNER_TEMP/desktop-apm-evidence.log"
+      - name: Upload bounded failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-apm-failure-${{ github.sha }}
+          path: ${{ runner.temp }}/desktop-apm-evidence.log
+          retention-days: 7
+          if-no-files-found: warn
