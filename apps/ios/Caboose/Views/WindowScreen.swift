@@ -7,6 +7,7 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.openWindow) private var openWindow
     @State private var chromeVisible = true
     @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
@@ -170,7 +171,7 @@ struct WindowScreen: View {
     // MARK: Swiping between apps
 
     /// The open apps' windows in the order they opened, so swiping is predictable.
-    private var cardOrder: [RemoteWindow] { model.appWindows.sorted { $0.id < $1.id } }
+    private var cardOrder: [RemoteWindow] { model.workspaceWindows.sorted { $0.id < $1.id } }
 
     /// The app the card swipes towards: the next one for a swipe to the left.
     private func neighbour(of window: RemoteWindow, leftward: Bool) -> RemoteWindow? {
@@ -338,6 +339,10 @@ struct WindowScreen: View {
     /// The presenting toolbar button anchors these system actions beside the controls.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        // The card closes once the window's own iPadOS window takes it.
+        if let ref = model.windowRef(for: window) {
+            Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(value: ref) }
+        }
         Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
             model.session?.exitFullscreen(window, frame: window.frame)
             withAnimation(.snappy) { chromeVisible = true }
@@ -435,19 +440,31 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let keyboardVisible: Bool
+    /// Stretches the last picture over the view while a new size is on its way.
+    var stretch = false
+    /// Where a tap's answer to whether the keyboard is wanted goes: the shell's keyboard
+    /// unless a window of its own keeps its own.
+    var keyboardWanted: ((Bool) -> Void)?
 
     func makeUIView(context: Context) -> YardSurfaceView {
         let view = YardSurfaceView(content: RemoteWindowView(session: model.session, window: window))
         view.content.pixelsPerPoint = model.pixelsPerPoint
+        view.content.onKeyboardWanted = keyboardHandler
+        return view
+    }
+
+    private var keyboardHandler: (Bool) -> Void {
+        if let keyboardWanted { return keyboardWanted }
         let model = model
-        view.content.onKeyboardWanted = { wanted in
+        return { wanted in
             if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
         }
-        return view
     }
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
+        view.content.onKeyboardWanted = keyboardHandler
+        view.stretch = stretch
         view.locallyRendered = window.game != nil
         view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint

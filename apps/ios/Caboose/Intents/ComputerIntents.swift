@@ -106,6 +106,7 @@ struct CabooseShortcuts: AppShortcutsProvider {
         AppShortcut(intent: OpenComputerFileIntent(), phrases: ["Open a computer file with \(.applicationName)"], shortTitle: "Open File", systemImageName: "doc")
         AppShortcut(intent: ExportFilesIntent(), phrases: ["Export files with \(.applicationName)"], shortTitle: "Export Files", systemImageName: "square.and.arrow.up")
         AppShortcut(intent: PDFCraftCombineIntent(), phrases: ["Combine PDFs with \(.applicationName)"], shortTitle: "Combine PDFs", systemImageName: "doc.on.doc")
+        AppShortcut(intent: RunComputerCommandIntent(), phrases: ["Run a command on my computer with \(.applicationName)", "Run a \(.applicationName) command"], shortTitle: "Run Command", systemImageName: "terminal")
         #endif
     }
 }
