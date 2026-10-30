@@ -23,7 +23,6 @@ let gpuBinaryTargets: [Target] = gpuLive
 
 let gpuStreamLinking: [LinkerSetting] = [
     .linkedLibrary("c++"),
-    .linkedLibrary("z"),
     .linkedFramework("Foundation"),
     .linkedFramework("CoreGraphics"),
     .linkedFramework("IOSurface"),
@@ -45,7 +44,7 @@ let package = Package(
             name: "CabooseKit",
             dependencies: gpuDependencies,
             resources: [.process("Resources")],
-            linkerSettings: gpuStream || gpuLive ? gpuStreamLinking : []),
+            linkerSettings: [.linkedLibrary("z")] + (gpuStream || gpuLive ? gpuStreamLinking : [])),
         .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),
     ] + gpuBinaryTargets,
     swiftLanguageModes: [.v5]

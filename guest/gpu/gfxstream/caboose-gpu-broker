@@ -194,6 +194,7 @@ class FrameTiming:
         self.started = None
         self.frames = 0
         self.data_bytes = 0
+        self.wire_data_bytes = 0
         self.samples = {name: [0, 0, 0] for name in ('gap', 'result', 'release', 'retire')}
 
     def begin(self, surface, pending):
@@ -221,7 +222,7 @@ class FrameTiming:
         elapsed = now - self.started
         if elapsed < 2_000_000_000: return
         fields = [f'ordinal={self.records}', f'elapsed_ns={elapsed}',
-                  f'retired={self.frames}', f'data_bytes={self.data_bytes}']
+                  f'retired={self.frames}', f'data_bytes={self.data_bytes}', f'wire_data_bytes={self.wire_data_bytes}']
         for key, (count, total, maximum) in self.samples.items():
             fields += [f'{key}_count={count}', f'{key}_sum_ns={total}', f'{key}_max_ns={maximum}']
         with contextlib.suppress(OSError):
@@ -229,6 +230,7 @@ class FrameTiming:
         self.records += 1
         self.started = now
         self.frames = self.data_bytes = 0
+        self.wire_data_bytes = 0
         for values in self.samples.values(): values[:] = [0, 0, 0]
 
 
@@ -339,6 +341,7 @@ class Session:
         self.sequence += 1
         if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
             self.frame_timing.data_bytes += len(payload)
+            self.frame_timing.wire_data_bytes += len(frame)
         self.surface_progress("queued_to_phone", kind)
 
     async def close_after_retirement(self):
@@ -385,6 +388,9 @@ class Session:
                     frame.payload != TRANSPORT_CONFIG):
                 raise ValueError('unexpected transport receipt')
             self.deflate_enabled = True
+            if self.progress_enabled:
+                with contextlib.suppress(OSError):
+                    print('CABOOSE_GPU_TRANSPORT deflate=1 max_decoded=65600', file=sys.stderr, flush=True)
             self.session_ready.set()
             return
         if not self.session_ready.is_set(): raise ValueError('session not ready')

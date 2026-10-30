@@ -36,7 +36,7 @@ does not authenticate a new writer.
 ## Envelope
 
 All integers are little-endian. UUID bytes are in standard UUID byte order.
-WebSocket message boundaries have no framing meaning. A receiver retains at most
+Without the optional compressed transport, WebSocket message boundaries have no framing meaning. A receiver retains at most
 one partial envelope and applies bounded admission before retaining delivered
 messages. Each direction starts at sequence 1 and increments across the entire
 connection, not independently per stream.
@@ -83,6 +83,8 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 22 | SOURCE_RELEASED | Process | 48 bytes |
 | 23 | SURFACE_RETIRE | Process | 40 bytes |
 | 24 | SURFACE_RETIRED | Process | 56 bytes |
+| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1, maximum decoded record u32 = 65600 |
+| 38 | TRANSPORT_READY | Session | Exact matching configuration |
 
 Kinds 14 and 15 are reserved and rejected.
 
@@ -91,6 +93,39 @@ process and zero stream ID; stream scope has both nonzero. Process and stream ID
 are monotonic and never reused within a generation. The initial admission limits
 are 16 active processes and 64 active streams; retirement releases capacity without
 resetting identity counters.
+
+### Optional bounded command compression
+
+With `CABOOSE_PRIVATE_GPU_DEFLATE=1`, the indexed v4 broker sends TRANSPORT_CONFIG
+after SESSION_READY and waits for the exact TRANSPORT_READY before publishing
+local sockets or reporting compositor readiness. Duplicate, unsolicited or late
+negotiation terminates the session. The Vulkan hello and native runtime mode do
+not change. The opt-in is invalid for older modes; without it, transport stays raw.
+
+After this exchange, each broker-to-phone WebSocket message contains exactly one
+whole CGLV envelope or one CGLZ record. CGLZ uses a 16-byte little-endian header:
+`magic[4]="CGLZ", version:u16=1, algorithm:u16=1, decodedBytes:u32,
+compressedBytes:u32`, followed by one independent raw RFC 1951 DEFLATE stream.
+There is no shared dictionary. `decodedBytes` is 65 through 65600,
+`compressedBytes` exactly matches the remaining message, and the whole compressed
+record must be smaller than its decoded bytes. The decoded bytes must be exactly
+one CGLV DATA envelope with 1 through 65536 payload bytes. Its original identity,
+scope and sequence pass through the existing decoder unchanged. Control messages,
+concatenated envelopes, truncated streams, extra bytes after DEFLATE end-of-stream,
+and output-length mismatches are rejected. Ordinary DATA is used when compression
+does not reduce size. Phone replies remain raw, and WebSocket extensions remain
+forbidden on both hops.
+
+The broker charges the original uncompressed WebSocket frame until its send
+completes. Before queuing compressed work, the phone reserves the wire size plus
+the declared decoded size plus one byte for bounded inflate output. The decoder
+separately retains its existing single bounded partial envelope. Admission uses
+the existing 1 MiB/64-message ingress limit; no limit is raised. Inflation runs
+only on the serial consumer worker, uses an overflow
+sentinel, and requires exact output and complete input consumption. Malformed
+input closes the session and follows ordinary native revocation and cleanup;
+it cannot establish successful retirement. These transformations preserve command
+bytes and do not infer memory contents, GPU completion, or frame display timing.
 
 The retained version-3 live hello is ASCII `CBGLREF1`, little-endian version 3,
 mask `0x30`, and the

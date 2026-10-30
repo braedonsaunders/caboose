@@ -2547,6 +2547,11 @@ Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
 explicit non-coherent memory transfers and is not a general driver or on-screen
 game presentation. The bounded live envelope codec is specified in
 [gpu-live.md](gpu-live.md); it is separate from the legacy capture protocol.
+The indexed broker can explicitly negotiate independent, bounded DEFLATE records
+for complete DATA envelopes. The phone reserves their expanded memory before
+queuing and validates exact decoding before passing the unchanged command bytes
+to the native runtime. Existing queue limits, Vulkan negotiation and host relay
+behavior remain unchanged; this is not coherent-memory emulation.
 The indexed app adapter links the native creation, mapping, acquisition and
 presentation APIs under exact version-4 negotiation. It separates actual
 acquisition from source release and preserves provider results separately from

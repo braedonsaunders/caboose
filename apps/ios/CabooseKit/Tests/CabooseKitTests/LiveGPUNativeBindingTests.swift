@@ -4,6 +4,46 @@ import XCTest
 @testable import CabooseKit
 
 final class LiveGPUNativeBindingTests: XCTestCase {
+    func testNegotiatedCompressedDataPreservesBytesAndNativeRetirement() throws {
+        // Independent Python struct/zlib raw-DEFLATE fixture: sequence5, process1/stream1.
+        let text = "43474c5a01000100c00f0000650000007376f7096364606768e06700034634c00e11666044a359a1fcfca294ccbcc4a24a8594d4e4fc94d41485e4fcdcdcc4bc1485a4ca92d4628651e9d160194d0ea3d960b474182d15476b83d14a72b47130da281a6d2b8eb69147fb06a35da6d1ae2215bac800"
+        let chars = Array(text.utf8)
+        let packed = Data(stride(from: 0, to: chars.count, by: 2).map { UInt8(String(bytes: chars[$0..<$0 + 2], encoding: .utf8)!, radix: 16)! })
+        let runtime = LiveRuntimeProbe(), output = LiveOutputProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        // Expansion is charged even while CONFIG is waiting behind earlier work.
+        XCTAssertEqual(try binding.ingressCharge(packed), packed.count + 4032 + 1)
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer))
+        XCTAssertEqual(try output.frames().last?.kind, .transportReady)
+        try binding.consume(wire(.processOpen, sequence: 3, process: 1))
+        try binding.consume(wire(.streamOpen, sequence: 4, process: 1, stream: 1))
+        try binding.consume(packed)
+        try binding.consume(wire(.fin, sequence: 6, process: 1, stream: 1))
+        XCTAssertTrue(output.waitForFINs(1))
+        try binding.consume(wire(.processStop, sequence: 7, process: 1))
+        try binding.consume(wire(.revoke, sequence: 8))
+        try binding.finish()
+        XCTAssertEqual(runtime.received[1], Data(String(repeating: "ordinary decoded command bytes\0", count: 128).utf8))
+        XCTAssertNil(output.error)
+        XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
+    }
+
+    func testCompressionNegotiationCannotRepeatOrFollowProcessAdmission() throws {
+        for late in [false, true] {
+            let runtime = LiveRuntimeProbe()
+            let binding = try LiveGPUNativeBinding(backend: runtime)
+            try binding.start(output: { _ in true }, failed: { _ in })
+            try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+            if late { try binding.consume(wire(.processOpen, sequence: 2, process: 1)) }
+            else { try binding.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer)) }
+            XCTAssertThrowsError(try binding.consume(wire(.transportConfig, sequence: 3, payload: LiveGPUCompression.offer)))
+            try binding.revoke(); try binding.finish()
+            XCTAssertFalse(binding.retirementReceiptSent)
+        }
+    }
+
     func testRealSocketpairMultiprocessDuplexAndRetirement() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)

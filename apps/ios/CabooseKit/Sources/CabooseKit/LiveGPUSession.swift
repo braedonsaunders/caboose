@@ -141,11 +141,14 @@ public final class LiveGPUSession: @unchecked Sendable {
         case .bytes(let data):
             lock.lock()
             guard !stopping else { lock.unlock(); return }
-            if let error = ingress.admit(data.count) {
+            let charge: Int
+            do { charge = try (consumer as? LiveGPUIngressAccounting)?.ingressCharge(data) ?? data.count }
+            catch { lock.unlock(); stop(error); return }
+            if let error = ingress.admit(charge) {
                 lock.unlock(); stop(error); return
             }
             worker.async { [self] in
-                defer { ingress.release(data.count) }
+                defer { ingress.release(charge) }
                 guard ingress.active else { return }
                 do { try consumer.consume(data) } catch { stop(error) }
             }

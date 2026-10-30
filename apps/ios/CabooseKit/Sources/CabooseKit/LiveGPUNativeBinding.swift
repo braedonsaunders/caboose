@@ -145,7 +145,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -157,6 +157,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var started = false
     private var finished = false
     private var negotiated = false
+    private var compressedTransport = false // guarded by lock for network admission
     private var drainRequested = false
     private var drainSent = false
     private var peerRevoked = false
@@ -217,8 +218,35 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     }
     public func consume(_ bytes: Data) throws {
         guard lock.withLock({ started && !cancelled && !finished && !peerRevoked }) else { throw LiveGPUError.closed }
-        do { try decoder.feed(bytes) { try handle($0) } }
+        do {
+            let compressed = lock.withLock { compressedTransport }
+            if compressed {
+                guard decoder.atFrameBoundary else { throw LiveGPUBindingError.protocolViolation("fragmented compressed transport") }
+                if LiveGPUCompression.isCompressed(bytes) {
+                    let decoded = try LiveGPUCompression.decode(bytes)
+                    try decoder.feed(decoded) { try handle($0) }
+                } else {
+                    try LiveGPUCompression.requireWholeEnvelope(bytes)
+                    try decoder.feed(bytes) { try handle($0) }
+                }
+            } else {
+                try decoder.feed(bytes) { try handle($0) }
+            }
+        }
         catch { decodingFailed = true; fail(error); throw error }
+    }
+    func ingressCharge(_ bytes: Data) throws -> Int {
+        if LiveGPUCompression.isCompressed(bytes) {
+            if lock.withLock({ compressedTransport }) {
+                return try LiveGPUCompression.admissionCharge(bytes)
+            }
+            // A malicious peer can queue input while CONFIG is still waiting on
+            // the worker. Reserve expansion even then; decoding still requires
+            // negotiated mode. Legacy partial DATA that happens to start CGLZ
+            // remains ordinary input if it is not a structurally valid record.
+            if let charge = try? LiveGPUCompression.admissionCharge(bytes) { return charge }
+        }
+        return bytes.count
     }
     /// Serial consumer-worker operation. A close before SESSION is retained until
     /// negotiation; no native work or socket is discarded to manufacture retirement.
@@ -268,6 +296,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             return
         }
         switch frame.kind {
+        case .transportConfig:
+            guard frame.payload == LiveGPUCompression.offer, lastProcess == 0,
+                  !drainRequested, !lock.withLock({ compressedTransport }) else {
+                throw LiveGPUBindingError.protocolViolation("unexpected compression negotiation")
+            }
+            // Publish the accounting mode before admitting the acknowledgement.
+            lock.withLock { compressedTransport = true }
+            try send(.transportReady, payload: LiveGPUCompression.offer)
         case .processOpen:
             guard frame.process > lastProcess, lock.withLock({ processes.count < 16 }) else {
                 throw LiveGPUBindingError.protocolViolation("process identity or capacity")

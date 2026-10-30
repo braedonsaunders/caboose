@@ -10,6 +10,7 @@ struct LiveGPUEnvelope: Equatable {
         case data, fin, processStop, processRetired, revoke, revoked, executorDrain
         case surfaceBind = 16, surfaceBound, surfaceQuery, surfaceCaps, present, presentResult, sourceReleased, surfaceRetire, surfaceRetired
         case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest, presentRetired
+        case transportConfig = 37, transportReady
         var isSurface: Bool { rawValue >= 16 && rawValue <= 36 }
         var isIndexed: Bool { rawValue >= 25 && rawValue <= 36 }
     }
@@ -36,13 +37,14 @@ struct LiveGPUEnvelope: Equatable {
             return
         }
         switch kind {
-        case .session, .sessionReady, .revoke, .revoked, .executorDrain: try require(process == 0 && stream == 0)
+        case .session, .sessionReady, .revoke, .revoked, .executorDrain, .transportConfig, .transportReady: try require(process == 0 && stream == 0)
         case .processOpen, .processReady, .processStop, .processRetired, .surfaceBind, .surfaceBound, .surfaceQuery, .surfaceCaps, .present, .presentResult, .sourceReleased, .surfaceRetire, .surfaceRetired: try require(process > 0 && stream == 0)
         default: try require(process > 0 && stream > 0)
         }
         if kind.isSurface { try LiveGPUSurfaceMessage.validateLength(length, kind: kind); return }
         switch kind {
         case .session, .sessionReady: try require(length == 48)
+        case .transportConfig, .transportReady: try require(length == 8)
         case .data: try require(length > 0)
         default: try require(length == 0)
         }
@@ -50,6 +52,9 @@ struct LiveGPUEnvelope: Equatable {
     func encoded() throws -> Data {
         try validate(length: payload.count)
         if kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: kind, payload: payload) }
+        if kind == .transportConfig || kind == .transportReady {
+            guard payload == LiveGPUCompression.offer else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
+        }
         var result = Data([0x43, 0x47, 0x4c, 0x56])
         func append<T: FixedWidthInteger>(_ value: T) {
             var little = value.littleEndian
@@ -73,6 +78,7 @@ final class LiveGPUEnvelopeDecoder {
     private var length = 0
     private var ended = false
     var bufferedBytes: Int { buffer.count }
+    var atFrameBoundary: Bool { header == nil && buffer.isEmpty }
     init(executor: Data? = nil, generation: UInt64? = nil) throws {
         guard (executor == nil) == (generation == nil) else { throw LiveGPUBindingError.protocolViolation("incomplete identity") }
         if let executor, let generation { identity = (executor, generation) }
@@ -115,6 +121,9 @@ final class LiveGPUEnvelopeDecoder {
                 buffer = Data(); header = nil
                 if sequence == UInt64.max { exhausted = true } else { sequence += 1 }
                 if frame.kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload) }
+                if frame.kind == .transportConfig || frame.kind == .transportReady {
+                    guard frame.payload == LiveGPUCompression.offer else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
+                }
                 try deliver(frame)
             }
         } catch { ended = true; buffer = Data(); header = nil; throw error }
