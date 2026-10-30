@@ -1,8 +1,10 @@
 import array
 import socket
+import sys
 import unittest
 from unittest import mock
 import ipc_handoff
+import control_protocol as protocol
 
 
 class Peer:
@@ -25,6 +27,28 @@ class IpcHandoffTests(unittest.TestCase):
                     ipc_handoff.receive_socket(receiver, 1000, 42, 123)
         finally:
             sender.close(); receiver.close(); endpoint.close(); other.close()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    def test_seqpacket_response_preserves_record_boundary(self):
+        sender, receiver = socket.socketpair(type=socket.SOCK_SEQPACKET)
+        value = protocol.BindResult(7, 0, b'a' * 16, b'b' * 16, 12, 3)
+        try:
+            sender.send(protocol.encode_result(value))
+            with mock.patch.object(ipc_handoff.PeerIdentity, 'from_socket', return_value=Peer()):
+                self.assertEqual(ipc_handoff.receive_record(receiver, 1000, 42, 123), value)
+        finally:
+            sender.close(); receiver.close()
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    def test_truncated_seqpacket_is_rejected(self):
+        sender, receiver = socket.socketpair(type=socket.SOCK_SEQPACKET)
+        try:
+            sender.send(b'CGB1' + bytes(100))
+            with mock.patch.object(ipc_handoff.PeerIdentity, 'from_socket', return_value=Peer()):
+                with self.assertRaises(ValueError):
+                    ipc_handoff.receive_record(receiver, 1000, 42, 123)
+        finally:
+            sender.close(); receiver.close()
 
     def test_wrong_compositor_is_rejected_before_receiving(self):
         with mock.patch.object(ipc_handoff.PeerIdentity, 'from_socket', return_value=Peer()):

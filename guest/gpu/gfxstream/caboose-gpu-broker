@@ -6,6 +6,7 @@ TCP connections from the compositor; local Vulkan streams use the supplied
 owner-only socket path. Receipts must come from the real executor.
 """
 import argparse
+import array
 import asyncio
 import contextlib
 import os
@@ -17,7 +18,8 @@ import sys
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
 from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
-from ipc_handoff import receive_socket
+from ipc_handoff import receive_record
+import control_protocol
 from process_binding import PeerIdentity, ProcessBindings, process_start_ticks
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 
@@ -254,13 +256,66 @@ class Broker:
         self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
         self.lease = ExecutorLease()
         self.tasks = set(); self.closing = asyncio.Event()
+        self.session = None
+        self.next_bind = 0
+        self.pending_binds = {}
+        self.bind_send_lock = asyncio.Lock()
+
+    async def request_bind(self, session, process_id, object_id, expected_epoch):
+        """Ask the compositor to bind a live process and native Wayland object."""
+        if (self.session is not session or session.draining or process_id not in session.processes or
+            not session.processes[process_id]['ready'].is_set()):
+            raise RuntimeError('process is not ready for surface binding')
+        if len(expected_epoch) != 16 or expected_epoch == bytes(16):
+            raise ValueError('invalid expected compositor epoch')
+        if len(self.pending_binds) >= 64 or self.next_bind == (1 << 64) - 1:
+            raise OverflowError('surface bind capacity')
+        (uid, pid, start), pidfd = session.bindings.duplicate_process_identity(session.binding_generation, process_id)
+        self.next_bind += 1
+        request = self.next_bind
+        future = asyncio.get_running_loop().create_future()
+        self.pending_binds[request] = future
+        try:
+            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id))
+            loop = asyncio.get_running_loop()
+            async with self.bind_send_lock:
+                deadline = loop.time() + 5
+                while True:
+                    try:
+                        n = self.control.sendmsg([data], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [pidfd]))])
+                        if n != len(data): raise OSError('partial sequenced-packet bind')
+                        break
+                    except BlockingIOError:
+                        ready = loop.create_future()
+                        def writable():
+                            if not ready.done(): ready.set_result(None)
+                        loop.add_writer(self.control.fileno(), writable)
+                        try: await asyncio.wait_for(ready, max(0, deadline - loop.time()))
+                        finally: loop.remove_writer(self.control.fileno())
+            result = await asyncio.wait_for(future, 5)
+            if result.status or result.epoch != expected_epoch:
+                raise PermissionError('surface bind denied or stale epoch')
+            return result
+        finally:
+            os.close(pidfd)
+            self.pending_binds.pop(request, None)
 
     async def run(self):
         loop = asyncio.get_running_loop()
         self.control.setblocking(False)
         def ready():
             try:
-                stream = receive_socket(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
+                record = receive_record(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
+                if isinstance(record, control_protocol.BindResult):
+                    future = self.pending_binds.get(record.request)
+                    if future is None or future.done(): raise ValueError('unexpected bind response')
+                    future.set_result(record)
+                    return
+                if isinstance(record, control_protocol.RevokeGrant):
+                    # Surface CGLV revoke is not yet assigned: terminate rather
+                    # than let an obsolete grant remain usable.
+                    self.closing.set(); return
+                stream = record
             except BlockingIOError: return
             except (OSError, ValueError, PermissionError): self.closing.set(); return
             if len(self.tasks) >= MAX_QUEUED_MESSAGES:
@@ -272,6 +327,8 @@ class Broker:
         try: await self.closing.wait()
         finally:
             loop.remove_reader(self.control.fileno()); self.control.close()
+            for future in self.pending_binds.values():
+                if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
             if self.tasks:
                 _done, pending = await asyncio.wait(tuple(self.tasks), timeout=10)
                 for task in pending: task.cancel()
@@ -298,6 +355,7 @@ class Broker:
             session.send(Kind.SESSION, payload=HELLO)
             await asyncio.wait_for(session.session_ready.wait(), 10)
             self.lease.ready(executor.bytes, generation)
+            self.session = session
             directory = self.socket_path.parent
             info = directory.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
@@ -326,6 +384,8 @@ class Broker:
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
             pass
         finally:
+            if self.session is session:
+                self.session = None
             if server:
                 server.close()
             if owned_socket is not None:

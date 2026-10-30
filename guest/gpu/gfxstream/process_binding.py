@@ -162,6 +162,24 @@ class ProcessBindings:
                 raise RuntimeError('bound process exited')
             return process_id, key
 
+    def duplicate_process_identity(self, generation, process_id):
+        """Duplicate the held pidfd for a compositor BIND; caller closes it."""
+        with self._lock:
+            if not self._active or generation != self._generation:
+                raise RuntimeError('stale generation')
+            for key, (peer, current) in self._peers.items():
+                if current == process_id:
+                    if not peer.alive(): raise RuntimeError('bound process exited')
+                    fd = os.dup(peer.pidfd)
+                    try:
+                        os.set_inheritable(fd, False)
+                        if not peer.alive(): raise RuntimeError('bound process exited')
+                        return key, fd
+                    except BaseException:
+                        os.close(fd)
+                        raise
+            raise KeyError('unknown process')
+
     def unbind_stream(self, generation, stream_id):
         with self._lock:
             if not self._active or generation != self._generation:

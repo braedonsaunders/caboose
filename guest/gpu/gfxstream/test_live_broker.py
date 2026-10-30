@@ -1,4 +1,6 @@
 import asyncio
+import array
+import os
 from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
@@ -15,6 +17,7 @@ broker = importlib.util.module_from_spec(spec)
 loader.exec_module(broker)
 from live_protocol import Decoder, Envelope, Kind, encode
 from test_gpu_websocket import client_frame
+import control_protocol
 
 
 class Writer:
@@ -225,6 +228,39 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         writer = FailedRemote()
         self.assertTrue(await broker.close_owned_writer(writer, abort=True, timeout=0.1))
         self.assertTrue(writer.aborted)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_bind_request_sends_held_fd_and_checks_epoch(self):
+        control, peer = socket.socketpair(type=socket.SOCK_SEQPACKET)
+        control.setblocking(False); peer.setblocking(False)
+        broker_instance = broker.Broker.__new__(broker.Broker)
+        broker_instance.control = control
+        broker_instance.next_bind = 0
+        broker_instance.pending_binds = {}
+        broker_instance.bind_send_lock = asyncio.Lock()
+        class Bindings:
+            def duplicate_process_identity(self, generation, process):
+                return (1000, 42, 123), os.open('/dev/null', os.O_RDONLY)
+        session = mock.Mock()
+        session.draining = False
+        session.binding_generation = 1
+        session.bindings = Bindings()
+        ready = asyncio.Event(); ready.set()
+        session.processes = {3: {'ready': ready}}
+        broker_instance.session = session
+        task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
+        try:
+            await asyncio.sleep(0)
+            data, ancillary, flags, _ = peer.recvmsg(80, socket.CMSG_SPACE(array.array('i').itemsize))
+            record = control_protocol.decode(data, 1)
+            self.assertEqual(record, control_protocol.Bind(1, 3, 1000, 42, 123, 17))
+            fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize]); os.close(fds[0])
+            broker_instance.pending_binds[1].set_result(control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 9, 1))
+            result = await asyncio.wait_for(task, 1)
+            self.assertEqual((result.window, result.generation), (9, 1))
+        finally:
+            if not task.done(): task.cancel(); await asyncio.gather(task, return_exceptions=True)
+            control.close(); peer.close()
 
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
