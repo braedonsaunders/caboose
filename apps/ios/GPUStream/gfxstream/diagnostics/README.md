@@ -69,8 +69,8 @@ headers from the pinned gfxstream source. Modes 0–3 compare the default layout
 mutable sampler, and vertex-only layouts. Modes 4 and 5 use two- and three-plane
 YCbCr immutable samplers and exit 2 if the device lacks the required conversion,
 sampled-image or cosited-chroma support. After pipeline creation they upload
-neutral-chroma YCbCr planes, sample through the compositor shader and compare a
-RGBA readback against the expected gray pixel. This readback remains unverified
+neutral and chromatic YCbCr planes, sample through the compositor shader and
+compare RGBA readback against independently calculated BT.601 colors. This readback remains unverified
 on Metal.
 
 `spirv-multiplane.cpp` builds against the core, GLSL and MSL libraries from

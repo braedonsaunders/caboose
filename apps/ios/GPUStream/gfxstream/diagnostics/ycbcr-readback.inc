@@ -25,7 +25,7 @@ static Image makeImage(VkPhysicalDevice physical, VkDevice device, VkFormat form
     if (vkCreateImageView(device,&vi,nullptr,&image.view) != VK_SUCCESS) std::exit(2);
     return image;
 }
-static int drawYcbcr(VkPhysicalDevice physical, VkDevice device, uint32_t family, VkFormat format, int planes, VkSamplerYcbcrConversion conversion, VkDescriptorSetLayout layout, VkPipelineLayout pipelineLayout, VkPipeline pipeline, VkRenderPass pass) {
+static int drawYcbcr(VkPhysicalDevice physical, VkDevice device, uint32_t family, VkFormat format, int planes, VkSamplerYcbcrConversion conversion, VkDescriptorSetLayout layout, VkPipelineLayout pipelineLayout, VkPipeline pipeline, VkRenderPass pass, bool chromatic) {
     VkFormatProperties props{}; vkGetPhysicalDeviceFormatProperties(physical,format,&props);
     if (!(props.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT)) { std::fprintf(stderr,"YCbCr transfer destination unsupported\n"); return 2; }
     VkImageFormatProperties imageProps{}; VkResult supported=vkGetPhysicalDeviceImageFormatProperties(physical,format,VK_IMAGE_TYPE_2D,VK_IMAGE_TILING_OPTIMAL,VK_IMAGE_USAGE_SAMPLED_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT,0,&imageProps);
@@ -39,7 +39,8 @@ static int drawYcbcr(VkPhysicalDevice physical, VkDevice device, uint32_t family
     Buffer result=makeBuffer(physical,device,4,VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     auto write=[&](Buffer b,const void* data,size_t size){ void* p=nullptr; if(vkMapMemory(device,b.memory,0,size,0,&p)!=VK_SUCCESS) std::exit(2); std::memcpy(p,data,size); vkUnmapMemory(device,b.memory); };
     // Full-range YCbCr: neutral chroma and luma 64/255 gives RGB approximately 64.
-    const uint8_t data[12]={64,64,64,64,128,128,0,0,128,0,0,0}; write(upload,data,sizeof(data));
+    uint8_t data[12]={64,64,64,64,128,128,0,0,128,0,0,0};
+    if (chromatic) { for (int i=0;i<4;i++) data[i]=128; data[4]=64; data[5]=192; data[8]=192; } write(upload,data,sizeof(data));
     const float vertices[12]={-1,-1,0.5f,0.5f, 3,-1,0.5f,0.5f, -1,3,0.5f,0.5f}; write(vertex,vertices,sizeof(vertices));
     struct Uniform { float pos[16], tex[16], colorMatrix[16]; uint32_t mode[4]; float alpha[4], color[4]; } u{};
     for (int i=0;i<4;i++) u.pos[i*5]=u.tex[i*5]=u.colorMatrix[i*5]=1.0f; u.mode[0]=2; for(float &a:u.alpha) a=1.0f; write(uniform,&u,sizeof(u));
@@ -63,8 +64,9 @@ static int drawYcbcr(VkPhysicalDevice physical, VkDevice device, uint32_t family
     VkBufferImageCopy output{}; output.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1}; output.imageExtent={1,1,1}; vkCmdCopyImageToBuffer(cmd,target.image,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,result.buffer,1,&output);
     VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER}; bb.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT; bb.dstAccessMask=VK_ACCESS_HOST_READ_BIT; bb.srcQueueFamilyIndex=bb.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED; bb.buffer=result.buffer; bb.size=VK_WHOLE_SIZE; vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&bb,0,nullptr);
     CHECK(vkEndCommandBuffer(cmd)); VkQueue queue; vkGetDeviceQueue(device,family,0,&queue); VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO}; submit.commandBufferCount=1; submit.pCommandBuffers=&cmd; CHECK(vkQueueSubmit(queue,1,&submit,VK_NULL_HANDLE)); CHECK(vkQueueWaitIdle(queue));
-    void* ptr=nullptr; CHECK(vkMapMemory(device,result.memory,0,4,0,&ptr)); uint8_t pixel[4]; std::memcpy(pixel,ptr,4); vkUnmapMemory(device,result.memory); std::printf("YCbCr %d-plane RGBA=%u,%u,%u,%u expected ~64,64,64,255\n",planes,pixel[0],pixel[1],pixel[2],pixel[3]);
-    bool ok=pixel[0]>=62&&pixel[0]<=66&&pixel[1]>=62&&pixel[1]<=66&&pixel[2]>=62&&pixel[2]<=66&&pixel[3]==255;
+    void* ptr=nullptr; CHECK(vkMapMemory(device,result.memory,0,4,0,&ptr)); uint8_t pixel[4]; std::memcpy(pixel,ptr,4); vkUnmapMemory(device,result.memory); const int expected[3]={chromatic ? 218 : 64, chromatic ? 104 : 64, chromatic ? 15 : 64};
+    std::printf("YCbCr %d-plane %s RGBA=%u,%u,%u,%u expected ~%d,%d,%d,255\n",planes,chromatic?"chromatic":"neutral",pixel[0],pixel[1],pixel[2],pixel[3],expected[0],expected[1],expected[2]);
+    bool ok=pixel[3]==255; for(int i=0;i<3;i++) ok=ok && std::abs(int(pixel[i])-expected[i])<=3;
     vkDestroyCommandPool(device,cp,nullptr); vkDestroyFramebuffer(device,fb,nullptr); vkDestroyDescriptorPool(device,pool,nullptr);
     for(Buffer b:{upload,vertex,uniform,result}) { vkDestroyBuffer(device,b.buffer,nullptr); vkFreeMemory(device,b.memory,nullptr); }
     for(Image image:{source,target}) { vkDestroyImageView(device,image.view,nullptr); vkDestroyImage(device,image.image,nullptr); vkFreeMemory(device,image.memory,nullptr); }
