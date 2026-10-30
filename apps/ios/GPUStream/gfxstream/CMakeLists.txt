@@ -49,6 +49,14 @@ if(TARGET gfxstream_backend_static)
     if(CABOOSE_GFXSTREAM_INDEXED_WSI AND NOT CABOOSE_GFXSTREAM_PRESENTATION_LEASE)
         message(FATAL_ERROR "Indexed WSI requires decoder presentation leases")
     endif()
+    if(CABOOSE_GFXSTREAM_INDEXED_WSI)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_custom_target(caboose_v4_profile_check
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate-v4-profile.py"
+                    "${GFXSTREAM_REPO_ROOT}" --check --patched
+            VERBATIM)
+        add_dependencies(caboose_gfxstream_connection caboose_v4_profile_check)
+    endif()
     if(CABOOSE_GFXSTREAM_PRESENTATION_LEASE AND NOT EXISTS "${GFXSTREAM_REPO_ROOT}/host/vulkan/caboose_presentation_lifetime.h")
         message(FATAL_ERROR "Presentation leases require the matching patched decoder source")
     endif()

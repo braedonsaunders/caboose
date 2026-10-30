@@ -1,0 +1,12 @@
+# V4 guest GPU submission boundary
+
+The private v4 stream uses gfxstream revision `f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be` and the synchronous-only opcode profile. The build checks SHA-256 values of the actual patched decoder, decoder global-state and internal headers, feature header, completion tracker, and pinned marshaling header. `generate-v4-profile.py --check --patched` regenerates and compares the admission list against those inputs. An unmatched input fails the build.
+
+For ordinary mapped source images, the audited guest work paths are:
+
+- `vkQueueSubmit` and core `vkQueueSubmit2` enter the common global-state submission template. Its admission ticket spans validation and the real submission. The KHR `vkQueueSubmit2KHR` decoder case dispatches directly upstream and is separately routed through a tracked wrapper.
+- `vkQueueBindSparse` enters the tracked sparse handler, including its internal workaround submissions. Successful decoded `vkQueueWaitIdle` and `vkDeviceWaitIdle` are observed from their real provider calls. A failed or overlapping wait does not establish completion.
+- The profile rejects every other decoded `vkQueue*` case, all `Async` and `ANDROID` cases, native swapchain/acquire cases, and host image-copy and host image-layout-transition cases before generated unmarshalling. These include deferred Google queue work and Android acquire/release work. Host `vkSignalSemaphore` does not drain virtual-queue submissions because v4 disables and verifies `VulkanVirtualQueue`; v4 also disables and verifies `VulkanQueueSubmitWithCommands`.
+- `vkCmd*` calls record operations into command buffers; the target GPU work is admitted when a tracked queue submission executes those buffers. Other direct generated decoder calls are host queries, object creation/destruction, mapping, or synchronization. The mapped-source lease excludes external, color-buffer-backed, sparse, compressed, aliased and nonordinary images; Android/color-buffer paths are outside this proof.
+
+The admission boundary is an implementation restriction, not general Vulkan support or a claim of adversarially safe unmarshalling. The proof assumes valid Vulkan host synchronization and synchronous completion of admitted guest calls across guest threads. If tracked coverage is lost, an asynchronous path is observed, an admission overlaps idle, or a real wait fails, unused-image release remains unavailable. Guest GPU completion does not establish presentation-engine retirement: the actual maintenance1 present fence remains required.

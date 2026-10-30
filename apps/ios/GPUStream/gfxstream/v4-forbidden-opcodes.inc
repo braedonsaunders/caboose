@@ -1,5 +1,10 @@
 // Generated from pinned vk_decoder.cpp and goldfish_vk_marshaling.h.
+20170u, // vkCreateSwapchainKHR
+20171u, // vkDestroySwapchainKHR
+20172u, // vkGetSwapchainImagesKHR
+20173u, // vkAcquireNextImageKHR
 20174u, // vkQueuePresentKHR
+20178u, // vkAcquireNextImage2KHR
 20251u, // vkGetSwapchainGrallocUsageANDROID
 20252u, // vkAcquireImageANDROID
 20253u, // vkQueueSignalReleaseImageANDROID
@@ -14,8 +19,18 @@
 20331u, // vkQueueWaitIdleAsyncGOOGLE
 20332u, // vkQueueBindSparseAsyncGOOGLE
 20340u, // vkQueueFlushCommandsGOOGLE
+204695490u, // vkCopyImageToMemoryEXT
+204990977u, // vkCopyImageToMemory
+218832495u, // vkCopyMemoryToImageEXT
+223491795u, // vkCopyImageToImage
+223534798u, // vkCopyImageToImageEXT
+230545069u, // vkReleaseSwapchainImagesEXT
 236453297u, // vkSetDebugMetadataAsyncGOOGLE
+242817558u, // vkTransitionImageLayoutEXT
 243985229u, // vkQueueSignalReleaseImageANDROIDAsyncGOOGLE
+249625009u, // vkReleaseSwapchainImagesKHR
+252133608u, // vkTransitionImageLayout
+263029492u, // vkCopyMemoryToImage
 267932433u, // vkQueueCommitDescriptorSetUpdatesGOOGLE
 286553566u, // vkTraceAsyncGOOGLE
 287960452u, // vkGetSwapchainGrallocUsage2ANDROID
