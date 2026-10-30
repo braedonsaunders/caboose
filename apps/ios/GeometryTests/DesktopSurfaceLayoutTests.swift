@@ -7,6 +7,31 @@ import QuartzCore
 
 @MainActor
 final class DesktopSurfaceLayoutTests: XCTestCase {
+    func testReattachedWindowAdoptsSameSizePictureAndNotifiesContainer() {
+        let picture = CGSize(width: 1600, height: 1000)
+        let first = RemoteWindow(id: 1, frame: CGRect(origin: .zero, size: picture),
+                                 overrideRedirect: false, surface: WindowSurface())
+        let second = RemoteWindow(id: 2, frame: CGRect(x: 0, y: 0, width: 1600, height: 520),
+                                  overrideRedirect: false, surface: WindowSurface())
+        let content = RemoteWindowView(session: nil, window: first)
+        var notifications: [CGSize] = []
+        content.onPictureSizeChanged = { notifications.append($0) }
+        // Exercise the same adoption entry point present() calls after nextDrawable.
+        content.adoptPictureSize(picture)
+        content.adoptPictureSize(picture)
+        XCTAssertEqual(notifications, [picture])
+        content.attach(second)
+        XCTAssertEqual(second.presentationSize.height, 520)
+        content.adoptPictureSize(picture)
+        XCTAssertEqual(second.presentationSize, picture)
+        XCTAssertEqual(notifications, [picture, picture])
+        // Updating the same identity keeps the per-view size deduplication.
+        content.attach(second)
+        content.adoptPictureSize(picture)
+        XCTAssertEqual(notifications, [picture, picture])
+        content.attach(nil)
+    }
+
     func testKeyboardSlotFitsRetainedPictureBeforeMetadataAndDecodeCatchUp() {
         let surface = WindowSurface()
         surface.resize(width: 1600, height: 1000)

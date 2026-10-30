@@ -99,6 +99,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public func attach(_ window: RemoteWindow?) {
         if window !== remoteWindow {
+            presentedPictureSize = .zero
             releaseVideos()
             focusCheck = nil
             resetTyping()
@@ -267,12 +268,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let drawable = metalLayer.nextDrawable(),
               let commands = SurfaceRenderer.shared.queue.makeCommandBuffer(),
               let blit = commands.makeBlitCommandEncoder() else { return }
-        if presentedPictureSize != size {
-            presentedPictureSize = size
-            remoteWindow?.adoptPictureSize(size)
-            // Guest picture replacement is atomic; slot geometry keeps its animation.
-            UIView.performWithoutAnimation { onPictureSizeChanged?(size) }
-        }
+        adoptPictureSize(size)
         let target = drawable.texture
         let width = min(texture.width, target.width), height = min(texture.height, target.height)
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
@@ -282,6 +278,16 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         commands.present(drawable)
         commands.commit()
         presentedGeneration = generation
+    }
+
+    /// Called after acquiring a drawable. Adoption belongs to the attached window,
+    /// even when its first picture has the same dimensions as the preceding window.
+    func adoptPictureSize(_ size: CGSize) {
+        guard presentedPictureSize != size else { return }
+        presentedPictureSize = size
+        remoteWindow?.adoptPictureSize(size)
+        // Guest picture replacement is atomic; slot geometry keeps its animation.
+        UIView.performWithoutAnimation { onPictureSizeChanged?(size) }
     }
 
     // MARK: Pointer mapping
