@@ -73,10 +73,10 @@ check and signed-app invocation are documented in [the iOS README](../apps/ios/R
 
 ## Limits
 
-- **The driver answers, not the client's GPU.** Fences and semaphores signal at once, and
-  queries and memory the GPU writes read back as zeros, so an application that reads
-  occlusion queries or GPU results back to the CPU draws as if nothing were visible or
-  computed.
+- **The driver answers, not the client's GPU.** The mock driver fabricates completion;
+  GPU query and memory results are absent or uninitialized, not guaranteed zeros.
+  There is no device-to-guest result channel, so applications requiring real GPU
+  feedback do not have correct execution semantics through this capture path.
 - **Vulkan only, X11 window.** Applications render through Vulkan: native Vulkan, or
   Direct3D through DXVK and vkd3d-proton under Wine or Proton. OpenGL applications are not
   streamed.

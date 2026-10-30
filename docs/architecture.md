@@ -2499,6 +2499,12 @@ support. The C API returns schema-versioned JSON and owns no device or surface. 
 run the synchronous query off the UI thread. It does not change the display handshake,
 the computer's static profile or the renderer's advertised capabilities.
 
+The isolated live-transport source in `guest/gpu/gfxstream`, `guest/gpu/broker`, and
+`apps/ios/GPUStream/gfxstream` is not connected to this display handshake or player.
+It contains pinned source checks, socket adapters and bounded duplex transport;
+the experimental guest socket selection rejects initialization. It does not expose
+a working virtual GPU, provide coherent remote memory, or enable phone GPU feedback.
+
 ### Shell
 
 With the native vertical tab bar, Home's Ask field, the Agent composer and the tiled

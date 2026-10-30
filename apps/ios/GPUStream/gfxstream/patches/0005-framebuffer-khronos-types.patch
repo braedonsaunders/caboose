@@ -1,0 +1,11 @@
+--- a/host/frame_buffer.h
++++ b/host/frame_buffer.h
+@@ -23 +23,3 @@
+-#if GFXSTREAM_ENABLE_HOST_GLES
++// These are vendored Khronos type declarations. FrameBuffer retains some EGL
++// types in its interface even when its GLES implementation is disabled; the
++// headers do not link or enable a GLES implementation.
+@@ -27,3 +28,0 @@
+-#else
+-#include "gles_compat.h"
+-#endif  // GFXSTREAM_ENABLE_HOST_GLES

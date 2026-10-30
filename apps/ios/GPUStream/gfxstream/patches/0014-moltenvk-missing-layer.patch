@@ -1,0 +1,11 @@
+--- a/MoltenVK/MoltenVK/Vulkan/vulkan.mm
++++ b/MoltenVK/MoltenVK/Vulkan/vulkan.mm
+@@ -380 +380,2 @@
+-	VkResult rslt = MVKLayerManager::globalManager()->getLayerNamed(pLayerName)->getInstanceExtensionProperties(pCount, pProperties);
++	MVKLayer* layer = MVKLayerManager::globalManager()->getLayerNamed(pLayerName);
++	VkResult rslt = layer ? layer->getInstanceExtensionProperties(pCount, pProperties) : VK_ERROR_LAYER_NOT_PRESENT;
+@@ -393 +394,3 @@
+-	VkResult rslt = mvkPD->getExtensionProperties(pLayerName, pCount, pProperties);
++	VkResult rslt = MVKLayerManager::globalManager()->getLayerNamed(pLayerName)
++		? mvkPD->getExtensionProperties(pLayerName, pCount, pProperties)
++		: VK_ERROR_LAYER_NOT_PRESENT;

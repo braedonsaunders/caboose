@@ -1,0 +1,19 @@
+#version 450
+// Synthetic, repository-owned fixture. The indirect command and cookie are GPU outputs.
+// No geometry/cull feature is required and no application shader is substituted.
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Result {
+    uint vertexCount;
+    uint instanceCount;
+    uint firstVertex;
+    uint firstInstance;
+    uint cookie;
+} result;
+layout(push_constant) uniform Input { uint seed; } inputData;
+void main() {
+    result.vertexCount = 3u + inputData.seed % 4u;
+    result.instanceCount = 1u;
+    result.firstVertex = 0u;
+    result.firstInstance = 0u;
+    result.cookie = inputData.seed ^ 0x6d2b79f5u;
+}
