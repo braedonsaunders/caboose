@@ -1,0 +1,17 @@
+--- a/host/color_buffer.cpp
++++ b/host/color_buffer.cpp
+@@ -403 +403 @@
+-    if (!(mColorBufferGl && mColorBufferVk)) {
++    if (!(getColorBufferGl() && mColorBufferVk)) {
+@@ -418 +418 @@
+-    if (!(mColorBufferGl && mColorBufferVk)) {
++    if (!(getColorBufferGl() && mColorBufferVk)) {
+@@ -446 +446 @@
+-    if (!(mColorBufferGl && mColorBufferVk)) {
++    if (!(getColorBufferGl() && mColorBufferVk)) {
+@@ -467 +467 @@
+-    if (!(mColorBufferGl && mColorBufferVk)) {
++    if (!(getColorBufferGl() && mColorBufferVk)) {
+@@ -481 +481 @@
+-    if (!(mColorBufferGl && mColorBufferVk)) {
++    if (!(getColorBufferGl() && mColorBufferVk)) {
