@@ -40,20 +40,23 @@ int main() {
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
     assert(remote.sends.empty());
 
-    // Two separated edits send two page-aligned runs; the tail page ends at the range end.
+    // Two separated edits send two block-aligned runs; the tail block ends at the range end.
     local[5000] ^= 1;
     local[size - 1] ^= 1;
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
     assert(remote.sends.size() == 2);
-    assert(remote.sends[0] == std::make_pair(uint64_t(4096), uint64_t(4096)));
+    assert(remote.sends[0] == std::make_pair(uint64_t(4864), uint64_t(256)));
     assert(remote.sends[1] == std::make_pair(uint64_t(64 * 1024), uint64_t(100)));
     assert(remote.bytes == local);
 
-    // Adjacent changed pages merge into one run.
+    // Adjacent changed blocks merge into one run, across a page boundary too.
     remote.sends.clear();
-    local[8192] ^= 1; local[12288] ^= 1;
+    local[8191] ^= 1; local[8192] ^= 1; local[8448] ^= 1; local[12288] ^= 1;
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
-    assert(remote.sends.size() == 1 && remote.sends[0] == std::make_pair(uint64_t(8192), uint64_t(8192)));
+    assert(remote.sends.size() == 2);
+    assert(remote.sends[0] == std::make_pair(uint64_t(7936), uint64_t(768)));
+    assert(remote.sends[1] == std::make_pair(uint64_t(12288), uint64_t(256)));
+    assert(remote.bytes == local);
 
     // A partial page is sent within the chunk bounds and never trusted later.
     remote.sends.clear();

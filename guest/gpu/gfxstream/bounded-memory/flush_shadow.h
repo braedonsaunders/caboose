@@ -12,13 +12,14 @@
 namespace caboose::memory {
 
 inline constexpr uint64_t shadowPageBytes = 4096;
+inline constexpr uint64_t shadowBlockBytes = 256;
 inline constexpr uint64_t shadowMaxAllocationBytes = 16 * 1024 * 1024;
 // Shadows share processBudget with command-buffer staging; keep them to a slice of it.
 inline constexpr size_t shadowMaxTotalBytes = 24 * 1024 * 1024;
 
-// Last bytes the host received for each flushed allocation, at page granularity.
-// A flush sends only pages that differ from (or were never sent into) the
-// shadow. Invalidate, unmap and free drop knowledge of the host's copy, so the
+// Last bytes the host received for each flushed allocation. The host's copy is
+// known per page; within a known page a flush sends only the blocks that differ,
+// and a page never sent in full is sent whole. Invalidate, unmap and free drop knowledge of the host's copy, so the
 // next flush of those pages is sent in full. Allocations the budget cannot
 // shadow are always sent in full.
 class FlushShadow {
@@ -26,9 +27,9 @@ public:
     explicit FlushShadow(Budget& budget = processBudget) : budget_(budget) {}
     ~FlushShadow() { std::lock_guard<std::mutex> lock(mutex_); clearLocked(); }
 
-    // Calls emit(offset, size) for each maximal run of changed pages inside
+    // Calls emit(offset, size) for each maximal run of changed blocks inside
     // [offset, offset + size) of the mapping `base`, and records those bytes as
-    // sent. Run boundaries are page-aligned or equal to the chunk's own bounds.
+    // sent. Run boundaries are block-aligned or equal to the chunk's own bounds.
     template<class Emit>
     int emitChanged(uint64_t key, const uint8_t* base, uint64_t allocation,
                     uint64_t offset, uint64_t size, Emit emit) {
@@ -44,18 +45,24 @@ public:
             const size_t index = size_t(page / shadowPageBytes);
             const uint64_t pageEnd = page + shadowPageBytes < allocation ? page + shadowPageBytes : allocation;
             const bool whole = begin == page && stop == pageEnd;
-            bool changed = !entry->valid[index] ||
-                std::memcmp(entry->bytes.get() + begin, base + begin, size_t(stop - begin)) != 0;
-            if (changed) {
-                std::memcpy(entry->bytes.get() + begin, base + begin, size_t(stop - begin));
-                // A partially sent page is only known on the host where it was sent.
-                entry->valid[index] = whole || entry->valid[index];
-                if (!inRun) { runBegin = begin; inRun = true; }
-            } else if (inRun) {
-                const int result = emit(runBegin, begin - runBegin);
-                if (result != success) { forgetLocked(key); return result; }
-                inRun = false;
+            const bool known = entry->valid[index];
+            for (uint64_t block = begin; block < stop;) {
+                const uint64_t next = block - block % shadowBlockBytes + shadowBlockBytes;
+                const uint64_t blockStop = next < stop ? next : stop;
+                const bool changed = !known ||
+                    std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
+                if (changed) {
+                    std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
+                    if (!inRun) { runBegin = block; inRun = true; }
+                } else if (inRun) {
+                    const int result = emit(runBegin, block - runBegin);
+                    if (result != success) { forgetLocked(key); return result; }
+                    inRun = false;
+                }
+                block = blockStop;
             }
+            // A partially sent page is only known on the host where it was sent.
+            entry->valid[index] = whole || known;
         }
         if (inRun) {
             const int result = emit(runBegin, end - runBegin);
