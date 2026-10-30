@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { afterEach, expect, it } from 'vitest'
@@ -5,7 +6,7 @@ import { mkdtemp, mkdir, rm, readFile, writeFile, symlink, open } from 'node:fs/
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { accumulate, UsageHistory, WINDOW, type History } from './computer-usage.js'
-import { allocatedVolume, dockerCounters, dockerEndpointSelection, VOLUME_SCAN_SCRIPT } from './container-usage.js'
+import { allocatedVolume, containerHomeSource, containerUsage, dockerCounters, dockerEndpointSelection, VOLUME_SCAN_SCRIPT } from './container-usage.js'
 import type { UsageCounters } from '../../../packages/capacity/types.js'
 const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
@@ -81,7 +82,7 @@ it('uses Docker context ahead of an environment host override', () => {
   expect(dockerEndpointSelection({ DOCKER_HOST: 'unix:///actual' }).endpoint).toBe('unix:///actual')
   expect(dockerEndpointSelection({}).args).toContain('inspect')
 })
-it('rejects a directory swapped for an outside symlink between stat and open', async () => {
+it.each(['symlink', 'directory'])('rejects a directory swapped for a different %s between stat and open', async replacement => {
   const root = await temp(), outside = await temp()
   await mkdir(join(root, 'child')); await writeFile(join(outside, 'private'), 'outside')
   // Interpose exactly at the vulnerable boundary; the real worker still opens with NOFOLLOW.
@@ -92,11 +93,61 @@ def racing_open(path, flags, *args, **kwargs):
     if path == 'child':
         fd = kwargs['dir_fd']
         os.rename('child', 'moved', src_dir_fd=fd, dst_dir_fd=fd)
-        os.symlink(${JSON.stringify(outside)}, 'child', dir_fd=fd)
+        ${replacement === 'symlink' ? `os.symlink(${JSON.stringify(outside)}, 'child', dir_fd=fd)` : `os.mkdir('child', dir_fd=fd)`}
     return original_open(path, flags, *args, **kwargs)
 os.open = racing_open
 `
   await expect(promisify(execFile)('python3', ['-I', '-c', attack + VOLUME_SCAN_SCRIPT, root, '100'], { timeout: 2000 })).rejects.toThrow()
-  await expect(allocatedVolume(join(root, 'child'))).rejects.toThrow()
+  if (replacement === 'symlink') await expect(allocatedVolume(join(root, 'child'))).rejects.toThrow()
   expect(await readFile(join(outside, 'private'), 'utf8')).toBe('outside')
+})
+
+const bindHome = '/srv/caboose/home'
+const bindMount = { Type: 'bind', Source: bindHome, Destination: '/home/caboose' }
+it('selects only the exact configured bind home, ignoring unrelated inspected mounts', () => {
+  expect(containerHomeSource(bindHome, [{ ...bindMount, Source: '/' }, bindMount])).toBe(bindHome)
+  expect(containerHomeSource(`${bindHome}-tenant`, [{ ...bindMount, Source: `${bindHome}-tenant` }])).toBe(`${bindHome}-tenant`)
+  for (const mount of [
+    { ...bindMount, Source: '/srv/other' },
+    { ...bindMount, Source: `${bindHome}/` },
+    { ...bindMount, Destination: '/home/other' },
+    { ...bindMount, Destination: '/home/caboose/subdir' },
+    { ...bindMount, Type: 'volume', Name: bindHome },
+    { ...bindMount, Type: 'tmpfs' },
+    { ...bindMount, Source: undefined },
+  ]) expect(containerHomeSource(bindHome, [mount])).toBeUndefined()
+  for (const mounts of [undefined, null, {}, [], [null]]) expect(containerHomeSource(bindHome, mounts)).toBeUndefined()
+})
+it('rejects root, relative paths and traversal even with matching inspection metadata', () => {
+  for (const home of ['/', '//', '/srv/../home', '/srv/./home', '/srv//home', '/srv/home/', './home', '../home', 'srv/home', '/srv/\0home']) {
+    expect(containerHomeSource(home, [{ ...bindMount, Source: home, Name: home }, { Type: 'volume', Name: home, Source: '/unrelated', Destination: '/home/caboose' }])).toBeUndefined()
+  }
+})
+it('preserves exact named-volume selection without falling back to a bind', () => {
+  const volume = { Type: 'volume', Name: 'caboose-home', Source: '/var/lib/docker/volumes/caboose-home/_data', Destination: '/home/caboose' }
+  expect(containerHomeSource('caboose-home', [bindMount, volume])).toBe(volume.Source)
+  for (const mount of [{ ...volume, Name: 'other' }, { ...volume, Type: 'bind' }, { ...volume, Destination: '/' }, { ...volume, Source: null }]) {
+    expect(containerHomeSource('caboose-home', [mount])).toBeUndefined()
+  }
+})
+it('measures a configured bind home only on explicit refresh and shares the cached result', async () => {
+  const home = await temp(), socket = join(await temp(), 'engine.sock'), requests: string[] = []
+  await writeFile(join(home, 'file'), 'home bytes')
+  const server = createServer((req, res) => {
+    requests.push(req.url!)
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ Mounts: [{ ...bindMount, Source: home }], SizeRw: 10, SizeRootFs: 30 }))
+  })
+  await new Promise<void>(resolve => server.listen(socket, resolve))
+  try {
+    const usage = containerUsage('test', home, async () => socket)
+    expect(requests).toEqual([])
+    const first = usage.storage()
+    expect(usage.storage()).toBe(first)
+    expect(await first).toMatchObject({ home: { logicalBytes: { value: 10 } }, writableLayerLogicalBytes: { value: 10 }, sharedImageLogicalBytes: { value: 20 } })
+    expect(usage.storage()).toBe(first)
+    expect(requests).toEqual(['/containers/test/json?size=true'])
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
 })
