@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Finite private phone GPU diagnostic orchestration; no shipping service."""
 import argparse
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -18,6 +20,17 @@ def private_directory(path):
     st = path.lstat()
     if path.is_symlink() or not path.is_dir() or st.st_uid != os.geteuid() or st.st_mode & 0o077:
         raise ValueError("directory must be owned and mode 0700")
+
+
+@contextmanager
+def lock_directory(directory):
+    private_directory(directory)
+    fd = os.open(directory / ".session.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
 
 
 def write_private(path, data):
@@ -93,10 +106,12 @@ def cleanup_container(transport):
 
 
 def run(directory, guest_runner):
-    private_directory(directory)
-    config = json.loads((directory / "phone-environment.json").read_text())
+    with lock_directory(directory):
+        return run_locked(directory, guest_runner)
+
+
+def run_locked(directory, guest_runner):
     transport = directory / "transport"
-    private_directory(transport)
     broker = guest = None
     started = time.monotonic()
     deadline = started + 90
@@ -108,6 +123,8 @@ def run(directory, guest_runner):
     signal.signal(signal.SIGALRM, interrupted)
     signal.alarm(100)
     try:
+        private_directory(transport)
+        config = json.loads((directory / "phone-environment.json").read_text())
         with (directory / "broker.log").open("x") as log, (directory / "guest-runner.log").open("x") as guest_log:
             broker = subprocess.Popen([sys.executable, str(Path(__file__).with_name("phone_broker.py")),
                 "--bind", config["CABOOSE_GPU_HOST"], "--port", config["CABOOSE_GPU_PORT"],
@@ -172,7 +189,8 @@ def main():
         return 0
     private_directory(a.directory)
     if a.action == "cleanup":
-        cleanup_secrets(a.directory)
+        with lock_directory(a.directory):
+            cleanup_secrets(a.directory)
         return 0
     if not a.guest_runner: p.error("run requires --guest-runner")
     return run(a.directory, a.guest_runner)

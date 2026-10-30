@@ -56,6 +56,31 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertNotIn('phone_authenticated', result)
 
+    def test_duplicate_session_cannot_cleanup_active_trial(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d); directory.chmod(0o700)
+            token = directory / 'token'; token.write_bytes(b'synthetic')
+            with session.lock_directory(directory):
+                with self.assertRaises(BlockingIOError):
+                    session.run(directory, Path('/private/guest.py'))
+                self.assertEqual(token.read_bytes(), b'synthetic')
+                with self.assertRaises(BlockingIOError):
+                    with session.lock_directory(directory):
+                        session.cleanup_secrets(directory)
+                self.assertTrue(token.exists())
+
+    def test_invalid_config_cleans_owned_credentials(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d); directory.chmod(0o700)
+            (directory / 'transport').mkdir(mode=0o700)
+            (directory / 'token').write_bytes(b'synthetic')
+            (directory / 'phone-environment.json').write_text('{')
+            with patch.object(session.signal, 'signal'), patch.object(session.signal, 'alarm'), \
+                 patch.object(session.subprocess, 'Popen') as popen:
+                self.assertEqual(session.run(directory, Path('/private/guest.py')), 1)
+                popen.assert_not_called()
+                self.assertFalse((directory / 'token').exists())
+
     def test_mismatched_container_identity_not_removed(self):
         class Result:
             def __init__(self, stdout): self.stdout=stdout
