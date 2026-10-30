@@ -115,6 +115,7 @@ class Session:
             surface = self.surfaces.get(key)
             if surface is None or surface['process'] != frame.process or surface.get('replies') is None:
                 raise ValueError('unexpected surface response')
+            surface['verify_peer']()
             if frame.kind == Kind.SURFACE_BOUND:
                 if surface['bound'] is not None: raise ValueError('duplicate surface bind reply')
                 error, has_vk, vk, _ = struct.unpack_from('<iIiI', frame.payload, 40)
@@ -127,10 +128,19 @@ class Session:
                 serial = struct.unpack_from('<Q', frame.payload, 40)[0]
                 pending = surface['presents'].get(serial)
                 if pending is None: raise ValueError('unknown surface present')
-                field = 'result' if frame.kind == Kind.PRESENT_RESULT else 'release'
-                if pending[field]: raise ValueError('duplicate surface present reply')
-                pending[field] = True
-                if pending['result'] and pending['release']: del surface['presents'][serial]
+                if frame.kind == Kind.SOURCE_RELEASED:
+                    if pending['release']: raise ValueError('duplicate source release')
+                    pending['release'] = True
+                else:
+                    disposition, event = struct.unpack_from('<II', frame.payload, 64)
+                    if event == 0:
+                        if pending['result']: raise ValueError('duplicate submission result')
+                        if disposition == 0 and pending['release']: raise ValueError('rejected source was released')
+                        pending['result'] = True
+                        if disposition == 0: del surface['presents'][serial]
+                    else:
+                        if not pending['result'] or pending['terminal']: raise ValueError('unexpected terminal present event')
+                        pending['terminal'] = True
             body = (struct.pack('<Q', surface['window']) if frame.kind == Kind.SURFACE_BOUND else b'') + frame.payload
             data = surface_wire.encode_reply(frame.kind, body)
             if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
@@ -433,8 +443,10 @@ class Broker:
                 data = await queue.get()
                 async def send_packet():
                     while True:
+                        verify_peer()
                         try:
                             if sock.send(data) != len(data): raise OSError('partial surface seqpacket')
+                            verify_peer()
                             return
                         except BlockingIOError:
                             ready = loop.create_future()
@@ -447,14 +459,18 @@ class Broker:
         try:
             peer = PeerIdentity.from_socket(sock, os.getuid(), allow_seqpacket=True)
             process_id = session.bindings.find_process(session.binding_generation, peer)
+            def verify_peer():
+                if not peer.alive() or session.bindings.find_process(session.binding_generation, peer) != process_id:
+                    raise PermissionError('surface peer exited or changed')
             kind, body = await asyncio.wait_for(receive(), 5)
+            verify_peer()
             if kind != 16: raise ValueError('surface bind required')
             instance, obj, width, height, _ = struct.unpack('<QIIII', body)
             result = await self.request_bind(session, process_id, obj)
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
             surface['replies'] = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
-            surface.update(bound=None, queries=set(), presents={}, last_query=0, last_present=0, reply_bytes=0)
+            surface.update(bound=None, queries=set(), presents={}, last_query=0, last_present=0, reply_bytes=0, verify_peer=verify_peer)
             sender = asyncio.create_task(send_replies(surface['replies']))
             def sender_done(task):
                 if not task.cancelled() and task.exception() is not None:
@@ -464,7 +480,10 @@ class Broker:
             identity = result.epoch + result.grant + struct.pack('<Q', result.generation)
             session.send(Kind.SURFACE_BIND, process_id, payload=identity + struct.pack('<QQII', result.window, instance, width, height))
             while not session.draining:
-                kind, body = await receive()
+                verify_peer()
+                try: kind, body = await asyncio.wait_for(receive(), 1)
+                except asyncio.TimeoutError: continue
+                verify_peer()
                 if kind == 18:
                     query = struct.unpack_from('<Q', body)[0]
                     if not surface['bound'] or query <= surface['last_query'] or len(surface['queries']) >= 64:
@@ -477,7 +496,7 @@ class Broker:
                     if not surface['bound'] or serial <= surface['last_present'] or len(surface['presents']) >= 64:
                         raise ValueError('invalid present state')
                     surface['last_present'] = serial
-                    surface['presents'][serial] = {'result': False, 'release': False}
+                    surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False}
                     session.send(Kind.PRESENT, process_id, payload=identity + body)
                 elif kind == 23:
                     if not surface['retiring']:

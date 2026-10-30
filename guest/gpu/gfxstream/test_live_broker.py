@@ -324,7 +324,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.processes[1] = {}
         surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(maxsize=64),
                    'reply_bytes': 0, 'bound': None, 'queries': {3},
-                   'presents': {4: {'result': False, 'release': False}}}
+                   'verify_peer': lambda: None,
+                   'presents': {4: {'result': False, 'release': False, 'terminal': False}}}
         session.surfaces[key] = surface
         bound = identity + struct.pack('<iIiI', 0, 1, 0, 0)
         await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 1, bound))
@@ -338,6 +339,30 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await session.message(Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 4, release))
         self.assertIn(4, surface['presents'])
+        session.bindings.finish(session.binding_generation)
+
+    async def test_present_late_device_loss_and_rejected_capacity(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        session.processes[1] = {}
+        surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(maxsize=64), 'reply_bytes': 0,
+                   'verify_peer': lambda: None, 'presents': {4: {'result': False, 'release': False, 'terminal': False}}}
+        session.surfaces[key] = surface
+        def result(serial, disposition, event, vk=0):
+            return identity + struct.pack('<QiIiIII', serial, 0, 1, vk, 0, disposition, event)
+        async def deliver(kind, payload):
+            await session.message(Envelope(kind, b'a' * 16, 1, 1, 0, 1, payload))
+        await deliver(Kind.PRESENT_RESULT, result(4, 1, 0))
+        await deliver(Kind.SOURCE_RELEASED, identity + struct.pack('<Q', 4))
+        await deliver(Kind.PRESENT_RESULT, result(4, 1, 1, -4))
+        self.assertTrue(surface['presents'][4]['terminal'])
+        with self.assertRaises(ValueError): await deliver(Kind.PRESENT_RESULT, result(4, 1, 1, -4))
+        surface['presents'][5] = {'result': False, 'release': False, 'terminal': False}
+        await deliver(Kind.PRESENT_RESULT, result(5, 0, 0, -3))
+        self.assertNotIn(5, surface['presents'])
+        with self.assertRaises(ValueError): await deliver(Kind.PRESENT_RESULT, result(5, 0, 0, -3))
         session.bindings.finish(session.binding_generation)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
