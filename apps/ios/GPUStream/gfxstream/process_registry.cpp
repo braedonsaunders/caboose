@@ -3,6 +3,11 @@
 #include "decode_connection.h"
 #include "frame_buffer.h"
 #include "render_thread_info.h"
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+#include "process_registry_presentation.h"
+#include "vk_decoder_global_state.h"
+#include <vector>
+#endif
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
@@ -149,3 +154,39 @@ extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64
     registry->processes.erase(it);
     return 0;
 }
+#ifdef CABOOSE_GPU_PRESENTATION_LEASE
+namespace caboose::gpuv2 {
+VkResult acquirePresentationObjects(caboose_gfx_registry* registry,
+    uint64_t boxedInstance, const caboose_gpu_present_info& info,
+    std::unique_ptr<gfxstream::host::vk::CaboosePresentationObjects>* out) {
+    static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "64-bit boxed Vulkan handles required");
+    if (!out) return VK_ERROR_INITIALIZATION_FAILED;
+    out->reset();
+    if (!registry || !info.identity.process_token || !boxedInstance ||
+        info.wait_semaphore_count > CABOOSE_GPU_PRESENT_MAX_WAIT_SEMAPHORES ||
+        (info.wait_semaphore_count && !info.boxed_wait_semaphores))
+        return VK_ERROR_INITIALIZATION_FAILED;
+    try {
+        std::vector<VkSemaphore> waits;
+        waits.reserve(info.wait_semaphore_count);
+        for (uint32_t i = 0; i < info.wait_semaphore_count; ++i)
+            waits.push_back((VkSemaphore)(uintptr_t)info.boxed_wait_semaphores[i]);
+        // Process stop takes this same lock; no new lease can be admitted after
+        // stop marks the process dead and schedules upstream cleanup.
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        auto it = registry->processes.find(info.identity.process_token);
+        if (it == registry->processes.end() || it->second->stopped)
+            return VK_ERROR_INITIALIZATION_FAILED;
+        return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCaboosePresentationObjects(
+            it->second->context, (VkInstance)(uintptr_t)boxedInstance,
+            (VkDevice)(uintptr_t)info.boxed_device, (VkQueue)(uintptr_t)info.boxed_queue,
+            (VkImage)(uintptr_t)info.boxed_image, (VkFormat)info.vk_format,
+            info.width, info.height, info.queue_family,
+            info.wait_semaphore_count, waits.data(), out);
+    } catch (const std::bad_alloc&) {
+        out->reset();
+        return VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+}
+}
+#endif

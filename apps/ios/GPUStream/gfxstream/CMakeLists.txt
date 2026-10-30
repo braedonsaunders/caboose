@@ -44,8 +44,15 @@ endif()
 # This retains the real upstream framebuffer and offscreen Vulkan compositor.
 # Its upstream target currently has desktop dependencies and is not iOS-ready.
 if(TARGET gfxstream_backend_static)
+    option(CABOOSE_GFXSTREAM_PRESENTATION_LEASE "Build experimental decoder-owned presentation leases" OFF)
+    if(CABOOSE_GFXSTREAM_PRESENTATION_LEASE AND NOT EXISTS "${GFXSTREAM_REPO_ROOT}/host/vulkan/caboose_presentation_lifetime.h")
+        message(FATAL_ERROR "Presentation leases require the matching patched decoder source")
+    endif()
     add_library(caboose_gfxstream_framebuffer STATIC headless_framebuffer.cpp process_registry.cpp)
     target_compile_definitions(caboose_gfxstream_framebuffer PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
+    if(CABOOSE_GFXSTREAM_PRESENTATION_LEASE)
+        target_compile_definitions(caboose_gfxstream_framebuffer PRIVATE CABOOSE_GPU_PRESENTATION_LEASE=1)
+    endif()
     target_compile_features(caboose_gfxstream_framebuffer PRIVATE cxx_std_17)
     target_include_directories(caboose_gfxstream_framebuffer PRIVATE
         "${GFXSTREAM_REPO_ROOT}"

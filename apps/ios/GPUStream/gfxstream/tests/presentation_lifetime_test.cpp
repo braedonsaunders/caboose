@@ -7,12 +7,14 @@
 #include <thread>
 using caboose::gpuv2::PresentationLease;
 using caboose::gpuv2::PresentationLifetime;
+using caboose::gpuv2::PresentationMutation;
 int main() {
     auto image = std::make_shared<PresentationLifetime>();
     auto other = std::make_shared<PresentationLifetime>();
     auto lease = std::make_unique<PresentationLease>();
     assert(lease->acquire(image));
     assert(lease->acquire(other));
+    { PresentationMutation mutation; assert(!mutation.acquire(other)); }
     image->close();
     auto late = std::make_unique<PresentationLease>();
     assert(!late->acquire(image));
@@ -30,4 +32,17 @@ int main() {
     assert(!std::make_unique<PresentationLease>()->acquire(other));
     late.reset();
     other->wait();
+    auto memory = std::make_shared<PresentationLifetime>();
+    std::future<void> pending;
+    {
+        PresentationMutation mutation;
+        assert(mutation.acquire(memory));
+        assert(mutation.acquire(memory)); // duplicate entries bind once
+        PresentationLease concurrent;
+        assert(!concurrent.acquire(memory));
+        memory->close();
+        pending = std::async(std::launch::async, [&] { memory->wait(); });
+        assert(pending.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
+    }
+    pending.get();
 }

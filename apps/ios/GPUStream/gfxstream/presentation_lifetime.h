@@ -14,7 +14,7 @@ class PresentationLifetime {
 public:
     bool tryAcquire() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_) return false;
+        if (closed_ || mutating_) return false;
         ++active_;
         return true;
     }
@@ -26,6 +26,18 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         closed_ = true;
     }
+    bool tryMutation() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (closed_ || active_) return false;
+        mutating_ = true;
+        ++active_;
+        return true;
+    }
+    void endMutation() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mutating_ = false;
+        if (--active_ == 0) drained_.notify_all();
+    }
     void wait() {
         std::unique_lock<std::mutex> lock(mutex_);
         drained_.wait(lock, [this] { return active_ == 0; });
@@ -35,6 +47,7 @@ private:
     std::condition_variable drained_;
     size_t active_ = 0;
     bool closed_ = false;
+    bool mutating_ = false;
 };
 
 // Noncopyable; ownership may be transferred between threads. A submitted GPU operation must
@@ -49,6 +62,25 @@ public:
         if (!gate || !gate->tryAcquire()) return false;
         try { gates_.push_back(gate); }
         catch (...) { gate->release(); throw; }
+        return true;
+    }
+private:
+    std::vector<std::shared_ptr<PresentationLifetime>> gates_;
+};
+
+// Used while a real bind call is in flight, including its state update. An
+// existing presenter lease or another mutation rejects admission immediately.
+class PresentationMutation {
+public:
+    PresentationMutation() = default;
+    PresentationMutation(const PresentationMutation&) = delete;
+    PresentationMutation& operator=(const PresentationMutation&) = delete;
+    ~PresentationMutation() { for (auto& gate : gates_) gate->endMutation(); }
+    bool acquire(const std::shared_ptr<PresentationLifetime>& gate) {
+        for (const auto& held : gates_) if (held == gate) return true;
+        if (!gate || !gate->tryMutation()) return false;
+        try { gates_.push_back(gate); }
+        catch (...) { gate->endMutation(); throw; }
         return true;
     }
 private:
