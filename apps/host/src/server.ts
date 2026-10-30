@@ -1,5 +1,6 @@
-import { recoveryRoute } from './recovery.js'
 import { CapacitySampler, capacityFor } from './capacity.js'
+import { recoveryRoute } from './recovery.js'
+import { AccountSocketFence } from './identity/socket-fence.js'
 import { computerSizes, expandSize } from './sizes.js'
 import { createHash } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
@@ -1351,6 +1352,7 @@ export function createCabooseServer(options: ComputerPieces & {
             input.person = selected.name
           }
           await options.fleet.computers.assign(runtime.id, input as Partial<ComputerAssignment>)
+          await accountSockets.revalidate()
           return json(response, 200, describe(runtime))
         }
         if (!phones && request.method === 'DELETE') {
@@ -1393,6 +1395,10 @@ export function createCabooseServer(options: ComputerPieces & {
     })
   })
 
+  const accountSockets = new AccountSocketFence()
+  const unsubscribeAuthorization = identity?.onAuthorizationChange(() => accountSockets.revalidate())
+  server.once('close', () => { unsubscribeAuthorization?.(); accountSockets.dispose() })
+
   server.on('upgrade', (request, socket, head) => void (async () => {
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
@@ -1400,10 +1406,22 @@ export function createCabooseServer(options: ComputerPieces & {
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (principal.kind === 'admin') {
+      const remove = accountSockets.add(async () => {
+        const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
+        return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
+      }, () => socket.destroy())
+      socket.once('close', remove)
+      // Fence a revocation racing the initial upgrade authorization.
+      await accountSockets.revalidate()
+      if (socket.destroyed) return
+    }
     routed.runtime.connect(request, socket, head, url, routed.path, principal)
   })())
 
   async function shutdown(): Promise<void> {
+    unsubscribeAuthorization?.()
+    accountSockets.dispose()
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }

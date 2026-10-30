@@ -15,6 +15,8 @@ import { People } from './pages/People.js'
 import { Tenants } from './pages/Tenants.js'
 import { Usage } from './pages/Usage.js'
 import { Host } from './pages/Host.js'
+import { Security } from './pages/Security.js'
+import { PasswordRecovery } from './pages/PasswordRecovery.js'
 
 /** Every navigation entry routes client-side, so the shell never reloads the page. */
 const linkRender: LinkRender = ({ href, children, className, title, ariaCurrent, role }) => (
@@ -69,6 +71,7 @@ export function App() {
   let page: React.ReactNode
   if (route.page === 'setup') page = <Setup onDone={() => { signedIn({ kind: 'account' }); navigate('/', { replace: true }) }} />
   else if (route.page === 'invite') page = <AcceptInvite onDone={() => { signedIn({ kind: 'account' }); navigate('/', { replace: true }) }} />
+  else if (route.page === 'recover') page = <PasswordRecovery />
   else if (session === 'checking') page = <main className="flex min-h-screen items-center justify-center"><RollingWordmark label="Loading" /></main>
   else if (session === null) page = <SignIn onSignIn={signedIn} />
   else page = <Console session={session} onSignOut={signOut} />
@@ -101,20 +104,21 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
   const awake = computers.list?.computers.some(computer => computer.state !== 'parked') ?? false
 
   React.useEffect(() => {
-    const titles: Partial<Record<typeof route.page, string>> = { usage: 'Usage', host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants' }
+    const titles: Partial<Record<typeof route.page, string>> = { host: 'Host', computers: 'Computers', people: 'People', tenants: 'Tenants', usage: 'Usage', security: 'Account security' }
     if (route.page !== 'computer') document.title = titles[route.page] ? `${titles[route.page]} — Caboose` : 'Caboose'
   }, [route.page])
 
   // Tenants and Host are the operator's; anyone else who lands there goes to the Overview.
   React.useEffect(() => {
     if (me && !me.operator && (route.page === 'tenants' || route.page === 'host')) navigate('/', { replace: true })
-  }, [me, route.page])
+    if (me && session.kind !== 'account' && route.page === 'security') navigate('/', { replace: true })
+  }, [me, route.page, session.kind])
 
   if (!me) return <main className="flex min-h-screen items-center justify-center"><RollingWordmark label="Loading" /></main>
 
   return (
     <AppShell
-      groups={navigationGroups(operator)}
+      groups={navigationGroups(operator, session.kind === 'account')}
       pathname={sidebarPath(route)}
       navigationMode="sidebar"
       linkRender={linkRender}
@@ -123,12 +127,14 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
         // a lit train rolls now and then, a parked one stays still.
         <Wordmark height={30} lit={awake} motion={awake ? 'idle' : 'none'} className="text-fg" />
       }
+      headerMiddle={<div className="flex min-w-0 items-center gap-2 text-sm"><span className="truncate font-medium">Administrator console</span><span className="hidden text-fg-muted sm:inline">/ {operator ? 'Host operator' : 'Tenant administrator'}</span></div>}
+      sidebarFooter={<div className="px-3 py-2 text-xs text-fg-muted"><p className="font-medium text-fg">{operator ? 'Host workspace' : 'Your workspace'}</p><p className="mt-1 truncate">{operator ? 'Computers, access & resources' : me.tenants.map(tenant => tenant.name).join(', ')}</p></div>}
       header={
         <AccountMenu
           name={me.user?.name ?? 'Owner token'}
           email={me.user?.email ?? 'Signed in with CABOOSE_OWNER_TOKEN'}
           roleLabel={operator ? 'Operator' : 'Administrator'}
-          showTheme={false}
+          showTheme={true}
           onSignOut={onSignOut}
         />
       }
@@ -152,6 +158,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
       ) : null}
       {route.page === 'usage' ? <Usage client={client} me={me} onUnauthorized={onSignOut} /> : null}
       {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
+      {route.page === 'security' && session.kind === 'account' ? <Security onSignOut={onSignOut} /> : null}
       {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (
         // Keyed by computer, so nothing one computer's tabs loaded is shown for another.

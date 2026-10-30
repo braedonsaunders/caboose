@@ -893,7 +893,7 @@ visible to the operator and their existing tenant administrators, not to other t
 
 **Invitations** are links an administrator copies: `/invite?token=<token>`, single-use,
 valid for seven days, kept as a SHA-256. A new administrator chooses a name and password;
-someone with an account confirms it with their password. A tenant keeps at least one
+someone with an account completes sign-in, including MFA when enabled. A tenant keeps at least one
 administrator.
 
 Computer status includes `sizes`, the host's preset catalog: Micro (2 vCPUs, 2048 MiB),
@@ -919,7 +919,7 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `POST` | `/v1/setup/link` | Owner token only; `{ path }` containing the one-time setup link; 409 once claimed |
 | `GET`, `POST` | `/v1/tenants/:id/people` | Lists `{ people: [{ id, tenantId, name, userId, createdAt }] }`; creates a phone user with `{ name }`, no login required |
 | `PATCH`, `DELETE` | `/v1/people/:id` | Rename `{ name }` or delete a person in an administered tenant; deletion refuses assigned computers |
-| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`. Sign-up is closed; accounts come from setup and invitations |
+| any | `/v1/auth/*` | Better Auth: `POST /v1/auth/sign-in/email { email, password }`, `POST /v1/auth/sign-out`, `GET /v1/auth/get-session`, `POST /v1/auth/change-password`, and the account security routes described in [account security](account-security.md). Sign-up is closed; accounts come from setup and invitations |
 | `GET` | `/v1/me` | `{ kind: "owner" \| "admin", user: { id, name, email } \| null, operator, setupRequired, tenants: [{ id, name, quotas, createdAt }] }` |
 | `GET`, `POST` | `/v1/tenants` | The tenants the caller administers, each with `usage: { computers, memoryMb, vcpus, diskBytes }`; the operator makes one with `{ name, quotas? }` |
 | `GET`, `PATCH`, `DELETE` | `/v1/tenants/:id` | One tenant; `PATCH { name?, quotas? }` (quotas: the operator only); `DELETE` (the operator, once it has no computers) |
@@ -928,9 +928,11 @@ checked when a computer is made, resized or moved, and all three when it wakes.
 | `GET`, `POST` | `/v1/tenants/:id/invites` | Waiting invitations; `POST { email }` → 201 `{ invite, token }`, the token shown only here |
 | `DELETE` | `/v1/tenants/:id/invites/:invite` | Withdraws an invitation |
 | `GET` | `/v1/invites/:token` | **No account.** `{ tenantName, email, expiresAt, accountExists }` |
-| `POST` | `/v1/invites/:token/accept` | **No account.** `{ name?, password }` → the session cookie; `name` for a new account |
+| `POST` | `/v1/invites/:token/accept` | `{ name, password }` creates a new account and session; an existing account must already have a completed matching session |
 
 A tenant an administrator does not administer answers 404, as if it were not there.
+
+### Capacity and usage
 
 The console Usage page reads `GET /v1/tenants/:id/capacity` for an administered
 tenant and `GET /v1/host/capacity` for the operator. It separates configured and
@@ -943,6 +945,11 @@ console polls thirty seconds. Existing quotas and enforcement are unchanged.
 See [capacity and usage](capacity.md) for the complete contract and limitations.
 
 ### Authentication
+
+Account security provides password changes, configured recovery email, authenticator MFA,
+single-use recovery codes and session revocation; see [administrator account security](account-security.md).
+Existing-account invitations require completed sign-in including MFA. Revocation revalidates
+open administrator sockets before returning; expiry is checked every thirty seconds.
 
 A request is from one of three kinds of caller:
 

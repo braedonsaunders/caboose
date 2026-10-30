@@ -1,4 +1,5 @@
-import { DashboardMetricCard, DashboardPanel } from '@braedonsaunders/appkit-dashboard/primitives'
+import { DashboardMetricCard, DashboardPanel } from '../../components/console-ui.js'
+
 import { Badge } from '@braedonsaunders/appkit-ui'
 import { Clock, Cpu, HardDrive, Smartphone } from 'lucide-react'
 import { formatIdleDuration, formatMemoryMb } from '../../api.js'

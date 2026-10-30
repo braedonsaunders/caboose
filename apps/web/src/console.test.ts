@@ -184,6 +184,15 @@ describe('navigation and actions', () => {
     expect(navigationGroups(false).map(group => group.label)).toEqual(['Overview', 'Computers', 'Usage', 'People'])
   })
 
+  it('offers account security only for account sessions and preserves management links', () => {
+    expect(navigationGroups(true).some(group => group.label === 'Account security')).toBe(false)
+    expect(navigationGroups(false, true).some(group => group.label === 'Account security')).toBe(true)
+    for (const page of ['usage', 'security', 'recover'] as const) {
+      expect(parseRoute(routeHref({ page }))).toEqual({ page })
+    }
+    expect(parseRoute('/computers/owner/backups')).toEqual({ page: 'computer', id: 'owner', tab: 'backups' })
+  })
+
   it('never sends account, tenant or invitation routes under a computer', async () => {
     const seen: string[] = []
     const client = new CabooseClient(() => '', '', async url => { seen.push(String(url)); return new Response('{}', { status: 200 }) }).forComputer('c-0123456789')

@@ -1,5 +1,5 @@
-import type { RecoveryStatus } from './recovery.js'
 import type { Capacity } from '../../../packages/capacity/types.js'
+import type { RecoveryStatus } from './recovery.js'
 import type { CatalogOperation, CatalogPage, CatalogResponse, CatalogStorefront, DiscoverQuery } from './catalog.js'
 import { fsQuery, joinPath, numberedName, type FileItem } from './files.js'
 import type { ComponentsUpgrade, HealthStatus, HostInfo } from './host.js'

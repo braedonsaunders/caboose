@@ -1,8 +1,10 @@
 import { createHash, randomBytes, timingSafeEqual, randomUUID } from 'node:crypto'
 import { rm } from 'node:fs/promises'
 import { and, asc, eq, gt, inArray, isNull, sql } from 'drizzle-orm'
-import { createAppkitAuth, type AppkitAuth } from '@braedonsaunders/appkit-auth'
+import { createAppkitAuth, type AppkitAuth, type AuthEmailSender } from '@braedonsaunders/appkit-auth'
 import { authAccounts, memberships, tenants, users } from '@braedonsaunders/appkit-db/schema'
+import { AuthInputError, readAuthObject } from './auth-input.js'
+import { accountEmail } from './email.js'
 import { secretFile } from '../owner-token.js'
 import type { IdentityDatabase } from './database.js'
 import { invites, people } from './schema.js'
@@ -12,7 +14,7 @@ import { invites, people } from './schema.js'
  * console; the people whose computers they run use only their phones, which pair with a
  * computer and need no account. The first account is made by claiming the host and is its
  * operator, who sees every tenant. Invitations are links an administrator copies and sends
- * however they like; this host sends no email.
+ * however they like. Recovery email uses the configured host transport.
  */
 
 /** Limits on what a tenant's computers are given between them; null is no limit. */
@@ -85,6 +87,14 @@ function slugFor(name: string): string {
 }
 
 export class Identity {
+  private readonly authorizationListeners = new Set<() => Promise<void>>()
+  onAuthorizationChange(listener: () => Promise<void>): () => void {
+    this.authorizationListeners.add(listener)
+    return () => { this.authorizationListeners.delete(listener) }
+  }
+  private async authorizationChanged(): Promise<void> {
+    await Promise.all([...this.authorizationListeners].map(listener => listener()))
+  }
   private claimedOnce = false
   private claiming: Promise<unknown> | undefined
 
@@ -94,6 +104,8 @@ export class Identity {
     private readonly setupCodePath: string,
     private readonly transports: { http: AppkitAuth; https: AppkitAuth },
     private readonly defaultTransport: 'http' | 'https',
+    readonly recoveryAvailable: boolean,
+    private readonly publicOrigin: string,
   ) {}
 
   /**
@@ -101,7 +113,8 @@ export class Identity {
    * whatever origin a browser used to reach this host, since a home server answers on its LAN
    * address, its Tailscale name and loopback alike.
    */
-  static create(options: { database: IdentityDatabase; baseURL: string; secret: string; setupCodePath: string }): Identity {
+  static create(options: { database: IdentityDatabase; baseURL: string; secret: string; setupCodePath: string; sendEmail?: AuthEmailSender }): Identity {
+    const sendEmail = options.sendEmail ?? accountEmail()
     const configured = new URL(options.baseURL)
     const makeAuth = (protocol: 'http:' | 'https:'): AppkitAuth => {
       const url = new URL(configured)
@@ -112,7 +125,9 @@ export class Identity {
         baseURL,
         secret: options.secret,
         appName: 'Caboose',
-        sendEmail: async () => { throw new Error('This host sends no email') },
+        sendEmail: sendEmail ?? (async () => { throw new Error('Password recovery email is not configured') }),
+        twoFactor: { issuer: 'Caboose' },
+        session: { cookieCacheEnabled: false },
         trustedOrigins: request => {
           const host = request?.headers.get('host')
           const proto = request?.headers.get('x-forwarded-proto') ?? new URL(request?.url ?? baseURL).protocol.replace(':', '')
@@ -125,12 +140,65 @@ export class Identity {
     // prefixes follow the connection used by the browser, not the advertised URL.
     const transports = { http: makeAuth('http:'), https: makeAuth('https:') }
     const preferred = configured.protocol === 'https:' ? 'https' : 'http'
-    return new Identity(options.database, transports[preferred], options.setupCodePath, transports, preferred)
+    return new Identity(options.database, transports[preferred], options.setupCodePath, transports, preferred, Boolean(sendEmail), configured.origin)
   }
 
-  handleAuthentication(request: Request): Promise<Response> {
-    const transport = new URL(request.url).protocol === 'https:' ? 'https' : 'http'
-    return this.transports[transport].handler(request)
+  async handleAuthentication(request: Request): Promise<Response> {
+    const url = new URL(request.url)
+    const path = url.pathname.replace('/v1/auth', '')
+    const auth = path === '/request-password-reset' || path.startsWith('/reset-password')
+      ? this.auth : this.transports[url.protocol === 'https:' ? 'https' : 'http']
+    const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' } })
+    const allowed = new Set([
+      'POST /sign-in/email', 'POST /sign-out', 'GET /get-session',
+      'POST /change-password', 'POST /request-password-reset', 'POST /reset-password',
+      'GET /list-sessions', 'POST /revoke-session', 'POST /revoke-other-sessions',
+      'POST /two-factor/enable', 'POST /two-factor/disable', 'POST /two-factor/verify-totp',
+      'POST /two-factor/verify-backup-code', 'POST /two-factor/generate-backup-codes',
+    ])
+    if (path === '/security-config' && request.method === 'GET') return reply({ recoveryAvailable: this.recoveryAvailable })
+    if (!allowed.has(`${request.method} ${path}`) && !(request.method === 'GET' && /^\/reset-password\/[^/]+$/.test(path))) return reply({ error: 'not found' }, 404)
+    if (path === '/request-password-reset' && !this.recoveryAvailable) return reply({ message: 'Password recovery email is not configured on this host.' }, 503)
+    let body: Record<string, unknown> = {}
+    if (path === '/request-password-reset' || path === '/revoke-session') {
+      try { body = await readAuthObject(request) }
+      catch (error) {
+        if (error instanceof AuthInputError) return reply({ message: error.message }, error.status)
+        throw error
+      }
+    }
+    if (path === '/request-password-reset') {
+      // Recovery links always return to the configured public origin, never Host or input.
+      request = new Request(request.url, { method: 'POST', headers: request.headers,
+        body: JSON.stringify({ email: body.email, redirectTo: `${this.publicOrigin}/recover` }) })
+    }
+    // Session tokens are credentials. Only IDs cross the account-management boundary.
+    if (path === '/revoke-session') {
+      if (typeof body.id !== 'string') return reply({ message: 'A session ID is required' }, 400)
+      const sessions = await auth.api.listSessions({ headers: request.headers }).catch(() => null)
+      if (!sessions) return reply({ message: 'Sign in to manage sessions' }, 401)
+      const session = sessions.find(item => item.id === body.id)
+      if (!session) return reply({ message: 'Session not found' }, 404)
+      request = new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify({ token: session.token }) })
+    }
+    if (request.method === 'GET' && path.startsWith('/reset-password/')) {
+      url.searchParams.set('callbackURL', `${this.publicOrigin}/recover`)
+      request = new Request(url, request)
+    }
+    const response = await auth.handler(request)
+    if (response.ok && request.method === 'POST') await this.authorizationChanged()
+    response.headers.set('cache-control', 'no-store')
+    response.headers.set('referrer-policy', 'no-referrer')
+    if (response.ok && (path === '/list-sessions' || path === '/get-session')) {
+      const body = await response.json()
+      const safeSession = (session: Record<string, unknown>) => {
+        const { token: _token, ...safe } = session
+        return safe
+      }
+      const safe = path === '/list-sessions' ? body.map(safeSession) : body ? { ...body, session: safeSession(body.session) } : null
+      return new Response(JSON.stringify(safe), { status: response.status, headers: response.headers })
+    }
+    return response
   }
 
   private authFor(headers: Headers): AppkitAuth {
@@ -233,9 +301,9 @@ export class Identity {
 
   // --- Sessions ---------------------------------------------------------------
 
-  async principal(headers: Headers): Promise<AdminPrincipal | undefined> {
+  async principal(headers: Headers, options: { disableRefresh?: boolean } = {}): Promise<AdminPrincipal | undefined> {
     if (!headers.get('cookie')) return undefined
-    const session = await this.authFor(headers).api.getSession({ headers }).catch(() => null)
+    const session = await this.authFor(headers).api.getSession({ headers, query: { disableRefresh: options.disableRefresh } }).catch(() => null)
     const user = session?.user as { id: string; name: string; email: string; isActive?: boolean; isSuperAdmin?: boolean } | undefined
     if (!user || user.isActive === false) return undefined
     const rows = await this.db.select({ tenantId: memberships.tenantId }).from(memberships)
@@ -341,6 +409,7 @@ export class Identity {
     if (!current.some(admin => admin.userId === userId)) throw new IdentityNotFoundError('administrator not found')
     if (current.length === 1) throw new IdentityConflictError('A tenant keeps at least one administrator')
     await this.db.delete(memberships).where(and(eq(memberships.tenantId, tenantId), eq(memberships.userId, userId)))
+    await this.authorizationChanged()
   }
 
   // --- Invitations --------------------------------------------------------------
@@ -382,31 +451,30 @@ export class Identity {
 
   /**
    * Accepts an invitation: a new administrator chooses a name and password; one who already
-   * has an account confirms it with their password. Either way they join the tenant.
+   * has an account must have completed sign-in, including MFA. Either way they join the tenant.
    */
-  async acceptInvite(token: unknown, input: Record<string, unknown>): Promise<{ email: string; password: string }> {
+  async acceptInvite(token: unknown, input: Record<string, unknown>, headers = new Headers()): Promise<{ email: string; password?: string }> {
     const { invite } = await this.openInvite(token)
-    const secret = password(input.password)
     const context = await this.auth.$context
     const existing = await context.internalAdapter.findUserByEmail(invite.email, { includeAccounts: true })
     let userId: string
     let displayName: string
     if (existing) {
-      const credential = existing.accounts.find(account => account.providerId === 'credential')
-      if (!credential?.password || !await context.password.verify({ hash: credential.password, password: secret })) {
-        throw new IdentityInputError('That is not the password for this account')
+      const principal = await this.principal(headers)
+      if (!principal || principal.userId !== existing.user.id) {
+        throw new IdentityInputError('Sign in to the invited account, including two-factor authentication, before accepting')
       }
       userId = existing.user.id
       displayName = existing.user.name
     } else {
       displayName = label(input.name, 'name')
-      userId = await this.createAccount(displayName, invite.email, secret)
+      userId = await this.createAccount(displayName, invite.email, password(input.password))
     }
     const accepted = await this.db.update(invites).set({ acceptedAt: new Date(), acceptedBy: userId })
       .where(and(eq(invites.id, invite.id), isNull(invites.acceptedAt))).returning({ id: invites.id })
     if (!accepted.length) throw new IdentityNotFoundError('This invitation has expired or was already used')
     await this.addMembership(invite.tenantId, userId, displayName)
-    return { email: invite.email, password: secret }
+    return { email: invite.email, ...(!existing ? { password: password(input.password) } : {}) }
   }
 }
 

@@ -113,7 +113,7 @@ describe('tenants, administrators and invitations', () => {
     await expect(identity.tenant(family.id)).rejects.toThrow(/not found/)
   })
 
-  it('invites an administrator by link, once, and lets an existing account join with its password', async () => {
+  it('invites an administrator by link, once, and requires completed sign-in for an existing account', async () => {
     const team = await identity.createTenant({ name: 'Team' })
     const { token, invite } = await identity.invite(team.id, { email: 'Sam@Example.com' }, null)
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
@@ -130,8 +130,10 @@ describe('tenants, administrators and invitations', () => {
     // The owner joins too, with the password they already have.
     const second = await identity.invite(team.id, { email: 'owner@example.com' }, sam!.userId)
     expect((await identity.inspectInvite(second.token)).accountExists).toBe(true)
-    await expect(identity.acceptInvite(second.token, { password: 'not it at all' })).rejects.toThrow(/not the password/)
-    await identity.acceptInvite(second.token, { password: 'correct horse' })
+    await expect(identity.acceptInvite(second.token, { password: 'correct horse' })).rejects.toThrow(/Sign in/)
+    await expect(identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(signedIn) }))).rejects.toThrow(/Sign in/)
+    const ownerSession = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+    await identity.acceptInvite(second.token, {}, new Headers({ cookie: cookieFrom(ownerSession) }))
     expect((await identity.administrators(team.id)).map(admin => admin.email)).toEqual(['sam@example.com', 'owner@example.com'])
 
     const revoked = await identity.invite(team.id, { email: 'late@example.com' }, null)
@@ -166,4 +168,18 @@ describe('sign-in throttling', () => {
     expect(isSignInAttempt('GET', '/v1/setup')).toBe(false)
     expect(isSignInAttempt('POST', '/v1/auth/sign-out')).toBe(false)
   })
+})
+
+
+it('socket authorization reads do not refresh session lifetime', async () => {
+  const signedIn = await identity.signIn('owner@example.com', 'correct horse', new Headers())
+  const headers = new Headers({ cookie: cookieFrom(signedIn) })
+  const principal = await identity.principal(headers)
+  const expires = new Date(Date.now() + 60 * 60 * 1000)
+  await database.pool.query("UPDATE sessions SET expires_at=$1, updated_at=now()-interval '2 days' WHERE user_id=$2", [expires, principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeDefined()
+  const rows = await database.pool.query('SELECT expires_at FROM sessions WHERE user_id=$1', [principal!.userId])
+  expect(rows.rows.every(row => row.expires_at.getTime() === expires.getTime())).toBe(true)
+  await database.pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE user_id=$1", [principal!.userId])
+  expect(await identity.principal(headers, { disableRefresh: true })).toBeUndefined()
 })

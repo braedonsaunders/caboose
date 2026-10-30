@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { WebSocket } from 'ws'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -249,3 +250,64 @@ describe('a host with accounts and tenants', () => {
     expect((await parent('/v1/me')).status).toBe(200)
   })
 })
+
+
+it('closes a live administrator control socket when its session is revoked', async () => {
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, {
+    method: 'POST', headers: { origin: base, 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@example.com', password: 'correct horse' }),
+  })
+  expect(signedIn.status).toBe(200)
+  const cookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const accountHeaders = { cookie, origin: base, 'content-type': 'application/json' }
+  const current = await (await fetch(`${base}/v1/auth/get-session`, { headers: accountHeaders })).json()
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: accountHeaders, body: '{}' })).status).toBe(200)
+  const socket = new WebSocket(`${base.replace('http:', 'ws:')}/v1/control`, { headers: { cookie }, handshakeTimeout: 5_000 })
+  try {
+    await once(socket, 'open')
+    const closed = once(socket, 'close')
+    const revoked = await fetch(`${base}/v1/auth/revoke-session`, { method: 'POST', headers: accountHeaders, body: JSON.stringify({ id: current.session.id }) })
+    expect(revoked.status).toBe(200)
+    await closed
+    expect(socket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/me`, { headers: accountHeaders })).status).toBe(401)
+  } finally { socket.terminate() }
+}, 15_000)
+
+it('fences the former tenant socket on a move and admits the destination administrator', async () => {
+  const ownerHeaders = { authorization: 'Bearer owner-token-for-tests', origin: base, 'content-type': 'application/json' }
+  const records = (await (await fetch(`${base}/v1/computers`, { headers: ownerHeaders })).json()).computers as Array<{ id: string; tenantId: string; personId: string }>
+  // Earlier tests rename the tenant. Ownership IDs remain the fixture identity.
+  const owned = records.filter(record => record.id !== OWNER_COMPUTER)
+  expect(owned).toHaveLength(1)
+  const target = owned[0]!
+  const family = { id: target.tenantId }
+  const home = { id: records.find(record => record.id === OWNER_COMPUTER)!.tenantId }
+  const homePerson = (await (await fetch(`${base}/v1/tenants/${home.id}/people`, { headers: ownerHeaders })).json()).people[0]
+  const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ email: 'parent@example.com', password: 'parent password' }) })
+  expect(signedIn.status).toBe(200)
+  const oldCookie = signedIn.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  expect((await fetch(`${base}/v1/computers/${target.id}/session`, { method: 'POST', headers: { cookie: oldCookie, origin: base, 'content-type': 'application/json' }, body: '{}' })).status).toBe(200)
+  const invitation = await (await fetch(`${base}/v1/tenants/${home.id}/invites`, { method: 'POST', headers: ownerHeaders, body: JSON.stringify({ email: 'move-admin@example.com' }) })).json()
+  const accepted = await fetch(`${base}/v1/invites/${invitation.token}/accept`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Move administrator', password: 'move admin password' }) })
+  expect(accepted.status).toBe(200)
+  const newCookie = accepted.headers.getSetCookie().map(value => value.split(';')[0]).join('; ')
+  const socketURL = `${base.replace('http:', 'ws:')}/v1/computers/${target.id}/control`
+  const oldSocket = new WebSocket(socketURL, { headers: { cookie: oldCookie }, handshakeTimeout: 5_000 })
+  let newSocket: WebSocket | undefined
+  try {
+    await once(oldSocket, 'open')
+    const closed = once(oldSocket, 'close')
+    const moved = await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: home.id, personId: homePerson.id }) })
+    expect(moved.status).toBe(200)
+    await closed
+    expect(oldSocket.readyState).toBe(WebSocket.CLOSED)
+    expect((await fetch(`${base}/v1/computers/${target.id}`, { headers: { cookie: oldCookie } })).status).toBe(404)
+    newSocket = new WebSocket(socketURL, { headers: { cookie: newCookie }, handshakeTimeout: 5_000 })
+    await once(newSocket, 'open')
+    expect(newSocket.readyState).toBe(WebSocket.OPEN)
+  } finally {
+    oldSocket.terminate(); newSocket?.terminate()
+    await fetch(`${base}/v1/computers/${target.id}`, { method: 'PATCH', headers: ownerHeaders, body: JSON.stringify({ tenantId: family.id, personId: target.personId }) })
+  }
+}, 20_000)
