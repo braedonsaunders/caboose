@@ -1,9 +1,11 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { afterEach, expect, it } from 'vitest'
-import { mkdtemp, rm, readFile, writeFile, symlink, open } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readFile, writeFile, symlink, open } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { accumulate, UsageHistory, WINDOW, type History } from './computer-usage.js'
-import { allocatedVolume, dockerCounters } from './container-usage.js'
+import { allocatedVolume, dockerCounters, dockerEndpointSelection, VOLUME_SCAN_SCRIPT } from './container-usage.js'
 import type { UsageCounters } from '../../../packages/capacity/types.js'
 const dirs: string[] = []
 afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
@@ -72,4 +74,29 @@ it('retains at most 256 computer histories', async () => {
   await history.save(['256'])
   await history.record('256', sample(now), now)
   expect(history.get('256').memoryBytes).toBe(123)
+})
+
+it('uses Docker context ahead of an environment host override', () => {
+  expect(dockerEndpointSelection({ DOCKER_CONTEXT: 'actual', DOCKER_HOST: 'unix:///wrong' })).toEqual({ args: ['context', 'inspect', 'actual', '--format', '{{.Endpoints.docker.Host}}'] })
+  expect(dockerEndpointSelection({ DOCKER_HOST: 'unix:///actual' }).endpoint).toBe('unix:///actual')
+  expect(dockerEndpointSelection({}).args).toContain('inspect')
+})
+it('rejects a directory swapped for an outside symlink between stat and open', async () => {
+  const root = await temp(), outside = await temp()
+  await mkdir(join(root, 'child')); await writeFile(join(outside, 'private'), 'outside')
+  // Interpose exactly at the vulnerable boundary; the real worker still opens with NOFOLLOW.
+  const attack = `
+import os
+original_open = os.open
+def racing_open(path, flags, *args, **kwargs):
+    if path == 'child':
+        fd = kwargs['dir_fd']
+        os.rename('child', 'moved', src_dir_fd=fd, dst_dir_fd=fd)
+        os.symlink(${JSON.stringify(outside)}, 'child', dir_fd=fd)
+    return original_open(path, flags, *args, **kwargs)
+os.open = racing_open
+`
+  await expect(promisify(execFile)('python3', ['-I', '-c', attack + VOLUME_SCAN_SCRIPT, root, '100'], { timeout: 2000 })).rejects.toThrow()
+  await expect(allocatedVolume(join(root, 'child'))).rejects.toThrow()
+  expect(await readFile(join(outside, 'private'), 'utf8')).toBe('outside')
 })

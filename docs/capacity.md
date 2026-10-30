@@ -90,8 +90,8 @@ tenants. Missing and unauthorized computers return 404; phone tokens return 403.
 `POST /v1/computers/:id/usage/storage` uses the same authorization and explicitly
 requests storage measurement. Both responses are `no-store` and neither wakes a guest.
 
-Container telemetry uses the local Docker Engine socket selected by `DOCKER_HOST`
-or the current Docker context. Remote TCP/SSH Docker endpoints are unsupported.
+Container telemetry uses the local Docker Engine socket selected by `DOCKER_CONTEXT`, then `DOCKER_HOST`,
+then the current Docker context (the same precedence as the runtime CLI). Remote TCP/SSH Docker endpoints are unsupported.
 Each sample reads container inspection metadata and one-shot Engine stats; no guest
 process runs. Memory is the cgroup's current charge, including kernel and file-cache
 charges. Inactive file cache is reported separately as potentially reclaimable, not
@@ -130,9 +130,11 @@ Container storage is cached for fifteen minutes, including failures, and only on
 storage refresh runs at a time. Docker inspection with `size=true` supplies writable
 layer and shared-image **logical** sizes; these are not allocated physical costs and
 exclude mounted volumes. The dedicated `/home/caboose` named volume is measured only
-when its Engine-reported directory is locally accessible. A separate Node worker
-counts logical file sizes and allocated file blocks with inode deduplication, skips
-following symlinks, and rejects unsupported entries. It has a 100,000-entry/depth-32
+when its Engine-reported directory is locally accessible. A separate Python 3 worker
+counts logical file sizes and allocated file blocks with inode deduplication, opens each directory with `O_DIRECTORY | O_NOFOLLOW` and uses retained directory
+descriptors for child lookups, without following symlinks. Changed directory identities,
+mount boundaries and unsupported entries reject the scan. Python 3 and descriptor-relative
+filesystem support are required; unavailable support yields unavailable storage. It has a 100,000-entry/depth-32
 budget and is killed after two seconds, including during slow filesystem operations.
 An incomplete scan yields unavailable, never a partial total. File blocks can include
 shared reflink extents; unique physical cost remains unavailable. Other mounts and
