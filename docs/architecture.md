@@ -2512,7 +2512,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
 The phone reads the system clipboard only for an explicit paste, not when entering the
@@ -2771,7 +2772,8 @@ The control socket's `notification` events become local notifications while the 
 When the host has APNs configured, Computer settings offers per-device switches for
 approvals, task results and desktop notifications. Enabling them requests permission and
 registers the device's APNs token (`POST /v1/devices/push`). Approval notifications carry
-actions that call the approval route; task notifications open the task. Signing out
+actions that call the approval route; task notifications open the task, and command
+notifications the command. Signing out
 unregisters the device.
 
 ### Live Activities and widgets
@@ -2780,7 +2782,7 @@ The app starts a Live Activity for each running agent task and registers its upd
 with `POST /v1/activities`, and registers the device's push-to-start token with
 `POST /v1/activities/start-token`. It also updates or ends an activity while in the
 foreground, and unregisters both on sign-out. The widget extension renders the Lock Screen
-and Dynamic Island presentations and opens the agent task on tap.
+and Dynamic Island presentations and opens the agent task or command on tap.
 
 The WidgetKit extension reads the pairing from the shared Keychain access group and fetches
 the computer's state and running agent count without waking it; WidgetKit schedules its
@@ -2792,14 +2794,28 @@ that wakes or parks the computer.
 
 App Intents wake or park the computer, open a Linux app or run one of its desktop actions
 (New Private Window, a new document), open a URL on the computer, ask a computer agent (an approval-gated task, returning a task link), open, get or save computer
-files, and run the four Craft operations. App shortcuts offer phrases to Siri and
-Shortcuts. App and file entities use the authenticated host API. File paths are relative to
+files, run the four Craft operations, and run a command on the computer. App shortcuts offer
+phrases to Siri and Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
 
 Craft intents stage their inputs under `.caboose-jobs/<job>` through `/v1/fs`, call
 `POST /v1/catalog/:id/run`, download the outputs, and move the job directory to Trash after
 success. A failed or interrupted job's directory is kept for inspection. CLI warnings are
 returned to the shortcut.
+
+Run Command on Computer takes a script, optional input text (standard input, at most 1 MiB)
+and input files, whether to wait for the result and for how long (default 25 s), and a time
+limit in minutes (default 60). It uploads the files to `.caboose-jobs/cmd-<id>/in/` under their
+own names (made plain and distinct: `photo.jpg`, `photo (2).jpg`), calls `POST /v1/commands`,
+then long-polls `GET /v1/commands/:id` until the command ends or the wait is over. It returns a
+Command Result with the output, errors, status, whether it finished, exit code, a
+`caboose://command/<id>` link and the files from `out/`, downloaded. A succeeded command's job
+directory then moves to Trash; a failed one's stays. A non-zero exit is a result, not an
+error, so a shortcut can branch on it. A command still running when the wait ends keeps
+running: the shortcut gets its link, and the Live Activity and notification report its end.
+The link opens the command in the app, which follows it until it ends, shows its output and
+errors, cancels it, and saves its files to `~/Downloads` (moving them, then the job directory
+to Trash).
 
 File search lists the home recursively through `/v1/fs`, skipping unreadable or removed
 directories and the top-level `.caboose-jobs` directory, and sorts by modification time.
