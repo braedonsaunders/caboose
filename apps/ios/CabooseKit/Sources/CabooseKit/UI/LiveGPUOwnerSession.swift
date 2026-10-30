@@ -1,11 +1,13 @@
 #if canImport(UIKit)
 import Foundation
+import OSLog
 
 /// The app creates this explicitly for its owner computer. It is never created
 /// by CabooseDisplaySession, so agent, thumbnail and auxiliary connections cannot
 /// accidentally become a GPU executor. One instance is one nonrestartable lease.
 @MainActor
 public final class LiveGPUOwnerSession {
+    private static let log = Logger(subsystem: "org.caboose", category: "LiveGPUOwner")
     public enum State: Equatable { case idle, connecting, connected, draining, ended(cleanupFailed: Bool) }
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
@@ -36,6 +38,7 @@ public final class LiveGPUOwnerSession {
         guard state == .idle, Self.retainedExecutor == nil else { throw LiveGPUError.closed }
         Self.retainedExecutor = self
         state = .connecting
+        Self.log.info("Owner executor connecting")
         executor.start { [weak self] event in
             Task { @MainActor in
                 guard let self else { return }
@@ -43,11 +46,13 @@ public final class LiveGPUOwnerSession {
                 case .transportOpened:
                     // Transport acceptance does not imply SESSION_READY or a surface.
                     if self.state == .connecting { self.state = .connected }
+                    Self.log.info("Owner GPU transport opened")
                 case .ended(let cause, let cleanupError):
                     self.presentationOwners.revoke()
                     self.state = .ended(cleanupFailed: cleanupError != nil)
                     if cleanupError == nil, self.executor.remoteRetirementCompleted,
                        Self.retainedExecutor === self { Self.retainedExecutor = nil }
+                    Self.log.info("Owner executor ended: cause=\(cause != nil, privacy: .public) cleanupFailed=\(cleanupError != nil, privacy: .public) retirementConfirmed=\(self.executor.remoteRetirementCompleted, privacy: .public)")
                     self.onEnd(cause, cleanupError)
                 }
             }
@@ -69,6 +74,7 @@ public final class LiveGPUOwnerSession {
         default: break
         }
         state = .draining
+        Self.log.info("Owner executor drain requested")
         presentationOwners.revoke()
         executor.close()
     }
@@ -77,6 +83,7 @@ public final class LiveGPUOwnerSession {
     public func abort() {
         switch state { case .ended: return; default: break }
         state = .draining
+        Self.log.info("Owner executor abort requested; remote retirement remains unconfirmed")
         presentationOwners.revoke()
         executor.abort()
     }
