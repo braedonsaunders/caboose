@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 // Portable source fixture. No decoder, GPU, or window is used.
 #include "packet_framing.h"
+#include "decode_diagnostic.h"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -43,6 +44,29 @@ int main() {
         b = flush(seq, false);
         assert(inspectFrame(b.data(), b.size(), b.size() - 1, seq).status == FrameStatus::invalid);
     }
+    // Exact ordinary single-range flush header plus announced 32 MiB tail.
+    // The wire header declares 52 bytes; no payload allocation is necessary to
+    // prove rejection under the unchanged 16 MiB complete-frame budget.
+    std::vector<uint8_t> large;
+    put<uint32_t>(large, 20025); put<uint32_t>(large, 52);
+    put<uint64_t>(large, 11); put<uint32_t>(large, 1);
+    put<uint32_t>(large, 6); put<uint32_t>(large, 0);
+    put<uint64_t>(large, 100); put<uint64_t>(large, 0);
+    put<uint64_t>(large, 32u * 1024u * 1024u);
+    put<uint64_t>(large, 32u * 1024u * 1024u);
+    assert(large.size() == 60);
+    caboose::gpuv2::FrameDiagnostic diagnostic;
+    auto limited = inspectFrame(large.data(), large.size(), 16u * 1024u * 1024u, false, &diagnostic);
+    assert(limited.status == FrameStatus::invalid);
+    assert(diagnostic.rangeCount == 1 && diagnostic.rangeIndex == 0);
+    assert(diagnostic.tailPresent && diagnostic.tailBytes == 32u * 1024u * 1024u);
+    assert(diagnostic.tailOffset == 60);
+    // An incomplete tail length must never be reported as an observed size.
+    limited = inspectFrame(large.data(), 59, 16u * 1024u * 1024u, false, &diagnostic);
+    assert(limited.status == FrameStatus::need_more && !diagnostic.tailPresent);
+    caboose::gpuv2::DecodeDiagnosticBudget budget;
+    for (unsigned i = 0; i < 65; ++i) assert(budget.take() == i);
+    for (unsigned i = 0; i < 100; ++i) assert(budget.take() == 65);
     std::vector<uint8_t> unknown;
     put<uint32_t>(unknown, 0); put<uint32_t>(unknown, 8);
     assert(inspectFrame(unknown.data(), unknown.size(), 4096, false).status == FrameStatus::invalid);

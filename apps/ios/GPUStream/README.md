@@ -88,3 +88,25 @@ swift test --jobs 1 --filter 'LiveGPUTransportTests|LiveGPUEnvelopeTests|LiveGPU
 ```
 
 These tests use injected runtime operations and socketpairs, not phone GPU work.
+
+### Opt-in decoder terminal diagnostics
+
+The memory-audit build emits `CABOOSE_GPU_DECODE_TERMINAL` only when the actual
+immutable `CabooseMemoryAudit` feature is enabled before startup. Each process
+has at most 64 terminal records and one overflow marker. Records contain numeric
+process/context IDs, errno, the current header opcode and declared length when
+present, last completed opcode, framing and consumption sizes, socket state,
+and configured limits. Flush records can also identify the observed tail length
+and its offset. They contain no packet bodies, Vulkan handles or addresses.
+
+Stage numbers are validation=1, flags=2, input=3, private-profile rejection=4,
+framing=5, unsupported framing=6, decoder=7, consumption mismatch=8, reply flush=9,
+allocation failure=10, requested stop=11, EOF=12, exception=13. A stage identifies
+the terminal adapter branch; it does not imply a provider error. Header presence
+and tail presence fields distinguish observed metadata from absent values. The
+37-opcode restriction and 16 MiB default complete-frame budget are unchanged.
+
+The portable framing fixture includes a 52-byte single-range flush header and
+an 8-byte length announcing a 32 MiB tail: the 16 MiB frame budget rejects it
+before any body allocation or decoder entry. The real-provider EOF and v4
+admission fixtures inspect same-thread diagnostic metadata in test builds.

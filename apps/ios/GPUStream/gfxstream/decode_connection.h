@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include "decode_diagnostic.h"
 
 namespace gfxstream::host { struct RenderThreadInfo; }
 namespace caboose::gpuv2 {
@@ -15,5 +16,5 @@ namespace caboose::gpuv2 {
 int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                      gfxstream::host::RenderThreadInfo& thread_info,
                      std::atomic_bool& stop, bool synchronousOnly = false,
-                     uint64_t* decoderEntries = nullptr);
+                     uint64_t* decoderEntries = nullptr, DecodeDiagnostic* diagnostic = nullptr);
 }

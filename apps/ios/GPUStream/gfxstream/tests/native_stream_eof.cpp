@@ -2,6 +2,7 @@
 // Real decoder/provider socketpair regression. Run under an external watchdog.
 #include "native_runtime.h"
 #include "socket_stream.h"
+#include "decode_diagnostic.h"
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -57,7 +58,11 @@ bool runCase(const char* label, size_t flagsBytes, size_t packetBytes,
     ok = ok && shutdown(fd[0], SHUT_WR) == 0;
     if (rejectReply) { close(fd[0]); fd[0] = -1; }
     int result = EIO;
-    std::thread worker([&] { result = caboose_gpu_runtime_run(token, fd[1], 65536, 65536); });
+    caboose::gpuv2::DecodeDiagnostic diagnostic;
+    std::thread worker([&] {
+        result = caboose_gpu_runtime_run(token, fd[1], 65536, 65536);
+        diagnostic = caboose::gpuv2::lastDecodeDiagnosticForTesting();
+    });
     if (expectReply) {
         uint32_t reply[2] = {};
         ok = ok && readAll(fd[0], reply, sizeof(reply));
@@ -74,7 +79,15 @@ bool runCase(const char* label, size_t flagsBytes, size_t packetBytes,
 #else
     bool matched = rejectReply ? (result == EPIPE || result == ECONNRESET) : result == expected;
 #endif
-    if (!ok || !matched || finish) {
+    using caboose::gpuv2::DecodeStage;
+    bool metadata = rejectReply ?
+        ((diagnostic.stage == DecodeStage::decoder || diagnostic.stage == DecodeStage::flush) &&
+         diagnostic.headerPresent && diagnostic.opcode == 20137 && diagnostic.socketError != 0) :
+        flagsBytes < 4 ? diagnostic.stage == DecodeStage::flags && diagnostic.eof :
+        diagnostic.stage == DecodeStage::eof && diagnostic.eof &&
+        diagnostic.headerPresent == (packetBytes >= 8 && packetBytes < 12);
+    if (expectReply) metadata = metadata && diagnostic.lastOpcode == 20137 && diagnostic.completed == 1;
+    if (!ok || !matched || finish || !metadata) {
         std::fprintf(stderr, "%s result=%d expected=%d cleanup=%d io=%d\n",
                      label, result, expected, finish, ok);
         return false;

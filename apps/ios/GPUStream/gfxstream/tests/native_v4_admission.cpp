@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 // Real provider and generated decoder, under an external watchdog.
 #include "native_runtime.h"
+#include "decode_diagnostic.h"
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -27,7 +28,11 @@ bool run(uint32_t opcode) {
     int fd[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd)) return false;
     uint64_t entries = 0; int result = EIO;
-    std::thread worker([&] { result = caboose_gpu_runtime_run_counted(token, fd[1], 65536, 65536, &entries); });
+    caboose::gpuv2::DecodeDiagnostic diagnostic;
+    std::thread worker([&] {
+        result = caboose_gpu_runtime_run_counted(token, fd[1], 65536, 65536, &entries);
+        diagnostic = caboose::gpuv2::lastDecodeDiagnosticForTesting();
+    });
     uint32_t flags = 0;
     uint32_t query[] = {20137, 12, 0}; // real vkEnumerateInstanceVersion
     uint32_t reply[2] = {};
@@ -44,7 +49,10 @@ bool run(uint32_t opcode) {
     worker.join(); close(fd[0]); close(fd[1]);
     const int stop = caboose_gpu_runtime_stop(token);
     const int finish = stop ? stop : caboose_gpu_runtime_finish(token);
-    if (!ok || result != ENOTSUP || entries != 1 || finish) {
+    if (!ok || result != ENOTSUP || entries != 1 || finish ||
+        diagnostic.stage != caboose::gpuv2::DecodeStage::profile ||
+        !diagnostic.headerPresent || diagnostic.opcode != opcode || diagnostic.declared != 8 ||
+        diagnostic.lastOpcode != 20137 || diagnostic.completed != 1) {
         std::fprintf(stderr, "opcode %u: io=%d result=%d decoder_entries=%llu cleanup=%d\n",
                      opcode, ok, result, static_cast<unsigned long long>(entries), finish);
         return false;

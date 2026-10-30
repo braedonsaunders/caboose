@@ -22,7 +22,8 @@ FrameResult invalid() { return {FrameStatus::invalid, 0}; }
 bool forbiddenV4Opcode(uint32_t opcode) {
     return std::binary_search(std::begin(v4Forbidden), std::end(v4Forbidden), opcode);
 }
-FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool sequenced) {
+FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool sequenced, FrameDiagnostic* diagnostic) {
+    if (diagnostic) *diagnostic = {};
     if (max_size < 8 || size > max_size || (size && !data)) return invalid();
     if (size < 8) return need(8);
     const uint32_t opcode = u32(data);
@@ -38,6 +39,7 @@ FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool
     const size_t count_offset = 8 + (sequenced ? 4 : 0) + 8;
     if (declared < count_offset + 4) return invalid();
     const uint32_t count = u32(data + count_offset);
+    if (diagnostic) diagnostic->rangeCount = count;
     const size_t ranges_offset = count_offset + 4;
     constexpr size_t range_size = 32;
     if (count > (declared - ranges_offset) / range_size ||
@@ -54,6 +56,12 @@ FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool
         if (size - position < 8) return need(position + 8);
         const uint64_t bytes = u64(data + position);
         position += 8;
+        if (diagnostic) {
+            diagnostic->tailPresent = true;
+            diagnostic->rangeIndex = i;
+            diagnostic->tailBytes = bytes;
+            diagnostic->tailOffset = position;
+        }
         if (bytes > max_size - position) return invalid();
         position += static_cast<size_t>(bytes);
         if (size < position) return need(position);

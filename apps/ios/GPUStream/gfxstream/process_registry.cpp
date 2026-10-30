@@ -11,6 +11,10 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdint>
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+#include <cstdio>
+#include <cinttypes>
+#endif
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,6 +33,9 @@ struct Process {
     std::shared_ptr<const ProcessResources> resources;
     std::atomic_bool stopped{false};
     std::set<int> sockets;
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+    caboose::gpuv2::DecodeDiagnosticBudget terminalBudget;
+#endif
 };
 }
 struct caboose_gfx_registry {
@@ -98,6 +105,29 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
     } catch (const std::bad_alloc&) { return ENOMEM; }
       catch (...) { return EIO; }
 }
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+static void emitDecodeTerminal(Process& process, uint64_t token,
+    const caboose::gpuv2::DecodeDiagnostic& d, int result, size_t maxPacket, size_t maxReply) {
+    const unsigned record = process.terminalBudget.take();
+    if (record > 64) return;
+    if (record == 64) {
+        std::fprintf(stderr, "CABOOSE_GPU_DECODE_TERMINAL token=%" PRIu64 " context=%u overflow=1\n",
+                     token, process.context);
+        return;
+    }
+    std::fprintf(stderr,
+        "CABOOSE_GPU_DECODE_TERMINAL token=%" PRIu64 " context=%u record=%u stage=%u result=%d "
+        "header=%u opcode=%u declared=%u buffered=%" PRIu64 " frame=%" PRIu64 " consumed=%" PRIu64 " "
+        "last_present=%u last_opcode=%u completed=%" PRIu64 " socket_errno=%d eof=%u stopped=%u "
+        "max_packet=%zu max_reply=%zu ranges=%u range_index=%u tail_present=%u "
+        "tail_bytes=%" PRIu64 " tail_offset=%" PRIu64 "\n",
+        token, process.context, record, static_cast<unsigned>(d.stage), result,
+        d.headerPresent, d.opcode, d.declared, d.buffered, d.frameSize, d.consumed,
+        d.lastOpcodePresent, d.lastOpcode, d.completed, d.socketError,
+        unsigned(d.eof), unsigned(d.stopped), maxPacket, maxReply, d.frame.rangeCount,
+        d.frame.rangeIndex, unsigned(d.frame.tailPresent), d.frame.tailBytes, d.frame.tailOffset);
+}
+#endif
 static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
                       size_t max_packet, size_t max_reply_buffer, uint64_t* decoderEntries) {
     if (!registry || fd < 0) return EINVAL;
@@ -119,9 +149,29 @@ static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
             threadInfo.setPuid(process->context);
             threadInfo.setProcessResources(process->resources);
             lock.unlock();
-            int result = caboose::gpuv2::decodeConnection(fd, max_packet, max_reply_buffer,
-                                                           threadInfo, process->stopped, registry->synchronousOnly,
-                                                           decoderEntries);
+            caboose::gpuv2::DecodeDiagnostic* diagnostic = nullptr;
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            caboose::gpuv2::DecodeDiagnostic terminal;
+            if (FrameBuffer::getFB()->getFeatures().CabooseMemoryAudit.enabled()) diagnostic = &terminal;
+#endif
+            int result;
+            try {
+                result = caboose::gpuv2::decodeConnection(fd, max_packet, max_reply_buffer,
+                    threadInfo, process->stopped, registry->synchronousOnly, decoderEntries, diagnostic);
+            } catch (const std::bad_alloc&) {
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+                if (diagnostic) emitDecodeTerminal(*process, puid, terminal, ENOMEM, max_packet, max_reply_buffer);
+#endif
+                throw;
+            } catch (...) {
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+                if (diagnostic) emitDecodeTerminal(*process, puid, terminal, EIO, max_packet, max_reply_buffer);
+#endif
+                throw;
+            }
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            if (diagnostic) emitDecodeTerminal(*process, puid, terminal, result, max_packet, max_reply_buffer);
+#endif
             // Decoder work has ended. Clear the TLS identities while admission is locked;
             // the TLS object is destroyed before that lock is released.
             if (result != 0) shutdown(fd, SHUT_RDWR);
