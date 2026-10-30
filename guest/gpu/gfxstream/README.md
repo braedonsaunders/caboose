@@ -286,3 +286,9 @@ The private broker accepts `CABOOSE_PRIVATE_GPU_PROGRESS=1` for diagnostic runs.
 It records at most 128 surface-control direction/kind/timestamp and successful capability-extent records and one
 limit marker per session; records contain no payloads or credentials. Queued
 requests do not establish delivery, GPU completion or presentation.
+The same opt-in records at most 128 frame-timing aggregates, spaced by at least
+two seconds of observed retirement receipts. These contain broker-clock intervals
+from indexed-present admission to result, source release and retirement, the
+interval between admissions, and queued DATA bytes. They contain no payloads or
+identities. Retirement receipt rate is not displayed FPS; intervals include relay
+and executor scheduling, and do not isolate GPU execution time.

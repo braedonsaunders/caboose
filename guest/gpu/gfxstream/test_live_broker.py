@@ -43,6 +43,50 @@ class ReadyReader(asyncio.StreamReader):
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    def test_frame_timing_uses_broker_intervals_and_bounded_aggregates(self):
+        timing = broker.FrameTiming(True)
+        surface, first, second = {}, {}, {}
+        with mock.patch.object(broker.time, 'monotonic_ns', side_effect=[0, 100, 200, 300, 2_000_000_000, 2_000_000_100, 2_000_000_200, 2_000_000_300]), mock.patch('builtins.print') as output:
+            timing.begin(surface, first)
+            for name in ('result', 'release', 'retire'): timing.event(first, name)
+            output.assert_not_called()
+            timing.data_bytes = 1234
+            timing.begin(surface, second)
+            for name in ('result', 'release', 'retire'): timing.event(second, name)
+            fields = dict(field.split('=') for field in output.call_args.args[0].split()[1:])
+            self.assertEqual(fields['retired'], '2')
+            self.assertEqual(fields['gap_sum_ns'], '2000000000')
+            self.assertEqual(fields['result_sum_ns'], '200')
+            self.assertEqual(fields['release_sum_ns'], '400')
+            self.assertEqual(fields['retire_sum_ns'], '600')
+            self.assertEqual(fields['data_bytes'], '1234')
+            self.assertEqual(timing.frames, 0)
+            self.assertEqual(timing.data_bytes, 0)
+        with mock.patch.object(broker.time, 'monotonic_ns', return_value=10_000_000_000), mock.patch('builtins.print') as output:
+            for _ in range(200):
+                timing.started = 0
+                timing.event(second, 'retire')
+            self.assertEqual(output.call_count, 127)
+            self.assertEqual(timing.records, 128)
+            pending = {}
+            timing.begin(surface, pending)
+            self.assertFalse(pending)
+
+    def test_frame_timing_is_opt_in_and_logging_failure_does_not_fail_transport(self):
+        surface, pending = {}, {}
+        disabled = broker.FrameTiming(False)
+        with mock.patch('builtins.print') as output:
+            disabled.begin(surface, pending)
+            disabled.event(pending, 'retire')
+            output.assert_not_called()
+            self.assertFalse(surface)
+            self.assertFalse(pending)
+        timing = broker.FrameTiming(True)
+        with mock.patch.object(broker.time, 'monotonic_ns', side_effect=[0, 3_000_000_000]), mock.patch('builtins.print', side_effect=BrokenPipeError):
+            timing.begin(surface, pending)
+            timing.event(pending, 'retire')
+            self.assertEqual(timing.records, 1)
+
     def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             session = broker.Session(None, b'a' * 16, 1, None, Writer())

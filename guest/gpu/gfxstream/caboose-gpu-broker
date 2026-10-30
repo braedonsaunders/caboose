@@ -185,6 +185,52 @@ class DataCredit:
         self.owner.capacity_changed.set()
 
 
+class FrameTiming:
+    """Opt-in broker-clock intervals, not GPU timestamps or displayed FPS."""
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.records = 0
+        self.started = None
+        self.frames = 0
+        self.data_bytes = 0
+        self.samples = {name: [0, 0, 0] for name in ('gap', 'result', 'release', 'retire')}
+
+    def begin(self, surface, pending):
+        if not self.enabled or self.records >= 128: return
+        now = time.monotonic_ns()
+        if self.started is None: self.started = now
+        previous = surface.get('timing_previous')
+        if previous is not None: self.sample('gap', now - previous)
+        surface['timing_previous'] = now
+        pending['timing_start'] = now
+
+    def sample(self, name, elapsed):
+        values = self.samples[name]
+        values[0] += 1
+        values[1] += elapsed
+        values[2] = max(values[2], elapsed)
+
+    def event(self, pending, name):
+        start = pending.get('timing_start')
+        if start is None or self.records >= 128: return
+        now = time.monotonic_ns()
+        self.sample(name, now - start)
+        if name != 'retire': return
+        self.frames += 1
+        elapsed = now - self.started
+        if elapsed < 2_000_000_000: return
+        fields = [f'ordinal={self.records}', f'elapsed_ns={elapsed}',
+                  f'retired={self.frames}', f'data_bytes={self.data_bytes}']
+        for key, (count, total, maximum) in self.samples.items():
+            fields += [f'{key}_count={count}', f'{key}_sum_ns={total}', f'{key}_max_ns={maximum}']
+        with contextlib.suppress(OSError):
+            print('CABOOSE_GPU_FRAME_TIMING ' + ' '.join(fields), file=sys.stderr, flush=True)
+        self.records += 1
+        self.started = now
+        self.frames = self.data_bytes = 0
+        for values in self.samples.values(): values[:] = [0, 0, 0]
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -219,6 +265,7 @@ class Session:
         self.closing_ws = False
         self.progress_enabled = os.environ.get('CABOOSE_PRIVATE_GPU_PROGRESS') == '1'
         self.progress_count = 0
+        self.frame_timing = FrameTiming(self.progress_enabled)
 
     def surface_progress(self, direction, kind, extent=None):
         # Diagnostic metadata only: no payloads, handles, identities or credentials.
@@ -277,6 +324,8 @@ class Session:
         frame = server_frame(2, data)
         self.enqueue_frame(frame, credit)
         self.sequence += 1
+        if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
+            self.frame_timing.data_bytes += len(payload)
         self.surface_progress("queued_to_phone", kind)
 
     async def close_after_retirement(self):
@@ -369,6 +418,7 @@ class Session:
                 pending = surface['presents'].get(serial)
                 if pending is None or pending.get('swap') != swap or not pending['result'] or not pending['release']:
                     raise ValueError('unexpected present retirement')
+                self.frame_timing.event(pending, 'retire')
                 del surface['presents'][serial]
             else:
                 serial = struct.unpack_from('<Q', frame.payload, 40)[0]
@@ -377,12 +427,14 @@ class Session:
                 if frame.kind == Kind.SOURCE_RELEASED:
                     if pending['release']: raise ValueError('duplicate source release')
                     pending['release'] = True
+                    self.frame_timing.event(pending, 'release')
                 else:
                     disposition, event = struct.unpack_from('<II', frame.payload, 64)
                     if event == 0:
                         if pending['result']: raise ValueError('duplicate submission result')
                         if disposition == 0 and pending['release']: raise ValueError('rejected source was released')
                         pending['result'] = True
+                        self.frame_timing.event(pending, 'result')
                         if disposition == 0:
                             if pending.get('swap') is not None:
                                 swap = surface['indexed'].swaps.get(pending['swap'])
@@ -809,6 +861,8 @@ class Broker:
                         surface['last_present'] = serial
                         surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap, 'index': index}
                     surface['indexed'].send(kind, body)
+                    if kind == 34:
+                        session.frame_timing.begin(surface, surface['presents'][serial])
                     session.send(Kind(kind), process_id, payload=identity + body)
                 elif kind == 23:
                     if not surface['retiring']:
