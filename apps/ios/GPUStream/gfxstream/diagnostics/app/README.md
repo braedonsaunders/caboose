@@ -1,10 +1,11 @@
 # Standalone iOS GPU diagnostic
 
-This source-only app is a separate signed-device fixture. It does not modify the
+This app is a separate device diagnostic fixture. It does not modify the
 shipping Caboose app or enable a public guest ICD. Root owns build-slot scheduling,
-signing, installation and any physical-device execution. This target is uncompiled
-and unrun; the compositor failure-propagation patch 0009 must be included in the
-private upstream source before a device test.
+signing, installation and any physical-device execution. The iOS arm64 target
+compiles and links with the private patched MoltenVK archive and the half-close
+bridge. Physical-device execution is unverified. The compositor failure-propagation
+patch 0009 and real device-info patch 0012 are required in the private upstream source.
 
 The app starts no GPU or network work until the user presses **Start diagnostic**.
 The launch environment supplies a temporary broker's host and decimal port as
@@ -45,7 +46,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer cmake \
 ```
 
 Root reviews the generated project, configures signing and builds the
-`CabooseGPUDiagnostic` scheme. The app force-loads the one stock MoltenVK archive
+`CabooseGPUDiagnostic` scheme. The app force-loads the one explicitly selected MoltenVK archive
 and exports its trampolines for the same-provider resolver; if these exports are
 not available at runtime it fails initialization. Xcode signing credentials or
 entitlements are not specified by this project.

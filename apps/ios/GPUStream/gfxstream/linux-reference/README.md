@@ -105,3 +105,16 @@ docker run --rm --network none --cpus 2 --memory 3g -v "$WORK:/work" \
   python3 /work/gfxstream/linux-reference/test_receiver.py \
   /work/build/caboose_gfxstream_receiver /usr/lib/x86_64-linux-gnu/libvulkan.so.1
 ```
+
+`phone_session.py prepare --directory PRIVATE_TRIAL --bind TAILSCALE_IPV4`
+creates ephemeral certificate/token files and a private phone launch-environment
+JSON without starting a listener. `run --directory PRIVATE_TRIAL --guest-runner
+/path/to/phone_guest_oracle.py` starts the finite broker and launches the guest
+CPU/encoder oracle only after phone authentication. The 90-second deadline includes
+waiting for the explicit phone Start action. Credential files are kept outside the
+transport directory mounted into the guest container. On exit the runner reaps
+its children, checks the exact trial-labeled container, and deletes credentials;
+root independently stops the diagnostic app and verifies device cleanup. The
+host verdict remains provisional until the phone executor identity and teardown
+are independently recorded. The orchestration tests mock process boundaries and
+do not establish physical-device transport behavior.
