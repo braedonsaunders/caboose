@@ -4,9 +4,9 @@
 #include "presentation_api_draft.h"
 #include <stdint.h>
 
-// DESIGN ONLY: this API is not implemented, exported, or wired to the guest.
-// It replaces the acquire-at-present behavior only after the implementation,
-// lifetime interlocks, and same-provider device regressions have passed.
+// Experimental indexed WSI API, disabled by default. The private iOS target
+// compiles and links this interface; real provider execution is unverified.
+// Acquired-unused retirement and old-swapchain replacement are unsupported.
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,18 +24,14 @@ int caboose_gpu_surface_query_indexed(caboose_gpu_surface* surface, uint64_t box
 // may be reacquired while earlier retirement records still exist. A new acquire
 // must not overwrite those records. SOURCE_RELEASED follows its actual copy
 // fence. Reuse requires both actual acquisition and source release; neither
-// condition alone implies the other. An acquired unused index becomes unacquired only after real maintenance1
-// release succeeds and all relevant use has completed. Ambiguous operations
+// condition alone implies the other. Acquired-unused indices prevent retirement
+// because completion of all guest GPU use is not established. Ambiguous operations
 // are QUARANTINED. Retirement never turns a timeout into completion.
 //
-// The current decoder has a semaphore destruction lease, but FenceInfo has no
-// equivalent gate. A real implementation must add same-device/boxed fence
-// validation and interlock destroy/reset with the actual acquire signal before
-// admitting this API. The semaphore's signal completion also needs tracking:
-// when the guest passes only a semaphore, an internal fence can accompany it;
-// when the guest supplies a fence, its reset/destroy must be serialized with
-// observing actual completion. Existing FenceInfo latestUse handling must be
-// integrated, not bypassed. If completion or safe release cannot be proven,
+// Decoder semaphore and fence leases interlock destroy/reset with observation
+// of the actual acquire signal. Semaphore-only acquire uses an internal fence;
+// supplied-fence acquire observes that fence. Existing FenceInfo latestUse
+// handling remains in effect. If completion or safe release cannot be proven,
 // keep all objects quarantined; no queue-idle shortcut or success receipt.
 
 typedef struct caboose_gpu_swapchain_create_info {
@@ -47,7 +43,7 @@ typedef struct caboose_gpu_swapchain_create_info {
     uint32_t queue_family_count, has_unsupported_extensions;
     const uint32_t* queue_families;
     // Existing authenticated virtual swapchain identity, or zero. Replacement
-    // is unsupported until actual old-swapchain retirement is implemented.
+    // is unsupported; a nonzero value is rejected.
     uint64_t old_swapchain_id;
 } caboose_gpu_swapchain_create_info;
 
@@ -140,9 +136,9 @@ caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
     caboose_gpu_virtual_swapchain* swapchain, const caboose_gpu_mapped_present_info* info,
     caboose_gpu_present_callback callback, void* context);
 
-// Worker only: revoke admission, drain acquire and submission users, wait actual
-// completion, release each unused acquired index only via enabled real
-// swapchain-maintenance1 after it is no longer in use, and retire present fences.
+// Worker only: revoke admission, drain acquire and submission users and retire
+// real present fences. An acquired-unused index currently returns EBUSY and
+// keeps resources retained because its guest GPU use is not proven complete.
 // Failure leaves swapchain/surface/leases quarantined; never queue-idle-as-proof.
 // Main detach follows successful retirement before runtime_finish.
 // Success consumes *swapchain; failure leaves it retained and revoked.
