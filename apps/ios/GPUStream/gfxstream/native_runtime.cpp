@@ -102,6 +102,10 @@ PFN_vkGetInstanceProcAddr runtimeInstanceProcAddr() {
     std::lock_guard<std::mutex> lock(mutex);
     return startResult == 0 ? installedGet : nullptr;
 }
+caboose_gfx_registry* virtualWsiRegistry() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return startResult == 0 && installedVirtualWsi ? registry : nullptr;
+}
 }
 extern "C" int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet,
                                         size_t max_reply_buffer) {

@@ -3,8 +3,11 @@
 #include "presentation_types.h"
 #include <stdint.h>
 
-// SOURCE-ONLY DESIGN: declarations below have no implementation or shipping
-// capability. Do not link or activate until the real presenter and tests land.
+// Experimental private interface: implementation is not yet validated for
+// production activation. Calls on the same surface must be externally ordered;
+// callbacks must not call surface methods synchronously or wait for main work.
+// A callback can run before surface_present returns. Caller must keep the
+// surface alive and externally serialize all calls, including main detach.
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,10 +83,12 @@ const caboose_gpu_surface_capabilities_view* caboose_gpu_surface_capabilities_ge
     const caboose_gpu_surface_capabilities* capabilities);
 void caboose_gpu_surface_capabilities_release(caboose_gpu_surface_capabilities* capabilities);
 
-// Worker only; copies request and its semaphore array before return. Reject stale
+// Worker only; consumes request and its semaphore array before return. Reject stale
 // generation, unsupported format/layout/ownership, duplicate serial and invalid
 // waits before queueing; a submitted-but-uncertain outcome is never retried. On
-// accepted submission the surface owns resources until the callback and retirement.
+// accepted or uncertain submission the surface owns resources until retirement;
+// uncertain failures can remain quarantined indefinitely. If worker creation
+// fails, retirement attempts the fence waits and delivers any callback itself.
 caboose_gpu_submit_result caboose_gpu_surface_present(caboose_gpu_surface* surface,
     const caboose_gpu_present_info* present, caboose_gpu_present_callback callback, void* context);
 
