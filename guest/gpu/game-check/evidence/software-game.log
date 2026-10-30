@@ -1,0 +1,105 @@
+Command line: /evidence/bundle/vkquake -basedir /evidence/bundle -window -width 640 -height 480 -nosound +map start
+Using SDL version 2.32.4
+Detected 16 CPUs.
+Initializing vkQuake 1.37.0
+Built with GCC 14.2.0
+Host_Init
+Steam library not found.
+Playing registered version.
+Console initialized.
+UDP4 Initialized
+UDPv6 Initialized
+Server using protocol 999+ (FTE-RMQ)
+Exe: 00:00:00 Oct 30 2026 
+SDL Video Driver: wayland
+
+Vulkan Initialization
+Using Vulkan 1.1
+Instance extensions:
+ VK_KHR_surface
+ VK_KHR_wayland_surface
+ VK_KHR_get_surface_capabilities2
+ VK_KHR_get_physical_device_properties2
+
+Vendor: MESA
+Device: llvmpipe (LLVM 19.1.7, 256 bits)
+Driver: llvmpipe Mesa 25.0.7-2+deb13u1 (LLVM 19.1.7)
+Using FP16 shader arithmetic
+Using subgroup operations
+Using ray queries
+Device extensions:
+ VK_KHR_swapchain
+ VK_KHR_shader_float16_int8
+ VK_KHR_get_memory_requirements2
+ VK_KHR_dedicated_allocation
+ VK_EXT_subgroup_size_control
+ VK_KHR_acceleration_structure
+ VK_KHR_push_descriptor
+ VK_EXT_descriptor_indexing
+ VK_KHR_buffer_device_address
+ VK_KHR_deferred_host_operations
+ VK_KHR_shader_float_controls
+ VK_KHR_spirv_1_4
+ VK_KHR_acceleration_structure
+ VK_KHR_ray_query
+Using A2B10G10R10 color buffer format
+Using D32_S8 depth buffer format
+
+Creating command buffers
+Initializing staging
+Creating descriptor set layouts
+Reallocating dynamic vertex buffers (256 KB)
+Reallocating dynamic index buffers (1024 KB)
+Reallocating dynamic uniform buffers (256 KB)
+Initializing samplers
+Texture lod bias: 0.000000
+Creating pipeline layouts
+Allocating lightstyles buffer (0 KB)
+Allocating lights buffer (12 KB)
+Allocating submodel transforms buffer (768 KB)
+Allocating bmodel instances buffer (1024 KB)
+Couldn't load 'localization/loc_english.txt'
+from '/evidence/bundle'
+Using FIFO present mode
+Creating color buffer
+4 AA Samples
+Creating depth buffer
+Creating pipelines
+Couldn't load 'localization/loc_english.txt'
+from '/evidence/bundle'
+
+========= Quake Initialized =========
+
+execing quake.rc
+execing default.cfg
+couldn't exec config.cfg
+couldn't exec autoexec.cfg
+3 demo(s) in loop
+
+============================== 
+check out our commands 
+Zoom90 or Zoom120 for the zoom function 
+Dev for development bindings 
+Cam for the camera system we use for the main menu demos 
+============================== 
+
+============================== 
+LibreQuake Version V0.09-beta 
+============================== 
+
+vkQuake 1.37.0 Server (62091 CRC)
+
+
+
+Tainted Tech Threshold
+Using protocol fte999
+Allocating surface submodel indices (13 KB)
+Allocating lightmap compute surface data (218 KB)
+Allocating acceleration structure data (872 KB)
+Reallocating dynamic AS scratch buffer (8192 KB)
+Allocating indirect draw data (1 KB, 60 draws)
+Allocating indirect IBs (92 KB)
+Allocating visibility buffers (1 KB)
+player entered the game
+Reallocating dynamic storage buffers (0 KB)
+Client player removed

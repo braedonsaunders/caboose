@@ -7,3 +7,4 @@ install -Dm755 "$here/caboose-gpu-run" /usr/local/bin/caboose-gpu-run
 if [ -d /usr/local/lib/caboose-gpu ]; then
   install -m 644 "$here/profile.json" /usr/local/lib/caboose-gpu/profile.json
 fi
+python3 "$here/install-live.py"

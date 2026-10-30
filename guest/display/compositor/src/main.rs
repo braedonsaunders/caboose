@@ -9,6 +9,13 @@ mod control;
 mod displays;
 mod encode;
 mod game;
+#[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
+mod gpu_supervisor;
+#[allow(dead_code)] // Grant handling remains disabled until CGB IPC is connected.
+mod gpu_grant;
+#[allow(dead_code)] // Control handling is unavailable until the private bridge is connected.
+mod gpu_control;
+mod gpu_peer;
 mod input;
 mod keymap;
 mod motion;
@@ -266,6 +273,7 @@ fn stop_on_signals(handle: &smithay::reexports::calloop::LoopHandle<'static, Sta
 }
 
 fn run(config: Config) -> Result<(), String> {
+    config.validate_private_gpu_seat(std::env::var_os("CABOOSE_SEAT").as_deref() == Some(std::ffi::OsStr::new("agent")))?;
     let encoders = Encoders::probe(config.encoder, config.settings.clone());
     if config.list_encoders {
         for b in &encoders.backends {
@@ -377,7 +385,9 @@ fn run(config: Config) -> Result<(), String> {
         ListeningSocketSource::with_name(&config.socket).map_err(|e| format!("socket {}: {e}", config.socket))?;
     handle
         .insert_source(socket, |stream, _, state: &mut State| {
-            if let Err(e) = state.dh.insert_client(stream, Arc::new(ClientState::default())) {
+            let gpu_peer = if state.net.gpu_enabled() { gpu_peer::GpuPeer::capture(&stream).ok() } else { None };
+            let client = ClientState { gpu_peer, ..ClientState::default() };
+            if let Err(e) = state.dh.insert_client(stream, Arc::new(client)) {
                 tracing::warn!("cannot add a Wayland client: {e}");
             }
         })
@@ -446,10 +456,20 @@ fn run(config: Config) -> Result<(), String> {
         devices_tx,
         generation: 0,
         epoch: session::new_epoch(),
+        gpu_grants: None,
+        gpu_last_bind_request: 0,
         stats: Default::default(),
         cursor: None,
         refine_timer: None,
     };
+
+    if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
+        let grants = gpu_grant::Grants::new().map_err(|e| format!("private GPU entropy: {e}"))?;
+        let token = state.config.token_file.as_ref().ok_or("private GPU requires authentication")?;
+        state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, &handle)
+            .map_err(|e| format!("private GPU supervisor: {e}"))?;
+        state.gpu_grants = Some(grants);
+    }
 
     if state.config.audio {
         let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());

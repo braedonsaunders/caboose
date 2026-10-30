@@ -291,6 +291,9 @@ summary.
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--no-games` | | Do not listen for game launchers |
 | `--no-devices` | | Do not accept the phone's hardware as devices ([docs/devices.md](../../docs/devices.md)) |
+| `--private-gpu-stream-socket PATH` | disabled | Owner-only private live GPU stream socket; requires the surface socket option |
+| `--private-gpu-surface-socket PATH` | disabled | Owner-only private live GPU surface socket; requires the stream socket option |
+| `--private-gpu-indexed` | disabled | Select private indexed v4 transport; requires both private GPU sockets |
 | `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |

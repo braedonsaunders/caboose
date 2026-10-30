@@ -1487,3 +1487,32 @@ app launch and file actions and remains available when the host is offline.
 Run `swift test --filter FileExportTests` in `CabooseKit` for export validation. On a
 paired phone, follow `sh scripts/check-shortcuts.sh` to verify the system editor and
 end-to-end file results.
+### Private indexed GPU acceptance
+
+The live driver integration is disabled by default. A Debug build launched with
+`CABOOSE_PRIVATE_GPU_INDEXED=1` creates one executor for the paired owner computer
+using its existing phone token and host `/v1/gpu` endpoint. The matching guest
+requires the authenticated private sockets and explicit indexed broker selection
+described in [the live GPU contract](../../docs/gpu-live.md). This path never
+selects a diagnostic endpoint or creates an agent/thumbnail executor.
+
+The app's ordinary display supplies the compositor epoch and owner window objects;
+only their visible interactive views can supply a Metal layer. Backgrounding or
+switching computers drains the executor. Failed or unconfirmed retirement keeps
+its reservation and disables replacement for that app process. Native indexed
+presentation and game execution on this path remain unverified.
+
+With the separately packaged memory-audit module, Debug launch variable
+`CABOOSE_PRIVATE_GPU_MEMORY_AUDIT=1` enables native allocation receipts before the
+first provider initialization. Fixed `CABOOSE_GPU_MEMORY_AUDIT` console records
+contain actual feature flags and per-process allocation indices, sizes and provider
+results. They exclude memory contents and credentials. The receipt snapshot runs
+after decoder streams join and before process cleanup. Overflow or a snapshot
+error is reported as incomplete and never skips cleanup. Requesting this audit
+without its native module fails explicitly; it is absent from ordinary builds.
+The same opt-in emits `nativeRun` and `sessionStop` records with native errno and
+fixed error categories, allowlisted protocol reason labels, surface-bind stages and
+owner-invalidation reasons. POSIX, URL and Cocoa failures record only their numeric
+code and fixed category. These terminal records are capped at 64 per app process,
+followed by one `terminalOverflow`; they contain no error descriptions, command
+payloads or object addresses. They do not change runtime results or retirement.

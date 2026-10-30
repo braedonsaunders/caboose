@@ -27,7 +27,7 @@ use smithay::utils::{Clock, IsAlive, Monotonic, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState, CompositorHandler,
-    CompositorState, SurfaceAttributes, TraversalAction,
+    BufferAssignment, CompositorState, SurfaceAttributes, TraversalAction,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
@@ -112,6 +112,7 @@ impl KeyboardTarget<State> for KeyboardFocus {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor: CompositorClientState,
+    pub gpu_peer: Option<crate::gpu_peer::GpuPeer>,
 }
 
 impl ClientData for ClientState {
@@ -211,6 +212,8 @@ pub struct State {
     pub generation: u64,
     /// Random for this process, sent in every hello: window ids are unique within it.
     pub epoch: String,
+    pub gpu_grants: Option<crate::gpu_grant::Grants>,
+    pub gpu_last_bind_request: u64,
     pub stats: Stats,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
@@ -226,13 +229,138 @@ impl HasNet for State {
         self.handle.clone()
     }
     fn on_net_events(&mut self, events: Vec<NetEvent>) {
-        for event in events {
-            self.on_net_event(event);
+        for event in events { self.on_net_event(event); }
+    }
+    fn on_gpu_record(&mut self, record: crate::gpu_control::Record) { self.handle_gpu_record(record); }
+    fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>) {
+        if let Some(grant) = grant {
+            if self.gpu_grants.as_mut().is_none_or(|grants| grants.revoke_sent(grant).is_err()) {
+                self.gpu_control_failed();
+            }
         }
     }
+    fn on_gpu_control_failure(&mut self) { self.gpu_control_failed(); }
 }
 
 impl State {
+    /// Native Wayland toplevel identity from its accepted peer, never X11 PID
+    /// properties. This does not mint or authorize a surface grant by itself.
+    #[allow(dead_code)]
+    pub fn native_gpu_surface_identity(&self, window: u64) -> Option<(u32, u32, u64, u32)> {
+        use smithay::reexports::wayland_server::Resource;
+        let window = self.windows.get(window)?;
+        let Surface::Toplevel(toplevel) = &window.surface else { return None };
+        let surface = toplevel.wl_surface();
+        let object = surface.id();
+        let client = self.dh.get_client(object.clone()).ok()?;
+        let peer = client.get_data::<ClientState>()?.gpu_peer.as_ref()?;
+        if !peer.alive() { return None; }
+        Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
+    }
+
+    pub(crate) fn gpu_control_failed(&mut self) {
+        if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
+        self.net.fail_gpu_control();
+        self.reconnect_for_gpu_epoch();
+    }
+
+    fn reconnect_for_gpu_epoch(&mut self) {
+        if let Some(conn) = self.session.as_ref().map(|s| s.conn) {
+            self.net.close_with(conn, None);
+            self.end_session();
+        }
+    }
+
+    pub(crate) fn queue_gpu_revoke(&mut self, grant: crate::gpu_grant::Grant) -> std::io::Result<()> {
+        let bytes = crate::gpu_control::revoke(grant)?;
+        self.net.queue_gpu_control(bytes, Some(grant))
+    }
+
+    fn handle_gpu_record(&mut self, record: crate::gpu_control::Record) {
+        use crate::gpu_control::{self, Record};
+        use std::os::fd::AsRawFd;
+        use smithay::reexports::wayland_server::Resource;
+        match record {
+            Record::Bind(bind) => {
+                if bind.request <= self.gpu_last_bind_request {
+                    self.gpu_control_failed(); return;
+                }
+                self.gpu_last_bind_request = bind.request;
+                let mut matches = Vec::new();
+                for window in self.windows.iter() {
+                    let Surface::Toplevel(toplevel) = &window.surface else { continue };
+                    let object = toplevel.wl_surface().id();
+                    if object.protocol_id() != bind.object { continue; }
+                    let Ok(client) = self.dh.get_client(object) else { continue };
+                    let Some(peer) = client.get_data::<ClientState>().and_then(|state| state.gpu_peer.as_ref()) else { continue };
+                    if peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
+                        matches.push(window.id);
+                    }
+                }
+                // A retained fallback display is not an authenticated owner layout.
+                // Ambiguous Wayland connections must remain ambiguous, even if
+                // only one happens to be on an eligible output.
+                if matches.len() == 1 && !self.windows.get(matches[0]).is_some_and(|window|
+                    self.session.as_ref().is_some_and(|session| session.ready && session.owner_displays.contains(&window.display)) &&
+                    self.displays.get(window.display).is_some_and(|display| {
+                        let size = display.logical_size(); size.w > 0 && size.h > 0
+                    })) { matches.clear(); }
+                let grant = self.gpu_grants.as_mut().and_then(|grants|
+                    grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+                if let Some(grant) = grant {
+                    if let Some(window) = self.windows.get(grant.window) {
+                        if let Surface::Toplevel(toplevel) = &window.surface {
+                            let size = self.displays.get(window.display).unwrap().logical_size();
+                            toplevel.with_pending_state(|state| state.size = Some(size));
+                            toplevel.send_configure();
+                        }
+                    }
+                    self.sync_windows();
+                }
+                if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
+                    self.gpu_control_failed();
+                }
+            }
+            Record::SurfaceRetired { epoch, grant, generation } => {
+                if self.gpu_grants.as_mut().is_none_or(|grants| grants.surface_retired_by_identity(epoch, grant, generation).is_err()) {
+                    self.gpu_control_failed();
+                }
+            }
+            Record::RevokeRequest { epoch, grant, generation } => {
+                let result = self.gpu_grants.as_mut().ok_or(()).and_then(|grants|
+                    grants.request_revoke(epoch, grant, generation).map_err(|_| ()));
+                match result {
+                    Ok(Some(grant)) => if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); },
+                    Ok(None) => {},
+                    Err(()) => self.gpu_control_failed(),
+                }
+            }
+            Record::Lifecycle { kind, executor, generation } => {
+                let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
+                match kind {
+                    4 => {
+                        if grants.ready(executor, generation).is_err() { self.gpu_control_failed(); }
+                        else { self.reconnect_for_gpu_epoch(); }
+                    }
+                    5 => {
+                        let revokes = match grants.lost(executor, generation) {
+                            Ok(revokes) => revokes,
+                            Err(_) => { self.gpu_control_failed(); return; }
+                        };
+                        for grant in revokes {
+                            if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); return; }
+                        }
+                        self.reconnect_for_gpu_epoch();
+                    }
+                    6 => {
+                        if grants.retired(executor, generation).is_err() { self.gpu_control_failed(); }
+                    }
+                    _ => self.gpu_control_failed(),
+                }
+            }
+        }
+    }
+
     pub fn now_us(&self) -> u64 {
         Duration::from(self.clock.now()).as_micros() as u64
     }
@@ -300,6 +428,10 @@ impl State {
     }
 
     fn forget_window(&mut self, id: u64) {
+        let revoke = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+        if let Some(grant) = revoke {
+            if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+        }
         let focused = self.focus_history.last() == Some(&id);
         self.focus_history.retain(|f| *f != id);
         let Some(w) = self.windows.remove(id) else { return };
@@ -383,7 +515,9 @@ impl State {
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application whose stream the client renders never presents here, so its
             // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
-            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id);
+            let virtual_window = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(id)) &&
+                self.session.as_ref().is_some_and(|session| session.owner_displays.contains(&w.display));
+            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id) || virtual_window;
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {
@@ -400,7 +534,15 @@ impl State {
                 }
                 continue;
             }
-            let Some(now) = self.windows.describe(id, &self.displays) else { continue };
+            let Some(mut now) = self.windows.describe(id, &self.displays) else { continue };
+            if virtual_window && w.surface.wl_surface().is_some_and(|s| !Self::is_mapped(&s)) {
+                let Surface::Toplevel(toplevel) = &w.surface else { continue };
+                let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };
+                let Some(display) = self.displays.get(w.display) else { continue };
+                let Some((width, height)) = virtual_target_pixels(size.w, size.h, display.info.scale) else { continue };
+                now.geometry.w = width;
+                now.geometry.h = height;
+            }
             match &w.announced {
                 None => {
                     self.net.send(conn, &proto::Message::WindowCreate(now.clone()));
@@ -451,6 +593,34 @@ impl BufferHandler for State {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
+fn virtual_target_pixels(width: i32, height: i32, scale: f64) -> Option<(i32, i32)> {
+    if width <= 0 || height <= 0 || !scale.is_finite() || scale <= 0.0 { return None; }
+    let (w, h) = ((width as f64 * scale).round(), (height as f64 * scale).round());
+    if w < 1.0 || h < 1.0 || w > i32::MAX as f64 || h > i32::MAX as f64 { return None; }
+    Some((w as i32, h as i32))
+}
+
+fn is_explicit_buffer_detach(buffer: Option<&BufferAssignment>) -> bool {
+    matches!(buffer, Some(BufferAssignment::Removed))
+}
+
+#[cfg(test)]
+mod gpu_detach_tests {
+    use super::{is_explicit_buffer_detach, virtual_target_pixels, BufferAssignment};
+    #[test]
+    fn only_explicit_null_buffer_is_a_detach() {
+        assert!(!is_explicit_buffer_detach(None));
+        assert!(is_explicit_buffer_detach(Some(&BufferAssignment::Removed)));
+    }
+    #[test]
+    fn virtual_target_requires_a_real_positive_configure() {
+        assert_eq!(virtual_target_pixels(640, 360, 1.5), Some((960, 540)));
+        for (w, h, scale) in [(0, 360, 1.0), (640, 0, 1.0), (640, 360, 0.0), (640, 360, f64::NAN)] {
+            assert_eq!(virtual_target_pixels(w, h, scale), None);
+        }
+    }
+}
+
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor
@@ -464,6 +634,19 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Smithay's renderer consumes this assignment, so inspect it first.
+        // A missing buffer assignment is not an explicit unmap.
+        let detached = smithay::wayland::compositor::with_states(surface, |states| {
+            is_explicit_buffer_detach(states.cached_state.get::<SurfaceAttributes>().current().buffer.as_ref())
+        });
+        if detached {
+            if let Some(id) = self.windows.by_surface(surface) {
+                let revoke = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+                if let Some(grant) = revoke {
+                    if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+                }
+            }
+        }
         on_commit_buffer_handler::<Self>(surface);
         let Renderer::Pixman(r) = &mut self.renderer;
         // Import now so a client's shm buffer is released as early as possible.

@@ -407,6 +407,8 @@ The relay forwards normal close code 1000 and waits at most one second for the
 other endpoint; errors and abnormal closes terminate both endpoints without
 manufacturing a normal-close receipt. The executor reservation lasts until both
 have closed. This transport state does not prove native resource retirement. A reconnect receives a new executor identity; no command history
+Both endpoints close on transport failure, and the executor reservation lasts until
+both have closed. A reconnect receives a new executor identity; no command history
 is replayed. The relay does not interpret GPU completion, capabilities or resource
 handles. It requires a matching guest `/gpu` implementation and does not enable the
 existing capture player or advertise a usable driver. Run its isolated socket and

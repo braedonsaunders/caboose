@@ -1,0 +1,50 @@
+--- a/host/vulkan/vulkan_dispatch.h
++++ b/host/vulkan/vulkan_dispatch.h
+@@ -21,0 +22,7 @@
++// Install the process-owned loader before any call to vkDispatch. The resolver
++// must provide actual loader export trampolines, including instance/device
++// functions; vkGetInstanceProcAddr(VK_NULL_HANDLE, name) alone is insufficient.
++using CabooseVulkanResolve = void* (*)(const char* name);
++bool installVulkanLoader(PFN_vkGetInstanceProcAddr getInstanceProcAddr,
++                         CabooseVulkanResolve resolve);
++
+--- a/host/vulkan/vulkan_dispatch.cpp
++++ b/host/vulkan/vulkan_dispatch.cpp
+@@ -283,0 +284,2 @@
++    bool installLoader(PFN_vkGetInstanceProcAddr getInstanceProcAddr,
++                       CabooseVulkanResolve resolve);
+@@ -376,0 +379,2 @@
++    PFN_vkGetInstanceProcAddr mInjectedGetInstanceProcAddr = nullptr;
++    CabooseVulkanResolve mInjectedResolve = nullptr;
+@@ -385,0 +390,14 @@
++}
++
++bool VulkanDispatchImpl::installLoader(PFN_vkGetInstanceProcAddr getInstanceProcAddr,
++                                       CabooseVulkanResolve resolve) {
++    AutoLock lock(mLock);
++    if (mInitialized || mInjectedResolve || !getInstanceProcAddr || !resolve) return false;
++    mInjectedGetInstanceProcAddr = getInstanceProcAddr;
++    mInjectedResolve = resolve;
++    return true;
++}
++
++bool installVulkanLoader(PFN_vkGetInstanceProcAddr getInstanceProcAddr,
++                         CabooseVulkanResolve resolve) {
++    return sVulkanDispatchImpl()->installLoader(getInstanceProcAddr, resolve);
+@@ -508,2 +526,14 @@
+-    init_vulkan_dispatch_from_system_loader(sVulkanDispatchDlOpen, sVulkanDispatchDlSym,
+-                                            &mDispatch);
++    if (mInjectedResolve) {
++        // The generated initializer expects a dlopen/dlsym pair. Use the real
++        // process-owned export resolver, never a second dynamic loader.
++        static CabooseVulkanResolve resolver = mInjectedResolve;
++        init_vulkan_dispatch_from_system_loader(
++            []() -> void* { return &resolver; },
++            [](void* lib, const char* name) -> void* {
++                return (*static_cast<CabooseVulkanResolve*>(lib))(name);
++            }, &mDispatch);
++        mDispatch.vkGetInstanceProcAddr = mInjectedGetInstanceProcAddr;
++    } else {
++        init_vulkan_dispatch_from_system_loader(sVulkanDispatchDlOpen, sVulkanDispatchDlSym,
++                                                &mDispatch);
++    }

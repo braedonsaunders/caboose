@@ -11,7 +11,7 @@ use caboose_display_protocol::{self as proto, ByeReason, Codec, Message, Rect};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,8 @@ pub struct Session {
     pub conn: ConnId,
     /// The handshake is complete and windows are announced.
     pub ready: bool,
+    /// Outputs supplied by this authenticated owner, not retained fallback outputs.
+    pub owner_displays: HashSet<u32>,
     pub backend: Backend,
     pub last_vsync: HashMap<u32, Instant>,
     /// What the client plays as `video.*` streams.
@@ -151,7 +153,7 @@ impl State {
         }
     }
 
-    fn end_session(&mut self) {
+    pub(crate) fn end_session(&mut self) {
         if self.session.as_ref().is_some_and(|s| s.devices) {
             if let Some(hub) = &self.devices {
                 hub.disconnected();
@@ -413,6 +415,7 @@ impl State {
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
+                gpu_live_epoch: self.gpu_grants.as_ref().and_then(|g| g.epoch_if_ready()),
             }),
         );
         if atlas {
@@ -428,6 +431,7 @@ impl State {
         self.session = Some(Session {
             conn,
             ready: true,
+            owner_displays: hello.displays.iter().filter(|d| d.width > 0 && d.height > 0 && d.scale.is_finite() && d.scale > 0.0).map(|d| d.id).collect(),
             backend,
             last_vsync: HashMap::new(),
             video_decoders,
@@ -486,7 +490,21 @@ impl State {
     }
 
     pub fn set_displays(&mut self, displays: &[proto::Display]) {
+        let owner_displays: HashSet<u32> = displays.iter().filter(|d| d.width > 0 && d.height > 0 && d.scale.is_finite() && d.scale > 0.0).map(|d| d.id).collect();
+        if let Some(session) = self.session.as_mut() {
+            session.owner_displays = owner_displays.clone();
+        }
         let change = self.displays.replace(&self.dh, displays);
+        let revoked: Vec<_> = self.windows.iter().filter_map(|window| {
+            let available = owner_displays.contains(&window.display);
+            (!available || change.changed.contains(&window.display) || change.removed.contains(&window.display)).then_some(window.id)
+        }).collect();
+        for id in revoked {
+            let grant = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+            if let Some(grant) = grant {
+                if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+            }
+        }
         let fallback = self.displays.primary().info.id;
         let ids = self.windows.ids();
         let mut resized = Vec::new();

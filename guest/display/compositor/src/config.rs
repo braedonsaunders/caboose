@@ -20,6 +20,9 @@ OPTIONS:
     --no-audio             do not run PulseAudio or send sound
     --no-games             do not listen for game launchers (the agent seat)
     --no-devices           do not accept the phone's hardware as devices (the agent seat)
+    --private-gpu-stream-socket PATH   private live GPU stream socket (owner only)
+    --private-gpu-surface-socket PATH  private live GPU surface socket (owner only)
+    --private-gpu-indexed  select the private indexed v4 transport
     --gpu-spool-limit BYTES  the most of one GPU stream kept on disk; a stream that outgrows
                            it ends [default: 2147483648]
     --audio-bitrate BPS    Opus bitrate [default: 128000]
@@ -83,6 +86,9 @@ impl DisplaySpec {
 pub struct Config {
     pub listen: SocketAddr,
     pub token_file: Option<PathBuf>,
+    pub private_gpu_stream: Option<PathBuf>,
+    pub private_gpu_surface: Option<PathBuf>,
+    pub private_gpu_indexed: bool,
     pub socket: String,
     pub x_display: Option<u32>,
     pub audio: bool,
@@ -112,6 +118,9 @@ impl Default for Config {
         Self {
             listen: "0.0.0.0:14600".parse().unwrap(),
             token_file: Some("/run/caboose/display-token".into()),
+            private_gpu_stream: None,
+            private_gpu_surface: None,
+            private_gpu_indexed: false,
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
             audio: true,
@@ -134,6 +143,13 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The agent launch environment is not authorized to start a GPU broker.
+    pub fn validate_private_gpu_seat(&self, is_agent: bool) -> Result<(), &'static str> {
+        if is_agent && (self.private_gpu_stream.is_some() || self.private_gpu_surface.is_some()) {
+            return Err("private GPU is unavailable on the agent seat");
+        }
+        Ok(())
+    }
     /// This instance's private state (X11 authority, the Xwayland shim, PulseAudio) under
     /// `runtime_dir`, named after its Wayland socket so that two instances (the owner's
     /// display and the agent seat) never share it.
@@ -164,6 +180,9 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             }
             "--token-file" => config.token_file = Some(value(&mut args, &arg)?.into()),
             "--no-auth" => config.token_file = None,
+            "--private-gpu-stream-socket" => config.private_gpu_stream = Some(value(&mut args, &arg)?.into()),
+            "--private-gpu-surface-socket" => config.private_gpu_surface = Some(value(&mut args, &arg)?.into()),
+            "--private-gpu-indexed" => config.private_gpu_indexed = true,
             "--socket" => config.socket = value(&mut args, &arg)?,
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
@@ -213,6 +232,15 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    let safe_path = |path: &std::path::Path| path.is_absolute() && path.file_name().is_some() &&
+        path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)));
+    match (&config.private_gpu_stream, &config.private_gpu_surface) {
+        (None, None) if !config.private_gpu_indexed => {},
+        (Some(stream), Some(surface)) if config.games && config.socket != "wayland-caboose-agent" &&
+            config.token_file.is_some() && safe_path(stream) && safe_path(surface) && stream != surface &&
+            stream.parent().is_some() && stream.parent() == surface.parent() => {},
+        _ => return Err("private GPU requires an authenticated owner seat and distinct absolute sockets in one private directory".into()),
+    }
     Ok(Parsed::Run(Box::new(config)))
 }
 
@@ -225,6 +253,29 @@ mod tests {
             Parsed::Run(c) => *c,
             Parsed::Help => panic!("help"),
         }
+    }
+
+    #[test]
+    fn private_gpu_requires_authenticated_owner_and_both_private_paths() {
+        let parse_args = |args: &[&str]| parse(args.iter().map(|s| s.to_string()));
+        assert!(run(&[]).private_gpu_stream.is_none());
+        assert!(!run(&[]).private_gpu_indexed);
+        assert!(parse_args(&["--private-gpu-indexed"]).is_err());
+        let paths = ["--private-gpu-stream-socket", "/tmp/private/stream", "--private-gpu-surface-socket", "/tmp/private/surface"];
+        assert!(parse_args(&paths).is_ok());
+        let mut indexed = paths.to_vec(); indexed.push("--private-gpu-indexed");
+        assert!(run(&indexed).private_gpu_indexed);
+        assert!(run(&paths).validate_private_gpu_seat(true).is_err());
+        assert!(run(&paths).validate_private_gpu_seat(false).is_ok());
+        assert!(run(&[]).validate_private_gpu_seat(true).is_ok());
+        assert!(parse_args(&paths[..2]).is_err());
+        for extra in [&["--no-auth"][..], &["--no-games"][..], &["--socket", "wayland-caboose-agent"][..]] {
+            let mut args = paths.to_vec(); args.extend_from_slice(extra);
+            assert!(parse_args(&args).is_err());
+        }
+        assert!(parse_args(&["--private-gpu-stream-socket", "/tmp/p/a", "--private-gpu-surface-socket", "/tmp/q/b"]).is_err());
+        assert!(parse_args(&["--private-gpu-stream-socket", "/tmp/p/a", "--private-gpu-surface-socket", "/tmp/p/a"]).is_err());
+        assert!(parse_args(&["--private-gpu-stream-socket", "/tmp/p/../a", "--private-gpu-surface-socket", "/tmp/p/../b"]).is_err());
     }
 
     #[test]

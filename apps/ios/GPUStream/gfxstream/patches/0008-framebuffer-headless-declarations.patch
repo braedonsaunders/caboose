@@ -1,0 +1,61 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -62,0 +63 @@
++#include "gfxstream/host/readback_worker.h"
+@@ -88,0 +90 @@
++using gfxstream::host::gl::RecursiveScopedContextBind;
+@@ -99 +100,0 @@
+-using gfxstream::host::gl::RecursiveScopedContextBind;
+@@ -620,0 +622,25 @@
++    bool hasEmulationGl() const {
++#if GFXSTREAM_ENABLE_HOST_GLES
++        return m_emulationGl != nullptr;
++#else
++        return false;
++#endif
++    }
++    gl::EmulationGl* glForBuffer() const {
++#if GFXSTREAM_ENABLE_HOST_GLES
++        return m_emulationGl.get();
++#else
++        return nullptr;
++#endif
++    }
++
++    bool hasEmulationVk() const { return m_emulationVk != nullptr; }
++
++    bool setColorBufferVulkanMode(HandleType colorBufferHandle, uint32_t mode);
++    int32_t mapGpaToBufferHandle(uint32_t bufferHandle, uint64_t gpa, uint64_t size);
++
++#if !GFXSTREAM_ENABLE_HOST_GLES
++    // There is no EGL context to bind in the Vulkan-only backend.
++    bool bindContext(HandleType, HandleType, HandleType) override { return false; }
++#endif
++
+@@ -695,15 +720,0 @@
+-    bool hasEmulationGl() const {
+-#if GFXSTREAM_ENABLE_HOST_GLES
+-        return m_emulationGl != nullptr;
+-#else
+-        return false;
+-#endif
+-    }
+-    gl::EmulationGl* glForBuffer() const {
+-#if GFXSTREAM_ENABLE_HOST_GLES
+-        return m_emulationGl.get();
+-#else
+-        return nullptr;
+-#endif
+-    }
+-
+@@ -711,4 +721,0 @@
+-    bool hasEmulationVk() const { return m_emulationVk != nullptr; }
+-
+-    bool setColorBufferVulkanMode(HandleType colorBufferHandle, uint32_t mode);
+-    int32_t mapGpaToBufferHandle(uint32_t bufferHandle, uint64_t gpa, uint64_t size);
+@@ -1799,0 +1807,5 @@
++#if !GFXSTREAM_ENABLE_HOST_GLES
++    // This callback uses the GL readback worker, which is absent in this target.
++    GFXSTREAM_ERROR("Post callback readback requires GLES support.");
++    return;
++#endif

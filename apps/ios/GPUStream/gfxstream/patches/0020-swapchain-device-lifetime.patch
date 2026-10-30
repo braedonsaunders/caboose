@@ -1,0 +1,51 @@
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -77,0 +78,9 @@
++};
++
++// Queue-independent device lease for virtual swapchain creation.
++struct CabooseSwapchainDevice {
++    caboose::gpuv2::PresentationLease lease;
++    VkInstance instance = VK_NULL_HANDLE;
++    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
++    VkDevice device = VK_NULL_HANDLE;
++    VulkanDispatch* vk = nullptr;
+@@ -133,0 +143,2 @@
++    VkResult acquireCabooseSwapchainDevice(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, std::unique_ptr<CabooseSwapchainDevice>* out);
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -400,0 +401,25 @@
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
++
++    VkResult acquireCabooseSwapchainDevice(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, std::unique_ptr<CabooseSwapchainDevice>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedInstance || !boxedDevice) return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CabooseSwapchainDevice>();
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkInstance instance = try_unbox_VkInstance(boxedInstance);
++        VkDevice device = try_unbox_VkDevice(boxedDevice);
++        auto* inst = gfxstream::base::find(mInstanceInfo, instance);
++        auto* dev = gfxstream::base::find(mDeviceInfo, device);
++        if (!inst || !dev || inst->boxed != boxedInstance || inst->contextId != contextId ||
++            dev->boxed != boxedDevice) return VK_ERROR_INITIALIZATION_FAILED;
++        auto* physical = gfxstream::base::find(mPhysdevInfo, dev->physicalDevice);
++        if (!physical || physical->instance != instance) return VK_ERROR_INITIALIZATION_FAILED;
++        if (!dev->caboosePresentFenceEnabled) return VK_ERROR_FEATURE_NOT_PRESENT;
++        if (!result->lease.acquire(inst->cabooseLifetime) || !result->lease.acquire(dev->cabooseLifetime))
++            return VK_ERROR_INITIALIZATION_FAILED;
++        result->vk = dispatch_VkDevice(boxedDevice);
++        if (!result->vk) return VK_ERROR_INITIALIZATION_FAILED;
++        result->instance = instance; result->physicalDevice = dev->physicalDevice; result->device = device;
+@@ -12333,0 +12359,7 @@
++VkResult VkDecoderGlobalState::acquireCabooseSwapchainDevice(
++    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice,
++    std::unique_ptr<CabooseSwapchainDevice>* out) {
++    try { return mImpl->acquireCabooseSwapchainDevice(contextId, boxedInstance, boxedDevice, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++

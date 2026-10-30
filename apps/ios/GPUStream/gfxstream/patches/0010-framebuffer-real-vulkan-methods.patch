@@ -1,0 +1,20 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -491,0 +492 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -493,0 +495 @@
++#endif
+@@ -4177,0 +4180 @@
++#endif  // GFXSTREAM_ENABLE_HOST_GLES
+@@ -4254,0 +4258 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -4931,0 +4936 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -4935,0 +4941 @@
++#endif
+--- a/host/frame_buffer.h
++++ b/host/frame_buffer.h
+@@ -308,0 +309 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -309,0 +311 @@
++#endif

@@ -113,7 +113,7 @@ struct ComputerStateView: View {
     }
 }
 
-/// Every tab's trailing pair: the Computer settings, and the lifecycle menu below it.
+/// Tabs follow Home’s selected computer and offer settings and the lifecycle menu.
 /// They overflow last when the vertical bar runs short of room.
 struct ComputerToolbar: ToolbarContent {
     var body: some ToolbarContent {

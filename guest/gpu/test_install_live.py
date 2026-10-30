@@ -1,0 +1,56 @@
+"""Run against the assembled guest sources; never launches a listener."""
+import importlib.util
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("install_live", HERE / "install-live.py")
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+
+
+class InstalledBrokerTests(unittest.TestCase):
+    def test_installed_layout_ignores_working_directory_and_pythonpath(self):
+        assembled = Path(os.environ.get("CABOOSE_GPU_TEST_SOURCE", HERE))
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-install-") as temporary:
+            base = Path(temporary)
+            source = base / "source"
+            shutil.copytree(assembled, source)
+            # The installer and launcher under test, independent of assembled branch.
+            shutil.copyfile(HERE / "caboose-gpu-broker-launcher", source / "caboose-gpu-broker-launcher")
+            for name in ("live_protocol.py", "live_surface_protocol.py"):
+                shutil.copyfile(HERE / "broker" / name, source / "broker" / name)
+            shutil.copyfile(HERE / "gfxstream/surface_local_protocol.py",
+                            source / "gfxstream/surface_local_protocol.py")
+            destination = base / "root"
+            installer.install(source, destination)
+            hostile = base / "untrusted"
+            hostile.mkdir()
+            (hostile / "executor_lease.py").write_text("raise RuntimeError('untrusted import')\n")
+            launcher = destination / "usr/local/libexec/caboose-gpu-broker"
+            result = subprocess.run([sys.executable, "-I", str(launcher), "--help"],
+                                    cwd=hostile, env={**os.environ, "PYTHONPATH": str(hostile)},
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--control-fd", result.stdout)
+            self.assertEqual(launcher.stat().st_mode & 0o777, 0o755)
+            for name in installer.MODULES:
+                module = launcher.parent / "caboose-gpu" / name
+                self.assertEqual(module.read_bytes(), (source / "gfxstream" / name).read_bytes())
+                self.assertEqual(module.stat().st_mode & 0o777, 0o644)
+
+    def test_incomplete_bundle_does_not_install_entrypoint(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-incomplete-") as temporary:
+            base = Path(temporary)
+            with self.assertRaises(FileNotFoundError):
+                installer.install(base / "missing", base / "root")
+            self.assertFalse((base / "root/usr/local/libexec/caboose-gpu-broker").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
