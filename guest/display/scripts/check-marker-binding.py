@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in legacy marker protocol fixture, never production admission enablement.
-Requires explicitly selected isolated binaries that admit experimental marker streams.
+Requires compositor and probe built together from pinned legacy source 7f3b94796bcc1e691ac39a5754048fe26ddd158f, in an isolated fixture environment.
 Current production binaries correctly fail this historical behavior check.
 """
 import argparse

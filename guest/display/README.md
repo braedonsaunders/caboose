@@ -430,7 +430,10 @@ presentation checks; they do not establish a scroll-delivery fix.
 The production `passthrough` check verifies local-decode admission. The historical
 marker binding/forwarding check is retained separately in
 `scripts/check-marker-binding.py`. It is explicitly opt-in and requires
-`CABOOSE_DISPLAY_BIN` pointing to isolated legacy/internal compositor and probe binaries:
+`CABOOSE_DISPLAY_BIN` pointing to compositor and probe binaries built together from
+pinned legacy source `7f3b94796bcc1e691ac39a5754048fe26ddd158f`. Record both binary
+SHA-256 hashes with the run and use a disposable fixture environment; this is not a
+production launch recipe:
 
 ```sh
 CABOOSE_DISPLAY_BIN=/path/to/isolated/test-binaries python3 scripts/check-marker-binding.py --legacy-marker-binding
