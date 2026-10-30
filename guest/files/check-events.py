@@ -52,9 +52,10 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
     def counters():
         stat=(pathlib.Path('/proc')/str(process.pid)/'stat').read_text().split()
         switches=0
-        for task in (pathlib.Path('/proc')/str(process.pid)/'task').iterdir():
-            for line in (task/'status').read_text().splitlines():
-                if 'ctxt_switches:' in line: switches+=int(line.split(':')[1])
+        # Main thread exists for the entire sample. Summing transient request
+        # threads produces negative deltas when a completed handler disappears.
+        for line in (pathlib.Path('/proc')/str(process.pid)/'status').read_text().splitlines():
+            if 'ctxt_switches:' in line: switches+=int(line.split(':')[1])
         children=(pathlib.Path('/proc')/str(process.pid)/'task'/str(process.pid)/'children').read_text().strip()
         return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children}
     process = subprocess.Popen([sys.executable,str(HERE/'caboose-files.py')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -102,7 +103,7 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
                 # Wake only the synthetic queue, then ACK it.
                 queue=home/'.cache/caboose/phone/queue'; path=queue/'wake.json'; path.write_text('{"type":"phone.open","url":"https://example.com"}')
                 status,result=pending.result(); assert status==200,result
-                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children']}))
+                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'main_thread_context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children']}))
                 status,result=call('/events',req('',acks=[r['receipt'] for r in result['records'] if 'receipt' in r])); cursor=result['cursor']
             assert call('/events/presence',{'session':session,'generation':2,'phone':False})[0]==200
             assert call('/events/presence',{'session':session,'generation':1,'phone':True})[0]==409

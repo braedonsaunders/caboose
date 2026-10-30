@@ -345,6 +345,7 @@ class Events:
 
     def serve(self, handler, value, changes, authorized):
         value = request(value)
+        handler.close_connection = True
         if not self.guard.acquire(blocking=False): return handler.reply(409, {'error': 'event reader busy'})
         watch = None
         try:
@@ -382,7 +383,7 @@ class Events:
             records, more = self.store.snapshot(value, self.last_anchor) if dirty else ([], False)
             self.more = more
             self.cursor = secrets.token_hex(16)
-            handler.reply(200, {'cursor': self.cursor, 'records': records, 'more': more}, {'Cache-Control': 'no-store'})
+            handler.reply(200, {'cursor': self.cursor, 'records': records, 'more': more}, {'Cache-Control': 'no-store', 'Connection': 'close'})
         finally:
             if watch: watch.close()
             self.guard.release()
