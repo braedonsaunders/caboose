@@ -50,6 +50,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
     /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
     public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// The phone's hardware offered to the computer as devices (docs/devices.md), attached
+    /// while a connection whose server accepts them is up. Set before `connect()`.
+    public var devices: DeviceCenter?
     /// How game surfaces reach the computer's files: the host behind the display URL, with its token.
     public private(set) var gameHost: GameHostAccess?
 
@@ -236,7 +239,9 @@ public final class CabooseDisplaySession: DisplaySession {
         watchdog = nil
         if isClosed { return }
         closeCause = cause
-        // What a game held from the app's controls is released with the connection.
+        // What a game held from the app's controls is released with the connection, and the
+        // phone's hardware stops with it.
+        devices?.detach()
         gameHoldingInput?.releaseInput()
         gameHoldingInput = nil
         // State first: an observer that sees windows go while the state is still `.ready`
@@ -303,7 +308,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil))
     }
 
     // MARK: Server messages
@@ -365,6 +370,8 @@ public final class CabooseDisplaySession: DisplaySession {
                 } else {
                     endGPUStream(of: window)
                 }
+            case .deviceStatus, .deviceOpen, .deviceClose, .deviceRumble, .deviceKeyframe:
+                devices?.handle(message)
             case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
@@ -400,6 +407,15 @@ public final class CabooseDisplaySession: DisplaySession {
         announcedGames.removeAll()
         send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
+        attachDevices()
+    }
+
+    /// Offers the phone's hardware on this connection when its server accepts devices.
+    private func attachDevices() {
+        guard let devices else { return }
+        guard has("devices"), let stream else { return devices.detach() }
+        devices.attach(DeviceOutput(send: { message in stream.send(DisplayFraming.encode(message.frame)) },
+                                    backlog: { stream.sendBacklog }))
     }
 
     /// The hello's windows have all been announced: a kept window that was not is gone.

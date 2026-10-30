@@ -107,6 +107,11 @@ import Testing
             if let fields = message.fields {
                 // A liberal payload may carry keys v0 does not know; decoders ignore them.
                 var body = frame.body
+                // A newer phone's devices: a kind this version does not know is skipped and an
+                // unknown sensor or key name dropped, as `DeviceDescriptor` reads them.
+                if message.canonicalPayload != nil, frame.type == DisplayProtocol.ClientType.devices.rawValue {
+                    body = ClientMessage.devices(body["devices"]?.array?.compactMap(DeviceDescriptor.init) ?? []).frame.body
+                }
                 if message.canonicalPayload != nil, case .map(let pairs) = body, let known = fields.pairs?.map(\.0) {
                     body = .map(pairs.filter { pair in known.contains(pair.0) })
                 }
@@ -222,6 +227,28 @@ import Testing
         #expect(name == "text")
         guard case .cursorImage(let id, let image, _) = try server("cursor-image").first else { Issue.record("image"); return }
         #expect(id == 7 && !image.isEmpty)
+    }
+
+    @Test func devices() throws {
+        guard case .deviceStatus(let states) = try server("device-status").first else { Issue.record("device.status"); return }
+        #expect(states == [DeviceState(id: "camera-back", nodes: ["/dev/video4"]),
+                           DeviceState(id: "battery", nodes: [], error: "This computer's kernel has no UHID")])
+        guard case .deviceOpen("motion", 100) = try server("device-open").first else { Issue.record("device.open"); return }
+        guard case .deviceClose("camera-back") = try server("device-close").first else { Issue.record("device.close"); return }
+        guard case .deviceRumble("gamepad-1", 1, 0.25, 250) = try server("device-rumble").first else { Issue.record("device.rumble"); return }
+        guard case .deviceKeyframe("camera-back") = try server("device-keyframe").first else { Issue.record("device.keyframe"); return }
+    }
+
+    /// A phone's own `devices` decodes back to what it offered; a newer phone's unknown device
+    /// kind is skipped and an unknown sensor dropped.
+    @Test func deviceDescriptorsDecode() throws {
+        var parser = DisplayFrameParser()
+        let frame = try #require(try parser.append(try Self.vector("liberal-devices-future").wire).first)
+        let devices = frame.body["devices"]?.array?.compactMap(DeviceDescriptor.init) ?? []
+        #expect(devices == [DeviceDescriptor(id: "motion", kind: .motion, name: "iPhone Motion Sensors", sensors: [.accelerometer])])
+        guard case .devices(let offered) = Self.clientMessages["devices"] else { Issue.record("devices"); return }
+        let decoded = ClientMessage.devices(offered).frame.body["devices"]?.array?.compactMap(DeviceDescriptor.init)
+        #expect(decoded == offered)
     }
 
     @Test func unknownTypesAreSkipped() throws {
@@ -363,6 +390,36 @@ import Testing
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
+        "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], audioDecoders: ["opus"], devices: true),
+        "devices": .devices([
+            DeviceDescriptor(id: "camera-back", kind: .camera, name: "iPhone Back Camera", position: .back, size: (1280, 720), fps: 30),
+            DeviceDescriptor(id: "depth", kind: .depth, name: "iPhone Depth", position: .back, size: (256, 192), fps: 15),
+            DeviceDescriptor(id: "microphone", kind: .microphone, name: "iPhone Microphone"),
+            DeviceDescriptor(id: "motion", kind: .motion, name: "iPhone Motion Sensors",
+                             sensors: [.accelerometer, .gyroscope, .magnetometer, .rotation, .pressure]),
+            DeviceDescriptor(id: "gamepad-1", kind: .gamepad, name: "DualSense Wireless Controller", rumble: true),
+            DeviceDescriptor(id: "buttons", kind: .buttons, name: "iPhone Buttons", keys: [.volumeUp, .volumeDown, .camera, .action]),
+            DeviceDescriptor(id: "battery", kind: .battery, name: "iPhone Battery"),
+        ]),
+        "liberal-devices-future": .devices([
+            DeviceDescriptor(id: "motion", kind: .motion, name: "iPhone Motion Sensors", sensors: [.accelerometer]),
+        ]),
+        "device-camera": .deviceCamera(device: "camera-back", seq: 0, keyframe: true, micros: 77_000_033_333,
+                                       data: (try? Data(contentsOf: directory.appendingPathComponent("media/keyframe-64x64.h264"))) ?? Data()),
+        "device-depth": .deviceDepth(device: "depth", micros: 77_000_066_666, width: 2, height: 2,
+                                     data: Data([0xE8, 0x03, 0xDC, 0x05, 0x00, 0x00, 0xA0, 0x0F])),
+        "device-audio": .deviceAudio(device: "microphone", micros: 77_000_020_000, data: Data([0xF8, 0xFF, 0xFE])),
+        "device-motion": .deviceMotion(device: "motion", samples: [
+            MotionSample(micros: 77_000_000_000, accel: [0, 0, 9.80665], gyro: [0, 0, 0], magnet: [21.5, -4.25, -40],
+                         rotation: [0, 0, 0, 1], pressure: 101.325),
+            MotionSample(micros: 77_000_010_000, accel: [0.125, -0.5, 9.75], gyro: [0.01, -0.02, 0.5]),
+        ]),
+        "device-gamepad": .deviceGamepad(device: "gamepad-1", GamepadReport(buttons: GamepadReport.Bit.south.mask, axes: [0.5, 1, 0, 0, 0, 0.5])),
+        "device-button": .deviceButton(device: "buttons", key: .volumeUp, pressed: true),
+        "device-battery": .deviceBattery(device: "battery", BatteryReport(level: 0.75, charging: true, full: false, lowPower: false, thermal: .fair)),
+        "device-error": .deviceError(device: "camera-back", reason: "Camera access is off in Settings"),
     ]
 
     static var clientVectors: [String] {
