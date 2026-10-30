@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/CATransaction.h>
 #include "metal_surface_internal.h"
 #include <cerrno>
 #include <new>
