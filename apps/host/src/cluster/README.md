@@ -36,9 +36,12 @@ Operator-authenticated POST endpoints (owner token or operator account) are:
   Creating a registry computer does not implicitly claim it on every host.
 - `/v1/computers/:id/cluster/checkpoint`: disconnect clients, drain routine/tool work,
   park, hold lifecycle exclusion, and publish an encrypted disk/keyring/host-state
-  archive. Requests and upgrades are serialized during this operation. The computer
-  stays parked and wakes normally on the next request. Large uploads delay other
-  requests on that host. Checkpoints are explicit operator operations.
+  archive. Admission excludes only this computer; unrelated requests and location
+  discovery remain concurrent. Its active HTTP/WebSocket transports are cancelled,
+  and their handlers must settle within five seconds before capture starts. If they
+  do not, capture is refused and admission stays closed until they settle. New work
+  during maintenance receives 409 (upgrades close). The computer stays parked and
+  wakes normally on the next request. Checkpoints are explicit operator operations.
 - `/v1/computers/:id/cluster/recover`: require an expired owner, revoke its host,
   deallocate and independently verify Azure `PowerState/deallocated`, claim a new
   generation, verify and restore the archive, then cold boot headlessly. A previously
