@@ -256,6 +256,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         ready = asyncio.Event(); ready.set()
         session.processes = {3: {'ready': ready, 'surfaces': set()}}
         session.surfaces = {}
+        session.surface_epoch = None
         broker_instance.session = session
         task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
         try:
@@ -314,6 +315,71 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await session.message(Envelope(Kind.DATA, b'a' * 16, 1, 1, 2, 1, b'x'))
         session.bindings.finish(session.binding_generation)
+
+    async def test_surface_replies_require_matching_real_requests(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        session.processes[1] = {}
+        surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(maxsize=64),
+                   'reply_bytes': 0, 'bound': None, 'queries': {3},
+                   'presents': {4: {'result': False, 'release': False}}}
+        session.surfaces[key] = surface
+        bound = identity + struct.pack('<iIiI', 0, 1, 0, 0)
+        await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 1, bound))
+        self.assertTrue(surface['bound'])
+        packet = surface['replies'].get_nowait()
+        self.assertEqual(struct.unpack_from('<Q', packet, 16)[0], 12)
+        with self.assertRaises(ValueError):
+            await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 2, bound))
+        release = identity + struct.pack('<Q', 4)
+        await session.message(Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 3, release))
+        with self.assertRaises(ValueError):
+            await session.message(Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 4, release))
+        self.assertIn(4, surface['presents'])
+        session.bindings.finish(session.binding_generation)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_local_surface_forwards_real_reply_over_seqpacket(self):
+        local, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        local.setblocking(False); client.setblocking(False)
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        session.processes[1] = {'surfaces': set()}
+        session.send = mock.Mock()
+        peer = mock.Mock()
+        result = control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 12, 7)
+        key = (result.epoch, result.grant, result.generation)
+        async def bind(_session, process, obj):
+            self.assertEqual((process, obj), (1, 9))
+            session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
+            return result
+        instance = broker.Broker.__new__(broker.Broker)
+        instance.request_bind = bind
+        loop = asyncio.get_running_loop()
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=peer), \
+             mock.patch.object(session.bindings, 'find_process', return_value=1):
+            task = asyncio.create_task(instance.surface_client(session, local))
+            try:
+                body = struct.pack('<QIIII', 8, 9, 0, 0, 0)
+                await loop.sock_sendall(client, struct.pack('<4sHHII', b'CGLS', 1, 16, 40, 0) + body)
+                for _ in range(10):
+                    if session.send.called: break
+                    await asyncio.sleep(0)
+                self.assertEqual(session.send.call_args.args[0], Kind.SURFACE_BIND)
+                self.assertEqual(session.send.call_args.kwargs['payload'][-8:], bytes(8))
+                payload = result.epoch + result.grant + struct.pack('<Q', 7) + struct.pack('<iIiI', 0, 1, 0, 0)
+                await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 1, payload))
+                reply = await asyncio.wait_for(loop.sock_recv(client, 256), 1)
+                self.assertEqual(reply[:4], b'CGLS')
+                self.assertEqual(struct.unpack_from('<Q', reply, 16)[0], 12)
+                self.assertEqual(reply[24:], payload)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                client.close()
+                session.bindings.finish(session.binding_generation)
 
 
 if __name__ == '__main__': unittest.main()

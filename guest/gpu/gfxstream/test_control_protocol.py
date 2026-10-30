@@ -9,6 +9,7 @@ class ControlProtocolTests(unittest.TestCase):
                   (p.BindResult(1,1,bytes(16),bytes(16),0,0), p.encode_result, 80, 0),
                   (p.RevokeGrant(b'a'*16,b'b'*16,3), p.encode_revoke, 64, 0),
                   (p.GrantRetired(b'a'*16,b'b'*16,3), p.encode_grant_retired, 64, 0),
+                  (p.RevokeRequest(b'a'*16,b'b'*16,3), p.encode_revoke_request, 64, 0),
                   (p.ExecutorLifecycle(4, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(5, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0)]

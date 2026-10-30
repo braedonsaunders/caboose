@@ -307,6 +307,15 @@ impl State {
                     self.gpu_control_failed();
                 }
             }
+            Record::RevokeRequest { epoch, grant, generation } => {
+                let result = self.gpu_grants.as_mut().ok_or(()).and_then(|grants|
+                    grants.request_revoke(epoch, grant, generation).map_err(|_| ()));
+                match result {
+                    Ok(Some(grant)) => if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); },
+                    Ok(None) => {},
+                    Err(()) => self.gpu_control_failed(),
+                }
+            }
             Record::Lifecycle { kind, executor, generation } => {
                 let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
                 match kind {

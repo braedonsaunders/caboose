@@ -169,11 +169,36 @@ impl Grants {
         *phase = GrantPhase::RevokeQueued;
         Some(*grant)
     }
+
+    /// An authenticated request is idempotent only while this exact grant is revoking.
+    pub fn request_revoke(&mut self, epoch: [u8; 16], token: [u8; 16], generation: u64) -> io::Result<Option<Grant>> {
+        let (grant, phase) = self.windows.values_mut().find(|(grant, _)|
+            grant.epoch == epoch && grant.token == token && grant.generation == generation)
+            .ok_or_else(|| io::Error::other("unknown surface revoke request"))?;
+        match *phase {
+            GrantPhase::Active => { *phase = GrantPhase::RevokeQueued; Ok(Some(*grant)) }
+            GrantPhase::RevokeQueued | GrantPhase::AwaitingRetirement => Ok(None),
+            GrantPhase::RetiredBeforeSendCallback => Err(io::Error::other("surface already retired")),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Grants;
+    #[test]
+    fn revoke_request_is_idempotent_only_for_the_live_matching_grant() {
+        let mut grants = Grants::new().unwrap();
+        grants.ready([1; 16], 1).unwrap();
+        let grant = grants.bind(1, (1, 2, 3, 4), &[7]).unwrap();
+        assert!(grants.request_revoke(grant.epoch, grant.token, grant.generation + 1).is_err());
+        assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), Some(grant));
+        assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
+        grants.revoke_sent(grant).unwrap();
+        assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
+        grants.surface_retired(grant).unwrap();
+        assert!(grants.request_revoke(grant.epoch, grant.token, grant.generation).is_err());
+    }
     #[test]
     fn ambiguous_wayland_connections_cannot_receive_a_grant() {
         let mut grants = Grants::new().unwrap();
