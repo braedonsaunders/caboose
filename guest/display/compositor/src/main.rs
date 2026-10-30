@@ -10,6 +10,8 @@ mod encode;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
+#[allow(dead_code)] // Grant handling remains disabled until CGB IPC is connected.
+mod gpu_grant;
 mod gpu_peer;
 mod input;
 mod keymap;
