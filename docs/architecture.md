@@ -2543,6 +2543,10 @@ local cancellation. Independent acquire observers release signal leases without
 waiting behind surface work. The private Mesa swapchain path and physical
 presentation validation remain incomplete; default app sessions do not activate
 this driver.
+An explicitly selected diagnostic package exposes a separate memory-audit module.
+Its debug launch opt-in records immutable decoder feature flags and bounded allocation
+mapping receipts before process cleanup; it never records memory contents or credentials.
+These receipts describe allocation decisions, not proof of transferred bytes or coherence.
 
 ### Shell
 
