@@ -48,7 +48,7 @@ destination. Fetch size depends on the remote server and has not been measured.
 
 For an isolated checkout whose `HEAD` is exactly the candidate Mesa revision,
 `python3 guest/gpu/gfxstream/prepare_mesa.py /path/to/mesa` checks SHA-256 of
-all three changed upstream files before applying the integration. It refuses an
+all five changed upstream files before applying the integration. It refuses an
 already patched or different tree. For an isolated Linux build environment with
 the required Mesa build dependencies already installed, the proposed minimal
 headless configuration is:
@@ -61,3 +61,28 @@ ninja -C /path/to/build
 This command has not been compiled or validated, and the complete source and
 dependency download sizes are not measured. No source fetch, build or install is
 performed by the preparation script. Do not use the output as a working ICD.
+
+## Non-direct memory transfer at the pinned revisions
+
+Mesa's generated `VkEncoder.cpp` emits a uint64 byte count and bytes after
+the flush command when `usingDirectMapping()` is false, and reads the Vulkan
+result, a uint64 count and bytes on invalidate. The host decoder's matching
+handlers copy flush bytes into the mapped host allocation before calling Vulkan,
+and return invalidated allocation bytes after calling Vulkan. Its non-direct
+mode requires both `GlDirectMem` and `VirtioGpuNext` disabled. The upstream flush
+packet header excludes the appended data; a streaming decoder must preserve
+incomplete commands and consume the full payload.
+
+The guest's `ResourceTracker.cpp` currently hardcodes direct mapping, and its
+host-visible allocations use Goldfish or VirtGpu mappings. Its fence status and
+wait paths do not synchronize a socket-backed guest shadow. The host's
+`VulkanDisableCoherentMemoryAndEmulate` queue-submit branch flushes host mapped
+buffer ranges; it does not return GPU-written bytes to the guest and does not
+provide coherent socket semantics. It cannot replace guest synchronization.
+
+The preparation script corrects the generated non-direct flush and invalidate
+`VK_WHOLE_SIZE` calculation to subtract the range offset, and makes upstream's
+range bounds check resistant to integer overflow. These changes do not enable
+non-direct mapping. The socket Vulkan gate remains in place. Invalidation also
+requires validating the returned byte count against the requested range before
+using this path; the upstream encoder currently ignores that count.
