@@ -16,7 +16,9 @@ public enum LiveGPUTransportEvent: Sendable {
     case opened, bytes(Data), closed(Error?)
 }
 
-/// Counts retained work, including running work. Revocation never releases a running permit.
+/// Counts retained logical work, including running work and any coalesced send
+/// scratch buffer. This is retained logical byte accounting, not an allocator or
+/// physical RSS proof. Revocation never releases a running permit.
 final class LiveGPUBudget: @unchecked Sendable {
     static let messageLimit = 256 * 1024
     static let byteLimit = 1024 * 1024
@@ -36,10 +38,121 @@ final class LiveGPUBudget: @unchecked Sendable {
             return nil
         }
     }
-    func release(_ size: Int) { lock.withLock { bytes -= size; count -= 1 } }
+    /// Reserves destination scratch bytes for optional ready-prefix coalescing
+    /// before allocating the combined Data buffer. Failure never revokes the budget.
+    func reserveScratch(_ size: Int) -> Bool {
+        lock.withLock {
+            guard !revoked, size >= 0, size <= Self.byteLimit - bytes else { return false }
+            bytes += size
+            return true
+        }
+    }
+    func release(_ size: Int, count releasedCount: Int = 1) {
+        lock.withLock {
+            precondition(size >= 0 && releasedCount >= 0 && size <= bytes && releasedCount <= count)
+            bytes -= size; count -= releasedCount
+        }
+    }
     func revoke() { lock.withLock { revoked = true } }
     var active: Bool { lock.withLock { !revoked } }
     var retained: (bytes: Int, count: Int) { lock.withLock { (bytes, count) } }
+}
+
+/// Serial outbound queue helper that coalesces a ready FIFO prefix into one
+/// WebSocket binary message without a timer while conservatively retaining both
+/// the original permits and the destination scratch permit until send completion.
+final class LiveGPUOutboundQueue {
+    struct Batch {
+        let data: Data
+        let originalBytes: Int
+        let scratchBytes: Int
+        let count: Int
+        var totalRetainedBytes: Int { originalBytes + scratchBytes }
+    }
+
+    private let budget: LiveGPUBudget
+    private var pending: [Data] = []
+    private var inFlight: Batch?
+
+    init(budget: LiveGPUBudget) {
+        self.budget = budget
+    }
+
+    var isSending: Bool { inFlight != nil }
+    var isEmpty: Bool { pending.isEmpty }
+    var pendingCount: Int { pending.count }
+
+    func enqueue(_ bytes: Data) {
+        pending.append(bytes)
+    }
+
+    func nextBatch() -> Batch? {
+        guard inFlight == nil, !pending.isEmpty else { return nil }
+        let first = pending.removeFirst()
+        guard !pending.isEmpty else {
+            let batch = Batch(data: first, originalBytes: first.count, scratchBytes: 0, count: 1)
+            inFlight = batch
+            return batch
+        }
+        var total = first.count
+        var extraCount = 0
+        let maxExtra = min(pending.count, LiveGPUBudget.countLimit - 1)
+        while extraCount < maxExtra {
+            let nextSize = pending[extraCount].count
+            if total + nextSize > LiveGPUBudget.messageLimit { break }
+            total += nextSize
+            extraCount += 1
+        }
+        guard extraCount > 0, budget.reserveScratch(total) else {
+            let batch = Batch(data: first, originalBytes: first.count, scratchBytes: 0, count: 1)
+            inFlight = batch
+            return batch
+        }
+        var combined = Data(count: total)
+        var offset = 0
+        combined.withUnsafeMutableBytes { dest in
+            let base = dest.baseAddress
+            if first.count > 0 {
+                first.withUnsafeBytes { src in
+                    if let dstBase = base, let srcBase = src.baseAddress {
+                        memcpy(dstBase.advanced(by: offset), srcBase, first.count)
+                    }
+                }
+                offset += first.count
+            }
+            for _ in 0..<extraCount {
+                let part = pending.removeFirst()
+                if part.count > 0 {
+                    part.withUnsafeBytes { src in
+                        if let dstBase = base, let srcBase = src.baseAddress {
+                            memcpy(dstBase.advanced(by: offset), srcBase, part.count)
+                        }
+                    }
+                    offset += part.count
+                }
+            }
+        }
+        precondition(offset == total)
+        let batch = Batch(data: combined, originalBytes: total, scratchBytes: total, count: 1 + extraCount)
+        inFlight = batch
+        return batch
+    }
+
+    /// Releases the in-flight batch's original bytes/count plus any scratch
+    /// reservation exactly once. Safe if called after discardPending().
+    func completeInFlight() -> Bool {
+        guard let batch = inFlight else { return false }
+        inFlight = nil
+        budget.release(batch.totalRetainedBytes, count: batch.count)
+        return true
+    }
+
+    /// Releases queued pending permits only; any in-flight batch remains
+    /// accounted until its send completion callback invokes completeInFlight().
+    func discardPending() {
+        for data in pending { budget.release(data.count) }
+        pending.removeAll()
+    }
 }
 
 /// Dedicated live socket, independent of the display/replay transport. Events are ordered
@@ -49,14 +162,13 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
+    private lazy var outbound = LiveGPUOutboundQueue(budget: budget)
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var event: (@Sendable (LiveGPUTransportEvent) -> Void)?
     private var started = false
     private var ended = false
     private var ready = false
-    private var pending: [Data] = []
-    private var sending = false
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
@@ -123,7 +235,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
         queue.async { [self] in
             guard !ended, budget.active else { budget.release(bytes.count); return }
             guard ready else { budget.release(bytes.count); finish(LiveGPUError.notOpen); return }
-            pending.append(bytes); pump()
+            outbound.enqueue(bytes); pump()
         }
         return true
     }
@@ -134,13 +246,11 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     }
 
     private func pump() {
-        guard !ended, budget.active, !sending, let task, !pending.isEmpty else { return }
-        let data = pending.removeFirst()
-        sending = true
-        let size = data.count
-        task.send(.data(data)) { [self] error in
+        guard !ended, budget.active, !outbound.isSending, let task,
+              let batch = outbound.nextBatch() else { return }
+        task.send(.data(batch.data)) { [self] error in
             queue.async { [self] in
-                budget.release(size); sending = false
+                _ = outbound.completeInFlight()
                 guard !ended, budget.active else { return }
                 if let error { finish(error) } else { pump() }
             }
@@ -165,8 +275,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private func finish(_ error: Error?) {
         guard !ended else { return }
         ended = true; ready = false; budget.revoke()
-        for data in pending { budget.release(data.count) }
-        pending.removeAll()
+        outbound.discardPending()
         task?.cancel(with: error == nil ? .normalClosure : .policyViolation, reason: nil)
         session?.invalidateAndCancel()
         task = nil; session = nil
