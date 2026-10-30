@@ -117,10 +117,6 @@ The image contains:
   GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
-- **OS Decomposition (`guest/scene`).** `libcaboose_scene_cairo.so` (the `LD_PRELOAD`-compatible
-  Cairo/GTK/Qt vector and glyph scene interceptor), `caboose-chromium-scene.conf` (Chromium and
-  Electron Wayland subsurface delegation and smooth-scroll flags), and `libcaboose_wsi_promote.so`
-  (`VK_LAYER_CABOOSE_wsi_promote`, implicit Vulkan WSI and Mesa Zink promotion on the owner seat).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
@@ -476,9 +472,9 @@ within the existing shared Unix user, not an arbitrary-command security boundary
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` (its non-blocking
-scene-graph socket), `CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
-`CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display (never on the agent seat), plus
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` when opt-in scene interception (`CABOOSE_SCENE=1`) is enabled,
+`CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
+`CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display when explicitly opted in (never on the agent seat), plus
 `LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed.
 
 **OS Decomposition ("Zero Server Video") & Headless Liveness Invariant.** When a client

@@ -146,7 +146,7 @@ fn launch_env(
         }
         env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
-    if !is_agent {
+    if !is_agent && std::env::var("CABOOSE_WSI_AUTO_PROMOTE").as_deref() == Ok("1") {
         env.push(("CABOOSE_WSI_AUTO_PROMOTE".into(), "1".into()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
-        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), Some("1"));
+        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     #[test]

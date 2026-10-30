@@ -316,6 +316,7 @@ impl State {
         }
         self.video_window_gone(id);
         self.game_window_gone(id);
+        self.scene_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;
