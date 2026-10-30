@@ -23,6 +23,8 @@ class InstalledBrokerTests(unittest.TestCase):
             shutil.copytree(assembled, source)
             # The installer and launcher under test, independent of assembled branch.
             shutil.copyfile(HERE / "caboose-gpu-broker-launcher", source / "caboose-gpu-broker-launcher")
+            for name in ("live_protocol.py", "live_surface_protocol.py"):
+                shutil.copyfile(HERE / "broker" / name, source / "broker" / name)
             destination = base / "root"
             installer.install(source, destination)
             hostile = base / "untrusted"

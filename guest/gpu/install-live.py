@@ -13,7 +13,8 @@ def install(source: Path, destination: Path):
     libexec = destination / "usr/local/libexec"
     private = libexec / "caboose-gpu"
     files = [(source / "gfxstream" / name, private / name, 0o644) for name in MODULES]
-    files += [(source / "broker/live_protocol.py", private / "live_protocol.py", 0o644),
+    files += [(source / "broker/live_surface_protocol.py", private / "live_surface_protocol.py", 0o644),
+              (source / "broker/live_protocol.py", private / "live_protocol.py", 0o644),
               (source / "gfxstream/caboose-gpu-broker", private / "broker.py", 0o644),
               (source / "caboose-gpu-broker-launcher", libexec / "caboose-gpu-broker", 0o755)]
     # Fail before modifying the install when a component was omitted from a bundle.

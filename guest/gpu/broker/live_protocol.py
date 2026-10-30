@@ -7,6 +7,7 @@ an executor or make a ready/retired message evidence of a native operation.
 from dataclasses import dataclass
 from enum import IntEnum
 import struct
+from live_surface_protocol import validate_surface
 
 PROTOCOL = "caboose.gpu.live.v1"
 MAX_MESSAGE = 256 * 1024
@@ -28,10 +29,26 @@ class Kind(IntEnum):
     REVOKE = 11
     REVOKED = 12
     EXECUTOR_DRAIN = 13
+    SURFACE_BIND = 16
+    SURFACE_BOUND = 17
+    SURFACE_QUERY = 18
+    SURFACE_CAPS = 19
+    PRESENT = 20
+    PRESENT_RESULT = 21
+    SOURCE_RELEASED = 22
+    SURFACE_RETIRE = 23
+    SURFACE_RETIRED = 24
 
 
 class ProtocolError(ValueError):
     pass
+
+
+def _surface(kind, payload):
+    try:
+        validate_surface(kind, payload)
+    except ValueError as error:
+        raise ProtocolError(str(error)) from error
 
 
 @dataclass(frozen=True)
@@ -61,12 +78,15 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
     if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN):
         if process or stream:
             raise ProtocolError("session message has resource identity")
-    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED):
+    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or kind >= Kind.SURFACE_BIND:
         if not process or stream:
             raise ProtocolError("invalid process scope")
     elif not process or not stream:
         raise ProtocolError("invalid stream scope")
-    if kind in (Kind.SESSION, Kind.SESSION_READY):
+    if kind >= Kind.SURFACE_BIND:
+        if length < 40:
+            raise ProtocolError("truncated surface control")
+    elif kind in (Kind.SESSION, Kind.SESSION_READY):
         if length != 48:
             raise ProtocolError("invalid hello size")
     elif kind == Kind.DATA:
@@ -80,6 +100,8 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
 def encode(message: Envelope) -> bytes:
     kind = _validate(message.kind, message.executor, message.generation,
                      message.process, message.stream, message.sequence, len(message.payload))
+    if kind >= Kind.SURFACE_BIND:
+        _surface(kind, message.payload)
     return HEADER.pack(b"CGLV", 1, kind, len(message.payload), 0, message.executor,
                        message.generation, message.process, message.stream,
                        message.sequence) + message.payload
@@ -144,6 +166,8 @@ class Decoder:
                 _, _, kind, _, _, executor, generation, process, stream, sequence = self._header
                 frame = Envelope(Kind(kind), executor, generation, process, stream,
                                  sequence, bytes(self._buffer))
+                if frame.kind >= Kind.SURFACE_BIND:
+                    _surface(frame.kind, frame.payload)
                 self._header = None
                 self._buffer.clear()
                 self._sequence += 1
