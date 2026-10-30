@@ -104,11 +104,16 @@ open class RemoteTextInputView: UIView, UITextInput {
         }
     }
 
-    /// Read the system clipboard only in response to the user's Paste action.
+    /// Read the system clipboard only in response to the user's Paste action. Text is
+    /// typed; a pasteboard without text goes to `pasteItems()`.
     open override func paste(_ sender: Any?) {
         releaseSticky()
         if let text = UIPasteboard.general.string { insertLiterally(text) }
+        else { _ = pasteItems() }
     }
+
+    /// Pastes the pasteboard's images and files; false when there is nothing to take them.
+    open func pasteItems() -> Bool { false }
 
     /// Paste and the key bar type their text as it is, never as AutoFill.
     private var insertingLiterally = false

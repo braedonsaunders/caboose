@@ -311,7 +311,57 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "clipboard-server",
             "",
-            Message::ServerClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: "héllo ✓".as_bytes().to_vec() }),
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: "héllo ✓".as_bytes().to_vec(),
+                alternatives: Vec::new(),
+            }),
+        ),
+        one(
+            "clipboard-server-types",
+            "A copy of files in a file manager, for a client that takes images and files: text first, then a PNG and the files as a text/uri-list.",
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"/home/caboose/Pictures/a b.png".to_vec(),
+                alternatives: vec![
+                    ClipboardEntry { mime: "image/png".into(), data: media.png.clone() },
+                    ClipboardEntry {
+                        mime: "text/uri-list".into(),
+                        data: b"file:///home/caboose/Pictures/a%20b.png\r\n".to_vec(),
+                    },
+                ],
+            }),
+        ),
+        one(
+            "drop-status",
+            "The application under the client's drop accepts it.",
+            Message::DropStatus { accepted: Some(true) },
+        ),
+        one(
+            "drop-status-unknown",
+            "Over an application that decides only once it has the content: no answer until the drop.",
+            Message::DropStatus { accepted: None },
+        ),
+        one(
+            "drop-result-rejected",
+            "The application under the drop did not accept it.",
+            Message::DropResult { ok: false, reason: Some(DropFailure::Rejected) },
+        ),
+        one("drop-result-ok", "", Message::DropResult { ok: true, reason: None }),
+        one(
+            "drag-start",
+            "A file manager started dragging a file, offered as a list of files and its path as text.",
+            Message::DragStart { mimes: vec!["text/plain;charset=utf-8".into(), "text/uri-list".into()] },
+        ),
+        one("drag-end", "The drag the client took ended.", Message::DragEnd { taken: true }),
+        one(
+            "drag-data",
+            "What the client took from the drag: one file under the home.",
+            Message::DragData(Clipboard {
+                mime: "text/uri-list".into(),
+                data: b"file:///home/caboose/Documents/report.pdf\r\n".to_vec(),
+                alternatives: Vec::new(),
+            }),
         ),
         one(
             "notification",
@@ -485,7 +535,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -493,7 +543,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A client accepts half-resolution motion without enabling passthrough video.",
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -510,7 +560,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -527,7 +577,25 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false, clipboard_types: None,
+            }),
+        ),
+        one(
+            "client-hello-clipboard",
+            "client-hello-audio plus images and files from the computer's clipboard.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
                 devices: false,
+                clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
             }),
         ),
         one(
@@ -544,7 +612,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: true,
                 scaled_motion: false,
-                devices: false,
+                devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -561,7 +629,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -571,7 +639,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
-                devices: false,
+                devices: false, clipboard_types: None,
             }),
         ),
         one(
@@ -581,7 +649,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, devices: true,
+                scaled_motion: false, devices: true, clipboard_types: None,
             }),
         ),
         one(
@@ -813,8 +881,43 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "clipboard-client",
             "",
-            Message::ClientClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: b"copied on the phone".to_vec() }),
+            Message::ClientClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"copied on the phone".to_vec(),
+                alternatives: Vec::new(),
+            }),
         ),
+        one(
+            "clipboard-client-image",
+            "An image copied on the phone, with no text.",
+            Message::ClientClipboard(Clipboard { mime: "image/png".into(), data: media.png.clone(), alternatives: Vec::new() }),
+        ),
+        one(
+            "drop-enter",
+            "A photo dragged over window 7, offered as a JPEG and as a file.",
+            Message::DropEnter(DropEnter {
+                id: 7,
+                x: 400.5,
+                y: 812.0,
+                mimes: vec!["image/jpeg".into(), "text/uri-list".into()],
+            }),
+        ),
+        one("drop-motion", "", Message::DropMotion { id: 7, x: 420.0, y: 830.25 }),
+        one("drop-leave", "", Message::DropLeave),
+        one(
+            "drop-perform",
+            "The drop: the photo's bytes and the file uploaded to the transfer area.",
+            Message::DropPerform(Clipboard {
+                mime: "image/jpeg".into(),
+                data: vec![0xff, 0xd8, 0xff, 0xe0],
+                alternatives: vec![ClipboardEntry {
+                    mime: "text/uri-list".into(),
+                    data: b"file:///home/caboose/.cache/caboose/transfers/0123456789abcdef0123456789abcdef/IMG_0001.jpeg\r\n"
+                        .to_vec(),
+                }],
+            }),
+        ),
+        one("drag-take", "", Message::DragTake),
         one("ping", "", Message::Ping { t_us: 98_765_432_100 }),
         Vector {
             name: "stream-unknown-skipped",

@@ -274,9 +274,10 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`. A feature is listed only
-when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
-`text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
+`clipboard-types`, `drop`, `drag`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`,
+`devices`. A feature is listed only when the server implements it. caboose-display always
+lists `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `cursor-named`, `clipboard`,
+`clipboard-types`, `drop` and `drag`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
 plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
@@ -334,8 +335,13 @@ Server → client (`0x01`–`0x7F`):
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (text-input-v3 content purpose: `normal`, `alpha`, `digits`, `number`, `phone`, `url`, `email`, `name`, `password`, `pin`, `date`, `time`, `datetime`, `terminal`), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
-| `0x30` | `clipboard` | `mime`, `data: bytes` |
+| `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
+| `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
+| `0x33` | `drop.result` | `ok: bool`, `reason?: "rejected"\|"cancelled"\|"timeout"\|"invalid"` |
+| `0x34` | `drag.start` | `mimes: [mime]` |
+| `0x35` | `drag.end` | `taken: bool` |
+| `0x36` | `drag.data` | as `clipboard` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]` ([devices.md](devices.md#protocol)) |
 | `0x61` | `device.open` | `device`, `rate_hz?: float` |
@@ -349,7 +355,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
@@ -366,7 +372,12 @@ Client → server (`0x81`–`0xFF`):
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
-| `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0xA0` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` |
+| `0xA1` | `drop.enter` | `id`, `x`, `y`, `mimes: [mime]` |
+| `0xA2` | `drop.motion` | `id`, `x`, `y` |
+| `0xA3` | `drop.leave` | (empty map) |
+| `0xA4` | `drop.perform` | as `clipboard` |
+| `0xA5` | `drag.take` | (empty map) |
 | `0xB0` | `devices` | `devices: [device]` ([devices.md](devices.md#protocol)) |
 | `0xB1` | `device.camera` | `device`, `seq`, `keyframe: bool`, `t_us`, `data: bytes` (H.264, Annex-B) |
 | `0xB2` | `device.depth` | `device`, `t_us`, `size: [w, h]`, `data: bytes` (u16 LE millimetres) |
@@ -426,7 +437,7 @@ the app through the host, from [guest/notifications](../guest/notifications)). I
 `pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
 into proximity of the surface under it), `down` and `up` are the tip's contact, `leave` and
 `cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
-degrees. The clipboard carries text (`text/plain;charset=utf-8`).
+degrees. The clipboard carries text, images and files ("Clipboard" below).
 
 ### Direct content scroll units
 
@@ -457,6 +468,86 @@ Rendering back into the presented surface multiplies by `s * V / P`, leaving
 rotation, fitting and output scale, including 1.5; other responses remain proportional.
 Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
 model. The client does not infer or compensate for per-application response differences.
+
+### Clipboard
+
+One `clipboard` message is one copy: its first representation in `mime` and `data`, and
+the same content in other types in `alternatives`, absent when there are none. Either
+side sends one whenever its own clipboard changes; the server also sends the computer's
+current copy right after `hello`. The types are:
+
+| Type | Content |
+| --- | --- |
+| `text/plain;charset=utf-8` | UTF-8 text, at most 1 MiB |
+| `image/png` | A PNG, beginning with the PNG signature |
+| `image/jpeg` | A JPEG, beginning with `FF D8 FF` |
+| `text/uri-list` | Files: `file://` URIs of absolute paths (empty or `localhost` host, percent-encoded), one per line, `#` lines ignored; at most 64 files and 256 KiB |
+
+- A copy carries each type at most once, at most 12 MiB (`MAX_BYTES`) for every
+  representation together, and is listed text first, then images, then files. A receiver
+  refuses a whole copy with an unknown or repeated type, bytes that are not what their
+  type says, or more than the limit; the framing's 16 MiB limit is enforced before any of
+  it is read.
+- **To the client**, the server sends text, and the other types only when the client's
+  `hello` lists them in `clipboard_types`; a copy that leaves nothing for the client is
+  not sent. caboose-display reads an application's copy in its best text type
+  (`text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`, `TEXT`, `STRING`), its best
+  image type (`image/png`, then `image/jpeg`) and its files (`text/uri-list`, or
+  GNOME's `x-special/gnome-copied-files`, converted), each within its share of the limit
+  and five seconds. Paths are the computer's; a client fetches files under the home
+  through the host's `/v1/fs` routes and cannot reach others.
+- **From the client**, `text/uri-list` may only name files the client has uploaded to the
+  computer's transfer area (`~/.cache/caboose/transfers/<id>/<name>`, through the host's
+  `/v1/fs/transfer`, [architecture.md § Files](architecture.md#files)). caboose-display
+  opens each one without following links before it offers the copy, and refuses the copy
+  otherwise. It offers applications the text in every text type above, the images in
+  their own types, and files as `text/uri-list` and `x-special/gnome-copied-files`
+  (`copy`), and gives an application that pastes thirty seconds to read.
+
+### Drag and drop
+
+The clipboard's types, limits and checks apply to everything dragged either way; a
+drop's or a drag's content has the shape of a `clipboard` message.
+
+**A drop from the client** (`drop`). While the client drags something over a window,
+it sends `drop.enter` with the window, the window-local position and the types it can
+deliver, then `drop.motion` as it moves, over the same window or another. Applications
+read what a drag offers as it enters, and many decide from it whether to accept, but the
+client can deliver the content only once the user has let go. So the server follows the
+finger and enters the application under it as each kind of window allows:
+
+- **X11 windows** get an XDND (version 3 to 5) drag from the server's own X client, with
+  the copy action only, as the finger moves. `drop.status { accepted }` reports the
+  window's answer whenever it changes. A window that asked for the data before it was
+  there is entered again once it is.
+- **Wayland windows** are entered only on the drop, with the content ready: a
+  compositor-owned Wayland drag follows the finger without entering any surface, and
+  `drop.status` is sent without `accepted`.
+
+When the user lets go, the client prepares the content (it uploads files to the transfer
+area first) and sends `drop.perform` with it: the types are a subset of those it entered
+with, and its files must be in the transfer area. The server then drops on the
+application under the last position. A Wayland application is entered and the drag
+released once it accepts the offer, has been sent everything it asked for and has had
+0.6 s to read it, the drag moving over it meanwhile; an XDND window is dropped on once it
+accepts, its position renewed for up to 2 s. `drop.result` ends the drop: `ok`, or
+`rejected` (the application did not accept it; a Wayland application has 3 s), `cancelled`
+(no drop was in progress), `timeout` (the application did not finish within 30 s, or the
+drop hovered 15 minutes without a `drop.motion`) or `invalid` (the content failed the
+checks). `drop.leave` ends a drop without a result. While a drop is in progress the server
+ignores the client's `pointer` messages, which would move the drag.
+
+**A drag to the client** (`drag`). When a Wayland application starts dragging something
+in a type the client takes (text, or one its hello lists in `clipboard_types`), the
+server sends `drag.start` with those types. If the user releases it on the client's
+own drop target, the client sends `drag.take` before the release. The server moves the
+drag off every window, reads the content from the application as it reads a copy, and
+holds the client's `touch`, `pointer` and `key` messages until it is read (five seconds
+at most). It sends `drag.data` and then applies the held input, so the release ends the
+drag over no window: the application sees a drag that was not dropped, and removes
+nothing. `drag.end` says the application's drag ended and whether the client took it.
+Drags started by X11 applications stay within X11 (Xwayland and its window manager do
+not hand them to Wayland), so the client is not told of them.
 
 ### Audio
 

@@ -1,0 +1,8 @@
+{
+  "name": "drop-enter",
+  "description": "A photo dragged over window 7, offered as a JPEG and as a file.",
+  "messages": [
+    {"direction": "client", "type": "drop.enter", "type_id": 161, "fields": {"x": {"$float": 400.5}, "y": {"$float": 812.0}, "id": 7, "mimes": ["image/jpeg", "text/uri-list"]}}
+  ],
+  "hex": "a13b000000a46178fb40790800000000006179fb408960000000000062696407656d696d6573826a696d6167652f6a7065676d746578742f7572692d6c697374"
+}

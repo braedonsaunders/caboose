@@ -538,9 +538,16 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                 click(at: point, button: 3)
             }
         case .changed:
-            if holdingDirectDrag { sendDirectDrag(directDrag.move(to: point)) }
+            if holdingDirectDrag {
+                sendDirectDrag(directDrag.move(to: point))
+                session?.trackDragOut(at: convert(point, to: nil))
+            }
         case .ended:
-            if holdingDirectDrag { sendDirectDrag(directDrag.end(at: point)) }
+            // A computer drag released on the phone's own target is the phone's.
+            if holdingDirectDrag {
+                session?.takeDragIfOver(convert(point, to: nil))
+                sendDirectDrag(directDrag.end(at: point))
+            }
             holdingDirectDrag = false
         case .cancelled, .failed:
             if holdingDirectDrag { sendDirectDrag(directDrag.cancel()) }
@@ -590,7 +597,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
         case .changed:
             move(to: point)
+            session.trackDragOut(at: convert(point, to: nil))
         default:
+            if gesture.state == .ended { session.takeDragIfOver(convert(point, to: nil)) }
             session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point))
         }
     }
@@ -714,6 +723,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             } else {
                 activeTouches[key] = (slot, point)
             }
+        }
+        // A computer drag follows the finger to the phone's own target; lifted there, it is
+        // the phone's, taken before the lift reaches the computer.
+        if session.computerDrag != nil, let finger = touches.first(where: { $0.type != .pencil }) {
+            let location = convert(finger.location(in: self), to: nil)
+            if phase == .motion { session.trackDragOut(at: location) }
+            if phase == .up { session.takeDragIfOver(location) }
         }
         if !points.isEmpty { session.touch(points, in: window) }
     }
@@ -870,6 +886,17 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         focusCheck = nil
         onKeyboardWanted?(false)
         super.dismissKeyboard()
+    }
+
+    /// The session puts the images and files on the computer's clipboard, then Control-V
+    /// pastes them into this window, if it is still the one shown.
+    public override func pasteItems() -> Bool {
+        guard let session, let window = remoteWindow, let take = session.onPasteItems else { return false }
+        return take { [weak self, weak session, weak window] in
+            guard let self, let session, let window, self.session === session, self.remoteWindow === window,
+                  let stroke = Keysyms.stroke(for: "v") else { return }
+            self.sendKey(stroke, modifiers: ["control"])
+        }
     }
 
     public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {

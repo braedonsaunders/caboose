@@ -14,10 +14,12 @@ arrived, and prints fps, latency and the server's CPU time per frame.
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -32,11 +34,27 @@ class Failed(Exception):
     pass
 
 
+LAST_LOG = None
+
+
+def log_tail(lines=60, needle=None):
+    """The end of the last compositor's log (lines containing `needle`), for a failure."""
+    try:
+        text = open(LAST_LOG, errors="replace").read().splitlines()
+    except (TypeError, OSError):
+        return ""
+    if needle:
+        text = [t for t in text if needle in t]
+    return "\n".join(text[-lines:])
+
+
 def compositor(command, token_file, extra=()):
     env = dict(os.environ)
     env.setdefault("XDG_RUNTIME_DIR", tempfile.mkdtemp(prefix="xdg-"))
     os.chmod(env["XDG_RUNTIME_DIR"], 0o700)
-    log = open(os.path.join(env["XDG_RUNTIME_DIR"], "caboose-display.log"), "w")
+    global LAST_LOG
+    LAST_LOG = os.path.join(env["XDG_RUNTIME_DIR"], "caboose-display.log")
+    log = open(LAST_LOG, "w")
     proc = subprocess.Popen(
         [os.path.join(BIN, "caboose-display"), "--listen", f"127.0.0.1:{PORT}", "--token-file", token_file, *extra, "--", *command],
         env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -393,6 +411,230 @@ def check_clipboard_bridge():
             raise Failed(f"X11 read the Wayland copy / Wayland read the X11 copy as {got!r}")
         return "a Wayland copy pastes into X11 and an X11 copy into Wayland"
     return with_server(["sh", "-c", script], run)
+
+
+def png(width, height, rgb=None):
+    """An RGB PNG: one colour, or noise (which does not compress) without one."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    row = (lambda: bytes(rgb) * width) if rgb else (lambda: os.urandom(3 * width))
+    rows = b"".join(b"\0" + row() for _ in range(height))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def fnv1a(data):
+    h = 0xcbf29ce484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
+IMAGE_TYPES = ["--clipboard-types", "image/png,image/jpeg,text/uri-list"]
+
+
+def clipboard_image(copy_cmd, paste_cmd):
+    # Computer -> phone: an application copies a PNG before the phone connects; the phone,
+    # which takes images, is sent it on hello, byte for byte, and a text-only phone is not.
+    # Phone -> computer: the phone copies another PNG and the application pastes it as
+    # image/png, byte for byte.
+    work = tempfile.mkdtemp()
+    ours, theirs, out = (os.path.join(work, n) for n in ("computer.png", "phone.png", "pasted"))
+    open(ours, "wb").write(png(40, 30, (200, 30, 30)))
+    open(theirs, "wb").write(png(17, 9, (20, 90, 220)))
+    script = (f"xterm & sleep 2; {copy_cmd.format(ours)}; "
+              f"while sleep 0.3; do {paste_cmd} > {out}.tmp 2>/dev/null && cmp -s {out}.tmp {theirs} "
+              f"&& echo ok > {out} && break; done; exec sleep 60")
+    def run(proc, token):
+        time.sleep(2)
+        text_only = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
+        if text_only["clipboard_entries"]:
+            raise Failed(f"a text-only phone was sent {text_only['clipboard_entries']}")
+        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", *IMAGE_TYPES,
+                   "--actions", f"copy-file:image/png:{theirs};wait:500"])
+        want = {"mime": "image/png", "bytes": os.path.getsize(ours), "fnv1a": fnv1a(open(ours, "rb").read())}
+        if r["clipboard_entries"] != [want]:
+            raise Failed(f"the phone got {r['clipboard_entries']}, not the copied PNG {want}")
+        wait_for_file(out)
+        return "a copied PNG reaches the phone byte for byte (not a text-only phone), and the phone's PNG pastes byte for byte"
+    return with_server(["sh", "-c", script], run)
+
+
+def check_clipboard_image_wayland():
+    return clipboard_image("wl-copy --type image/png < {}", "wl-paste --type image/png")
+
+
+def check_clipboard_image_x11():
+    return clipboard_image("xclip -i -selection clipboard -t image/png {}", "xclip -o -selection clipboard -t image/png")
+
+
+def check_clipboard_x11_large():
+    # X11 owners that send big images incrementally (INCR) or vanish. A 6 MiB PNG, which
+    # xclip sends in INCR pieces, reaches the phone byte for byte. A 13 MiB one is over
+    # the clipboard's limit: nothing reaches the phone and the next copy still does. An
+    # owner killed right after copying leaves nothing, and does not stall the next copy.
+    work = tempfile.mkdtemp()
+    big, huge, out = (os.path.join(work, n) for n in ("big.png", "huge.png", "step"))
+    open(big, "wb").write(png(1450, 1450))
+    open(huge, "wb").write(png(2100, 2100))
+    def step(name, cmd):
+        return f"{cmd}; echo {name} > {out}; while [ \"$(cat {out})\" = {name} ]; do sleep 0.2; done"
+    script = ("xterm & sleep 2; "
+              + step("big", f"xclip -i -selection clipboard -t image/png {big}") + "; "
+              + step("huge", f"xclip -i -selection clipboard -t image/png {huge}") + "; "
+              + step("text", "printf 'after huge' | xclip -i -selection clipboard") + "; "
+              + step("gone", f"xclip -i -selection clipboard -t image/png {big} & p=$!; sleep 0.3; kill $p") + "; "
+              + "printf 'after gone' | xclip -i -selection clipboard; echo done > " + out + "; exec sleep 60")
+    def advance(expect):
+        # The script writes each step's name and waits until it is replaced with "next".
+        for _ in range(300):
+            if os.path.exists(out) and open(out).read().strip() == expect:
+                return
+            time.sleep(0.1)
+        raise Failed(f"the script never reached {expect!r}")
+    def connect(token):
+        return probe(["--token-file", token, "--duration", "4", "--windows", "1", *IMAGE_TYPES], timeout=60)
+    def run(proc, token):
+        advance("big")
+        r = connect(token)
+        want = {"mime": "image/png", "bytes": os.path.getsize(big), "fnv1a": fnv1a(open(big, "rb").read())}
+        if r["clipboard_entries"] != [want]:
+            raise Failed(f"the INCR image arrived as {r['clipboard_entries']}, not {want}")
+        open(out, "w").write("next")
+        advance("huge")
+        r = connect(token)
+        if any(e["mime"] == "image/png" and e["bytes"] > 12 * 1024 * 1024 for e in r["clipboard_entries"]):
+            raise Failed("an image over the limit reached the phone")
+        open(out, "w").write("next")
+        advance("text")
+        r = connect(token)
+        if r["clipboard"] != "after huge":
+            raise Failed(f"after the oversized image the phone got {r['clipboard']!r}")
+        open(out, "w").write("next")
+        advance("gone")
+        open(out, "w").write("next")
+        advance("done")
+        r = connect(token)
+        if r["clipboard"] != "after gone":
+            raise Failed(f"after the owner vanished the phone got {r['clipboard']!r}")
+        return ("a 6 MiB X11 image sent by INCR arrives byte for byte; a 13 MiB one is refused and the next copy "
+                "arrives; an owner that vanishes does not stall the next copy")
+    return with_server(["sh", "-c", script], run)
+
+
+def check_clipboard_files():
+    # Computer -> phone: a file manager's copy (x-special/gnome-copied-files) reaches the
+    # phone as a text/uri-list. Phone -> computer: files the phone uploaded to the transfer
+    # area paste as text/uri-list and as GNOME's list; a file outside the area is refused
+    # and leaves the clipboard as it was.
+    transfer = os.path.join(os.path.expanduser("~"), ".cache/caboose/transfers", os.urandom(16).hex())
+    os.makedirs(transfer, mode=0o700)
+    staged = os.path.join(transfer, "report #1.txt")
+    open(staged, "w").write("uploaded")
+    out = os.path.join(tempfile.mkdtemp(), "pasted")
+    uri = "file://" + staged.replace(" ", "%20").replace("#", "%23")
+    script = ("xterm & sleep 2; printf 'copy\n%s' 'file:///home/caboose/Documents/a%20b.odt' | "
+              "wl-copy --type x-special/gnome-copied-files; "
+              f"while sleep 0.3; do t=$(wl-paste --type x-special/gnome-copied-files 2>/dev/null); "
+              f"[ \"$t\" = \"$(printf 'copy\n%s' '{uri}')\" ] && wl-paste --type text/uri-list > {out}.tmp && mv {out}.tmp {out} "
+              "&& break; done; exec sleep 60")
+    def run(proc, token):
+        time.sleep(2)
+        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", *IMAGE_TYPES,
+                   "--actions", f"copy-files:/etc/hostname;wait:800;copy-files:{staged};wait:800"])
+        want = b"file:///home/caboose/Documents/a%20b.odt\r\n"
+        if r["clipboard_entries"] != [{"mime": "text/uri-list", "bytes": len(want), "fnv1a": fnv1a(want)}]:
+            raise Failed(f"the phone got {r['clipboard_entries']}, not the copied file")
+        got = wait_for_file(out)
+        if got.strip() != uri:
+            raise Failed(f"the computer pasted {got!r}, not {uri!r}")
+        return "a file manager's copy reaches the phone as a uri-list; the phone's uploaded file pastes, a file outside the transfer area does not"
+    try:
+        return with_server(["sh", "-c", script], run)
+    finally:
+        shutil.rmtree(transfer, ignore_errors=True)
+
+
+def staged_file(name, content):
+    """A file in the transfer area, as the phone uploads it before a copy or a drop."""
+    transfer = os.path.join(os.path.expanduser("~"), ".cache/caboose/transfers", os.urandom(16).hex())
+    os.makedirs(transfer, mode=0o700)
+    path = os.path.join(transfer, name)
+    open(path, "w").write(content)
+    return transfer, path
+
+
+def dnd_page(x11=False):
+    browser = [a for a in CHROMIUM if not a.startswith("--ozone-platform")]
+    return browser + [f"--ozone-platform={'x11' if x11 else 'wayland'}", "--window-size=900,600", f"--app={PAGES}/dnd.html"]
+
+
+def drop_into(x11):
+    # The phone drags a file it uploaded over the page's drop zone: the page (through a
+    # real Wayland drag, or XDND for X11) accepts it, and the drop hands it the file.
+    # Then text, then a drop over the part of the page that refuses drops.
+    transfer, staged = staged_file("report.txt", "uploaded")
+    os.environ["CABOOSE_DISPLAY_LOG"] = "caboose_display=debug"
+    def run(proc, token):
+        time.sleep(4)
+        files = probe(["--token-file", token, "--duration", "6", "--windows", "1", *IMAGE_TYPES, "--actions",
+                       "drop-enter:text/uri-list@100,300;wait:300;drop-move:130,310;wait:300;drop-move:160,320;wait:800;"
+                       f"drop-files:{staged};wait:2500"])
+        title, events = files["windows"][0]["title"], files["dnd"]
+        if not (title.startswith("drop:") and "Files" in title.split(":")[1] and title.endswith(":report.txt=8")):
+            raise Failed(f"the page shows {title!r} after the file drop (events {events})\n{log_tail(80, 'dnd') or log_tail(40)}")
+        # A Wayland application answers only once it has the content; an X11 one as the
+        # drag hovers.
+        if (x11 and "status:true" not in events) or events[-1] != "result:ok":
+            raise Failed(f"the drop was not accepted and finished: {events}")
+        text = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--actions",
+                      "drop-enter:text@100,300;wait:400;drop-move:120,310;wait:1000;"
+                      "drop-text:dropped ✓;wait:3000"])
+        if text["windows"][0]["title"] != "drop:text/plain:dropped ✓" or text["dnd"][-1] != "result:ok":
+            raise Failed(f"the text drop gave {text['windows'][0]['title']!r}, {text['dnd']}\n{log_tail(60, 'ERROR')}\n{log_tail(30, 'WARN')}")
+        refused = probe(["--token-file", token, "--duration", "8", "--windows", "1", "--actions",
+                         "drop-enter:text@700,150;wait:400;drop-move:710,160;wait:1000;"
+                         "drop-text:refused;wait:4500"])
+        if refused["dnd"][-1:] != ["result:rejected"]:
+            raise Failed(f"a drop on the refusing part was {refused['dnd']}")
+        if refused["windows"][0]["title"] != "drop:text/plain:dropped ✓":
+            raise Failed(f"the refused drop reached the page: {refused['windows'][0]['title']!r}")
+        return ("a file and text from the phone drop into the page under the finger"
+                + (", accepted as they hover" if x11 else ", entered once uploaded")
+                + "; a drop where the page refuses is rejected")
+    try:
+        return with_server(dnd_page(x11), run)
+    finally:
+        os.environ.pop("CABOOSE_DISPLAY_LOG", None)
+        shutil.rmtree(transfer, ignore_errors=True)
+
+
+def check_drop_wayland():
+    return drop_into(False)
+
+
+def check_drop_x11():
+    return drop_into(True)
+
+
+def check_drag_out():
+    # The page's draggable is dragged with the pointer; the phone takes it before the
+    # release: it gets the text, the drag ends as taken, and the page's own drop zone,
+    # where the release happens, receives nothing.
+    def run(proc, token):
+        time.sleep(4)
+        r = probe(["--token-file", token, "--duration", "6", "--windows", "1", *IMAGE_TYPES, "--actions",
+                   "press:700,450;move:705,455;move:720,470;move:600,400;move:300,300;wait:600;"
+                   "drag-take;release:300,300;wait:2000"])
+        events, title = r["dnd"], r["windows"][0]["title"]
+        if not any(e.startswith("start:") and "text/plain;charset=utf-8" in e for e in events):
+            raise Failed(f"the phone was not told of the drag: {events}")
+        if "data:text/plain;charset=utf-8=dragged from Linux" not in events or events[-1] != "end:taken":
+            raise Failed(f"the phone did not take the drag: {events}")
+        if title.startswith("drop:"):
+            raise Failed(f"the taken drag was also dropped on the page: {title!r}")
+        return "a drag from Chromium reaches the phone when it takes it, and drops nowhere on the computer"
+    return with_server(dnd_page(), run)
 
 
 def check_audio():
@@ -753,6 +995,13 @@ CHECKS = [
     ("clipboard-wayland", check_clipboard_wayland),
     ("clipboard-x11", check_clipboard_x11),
     ("clipboard-bridge", check_clipboard_bridge),
+    ("clipboard-image-wayland", check_clipboard_image_wayland),
+    ("clipboard-image-x11", check_clipboard_image_x11),
+    ("clipboard-x11-large", check_clipboard_x11_large),
+    ("clipboard-files", check_clipboard_files),
+    ("drop-wayland", check_drop_wayland),
+    ("drop-x11", check_drop_x11),
+    ("drag-out", check_drag_out),
     ("audio", check_audio),
     ("refine", check_refine),
     ("motion", check_motion),

@@ -6,6 +6,7 @@ mod clipboard;
 mod config;
 mod control;
 mod displays;
+mod dnd;
 mod encode;
 mod game;
 mod input;
@@ -13,15 +14,19 @@ mod keymap;
 mod motion;
 mod net;
 mod pencil;
+mod pipes;
 mod render;
 mod session;
 mod state;
 mod stream;
 mod text_input;
+mod transfers;
 mod video;
 mod windows;
 mod x11_focus;
+mod x11sel;
 mod xauth;
+mod xdnd;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -338,11 +343,27 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let (clip_tx, clip_rx) = channel::<Vec<u8>>();
+    let (clip_tx, clip_rx) = channel::<clipboard::Read>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
-            if let ChannelEvent::Msg(data) = event {
-                state.clipboard_read(data);
+            if let ChannelEvent::Msg(read) = event {
+                state.clipboard_read(read);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (xdnd_tx, xdnd_rx) = channel::<(u64, xdnd::Report)>();
+    handle
+        .insert_source(xdnd_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg((serial, report)) = event {
+                state.on_xdnd_report(serial, report);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (drag_tx, drag_rx) = channel::<clipboard::Read>();
+    handle
+        .insert_source(drag_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(read) = event {
+                state.on_drag_read(read);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -426,7 +447,9 @@ fn run(config: Config) -> Result<(), String> {
         videos: Default::default(),
         games: Default::default(),
         control: Default::default(),
-        clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
+        clipboard: clipboard::Clipboard::new(clip_tx),
+        x11: None,
+        dnd: dnd::Dnd::new(xdnd_tx, drag_tx),
         audio: None,
         audio_tx,
         devices: None,
@@ -541,6 +564,7 @@ fn run(config: Config) -> Result<(), String> {
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
                                 }
+                                state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 ready(state, Some(display_number), Some(&authority));
                             }
                             Err(e) => {
