@@ -133,12 +133,13 @@ impl Net {
         if self.gpu_router.is_some() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "GPU router already active"));
         }
-        let (tx, rx) = channel::<(TcpStream, SocketAddr)>();
-        let router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, move |stream, peer| {
-            let _ = tx.send((stream, peer));
+        let (tx, rx) = channel::<crate::gpu_supervisor::RoutedDisplay>();
+        let router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, move |routed| {
+            let _ = tx.send(routed);
         })?;
         handle.insert_source(rx, |event, _, state: &mut S| {
-            if let ChannelEvent::Msg((stream, peer)) = event {
+            if let ChannelEvent::Msg(routed) = event {
+                let (stream, peer) = routed.into_parts();
                 state_accept_display(state, stream, peer);
             }
             Ok(())

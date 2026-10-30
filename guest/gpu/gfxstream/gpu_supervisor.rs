@@ -175,19 +175,37 @@ impl Drop for GpuSupervisor {
 
 /// Bounded routing workers leave the compositor's event loop nonblocking.
 /// The callback returns ordinary display sockets to the event loop unchanged.
+struct RoutePermit(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for RoutePermit {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+
+/// The route permit remains occupied until the compositor consumes the socket.
+pub struct RoutedDisplay {
+    stream: Option<std::net::TcpStream>,
+    peer: std::net::SocketAddr,
+    _permit: RoutePermit,
+}
+
+impl RoutedDisplay {
+    pub fn into_parts(mut self) -> (std::net::TcpStream, std::net::SocketAddr) {
+        (self.stream.take().expect("route consumed once"), self.peer)
+    }
+}
+
 pub struct GpuRouter {
     supervisor: GpuSupervisor,
     stop: std::sync::Arc<AtomicBool>,
     active: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     workers: Vec<std::thread::JoinHandle<()>>,
-    deliver: std::sync::Arc<dyn Fn(std::net::TcpStream, std::net::SocketAddr) + Send + Sync>,
+    deliver: std::sync::Arc<dyn Fn(RoutedDisplay) + Send + Sync>,
 }
 
 impl GpuRouter {
     pub fn start(
         token_file: &Path,
         local_socket: &Path,
-        deliver: impl Fn(std::net::TcpStream, std::net::SocketAddr) + Send + Sync + 'static,
+        deliver: impl Fn(RoutedDisplay) + Send + Sync + 'static,
     ) -> io::Result<Self> {
         Ok(Self {
             supervisor: GpuSupervisor::start(token_file, local_socket)?,
@@ -213,16 +231,16 @@ impl GpuRouter {
         let active = self.active.clone();
         let deliver = self.deliver.clone();
         let spawned = std::thread::Builder::new().name("caboose-gpu-route".into()).spawn(move || {
-            struct Count(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-            impl Drop for Count { fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); } }
-            let _count = Count(active);
+            let permit = RoutePermit(active);
             match is_gpu_request(&stream, &stop, Duration::from_secs(5)) {
                 Ok(true) => {
                     if let Some(ipc) = ipc {
                         let _ = handoff_wait(&ipc, &stream, &stop, Duration::from_secs(5));
                     }
                 }
-                Ok(false) if !stop.load(Ordering::Acquire) => deliver(stream, peer),
+                Ok(false) if !stop.load(Ordering::Acquire) => deliver(RoutedDisplay {
+                    stream: Some(stream), peer, _permit: permit,
+                }),
                 _ => {}
             }
         });
