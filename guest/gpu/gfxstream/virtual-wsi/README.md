@@ -39,9 +39,8 @@ This directory is not connected to Mesa entrypoints. It provides no swapchain,
 capability advertisement, acquire synchronization, coherent memory support or
 game presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
 Vulkan swapchain acquisition or semaphore/fence signaling. The current record set
-has no native swapchain create/acquire operation. An empty submit on an application
-queue cannot implement acquisition because an earlier same-queue wait on that
-acquire semaphore can block it indefinitely.
+has no native swapchain create/acquire operation, source-to-provider-index mapping
+or acquire semaphore/fence ownership contract.
 
 ## Focused Linux verification
 
