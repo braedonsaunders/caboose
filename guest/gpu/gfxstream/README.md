@@ -278,3 +278,8 @@ eight control-wire expressions with host IDs distinct from guest addresses.
 `SOURCE` contains the WSI include files and `wire.h`; `OUT` is a new private
 directory. `--expect-reject` verifies the same fixture rejects the original
 pointer-cast implementation. This check uses no Vulkan loader or GPU.
+
+The private broker accepts `CABOOSE_PRIVATE_GPU_PROGRESS=1` for diagnostic runs.
+It records at most 128 surface-control direction/kind/timestamp records and one
+limit marker per session; records contain no payloads or credentials. Queued
+requests do not establish delivery, GPU completion or presentation.

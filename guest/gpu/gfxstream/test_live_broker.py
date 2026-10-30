@@ -35,6 +35,22 @@ class Writer:
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        with mock.patch('builtins.print') as output:
+            session.surface_progress('received_from_guest', 25)
+            output.assert_not_called()
+            session.progress_enabled = True
+            session.surface_progress('received_from_guest', 5)
+            for _ in range(200): session.surface_progress('received_from_guest', 25)
+            self.assertEqual(output.call_count, 129)
+            self.assertEqual(output.call_args_list[-1].args[0], 'CABOOSE_GPU_SURFACE_PROGRESS limit=128')
+            self.assertIn('kind=25', output.call_args_list[0].args[0])
+        with mock.patch('builtins.print', side_effect=BrokenPipeError):
+            session.progress_count = 0
+            session.surface_progress('received_from_guest', 25)
+
     async def test_normal_close_is_queued_only_after_native_retirement(self):
         writer = Writer()
         session = broker.Session(None, b'a' * 16, 1, None, writer)
