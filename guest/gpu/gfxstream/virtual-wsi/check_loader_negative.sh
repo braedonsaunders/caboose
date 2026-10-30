@@ -2,6 +2,7 @@
 set -eu
 # The caller supplies only read-only /slice, /icd and retained include/sysroot mounts.
 printf '%s  %s\n' 8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff /icd/libvulkan_gfxstream.so | sha256sum -c -
+sha256sum /icd/libvulkan_gfxstream.so /usr/lib/x86_64-linux-gnu/libvulkan.so.1 /slice/loader_negative.c /slice/check_loader_negative.sh
 task_root=$(mktemp -d /tmp/caboose-loader-check-XXXXXX)
 trap 'rm -f "$task_root/check" "$task_root/icd.json"; rmdir "$task_root/home" "$task_root/runtime" "$task_root"' EXIT
 mkdir "$task_root/home" "$task_root/runtime"

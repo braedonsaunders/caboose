@@ -16,6 +16,18 @@ int main(int argc, char **argv) {
         fputs("requires an explicitly nonexistent broker endpoint\n", stderr);
         return 2;
     }
+    void *icd = dlopen("/icd/libvulkan_gfxstream.so", RTLD_NOW | RTLD_LOCAL);
+    if (!icd) { fprintf(stderr, "exact ICD: %s\n", dlerror()); return 3; }
+    PFN_vkGetInstanceProcAddr icd_get =
+        (PFN_vkGetInstanceProcAddr)dlsym(icd, "vk_icdGetInstanceProcAddr");
+    typedef VkResult (VKAPI_PTR *Negotiate)(uint32_t *);
+    Negotiate negotiate = (Negotiate)dlsym(icd, "vk_icdNegotiateLoaderICDInterfaceVersion");
+    uint32_t interface_version = 7;
+    if (!icd_get || !negotiate || negotiate(&interface_version) != VK_SUCCESS ||
+        !interface_version || interface_version > 7 || !icd_get(VK_NULL_HANDLE, "vkCreateInstance")) {
+        fputs("exact ICD loader exports unavailable\n", stderr); return 3;
+    }
+    printf("exact_icd_loaded=1 negotiated_interface=%u\n", interface_version);
     void *loader = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
     if (!loader) { fprintf(stderr, "loader: %s\n", dlerror()); return 3; }
     PFN_vkGetInstanceProcAddr get = (PFN_vkGetInstanceProcAddr)dlsym(loader, "vkGetInstanceProcAddr");
@@ -54,6 +66,7 @@ int main(int argc, char **argv) {
     }
     if (result >= 0) return 6;
     dlclose(loader);
+    dlclose(icd);
     puts("PASS: no instance or device established without the private handshake");
     return 0;
 }
