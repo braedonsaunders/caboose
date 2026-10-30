@@ -240,6 +240,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         broker_instance.next_bind = 0
         broker_instance.pending_binds = {}
         broker_instance.bind_send_lock = asyncio.Lock()
+        broker_instance.closing = asyncio.Event()
         import process_binding
         start = process_binding.process_start_ticks(Path(f'/proc/{os.getpid()}/stat').read_text())
         class Bindings:
@@ -267,6 +268,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             broker_instance.pending_binds[1].set_result(control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 9, 1))
             result = await asyncio.wait_for(task, 1)
             self.assertEqual((result.window, result.generation), (9, 1))
+            task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
+            await asyncio.sleep(0)
+            _data, ancillary, _flags, _ = peer.recvmsg(80, socket.CMSG_SPACE(array.array('i').itemsize))
+            fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize]); os.close(fds[0])
+            broker_instance.pending_binds[2].set_result(control_protocol.BindResult(2, 0, b'x' * 16, b'g' * 16, 9, 2))
+            with self.assertRaises(PermissionError): await asyncio.wait_for(task, 1)
+            self.assertTrue(broker_instance.closing.is_set())
         finally:
             if not task.done(): task.cancel(); await asyncio.gather(task, return_exceptions=True)
             control.close(); peer.close()

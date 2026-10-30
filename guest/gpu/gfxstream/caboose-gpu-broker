@@ -20,7 +20,7 @@ from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
 import control_protocol
-from process_binding import PeerIdentity, ProcessBindings, process_start_ticks
+from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
@@ -282,8 +282,14 @@ class Broker:
             data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id))
             await self.send_control(data, pidfd)
             result = await asyncio.wait_for(future, 5)
-            if result.status or result.epoch != expected_epoch:
-                raise PermissionError('surface bind denied or stale epoch')
+            if result.status:
+                raise PermissionError('surface bind denied')
+            if (result.epoch != expected_epoch or self.session is not session or session.draining or
+                not pidfd_alive(pidfd) or pidfd_pid(pidfd) != pid):
+                # The compositor may already hold a grant. Retire the entire
+                # service rather than expose or silently leak a stale grant.
+                self.closing.set()
+                raise PermissionError('surface bind became stale')
             return result
         finally:
             os.close(pidfd)
