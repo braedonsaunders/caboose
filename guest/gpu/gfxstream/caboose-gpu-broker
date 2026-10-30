@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import socket
 import stat
+import struct
 import sys
 
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
@@ -52,7 +53,7 @@ class Session:
         self.pending = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
         self.pending_bytes = 0
         self.pending_count = 0
-        self.processes, self.streams = {}, {}
+        self.processes, self.streams, self.surfaces = {}, {}, {}
         self.session_ready = asyncio.Event()
         self.revoked = asyncio.Event()
         self.revoking = False
@@ -61,6 +62,7 @@ class Session:
         self.lost_reported = False
         self.drain_requested = asyncio.Event()
         self.local_tasks = set()
+        self.lifecycle_tasks = set()
         self.failed = False
 
     def send(self, kind, process=0, stream=0, payload=b''):
@@ -103,8 +105,22 @@ class Session:
             if process['ready'].is_set() or process['stopping']: raise ValueError('bad process receipt')
             process['ready'].set(); return
         if frame.kind == Kind.PROCESS_RETIRED:
-            if not process['stopping'] or process['retired'].is_set(): raise ValueError('bad process retirement')
+            if not process['stopping'] or process['retired'].is_set() or process['surfaces']: raise ValueError('bad process retirement')
             process['retired'].set(); return
+        if frame.kind == Kind.SURFACE_RETIRED:
+            key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
+            surface = self.surfaces.get(key)
+            if surface is None or not surface['retiring'] or surface['process'] != frame.process:
+                raise ValueError('unexpected surface retirement')
+            error, has_vk, vk, _reserved = struct.unpack_from('<iIiI', frame.payload, 40)
+            if error != 0 or (has_vk and vk != 0):
+                raise ValueError('surface retirement failed')
+            await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
+            surface['retired'].set()
+            process['surfaces'].remove(key)
+            del self.surfaces[key]
+            self.stop_process_if_idle(frame.process)
+            return
         stream = self.streams.get(frame.stream)
         if stream is None or stream['process'] != frame.process: raise ValueError('unknown stream')
         bound_process, _identity = self.bindings.identity(self.binding_generation, frame.stream)
@@ -129,6 +145,30 @@ class Session:
             stream['remote_fin'].set(); return
         raise ValueError('unexpected executor message')
 
+    def request_surface_retire(self, record):
+        key = (record.epoch, record.grant, record.generation)
+        surface = self.surfaces.get(key)
+        if surface is None: raise ValueError('unknown surface revoke')
+        if not surface['retiring']:
+            surface['retiring'] = True
+            self.send(Kind.SURFACE_RETIRE, surface['process'], payload=record.epoch + record.grant + struct.pack('<Q', record.generation))
+
+    def stop_process_if_idle(self, process_id):
+        process = self.processes.get(process_id)
+        if process is None or process['stopping'] or process['streams'] or process['surfaces'] or self.draining:
+            return
+        process['stopping'] = True
+        self.send(Kind.PROCESS_STOP, process_id)
+        async def finish():
+            try:
+                await asyncio.wait_for(process['retired'].wait(), 10)
+                self.bindings.retire_process(self.binding_generation, process_id)
+                self.processes.pop(process_id, None)
+            except (OSError, RuntimeError, asyncio.TimeoutError):
+                self.failed = True; self.writer.close()
+        task = asyncio.create_task(finish())
+        self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
+
     async def revoke(self):
         if self.processes or self.streams or self.revoking:
             raise RuntimeError('cannot revoke with live resources')
@@ -137,18 +177,25 @@ class Session:
         await asyncio.wait_for(self.revoked.wait(), 4)
 
     async def drain(self):
-        """Cancel local work, then wait for actual process retirement receipts."""
+        """Cancel local work, retire surfaces, then wait for native processes."""
         self.draining = True
+        # The drain path becomes the sole owner of process retirement.
+        for task in tuple(self.lifecycle_tasks): task.cancel()
+        if self.lifecycle_tasks:
+            await asyncio.wait_for(asyncio.gather(*tuple(self.lifecycle_tasks), return_exceptions=True), 2)
+        for task in tuple(self.local_tasks): task.cancel()
+        if self.local_tasks:
+            await asyncio.wait_for(asyncio.gather(*tuple(self.local_tasks), return_exceptions=True), 2)
+        if self.failed: raise ConnectionError('local transport cleanup failed')
+        # Compositor LOST queues every REVOKE_GRANT. Only its authenticated
+        # records cause SURFACE_RETIRE; never infer a native surface retirement.
+        surfaces = tuple(self.surfaces.values())
+        if surfaces:
+            await asyncio.wait_for(asyncio.gather(*(surface['retired'].wait() for surface in surfaces)), 4)
         for process_id, process in tuple(self.processes.items()):
             if not process['stopping']:
                 process['stopping'] = True
                 self.send(Kind.PROCESS_STOP, process_id)
-        # Native process-stop is now ordered after all previously queued data.
-        for task in tuple(self.local_tasks): task.cancel()
-        if self.local_tasks:
-            await asyncio.wait_for(asyncio.gather(*tuple(self.local_tasks), return_exceptions=True), 2)
-        if self.failed:
-            raise ConnectionError('local transport cleanup failed')
         for process_id, process in tuple(self.processes.items()):
             await asyncio.wait_for(process['retired'].wait(), 4)
             for stream_id in tuple(process['streams']):
@@ -157,8 +204,7 @@ class Session:
                 process['streams'].remove(stream_id)
             self.bindings.retire_process(self.binding_generation, process_id)
             self.processes.pop(process_id, None)
-        if self.streams:
-            raise RuntimeError('streams remain after native retirement')
+        if self.streams or self.surfaces: raise RuntimeError('resources remain after native retirement')
         await self.revoke()
 
     async def read_loop(self):
@@ -202,7 +248,7 @@ class Session:
             peer = None  # bindings owns it
             process = self.processes.get(process_id)
             if process is None:
-                process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set()}
+                process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set(), 'surfaces': set()}
                 self.processes[process_id] = process
                 self.send(Kind.PROCESS_OPEN, process_id)
             if process['stopping']: raise ValueError('process retiring')
@@ -241,14 +287,9 @@ class Session:
                 process = self.processes.get(process_id)
                 if process:
                     process['streams'].discard(stream_id)
-                    if not process['streams'] and not self.failed and not self.draining:
-                        process['stopping'] = True
-                        try:
-                            self.send(Kind.PROCESS_STOP, process_id)
-                            await asyncio.wait_for(process['retired'].wait(), 10)
-                            self.bindings.retire_process(self.binding_generation, process_id)
-                            self.processes.pop(process_id, None)
-                        except (OSError, RuntimeError, BufferError, asyncio.TimeoutError):
+                    if not self.failed and not self.draining:
+                        try: self.stop_process_if_idle(process_id)
+                        except (OSError, RuntimeError, BufferError):
                             self.failed = True; self.writer.close()
 
 
@@ -290,6 +331,12 @@ class Broker:
                 # service rather than expose or silently leak a stale grant.
                 self.closing.set()
                 raise PermissionError('surface bind became stale')
+            key = (result.epoch, result.grant, result.generation)
+            if key in session.surfaces:
+                self.closing.set()
+                raise ValueError('duplicate surface grant')
+            session.surfaces[key] = {'process': process_id, 'retiring': False, 'retired': asyncio.Event()}
+            session.processes[process_id]['surfaces'].add(key)
             return result
         finally:
             os.close(pidfd)
@@ -332,9 +379,9 @@ class Broker:
                     future.set_result(record)
                     return
                 if isinstance(record, control_protocol.RevokeGrant):
-                    # Surface CGLV revoke is not yet assigned: terminate rather
-                    # than let an obsolete grant remain usable.
-                    self.closing.set(); return
+                    if self.session is None: raise ValueError('surface revoke without session')
+                    self.session.request_surface_retire(record)
+                    return
                 stream = record
             except BlockingIOError: return
             except (OSError, ValueError, PermissionError): self.closing.set(); return
@@ -429,6 +476,9 @@ class Broker:
                 if not session.revoked.is_set():
                     # Socket loss alone is not native finish; leave lease draining.
                     self.lease.revoke(executor.bytes, generation)
+                for task in tuple(session.lifecycle_tasks): task.cancel()
+                if session.lifecycle_tasks:
+                    await asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
             if server:
                 with contextlib.suppress(OSError, asyncio.TimeoutError):

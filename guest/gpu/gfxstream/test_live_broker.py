@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import socket
+import struct
 import unittest
 from unittest import mock
 
@@ -109,6 +110,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             stopped = await next_frame(Kind.PROCESS_STOP)
             await session.message(Envelope(Kind.PROCESS_RETIRED, b'a' * 16, 1, stopped.process, 0, 5))
             await asyncio.wait_for(task, 1)
+            if session.lifecycle_tasks:
+                await asyncio.wait_for(asyncio.gather(*tuple(session.lifecycle_tasks)), 1)
         self.assertEqual(writer.data, broker.HELLO + b'reply')
         self.assertTrue(writer.eof)
         self.assertFalse(session.processes)
@@ -126,7 +129,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()
         ready, retired, stream_ready, remote_fin = (asyncio.Event() for _ in range(4))
-        session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}}
+        session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}, 'surfaces': set()}
         writer = Writer()
         session.bindings.identity = lambda _generation, _stream: (1, (1000, 42, 123))
         session.streams[2] = {'process': 1, 'writer': writer, 'ready': stream_ready, 'remote_fin': remote_fin}
@@ -159,7 +162,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.session_ready.set()
         ready, retired, stream_ready, remote_fin = (asyncio.Event() for _ in range(4))
         ready.set(); stream_ready.set()
-        session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}}
+        session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}, 'surfaces': set()}
         session.streams[2] = {'process': 1, 'writer': Writer(), 'ready': stream_ready, 'remote_fin': remote_fin}
         session.bindings.identity = lambda _gen, _stream: (1, (1000, 42, 123))
         session.bindings.unbind_stream = mock.Mock()
@@ -251,7 +254,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.binding_generation = 1
         session.bindings = Bindings()
         ready = asyncio.Event(); ready.set()
-        session.processes = {3: {'ready': ready}}
+        session.processes = {3: {'ready': ready, 'surfaces': set()}}
+        session.surfaces = {}
         broker_instance.session = session
         task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
         try:
@@ -278,6 +282,31 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             if not task.done(): task.cancel(); await asyncio.gather(task, return_exceptions=True)
             control.close(); peer.close()
+
+    async def test_surface_retirement_receipt_precedes_compositor_release(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False,
+                   'streams': {2}, 'surfaces': {key}}
+        session.processes[1] = process
+        session.surfaces[key] = {'process': 1, 'retiring': False, 'retired': asyncio.Event()}
+        session.broker = mock.Mock(send_control=mock.AsyncMock())
+        record = control_protocol.RevokeGrant(*key)
+        session.request_surface_retire(record)
+        self.assertTrue(session.surfaces[key]['retiring'])
+        payload = key[0] + key[1] + struct.pack('<Q', key[2])
+        failure = payload + struct.pack('<iIiI', 5, 0, 0, 0)
+        with self.assertRaises(ValueError):
+            await session.message(Envelope(Kind.SURFACE_RETIRED, b'a' * 16, 1, 1, 0, 1, failure))
+        session.broker.send_control.assert_not_awaited()
+        success = payload + struct.pack('<iIiI', 0, 1, 0, 0)
+        await session.message(Envelope(Kind.SURFACE_RETIRED, b'a' * 16, 1, 1, 0, 2, success))
+        sent = session.broker.send_control.await_args.args[0]
+        self.assertEqual(control_protocol.decode(sent, 0), control_protocol.GrantRetired(*key))
+        self.assertFalse(process['surfaces'])
+        self.assertFalse(session.surfaces)
+        session.bindings.finish(session.binding_generation)
 
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
