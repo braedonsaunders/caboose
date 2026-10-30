@@ -14,6 +14,7 @@ namespace {
 std::mutex mutex;
 bool attempted = false;
 bool installedVirtualWsi = false;
+unsigned installedMode = 0;
 int startResult = EAGAIN;
 PFN_vkGetInstanceProcAddr installedGet = nullptr;
 caboose_gpu_resolve_export installedResolve = nullptr;
@@ -21,7 +22,8 @@ caboose_gfx_registry* registry = nullptr;
 uint64_t nextToken = 1;
 }
 static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_export resolve,
-                        bool virtualWsi) {
+                        unsigned mode) {
+    const bool virtualWsi = mode != 0;
     if (!get || !resolve) return EINVAL;
     // The global entrypoint and exported trampolines must come from the same
     // caller-owned provider; do not silently mix two Vulkan loaders.
@@ -29,7 +31,7 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
         !resolve("vkCreateInstance") || !resolve("vkDestroyInstance")) return EINVAL;
     std::lock_guard<std::mutex> lock(mutex);
     if (attempted) {
-        if (get != installedGet || resolve != installedResolve || virtualWsi != installedVirtualWsi)
+        if (get != installedGet || resolve != installedResolve || mode != installedMode)
             return EBUSY;
         return startResult;
     }
@@ -37,6 +39,7 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     installedGet = get;
     installedResolve = resolve;
     installedVirtualWsi = virtualWsi;
+    installedMode = mode;
     if (!gfxstream::host::vk::installVulkanLoader(get, resolve)) return startResult = EBUSY;
     gfxstream::host::FeatureSet features;
     features.Vulkan.setEnabled(true);
@@ -72,12 +75,18 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
 }
 extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
                                            caboose_gpu_resolve_export resolve) {
-    return startRuntime(get, resolve, false);
+    return startRuntime(get, resolve, 0);
 }
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
 extern "C" int caboose_gpu_runtime_start_virtual_wsi(PFN_vkGetInstanceProcAddr get,
                                                        caboose_gpu_resolve_export resolve) {
-    return startRuntime(get, resolve, true);
+    return startRuntime(get, resolve, 1);
+}
+#endif
+#ifdef CABOOSE_GPU_INDEXED_WSI
+extern "C" int caboose_gpu_runtime_start_v4(PFN_vkGetInstanceProcAddr get,
+                                                       caboose_gpu_resolve_export resolve) {
+    return startRuntime(get, resolve, 2);
 }
 #endif
 extern "C" int caboose_gpu_runtime_open(uint64_t* token) {
@@ -106,6 +115,12 @@ caboose_gfx_registry* virtualWsiRegistry() {
     std::lock_guard<std::mutex> lock(mutex);
     return startResult == 0 && installedVirtualWsi ? registry : nullptr;
 }
+#ifdef CABOOSE_GPU_INDEXED_WSI
+caboose_gfx_registry* indexedWsiRegistry() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return startResult == 0 && installedMode == 2 ? registry : nullptr;
+}
+#endif
 }
 extern "C" int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet,
                                         size_t max_reply_buffer) {

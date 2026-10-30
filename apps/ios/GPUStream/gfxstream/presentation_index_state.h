@@ -13,10 +13,17 @@ public:
     bool markAcquired(uint32_t index) {
         if (index >= indices_.size() || indices_[index].acquired || indices_[index].quarantined) return false;
         indices_[index].acquired = true;
+        indices_[index].ready = false;
+        return true;
+    }
+    bool markAcquireReady(uint32_t index) {
+        if (index >= indices_.size() || !indices_[index].acquired || indices_[index].quarantined || indices_[index].ready)
+            return false;
+        indices_[index].ready = true;
         return true;
     }
     bool sourceReusable(uint32_t index) const {
-        if (index >= indices_.size() || !indices_[index].acquired || indices_[index].quarantined) return false;
+        if (index >= indices_.size() || !indices_[index].acquired || !indices_[index].ready || indices_[index].quarantined) return false;
         for (const auto& entry : frames_)
             if (entry.second.index == index && !entry.second.sourceReleased) return false;
         return true;
@@ -79,13 +86,22 @@ public:
         return true;
     }
     void quarantine(uint32_t index) { if (index < indices_.size()) indices_[index].quarantined = true; }
+    bool acquiredUnused(std::vector<uint32_t>* out) const {
+        if (!out || !frames_.empty()) return false;
+        out->clear();
+        for (uint32_t i = 0; i < indices_.size(); ++i) {
+            if (indices_[i].quarantined || indices_[i].pending) return false;
+            if (indices_[i].acquired) out->push_back(i);
+        }
+        return true;
+    }
     bool mayRetire() const {
         if (!frames_.empty()) return false;
         for (const auto& index : indices_) if (index.acquired || index.quarantined) return false;
         return true;
     }
 private:
-    struct Index { bool acquired = false; bool quarantined = false; bool pending = false; };
+    struct Index { bool acquired = false; bool ready = false; bool quarantined = false; bool pending = false; };
     struct Frame { uint32_t index; bool sourceReleased; bool presentRetired; bool queued; bool copySubmitted; };
     std::vector<Index> indices_;
     std::map<uint64_t, Frame> frames_;

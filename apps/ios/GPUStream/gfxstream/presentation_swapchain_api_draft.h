@@ -14,6 +14,11 @@ extern "C" {
 typedef struct caboose_gpu_virtual_swapchain caboose_gpu_virtual_swapchain;
 typedef struct caboose_gpu_acquire_request caboose_gpu_acquire_request;
 
+// Actual provider query projected to the subset that CREATE accepts. The
+// separate surface_query API remains the complete raw provider snapshot.
+int caboose_gpu_surface_query_indexed(caboose_gpu_surface* surface, uint64_t boxed_physical_device,
+    caboose_gpu_surface_capabilities** out, caboose_gpu_query_status* status);
+
 // Per index, track acquisition (UNACQUIRED/ACQUIRED), source-copy fence and
 // present-fence records independently: after a real queued present the index
 // may be reacquired while earlier retirement records still exist. A new acquire
@@ -59,7 +64,12 @@ typedef struct caboose_gpu_acquire_result {
     int32_t vulkan_result;
     uint32_t has_image_index;   // only actual VK_SUCCESS or VK_SUBOPTIMAL_KHR
     uint32_t image_index;
+    uint32_t local_reason;      // 0 none, 1 deadline, 2 cancelled, 3 other local failure
 } caboose_gpu_acquire_result;
+// A nonzero native_error together with has_image_index is an internal
+// contradiction (such as an out-of-range or duplicate provider index). The
+// caller must quarantine and terminate the session; it cannot encode that as
+// a valid ACQUIRED reply or discard the actual acquired index.
 
 typedef struct caboose_gpu_mapped_present_info {
     caboose_gpu_surface_identity identity;
@@ -103,15 +113,20 @@ int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
 // after an expired finite timeout, only after cancellation serializes with any
 // in-flight poll and proves no successful acquire raced the deadline.
 // Poll/cancel serialize with each other and native swapchain host operations.
+// The owner serializes request release against all calls using that pointer.
 int caboose_gpu_acquire_begin(caboose_gpu_virtual_swapchain* swapchain,
-    const caboose_gpu_acquire_info* info, caboose_gpu_acquire_request** out);
+    const caboose_gpu_acquire_info* info, caboose_gpu_acquire_request** out,
+    caboose_gpu_query_status* status);
 caboose_gpu_acquire_result caboose_gpu_acquire_poll(caboose_gpu_acquire_request* request);
 // Cancel succeeds only before provider acquisition; a successful acquisition
 // racing cancellation remains owned and must be presented or safely released.
 int caboose_gpu_acquire_cancel(caboose_gpu_acquire_request* request);
-// Release request only after cancellation or after a successful result has been
-// observed; underlying in-flight signal lifetimes are retained independently.
-void caboose_gpu_acquire_request_release(caboose_gpu_acquire_request* request);
+// An independent worker must pace this real zero-timeout fence observation
+// after successful acquire, even after returning the index to the guest. It
+// releases acquire-sync leases only after actual completion or device loss.
+caboose_gpu_query_status caboose_gpu_acquire_observe(caboose_gpu_acquire_request* request);
+// Returns EBUSY and retains the request while acquisition signal is pending.
+int caboose_gpu_acquire_request_release(caboose_gpu_acquire_request** request);
 
 // Must name the mapped index currently acquired for this generation and the
 // actual boxed queue/family selected by the application; validate and lease
@@ -127,7 +142,9 @@ caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
 // swapchain-maintenance1 after it is no longer in use, and retire present fences.
 // Failure leaves swapchain/surface/leases quarantined; never queue-idle-as-proof.
 // Main detach follows successful retirement before runtime_finish.
-int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchain* swapchain);
+// Success consumes *swapchain; failure leaves it retained and revoked.
+int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchain** swapchain,
+                                         caboose_gpu_query_status* status);
 #ifdef __cplusplus
 }
 #endif

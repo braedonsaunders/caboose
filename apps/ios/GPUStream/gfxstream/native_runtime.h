@@ -6,8 +6,13 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
 typedef void* (*caboose_gpu_resolve_export)(const char* name);
+#ifdef CABOOSE_GPU_INDEXED_WSI
+// Experimental v4 only; the caller must validate CBGLREF1 version 4/mask 0x70
+// before opening a process. Cannot share an initialized runtime with v2/v3.
+int caboose_gpu_runtime_start_v4(PFN_vkGetInstanceProcAddr get,
+                                         caboose_gpu_resolve_export resolve);
+#endif
 // Process-wide initialization. A failed first attempt is terminal until app restart.
 // The loader, resolver and their backing library must remain valid for process life.
 int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_export resolve);

@@ -62,6 +62,7 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
             info.height < caps.minImageExtent.height || info.height > caps.maxImageExtent.height ||
             (caps.currentExtent.width != UINT32_MAX &&
              (caps.currentExtent.width != info.width || caps.currentExtent.height != info.height)) ||
+            caps.currentTransform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ||
             !(caps.supportedTransforms & info.pre_transform) ||
             !(caps.supportedCompositeAlpha & info.composite_alpha) ||
             (caps.supportedUsageFlags & nativeUsage) != nativeUsage)
@@ -121,6 +122,33 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
         images->resize(count); *out = swapchain;
         if (provider) provider->record(VK_SUCCESS);
         return VK_SUCCESS;
+    } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+}
+VkResult validateVirtualPresentQueue(gfxstream::host::vk::CaboosePresentationDevice& device,
+    VkSurfaceKHR surface, PresentationProviderResult* provider) {
+    if (provider) *provider = {};
+    auto get = runtimeInstanceProcAddr();
+    if (!get || !device.instance || !device.physicalDevice || !device.device || !device.queue || !surface)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    auto families = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+        get(device.instance, "vkGetPhysicalDeviceQueueFamilyProperties"));
+    auto support = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
+        get(device.instance, "vkGetPhysicalDeviceSurfaceSupportKHR"));
+    if (!families || !support) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    try {
+        uint32_t count = 0;
+        families(device.physicalDevice, &count, nullptr);
+        if (!count || count > 4096 || device.queueFamily >= count) return VK_ERROR_FEATURE_NOT_PRESENT;
+        std::vector<VkQueueFamilyProperties> properties(count);
+        families(device.physicalDevice, &count, properties.data());
+        if (device.queueFamily >= count || !(properties[device.queueFamily].queueFlags &
+                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)))
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        VkBool32 supported = VK_FALSE;
+        VkResult result = support(device.physicalDevice, device.queueFamily, surface, &supported);
+        if (result != VK_SUCCESS) return provider ? provider->record(result) : result;
+        if (!supported) return VK_ERROR_FEATURE_NOT_PRESENT;
+        return provider ? provider->record(VK_SUCCESS) : VK_SUCCESS;
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
 }
 VkResult releaseUnusedVirtualImages(gfxstream::host::vk::CabooseSwapchainDevice& device,
