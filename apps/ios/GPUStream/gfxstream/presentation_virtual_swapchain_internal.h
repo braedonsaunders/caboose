@@ -11,4 +11,10 @@ namespace caboose::gpuv2 {
 VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& device,
     VkSurfaceKHR surface, const caboose_gpu_swapchain_create_info& info,
     VkSwapchainKHR* out, std::vector<VkImage>* images, PresentationProviderResult* provider);
+// Caller serializes swapchain access, proves each index is acquired and unused,
+// and has observed completion of its actual acquisition signal. Maintenance1
+// must be enabled on this real device; no queue-idle shortcut is permitted.
+VkResult releaseUnusedVirtualImages(gfxstream::host::vk::CabooseSwapchainDevice& device,
+    VkSwapchainKHR swapchain, uint32_t imageCount, uint32_t count, const uint32_t* indices,
+    PresentationProviderResult* provider);
 }

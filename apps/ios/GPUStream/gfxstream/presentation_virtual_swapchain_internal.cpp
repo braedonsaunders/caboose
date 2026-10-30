@@ -33,9 +33,25 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
         get(device.instance, "vkGetPhysicalDeviceSurfacePresentModesKHR"));
     auto formatFn = reinterpret_cast<PFN_vkGetPhysicalDeviceFormatProperties>(
         get(device.instance, "vkGetPhysicalDeviceFormatProperties"));
-    if (!capsFn || !formatsFn || !modesFn || !formatFn) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    auto queueFamiliesFn = reinterpret_cast<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(
+        get(device.instance, "vkGetPhysicalDeviceQueueFamilyProperties"));
+    auto supportFn = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
+        get(device.instance, "vkGetPhysicalDeviceSurfaceSupportKHR"));
+    if (!capsFn || !formatsFn || !modesFn || !formatFn || !queueFamiliesFn || !supportFn)
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
     auto failed = [provider](VkResult r) { return provider ? provider->record(r) : r; };
     try {
+        uint32_t queueCount = 0;
+        queueFamiliesFn(device.physicalDevice, &queueCount, nullptr);
+        if (!queueCount || queueCount > 4096) return VK_ERROR_FEATURE_NOT_PRESENT;
+        bool supported = false;
+        for (uint32_t i = 0; i < queueCount; ++i) {
+            VkBool32 present = VK_FALSE;
+            VkResult r = supportFn(device.physicalDevice, i, surface, &present);
+            if (r != VK_SUCCESS) return failed(r);
+            supported = supported || present == VK_TRUE;
+        }
+        if (!supported) return VK_ERROR_FEATURE_NOT_PRESENT;
         VkSurfaceCapabilitiesKHR caps{};
         VkResult r = capsFn(device.physicalDevice, surface, &caps);
         if (r != VK_SUCCESS) return failed(r);
@@ -106,5 +122,32 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
         if (provider) provider->record(VK_SUCCESS);
         return VK_SUCCESS;
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+}
+VkResult releaseUnusedVirtualImages(gfxstream::host::vk::CabooseSwapchainDevice& device,
+    VkSwapchainKHR swapchain, uint32_t imageCount, uint32_t count, const uint32_t* indices,
+    PresentationProviderResult* provider) {
+    if (provider) *provider = {};
+    if (!device.instance || !device.device || !swapchain || !imageCount || imageCount > 256 ||
+        !count || count > imageCount || !indices)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (indices[i] >= imageCount) return VK_ERROR_INITIALIZATION_FAILED;
+        for (uint32_t j = 0; j < i; ++j)
+            if (indices[j] == indices[i]) return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    auto get = runtimeInstanceProcAddr();
+    if (!get) return VK_ERROR_INITIALIZATION_FAILED;
+    auto getDevice = reinterpret_cast<PFN_vkGetDeviceProcAddr>(get(device.instance, "vkGetDeviceProcAddr"));
+    if (!getDevice) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    auto release = reinterpret_cast<PFN_vkReleaseSwapchainImagesKHR>(
+        getDevice(device.device, "vkReleaseSwapchainImagesKHR"));
+    if (!release) release = reinterpret_cast<PFN_vkReleaseSwapchainImagesKHR>(
+        getDevice(device.device, "vkReleaseSwapchainImagesEXT"));
+    if (!release) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    VkReleaseSwapchainImagesInfoKHR info{};
+    info.sType = VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_KHR;
+    info.swapchain = swapchain; info.imageIndexCount = count; info.pImageIndices = indices;
+    VkResult result = release(device.device, &info);
+    return provider ? provider->record(result) : result;
 }
 }
