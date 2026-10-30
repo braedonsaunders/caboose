@@ -79,3 +79,8 @@ sampler registration first (0 or 1), descriptor count (1 or 2), and decoy
 SPIRV-Cross revision, not gfxstream. It only resolves scalar immutable YCbCr
 bindings; arrays retain their previous behavior. It has not been validated on
 Metal or a phone.
+
+After compiling the probe separately against the original and patched translator
+libraries, run `check-spirv-multiplane.sh BASELINE PATCHED` to check the expected
+successes and failures in both registration orders, descriptor counts and decoy
+stage/set cases.
