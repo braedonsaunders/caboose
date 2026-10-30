@@ -18,7 +18,7 @@ const ACTIONS = new Set(['press', 'focus', 'set-text'])
 const KEYS = /^[A-Za-z0-9_]+(\+[A-Za-z0-9_]+)*( [A-Za-z0-9_]+(\+[A-Za-z0-9_]+)*){0,9}$/
 const MAX_TEXT = 10_000
 
-export interface ScreenElement { id: string; role: string; name: string; states: string[]; bounds: { x: number; y: number; width: number; height: number } }
+export interface ScreenElement { id: string; role: string; name: string; value?: string; states: string[]; bounds: { x: number; y: number; width: number; height: number } }
 export interface ScreenElements { window: { title: string; app: string }; elements: ScreenElement[]; note?: string }
 
 export class ScreenElementGoneError extends Error {

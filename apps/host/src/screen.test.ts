@@ -26,6 +26,14 @@ describe('screen', () => {
     expect(runs[2]!.slice(-5)).toEqual(['/opt/caboose/seat.py', 'key', '--', 'ctrl+shift+t', 'Return'])
   })
 
+  it('preserves optional field values from the accessibility helper', async () => {
+    const answer = { window: { title: 'Save', app: 'Editor' }, elements: [
+      { id: '1-2-0-abcdef', role: 'entry', name: 'File name', value: 'report.txt', states: ['editable'], bounds: { x: 1, y: 2, width: 30, height: 20 } },
+    ] }
+    const guest = { ownerEnv: ['DISPLAY=:110'], run: async () => `0\n${JSON.stringify(answer)}` }
+    expect(await screenElements(guest)).toEqual(answer)
+  })
+
   it('uses the X display and environment Caboose Display reports', async () => {
     const runs: string[][] = []
     const env = ['WAYLAND_DISPLAY=wayland-caboose-0', 'DISPLAY=:110', 'XAUTHORITY=/run/user/1000/caboose-display/Xauthority']

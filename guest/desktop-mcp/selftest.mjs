@@ -27,7 +27,7 @@ send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
 const listed = (await wait(2)).result.tools
 const names = listed.map(tool => tool.name)
 // The accessibility tools come first, so a model reaches for them before a screenshot.
-assert.deepEqual(names, ['elements', 'find', 'click_element', 'set_text', 'read_text',
+assert.deepEqual(names, ['elements', 'find', 'click_element', 'set_text', 'batch', 'read_text',
   'screenshot', 'list_windows', 'focus', 'click', 'drag', 'type', 'key', 'scroll', 'launch'])
 for (const tool of listed) {
   assert.equal(tool.inputSchema.type, 'object', `${tool.name} schema`)
@@ -70,5 +70,9 @@ send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'nope', argu
 assert.equal((await wait(4)).error.code, -32602)
 send({ jsonrpc: '2.0', id: 5, method: 'bogus' })
 assert.equal((await wait(5)).error.code, -32601)
+const batch = await call('batch', { steps: [{ action: 'wait', ms: 10 }, { action: 'wait', ms: 0 }, { action: 'wait', ms: 10 }], observe: false })
+assert.deepEqual(JSON.parse(batch.content[0].text), { completed: 1, total: 3, error: 'ms must be 10–5000' })
+assert.equal((await call('batch', { steps: [], observe: false })).isError, true)
+assert.equal((await call('batch', { steps: [{ action: 'launch' }], observe: false })).isError, undefined)
 server.kill()
 console.log('caboose-desktop-mcp protocol self-test passed')

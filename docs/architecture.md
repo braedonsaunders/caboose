@@ -460,7 +460,7 @@ also see as their root window's.
 | `scroll X Y DX DY` | Wheel clicks at that position |
 | `key COMBO…` | Key combinations to the keyboard's window (`ctrl+s`, `alt+F4`, `Return`) |
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
-| `settle` | Releases pending frame callbacks, so applications on a seat nobody watches draw now |
+| `settle` | `{ ok: true, released: N }`: number of windows whose pending frame callbacks were released |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
 
 `guest/desktop-mcp/seat.py` is its client, as a library and a command.
@@ -472,12 +472,14 @@ previous one. Its readiness probe is:
 caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]   # default 60 s, port 14600
 ```
 
-It exits 0 once the instance on `PORT` answers a hello made with the current display
-token and has written its launch environment (`/run/caboose/display.env`, or
-`agent-display.env` for port 14601). The host starts the owner's display with
+It exits 0 once the launch environment exists, its control socket answers `windows`
+as the compositor user, and the selected TCP port listens. The socket authenticates the
+local seat through its peer-UID check; readiness does not validate WebSocket token acceptance.
+It sends no `ClientHello`, so repeated readiness checks preserve an attached watcher and
+its display geometry. The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
-`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
-interactive wake or promotion fails if the display writes no launch environment.
+`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`.
+An interactive wake or promotion fails if the display writes no launch environment.
 
 ### Display token
 
@@ -1587,7 +1589,7 @@ without pixels:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls, at most 200; `note` says why the list is empty |
+| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, value?, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls, at most 200; `note` says why the list is empty |
 | `POST` | `/v1/screen/act` | `{ element, action: "press" \| "focus" \| "set-text", text? }` → `{ ok: true }`; 404 when the element is gone. `text` is at most 10000 characters |
 | `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters) → `{ ok: true }`: type into the focused window |
 | `POST` | `/v1/screen/keys` | `{ keys }` → `{ ok: true }`: up to 10 space-separated combinations such as `ctrl+s` or `ctrl+shift+t Return`; common names (`enter`, `esc`, `cmd`, `pageup`, …) map to keysym names |
@@ -2226,11 +2228,12 @@ video passthrough variables.
 
 | Tool | Does |
 | --- | --- |
-| `elements` | The focused window's controls (role, name, states, bounds) from the AT-SPI tree |
+| `elements` | The focused window's controls (role, name, optional value, states, bounds) from the AT-SPI tree |
 | `find` | Elements whose name contains a query, optionally of one role |
 | `click_element`, `set_text` | Press an element, or replace an editable element's text, by id |
+| `batch` | 1–20 sequential actions; stops on the first failure and returns completed/total, error when present, and updated elements by default |
 | `read_text` | The focused window's readable text, page text included |
-| `screenshot` | PNG of the seat or one window |
+| `screenshot` | PNG of the seat or one window; `annotate: true` adds numbered bounds and an element legend |
 | `list_windows`, `focus` | Windows with kind, title, application, geometry and focus; give one the keyboard |
 | `click`, `drag`, `type`, `key`, `scroll` | Pointer and keyboard by coordinates |
 | `launch` | Start an application on the seat with accessibility enabled |
@@ -2241,6 +2244,27 @@ the seat, so an agent cannot list, read or press the owner's windows. The coordi
 and `screenshot` use the seat's control socket through `seat.py`, so they reach Wayland and
 X11 applications alike and work while nobody watches the seat; coordinates are the seat's
 logical pixels, the same as the screenshot's and the elements' bounds.
+
+The server caches a successful seat environment, checking its control socket before reuse,
+and starts the privileged helper only when the existing seat cannot be reached. It keeps
+Python workers warm and serializes calls, including whole batches. Control connections
+persist; a lost response fails the action without replaying it, and the next call reconnects.
+`settle` stops immediately when no callbacks were released, otherwise waits up to three
+50 ms rounds. This is a bounded rendering opportunity, not an application-idle guarantee.
+
+Mutating tools accept `observe: true` to append updated focused-window elements; its
+single-tool default is false. `batch` defaults to observation, permits coordinate actions,
+`click_element`, `set_text`, `focus_element`, `focus`, and `wait` (10–5000 ms), and returns
+`{ completed, total, error?, state?, observationError? }`. An observation failure preserves
+the action outcome. Element batch steps reject a changed focused window as well as stale
+IDs. Observation reports the current state without guaranteeing navigation has completed.
+
+Elements include a bounded optional string `value` for editable fields, selections and
+numeric controls. Password and sensitive fields omit it. Values do not enter element ID
+fingerprints. Annotated screenshots number the focused window's accessible controls that
+intersect the capture; a window-specific capture excludes other windows. The legend keeps
+seat-coordinate bounds and centers, while badges are translated to the captured image.
+Unannotated screenshots retain their single-image response.
 
 When `/opt/caboose/apps/apps-mcp.mjs` is installed, the runner also passes `caboose-apps`
 with the same environment: `app_guide`, `app_publish`, `app_list`, `app_open` (on the

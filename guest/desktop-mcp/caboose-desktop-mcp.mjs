@@ -6,16 +6,15 @@
 // seat's windows, pointer, keyboard and pictures, through its control socket). Wayland and
 // X11 applications are driven alike. caboose-agentd gives it to every ACP agent in
 // session/new, and answers the agent's permission requests itself.
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
-import { promisify } from 'node:util'
-import { ensureAgentSeat } from './ensure-agent-seat.mjs'
+import { Worker } from './worker.mjs'
+import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 
-const run = promisify(execFile)
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
 const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
@@ -117,6 +116,23 @@ const tools = [
   },
 ]
 
+tools.find(t => t.name === 'screenshot').inputSchema.properties.annotate = { type: 'boolean', default: false, description: 'Overlay numbered accessibility bounds and return an id/bounds legend.' }
+const mutations = ['click_element', 'set_text', 'click', 'drag', 'type', 'key', 'scroll', 'focus']
+for (const tool of tools) {
+  if (mutations.includes(tool.name)) tool.inputSchema.properties.observe = { type: 'boolean', default: false, description: 'Return updated focused-window elements after the action.' }
+}
+const stepProperties = Object.assign({}, ...tools.filter(t => mutations.includes(t.name)).map(t => t.inputSchema.properties))
+delete stepProperties.observe
+stepProperties.action = { type: 'string', enum: [...mutations, 'focus_element', 'wait'] }
+stepProperties.ms = { type: 'integer', minimum: 10, maximum: 5000 }
+tools.splice(4, 0, {
+  name: 'batch', description: 'Execute 1–20 actions sequentially, stopping at the first failure. Returns completed count and updated elements by default.',
+  inputSchema: { type: 'object', properties: {
+    steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: stepProperties, required: ['action'] } },
+    observe: { type: 'boolean', default: true },
+  }, required: ['steps'] },
+})
+
 function int(value, name) {
   if (!Number.isInteger(value) || value < -100000 || value > 100000) throw new Error(`${name} must be an integer`)
   return String(value)
@@ -128,34 +144,31 @@ function text(value, name, max) {
   return value
 }
 
-/** Runs a11y.py on the agent display; it always answers one JSON object. */
+const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
+const seatWorker = new Worker(SEAT)
+let seatEnvironment
+async function workerRequest(worker, request) {
+  const ready = await ensureAgentSeat()
+  if (ready !== seatEnvironment) {
+    a11yWorker.close()
+    seatWorker.close()
+    seatEnvironment = ready
+  }
+  Object.assign(env, ready, { DISPLAY })
+  try {
+    const answer = await worker.request(request, env)
+    if (answer.error) throw new Error(answer.error)
+    return answer
+  } catch (error) {
+    if (!await controlAlive(env)) ensureAgentSeat.invalidate()
+    throw error
+  }
+}
 async function a11y(command, options) {
-  Object.assign(env, await ensureAgentSeat(), { DISPLAY })
-  const args = [A11Y, command, `--display=${DISPLAY}`, ...Object.entries(options).map(([key, value]) => `--${key}=${value}`)]
-  let stdout
-  try {
-    ({ stdout } = await run('python3', args, { env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 }))
-  } catch (error) {
-    let answer
-    try { answer = JSON.parse(error.stdout) } catch { throw error }
-    const hint = error.code === 3 ? ' List the window again with elements: it has changed.' : ''
-    throw new Error(`${answer.error ?? 'accessibility helper failed'}.${hint}`)
-  }
-  return [{ type: 'text', text: stdout.trim() }]
+  const answer = await workerRequest(a11yWorker, { op: command, ...options })
+  return [{ type: 'text', text: JSON.stringify(answer) }]
 }
-
-/** Runs seat.py on the agent seat; it answers one JSON object, or exits 1 with {"error"}. */
-async function seat(...args) {
-  Object.assign(env, await ensureAgentSeat(), { DISPLAY })
-  try {
-    const { stdout } = await run('python3', [SEAT, ...args], { env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 })
-    return JSON.parse(stdout)
-  } catch (error) {
-    let answer
-    try { answer = JSON.parse(error.stdout) } catch { throw error }
-    throw new Error(answer.error ?? 'the seat refused')
-  }
-}
+async function seat(...args) { return workerRequest(seatWorker, { args }) }
 
 const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 
@@ -168,13 +181,20 @@ const handlers = {
     return a11y('act', { element: text(id, 'id', 500), action: 'set-text', text: value })
   },
   read_text: () => a11y('text', {}),
-  async screenshot({ window }) {
+  async screenshot({ window, annotate = false }) {
     if (window !== undefined && !Number.isInteger(window)) throw new Error('window must be an id from list_windows')
+    if (typeof annotate !== 'boolean') throw new Error('annotate must be a boolean')
     const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
     try {
       const file = join(dir, 'seat.png')
-      await seat('screenshot', '--out', file, ...(window === undefined ? [] : ['--window', String(window)]))
-      return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' }]
+      const shot = await seat('screenshot', '--out', file, ...(window === undefined ? [] : ['--window', String(window)]))
+      let legend
+      if (annotate) {
+        const state = JSON.parse((await a11y('elements', {}))[0].text)
+        ;({ legend } = await seat('annotate', file, shot.rect, state.elements, window ?? null))
+      }
+      return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' },
+        ...(legend ? [{ type: 'text', text: JSON.stringify(legend) }] : [])]
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -224,6 +244,57 @@ const handlers = {
   },
 }
 
+async function observe() {
+  await seat('settle')
+  return JSON.parse((await handlers.elements())[0].text)
+}
+handlers.batch = async ({ steps, observe: observing = true }) => {
+  if (!Array.isArray(steps) || steps.length < 1 || steps.length > 20) throw new Error('steps must contain 1–20 actions')
+  if (typeof observing !== 'boolean') throw new Error('observe must be a boolean')
+  const result = { completed: 0, total: steps.length }
+  for (const step of steps) {
+    try {
+      if (!step || !stepProperties.action.enum.includes(step.action)) throw new Error('unknown batch action')
+      if (['click_element', 'set_text', 'focus_element'].includes(step.action)) {
+        const id = text(step.id, 'id', 500)
+        const listing = await seat('windows')
+        let focused = listing.focused
+        const seen = new Set()
+        while (!seen.has(focused)) {
+          seen.add(focused)
+          const window = listing.windows.find(w => w.id === focused)
+          if (window?.kind !== 'popup' || window.parent == null) break
+          focused = window.parent
+        }
+        if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('element not found: focused window changed')
+      }
+      if (step.action === 'wait') {
+        if (!Number.isInteger(step.ms) || step.ms < 10 || step.ms > 5000) throw new Error('ms must be 10–5000')
+        await new Promise(resolve => setTimeout(resolve, step.ms))
+      } else if (step.action === 'focus_element') {
+        await a11y('act', { element: text(step.id, 'id', 500), action: 'focus' })
+      } else await handlers[step.action]({ ...step, observe: false })
+      result.completed++
+    } catch (error) { result.error = error.message; break }
+  }
+  if (observing) {
+    try { result.state = await observe() } catch (error) { result.observationError = error.message }
+  }
+  return [{ type: 'text', text: JSON.stringify(result) }]
+}
+for (const name of mutations) {
+  const handler = handlers[name]
+  handlers[name] = async args => {
+    if (args.observe !== undefined && typeof args.observe !== 'boolean') throw new Error('observe must be a boolean')
+    const result = await handler(args)
+    if (args.observe) {
+      try { result.push({ type: 'text', text: JSON.stringify({ state: await observe() }) }) }
+      catch (error) { result.push({ type: 'text', text: JSON.stringify({ observationError: error.message }) }) }
+    }
+    return result
+  }
+}
+
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n') }
 function fail(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n') }
 
@@ -249,10 +320,17 @@ async function handle(message) {
   fail(id, -32601, `method not found: ${method}`)
 }
 
+let queue = Promise.resolve()
 const lines = createInterface({ input: process.stdin })
 lines.on('line', line => {
   if (!line.trim()) return
   let message
   try { message = JSON.parse(line) } catch { return fail(null, -32700, 'parse error') }
-  void handle(message)
+  queue = queue.then(() => handle(message))
 })
+
+const close = () => { a11yWorker.close(); seatWorker.close() }
+lines.on('close', () => { void queue.finally(close) })
+process.on('SIGTERM', () => { close(); process.exit(0) })
+process.on('SIGINT', () => { close(); process.exit(0) })
+process.on('exit', close)

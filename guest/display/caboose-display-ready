@@ -1,8 +1,8 @@
 #!/bin/sh
-# Exits 0 once a caboose-display instance answers a hello made with the per-wake token and
+# Exits 0 once a caboose-display instance answers its control socket and
 # has written its launch environment; otherwise keeps trying for TIMEOUT seconds (default
-# 60). The hello answers before Xwayland is up, and the environment is written only after,
-# so launchers must wait for both. PORT selects the instance: 14600 is the owner's display
+# 60). No display hello is sent, so existing watchers retain their session.
+# PORT selects the instance: 14600 is the owner's display
 # (/run/caboose/display.env), 14601 the agent seat (/run/caboose/agent-display.env);
 # ENV_FILE names another instance's file.
 #
@@ -13,10 +13,32 @@ case $port in
   14601) env_file=${3:-/run/caboose/agent-display.env} ;;
   *) env_file=${3:-/run/caboose/display.env} ;;
 esac
-token=/run/caboose/display-token
 i=0
 while [ "$i" -lt "$timeout" ]; do
-  if [ -s "$env_file" ] && [ -r "$token" ] && caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$token" >/dev/null 2>&1; then exit 0; fi
+  if [ -s "$env_file" ] && (
+    set -a
+    . "$env_file"
+    # Run as the compositor user: the control socket checks peer credentials.
+    set -- python3
+    if [ "$(id -u)" -eq 0 ]; then
+      set -- runuser -u caboose -- env CABOOSE_DISPLAY_CONTROL="$CABOOSE_DISPLAY_CONTROL" python3
+    fi
+    "$@" - "$port" <<'PYTHON'
+import json, os, socket, sys
+try:
+    with socket.socket(socket.AF_UNIX) as control:
+        control.settimeout(0.5)
+        control.connect(os.environ["CABOOSE_DISPLAY_CONTROL"])
+        control.sendall(b"windows\n")
+        with control.makefile("rb") as stream:
+            if json.loads(stream.readline(1048576)).get("ok") is not True:
+                sys.exit(1)
+    with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.5):
+        pass
+except Exception:
+    sys.exit(1)
+PYTHON
+  ) >/dev/null 2>&1; then exit 0; fi
   i=$((i + 1)); sleep 1
 done
 echo "caboose-display on port $port did not become ready" >&2
