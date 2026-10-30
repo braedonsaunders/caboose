@@ -2047,7 +2047,8 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
 acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
 the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption; renderer timebase updates never drive backlog recovery. Live
+cleared on interruption. Placement and rate correction use one host-time sample for
+both coordinates of the anchor; renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the

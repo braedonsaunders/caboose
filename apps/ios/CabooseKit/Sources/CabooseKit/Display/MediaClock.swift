@@ -49,9 +49,9 @@ public final class MediaClock: @unchecked Sendable {
     }
 
     /// Called with `lock` held; this is the same host/media mapping supplied to the renderer.
-    private func projectedTime() -> Int64? {
+    private func projectedTime(at host: Int64? = nil) -> Int64? {
         guard let anchor else { return nil }
-        return anchor.media + Int64(Double(Self.micros(hostTime()) - anchor.host) * playbackRate)
+        return anchor.media + Int64(Double((host ?? Self.micros(hostTime())) - anchor.host) * playbackRate)
     }
 
     private static func micros(_ time: CMTime) -> Int64 {
@@ -71,7 +71,11 @@ public final class MediaClock: @unchecked Sendable {
         defer { lock.unlock() }
         let host = hostTime()
         let micros = Self.micros(host)
-        let now = projectedTime()
+        // Sample once: a rate correction must pair the media position with the exact
+        // host instant used to compute it. A second read after a scheduling delay
+        // would anchor the later media position to the earlier host time, counting
+        // that delay twice and permanently advancing the projected clock.
+        let now = projectedTime(at: micros)
         if let now, let rate = recovery.observe(pts: pts, host: micros, ahead: pts - now, target: playout.delay),
            abs(rate - playbackRate) >= 0.001 {
             // Change speed continuously, keeping the current media position. Flushing to

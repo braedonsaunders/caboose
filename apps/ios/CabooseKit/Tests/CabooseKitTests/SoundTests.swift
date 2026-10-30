@@ -41,6 +41,57 @@ import Testing
 
 /// Scheduling policy only: no renderer is attached and no sound is decoded or played.
 @Suite struct MediaClockSchedulingTests {
+    @Test func placementSamplesTheHostOnceEvenWhenTheThreadIsDelayed() {
+        var host: Int64 = 10_000_000
+        var reads = 0
+        var advanceOnRead: Int64 = 0
+        let clock = MediaClock(hostTime: {
+            reads += 1
+            defer { host += advanceOnRead }
+            return CMTime(value: host, timescale: 1_000_000)
+        })
+        let first: Int64 = 90_000_000_000
+        _ = clock.place(audio: first)
+        clock.start(at: first - PlayoutDelay.initial)
+        // Emulate descheduling after sampling the host. The packet is on time at
+        // that instant; a second host read would falsely classify it as late.
+        host += 20_000
+        advanceOnRead = 200_000
+        reads = 0
+        #expect(clock.place(audio: first + 20_000) == .play)
+        #expect(reads == 1)
+        #expect(clock.delay == PlayoutDelay.initial)
+        clock.stop()
+    }
+
+    @Test func rateCorrectionDoesNotCountASchedulingDelayTwice() {
+        var host: Int64 = 10_000_000
+        var advanceOnRead: Int64 = 0
+        let clock = MediaClock(hostTime: {
+            defer { host += advanceOnRead }
+            return CMTime(value: host, timescale: 1_000_000)
+        })
+        let first: Int64 = 90_000_000_000
+        _ = clock.place(audio: first)
+        clock.start(at: first - PlayoutDelay.initial)
+        // Seed a stable source rate, then request a phase correction. No hardware
+        // renderer or synthetic guest drift is needed for this accounting error.
+        for index in 1..<20 {
+            host = 10_000_000 + Int64(index) * 100_000
+            #expect(clock.place(audio: first + Int64(index) * 100_000) == .play)
+        }
+        host = 12_000_000
+        let before = clock.now!
+        let previousRate = clock.rate
+        advanceOnRead = 40_000
+        #expect(clock.place(audio: first + 2_080_000) == .play)
+        advanceOnRead = 0
+        #expect(clock.rate != previousRate)
+        // Only the 40 ms since the sampled instant advances the new anchor.
+        #expect(clock.now == before + Int64(40_000 * clock.rate))
+        clock.stop()
+    }
+
     @Test func packetsUseTheRequestedAnchorBeforeTheRenderTimebaseCatchesUp() {
         var host: Int64 = 10_000_000
         let clock = MediaClock(hostTime: { CMTime(value: host, timescale: 1_000_000) })

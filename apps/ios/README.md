@@ -236,8 +236,9 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
-  an explicit monotonic host/server anchor, with decoded sample durations keeping nearby
-  packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
+  an explicit monotonic host/server anchor. Placement samples host time once so a
+  scheduling delay cannot be counted twice when changing rate. Decoded sample durations
+  keep nearby packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
   server. Playback starts 120 ms behind the first packet; a late packet adds 20 ms (up to
   240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
   drift does not flush queued sound. A backlog beyond another 300 ms is dropped. Interruptions reset the anchor. The display closes
