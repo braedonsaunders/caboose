@@ -65,7 +65,9 @@ final class SoundPlayer: @unchecked Sendable {
     private let now: @Sendable () -> TimeInterval
     let timing = AudioTimingMetrics()
     private let queue = DispatchQueue(label: "caboose.display.sound", qos: .userInteractive)
+    private let ingress = AudioIngress()
     // On `queue`:
+    private var ingressContinuity = AudioIngressContinuity()
     private var decoder: OpusDecoder?
     private var format: CMAudioFormatDescription?
     private var sessionActive = false
@@ -165,142 +167,156 @@ final class SoundPlayer: @unchecked Sendable {
     }
 
     private func setInterrupted(_ value: Bool) {
-        queue.async { [self] in
-            cancelAutomaticFlushObservation()
-            interrupted = value
-            sessionActive = false
-            recordStartup(startup.reset())
-            timeline.reset()
-            timing.update { $0.reset() }
-            arrivalAt = nil
-            renderer.flush()
-            clock.stop(reason: value ? .interruptionBegan : .interruptionEnded)
+        ingress.invalidate {
+            queue.async { [self] in
+                cancelAutomaticFlushObservation()
+                interrupted = value
+                sessionActive = false
+                recordStartup(startup.reset())
+                timeline.reset()
+                timing.update { $0.reset() }
+                arrivalAt = nil
+                renderer.flush()
+                clock.stop(reason: value ? .interruptionBegan : .interruptionEnded)
+            }
         }
     }
 
     func play(_ packet: AudioPacket, receivedAt: TimeInterval? = nil) {
         let dispatchedAt = now()
         let receivedAt = receivedAt ?? dispatchedAt
-        queue.async { [self] in
-            let enteredAt = now()
-            guard packet.codec == "opus", !interrupted else { return }
-            observeAutomaticFlush()
-            var decodedAt: TimeInterval?
-            var enqueueStartedAt: TimeInterval?
-            var enqueuedAt: TimeInterval?
-            let traceStartup = AudioDiagnostics.enabled
-            var startupRaw: Int64?, startupPlaced: Int64?, startupLead: Int64?
-            var startupFrames: Int?, startupDeclared: Int?, startupCopied: Int?
-            var restartNotice: String?
-            var restartRecord: AudioDiagnosticRecord?
-            defer {
-                let finishedAt = now()
-                timing.update {
-                    $0.packet(received: receivedAt, dispatched: dispatchedAt, entered: enteredAt,
-                              decoded: decodedAt, enqueueStarted: enqueueStartedAt, enqueued: enqueuedAt,
-                              finished: finishedAt)
-                }
-                if let restartNotice {
-                    let enqueueMS = enqueueStartedAt.flatMap { start in enqueuedAt.map { milliseconds($0, since: start) } } ?? -1
-                    let preparationMS = decodedAt.flatMap { decoded in enqueueStartedAt.map { milliseconds($0, since: decoded) } } ?? -1
-                    let totalMS = milliseconds(finishedAt, since: receivedAt)
-                    log.notice("display audio restart \(restartNotice, privacy: .public) prepare_ms=\(preparationMS) enqueue_ms=\(enqueueMS) finished_s=\(finishedAt) total_ms=\(totalMS)")
-                    if var record = restartRecord {
-                        record.preparationMS = preparationMS >= 0 ? preparationMS : nil
-                        record.enqueueMS = enqueueMS >= 0 ? enqueueMS : nil
-                        record.totalMS = totalMS
-                        record.finishedMonotonicSeconds = finishedAt
-                        AudioDiagnostics.record(record)
-                    }
-                }
-                if traceStartup {
-                    let completed = startup.observe(.init(received: receivedAt, dispatched: dispatchedAt,
-                        entered: enteredAt, decoded: decodedAt, enqueueStarted: enqueueStartedAt,
-                        enqueued: enqueuedAt, finished: finishedAt, finishedWall: Date().timeIntervalSince1970,
-                        rawPTS: startupRaw, placedPTS: startupPlaced, frames: startupFrames,
-                        declaredBytes: startupDeclared, copiedBytes: startupCopied, leadMicros: startupLead))
-                    recordStartup(completed)
-                } else { _ = startup.reset() }
-                report(at: finishedAt)
+        ingress.submit(bytes: packet.data.count) { ticket in
+            queue.async { [self] in
+                playAdmitted(packet, ticket: ticket, receivedAt: receivedAt, dispatchedAt: dispatchedAt)
             }
-            do {
-                if decoder?.channels != packet.channels {
-                    decoder = try OpusDecoder(channels: packet.channels)
-                    format = nil
+        }
+    }
+
+    /// Playback-queue confined; its permit covers decoding and native enqueue as well.
+    private func playAdmitted(_ packet: AudioPacket, ticket: AudioIngress.Ticket,
+                              receivedAt: TimeInterval, dispatchedAt: TimeInterval) {
+        defer { ingress.finish(ticket) }
+        guard ingress.isCurrent(ticket) else { return }
+        let enteredAt = now()
+        if ingressContinuity.discontinuity(at: ticket.sequence) { timeline.reset() }
+        guard packet.codec == "opus", !interrupted else { return }
+        observeAutomaticFlush()
+        var decodedAt: TimeInterval?
+        var enqueueStartedAt: TimeInterval?
+        var enqueuedAt: TimeInterval?
+        let traceStartup = AudioDiagnostics.enabled
+        var startupRaw: Int64?, startupPlaced: Int64?, startupLead: Int64?
+        var startupFrames: Int?, startupDeclared: Int?, startupCopied: Int?
+        var restartNotice: String?
+        var restartRecord: AudioDiagnosticRecord?
+        defer {
+            let finishedAt = now()
+            timing.update {
+                $0.packet(received: receivedAt, dispatched: dispatchedAt, entered: enteredAt,
+                          decoded: decodedAt, enqueueStarted: enqueueStartedAt, enqueued: enqueuedAt,
+                          finished: finishedAt)
+            }
+            if let restartNotice {
+                let enqueueMS = enqueueStartedAt.flatMap { start in enqueuedAt.map { milliseconds($0, since: start) } } ?? -1
+                let preparationMS = decodedAt.flatMap { decoded in enqueueStartedAt.map { milliseconds($0, since: decoded) } } ?? -1
+                let totalMS = milliseconds(finishedAt, since: receivedAt)
+                log.notice("display audio restart \(restartNotice, privacy: .public) prepare_ms=\(preparationMS) enqueue_ms=\(enqueueMS) finished_s=\(finishedAt) total_ms=\(totalMS)")
+                if var record = restartRecord {
+                    record.preparationMS = preparationMS >= 0 ? preparationMS : nil
+                    record.enqueueMS = enqueueMS >= 0 ? enqueueMS : nil
+                    record.totalMS = totalMS
+                    record.finishedMonotonicSeconds = finishedAt
+                    AudioDiagnostics.record(record)
                 }
-                guard let decoder else { return }
-                let pcm = try decoder.decode(packet.data)
-                let arrived = now()
-                decodedAt = arrived
-                if traceStartup {
-                    startupRaw = Int64(packet.ptsMicros)
-                    startupFrames = Int(pcm.frameLength)
-                    startupDeclared = Int(pcm.audioBufferList.pointee.mBuffers.mDataByteSize)
-                }
-                guard pcm.frameLength > 0 else { return }
-                if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
-                arrivalAt = arrived
-                frameMin = min(frameMin, Int(pcm.frameLength))
-                frameMax = max(frameMax, Int(pcm.frameLength))
-                try activateSession()
-                if renderer.status == .failed {
-                    renderer.flush()
-                    clock.stop(reason: .rendererFailure)
-                }
-                let rawPTS = Int64(packet.ptsMicros)
-                if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
-                lastServerPTS = rawPTS
-                let pts = timeline.place(server: rawPTS, frames: Int(pcm.frameLength))
-                let decision = clock.placement(audio: pts)
-                let placement = decision.decision
-                if traceStartup { startupPlaced = pts; startupLead = decision.leadMicros }
-                if case .restart = placement {
-                    restarts += 1
-                    if restarts <= 10 || restarts % 50 == 0 {
-                        let rendered = observedRendererMicros()
-                        let observedAt = now()
-                        let requestedRate = clock.rate
-                        let observedRate = clock.synchronizer.rate
-                        let projected = clock.now ?? -1
-                        let delay = clock.delay
-                        let dispatchMS = milliseconds(dispatchedAt, since: receivedAt)
-                        let queueMS = milliseconds(enteredAt, since: dispatchedAt)
-                        let decodeMS = milliseconds(arrived, since: enteredAt)
-                        let stage = "mono_s=\(observedAt) rx_dispatch_ms=\(dispatchMS) queue_ms=\(queueMS) decode_ms=\(decodeMS) requested_rate=\(requestedRate) observed_rate=\(observedRate)"
-                        // Snapshot before flush; emit once enqueue finishes so its cost is
-                        // included. The observed renderer time may lag AVFoundation updates.
-                        restartNotice = "n=\(restarts) raw=\(rawPTS) pts=\(pts) projected=\(projected) rendered=\(rendered) delay=\(delay) regressions=\(timestampRegressions) \(stage)"
-                        if AudioDiagnostics.enabled {
-                            restartRecord = AudioDiagnosticRecord(
-                                kind: .restart, monotonicSeconds: observedAt, wallUnixSeconds: Date().timeIntervalSince1970,
-                                packets: played, failures: failed, restarts: restarts, delayMicros: delay,
-                                requestedRate: requestedRate, observedRate: Double(observedRate),
-                                projectedMicros: projected, renderedMicros: rendered, timestampRegressions: timestampRegressions,
-                                rawPTSMicros: rawPTS, placedPTSMicros: pts,
-                                receiptToDispatchMS: dispatchMS, queueMS: queueMS, decodeMS: decodeMS)
-                        }
+            }
+            if traceStartup {
+                let completed = startup.observe(.init(received: receivedAt, dispatched: dispatchedAt,
+                    entered: enteredAt, decoded: decodedAt, enqueueStarted: enqueueStartedAt,
+                    enqueued: enqueuedAt, finished: finishedAt, finishedWall: Date().timeIntervalSince1970,
+                    rawPTS: startupRaw, placedPTS: startupPlaced, frames: startupFrames,
+                    declaredBytes: startupDeclared, copiedBytes: startupCopied, leadMicros: startupLead))
+                recordStartup(completed)
+            } else { _ = startup.reset() }
+            report(at: finishedAt)
+        }
+        do {
+            if decoder?.channels != packet.channels {
+                decoder = try OpusDecoder(channels: packet.channels)
+                format = nil
+            }
+            guard let decoder else { return }
+            let pcm = try decoder.decode(packet.data)
+            let arrived = now()
+            decodedAt = arrived
+            if traceStartup {
+                startupRaw = Int64(packet.ptsMicros)
+                startupFrames = Int(pcm.frameLength)
+                startupDeclared = Int(pcm.audioBufferList.pointee.mBuffers.mDataByteSize)
+            }
+            guard pcm.frameLength > 0 else { return }
+            if let arrivalAt { arrivalMax = max(arrivalMax, arrived - arrivalAt) }
+            arrivalAt = arrived
+            frameMin = min(frameMin, Int(pcm.frameLength))
+            frameMax = max(frameMax, Int(pcm.frameLength))
+            try activateSession()
+            if renderer.status == .failed {
+                renderer.flush()
+                clock.stop(reason: .rendererFailure)
+            }
+            let rawPTS = Int64(packet.ptsMicros)
+            if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
+            lastServerPTS = rawPTS
+            let pts = timeline.place(server: rawPTS, frames: Int(pcm.frameLength))
+            let decision = clock.placement(audio: pts)
+            let placement = decision.decision
+            if traceStartup { startupPlaced = pts; startupLead = decision.leadMicros }
+            if case .restart = placement {
+                restarts += 1
+                if restarts <= 10 || restarts % 50 == 0 {
+                    let rendered = observedRendererMicros()
+                    let observedAt = now()
+                    let requestedRate = clock.rate
+                    let observedRate = clock.synchronizer.rate
+                    let projected = clock.now ?? -1
+                    let delay = clock.delay
+                    let dispatchMS = milliseconds(dispatchedAt, since: receivedAt)
+                    let queueMS = milliseconds(enteredAt, since: dispatchedAt)
+                    let decodeMS = milliseconds(arrived, since: enteredAt)
+                    let stage = "mono_s=\(observedAt) rx_dispatch_ms=\(dispatchMS) queue_ms=\(queueMS) decode_ms=\(decodeMS) requested_rate=\(requestedRate) observed_rate=\(observedRate)"
+                    // Snapshot before flush; emit once enqueue finishes so its cost is
+                    // included. The observed renderer time may lag AVFoundation updates.
+                    restartNotice = "n=\(restarts) raw=\(rawPTS) pts=\(pts) projected=\(projected) rendered=\(rendered) delay=\(delay) regressions=\(timestampRegressions) \(stage)"
+                    if AudioDiagnostics.enabled {
+                        restartRecord = AudioDiagnosticRecord(
+                            kind: .restart, monotonicSeconds: observedAt, wallUnixSeconds: Date().timeIntervalSince1970,
+                            packets: played, failures: failed, restarts: restarts, delayMicros: delay,
+                            requestedRate: requestedRate, observedRate: Double(observedRate),
+                            projectedMicros: projected, renderedMicros: rendered, timestampRegressions: timestampRegressions,
+                            rawPTSMicros: rawPTS, placedPTSMicros: pts,
+                            receiptToDispatchMS: dispatchMS, queueMS: queueMS, decodeMS: decodeMS)
                     }
-                    renderer.flush()
                 }
-                let buffer = try sample(pcm, decoder: decoder, pts: pts)
-                if traceStartup { startupCopied = CMSampleBufferGetTotalSampleSize(buffer) }
-                // Automatic route/lifecycle flushes may occur during preparation.
-                // Check again after preparation, immediately before the next enqueue.
-                if let generation = automaticFlushGeneration { recoverAutomaticFlush(generation: generation) }
-                enqueueStartedAt = now()
-                renderer.enqueue(buffer)
-                enqueuedAt = now()
-                switch placement {
-                case .play: break
-                case .start(let time), .restart(let time): clock.start(at: time)
-                }
-                played += 1
-            } catch {
-                failed += 1
-                if now() - errorsAt >= 5 {
-                    log.error("display audio failure count=\(self.failed) error=\(String(describing: error), privacy: .public)")
-                    errorsAt = now()
-                }
+                renderer.flush()
+            }
+            let buffer = try sample(pcm, decoder: decoder, pts: pts)
+            if traceStartup { startupCopied = CMSampleBufferGetTotalSampleSize(buffer) }
+            // Automatic route/lifecycle flushes may occur during preparation.
+            // Check again after preparation, immediately before the next enqueue.
+            if let generation = automaticFlushGeneration { recoverAutomaticFlush(generation: generation) }
+            enqueueStartedAt = now()
+            guard ingress.isCurrent(ticket) else { return }
+            renderer.enqueue(buffer)
+            enqueuedAt = now()
+            switch placement {
+            case .play: break
+            case .start(let time), .restart(let time): clock.start(at: time)
+            }
+            played += 1
+        } catch {
+            failed += 1
+            if now() - errorsAt >= 5 {
+                log.error("display audio failure count=\(self.failed) error=\(String(describing: error), privacy: .public)")
+                errorsAt = now()
             }
         }
     }
@@ -338,7 +354,8 @@ final class SoundPlayer: @unchecked Sendable {
         let rate = clock.rate
         let projected = clock.now ?? -1
         let minimum = frameMax == 0 ? 0 : frameMin
-        log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(delay) frames=\(minimum)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(status) rate=\(rate) observed_rate=\(observedRate) projected=\(projected) rendered=\(rendered) regressions=\(self.timestampRegressions) mono_s=\(time) \(stages, privacy: .public)")
+        let rejected = ingress.rejected
+        log.notice("display audio ingress_rejected=\(rejected) packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(delay) frames=\(minimum)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(status) rate=\(rate) observed_rate=\(observedRate) projected=\(projected) rendered=\(rendered) regressions=\(self.timestampRegressions) mono_s=\(time) \(stages, privacy: .public)")
         AudioDiagnostics.record(AudioDiagnosticRecord(
             kind: .interval, monotonicSeconds: time, wallUnixSeconds: Date().timeIntervalSince1970,
             packets: played, failures: failed, restarts: restarts, delayMicros: delay,
@@ -351,14 +368,16 @@ final class SoundPlayer: @unchecked Sendable {
     }
 
     func stop() {
-        queue.async { [self] in
-            cancelAutomaticFlushObservation()
-            recordStartup(startup.reset())
-            timeline.reset()
-            timing.update { $0.reset() }
-            arrivalAt = nil
-            renderer.flush()
-            clock.stop(reason: .sessionStop)
+        ingress.invalidate {
+            queue.async { [self] in
+                cancelAutomaticFlushObservation()
+                recordStartup(startup.reset())
+                timeline.reset()
+                timing.update { $0.reset() }
+                arrivalAt = nil
+                renderer.flush()
+                clock.stop(reason: .sessionStop)
+            }
         }
     }
 

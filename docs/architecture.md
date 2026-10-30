@@ -2161,6 +2161,14 @@ requests half-resolution software-encoded motion streams and upscales them with 
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
+payload. Excess or empty packets are rejected before dispatch, counted as
+`ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
+After rejection, the next admitted packet retains its server timestamp instead of joining
+across the missing duration; the Opus decoder remains alive, with no synthetic concealment
+packet or replay. Packet loss can therefore be audible. Existing playout thresholds govern
+any rebuffer. Stop and interruption invalidate old jobs without releasing their memory
+budget until those jobs exit.
 Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
 packets do not write the synchronizer rate. AVFoundation may automatically
 flush queued audio on a rate or route change. The phone coalesces renderer-specific
