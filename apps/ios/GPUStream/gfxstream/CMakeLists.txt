@@ -49,6 +49,11 @@ if(TARGET gfxstream_backend_static)
         message(FATAL_ERROR "Presentation leases require the matching patched decoder source")
     endif()
     if(CABOOSE_GFXSTREAM_PRESENTATION_LEASE)
+        file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/vulkan/vk_decoder_global_state.h"
+            CABOOSE_ACQUIRE_SYNC REGEX "acquireCabooseAcquireSync")
+        if(NOT CABOOSE_ACQUIRE_SYNC)
+            message(FATAL_ERROR "Presentation leases require the acquire fence lifetime patch")
+        endif()
         file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/features/include/gfxstream/host/features.h"
             CABOOSE_VIRTUAL_WSI_FEATURE REGEX "BoolFeatureInfo CabooseVirtualWsi")
         if(NOT CABOOSE_VIRTUAL_WSI_FEATURE)

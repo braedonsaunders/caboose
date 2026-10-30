@@ -10,12 +10,14 @@ using caboose::gpuv2::PresentationLifetime;
 using caboose::gpuv2::PresentationMutation;
 int main() {
     auto image = std::make_shared<PresentationLifetime>();
+    assert(!image->isClosed());
     auto other = std::make_shared<PresentationLifetime>();
     auto lease = std::make_unique<PresentationLease>();
     assert(lease->acquire(image));
     assert(lease->acquire(other));
     { PresentationMutation mutation; assert(!mutation.acquire(other)); }
     image->close();
+    assert(image->isClosed());
     auto late = std::make_unique<PresentationLease>();
     assert(!late->acquire(image));
     // Closing one object's gate must not revoke another object's admission.

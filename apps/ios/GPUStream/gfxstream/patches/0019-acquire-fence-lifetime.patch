@@ -1,0 +1,116 @@
+--- a/host/vulkan/caboose_presentation_lifetime.h
++++ b/host/vulkan/caboose_presentation_lifetime.h
+@@ -39,0 +40,4 @@
++    }
++    bool isClosed() {
++        std::lock_guard<std::mutex> lock(mutex_);
++        return closed_;
+--- a/host/vulkan/vk_decoder_internal_structs.h
++++ b/host/vulkan/vk_decoder_internal_structs.h
+@@ -435,0 +436,2 @@
++    std::shared_ptr<caboose::gpuv2::PresentationLifetime> cabooseLifetime =
++        std::make_shared<caboose::gpuv2::PresentationLifetime>();
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -61,0 +62,9 @@
++};
++
++// Acquire synchronization handles remain leased until their actual signal completes.
++struct CabooseAcquireSync {
++    caboose::gpuv2::PresentationLease lease;
++    VkDevice device = VK_NULL_HANDLE;
++    VkSemaphore semaphore = VK_NULL_HANDLE;
++    VkFence fence = VK_NULL_HANDLE;
++    VulkanDispatch* vk = nullptr;
+@@ -127,0 +137,3 @@
++    VkResult acquireCabooseAcquireSync(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, VkSemaphore boxedSemaphore, VkFence boxedFence,
++        std::unique_ptr<CabooseAcquireSync>* out);
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -339,0 +340,41 @@
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
++
++    VkResult acquireCabooseAcquireSync(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, VkSemaphore boxedSemaphore, VkFence boxedFence,
++        std::unique_ptr<CabooseAcquireSync>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedInstance || !boxedDevice || (!boxedSemaphore && !boxedFence))
++            return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CabooseAcquireSync>();
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkInstance instance = try_unbox_VkInstance(boxedInstance);
++        VkDevice device = try_unbox_VkDevice(boxedDevice);
++        auto* inst = gfxstream::base::find(mInstanceInfo, instance);
++        auto* dev = gfxstream::base::find(mDeviceInfo, device);
++        if (!inst || !dev || inst->boxed != boxedInstance || inst->contextId != contextId ||
++            dev->boxed != boxedDevice) return VK_ERROR_INITIALIZATION_FAILED;
++        auto* phys = gfxstream::base::find(mPhysdevInfo, dev->physicalDevice);
++        if (!phys || phys->instance != instance) return VK_ERROR_INITIALIZATION_FAILED;
++        if (!result->lease.acquire(inst->cabooseLifetime) || !result->lease.acquire(dev->cabooseLifetime))
++            return VK_ERROR_INITIALIZATION_FAILED;
++        if (boxedSemaphore) {
++            VkSemaphore semaphore = try_unbox_VkSemaphore(boxedSemaphore);
++            auto* info = gfxstream::base::find(mSemaphoreInfo, semaphore);
++            if (!semaphore || !info || info->boxed != boxedSemaphore || info->device != device ||
++                info->isTimelineSemaphore || !result->lease.acquire(info->cabooseLifetime))
++                return VK_ERROR_INITIALIZATION_FAILED;
++            result->semaphore = semaphore;
++        }
++        if (boxedFence) {
++            VkFence fence = try_unbox_VkFence(boxedFence);
++            auto* info = gfxstream::base::find(mFenceInfo, fence);
++            if (!fence || !info || info->boxed != boxedFence || info->device != device ||
++                !result->lease.acquire(info->cabooseLifetime)) return VK_ERROR_INITIALIZATION_FAILED;
++            result->fence = fence;
++        }
++        result->device = device;
++        result->vk = dispatch_VkDevice(boxedDevice);
++        if (!result->vk) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -4543,0 +4585,24 @@
++        // Exclude acquire leases without waiting while holding the global lock.
++        // Keep the mutation until all normal reset and pool bookkeeping ends.
++        std::unique_ptr<caboose::gpuv2::PresentationMutation> resetMutation;
++        for (;;) {
++            auto candidate = std::make_unique<caboose::gpuv2::PresentationMutation>();
++            std::shared_ptr<caboose::gpuv2::PresentationLifetime> blocked;
++            {
++                std::lock_guard<std::mutex> lock(mMutex);
++                for (uint32_t i = 0; i < fenceCount; ++i) {
++                    if (!pFences[i]) continue;
++                    auto* info = gfxstream::base::find(mFenceInfo, pFences[i]);
++                    if (!info) continue;
++                    if (!candidate->acquire(info->cabooseLifetime)) {
++                        blocked = info->cabooseLifetime;
++                        break;
++                    }
++                }
++            }
++            if (!blocked) { resetMutation = std::move(candidate); break; }
++            candidate.reset();
++            if (blocked->isClosed()) return VK_ERROR_INITIALIZATION_FAILED;
++            blocked->wait();
++        }
++
+@@ -5115,0 +5181,9 @@
++        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            auto* info = gfxstream::base::find(mFenceInfo, fence);
++            if (!info) return;
++            lifetime = info->cabooseLifetime;
++            lifetime->close();
++        }
++        lifetime->wait();
+@@ -12237,0 +12312,8 @@
++VkResult VkDecoderGlobalState::acquireCabooseAcquireSync(
++    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkSemaphore boxedSemaphore,
++    VkFence boxedFence, std::unique_ptr<CabooseAcquireSync>* out) {
++    try { return mImpl->acquireCabooseAcquireSync(contextId, boxedInstance, boxedDevice,
++        boxedSemaphore, boxedFence, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++

@@ -80,10 +80,12 @@ typedef struct caboose_gpu_mapped_present_info {
 // flags, pNext, replacement or other combinations must be explicitly rejected;
 // never silently select another mode, format, alpha or transform. Queue choice
 // is deferred until PRESENT. Zero/oversized/incompatible counts fail closed.
-// All objects stay leased; success does not mean that sources are mapped.
+// Also returns a nonzero surface-local monotonic swapchain ID which is never
+// reused within this surface generation. All objects stay leased; success does
+// not mean that sources are mapped.
 int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
     const caboose_gpu_swapchain_create_info* info, caboose_gpu_virtual_swapchain** out,
-    uint32_t* actual_image_count, caboose_gpu_query_status* status);
+    uint64_t* swapchain_id, uint32_t* actual_image_count, caboose_gpu_query_status* status);
 
 // Exactly actual_image_count distinct same-device decoder-owned images, ordered
 // by native image index. Each image, memory binding and supported shape/usage is

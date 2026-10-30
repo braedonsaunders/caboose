@@ -38,6 +38,10 @@ public:
         --mutations_;
         if (--active_ == 0) drained_.notify_all();
     }
+    bool isClosed() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_;
+    }
     void wait() {
         std::unique_lock<std::mutex> lock(mutex_);
         drained_.wait(lock, [this] { return active_ == 0; });

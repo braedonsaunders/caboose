@@ -4,8 +4,13 @@
 #include "process_registry.h"
 #include <memory>
 #include <vulkan/vulkan.h>
-namespace gfxstream::host::vk { struct CaboosePresentationObjects; struct CaboosePresentationInstance; struct CaboosePresentationPhysicalDevice; struct CaboosePresentationDevice; }
+namespace gfxstream::host::vk { struct CaboosePresentationObjects; struct CaboosePresentationInstance; struct CaboosePresentationPhysicalDevice; struct CaboosePresentationDevice; struct CabooseAcquireSync; }
 namespace caboose::gpuv2 {
+// Keeps instance, device and supplied semaphore/fence alive; release only after
+// real acquire signal completion or established terminal device loss.
+VkResult acquirePresentationSync(caboose_gfx_registry* registry, uint64_t token,
+    uint64_t boxedInstance, uint64_t boxedDevice, uint64_t boxedSemaphore, uint64_t boxedFence,
+    std::unique_ptr<gfxstream::host::vk::CabooseAcquireSync>* out);
 VkResult acquirePresentationInstance(caboose_gfx_registry* registry, uint64_t token,
     uint64_t boxedInstance, std::unique_ptr<gfxstream::host::vk::CaboosePresentationInstance>* out);
 VkResult acquirePresentationPhysicalDevice(caboose_gfx_registry* registry, uint64_t token,
