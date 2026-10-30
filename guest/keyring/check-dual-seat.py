@@ -91,6 +91,8 @@ def verify_windows(agent_count, check_id):
             and all(name + '-PASS' in str(w.get('title', '')) for name, rows in windows.items() for w in rows)):
             return
         time.sleep(0.1)
+    print(json.dumps({'phase': 'window-timeout', 'expected_agent_windows': agent_count,
+                      'windows': windows}), flush=True)
     raise AssertionError('Synthetic browser windows/profile values did not remain on their own seats')
 
 
@@ -145,6 +147,7 @@ def inside(phase, check_id):
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
     children = []
+    browser_logs = []
     try:
         def launch(seat):
             command = '/usr/bin/chromium' if seat == 'owner' else '/usr/local/libexec/caboose-agent-seat-bin/chromium'
@@ -155,7 +158,9 @@ def inside(phase, check_id):
                 '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
                 '--remote-debugging-port=' + ('18992' if seat == 'owner' else '18993'),
                 '--new-window', 'http://127.0.0.1:18991/' + seat]
-            child = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log = open('/tmp/caboose-seat-' + seat + '-' + uuid.uuid4().hex + '.log', 'w+b')
+            browser_logs.append((seat, log))
+            child = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
             children.append(child)
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(launch, ['owner', 'agent']))
@@ -182,6 +187,11 @@ def inside(phase, check_id):
         as_owner(['/usr/bin/python3', __file__, '--agent-secret', check_id])
         print(f'PASS: {phase}: owner/agent Chromium windows, repeated agent launch, synthetic cookie/localStorage, canonical GNOME item')
     finally:
+        for seat, log in browser_logs:
+            log.flush()
+            log.seek(max(0, os.fstat(log.fileno()).st_size - 8192))
+            print(json.dumps({'phase': 'browser-log', 'seat': seat, 'tail': log.read().decode(errors='replace')}), flush=True)
+            log.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
