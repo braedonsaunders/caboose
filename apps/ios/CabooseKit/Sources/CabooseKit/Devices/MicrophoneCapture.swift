@@ -45,6 +45,7 @@ final class MicrophoneCapture {
             engine.inputNode.removeTap(onBus: 0)
         }
         engine = nil
+        pipeline?.stop()
         pipeline = nil
         device = nil
         failed = nil
@@ -110,6 +111,13 @@ final class MicrophonePipeline: @unchecked Sendable {
     private let device: String
     private let output: DeviceOutput
     private var framer = PCMFramer()
+    private let admission = NSLock()
+    private var pending = 0
+    private var stopped = false
+
+    func stop() {
+        admission.withLock { stopped = true }
+    }
 
     init?(input: AVAudioFormat, device: String, output: DeviceOutput) {
         guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: PCMFramer.sampleRate, channels: 1, interleaved: false),
@@ -123,8 +131,21 @@ final class MicrophonePipeline: @unchecked Sendable {
 
     func append(_ buffer: AVAudioPCMBuffer, at time: AVAudioTime) {
         let micros = time.isHostTimeValid ? UInt64(AVAudioTime.seconds(forHostTime: time.hostTime) * 1_000_000) : 0
-        guard let copy = buffer.copy() as? AVAudioPCMBuffer else { return }
-        queue.async { self.convert(copy, at: micros) }
+        // Bound capture work even when encoding or the transport stalls.
+        guard admission.withLock({
+            guard !stopped, pending < 3 else { return false }
+            pending += 1
+            return true
+        }) else { return }
+        guard let copy = buffer.copy() as? AVAudioPCMBuffer else {
+            admission.withLock { pending -= 1 }
+            return
+        }
+        queue.async {
+            defer { self.admission.withLock { self.pending -= 1 } }
+            guard self.admission.withLock({ !self.stopped }) else { return }
+            self.convert(copy, at: micros)
+        }
     }
 
     private func convert(_ buffer: AVAudioPCMBuffer, at micros: UInt64) {
@@ -143,7 +164,11 @@ final class MicrophonePipeline: @unchecked Sendable {
         let samples = Array(UnsafeBufferPointer(start: channel, count: Int(converted.frameLength)))
         for frame in framer.append(samples, at: micros) {
             guard let packet = (try? encoder.encode(frame.samples)) ?? nil else { continue }
-            output.send(.deviceAudio(device: device, micros: frame.micros, data: packet))
+            // Closing waits for any send already underway, and fences queued work.
+            admission.withLock {
+                guard !stopped else { return }
+                output.send(.deviceAudio(device: device, micros: frame.micros, data: packet))
+            }
         }
     }
 }

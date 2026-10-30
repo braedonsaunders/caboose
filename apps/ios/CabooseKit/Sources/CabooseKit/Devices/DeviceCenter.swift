@@ -65,6 +65,7 @@ public final class DeviceCenter {
     public private(set) var screenGamepadActive = false
 
     @ObservationIgnored private let backend: DeviceBackend?
+    @ObservationIgnored private var opens: [String: UUID] = [:]
     @ObservationIgnored private var output: DeviceOutput?
     @ObservationIgnored private var lastBattery: BatteryReport?
     @ObservationIgnored private var lastScreenReport: GamepadReport?
@@ -91,6 +92,7 @@ public final class DeviceCenter {
     /// The connection is gone: every source stops.
     public func detach() {
         guard isAttached else { return }
+        opens.removeAll()
         backend?.detach()
         output = nil
         isAttached = false
@@ -111,9 +113,15 @@ public final class DeviceCenter {
             guard let device = offered.first(where: { $0.id == id }), [.camera, .depth, .microphone, .motion].contains(device.kind) else { return }
             inUse[id] = device.kind
             failures[id] = nil
-            backend?.open(device, rateHz: rate) { [weak self] reason in self?.failed(id, reason) }
+            let attempt = UUID()
+            opens[id] = attempt
+            backend?.open(device, rateHz: rate) { [weak self] reason in
+                guard let self, self.opens[id] == attempt else { return }
+                self.failed(id, reason)
+            }
         case .deviceClose(let id):
             guard let device = offered.first(where: { $0.id == id }) else { return }
+            opens[id] = nil
             inUse[id] = nil
             backend?.close(device)
         case .deviceKeyframe(let id):
@@ -177,6 +185,8 @@ public final class DeviceCenter {
 
     private func failed(_ id: String, _ reason: String) {
         guard isAttached, offered.contains(where: { $0.id == id }) else { return }
+        opens[id] = nil
+        if let device = offered.first(where: { $0.id == id }) { backend?.close(device) }
         failures[id] = reason
         inUse[id] = nil
         output?.send(.deviceError(device: id, reason: reason))
@@ -195,6 +205,7 @@ public final class DeviceCenter {
         if next != offered {
             let kept = Set(next.map(\.id))
             for device in offered where !kept.contains(device.id) {
+                opens[device.id] = nil
                 if inUse[device.id] != nil { backend.close(device) }
                 inUse[device.id] = nil
                 failures[device.id] = nil
@@ -202,6 +213,7 @@ public final class DeviceCenter {
             }
             // A device whose description changed is restarted when the computer opens it again.
             for device in offered where kept.contains(device.id) && !next.contains(device) && inUse[device.id] != nil {
+                opens[device.id] = nil
                 backend.close(device)
                 inUse[device.id] = nil
             }

@@ -166,11 +166,13 @@ import Testing
         var onButton: ((DeviceKey, Bool) -> Void)?
         var log: [String] = []
         var failOpen: String?
+        var failures: [@MainActor (String) -> Void] = []
 
         func attach(_ output: DeviceOutput) { log.append("attach") }
         func offer(_ devices: [DeviceDescriptor]) { log.append("offer \(devices.count)") }
         func open(_ device: DeviceDescriptor, rateHz: Double?, failed: @escaping @MainActor (String) -> Void) {
             log.append("open \(device.id) \(rateHz.map { "\($0)" } ?? "-")")
+            failures.append(failed)
             if let failOpen { failed(failOpen) }
         }
         func close(_ device: DeviceDescriptor) { log.append("close \(device.id)") }
@@ -205,7 +207,8 @@ import Testing
     }
 
     @MainActor @Test func theBatteryIsSentOnlyWhenItChanges() {
-        let (_, backend, sent) = attached()
+        let (center, backend, sent) = attached()
+        defer { withExtendedLifetime(center) {} }
         sent.clear()
         backend.onChange?()
         #expect(sent.types.isEmpty)
@@ -262,8 +265,8 @@ import Testing
         center.screenGamepad(GameGamepadState())
         #expect(!sent.types.contains(0xB5))
         center.setScreenGamepad(true)
-        #expect(center.offered.first?.id == "gamepad-screen")
-        #expect(center.offered.first?.name == "iPhone On-Screen Controller")
+        #expect(center.offered.contains { $0.id == "gamepad-screen" })
+        #expect(center.offered.first { $0.id == "gamepad-screen" }?.name == "iPhone On-Screen Controller")
         sent.clear()
         var state = GameGamepadState()
         state[.east] = 1
@@ -287,6 +290,22 @@ import Testing
         sent.clear()
         #expect(!center.pressAction())
         #expect(sent.types == [])
+    }
+
+    @MainActor @Test func staleFailuresCannotAffectReopenedDevices() {
+        let (center, backend, sent) = attached()
+        center.handle(.deviceOpen(device: "motion", rateHz: nil))
+        let oldFailure = backend.failures.last!
+        center.detach()
+        center.attach(DeviceOutput(send: { sent.append($0) }))
+        center.handle(.deviceOpen(device: "motion", rateHz: nil))
+        sent.clear()
+        oldFailure("Old connection failed")
+        #expect(center.inUse["motion"] == .motion)
+        #expect(center.failures.isEmpty && sent.types.isEmpty)
+        center.handle(.deviceClose(device: "motion"))
+        backend.failures.last?("Closed capture failed")
+        #expect(center.failures.isEmpty && sent.types.isEmpty)
     }
 
     @MainActor @Test func detachingStopsEverything() {
