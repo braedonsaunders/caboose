@@ -11,6 +11,7 @@ public:
     explicit CabooseSocketStream(size_t bufferSize);
     ~CabooseSocketStream() override;
     int connect(const char* path = nullptr) override;
+    void invalidate() override;
     void* allocBuffer(size_t size) override;
     int commitBuffer(size_t size) override;
     const unsigned char* readFully(void* buf, size_t len) override;

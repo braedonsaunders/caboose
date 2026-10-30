@@ -13,6 +13,9 @@ CabooseSocketStream::~CabooseSocketStream() {
     // Do not flush during teardown: an interrupted session must not send stale work.
     if (fd_ >= 0) close(fd_);
 }
+void CabooseSocketStream::invalidate() {
+    if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
+}
 int CabooseSocketStream::connect(const char* path) {
     if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
     if (!path || !*path || fd_ >= 0) { errno = EINVAL; return -1; }
@@ -44,7 +47,7 @@ int CabooseSocketStream::writeFully(const void* data, size_t len) {
     while (len) {
         ssize_t n = send(fd_, p, len, MSG_NOSIGNAL);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return -1;
+        if (n <= 0) { invalidate(); return -1; }
         p += n; len -= static_cast<size_t>(n);
     }
     return 0;
@@ -55,7 +58,7 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
     while (len) {
         ssize_t n = recv(fd_, p, len, 0);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return nullptr;
+        if (n <= 0) { invalidate(); return nullptr; }
         p += n; len -= static_cast<size_t>(n);
     }
     return start;
@@ -68,7 +71,7 @@ const unsigned char* CabooseSocketStream::read(void* data, size_t* len) {
     if (!data || !len) { errno = EINVAL; return nullptr; }
     ssize_t n;
     do { n = recv(fd_, data, *len, 0); } while (n < 0 && errno == EINTR);
-    if (n <= 0) return nullptr;
+    if (n <= 0) { invalidate(); return nullptr; }
     *len = static_cast<size_t>(n);
     return static_cast<const unsigned char*>(data);
 }

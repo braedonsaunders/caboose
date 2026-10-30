@@ -48,7 +48,7 @@ destination. Fetch size depends on the remote server and has not been measured.
 
 For an isolated checkout whose `HEAD` is exactly the candidate Mesa revision,
 `python3 guest/gpu/gfxstream/prepare_mesa.py /path/to/mesa` checks SHA-256 of
-all six changed upstream files before applying the integration. It refuses an
+all eight changed upstream files before applying the integration. It refuses an
 already patched or different tree. For an isolated Linux build environment with
 the required Mesa build dependencies already installed, the proposed minimal
 headless configuration is:
@@ -81,11 +81,11 @@ buffer ranges; it does not return GPU-written bytes to the guest and does not
 provide coherent socket semantics. It cannot replace guest synchronization.
 
 The preparation script corrects the generated non-direct flush and invalidate
-`VK_WHOLE_SIZE` calculation to subtract the range offset, and makes upstream's
-range bounds check resistant to integer overflow. These changes do not enable
-non-direct mapping. The socket Vulkan gate remains in place. Invalidation also
-requires validating the returned byte count against the requested range before
-using this path; the upstream encoder currently ignores that count.
+`VK_WHOLE_SIZE` calculation to end at the current mapping and sends an explicit
+range length to the host, and makes upstream's range bounds check resistant to
+integer overflow. These changes do not enable
+non-direct mapping. The socket Vulkan gate remains in place. The patched encoder checks each invalidate reply length and invalidates the
+socket on mismatch; upstream aborts the application on a truncated read.
 
 ## Experimental explicit-transfer shadow
 
@@ -104,3 +104,8 @@ selected device may not provide. Coherent allocations are rejected; because
 Vulkan requires a coherent type, this cannot be exposed as a usable device.
 The Vulkan initialization gate remains in place. The source has not been
 compiled or tested with a decoder.
+
+The socket shadow records one active map range per allocation, validates map
+bounds, mapped flush/invalidate bounds and non-coherent atom alignment, and
+clears that range on unmap. Socket EOF or write failure shuts down the stream.
+The Python range and reply fixtures are reference cases, not native tests.
