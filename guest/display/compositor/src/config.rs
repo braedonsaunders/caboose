@@ -140,6 +140,13 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The agent launch environment is not authorized to start a GPU broker.
+    pub fn validate_private_gpu_seat(&self, is_agent: bool) -> Result<(), &'static str> {
+        if is_agent && (self.private_gpu_stream.is_some() || self.private_gpu_surface.is_some()) {
+            return Err("private GPU is unavailable on the agent seat");
+        }
+        Ok(())
+    }
     /// This instance's private state (X11 authority, the Xwayland shim, PulseAudio) under
     /// `runtime_dir`, named after its Wayland socket so that two instances (the owner's
     /// display and the agent seat) never share it.
@@ -250,6 +257,9 @@ mod tests {
         assert!(run(&[]).private_gpu_stream.is_none());
         let paths = ["--private-gpu-stream-socket", "/tmp/private/stream", "--private-gpu-surface-socket", "/tmp/private/surface"];
         assert!(parse_args(&paths).is_ok());
+        assert!(run(&paths).validate_private_gpu_seat(true).is_err());
+        assert!(run(&paths).validate_private_gpu_seat(false).is_ok());
+        assert!(run(&[]).validate_private_gpu_seat(true).is_ok());
         assert!(parse_args(&paths[..2]).is_err());
         for extra in [&["--no-auth"][..], &["--no-games"][..], &["--socket", "wayland-caboose-agent"][..]] {
             let mut args = paths.to_vec(); args.extend_from_slice(extra);

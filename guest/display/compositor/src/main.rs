@@ -261,6 +261,7 @@ fn stop_on_signals(handle: &smithay::reexports::calloop::LoopHandle<'static, Sta
 }
 
 fn run(config: Config) -> Result<(), String> {
+    config.validate_private_gpu_seat(std::env::var_os("CABOOSE_SEAT").as_deref() == Some(std::ffi::OsStr::new("agent")))?;
     let encoders = Encoders::probe(config.encoder, config.settings.clone());
     if config.list_encoders {
         for b in &encoders.backends {
