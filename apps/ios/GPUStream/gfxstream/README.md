@@ -65,3 +65,48 @@ An exact source/dependency hash manifest, build recipe, generated schema compari
 real decoder wrapper, process resources, memory mapping and Apple link closure remain
 unimplemented. A successful static build and live Linux compute -> physical phone ->
 GPU readback -> CPU-dependent second draw are required before claiming viability.
+
+## Source-only integration artifacts
+
+`decode_connection.*` is an uncompiled upstream decoder-loop integration, not a
+public API or a safe endpoint for untrusted bytes: upstream generated unmarshalling
+reads packet fields without proving each field stays inside the packet. Per connection,
+the wrapper creates upstream `RenderThreadInfoVk` TLS with the externally bound
+nonzero context ID and shared `ProcessResources`. `VkDecoderGlobalState` must already
+exist. `FrameBuffer::Impl::Create` constructs `VkEmulation` with its real `GlobalState`,
+initializes its features, and then initializes that singleton; it also requires a
+compositor. Factoring a real headless `GlobalState` and the paths it uses remains
+necessary. Shutdown needs coordinated guest-process death notification for Vulkan
+waits, not merely socket shutdown.
+
+`0001-inject-vulkan-loader.patch` applies to the pinned upstream tree with
+`git apply --unidiff-zero 0001-inject-vulkan-loader.patch`. It adds a
+lock-protected, install-before-first-use injection to the real `vkDispatch` singleton.
+The injected callback must resolve actual loader export trampolines, including instance
+and device functions; `vkGetInstanceProcAddr(NULL, name)` returns only global commands
+and is insufficient. The GIPA and resolver must belong to the same process-owned
+MoltenVK provider used by capability queries. Both must outlive decoder use. Patch
+application is checked; the patch is uncompiled and has not been linked to the query.
+
+`CMakeLists.txt` defines only the adapter archive and requires the real upstream
+`gfxstream-vulkan-server` and `gfxstream_host_iostream` targets to already exist.
+It does not provide the missing iOS backend or exact link closure. After a suitable
+pinned upstream target is constructed, set `GFXSTREAM_REPO_ROOT`, add this directory,
+and link `caboose_gfxstream_connection` with the backend and shared MoltenVK provider.
+The upstream target still requires framebuffer and GL-related dependencies, so this
+is not a complete iOS build recipe.
+
+A narrow adapter syntax check needs the three headers listed in `source-hashes.json`
+under `host/iostream`, `host/include/render-utils`, and `common/logging`; it does not
+require the decoder or linking. Given those files in `<gfxstream>`, the command is:
+
+```sh
+clang++ -std=c++17 -fsyntax-only \
+  -I <gfxstream>/host/iostream/include -I <gfxstream>/host/include \
+  -I <gfxstream>/common/logging/include \
+  apps/ios/GPUStream/gfxstream/socket_stream.cpp
+```
+
+The pinned repository tree contains 1,938 tracked blobs totaling 61,415,876
+uncompressed bytes (GitHub tree metadata); archive transfer size, external
+dependency sizes, compiler memory and build output are not yet measured.
