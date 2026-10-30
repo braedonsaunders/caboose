@@ -7,6 +7,7 @@ on:
       - 'guest/display/**'
       - 'guest/apps/**'
       - 'guest/files/**'
+      - 'guest/notifications/**'
       - 'guest/template/**'
       - 'guest/components/**'
       - 'guest/container/Dockerfile'
@@ -43,6 +44,7 @@ jobs:
         run: |
           python3 -m unittest guest.components.test_staging guest.components.test_install guest.components.test_vsock_services guest.components.test_container_services.BusStartup
           python3 -m unittest discover -s guest/apps -p 'test_*.py'
+          python3 -m unittest discover -s guest/notifications -p 'test_*.py'
           python3 guest/files/test_webview_endpoint.py
           python3 guest/files/test_parked_quiesce.py
           python3 guest/template/test_template.py

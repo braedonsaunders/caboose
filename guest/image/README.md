@@ -105,9 +105,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
     (installed, started by the host at each wake);
   - [`guest/terminal`](../terminal/README.md): the terminal service and
     `caboose-terminal.service` (enabled);
-  - [`guest/notifications`](../notifications/README.md): the owner's notification monitor
-    (`caboose-notifications.service`, enabled) and the notification endpoints and agent bus
-    the display units require;
+  - [`guest/notifications`](../notifications/README.md): the notification endpoints and
+    agent bus the display units require, the owner's endpoint recording the owner's
+    notifications, and `caboose-notify`;
   - [`guest/phone`](../phone/README.md): `caboose-open`, `caboose-share`, Thunar's **Share to
     iPhone** action and the `iPhone` CUPS queue (`cups.service` and
     `caboose-phone-printer.service`, enabled);

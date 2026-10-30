@@ -128,14 +128,15 @@ start_display() {
     "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
+# A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].
 notification_endpoint() {
-  local name=$1 bus=$2
-  [ -f "$3" ] || return 0
+  local name=$1 bus=$2 script=$3; shift 3
+  [ -f "$script" ] || return 0
   local pidfile="$XDG_RUNTIME_DIR/$name.pid" log="$CABOOSE_HOME/.cache/$name.log"
   if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
   touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
-    /bin/sh -c 'echo $$ > "$0"; exec python3 "$1"' "$pidfile" "$3" >>"$log" 2>&1 < /dev/null &
+    /bin/sh -c 'pidfile=$0; echo $$ > "$pidfile"; exec python3 "$@"' "$pidfile" "$script" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
 # The native bridge (guest/bridge): Now Playing, the phone's appearance and the seat's
@@ -152,9 +153,8 @@ bridge_daemon() {
 start_owner() {
   local bus="$XDG_RUNTIME_DIR/bus"
   session_bus "$bus"
-  # The monitor records the owner's notifications; the endpoint owns the D-Bus name.
-  notification_endpoint caboose-notifications "$bus" /opt/caboose/notifications/monitor.py
-  notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
+  # The owner's endpoint owns the D-Bus name and records the owner's notifications.
+  notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py --owner
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
