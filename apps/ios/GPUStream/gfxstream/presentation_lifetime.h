@@ -14,7 +14,7 @@ class PresentationLifetime {
 public:
     bool tryAcquire() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || mutating_) return false;
+        if (closed_ || mutations_) return false;
         ++active_;
         return true;
     }
@@ -28,14 +28,14 @@ public:
     }
     bool tryMutation() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closed_ || active_) return false;
-        mutating_ = true;
+        if (closed_ || active_ != mutations_) return false;
+        ++mutations_;
         ++active_;
         return true;
     }
     void endMutation() {
         std::lock_guard<std::mutex> lock(mutex_);
-        mutating_ = false;
+        --mutations_;
         if (--active_ == 0) drained_.notify_all();
     }
     void wait() {
@@ -47,7 +47,7 @@ private:
     std::condition_variable drained_;
     size_t active_ = 0;
     bool closed_ = false;
-    bool mutating_ = false;
+    size_t mutations_ = 0;
 };
 
 // Noncopyable; ownership may be transferred between threads. A submitted GPU operation must
@@ -69,7 +69,8 @@ private:
 };
 
 // Used while a real bind call is in flight, including its state update. An
-// existing presenter lease or another mutation rejects admission immediately.
+// existing presenter lease rejects admission immediately. Concurrent binds
+// may proceed together while all presentation leases remain excluded.
 class PresentationMutation {
 public:
     PresentationMutation() = default;

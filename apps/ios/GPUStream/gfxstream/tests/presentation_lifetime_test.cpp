@@ -38,6 +38,8 @@ int main() {
         PresentationMutation mutation;
         assert(mutation.acquire(memory));
         assert(mutation.acquire(memory)); // duplicate entries bind once
+        PresentationMutation concurrentMutation;
+        assert(concurrentMutation.acquire(memory));
         PresentationLease concurrent;
         assert(!concurrent.acquire(memory));
         memory->close();
