@@ -116,6 +116,16 @@ and output-length mismatches are rejected. Ordinary DATA is used when compressio
 does not reduce size. Phone replies remain raw, and WebSocket extensions remain
 forbidden on both hops.
 
+Phone-to-broker replies can concatenate a ready FIFO prefix of raw CGLV envelopes
+into one WebSocket message, preserving envelope sequences and stream order. The
+first available reply sends immediately; batching adds no timer. A batch contains
+at most 64 admitted records and 256 KiB. The outbound 1 MiB budget retains all
+original byte/count permits and reserves the concatenation buffer before allocation,
+keeping both charges until send completion. Insufficient scratch capacity sends
+the first record alone. Closing discards pending records but retains in-flight
+charges until their completion callback. These are logical retained-byte limits,
+not physical allocator or RSS limits.
+
 The broker charges the original uncompressed WebSocket frame until its send
 completes. Before queuing compressed work, the phone reserves the wire size plus
 the declared decoded size plus one byte for bounded inflate output. The decoder

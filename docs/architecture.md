@@ -2517,6 +2517,10 @@ The live executor closes through a session-scoped `EXECUTOR_DRAIN` request while
 keeping duplex transport active for native retirement and revocation receipts. A
 ten-second graceful deadline falls back to local abort and reports a drain timeout;
 local cleanup never proves that the guest released the previous executor lease.
+Raw phone-to-broker CGLV replies may share a WebSocket message as an ordered ready
+prefix, without a batching delay. The outbound budget includes the temporary
+concatenation buffer and keeps in-flight permits until send completion; the
+record and byte limits are specified in [gpu-live.md](gpu-live.md).
 
 A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
 device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
