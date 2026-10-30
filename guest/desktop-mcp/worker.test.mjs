@@ -12,7 +12,9 @@ test('worker stays warm, restarts after exit/timeout, and never replays a failed
 for line in sys.stdin:
     request = json.loads(line)
     if request.get('exit'): sys.exit(1)
-    if request.get('hang'): time.sleep(10)
+    if request.get('hang'):
+        print('worker diagnostic', file=sys.stderr, flush=True)
+        time.sleep(10)
     print(json.dumps({'pid': os.getpid(), 'value': request.get('value')}), flush=True)
 `)
   const worker = new Worker(path, [], 1000)
@@ -22,7 +24,7 @@ for line in sys.stdin:
     await assert.rejects(worker.request({ exit: true }, process.env), /exited/)
     const second = await worker.request({ value: 3 }, process.env)
     assert.notEqual(second.pid, first.pid)
-    await assert.rejects(worker.request({ hang: true }, process.env), /timed out/)
+    await assert.rejects(worker.request({ hang: true }, process.env), /timed out.*worker diagnostic/)
     assert.equal((await worker.request({ value: 4 }, process.env)).value, 4)
   } finally { worker.close(); await rm(dir, { recursive: true, force: true }) }
 })

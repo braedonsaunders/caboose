@@ -1500,6 +1500,7 @@ def main(argv):
 def serve(display):
     global SERVING, ACTIVE_ARGS
     SERVING = True
+    import faulthandler
     for line in sys.stdin:
         try:
             request = json.loads(line)
@@ -1508,7 +1509,13 @@ def serve(display):
                 raise ValueError("invalid worker request")
             ACTIVE_ARGS = argparse.Namespace(command=op, display=display, query=request.get("query"),
                 role=request.get("role"), element=request.get("element"), action=request.get("action"), text=request.get("text"))
-            result, _ = execute(ACTIVE_ARGS)
+            # A native accessibility call can stall outside our tree-walk budget.
+            # Capture its stack before the parent terminates the bounded request.
+            faulthandler.dump_traceback_later(10)
+            try:
+                result, _ = execute(ACTIVE_ARGS)
+            finally:
+                faulthandler.cancel_dump_traceback_later()
         except ServedResult as result_error:
             result = result_error.result
         except Exception as error:

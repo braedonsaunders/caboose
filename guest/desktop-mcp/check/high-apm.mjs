@@ -11,9 +11,15 @@ createInterface({ input: child.stdout }).on('line', line => {
 })
 async function call(name, args = {}) {
   const key = ++id
+  console.log(`high-APM request ${key}: ${name}`)
   const answer = new Promise(resolve => pending.set(key, resolve))
   child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: key, method: 'tools/call', params: { name, arguments: args } }) + '\n')
-  const result = (await answer).result
+  let timer
+  const result = (await Promise.race([answer, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`high-APM request ${key} (${name}) did not answer in 45s`)), 45_000)
+  })]).result
+  clearTimeout(timer)
+  console.log(`high-APM response ${key}: ${name}`)
   assert.ok(!result.isError, JSON.stringify(result))
   return result.content
 }

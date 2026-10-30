@@ -144,7 +144,7 @@ function text(value, name, max) {
   return value
 }
 
-const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`])
+const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
 const seatWorker = new Worker(SEAT)
 let seatEnvironment
 async function workerRequest(worker, request) {
