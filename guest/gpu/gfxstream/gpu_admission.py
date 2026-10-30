@@ -11,6 +11,7 @@ import re
 import uuid
 
 MAX_REQUEST = 16 * 1024
+MAX_TOKEN = 4096
 PROTOCOL = 'caboose.gpu.live.v1'
 _GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _TOKEN = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -51,7 +52,7 @@ def admit(request, per_wake_token):
     """
     h = _headers(request)
     auth = h.get(b'authorization', b'')
-    if not per_wake_token or not hmac.compare_digest(auth, b'Bearer ' + per_wake_token):
+    if not per_wake_token or len(per_wake_token) > MAX_TOKEN or not hmac.compare_digest(auth, b'Bearer ' + per_wake_token):
         raise AdmissionError('authentication failed')
     # Identity is interpreted only after successful per-wake authentication.
     computer = h.get(b'x-caboose-gpu-computer', b'')

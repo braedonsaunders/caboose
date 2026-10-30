@@ -15,7 +15,7 @@ import stat
 import sys
 
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
-from gpu_admission import MAX_REQUEST, admit
+from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_socket
 from process_binding import PeerIdentity, ProcessBindings, process_start_ticks
@@ -229,7 +229,11 @@ class Broker:
         try:
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
             raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 5)
-            _computer, executor, response = admit(raw, self.token_file.read_bytes().strip())
+            with self.token_file.open('rb') as token_file:
+                token = token_file.read(MAX_TOKEN + 1)
+            if len(token) > MAX_TOKEN:
+                raise ValueError('token file too large')
+            _computer, executor, response = admit(raw, token.strip())
             generation = self.lease.admit(executor.bytes)
             session = Session(self, executor.bytes, generation, reader, writer)
             writer.write(response); await writer.drain()

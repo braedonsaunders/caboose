@@ -25,13 +25,19 @@ class AdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(admission.AdmissionError, 'authentication failed'):
                 admission.admit(request(), b'')
 
+    def test_oversized_matching_token_is_rejected(self):
+        token = b'a' * (admission.MAX_TOKEN + 1)
+        with self.assertRaises(admission.AdmissionError):
+            admission.admit(request(token=token), token)
+
     def test_fail_closed_bad_upgrade(self):
         cases = [request(protocol=b'binary'), request(key=b'bad'),
                  request(executor=b'00000000-0000-0000-0000-000000000000'),
                  request(extra=b'Sec-WebSocket-Extensions: permessage-deflate\r\n'),
                  request(extra=b'Authorization: Bearer secret\r\n'),
                  request().replace(b'GET /gpu ', b'GET /display '),
-                 request()[:-2], b'A' * (admission.MAX_REQUEST + 1)]
+                 request()[:-2], b'A' * (admission.MAX_REQUEST + 1),
+                 request(token=b'a' * (admission.MAX_TOKEN + 1))]
         for value in cases:
             with self.subTest(value=value[:50]), self.assertRaises(admission.AdmissionError):
                 admission.admit(value, b'secret')
