@@ -798,3 +798,8 @@ VM counters and remote Docker endpoints are unavailable. Explicit container stor
 measurement requires locally accessible home-volume metadata; Docker logical layer
 sizes are separate from allocated blocks. See [capacity and usage](../../docs/capacity.md)
 for API authorization, sampling overhead, history gaps, storage deadlines and focused tests.
+
+The host uses headless wake for file transfers, web-app bridges and batch exports.
+A later desktop session promotes the running computer without another boot.
+`python3 scripts/efficiency-baseline.py --help` describes a real-host timing check;
+it only observes unless an explicit files, session or park operation is selected.

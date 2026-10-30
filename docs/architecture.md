@@ -917,6 +917,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
 
+File transfers, web-app bridge requests and batch file exports wake the microVM
+without starting the owner display. Opening a desktop session or launching an
+application promotes that same running computer to interactive mode without a
+second boot or token rotation.
+
 ### Accounts and tenants
 
 Accounts belong to **administrators**, who use the web console. The people whose computers

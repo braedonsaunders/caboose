@@ -217,9 +217,11 @@ it('wakes, authenticates and streams a range through the guest relay', async () 
   })
   upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening')
   cleanup.push(() => new Promise(resolve => { upstream.closeAllConnections(); upstream.close(() => resolve()) }))
-  let wakes = 0
+  const modes: string[] = []
+  const session = { state: 'running', display: { path: '/v1/display', token: 'wake-token', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
+  const promote = vi.fn(async () => session)
   const controller: Controller = {
-    wake: async () => { wakes++; return { state: 'running', display: { path: '/v1/display', token: '', protocol: 'caboose-display' }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } } },
+    wake: async mode => { modes.push(mode ?? 'interactive'); return session }, promote,
     park: async () => {}, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: '', agentDisplayUrl: '', ensureAgentSeat: async () => {}, guest: () => undefined,
     activeResources: () => null, hasSavedState: () => false,
     fileService: () => ({ url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`, token: 'wake-token' }),
@@ -235,7 +237,13 @@ it('wakes, authenticates and streams a range through the guest relay', async () 
   expect(response.headers.get('content-range')).toBe('bytes 2-3/5')
   expect(response.headers.get('etag')).toBe('"version"')
   expect(await response.text()).toBe('cd')
-  expect(wakes).toBe(1)
+  expect(modes).toEqual(['headless'])
+  expect(promote).not.toHaveBeenCalled()
+  const opened = await fetch(url.split('/v1/fs/')[0] + '/v1/session', { method: 'POST', headers: { authorization: 'Bearer owner' } })
+  expect(opened.status).toBe(200)
+  expect((await opened.json()).display.token).toBe('wake-token')
+  expect(promote).toHaveBeenCalledOnce()
+  expect(modes).toEqual(['headless'])
 })
 
 it('signals control clients when the guest change anchor advances', async () => {
