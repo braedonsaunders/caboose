@@ -36,16 +36,24 @@ struct caboose_gfx_registry {
     std::map<uint64_t, std::shared_ptr<Process>> processes;
     std::set<int> activeSockets;
     uint64_t nextContext = 1;
+    bool synchronousOnly = false;
 };
-extern "C" int caboose_gfx_registry_create(caboose_gfx_registry** out) {
+static int createRegistry(caboose_gfx_registry** out, bool synchronousOnly) {
     if (!out) return EINVAL;
     *out = nullptr;
     std::lock_guard<std::mutex> lock(singletonMutex);
     if (registryExists) return EBUSY;
     if (!FrameBuffer::getFB() || !FrameBuffer::getFB()->hasEmulationVk()) return ENODEV;
     try { *out = new caboose_gfx_registry; } catch (const std::bad_alloc&) { return ENOMEM; }
+    (*out)->synchronousOnly = synchronousOnly;
     registryExists = true;
     return 0;
+}
+extern "C" int caboose_gfx_registry_create(caboose_gfx_registry** out) {
+    return createRegistry(out, false);
+}
+extern "C" int caboose_gfx_registry_create_synchronous(caboose_gfx_registry** out) {
+    return createRegistry(out, true);
 }
 extern "C" int caboose_gfx_registry_destroy(caboose_gfx_registry* registry) {
     if (!registry) return EINVAL;
@@ -90,8 +98,8 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
     } catch (const std::bad_alloc&) { return ENOMEM; }
       catch (...) { return EIO; }
 }
-extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t puid, int fd,
-                                       size_t max_packet, size_t max_reply_buffer) {
+static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
+                      size_t max_packet, size_t max_reply_buffer, uint64_t* decoderEntries) {
     if (!registry || fd < 0) return EINVAL;
     if (RenderThreadInfo::get() || gfxstream::host::vk::RenderThreadInfoVk::get()) return EBUSY;
     std::shared_ptr<Process> process;
@@ -112,7 +120,8 @@ extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t 
             threadInfo.setProcessResources(process->resources);
             lock.unlock();
             int result = caboose::gpuv2::decodeConnection(fd, max_packet, max_reply_buffer,
-                                                           threadInfo, process->stopped);
+                                                           threadInfo, process->stopped, registry->synchronousOnly,
+                                                           decoderEntries);
             // Decoder work has ended. Clear the TLS identities while admission is locked;
             // the TLS object is destroyed before that lock is released.
             if (result != 0) shutdown(fd, SHUT_RDWR);
@@ -132,6 +141,18 @@ extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t 
     } catch (const std::bad_alloc&) { return ENOMEM; }
       catch (...) { return EIO; }
 }
+extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t puid, int fd,
+                                       size_t max_packet, size_t max_reply_buffer) {
+    return runProcess(registry, puid, fd, max_packet, max_reply_buffer, nullptr);
+}
+#ifdef CABOOSE_GPU_DECODER_TESTING
+extern "C" int caboose_gfx_process_run_counted(caboose_gfx_registry* registry, uint64_t puid, int fd,
+    size_t max_packet, size_t max_reply_buffer, uint64_t* entries) {
+    if (!entries) return EINVAL;
+    *entries = 0;
+    return runProcess(registry, puid, fd, max_packet, max_reply_buffer, entries);
+}
+#endif
 extern "C" int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t puid) {
     if (!registry) return EINVAL;
     std::lock_guard<std::mutex> lock(registry->mutex);

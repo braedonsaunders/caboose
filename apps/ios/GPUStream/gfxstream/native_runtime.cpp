@@ -50,6 +50,10 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     features.VulkanSnapshots.setEnabled(false);
     features.VulkanNativeSwapchain.setEnabled(false);
     features.VulkanQueueSubmitWithCommands.setEnabled(false);
+    if (mode == 2) features.VulkanVirtualQueue.setEnabled(false);
+#ifdef CABOOSE_GPU_INDEXED_WSI
+    features.CabooseSynchronousProof.setEnabled(mode == 2);
+#endif
     features.VulkanNullOptionalStrings.setEnabled(true);
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
     features.CabooseVirtualWsi.setEnabled(virtualWsi);
@@ -58,6 +62,10 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     const auto& actual = gfxstream::host::FrameBuffer::getFB()->getFeatures();
     if (actual.GlDirectMem.enabled() || actual.VirtioGpuNext.enabled() ||
         actual.ExternalBlob.enabled() || actual.VulkanQueueSubmitWithCommands.enabled() ||
+        (mode == 2 && actual.VulkanVirtualQueue.enabled()) ||
+#ifdef CABOOSE_GPU_INDEXED_WSI
+        (actual.CabooseSynchronousProof.enabled() != (mode == 2)) ||
+#endif
         !actual.VulkanNullOptionalStrings.enabled()
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
         || actual.CabooseVirtualWsi.enabled() != virtualWsi
@@ -66,7 +74,8 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
         caboose::gpuv2::finalizeHeadlessFramebuffer();
         return startResult = EPROTO;
     }
-    const int result = caboose_gfx_registry_create(&registry);
+    const int result = mode == 2 ? caboose_gfx_registry_create_synchronous(&registry)
+                                 : caboose_gfx_registry_create(&registry);
     if (result) {
         caboose::gpuv2::finalizeHeadlessFramebuffer();
         return startResult = result;
@@ -127,6 +136,13 @@ extern "C" int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet
     auto* r = getRegistry();
     return r ? caboose_gfx_process_run(r, token, fd, max_packet, max_reply_buffer) : ENODEV;
 }
+#ifdef CABOOSE_GPU_DECODER_TESTING
+extern "C" int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t max_packet,
+    size_t max_reply_buffer, uint64_t* entries) {
+    auto* r = getRegistry();
+    return r ? caboose_gfx_process_run_counted(r, token, fd, max_packet, max_reply_buffer, entries) : ENODEV;
+}
+#endif
 extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
     auto* r = getRegistry();
     return r ? caboose_gfx_process_stop(r, token) : ENODEV;

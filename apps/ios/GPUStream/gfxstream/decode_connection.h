@@ -14,5 +14,6 @@ namespace caboose::gpuv2 {
 // Returns 0 only for requested shutdown, otherwise an errno-style error.
 int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                      gfxstream::host::RenderThreadInfo& thread_info,
-                     std::atomic_bool& stop);
+                     std::atomic_bool& stop, bool synchronousOnly = false,
+                     uint64_t* decoderEntries = nullptr);
 }

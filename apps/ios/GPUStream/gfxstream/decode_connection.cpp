@@ -17,7 +17,7 @@
 namespace caboose::gpuv2 {
 int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                      gfxstream::host::RenderThreadInfo& thread_info,
-                     std::atomic_bool& stop) {
+                     std::atomic_bool& stop, bool synchronousOnly, uint64_t* decoderEntries) {
     if (fd < 0 || max_packet < 8 || max_packet > 400u * 1024u * 1024u ||
         max_reply_buffer < 4096 || !thread_info.m_vkInfo || !thread_info.getProcessResources()) return EINVAL;
     SocketStream stream(fd, max_reply_buffer);
@@ -43,6 +43,11 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
         while (!stop.load()) {
+            if (synchronousOnly && pending.size() >= 8) {
+                uint32_t opcode = 0;
+                std::memcpy(&opcode, pending.data(), sizeof(opcode));
+                if (forbiddenV4Opcode(opcode)) return ENOTSUP;
+            }
             const auto frame = inspectFrame(pending.data(), pending.size(), max_packet, sequenced);
             if (frame.status == FrameStatus::invalid) return EPROTO;
             if (frame.status == FrameStatus::unsupported) return ENOTSUP;
@@ -56,6 +61,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 }
                 continue;
             }
+            if (decoderEntries) ++*decoderEntries;
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
             if (stream.error()) return stream.error();

@@ -58,28 +58,33 @@
 +        return vk->vkQueueSubmit2KHR(unbox_VkQueue(boxedQueue), count, submits, fence);
 @@ -478,0 +517 @@
 +        result->guestCompletion = dev->cabooseGuestCompletion;
-@@ -3089,0 +3129,2 @@
-+        if (m_vkEmulation->getFeatures().CabooseVirtualWsi.enabled())
+@@ -3089,0 +3129,7 @@
++        if (m_vkEmulation->getFeatures().CabooseVirtualWsi.enabled()) {
 +            deviceInfo.cabooseGuestCompletion = std::make_shared<caboose::gpuv2::GuestGpuCompletion>();
-@@ -8800,0 +8842 @@
++            const auto& features = m_vkEmulation->getFeatures();
++            if (features.CabooseSynchronousProof.enabled() && !features.VulkanVirtualQueue.enabled() &&
++                !features.VulkanQueueSubmitWithCommands.enabled())
++                deviceInfo.cabooseGuestCompletion->enableAuditedCoverage();
++        }
+@@ -8800,0 +8847 @@
 +        auto guestWork = beginCabooseGuestQueueWork(boxed_queue);
-@@ -9128,0 +9171 @@
+@@ -9128,0 +9176 @@
 +        std::shared_ptr<caboose::gpuv2::GuestGpuCompletion> tracker;
-@@ -9134 +9177,5 @@
+@@ -9134 +9182,5 @@
 -        }
 +            auto* device = gfxstream::base::find(mDeviceInfo, queueInfo->device);
 +            if (device) tracker = device->cabooseGuestCompletion;
 +        }
 +        auto before = tracker ? tracker->beforeQueueIdle((uint64_t)(uintptr_t)boxed_queue)
 +                              : caboose::gpuv2::GuestGpuCompletion::IdleSnapshot{};
-@@ -9142 +9189,3 @@
+@@ -9142 +9194,3 @@
 -        return vk->vkQueueWaitIdle(queue);
 +        VkResult result = vk->vkQueueWaitIdle(queue);
 +        if (tracker) tracker->afterIdle(before, result == VK_SUCCESS);
 +        return result;
-@@ -10096,0 +10146 @@
+@@ -10096,0 +10151 @@
 +        auto guestWork = beginCabooseGuestQueueWork(boxed_queue);
-@@ -12412,0 +12463,11 @@
+@@ -12412,0 +12468,11 @@
 +caboose::gpuv2::GuestGpuWork VkDecoderGlobalState::beginCabooseGuestQueueWork(VkQueue queue) {
 +    return mImpl->beginCabooseGuestQueueWork(queue);
 +}
@@ -91,19 +96,19 @@
 +    return mImpl->onCabooseQueueSubmit2KHR(queue, count, submits, fence);
 +}
 +
-@@ -13707,0 +13769,2 @@
+@@ -13707,0 +13774,2 @@
 +    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
 +    asyncWork.invalidate();
-@@ -13715,0 +13779,2 @@
+@@ -13715,0 +13784,2 @@
 +    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
 +    asyncWork.invalidate();
-@@ -13721,0 +13787,2 @@
+@@ -13721,0 +13792,2 @@
 +    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
 +    asyncWork.invalidate();
-@@ -13729,0 +13797,2 @@
+@@ -13729,0 +13802,2 @@
 +    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
 +    asyncWork.invalidate();
-@@ -13805,0 +13875,2 @@
+@@ -13805,0 +13880,2 @@
 +    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
 +    asyncWork.invalidate();
 --- a/host/vulkan/vk_decoder.cpp

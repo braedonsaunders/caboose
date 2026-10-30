@@ -9,12 +9,18 @@ namespace {
 constexpr uint32_t opcodes[] = {
 #include "decoder-opcodes.inc"
 };
+constexpr uint32_t v4Forbidden[] = {
+#include "v4-forbidden-opcodes.inc"
+};
 constexpr uint32_t flushOpcode = 20025; // OP_vkFlushMappedMemoryRanges at the pin.
 constexpr uint32_t mappedMemoryRangeType = 6; // VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE.
 uint32_t u32(const uint8_t* p) { uint32_t x; std::memcpy(&x, p, sizeof(x)); return x; }
 uint64_t u64(const uint8_t* p) { uint64_t x; std::memcpy(&x, p, sizeof(x)); return x; }
 FrameResult need(size_t size) { return {FrameStatus::need_more, size}; }
 FrameResult invalid() { return {FrameStatus::invalid, 0}; }
+}
+bool forbiddenV4Opcode(uint32_t opcode) {
+    return std::binary_search(std::begin(v4Forbidden), std::end(v4Forbidden), opcode);
 }
 FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool sequenced) {
     if (max_size < 8 || size > max_size || (size && !data)) return invalid();

@@ -1,0 +1,23 @@
+// Generated from pinned vk_decoder.cpp and goldfish_vk_marshaling.h.
+20174u, // vkQueuePresentKHR
+20251u, // vkGetSwapchainGrallocUsageANDROID
+20252u, // vkAcquireImageANDROID
+20253u, // vkQueueSignalReleaseImageANDROID
+20296u, // vkQueueBeginDebugUtilsLabelEXT
+20297u, // vkQueueEndDebugUtilsLabelEXT
+20298u, // vkQueueInsertDebugUtilsLabelEXT
+20321u, // vkBeginCommandBufferAsyncGOOGLE
+20322u, // vkEndCommandBufferAsyncGOOGLE
+20323u, // vkResetCommandBufferAsyncGOOGLE
+20329u, // vkQueueHostSyncGOOGLE
+20330u, // vkQueueSubmitAsyncGOOGLE
+20331u, // vkQueueWaitIdleAsyncGOOGLE
+20332u, // vkQueueBindSparseAsyncGOOGLE
+20340u, // vkQueueFlushCommandsGOOGLE
+236453297u, // vkSetDebugMetadataAsyncGOOGLE
+243985229u, // vkQueueSignalReleaseImageANDROIDAsyncGOOGLE
+267932433u, // vkQueueCommitDescriptorSetUpdatesGOOGLE
+286553566u, // vkTraceAsyncGOOGLE
+287960452u, // vkGetSwapchainGrallocUsage2ANDROID
+290633483u, // vkQueueFlushCommandsFromAuxMemoryGOOGLE
+292092830u, // vkQueueSubmitAsync2GOOGLE

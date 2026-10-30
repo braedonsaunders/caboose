@@ -27,6 +27,10 @@ int caboose_gpu_runtime_open(uint64_t* token);
 // Caller authenticates, binds the session and verifies the negotiated stream
 // features before entry. Runs one ordered raw connection; caller retains fd.
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);
+#ifdef CABOOSE_GPU_DECODER_TESTING
+int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t max_packet,
+                                    size_t max_reply_buffer, uint64_t* entries);
+#endif
 // Stop revokes admission, signals upstream cleanup and shuts down its streams.
 int caboose_gpu_runtime_stop(uint64_t token);
 // Finish only after every run has returned. Blocks for upstream queued process

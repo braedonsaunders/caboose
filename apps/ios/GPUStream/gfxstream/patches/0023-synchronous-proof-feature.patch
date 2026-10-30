@@ -1,0 +1,9 @@
+--- a/host/features/include/gfxstream/host/features.h
++++ b/host/features/include/gfxstream/host/features.h
+@@ -405,0 +406,6 @@
++    // Private v4 receiver enforces synchronous-only command admission.
++    BoolFeatureInfo CabooseSynchronousProof = {
++        "CabooseSynchronousProof",
++        "Track guest work only under the private synchronous decoder profile.",
++        &map,
++    };
