@@ -2068,6 +2068,11 @@ machines whose clocks run at a different rate without repeatedly discarding soun
 The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
 only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
 playback resets the clock and estimator.
+Opt-in audio diagnostics retain the existing five-second timing reports and bounded
+restart summaries in an asynchronous app-cache snapshot, limited to 64 numeric records
+and 128 KiB. Recording defaults off and changes neither playback nor the wire protocol;
+[the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
+and collection path.
 
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.

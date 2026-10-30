@@ -1135,3 +1135,34 @@ metadata identifies a close path that did not use the UI attribution wrapper.
 A record means the canonical session close method was called. It does not confirm a
 wire send: a device game still waits for its saves under the existing close policy.
 Correlate with a passive wire capture's close ID/time and subsequent window lifecycle.
+
+### Opt-in audio timing diagnostics
+
+The Boolean app preference `CabooseAudioDiagnosticsEnabled` defaults to false. Pass
+`-CabooseAudioDiagnosticsEnabled YES` as app launch arguments for a diagnostic launch.
+The existing five-second audio reports and bounded restart summaries (first ten, then
+one per fifty restarts) also enter a numeric flight record. No extra per-packet renderer
+clock reads occur, and recording does not change playback or recovery.
+
+`Library/Caches/CabooseDiagnostics/audio-timing.json` is an atomic JSON snapshot of at
+most the latest 64 records from this process, capped at 128 KiB by dropping oldest
+records. A serial utility queue encodes and writes snapshots; the sound queue only
+submits fixed-size records to a bounded mailbox. Slow storage coalesces pending writes
+instead of accumulating jobs. I/O failures do not affect playback. Invalid nonfinite
+records are omitted. Disable the preference or remove the launch override to stop
+recording; the existing cache file remains available for collection or deletion.
+
+Each record has `kind` (`interval` or `restart`), monotonic seconds, Unix wall-clock
+seconds, counters, rates, media-clock values and available renderer status/sample-frame
+counts. Interval durations are seconds and are maxima, not averages; restart stage fields
+ending in `MS` are milliseconds. Restart clock values precede the flush, while
+`finishedMonotonicSeconds` and stage durations cover completion. Wall timestamps support
+correlation, but changing the phone's wall clock does not change playback. No audio,
+packet payloads, log/error text, URLs, account identifiers or tokens enter the schema.
+
+Retrieve the file with the app-container tools, including `devicectl device copy from`
+with the `appDataContainer` domain, app bundle identifier, and the relative cache path
+above. The artifact requires the preference to have been enabled during playback; an
+older retained file does not establish a current capture. Run the deterministic mailbox,
+byte-bound and schema tests with `swift test --jobs 1 --filter AudioDiagnosticsTests`
+in `apps/ios/CabooseKit`. These tests do not use a renderer or write the app cache.

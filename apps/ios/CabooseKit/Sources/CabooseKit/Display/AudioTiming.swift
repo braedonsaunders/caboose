@@ -2,7 +2,7 @@ import Foundation
 
 /// Constant-space interval maxima. All timestamps use ProcessInfo.systemUptime;
 /// tests supply timestamps directly. Receipt is the app's socket callback, not wire arrival.
-struct AudioTimingInterval: Equatable {
+struct AudioTimingInterval: Equatable, Encodable {
     var receipts = 0
     var packets = 0
     var receiptGap: TimeInterval = 0

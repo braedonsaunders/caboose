@@ -133,6 +133,7 @@ final class SoundPlayer: @unchecked Sendable {
             var enqueueStartedAt: TimeInterval?
             var enqueuedAt: TimeInterval?
             var restartNotice: String?
+            var restartRecord: AudioDiagnosticRecord?
             defer {
                 let finishedAt = now()
                 timing.update {
@@ -143,7 +144,15 @@ final class SoundPlayer: @unchecked Sendable {
                 if let restartNotice {
                     let enqueueMS = enqueueStartedAt.flatMap { start in enqueuedAt.map { milliseconds($0, since: start) } } ?? -1
                     let preparationMS = decodedAt.flatMap { decoded in enqueueStartedAt.map { milliseconds($0, since: decoded) } } ?? -1
-                    log.notice("display audio restart \(restartNotice, privacy: .public) prepare_ms=\(preparationMS) enqueue_ms=\(enqueueMS) finished_s=\(finishedAt) total_ms=\(self.milliseconds(finishedAt, since: receivedAt))")
+                    let totalMS = milliseconds(finishedAt, since: receivedAt)
+                    log.notice("display audio restart \(restartNotice, privacy: .public) prepare_ms=\(preparationMS) enqueue_ms=\(enqueueMS) finished_s=\(finishedAt) total_ms=\(totalMS)")
+                    if var record = restartRecord {
+                        record.preparationMS = preparationMS >= 0 ? preparationMS : nil
+                        record.enqueueMS = enqueueMS >= 0 ? enqueueMS : nil
+                        record.totalMS = totalMS
+                        record.finishedMonotonicSeconds = finishedAt
+                        AudioDiagnostics.record(record)
+                    }
                 }
                 report(at: finishedAt)
             }
@@ -175,10 +184,27 @@ final class SoundPlayer: @unchecked Sendable {
                     restarts += 1
                     if restarts <= 10 || restarts % 50 == 0 {
                         let rendered = observedRendererMicros()
-                        let stage = "mono_s=\(now()) rx_dispatch_ms=\(milliseconds(dispatchedAt, since: receivedAt)) queue_ms=\(milliseconds(enteredAt, since: dispatchedAt)) decode_ms=\(milliseconds(arrived, since: enteredAt)) requested_rate=\(clock.rate) observed_rate=\(clock.synchronizer.rate)"
+                        let observedAt = now()
+                        let requestedRate = clock.rate
+                        let observedRate = clock.synchronizer.rate
+                        let projected = clock.now ?? -1
+                        let delay = clock.delay
+                        let dispatchMS = milliseconds(dispatchedAt, since: receivedAt)
+                        let queueMS = milliseconds(enteredAt, since: dispatchedAt)
+                        let decodeMS = milliseconds(arrived, since: enteredAt)
+                        let stage = "mono_s=\(observedAt) rx_dispatch_ms=\(dispatchMS) queue_ms=\(queueMS) decode_ms=\(decodeMS) requested_rate=\(requestedRate) observed_rate=\(observedRate)"
                         // Snapshot before flush; emit once enqueue finishes so its cost is
                         // included. The observed renderer time may lag AVFoundation updates.
-                        restartNotice = "n=\(restarts) raw=\(rawPTS) pts=\(pts) projected=\(clock.now ?? -1) rendered=\(rendered) delay=\(clock.delay) regressions=\(timestampRegressions) \(stage)"
+                        restartNotice = "n=\(restarts) raw=\(rawPTS) pts=\(pts) projected=\(projected) rendered=\(rendered) delay=\(delay) regressions=\(timestampRegressions) \(stage)"
+                        if AudioDiagnostics.enabled {
+                            restartRecord = AudioDiagnosticRecord(
+                                kind: .restart, monotonicSeconds: observedAt, wallUnixSeconds: Date().timeIntervalSince1970,
+                                packets: played, failures: failed, restarts: restarts, delayMicros: delay,
+                                requestedRate: requestedRate, observedRate: Double(observedRate),
+                                projectedMicros: projected, renderedMicros: rendered, timestampRegressions: timestampRegressions,
+                                rawPTSMicros: rawPTS, placedPTSMicros: pts,
+                                receiptToDispatchMS: dispatchMS, queueMS: queueMS, decodeMS: decodeMS)
+                        }
                     }
                     renderer.flush()
                 }
@@ -218,7 +244,18 @@ final class SoundPlayer: @unchecked Sendable {
         let stages = interval.logFields
         let rendered = observedRendererMicros()
         let observedRate = clock.synchronizer.rate
-        log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(self.clock.delay) frames=\(self.frameMax == 0 ? 0 : self.frameMin)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(self.renderer.status.rawValue) rate=\(self.clock.rate) observed_rate=\(observedRate) projected=\(self.clock.now ?? -1) rendered=\(rendered) regressions=\(self.timestampRegressions) mono_s=\(time) \(stages, privacy: .public)")
+        let delay = clock.delay
+        let status = renderer.status.rawValue
+        let rate = clock.rate
+        let projected = clock.now ?? -1
+        let minimum = frameMax == 0 ? 0 : frameMin
+        log.notice("display audio packets=\(self.played) failures=\(self.failed) restarts=\(self.restarts) delay_us=\(delay) frames=\(minimum)...\(self.frameMax) max_arrival_ms=\(Int(self.arrivalMax * 1000)) renderer=\(status) rate=\(rate) observed_rate=\(observedRate) projected=\(projected) rendered=\(rendered) regressions=\(self.timestampRegressions) mono_s=\(time) \(stages, privacy: .public)")
+        AudioDiagnostics.record(AudioDiagnosticRecord(
+            kind: .interval, monotonicSeconds: time, wallUnixSeconds: Date().timeIntervalSince1970,
+            packets: played, failures: failed, restarts: restarts, delayMicros: delay,
+            requestedRate: rate, observedRate: Double(observedRate), projectedMicros: projected,
+            renderedMicros: rendered, timestampRegressions: timestampRegressions, rendererStatus: status,
+            frameMin: minimum, frameMax: frameMax, arrivalMaxSeconds: arrivalMax, interval: interval))
         reportsAt = time
         frameMin = Int.max; frameMax = 0; arrivalMax = 0
     }
