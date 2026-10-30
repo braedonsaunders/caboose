@@ -12,7 +12,7 @@ from process_binding import PeerIdentity
 
 
 def receive_socket(ipc, required_uid, expected_pid, expected_start_ticks):
-    with PeerIdentity.from_socket(ipc, required_uid) as peer:
+    with PeerIdentity.from_socket(ipc, required_uid, allow_seqpacket=True) as peer:
         if (peer.pid, peer.start_ticks) != (expected_pid, expected_start_ticks):
             raise PermissionError('unexpected compositor process')
         itemsize = array.array('i').itemsize

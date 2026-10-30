@@ -59,9 +59,10 @@ class PeerIdentity:
     pidfd: int
 
     @classmethod
-    def from_socket(cls, stream, required_uid):
-        if stream.family != socket.AF_UNIX or stream.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM:
-            raise ValueError('expected connected Unix stream')
+    def from_socket(cls, stream, required_uid, *, allow_seqpacket=False):
+        allowed = (socket.SOCK_STREAM, socket.SOCK_SEQPACKET) if allow_seqpacket else (socket.SOCK_STREAM,)
+        if stream.family != socket.AF_UNIX or stream.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) not in allowed:
+            raise ValueError('expected connected Unix socket')
         raw = stream.getsockopt(socket.SOL_SOCKET, SO_PEERCRED, struct.calcsize('3i'))
         if len(raw) != struct.calcsize('3i'):
             raise ValueError('invalid peer credentials')

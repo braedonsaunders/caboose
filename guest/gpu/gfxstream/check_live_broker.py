@@ -19,10 +19,11 @@ EXECUTOR = bytes.fromhex('00112233445566778899aabbccddeeff')
 
 
 async def main():
+    draining = '--drain' in sys.argv[1:]
     with tempfile.TemporaryDirectory(prefix='gpu-loopback-', dir=os.environ['GPU_TRIAL_DIR']) as d:
         root = Path(d); token = root / 'token'; token.write_bytes(b'test-token')
         path = root / 'gpu.sock'
-        parent, child = socket.socketpair()
+        parent, child = socket.socketpair(type=socket.SOCK_SEQPACKET)
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(Path(__file__).with_name('caboose-gpu-broker')),
             '--control-fd=0', '--token-file', str(token), '--socket', str(path),
@@ -79,18 +80,30 @@ async def main():
             if data.payload != b'guest-wire': raise RuntimeError('guest bytes changed')
             await send(Kind.DATA, process=process.process, stream=stream.stream, payload=b'executor-reply')
             if await asyncio.wait_for(local_reader.readexactly(14), 5) != b'executor-reply': raise RuntimeError('reply changed')
-            local_writer.write_eof(); await local_writer.drain()
-            await receive(Kind.FIN)
-            await send(Kind.FIN, process=process.process, stream=stream.stream)
-            if await asyncio.wait_for(local_reader.read(), 5) != b'': raise RuntimeError('missing EOF')
-            stopped = await receive(Kind.PROCESS_STOP)
-            await send(Kind.PROCESS_RETIRED, process=stopped.process)
-            parent.shutdown(socket.SHUT_RDWR); parent.close()
-            await receive(Kind.REVOKE); await send(Kind.REVOKED)
+            if draining:
+                # Explicit phone drain cancels active device work; native
+                # retirement and revoke acknowledgements remain mandatory.
+                await send(Kind.EXECUTOR_DRAIN)
+                stopped = await receive(Kind.PROCESS_STOP)
+                await send(Kind.DATA, process=process.process, stream=stream.stream, payload=b'discarded-during-drain')
+                await send(Kind.FIN, process=process.process, stream=stream.stream)
+                await send(Kind.PROCESS_RETIRED, process=stopped.process)
+                await receive(Kind.REVOKE); await send(Kind.REVOKED)
+                if await asyncio.wait_for(local_reader.read(), 5) != b'': raise RuntimeError('local stream not cancelled')
+                parent.shutdown(socket.SHUT_RDWR); parent.close()
+            else:
+                local_writer.write_eof(); await local_writer.drain()
+                await receive(Kind.FIN)
+                await send(Kind.FIN, process=process.process, stream=stream.stream)
+                if await asyncio.wait_for(local_reader.read(), 5) != b'': raise RuntimeError('missing EOF')
+                stopped = await receive(Kind.PROCESS_STOP)
+                await send(Kind.PROCESS_RETIRED, process=stopped.process)
+                parent.shutdown(socket.SHUT_RDWR); parent.close()
+                await receive(Kind.REVOKE); await send(Kind.REVOKED)
             code = await asyncio.wait_for(proc.wait(), 10)
             err = (await proc.stderr.read()).decode(errors='replace')
             if code or path.exists(): raise RuntimeError(f'broker cleanup exit={code} stderr={err}')
-            print('PASS fake executor: 101, CGLV receipts, ordered bytes, FIN, retire, revoke, cleanup')
+            print('PASS fake executor: mode=' + ('drain' if draining else 'eof') + ', 101, CGLV receipts, ordered bytes, retirement, revoke, cleanup')
         finally:
             if local_writer:
                 local_writer.close()

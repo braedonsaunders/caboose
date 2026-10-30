@@ -151,6 +151,34 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, 1)
         session.bindings.finish(session.binding_generation)
 
+    async def test_executor_drain_waits_for_native_retirement_and_revocation(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        ready, retired, stream_ready, remote_fin = (asyncio.Event() for _ in range(4))
+        ready.set(); stream_ready.set()
+        session.processes[1] = {'ready': ready, 'retired': retired, 'stopping': False, 'streams': {2}}
+        session.streams[2] = {'process': 1, 'writer': Writer(), 'ready': stream_ready, 'remote_fin': remote_fin}
+        session.bindings.identity = lambda _gen, _stream: (1, (1000, 42, 123))
+        session.bindings.unbind_stream = mock.Mock()
+        session.bindings.retire_process = mock.Mock()
+        await session.message(Envelope(Kind.EXECUTOR_DRAIN, b'a' * 16, 1, 0, 0, 1))
+        self.assertTrue(session.drain_requested.is_set())
+        task = asyncio.create_task(session.drain())
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        self.assertTrue(session.processes[1]['stopping'])
+        await session.message(Envelope(Kind.DATA, b'a' * 16, 1, 1, 2, 2, b'drained'))
+        await session.message(Envelope(Kind.FIN, b'a' * 16, 1, 1, 2, 3))
+        await session.message(Envelope(Kind.PROCESS_RETIRED, b'a' * 16, 1, 1, 0, 4))
+        await asyncio.sleep(0)
+        self.assertFalse(task.done())
+        await session.message(Envelope(Kind.REVOKED, b'a' * 16, 1, 0, 0, 5))
+        await asyncio.wait_for(task, 1)
+        session.bindings.unbind_stream.assert_called_once_with(session.binding_generation, 2)
+        session.bindings.retire_process.assert_called_once_with(session.binding_generation, 1)
+        self.assertFalse(session.streams or session.processes)
+        session.bindings.finish(session.binding_generation)
+
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()

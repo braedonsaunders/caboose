@@ -41,6 +41,8 @@ class Session:
         self.session_ready = asyncio.Event()
         self.revoked = asyncio.Event()
         self.revoking = False
+        self.draining = False
+        self.drain_requested = asyncio.Event()
         self.local_tasks = set()
         self.failed = False
 
@@ -69,6 +71,11 @@ class Session:
             if self.session_ready.is_set() or frame.payload != HELLO: raise ValueError('bad session receipt')
             self.session_ready.set(); return
         if not self.session_ready.is_set(): raise ValueError('session not ready')
+        if frame.kind == Kind.EXECUTOR_DRAIN:
+            if self.draining: raise ValueError('duplicate drain')
+            self.draining = True
+            self.drain_requested.set()
+            return
         if frame.kind == Kind.REVOKED:
             if not self.revoking or self.revoked.is_set(): raise ValueError('unexpected revoked')
             self.revoked.set(); return
@@ -88,6 +95,13 @@ class Session:
             if stream['ready'].is_set(): raise ValueError('duplicate stream receipt')
             stream['ready'].set(); return
         if not stream['ready'].is_set() or stream['remote_fin'].is_set(): raise ValueError('stream not ready')
+        if self.draining:
+            # The local client has been cancelled; drain native output until
+            # real process retirement without publishing a successful reply.
+            if frame.kind == Kind.DATA: return
+            if frame.kind == Kind.FIN:
+                stream['remote_fin'].set(); return
+            raise ValueError('unexpected draining stream message')
         if frame.kind == Kind.DATA:
             stream['writer'].write(frame.payload)
             await stream['writer'].drain(); return
@@ -103,6 +117,29 @@ class Session:
         self.revoking = True
         self.send(Kind.REVOKE)
         await asyncio.wait_for(self.revoked.wait(), 4)
+
+    async def drain(self):
+        """Cancel local work, then wait for actual process retirement receipts."""
+        self.draining = True
+        for process_id, process in tuple(self.processes.items()):
+            if not process['stopping']:
+                process['stopping'] = True
+                self.send(Kind.PROCESS_STOP, process_id)
+        # Native process-stop is now ordered after all previously queued data.
+        for task in tuple(self.local_tasks): task.cancel()
+        if self.local_tasks:
+            await asyncio.gather(*tuple(self.local_tasks), return_exceptions=True)
+        for process_id, process in tuple(self.processes.items()):
+            await asyncio.wait_for(process['retired'].wait(), 4)
+            for stream_id in tuple(process['streams']):
+                self.streams.pop(stream_id, None)
+                self.bindings.unbind_stream(self.binding_generation, stream_id)
+                process['streams'].remove(stream_id)
+            self.bindings.retire_process(self.binding_generation, process_id)
+            self.processes.pop(process_id, None)
+        if self.streams:
+            raise RuntimeError('streams remain after native retirement')
+        await self.revoke()
 
     async def read_loop(self):
         while True:
@@ -134,9 +171,13 @@ class Session:
         process_id = stream_id = None
         try:
             sock = writer.get_extra_info('socket')
+            if self.draining:
+                return
             peer = PeerIdentity.from_socket(sock, os.getuid())
             offered = await asyncio.wait_for(reader.readexactly(48), 5)
             if offered != HELLO: raise ValueError('local hello mismatch')
+            if self.draining:
+                return
             process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
             peer = None  # bindings owns it
             process = self.processes.get(process_id)
@@ -174,13 +215,13 @@ class Session:
             if peer is not None: peer.close()
             writer.close()
             with contextlib.suppress(OSError): await writer.wait_closed()
-            if stream_id is not None:
+            if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
                 with contextlib.suppress(RuntimeError, KeyError): self.bindings.unbind_stream(self.binding_generation, stream_id)
                 process = self.processes.get(process_id)
                 if process:
                     process['streams'].discard(stream_id)
-                    if not process['streams'] and not self.failed:
+                    if not process['streams'] and not self.failed and not self.draining:
                         process['stopping'] = True
                         try:
                             self.send(Kind.PROCESS_STOP, process_id)
@@ -224,7 +265,7 @@ class Broker:
     async def remote(self, stream):
         writer = server = None
         session = executor = generation = None
-        sender = receiver = stop_wait = None
+        sender = receiver = stop_wait = drain_wait = None
         owned_socket = None
         try:
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
@@ -257,17 +298,13 @@ class Broker:
             os.chmod(self.socket_path, 0o600)
             owned_socket = self.socket_path.lstat().st_ino
             stop_wait = asyncio.create_task(self.closing.wait())
-            done, _ = await asyncio.wait((sender, receiver, stop_wait), return_when=asyncio.FIRST_COMPLETED)
-            if stop_wait in done:
-                server.close(); await server.wait_closed(); server = None
-                # Existing streams must finish naturally; discarding app bytes
-                # would make a later native retirement receipt misleading.
-                if session.local_tasks:
-                    _finished, pending = await asyncio.wait(tuple(session.local_tasks), timeout=4)
-                    if pending: raise TimeoutError('local streams did not retire')
-                if session.failed: raise ConnectionError('local stream teardown failed')
+            drain_wait = asyncio.create_task(session.drain_requested.wait())
+            done, _ = await asyncio.wait((sender, receiver, stop_wait, drain_wait), return_when=asyncio.FIRST_COMPLETED)
+            if stop_wait in done or drain_wait in done:
+                server.close()
                 self.lease.revoke(executor.bytes, generation)
-                await session.revoke()
+                await session.drain()
+                await server.wait_closed(); server = None
                 self.lease.finished(executor.bytes, generation)
             else:
                 for task in done: task.result()
@@ -287,10 +324,10 @@ class Broker:
                     # Socket loss alone is not native finish; leave lease draining.
                     self.lease.revoke(executor.bytes, generation)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
-            for task in (sender, receiver, stop_wait):
+            for task in (sender, receiver, stop_wait, drain_wait):
                 if task and not task.done(): task.cancel()
-            if sender or receiver or stop_wait:
-                await asyncio.gather(*(t for t in (sender, receiver, stop_wait) if t), return_exceptions=True)
+            if sender or receiver or stop_wait or drain_wait:
+                await asyncio.gather(*(t for t in (sender, receiver, stop_wait, drain_wait) if t), return_exceptions=True)
             if writer:
                 writer.close()
                 with contextlib.suppress(OSError): await writer.wait_closed()
@@ -304,8 +341,8 @@ def main():
     parser.add_argument('--socket', type=Path, required=True)
     args = parser.parse_args()
     control = socket.socket(fileno=args.control_fd)
-    if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_STREAM:
-        raise SystemExit('private Unix control stream required')
+    if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+        raise SystemExit('private Unix sequenced-packet control socket required')
     asyncio.run(Broker(control, args.token_file, args.socket).run())
 
 

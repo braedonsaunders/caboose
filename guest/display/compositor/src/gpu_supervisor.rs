@@ -22,7 +22,13 @@ impl GpuSupervisor {
     /// Starts exactly one child at owner-compositor startup, not on an incoming
     /// HTTP request. `token_file` is a path, never a bearer token in argv.
     pub fn start(token_file: &Path, local_socket: &Path) -> io::Result<Self> {
-        let (parent, child_ipc) = UnixStream::pair()?;
+        let mut fds = [-1; 2];
+        // SAFETY: fds points to two writable integers for a local socketpair.
+        let result = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
+        if result < 0 { return Err(io::Error::last_os_error()); }
+        // SAFETY: successful socketpair returns two distinct owned descriptors.
+        let parent = unsafe { UnixStream::from_raw_fd(fds[0]) };
+        let child_ipc = unsafe { UnixStream::from_raw_fd(fds[1]) };
         parent.set_nonblocking(true)?;
         // SAFETY: into_raw_fd transfers sole ownership into Stdio. The descriptor
         // becomes fd 0 in the child and is closed in this process after spawn.
