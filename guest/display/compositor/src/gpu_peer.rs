@@ -61,6 +61,19 @@ impl GpuPeer {
         Ok(peer)
     }
 
+    /// Match a broker-supplied pidfd against this accepted Wayland peer.
+    /// The descriptor and the held peer pidfd must both still identify the
+    /// live kernel process; numeric PID/start claims alone are insufficient.
+    pub fn matches_pidfd(&self, uid: u32, pid: u32, start: u64, received_fd: i32) -> bool {
+        if self.uid != uid || self.pid != pid || self.start_ticks != start || !self.alive() {
+            return false;
+        }
+        let mut fd = libc::pollfd { fd: received_fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: fd is a valid pollfd structure; zero timeout does not block.
+        let live = unsafe { libc::poll(&mut fd, 1, 0) == 0 };
+        live && pid_from_fdinfo(received_fd).ok() == Some(pid) && self.alive()
+    }
+
     pub fn alive(&self) -> bool {
         let mut fd = libc::pollfd { fd: self.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: pollfd is valid and polling with zero timeout never blocks.
@@ -71,6 +84,7 @@ impl GpuPeer {
 #[cfg(test)]
 mod tests {
     use super::{start_ticks, GpuPeer};
+    use std::os::fd::AsRawFd;
     #[test]
     fn captures_the_actual_socket_peer() {
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -78,6 +92,15 @@ mod tests {
         assert_eq!(peer.pid, std::process::id());
         assert_eq!(peer.uid, unsafe { libc::getuid() });
         assert!(peer.alive());
+        let fd = unsafe { libc::dup(peer.pidfd.as_raw_fd()) };
+        assert!(fd >= 0);
+        assert!(peer.matches_pidfd(peer.uid, peer.pid, peer.start_ticks, fd));
+        assert!(!peer.matches_pidfd(peer.uid, peer.pid, peer.start_ticks + 1, fd));
+        assert!(!peer.matches_pidfd(peer.uid, peer.pid + 1, peer.start_ticks, fd));
+        let not_pidfd = std::fs::File::open("/dev/null").unwrap();
+        assert!(!peer.matches_pidfd(peer.uid, peer.pid, peer.start_ticks, not_pidfd.as_raw_fd()));
+        // SAFETY: dup created this descriptor and the test owns it.
+        unsafe { libc::close(fd) };
     }
 
     #[test]
