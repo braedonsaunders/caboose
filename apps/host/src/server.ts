@@ -1185,7 +1185,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /** What someone started on the computer that deleting it would cut short, if anything. */
     operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : commands.busy > 0 ? 'A command is running on this computer' : null,
   }
@@ -1531,14 +1531,17 @@ export function createCabooseServer(options: ComputerPieces & {
         return clusterAdmission.runExclusive(id, async () => {
           if (action === 'checkpoint') {
             await options.cluster!.authorize(id)
-            // Admission has drained this computer; shutdown drains its background work and parks.
-            await runtime.shutdown()
+            const operation = runtime.operation()
+            if (operation) throw new ComputerConflictError(`${operation}; checkpoint it when that finishes`)
+            // Command results must settle durably before parking or copying host state.
+            const resumeCommands = await runtime.quiesceForCheckpoint()
             try {
+              await runtime.shutdown()
               const sourceRoot = options.cluster!.roots.get(id)!
               const dataDir = sourceRoot === options.cluster!.root ? options.fleet!.computers.dataDir(id) : sourceRoot
               const ref = await options.cluster!.recovery.capture(options.cluster!.owned.get(id)!, record, runtime.settings.get(), runtime.computer, sourceRoot, dataDir)
               return json(response, 201, { checkpoint: ref, memory: false })
-            } finally { await reload(id) }
+            } finally { resumeCommands(); await reload(id) }
           }
           if (action === 'claim') await options.cluster!.claim(id)
           else await options.cluster!.recover(id)

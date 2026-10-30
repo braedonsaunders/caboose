@@ -9,6 +9,7 @@ import { createCabooseServer, type Controller } from '../server.js'
 import { SettingsStore, settingsLimits } from '../settings.js'
 import type { ClusterRuntime } from './runtime.js'
 import { OwnershipError } from './coordinator.js'
+import { CommandStore, ComputerCommands } from '../commands.js'
 
 it('refuses stale execution routes while exposing location only to authorized identities', async () => {
   const root = await mkdtemp(join(tmpdir(),'cluster-routes-'))
@@ -52,8 +53,9 @@ it('keeps unrelated HTTP work concurrent while checkpoint cancels and drains onl
     load:async()=>undefined, save:async()=>{ if (id === 'owner' && heldSave) { saving.resolve(); await allowSave.promise } },
   })
   const ownerSettings = settingsFor('owner'), otherSettings = settingsFor(other.id)
+  const commands = CommandStore.memory()
   const controller = { wake:vi.fn(),park:async()=>{},stats:()=>({}),activeResources:()=>null,hasSavedState:()=>false,guest:()=>undefined,apps:async()=>[],launch:async()=>{},ensureAgentSeat:async()=>{},displayUrl:'ws://localhost',agentDisplayUrl:'ws://localhost' } as unknown as Controller
-  const pieces = (id: string) => ({ settings:id === 'owner' ? ownerSettings : otherSettings,controller })
+  const pieces = (id: string) => ({ settings:id === 'owner' ? ownerSettings : otherSettings,controller, ...(id === 'owner' ? { commands } : {}) })
   const capture = vi.fn(async () => { capturing.resolve(); await allowCapture.promise; return { version:1 } })
   const cluster = {
     coordinator:{assertHost:async()=>{},lookup:async()=>({generation:'1',host_id:'a',expired:false}),pool:{query:async()=>({rows:[{endpoint:'https://a.example.invalid'}]})}},
@@ -87,6 +89,19 @@ it('keeps unrelated HTTP work concurrent while checkpoint cancels and drains onl
     expect((await checkpoint).status).toBe(201)
     expect(ownerSettings.get().name).toBe('Written before capture')
     expect((await request('/v1/computer/settings','PATCH',JSON.stringify({name:'After'}))).status).toBe(200)
+    const quiesce = vi.spyOn(ComputerCommands.prototype, 'quiesceForCheckpoint')
+    await commands.save({ id:'a'.repeat(32), title:'Active', script:'sleep 20', cwd:null,
+      inputs:[], timeout:60, status:'running', exitCode:null, signal:null, error:null,
+      stdout:'', stderr:'', truncated:{stdout:false,stderr:false}, outputs:[],
+      createdAt:new Date().toISOString(), finishedAt:null })
+    try {
+      const rejected = await request('/v1/computers/owner/cluster/checkpoint','POST')
+      expect(rejected.status).toBe(409)
+      expect(await rejected.json()).toMatchObject({error:expect.stringContaining('command is running')})
+      expect(quiesce).not.toHaveBeenCalled()
+      expect(capture).toHaveBeenCalledTimes(1)
+    } finally { quiesce.mockRestore(); await commands.remove('a'.repeat(32)) }
+
   } finally {
     heldSave=false; allowSave.resolve(); allowCapture.resolve(); slowPair?.destroy()
     await mutation; await checkpoint?.catch(()=>{})

@@ -322,7 +322,9 @@ stops the entire source Azure VM, so cluster hosts must be dedicated to this rol
 
 Operator checkpoint requests park the computer and capture its complete disk,
 keyring and selected host state while holding lifecycle and state-write exclusion.
-Recovery verifies the archive into a new generation directory before cold boot.
+Checkpoint refuses active commands and drains result persistence before archiving
+validated command receipts. Recovery reinstalls those receipts without replay, then
+verifies the generation directory before cold boot.
 RAM and running processes are not restored, and changes since the last published
 checkpoint are lost. Checkpoints are explicit; a periodic scan attempts recovery
 of expired owners that already have compatible checkpoints.
