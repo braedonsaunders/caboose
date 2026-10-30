@@ -194,9 +194,41 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    lose the connection: the strip closes and nothing moves.
 9. On a Duo (tiled, opened and folded), an upright iPhone and an iPad: tap a dock app; it
    opens or goes to its window. Hold a dock app: a menu offers Open, Pin or Unpin, and Close
-   for each of its windows by title; each does what it says, for a running app and for a
+   for each of its windows by title (on iPad, also Open in New Window or Move to Desktop); each does what it says, for a running app and for a
    pinned one that is not running. A swipe up on the dock still opens Overview. On iPad Free
    and a TV, hold (or secondary-click) a dock app for the same actions.
+
+## Linux windows in iPad windows
+
+On iPad, any Linux window can be an iPadOS window of its own, beside Caboose and other apps
+in Stage Manager, Split View and App Exposé. Open in New Window is in a tile's menu, the app
+card's Window Options, a dock app's menu (for each of its windows) and Home's window tile
+menu; dragging a Home window tile out of the app and dropping it opens it there too. The
+window (`Caboose/Views/LinuxWindowScene.swift`, a second `WindowGroup` whose value is
+`LinuxWindowRef`) fills the iPadOS window below a bar with the Linux title, Keyboard and
+Window Options: Move to Desktop, Exit App Full Screen, Redraw and Close Window.
+
+- **Size.** Resizing the iPadOS window resizes the Linux window to fit it, a few times a
+  second while it moves. The Linux window's minimum and maximum sizes, where it has them,
+  limit how small and large the iPadOS window can be made. An app's own full screen uses the
+  computer's whole display, fitted into the window.
+- **Title and keys.** The iPadOS window's title is the Linux title. Bringing the window
+  forward focuses its Linux window, and a hardware keyboard types into it.
+- **Ownership.** While it has its own window, the Desktop tab's tiles and floating desktop,
+  app cards and Quick Switch leave the Linux window and its menus and dialogs out. Home still
+  shows it; tapping it, or its dock app, brings its window forward. Move to Desktop, or closing
+  the iPadOS window, returns it to the Desktop still running; closing an iPadOS window never
+  closes the Linux window. When the Linux window closes on the computer, its iPadOS window
+  closes. Signing out or switching computers closes these windows.
+- **Relaunch.** iPadOS restores these windows; each shows its Linux window again once the
+  computer has reconnected and announced it, or says it is no longer open, with Close.
+- **Foreground.** The display stays connected while any Caboose window is in the foreground.
+- **Icon.** Every such window carries Caboose's icon in Stage Manager and the Dock: iPadOS has
+  no per-window app icon.
+
+The naming, presence across reconnects and server restarts, ownership and size-limit mapping
+are unit-tested: `cd CabooseKit && swift test --filter 'WindowScenesTests|DockMenuTests'`.
+`sh scripts/check-desktop.sh` lists the device checks under "Linux windows in iPad windows".
 
 ## How it renders
 

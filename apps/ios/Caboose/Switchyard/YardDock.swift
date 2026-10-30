@@ -152,14 +152,17 @@ private struct OverviewControl: View {
 /// The same actions for a held dock icon in tiled and free desktops (`DockMenu`).
 struct DockAppActions: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     let app: HostClient.App
     /// After an action, for a menu that does not close itself.
     var done: () -> Void = {}
 
     var body: some View {
         let windows = model.appWindows.filter { model.matches($0, app) }
+        let detached = model.detachedWindowIDs
         let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
-                                       windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title) })
+                                       windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title, detached: detached.contains($0.id)) },
+                                       windowScenes: model.supportsWindowScenes)
         Button("Add Shortcut to Desktop", systemImage: "plus.square") {
             Task { await model.desktopFiles.addShortcut(app, model: model) }; done()
         }
@@ -169,6 +172,13 @@ struct DockAppActions: View {
                 Button(action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app); done() }
             case .pin, .unpin:
                 Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
+            case .openInNewWindow(let id, _):
+                Button(action.title, systemImage: "macwindow.badge.plus") {
+                    if let window = model.window(id), let ref = model.windowRef(for: window) { openWindow(value: ref) }
+                    done()
+                }
+            case .moveToDesktop(let id, _):
+                Button(action.title, systemImage: "rectangle.on.rectangle") { model.moveToDesktop(id); done() }
             case .close(let id, _):
                 Button(action.title, systemImage: "xmark", role: .destructive) {
                     if let window = model.session?.windows[id] { model.session?.close(window) }

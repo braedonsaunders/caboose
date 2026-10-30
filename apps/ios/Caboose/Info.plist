@@ -31,6 +31,8 @@
 	<key>NSSpeechRecognitionUsageDescription</key><string>Turn your speech into an editable agent message.</string>
 	<key>NSLocationWhenInUseUsageDescription</key><string>When you turn on Share Location with Computer, apps on your computer see where you are while Caboose is open.</string>
 	<key>NSLocalNetworkUsageDescription</key><string>Caboose connects to your computer when it runs on your own network.</string>
+	<key>NSUserActivityTypes</key>
+	<array><string>com.braedonsaunders.caboose.linux-window</string><string>com.apple.corespotlightitem</string></array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key><true/>
