@@ -125,6 +125,64 @@ mod tests {
         assert!(!request_is_gpu(b"GET /gpu-extra HTTP/1.1"));
         assert!(!request_is_gpu(b"POST /gpu HTTP/1.1"));
     }
+
+    #[test]
+    fn fragmented_request_is_peeked_without_consuming_bytes() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"GET /g").unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            stream.write_all(b"pu HTTP/1.1\r\n").unwrap();
+        });
+        let (mut stream, _) = listener.accept().unwrap();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        assert!(super::is_gpu_request(&stream, &stop, std::time::Duration::from_secs(1)).unwrap());
+        let mut request = [0u8; 19];
+        stream.read_exact(&mut request).unwrap();
+        assert_eq!(&request, b"GET /gpu HTTP/1.1\r\n");
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn seqpacket_handoff_transfers_one_connected_tcp_fd() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let mut fds = [-1; 2];
+        // SAFETY: fds is valid writable storage for a socketpair.
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) }, 0);
+        // SAFETY: each returned descriptor is owned exactly once.
+        let sender = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fds[0]) };
+        let receiver = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fds[1]) };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        super::send_once(&sender, &accepted).unwrap();
+        let mut byte = [0u8; 1];
+        let mut iov = libc::iovec { iov_base: byte.as_mut_ptr().cast(), iov_len: 1 };
+        let mut control = [0usize; 8];
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_iov = &mut iov; msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) as usize };
+        // SAFETY: msghdr buffers are aligned and valid for recvmsg.
+        assert_eq!(unsafe { libc::recvmsg(receiver.as_raw_fd(), &mut msg, 0) }, 1);
+        assert_eq!(byte, [b'G']);
+        assert_eq!(msg.msg_flags & libc::MSG_CTRUNC, 0);
+        let header = unsafe { libc::CMSG_FIRSTHDR(&msg) };
+        assert!(!header.is_null());
+        assert_eq!(unsafe { (*header).cmsg_level }, libc::SOL_SOCKET);
+        assert_eq!(unsafe { (*header).cmsg_type }, libc::SCM_RIGHTS);
+        let raw = unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<libc::c_int>()) };
+        // SAFETY: SCM_RIGHTS returned a new descriptor owned by this test.
+        let mut forwarded = unsafe { std::net::TcpStream::from_raw_fd(raw) };
+        client.write_all(b"unchanged").unwrap();
+        let mut bytes = [0u8; 9]; forwarded.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"unchanged");
+    }
+
 }
 
 /// Wait for actual IPC writable readiness without blocking the compositor loop.
