@@ -68,12 +68,21 @@ with socket.socket(socket.AF_UNIX) as connection:
     except OSError as error:
         sys.exit(1 if error.errno in (errno.ENOENT, errno.ECONNREFUSED) else 2)
 PY
-  then return; else
+  then
+    if [ "$bus" = "$XDG_RUNTIME_DIR/agent-bus" ]; then
+      runuser -u caboose -- python3 /opt/caboose/keyring/secret-forwarder.py --check-bus
+    fi
+    return
+  else
     local status=$?
     [ "$status" = 1 ] || return "$status"
   fi
   rm -f -- "$bus"
-  runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+  if [ "$bus" = "$XDG_RUNTIME_DIR/agent-bus" ]; then
+    runuser -u caboose -- python3 /opt/caboose/agent-profile.py exec dbus-daemon --config-file=/opt/caboose/keyring/agent-bus.conf --fork
+  else
+    runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
+  fi
 }
 
 # Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
@@ -107,6 +116,8 @@ start_display() {
   if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
+  local wrapper=()
+  if [ "$port" = 14601 ]; then wrapper=(python3 /opt/caboose/agent-profile.py exec); fi
   local libs=
   if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
   local log="$CABOOSE_HOME/.cache/$name.log"
@@ -114,7 +125,7 @@ start_display() {
   touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" CABOOSE_VIDEO_SOCKET="$video_socket" \
-    setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
+    "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
 notification_endpoint() {

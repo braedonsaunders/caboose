@@ -19,8 +19,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// on so the server paces the window to it. Set it on display-only views too; it is
     /// `session` when nil.
     public weak var pacer: (any DisplaySession)?
-    /// Which of the session's displays this view is on, for vsync pacing.
-    public var displayID = 0
+    /// Explicit output for pacing, or nil for the session's primary output. Only an
+    /// unselected bootstrap session resolves nil from the retained server hello.
+    public var displayID: Int?
     /// Whether this view plays the window's videos. A video plays in one view at a time, so
     /// thumbnails leave it to the window's main view.
     public var showsVideo = true {
@@ -34,6 +35,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var hostedVideos: [CALayer] = []
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
+    /// The containing slot adopts the drawable's size before it is presented.
+    public var onPictureSizeChanged: ((CGSize) -> Void)?
     /// When false the view only displays (thumbnails, previews).
     public var isInteractive = true {
         didSet {
@@ -55,14 +58,20 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
+    private var presentedPictureSize: CGSize = .zero
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
+    private var holdingDirectDrag = false
     private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
+    private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
+    private var holdUsesPointerDrag = false
+    private weak var holdWindow: RemoteWindow?
+    private weak var holdSession: (any DisplaySession)?
 
     /// Asks the host app to show or hide the software keyboard. Set it and a tap shows the
     /// keyboard only when it lands on editable text (the app switched to a text cursor) and
@@ -90,6 +99,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public func attach(_ window: RemoteWindow?) {
         if window !== remoteWindow {
+            presentedPictureSize = .zero
             releaseVideos()
             focusCheck = nil
             resetTyping()
@@ -250,14 +260,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     fileprivate func present() {
-        guard let surface = remoteWindow?.surface, let texture = surface.texture else { return }
-        let generation = surface.generation
+        guard let picture = remoteWindow?.surface.presentation() else { return }
+        let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
         let size = CGSize(width: texture.width, height: texture.height)
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
         guard let drawable = metalLayer.nextDrawable(),
               let commands = SurfaceRenderer.shared.queue.makeCommandBuffer(),
               let blit = commands.makeBlitCommandEncoder() else { return }
+        adoptPictureSize(size)
         let target = drawable.texture
         let width = min(texture.width, target.width), height = min(texture.height, target.height)
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
@@ -269,10 +280,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         presentedGeneration = generation
     }
 
+    /// Called after acquiring a drawable. Adoption belongs to the attached window,
+    /// even when its first picture has the same dimensions as the preceding window.
+    func adoptPictureSize(_ size: CGSize) {
+        guard presentedPictureSize != size else { return }
+        presentedPictureSize = size
+        remoteWindow?.adoptPictureSize(size)
+        // Guest picture replacement is atomic; slot geometry keeps its animation.
+        UIView.performWithoutAnimation { onPictureSizeChanged?(size) }
+    }
+
     // MARK: Pointer mapping
 
-    private func pixelPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
+    func pixelPoint(_ point: CGPoint) -> CGPoint {
+        guard let remoteWindow, bounds.width > 0, bounds.height > 0 else { return .zero }
+        return CGPoint(x: point.x * remoteWindow.frame.width / bounds.width,
+                       y: point.y * remoteWindow.frame.height / bounds.height)
     }
 
     private func move(to point: CGPoint) {
@@ -359,9 +382,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         longPress.delegate = self
         addGestureRecognizer(longPress)
 
-        // Mouse-only windows: one finger draws/selects; two fingers navigate.
+        // Mouse-only windows: a finger pans content; hold before moving to drag.
+        // Pencil strokes retain direct drawing/selection.
         let touchDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTouchDrag(_:)))
-        touchDrag.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        touchDrag.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
         touchDrag.maximumNumberOfTouches = 1
         touchDrag.allowedScrollTypesMask = []
         touchDrag.delegate = self
@@ -375,10 +399,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         scroll.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
         scroll.allowedScrollTypesMask = []
-        scroll.minimumNumberOfTouches = 2
+        scroll.minimumNumberOfTouches = 1
         scroll.maximumNumberOfTouches = 2
         scroll.delegate = self
         addGestureRecognizer(scroll)
+        // Movement fails the stationary hold and immediately releases the pan. Once
+        // the hold wins it owns the contact through lift, so it cannot also scroll.
+        scroll.require(toFail: longPress)
+        tap.require(toFail: longPress)
 
         // Hardware wheel/trackpad events do not have direct finger contacts.
         let wheel = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
@@ -401,7 +429,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
+        if gesture === contextTouchGesture {
+            holdUsesPointerDrag = touch.type == .direct && remoteWindow?.acceptsTouch == false
+            holdWindow = remoteWindow
+            holdSession = session
+        }
+        return gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -427,11 +460,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// The app answers a tap by redrawing the cursor: a text cursor means a text field took
     /// focus. Waits briefly for a fresh cursor; an unchanged one is still the answer, and a
-    /// server that names no cursors falls back to showing the keyboard.
+    /// server that names no cursors needs the owner's explicit keyboard control.
     fileprivate func checkFocus() {
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
         guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
-                                               isText: session.cursorIsText) else { return }
+                                               isText: session.cursorIsText, keyboardVisible: isFirstResponder) else { return }
         // The app says what the field takes: no autocorrect in a terminal or a password.
         if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
             prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
@@ -464,12 +497,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return super.resignFirstResponder()
     }
 
-    /// Open at recognition, at the held point; lifting or cancelling cannot issue another click.
+    /// Native touch and Pencil retain context holds. A mouse-only finger hold grabs
+    /// content instead; two-finger tap still opens its context menu.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        guard gesture.state == .began else { return }
-        cancelTouches()
-        stopMomentum()
-        click(at: gesture.location(in: self), button: 3)
+        let point = gesture.location(in: self)
+        switch gesture.state {
+        case .began:
+            guard let window = holdWindow, let session = holdSession,
+                  remoteWindow === window, self.session === session,
+                  isInteractive, self.window != nil, session.state == .ready,
+                  session.windows[window.id] === window else { return }
+            let drag = holdUsesPointerDrag
+            cancelTouches()
+            stopMomentum()
+            if drag {
+                holdingDirectDrag = true
+                focusCheck = nil
+                session.focus(window)
+                sendDirectDrag(directDrag.begin(at: point, translation: .zero))
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            } else {
+                click(at: point, button: 3)
+            }
+        case .changed:
+            if holdingDirectDrag { sendDirectDrag(directDrag.move(to: point)) }
+        case .ended:
+            if holdingDirectDrag { sendDirectDrag(directDrag.end(at: point)) }
+            holdingDirectDrag = false
+        case .cancelled, .failed:
+            if holdingDirectDrag { sendDirectDrag(directDrag.cancel()) }
+            holdingDirectDrag = false
+        default: break
+        }
     }
 
     @objc private func handleTouchDrag(_ gesture: UIPanGestureRecognizer) {
@@ -561,7 +620,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        stopMomentum()
+        // A second contact belongs to the current recognizer. Its topology check
+        // cancels the whole gesture; do not silently strand an active driver here.
+        if !scrollOwnership.isActive { stopMomentum() }
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
@@ -628,7 +689,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let point = pixelPoint(touch.location(in: self))
             let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
             points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
-                                     radius: Double(touch.majorRadius * pixelsPerPoint)))
+                                     radius: Double(touch.majorRadius * window.frame.width / max(1, bounds.width))))
             if phase == .up || phase == .cancel {
                 touchSlots.release(key)
                 activeTouches[key] = nil
@@ -662,6 +723,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         pointerClicks.cancel()
         stopMomentum()
         sendDirectDrag(directDrag.cancel())
+        holdingDirectDrag = false
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
@@ -688,32 +750,52 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// send precise deltas once per display frame, followed by client-side inertia.
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
         let now = CACurrentMediaTime()
+        let owner = ObjectIdentifier(gesture)
         switch gesture.state {
         case .began:
             stopMomentum()
+            pointerClicks.cancel()
+            focusCheck = nil
             guard let session, let remoteWindow else { return }
             session.resetScroll()
             move(to: gesture.location(in: self))
             scrollUsesDirectTouch = gesture.numberOfTouches > 0
+            let directContent = scrollUsesDirectTouch
             let anchor = lastPointer
             let scale = pixelsPerPoint
+            let geometry = bounds
+            let size = remoteWindow.frame.size
+            let epoch = session.epoch
+            let connection = (session as? CabooseDisplaySession)?.connections
+            scrollOwnership.begin(owner, contacts: gesture.numberOfTouches)
             scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
                 guard let self, let session, let remoteWindow, self.isInteractive,
                       self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
-                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow else { return false }
-                session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                      session.state == .ready, session.windows[remoteWindow.id] === remoteWindow,
+                      session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
+                      self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
+                else { return false }
+                let mapped = CGPoint(x: delta.x * size.width / max(1, geometry.width),
+                                     y: delta.y * size.height / max(1, geometry.height))
+                let precise = DirectScrollCalibration.preciseDelta(mapped, directContent: directContent)
+                session.scroll(in: remoteWindow, dx: precise.x, dy: precise.y, at: anchor)
                 return true
             }
             appendScroll(gesture, at: now)
         case .changed:
+            guard scrollOwnership.update(owner, contacts: gesture.numberOfTouches) else {
+                if !scrollOwnership.isActive { scrollDriver.cancel() }
+                return
+            }
             appendScroll(gesture, at: now)
         case .ended:
+            guard scrollOwnership.end(owner) else { return }
             appendScroll(gesture, at: now)
             let velocity = gesture.velocity(in: self)
             // Indirect hardware scrolling already includes OS momentum.
             scrollDriver.end(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: scrollUsesDirectTouch)
         case .cancelled, .failed:
-            stopMomentum()
+            if scrollOwnership.end(owner) { scrollDriver.cancel() }
         default: break
         }
     }
@@ -726,7 +808,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
     }
 
-    private func stopMomentum() { scrollDriver.cancel() }
+    private func stopMomentum() {
+        scrollOwnership.cancel()
+        scrollDriver.cancel()
+    }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
 
@@ -849,8 +934,8 @@ private final class DisplayLinkTarget: NSObject {
         view.adoptSurroundingText()
         view.layoutGame()
         view.layoutGPUStream()
-        view.layoutVideos()
         view.present()
+        view.layoutVideos()
     }
 }
 #endif

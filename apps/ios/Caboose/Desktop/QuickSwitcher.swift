@@ -264,9 +264,9 @@ struct QuickSwitchStrip: View {
         let strip = switcher.state.strip(height: height - 24 - (switcher.mode == .choose ? 52 : 0))
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                ConcentricRectangle(cornerRadius: 22)
                     .fill(.clear)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 22))
+                    .glassEffect(.regular, in: .surface(cornerRadius: 22))
                     .frame(width: strip.size.width, height: strip.size.height)
                 ForEach(Array(strip.visible), id: \.self) { index in
                     let id = switcher.state.windows[index]
@@ -291,7 +291,7 @@ struct QuickSwitchStrip: View {
                         .labelStyle(.iconOnly)
                         .font(.system(size: 15, weight: .semibold))
                         .frame(width: strip.size.width, height: 44)
-                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
+                        .glassEffect(.regular.interactive(), in: .surface(cornerRadius: 16))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white)
@@ -316,7 +316,7 @@ struct QuickSwitchStrip: View {
             }
             .padding(size * 0.12)
             .frame(width: size, height: size)
-            .background(.white.opacity(selected ? 0.22 : 0), in: RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+            .background(.white.opacity(selected ? 0.22 : 0), in: ConcentricRectangle(cornerRadius: size * 0.24))
             .scaleEffect(selected ? 1 : 0.92)
             .animation(.snappy(duration: 0.18), value: selected)
             .contentShape(Rectangle())
@@ -338,7 +338,7 @@ struct QuickSwitchStrip: View {
         .frame(maxWidth: 320, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .glassEffect(.regular, in: .rect(cornerRadius: 12))
+        .glassEffect(.regular, in: .surface(cornerRadius: 12))
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

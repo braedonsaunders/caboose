@@ -51,9 +51,13 @@ struct YardDock: View {
                         .accessibilityHint("Hold for Open, Pin and Close.")
                     }
                 }
+                // Extend only the vertical viewport. Horizontal scroll clipping still
+                // keeps offscreen apps out of the fixed dock controls.
+                .padding(.top, DockLaunchFeedback.maximumLift)
             }
             .scrollIndicators(.hidden)
-            .frame(width: appWidth, height: icon + 7)
+            .frame(width: appWidth, height: icon + 7 + DockLaunchFeedback.maximumLift)
+            .padding(.top, -DockLaunchFeedback.maximumLift)
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
             OverviewControl(yard: yard, enabled: true)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
@@ -61,7 +65,9 @@ struct YardDock: View {
         }
         .padding(.horizontal, 12)
         .frame(height: Self.height)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .background {
+            Color.clear.glassEffect(.regular, in: ConcentricRectangle(cornerRadius: 22))
+        }
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { value in
                 guard value.translation.height < -30, abs(value.translation.height) > abs(value.translation.width), !columns.isEmpty else { return }
@@ -171,7 +177,7 @@ struct DockAppActions: View {
                 Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
             case .close(let id, _):
                 Button(action.title, systemImage: "xmark", role: .destructive) {
-                    if let window = model.session?.windows[id] { model.session?.close(window) }
+                    if let window = model.session?.windows[id] { model.session?.closeDiagnosed(window) }
                     done()
                 }
             }

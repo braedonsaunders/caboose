@@ -13,6 +13,7 @@ struct WindowControls: View {
     var showsSymbols = false
     var title = "Window"
     var action: ((WindowTitleBar.Control) -> Void)?
+    @State private var diagnosticCloseFrame: CGRect?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -24,7 +25,14 @@ struct WindowControls: View {
                         .frame(width: frame.width, height: frame.height)
                     Group {
                         if let action {
-                            Button { action(control) } label: { light.contentShape(Rectangle()) }
+                            Button {
+                                CloseDiagnostics.withControlFrame(control == .close ? diagnosticCloseFrame : nil) { action(control) }
+                            } label: { light.contentShape(Rectangle()) }
+                                .onGeometryChange(for: CGRect.self) { proxy in
+                                    proxy.frame(in: .global)
+                                } action: { frame in
+                                    if control == .close, CloseDiagnostics.enabled { diagnosticCloseFrame = frame }
+                                }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(Self.label(control, title: title))
                         } else {

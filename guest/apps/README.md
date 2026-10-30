@@ -10,6 +10,7 @@ any Linux app. [guide.md](guide.md) is the format and API as agents read it.
 | --- | --- |
 | `caboose-app` | The CLI and runtime: a GTK 3 window with a local WebKitGTK view or native handoff, in Python |
 | `appcore.py` | Its logic that needs no display: manifests, URLs, desktop entries, the content policy, bridge bounds and file operations |
+| `net.py` | The network origin of an app that declares `net` |
 | `page.js` | `window.caboose`, injected into the app's top frame |
 | `world.js` | The relay between the page and the native bridge, in its own script world |
 | `remote.py` | The private, per-instance bridge socket and session grant gate |
@@ -62,6 +63,12 @@ window.
   scripts; WebAssembly compiles. Frames hold only the app's own pages. Styles, fonts,
   images, media and connections may come from anywhere. `check` and `publish` reject pages
   with inline script, handler attributes or `javascript:` URLs, naming file and line.
+- **Input checks.** `check`, `publish` and `list` include nonfatal `warnings` for a valid
+  app's entry page when its viewport is missing, duplicated, differs from device-width
+  with initial scale 1, or restricts zoom. Reading is bounded to 4 MiB and refuses
+  symlinks. The checker never edits app files or storage. MCP `app_publish` returns the
+  warnings too. These static hints do not establish working buttons or phone gestures;
+  the generation guide specifies pointer, text, scroll and persistence acceptance checks.
 - **Navigation.** The top frame stays on the app. A link to a web, mail or phone URL that
   the person followed opens in its default application; a redirect or a script-initiated
   navigation opens nothing; `javascript:`, `data:` and `file:` URLs never open. Permission
@@ -98,10 +105,26 @@ window.
   is set unless already set, so WebKit uses the shared-memory renderer that every
   compositor shows. `CABOOSE_APP_INSPECTOR=1` enables the Web Inspector.
 
+- **Network.** An app that declares `net` gets a network origin: a loopback HTTP server
+  (`net.py`) that only this run of the app knows, `http://127.0.0.1:<port>/<token>/`.
+  `<base><scheme>/<authority><path>?<query>` is requested from `<scheme>://<authority>…`
+  with curl: the page's method, body and headers (less those describing its own connection
+  to the origin, such as `Host`, `Origin`, `Cookie` and `Sec-*`; `X-Caboose-Header-<name>`
+  sends `<name>`, which `caboose.fetch` uses for headers script may not set), following up
+  to 10 redirects and decoding compressed bodies. The answer streams back with its status
+  and headers, less hop-by-hop fields, `Set-Cookie` (sent as `X-Caboose-Set-Cookie`) and the
+  remote site's security policies, plus `Access-Control-Allow-Origin` for the app's page and
+  `X-Caboose-Url`, the final URL. A request whose `Origin` is not the app's is refused (403);
+  one without an `Origin`, as media elements and images send, is admitted by the token. An
+  unreachable server is a 502 with `X-Caboose-Error`. Bodies are at most 64 MiB, at most 64
+  requests are open at once, and curl keeps no cookies. The network origin is not the app's
+  origin, so what comes through it is never the app's script: the content policy's `'self'`
+  does not cover it. It ends with the app.
+
 What this protects is the boundary with the web, not the owner from the app: the app's own
-code runs as `caboose` with everything its capabilities give it, and `exec` gives a
-terminal's authority. Agents write apps in the owner's home, where the owner can read and
-remove them.
+code runs as `caboose` with everything its capabilities give it: `exec` gives a terminal's
+authority, and `net` reaches whatever the machine running the page can. Agents write apps
+in the owner's home, where the owner can read and remove them.
 
 ## Native handoff
 
@@ -122,6 +145,16 @@ the app's startup capability set. The owner token stays in native code. A takeov
 the grant; a replaced or inactive document's processes are terminated. The client polls for
 spawn output and reloads, and no request is replayed after a disconnect. If the socket or
 client goes away, the local WebKit view starts in the same window.
+
+The device serves `net` itself, on its own loopback port under the same contract, so the
+requests go out from the device and need no computer. When Caboose leaves the screen, a page
+that is playing media (`WKWebView`'s media playback state) is kept running instead of
+closing with the display connection; WebKit's Media Session support gives it the system's
+media controls. Its computer bridge is cut, and its calls fail, until the computer announces
+the app again: the kept page then takes the new announcement's place without a reload and
+registers again over the new grant. Once the computer has announced its apps without that
+one, the page ends. At most four pages are kept. See
+[docs/architecture.md](../../docs/architecture.md#agent-apps).
 
 The device origin serves only the app directory through the host's fenced file service, with
 a content security policy and an isolated top-frame bridge. `caboose.open` file targets use
@@ -145,22 +178,22 @@ with the agent seat's launch environment, when `/opt/caboose/apps/apps-mcp.mjs` 
 
 ## Install
 
-`guest/components/install.sh` installs `gir1.2-webkit2-4.1` and runs `install.sh`, in both
-image builds and on existing computers when the host updates their components. The files
+`guest/components/install.sh` installs `gir1.2-webkit2-4.1` and `curl` and runs `install.sh`,
+in both image builds and on existing computers when the host updates their components. The files
 are replaced atomically; an open app keeps the code it loaded.
 
 ## Test
 
 ```sh
-python3 -m unittest discover -s guest/apps -p 'test_*.py'   # appcore
+python3 -m unittest discover -s guest/apps -p 'test_*.py'   # appcore, net (with curl)
 node --test guest/apps/apps-mcp.test.mjs guest/apps/agent-page.test.mjs  # MCP and page relay
 guest/apps/check-runtime.sh                                 # the runtime, in Docker
 guest/apps/check-handoff.sh                                # handoff, bridge and fallback in Docker
 ```
 
-`check-runtime.sh` builds a Debian 13 image with Xvfb and WebKitGTK 4.1 and runs
-`check/run.sh` in it; `sudo bash check/run.sh` runs the same check inside a Caboose
-computer, on its own display `:150`, session bus and throwaway home. Its probe app
+`check-runtime.sh` builds a Debian 13 image with Xvfb, WebKitGTK 4.1, GStreamer's good
+plugins and curl and runs `check/run.sh` in it; `sudo bash check/run.sh` runs the same check
+inside a Caboose computer, on its own display `:150`, session bus and throwaway home. Its probe app
 (`check/probe`) asserts that publish writes the entry and refuses inline script; that
 inline, `data:`, `blob:`, `eval` and `Function` script and remote frames are blocked by the
 policy; that `exec` returns code and output, times out (also while a program leaves a
@@ -169,6 +202,13 @@ undeclared capability and a path outside the home are refused; that `spawn` stre
 script navigation away is refused and a frame's forged request is ignored; that a classic
 script runs and a page without `<meta charset>` decodes as UTF-8; that an edit
 reloads the page, ending the old page's programs (including an exec whose input is
-blocked) and keeping its storage; that a second
+blocked) and keeping its storage; that a page `fetch` from a server without CORS consent
+fails while `caboose.fetch` reads it with its method, body and reserved headers and reports
+the final URL, an image and an audio element's stream load through `caboose.net.url` and
+an unreachable server is a 502; that a second
 launch raises the first; that quitting ends every program; and that storage survives a
 restart.
+
+The apps MCP keeps the task runner's HOME when opening a Caboose app on the agent seat,
+so `~/Apps` and each app's existing data remain shared. It still uses the agent display,
+session bus and GUI isolation environment; browser/editor profiles remain seat-specific.

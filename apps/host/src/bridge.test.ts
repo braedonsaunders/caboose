@@ -220,7 +220,7 @@ describe('BridgeRelay', () => {
     expect(fake.calls[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
   })
 
-  it('drains only while active', async () => {
+  it('does not fork idle drains while active', async () => {
     vi.useFakeTimers()
     try {
       const fake = fakeGuest()
@@ -228,7 +228,7 @@ describe('BridgeRelay', () => {
       relay.setActive(true)
       await vi.advanceTimersByTimeAsync(3000)
       const drains = fake.bridgeCalls('drain').length
-      expect(drains).toBeGreaterThanOrEqual(3)
+      expect(drains).toBe(0)
       relay.setActive(false)
       await vi.advanceTimersByTimeAsync(3000)
       expect(fake.bridgeCalls('drain')).toHaveLength(drains)

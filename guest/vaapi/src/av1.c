@@ -945,13 +945,13 @@ static void av1_flush(cb_context *c)
     st->held.valid = 0;
 }
 
-static int av1_provisional(cb_context *c, cb_buf *out, uint32_t *seq)
+static int av1_provisional(cb_context *c, cb_buf *out, uint32_t seq)
 {
     av1_state *st = c->state;
-    if (!st->held.valid || st->held.given || provisional_unit(st, out))
+    /* An older surface request must not consume the pending picture. */
+    if (!st->held.valid || st->held.seq != seq || st->held.given || provisional_unit(st, out))
         return -1;
     st->held.given = 1;
-    *seq = st->held.seq;
     return 0;
 }
 

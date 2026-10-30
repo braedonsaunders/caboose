@@ -85,3 +85,10 @@ example on a Mac with MoltenVK:
 ```sh
 gfxrecon-replay --remove-unsupported -m rebind guest/gpu/out/gpu-check.gfxr
 ```
+
+## Offscreen feature checks
+
+[emulation-check](emulation-check/README.md) builds a bounded offscreen Vulkan renderer
+and checks real image samples on a selected stock MoltenVK archive. Control, cull-distance,
+direct geometry, indirect geometry and indexed-indirect geometry are reported separately;
+unsupported features are not enabled or counted as passes.

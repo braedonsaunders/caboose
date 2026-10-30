@@ -1297,7 +1297,7 @@ describe('persistent profile tasks', () => {
       expect(bindTask).toHaveBeenCalledTimes(1)
     } finally { tasks.pause() }
   })
-  it('drains an in-flight mailbox poll after pausing', async () => {
+  it('drains an in-flight mailbox event after pausing', async () => {
     const fake = fakeGuest()
     let release!: () => void
     const waiting = new Promise<void>(resolve => { release = resolve })
@@ -1307,7 +1307,8 @@ describe('persistent profile tasks', () => {
       resolver: resolver(), pollMs: 10, toolJournal: async () => { if (++calls > 1) await waiting; return calls === 1 ? journal : null },
     })
     try {
-      await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      const task = await tasks.start({ prompt: 'hello', profileId: profile.id }, { profile })
+      const delivery = tasks.acceptMailbox({ id: task.id, request: b64('{}') })
       await vi.waitFor(() => expect(calls).toBeGreaterThan(1))
       tasks.pause()
       let drained = false
@@ -1316,6 +1317,7 @@ describe('persistent profile tasks', () => {
       expect(drained).toBe(false)
       release()
       await done
+      await delivery
       expect(drained).toBe(true)
     } finally { release(); tasks.pause() }
   })

@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import type { AgentGuest } from './agents.js'
 import { AgentInputError, AgentUnavailableError } from './agents.js'
 
@@ -51,17 +52,19 @@ export async function readPhoneFile(guest: AgentGuest | undefined, id: string): 
   return { data: Buffer.concat(parts).toString('base64') }
 }
 
-/** At-most-once delivery while an authenticated control client is connected. */
+/** Validated delivery while an authenticated control client is connected; transport retries may replay. */
 export class PhoneHandoff {
-  private timer?: ReturnType<typeof setInterval>
+  private timer?: () => void
   private polling = false
-  constructor(private guest: () => AgentGuest | undefined, private emit: (event: PhoneEvent) => void, private pollMs = 1000) {}
+  constructor(private guest: () => AgentGuest | undefined, private emit: (event: PhoneEvent) => void, private pollMs = 1000, private subscribe?: EventSubscribe) {}
   setActive(active: boolean): void {
     if (active && !this.timer) {
-      this.timer = setInterval(() => { void this.poll() }, this.pollMs)
-      this.timer.unref()
-      void this.poll()
-    } else if (!active && this.timer) { clearInterval(this.timer); this.timer = undefined }
+      this.timer = this.subscribe?.('phone', record => this.accept(record)) ?? (() => {})
+    } else if (!active && this.timer) { this.timer(); this.timer = undefined }
+  }
+  accept(raw: unknown): void {
+    const event = parsePhoneEvent(raw)
+    if (event) this.emit(event)
   }
   async poll(): Promise<void> {
     const guest = this.guest()

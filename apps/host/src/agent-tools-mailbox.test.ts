@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentToolJournal } from './agent-tools-journal.js'
-import { pollAgentTools } from './agent-tools-mailbox.js'
+import { pollAgentTools, acceptAgentTools } from './agent-tools-mailbox.js'
 import type { AgentGuest } from './agents.js'
 
 const task = { id: '11111111-1111-4111-8111-111111111111', profileId: '22222222-2222-4222-8222-222222222222', turn: 1 }
@@ -52,6 +52,20 @@ describe('profile tool mailbox', () => {
     await pollAgentTools(s.guest, s.journal, [task], () => true)
     expect((await s.wait(3)).result.content[0].text).toContain('done')
     expect(s.dispatch).toHaveBeenCalledWith({ taskId: task.id, profileId: task.profileId, turn: 1 }, 'routine_create', { name: 'Daily' })
+  })
+  it('replays a failed response write without repeating the durable tool action', async () => {
+    const s = await setup()
+    const box = join(s.taskDir, 'tool-mailbox'); await mkdir(box)
+    const id = '33333333-3333-4333-8333-333333333333'
+    const request = JSON.stringify({ id, turn: 1, tool: 'memory_list', arguments: {} })
+    await writeFile(join(box, `${id}.request`), request)
+    const rows = [[task.id, id, Buffer.from(request).toString('base64')]]
+    const failed: AgentGuest = { run: async () => { throw new Error('disconnected') } }
+    await expect(acceptAgentTools(failed, s.journal, [task], () => true, rows)).rejects.toThrow('disconnected')
+    expect(await readFile(join(box, `${id}.request`), 'utf8')).toBe(request)
+    await acceptAgentTools(s.guest, s.journal, [task], () => true, rows)
+    expect(s.dispatch).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(await readFile(join(box, `${id}.response`), 'utf8')).id).toBe(id)
   })
   it('times out truthfully and cleans up requests', async () => {
     const s = await setup(150)

@@ -81,8 +81,9 @@ check and signed-app invocation are documented in [the iOS README](../apps/ios/R
   Direct3D through DXVK and vkd3d-proton under Wine or Proton. OpenGL applications are not
   streamed.
 - **The client's GPU.** Without a profile the application sees a device that supports
-  everything; it may choose formats or features the client cannot render (desktop BC texture
-  compression on an iPhone, geometry shaders on any Apple GPU).
+  everything; it may choose formats or features the connected device cannot render.
+  Query the client's actual capabilities: BC texture support varies by device, and the
+  linked MoltenVK build does not expose geometry shaders or shader cull distances.
 - **Linear images.** An application that writes pixels straight into a linearly tiled image
   lays them out for the driver here, whose row pitch is not the client's; those images show
   wrong on the client. Uploads through a buffer (what games and engines do) are unaffected.

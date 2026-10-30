@@ -106,6 +106,10 @@ The image contains:
   desktop launchers for terminal tools and agents. Mesa provides software Vulkan and OpenGL when the
   computer has no GPU. Fonts are Inter, JetBrains Mono and Noto (including CJK and colour
   emoji). Optional applications come from the catalog (below).
+  On amd64, guest components also register Debian's i386 package architecture and install
+  the native Steam bootstrap's 32-bit loader and GL dependencies (`libc6-i386` and
+  `libgl1:i386`); arm64 keeps its native dependencies. This does not advertise additional
+  GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
@@ -216,8 +220,11 @@ The password travels in a bounded request body and helper stdin, never in comman
 environment variables or logs. The public filesystem proxy permits only file operations.
 
 The helper activates or adopts the owner's GNOME Secret Service on `/run/user/1000/bus`.
-It unlocks through the daemon's control socket, checking the peer PID against the D-Bus
-service owner. Only an empty credential store is initialized; existing keyrings and browser
+It unlocks existing login keyrings through the daemon's control socket, checking the peer PID
+against the D-Bus service owner. For an empty store it uses GNOME's D-Bus
+`CreateWithMasterPassword` extension so the new login collection is exported immediately;
+the nonempty password travels in a private owner-bus Secret Service session, closed after
+creation. Only an empty credential store is initialized; existing keyrings and browser
 profiles are preserved. An existing locked keyring that does not accept the managed password
 requires its original password and an explicit operator migration. No reset, empty password
 or plaintext browser password store is selected. The host waits for this bounded preparation
@@ -226,8 +233,14 @@ before owner app, file and URL launches. `GET /v1/computer` and `computer.settin
 available.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
-The agent seat still has separate Secret Service activation against the shared home;
-concurrent credential-store access from both seats is unresolved.
+The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
+client has a separate upstream D-Bus identity, preserving session/object ownership.
+Bodyless calls and replies, including `Session.Close`, retain their empty D-Bus bodies; other
+agent bus traffic remains on the agent bus. GUI unlock prompts return an explicit
+interaction-required error for owner recovery. No second keyring writer, KWallet proxy,
+or automatic credential reset is selected. Existing agent buses require an explicit
+restart onto the private activation configuration before agent-seat startup succeeds.
+See [agent credential routing](../guest/keyring/README.md#agent-credential-routing).
 
 ### Runtimes
 
@@ -392,6 +405,13 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
 
+Agent GUI applications use a separate persistent home and XDG profile directories under
+`~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
+are independent of owner applications. No owner profile snapshot or sign-in import occurs.
+The task runner retains owner CLI authentication settings and selects the isolated GUI
+launch environment through browser/editor wrappers and desktop MCP. This is routing
+within the existing shared Unix user, not an arbitrary-command security boundary.
+
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
@@ -399,11 +419,18 @@ Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
 passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
+The agent launch environment also publishes `HOME`, its four XDG state directories,
+`CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
 The units set `ACCESSIBILITY_ENABLED=1`, `GNOME_ACCESSIBILITY=1` and
 `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1`, and start the seat's AT-SPI bus (`a11y.py bus`) before
 any application: the accessibility bus of the seat's session bus, with its socket named
 after the seat's X display and published as `AT_SPI_BUS` on its Xwayland, so Wayland and
 X11 applications on a seat share one bus and the two seats never share one.
+
+X11 foreground metadata follows the seat’s keyboard focus. `_NET_ACTIVE_WINDOW` identifies
+the focused X11 window and is zero while a Wayland surface or no surface has focus.
+The compositor reconciles stale XWM property notifications on events; this does not
+change application focus protocols or synthesize input.
 
 **Control socket.** Each instance serves `control.sock` (mode 0600, only to processes of
 its own user) for the computer's own tools: the screen routes and the agents' desktop tools
@@ -455,7 +482,9 @@ response; the host relays display bytes without inspecting them.
 `caboose-files.service`) runs as `caboose` on TCP 14700 and requires
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
-service still wakes. The protocol is in [Files](#files).
+service still wakes. The protocol is in [Files](#files). Its private bounded `POST /events` long poll
+combines queue deliveries, media snapshots, active task output and filesystem change
+anchors; [guest events](guest-events.md) defines acceptance and reconnect behavior.
 
 **Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
 `caboose-terminal.service` in the microVM, `caboose-components-services` in the container)
@@ -661,13 +690,35 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   security policy under which script runs only from the app's files and frames hold only
   its own pages. Publishing rejects pages with inline script. The top frame cannot leave the
   app; web, mail and phone links the person follows open in their default application.
+- Generation prompts direct agents to the app guide's interaction acceptance checks at
+  phone and desktop sizes. `check`, `publish` and `list` report nonfatal entry-page
+  viewport warnings, also returned by MCP `app_publish`; they never rewrite owner files
+  or storage. Static validation does not verify controls or phone touch routing. Agents
+  report the interactions tested and any unavailable phone checks.
 - `window.caboose` exists only in the top frame, through a relay in an isolated script world
   that admits only the current document. It offers the capabilities `app.json` declares:
   `exec` (programs, with bounded arguments, output, time and concurrency, each in its own
   process group, ended when the document is replaced or the app quits), `files`
-  (symlink-safe file operations in the home), `notify` (a desktop notification, which
-  reaches the phone) and `open`. Declared capabilities describe the app; they are not a
-  sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
+  (symlink-safe file operations in the home), `net`, `notify` (a desktop
+  notification, which reaches the phone) and `open`. Declared capabilities describe the
+  app; they are not a sandbox. An app runs as `caboose`, and `exec` has that user's full
+  authority.
+- `net` gives the page a network origin: a loopback HTTP server that one run of the app
+  knows by a random token, on its own port, so it is never the app's origin and what it
+  fetches is never the app's script. `<base><scheme>/<authority><path>?<query>` makes that
+  request to any http or https URL with the page's method, headers and body, and streams
+  the answer back with CORS headers for the app's page; `caboose.fetch` and
+  `caboose.net.url` build these URLs. On the computer the runtime serves it with curl; on a
+  device that runs the app natively, CabooseKit's `AgentAppNetServer` serves it with the
+  device's own network. Requests carry no cookie jar.
+- A handed-off page that is playing media when Caboose leaves the screen keeps running on
+  the device (CabooseKit's `AgentAppPages`) instead of closing with the display connection,
+  so its sound, Picture in Picture video, timers and `net` requests carry on, with the
+  system's media controls through WebKit's Media Session support; its computer bridge is
+  cut meanwhile. The computer's next announcement of the app takes the kept page over
+  without a reload; once the computer has announced its apps without it, it ends. The app
+  has the `audio` background mode for this, and allows plain-http loads (App Transport
+  Security's arbitrary loads) so pages and `net` requests reach any server.
 - App files live under `~/.local/share/caboose/apps/<id>/files/`. Apps that opt in to
   handoff keep persistent app state in those files: WebKitGTK storage and device WebKit
   storage are separate and are not migrated. Device origins are stable per computer and app.
@@ -1189,10 +1240,10 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   does not report every change (including modifications through memory mappings), and
   processing is asynchronous. The host does not serve parked reads from this journal;
   reads and writes wake the computer.
-- While the computer runs and at least one control socket is connected, the host polls the
-  journal every second and broadcasts `fs.changed { anchor }` when something changed. It
-  keeps the last anchor through a resident freeze and resumes polling from it on thaw; park,
-  restart or the last control socket closing resets the host's polling anchor.
+- While the computer runs and at least one control socket is connected, the host subscribes to the
+  journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
+  keeps the last anchor through a resident freeze and resumes from it on thaw; park,
+  restart or the last control socket closing resets the host's event anchor.
 - `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
@@ -1435,8 +1486,8 @@ agent seat never reads or presses the owner's windows, and the reverse.
 
 ### Phone handoff
 
-The host drains the guest's phone queue (`caboose-phone drain`, at most 50 events) every
-second while the computer is running and at least one control socket opened with
+The host receives the guest's phone queue through the bounded Files event receiver
+while the computer is running and at least one control socket opened with
 `?phone=1` is connected. It validates each event and sends it to those sockets:
 
 - `phone.open { url }`: a URL of at most 8192 characters with no spaces or control
@@ -1448,8 +1499,9 @@ second while the computer is running and at least one control socket opened with
   separators or control characters, `size` at most 10 MiB, and `contentType` a MIME type.
   Print content is `application/pdf`.
 
-Delivery is at most once: events drained while no phone socket can receive them are not
-replayed. The token scopes the connection to its computer.
+Guest records remain queued until the host accepts their validated delivery. A lost
+acknowledgement can replay a record; this is not a durable phone receipt. The token scopes
+the connection to its computer.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -1493,8 +1545,8 @@ The media state, in the guest file and as the host sends it:
 
 The extension reports on `play`, `playing`, `pause`, `seeked`, `ended` and `emptied`, and
 every 5 seconds while playing. In the guest file `updatedAt` is the guest-clock sample
-time. The host reads the file, with the guest's clock so skew does not matter, about once
-a second, and only while the computer is running and at least one display client is
+time. The Files event receiver sends changed snapshots with the guest's clock so skew does not
+matter, only while the computer is running and at least one display client is
 connected. Reads go straight to the guest: they never wake the computer, hold a lease or
 delay parking. A file whose native host is no longer running is ignored. What the host
 sends has `position` extrapolated to the moment it is sent while playing (capped at
@@ -1515,7 +1567,7 @@ restarts. `sent` means the command reached the computer; an id the browser no lo
 is ignored there, and the next state shows the result.
 
 Control-socket events: `media.playing { media }` on every change of the state (including
-each 5-second report while playing, and once when polling starts), and
+each 5-second report while playing, and once when observation starts), and
 `media.stopped { id }` when that video stops being offered (it ended, its tab closed, the
 browser closed, another video replaced it, or the computer stopped running).
 
@@ -1531,8 +1583,8 @@ the control events above. The contract is [native-bridge.md](native-bridge.md#ho
 
 ### Desktop notifications
 
-While the computer runs, the host drains the owner's notification queue every second as
-`caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
+While the computer runs, Files reads the owner's notification queue as `caboose`, at most
+32 KiB per record. It removes each record only after the host accepts it. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
 `desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
@@ -1599,9 +1651,9 @@ Xwayland. It composites nothing: each toplevel and popup is its own stream, and 
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
 with lossless PNG tiles for small changes and a sharpening pass once content is still),
 paces frames on the client's vsync, carries clipboard text, named cursors, touch,
-text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. Video an
-application decodes through the Caboose VA-API driver reaches the client as its own
-compressed stream, layered into the window when the application presents each frame.
+text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
+composition; marker-based passthrough is fenced because it cannot preserve arbitrary
+foreground alpha and occlusion.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
   little-endian length and one canonical CBOR map), the hello and display token, pacing and
@@ -1909,7 +1961,7 @@ Control-socket events:
 | `agent.task.queued` | `{ id, queued: string[], queuedAttachments?: string[][] }`: the replies waiting for the turn to end changed |
 | `agent.task.approval` | `{ id, request: { id, tool, summary, options? } }`, once per request |
 | `agent.task.approval.resolved` | `{ id, requestId, allow }` |
-| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, at the host's one-second polling cadence |
+| `agent.task.draft` | `{ id, draft: { turn, kind: "text" \| "thought", text } \| null }`: a changed or cleared live snapshot, when the guest snapshot changes |
 | `agent.task.event` | `{ id, turn, entry: TranscriptEntry }`: each entry of the current turn as the host reads it |
 
 A `TranscriptEntry` is one line of the runner's transcript (guest/agentd/README.md), checked
@@ -2103,7 +2155,8 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
 acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
 the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption; renderer timebase updates never drive backlog recovery. Live
+cleared on interruption. Placement samples host time once against the requested anchor;
+renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
@@ -2112,7 +2165,10 @@ window's texture is a blit on one shared Metal queue, which runs command buffers
 order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app omits `video_decoders`, returning passthrough streams to server decoding. It
+The iOS app omits `video_decoders`. The compositor also requests local decode for
+every marker stream, including headless sessions, because the marker has no independent
+foreground alpha or occlusion provenance. Controls and subtitles are composed by the
+application over decoded pixels before the ordinary window/motion paths encode them. The iOS app
 requests half-resolution software-encoded motion streams and upscales them with MetalFX,
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
@@ -2188,7 +2244,12 @@ the app card, and a detached view releases its layers.
   in a bar at least 32 points tall, with their symbols always shown.
   Dragging a title bar to a side edge snaps the window to that half, near a corner to that
   quarter (where quarters are at least 280 × 200 points), and to the top edge maximizes it,
-  with an outline of where it will go; elsewhere its edges pull onto the desktop's and its
+  with an outline of where it will go. After twelve points of title-bar movement, a
+  translucent layout chooser appears above the windows. Sliding across its miniature
+  regions previews full screen, halves, quarters, thirds and either two-thirds/one-third
+  arrangement; releasing applies the preview. Regions smaller than the app's minimum
+  are dimmed and cannot be selected. Leaving the chooser returns to edge snapping and
+  free placement. The preview follows Reduce Motion; elsewhere window edges pull onto the desktop's and its
   neighbours' within ten points. Pulled out of a snap, a window takes back its own size
   under the finger. Each window keeps a place (`FreeDesktopLayout`): the frame last given
   by hand and the work area it was given in, or a snap. Every other desktop size, after a
@@ -2217,6 +2278,9 @@ the app card, and a detached view releases its layers.
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
   upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
+  The measured reserved division between the upper panel and controls stays black throughout
+  Laptop mode, including window, fullscreen and loading transitions. Keyboard occlusion does
+  not enlarge that division.
   Keyboard fills the lower panel with a custom keyboard under the shared shortcut header;
   Keyboard & Trackpad uses a full-width trackpad in the upper third of the lower panel and
   the same keyboard and header in its lower two thirds. The system keyboard opens only from
@@ -2269,8 +2333,19 @@ the app card, and a detached view releases its layers.
   so it uses the client-provided size, while an app's own full-screen request is preserved.
   Transient windows (menus, dialogs, tooltips) are positioned relative to their parent,
   never as separate cards.
+- **Native surface corners.** Screen-facing desktop, Home, agent, terminal and bridge
+  panels use iOS 26 container-concentric shapes with their interior design radius as a
+  minimum. The system resolves each corner against the enclosing screen or presentation;
+  no device-model radius is stored. Tile and floating-window title controls use measured
+  container corner insets, and the floating desktop applies the same leading clearance
+  to its control hit tests. System sheets and navigation keep their native safe areas.
+  Media/fullscreen fitting, monitor DPI and measured hinge divisions remain independent
+  of surface decoration.
 - **Switchyard.** Without an external display the Desktop tab tiles the windows on the
   device's own screen (on iPad, a toolbar choice keeps the floating desktop instead).
+  The outer tile margins are zero; interior resize gaps remain three points on narrow
+  workspaces and four elsewhere. Columns and scroll stops use the same outer-margin
+  geometry, so the leading and trailing edges settle flush with the workspace.
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
   a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
   offered only where a tile is at least 280 points wide and two halves fit, so an upright
@@ -2282,27 +2357,50 @@ the app card, and a detached view releases its layers.
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
   that window's Linux geometry (`configure`, from `YardMetrics.content(ofTile:)`), so apps lay out
   at that size and its input, dialogs and popups are placed by it; a
-  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
-  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  resize fits the entire retained picture proportionally until the new one arrives. Gap drags send geometry at
+  most about eight times a second; title-bar carries only configure on release. The gaps resize (snapping to the presets, with haptic
   detents). Dragging a tile's title carries it to a new column, into a stack or onto
-  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  another tile. During a carry, the shared native snap palette offers full width, halves,
+  quarters, thirds and complementary one-third/two-thirds arrangements. Each choice
+  places the carried window in ordinary Yard columns and stacks, with nearby real
+  windows filling the other slots. Unfilled slots reserve space in those columns;
+  they create no synthetic windows. Explicit snap slots keep their selected fractions
+  in portrait and landscape, independently of the ordinary column-width presets.
+  App minimum sizes constrain the guest content request through `WindowSizePolicy.fitting`,
+  not the slot: larger content fits into the slot with the same transform for rendering
+  and input. Only slots without space for native chrome and positive content are disabled.
+  The palette's region rectangles are also its hit targets. The highlighted destination
+  comes from the proposed Yard layout and scroll position that release commits, above
+  the existing tiles. The carried window stays above both the highlight and chooser;
+  selection uses the drag position, so these overlays do not intercept the gesture. Palette gaps and disabled regions do not select tiles beneath them.
+  Hover changes neither the saved layout nor guest geometry; cancellation restores the
+  track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
   Screen control, the tile's menu and accessibility action, and ⌘⌥F open the same card. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
   geometry while it is up. Its measured content area, including changes to its controls,
-  rotation and folding, replaces the guest display size; the complete picture fits while
+  rotation and folding, requests the window size within its hints without replacing the
+  retained monitor; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
   actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
   presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
   above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
   reconnecting and returning from another tab. A pull down from the small tab at its top
-  edge shrinks it back into its tile and tells the app to exit full screen. Separate app
+  edge carries it through the same snap palette and tile-drop path; a valid release
+  commits the destination and tells the app to exit full screen. Separate app
   cards keep their own controls. Menus and dialogs appear above the covering window and
   fit within the workspace. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.
+  App-requested fullscreen pictures remain aspect-fit and centered in the available
+  workspace, including during rotation and pending tile resizes. Rendering, input,
+  text drops and popup placement share that centered rectangle; ordinary constrained
+  tiles retain their top-aligned fit. When an output changes mode or origin, the
+  compositor reconfigures its fullscreen and maximized windows to that output's new
+  rectangle without clearing their states. Removing an output applies the same rule
+  after moving those windows to the primary output. Ordinary windows keep their size.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
   each, with a dot for an open app; tapping focuses or opens it and holding exposes
   its window actions. Icons keep their size and scroll horizontally when they do not fit.
@@ -2535,17 +2633,27 @@ and restores its dock.
 - **Touch.** Native Wayland windows take real multi-touch, except a two-finger tap or stationary
   half-second hold cancels
   the touch sequence and sends a right-click with a brief amber ring and haptic. Xwayland windows get pointer
-  gestures: a tap clicks, a one-finger drag holds the primary mouse button for drawing,
-  selection or moving, and two fingers scroll with momentum. A two-finger tap or a
-  stationary long press sends a right click (an amber ring blooms where it lands, with a tick). Emulated scrolling uses fractional deltas paced to display refresh, with
+  gestures: a tap clicks and a one-finger swipe scrolls with momentum. Holding for half a
+  second before moving holds the primary mouse button for selection or dragging; lifting
+  releases it. Two fingers can also scroll, and a two-finger tap sends a right click (an
+  amber ring blooms where it lands, with a tick). Pencil strokes and hardware pointers
+  retain direct dragging. The free desktop uses the same finger pan/hold convention for
+  content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
-  phone trackpad. A new touch, context action, target change, detach or app backgrounding
-  stops client inertia. Native touch leaves fling and gesture interpretation to the Linux app.
+  phone trackpad. Direct content pans map local points through the presented surface to
+  guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
+  scrolling and dedicated phone trackpads retain their existing gain. This calibrates
+  the Xwayland/Chromium reference response; other applications retain their own scroll
+  interpretation (see [scroll units](display.md#direct-content-scroll-units)). A new touch, context action, target change, detach or app backgrounding
+  stops client inertia. Card and free-desktop scroll delivery is fenced to the original
+  connection and geometry. Changing the finger count during an emulated pan cancels
+  that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without
+  disabling the rest of an ongoing finger pan. Native touch leaves fling and gesture interpretation to the Linux app.
   Pointer taps are sent individually, retaining their real timing for double
-  clicks. A stationary half-second hold opens context immediately at the held point;
-  lifting or cancellation cannot send another click. A direct drag starts at the finger's
-  original contact point; cancellation, backgrounding and target changes release its mouse
-  button exactly once. Hardware wheel scrolling keeps its own system momentum.
+  clicks. A stationary half-second hold in native-touch content opens context immediately
+  at the held point; lifting or cancellation cannot send another click. A mouse-only
+  content hold presses once, then moves the pointer until lift. Cancellation, backgrounding
+  and target changes release a held mouse button exactly once. Hardware wheel scrolling keeps its own system momentum.
   A tap shows the keyboard when the app
   answers it with a text cursor or text-input-v3 focus, and hides it otherwise. Dialogs are
   fitted and centred on the phone.
@@ -2558,7 +2666,11 @@ and restores its dock.
   and suppresses leftover touches. A gesture guide is available in both control surfaces.
   System-reserved/accessibility gestures, Force Touch and app-specific rotation are not emulated.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
-  `GCMouse`.
+  `GCMouse`. The guest's virtual pointer pairs absolute positioning with relative
+  motion in the same Wayland frame, followed by buttons and scroll axes. This keeps
+  Xwayland motion and scrolling on one source device so XI2 clients retain their
+  scroll baselines. Positions and deltas use logical coordinates after display-scale
+  conversion; the guest adds no pointer acceleration.
 - **Keyboard.** The iOS keyboard works through `UITextInput`, so autocorrect, QuickPath,
   dictation, emoji and marked-text input (Chinese, Japanese, Korean) work. The client keeps
   a `TypingBuffer` of the field's text before the remote caret and turns each edit iOS makes
@@ -2567,7 +2679,10 @@ and restores its dock.
   the caret, so predictions, autocorrect and dictation work with the words already in the
   field and can correct them; a report that races fresh keystrokes waits until the app has
   caught up. Otherwise the buffer is what was typed since the last click, Return or non-text
-  key. Where an app has text-input-v3, the keyboard follows its state, its content purpose
+  key. A tap opens the keyboard from text-input-v3 or a named text cursor. An Xwayland
+  bitmap cursor reported as the compositor's generic arrow has unknown editing state and
+  does not open the keyboard automatically; the explicit keyboard control remains available. Tap focus checks preserve an already-open
+  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, its content purpose
   turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
@@ -2587,6 +2702,9 @@ and restores its dock.
   Switching groups preserves active modifiers, also indicated on the controls menu.
   The accessory lays out within its own bounds, independently of the tab sidebar's safe area.
   The row offers Escape, Tab, sticky Ctrl/Alt, repeating arrows, navigation and shell symbols.
+  Shared light UIKit haptics accompany accessory actions and Laptop custom-key activation,
+  including held-arrow/Delete repeats. Feedback belongs to the key controls, independent
+  of text transport; the system keyboard retains its own iOS feedback setting.
   Remote inputs share the same text/composition and modifier handling, with a menu toggle
   for autocorrect; Terminal keeps its own terminal-byte semantics without prose correction.
   Native fields use UIKit text editing, selection and IME; navigation moves native text
@@ -2981,12 +3099,52 @@ resumes its conversation with the new runner and applies the choice before promp
 
 Synthetic mouse clicks from app cards, the desktop and its trackpad retain a 100 ms button-down interval and a 20 ms up interval between queued clicks. This lets frame-sampled desktop interfaces observe both edges. A drag or detached input view cancels pending clicks and releases the active button; queued input is fenced to the original session connection and window. Native touch sequences retain their original phases.
 
-An app card reasserts its measured viewport when the guest resizes the window after opening, including onboarding transitions. Corrections are limited to two per one-second burst so an app enforcing a minimum size does not cause a configure loop; a later app resize or viewport change starts a new burst.
+An ordinary app card requests its measured viewport within the app's positive per-axis
+minimum and maximum size hints, including hints received after opening. A minimum wins
+over an inconsistent maximum. Dialogs follow the same size rule and fit their reported
+picture when they cannot shrink to the viewport. Corrections are limited to two per
+one-second burst so a refused size does not cause a configure loop; a later app resize or
+viewport change starts a new burst. App-requested fullscreen retains compositor-owned
+monitor geometry and aspect-fit presentation/input until an explicit exit.
+
+Switchyard tiles, app cards and desktop snap placement share viewport-aspect sizing in
+`WindowSizePolicy`: when a minimum width requires a larger remote surface, its height
+grows proportionally if the size hints permit it. Fixed-size or conflicting constraints
+fall back to independent axis limits. Ordinary floating-window resizing keeps independent
+axes. Switchyard uses the card's bounded reconciliation after app-driven size changes;
+sending a target does not imply the app accepted it. Presentation and input continue to
+use the reported surface until the replacement size arrives.
+
+The device's virtual monitor retains its initial full-screen mode, chosen DPI and
+render scale in a validated local preference keyed by the existing computer identity.
+Start/resume restores that selection before announcing outputs. Uncached Home sends an
+empty display set, retaining the server's existing/default output; it does not choose a
+fallback DPI. The first measured device desktop or card selects the mode once, using its
+existing render scale and text DPI. Card, keyboard and desktop-stage measurements do not
+replace it. The attached UIWindow supplies transient physical dimensions: the full window
+in Tablet mode and its upper panel in Laptop mode, with the reserved division converted
+into window coordinates and keyboard overlap excluded. Rotation and posture change those
+dimensions at the retained render scale and DPI. Leaving Laptop restores the current full
+window dimensions, including when the saved preference predates that measurement. The
+transient dimensions do not overwrite the saved selection. External
+monitors take precedence without overwriting the device preference; explicit owner zoom
+updates the device DPI. Window viewports and visual render scale remain separate from monitor selection. Desktop surfaces occupy the model's
+shown rectangle directly; there is no second inner aspect-fit transform.
+This stabilizes output announcements; it does not guarantee a desktop application's
+minimum resolution or establish Wine compatibility with explicit live DPI changes.
 
 Window content and input retain the server-reported size while a resize is pending.
 Apps can constrain or decline a requested size without answering again; such windows
 remain fitted at their actual aspect ratio. Optimistic placement moves the window's
 origin only, and a reported content size is applied even during placement reconciliation.
+
+Keyboard-driven tile and card transitions retain the last Metal picture's dimensions
+independently of guest configure metadata. The slot moves with native layout animation;
+the picture uses a uniform fit, and replacement picture bounds change atomically before
+presentation. Popup roots and text drops use that same fitted rectangle; direct input
+inverts it into the currently reported guest coordinates. Tablet consumes SwiftUI's
+keyboard-adjusted proposal once, while Laptop alone measures keyboard occlusion. Neither
+path changes physical monitor DPI.
 
 Chat deletion uses `DELETE /v1/agent/tasks/:id` with `{ "stop": true }` for an
 explicit stop-and-delete operation; omitting `stop` rejects a running, paused, or queued

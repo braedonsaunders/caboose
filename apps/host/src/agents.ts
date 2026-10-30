@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import { modelId, publicModels, type AgentModels } from './agent-models.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
@@ -6,7 +7,7 @@ import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './fi
 import type { AgentLaunch } from './registry.js'
 import { AGENT_DISPLAY_ENV_PATH } from './display.js'
 import type { AgentToolJournal } from './agent-tools-journal.js'
-import { pollAgentTools } from './agent-tools-mailbox.js'
+import { acceptAgentTools } from './agent-tools-mailbox.js'
 
 /**
  * Agent tasks: any Agent Client Protocol (ACP) agent from the registry, run inside the
@@ -134,6 +135,8 @@ export interface AgentTaskOptions {
    * chats get it (the `caboose-library` server). Its secrets never enter the task's records.
    */
   mcpLibrary?: () => Promise<boolean>
+  subscribe?: EventSubscribe
+  eventsChanged?: () => void
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
   ensureSeat?: () => Promise<void>
@@ -217,7 +220,9 @@ const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', 
 const LAUNCH = [
   // The seat's launch environment (its Wayland socket, Xwayland :101 and cookie, control socket), when it is up.
   `if [ -r ${AGENT_DISPLAY_ENV_PATH} ]; then set -a; . ${AGENT_DISPLAY_ENV_PATH}; set +a; fi`,
-  'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
+  // GUI profiles belong to wrappers; preserve the runner CLI authentication home.
+  'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME CABOOSE_SEAT MOZ_NO_REMOTE VSCODE_PORTABLE CHROME_CONFIG_HOME CHROME_USER_DATA_DIR VSCODE_IPC_HOOK_CLI',
+  'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/usr/local/libexec/caboose-agent-seat-bin:/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
   `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,
   'rm -f exit-code',
   `setsid sh -c 'node ${AGENTD} run "$PWD" >> stderr.log 2>&1; echo $? > exit-code' > /dev/null 2>&1 < /dev/null &`,
@@ -417,6 +422,8 @@ export function parseRequest(id: string, json: string): { request: PendingApprov
 interface Tracked {
   task: AgentTask
   offset: number
+  lastEventDigest?: string
+  discardLine?: boolean
   carry: Buffer
   /** The turn the transcript is in, by its latest `user` line; output of older turns is not shown. */
   turn: number
@@ -437,15 +444,16 @@ interface Tracked {
 export class AgentTasks {
   private readonly tracked = new Map<string, Tracked>()
   private readonly releases = new Map<string, () => void>()
-  private timer: ReturnType<typeof setInterval> | undefined
+  private timer: (() => void) | undefined
+  private eventGeneration = 0
+  private readonly subscribe?: EventSubscribe
+  private readonly eventsChanged?: () => void
   private polling = false
   private readonly resolver: AgentResolver
   private readonly toolJournal?: AgentTaskOptions["toolJournal"]
-  private toolPolling = false
   private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly mcpLibrary?: AgentTaskOptions["mcpLibrary"]
-  private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
   private readonly home?: HomeOwnership
@@ -460,7 +468,8 @@ export class AgentTasks {
     this.toolJournal = options.toolJournal
     this.craftServers = options.craftServers
     this.mcpLibrary = options.mcpLibrary
-    this.pollMs = options.pollMs ?? 1000
+    this.subscribe = options.subscribe
+    this.eventsChanged = options.eventsChanged
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
     this.home = options.home
@@ -953,6 +962,7 @@ export class AgentTasks {
         await this.toolWork
         await asCaboose(guest, 'exec node -e "$2" "$1"', [`${HOME}/Agents/${id}`, DELETE_TASK], 20_000)
         this.tracked.delete(id)
+        this.eventsChanged?.()
         this.releases.get(id)?.(); this.releases.delete(id)
         this.emit({ type: 'agent.task.deleted', id })
         return true
@@ -1103,8 +1113,10 @@ export class AgentTasks {
 
   /** Stops tailing (the computer is parking); running tasks resume being tailed on wake. */
   pause(): void {
-    if (this.timer) clearInterval(this.timer)
+    this.eventGeneration++
+    if (this.timer) this.timer()
     this.timer = undefined
+    this.eventsChanged?.()
   }
 
   /** After pause, wait for any mailbox guest command and admitted dispatch to settle. */
@@ -1123,35 +1135,70 @@ export class AgentTasks {
     if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()
   }
 
-  private ensurePolling(): void {
-    if (this.timer) return
-    this.timer = setInterval(() => {
-      void this.poll()
-      if (!this.toolWork) {
-        const work = this.pollTools()
-        this.toolWork = work
-        void work.finally(() => { if (this.toolWork === work) this.toolWork = undefined })
-      }
-    }, this.pollMs)
-    this.timer.unref()
+  /** Only host-tracked live tasks are eligible for guest watches. */
+  eventTasks(): Array<{ id: string; offset: number; turn: number }> {
+    return [...this.tracked.values()].filter(entry => !entry.deleting && isLive(entry.task.status))
+      .map(entry => ({ id: entry.task.id, offset: entry.offset, turn: entry.task.turns }))
   }
 
-  private async pollTools(): Promise<void> {
-    if (this.toolPolling || !this.toolJournal || !this.timer) return
+  private ensurePolling(): void {
+    if (!this.timer) {
+      const tick = this.subscribe?.('agent.tick', record => this.acceptTick(record))
+      const mailbox = this.subscribe?.('agent.mailbox', record => this.acceptMailbox(record))
+      this.timer = () => { tick?.(); mailbox?.() }
+    }
+    this.eventsChanged?.()
+  }
+
+  async acceptTick(raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const value = raw as Record<string, unknown>
+    if (typeof value.id !== 'string' || !TASK_ID.test(value.id) || typeof value.output !== 'string'
+      || Buffer.byteLength(value.output) > 1048576 || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0
+      || !Number.isSafeInteger(value.nextOffset) || (value.nextOffset as number) < 0
+      || !Number.isSafeInteger(value.chunk) || (value.chunk as number) < 1 || (value.chunk as number) > POLL_BUDGET) return
+    const entry = this.tracked.get(value.id)
+    if (!entry || entry.deleting || !isLive(entry.task.status)) return
+    const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex')
+    if (entry.lastEventDigest === digest) return
+    const report = parsePoll(value.output).get(value.id)
+    if (!report || report.data.length > (value.chunk as number)) return
+    const offset = value.reset === true ? 0 : entry.offset
+    if (value.offset !== offset || value.nextOffset !== offset + report.data.length) return
+    if (value.reset === true) { entry.offset = 0; entry.carry = Buffer.alloc(0); entry.discardLine = false }
+    const previous = { offset: entry.offset, carry: entry.carry, discardLine: entry.discardLine, turn: entry.turn }
+    try { this.apply(entry, report, value.chunk as number) }
+    catch (error) { Object.assign(entry, previous); throw error }
+    entry.lastEventDigest = digest
+    if (!entry.replying) await entry.replyChain
+  }
+
+  async acceptMailbox(raw: unknown): Promise<void> {
+    const work = this.consumeMailbox(raw)
+    this.toolWork = work
+    try { await work } finally { if (this.toolWork === work) this.toolWork = undefined }
+  }
+
+  private async consumeMailbox(raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !this.toolJournal || !this.timer) return
+    const value = raw as Record<string, unknown>
+    if (typeof value.id !== 'string' || !TASK_ID.test(value.id) || typeof value.request !== 'string'
+      || value.request.length > 90000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.request)) return
     const guest = this.guest()
-    if (!guest) return
-    this.toolPolling = true
-    try {
-      const journal = await this.toolJournal()
-      if (!journal || !this.timer) return
-      const live = [...this.tracked.values()].flatMap(({ task }) => task.status === 'running' && task.profileId && journal.profileForTask(task.id) === task.profileId
-        ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
-      await pollAgentTools(guest, journal, live, task => {
-        const current = this.tracked.get(task.id)?.task
-        return Boolean(!this.tracked.get(task.id)?.deleting && this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
-      })
-    } catch (error) { console.error('Agent tool mailbox failed:', error) }
-    finally { this.toolPolling = false }
+    if (!guest) throw new AgentUnavailableError()
+    const generation = this.eventGeneration
+    const journal = await this.toolJournal()
+    if (!journal || generation !== this.eventGeneration) return
+    const entry = this.tracked.get(value.id)
+    if (!entry?.task.profileId || entry.deleting || entry.task.status !== 'running') return
+    let request: unknown
+    try { request = JSON.parse(Buffer.from(value.request, 'base64').toString('utf8')) } catch { return }
+    if (!request || typeof request !== 'object' || !('id' in request)) return
+    const task = { id: entry.task.id, profileId: entry.task.profileId, turn: entry.task.turns }
+    await acceptAgentTools(guest, journal, [task], current => generation === this.eventGeneration && !!this.timer
+      && this.tracked.get(current.id) === entry && !entry.deleting && entry.task.status === 'running'
+      && entry.task.turns === current.turn && entry.task.profileId === current.profileId,
+      [[task.id, request.id, value.request]])
   }
 
   /**
@@ -1191,6 +1238,7 @@ export class AgentTasks {
     let result: TurnResult | undefined
     let began = false
     for (let end = buffer.indexOf(10); end >= 0; start = end + 1, end = buffer.indexOf(10, start)) {
+      if (entry.discardLine || end - start > 2097152) { entry.discardLine = false; continue }
       const line = buffer.subarray(start, end).toString('utf8')
       if (!line.trim()) continue
       try {
@@ -1212,7 +1260,8 @@ export class AgentTasks {
       }
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
-    entry.carry = Buffer.from(buffer.subarray(start))
+    if (entry.discardLine || buffer.length - start > 2097152) { entry.carry = Buffer.alloc(0); entry.discardLine = true }
+    else entry.carry = Buffer.from(buffer.subarray(start))
     // Ignore snapshots from an older turn or beyond the transcript bytes consumed this tick.
     const draft = report.draft
     this.setDraft(entry, !result && report.data.length < chunk && draft?.turn === entry.task.turns
@@ -1293,6 +1342,7 @@ export class AgentTasks {
     if (!isLive(entry.task.status)) return
     this.setDraft(entry, null)
     entry.task.status = status
+    this.eventsChanged?.()
     // Restoring old history is not a new completion. Legacy records without a
     // durable timestamp stay undated rather than resurfacing after every restart.
     entry.task.finishedAt = finishedAt ?? (announce ? new Date().toISOString() : undefined)

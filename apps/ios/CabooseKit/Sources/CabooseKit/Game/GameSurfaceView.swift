@@ -21,7 +21,11 @@ import WebKit
 /// instead.
 @MainActor
 final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDelegate {
-    private(set) weak var game: RemoteGame?
+    private(set) weak var game: RemoteGame? {
+        didSet { current.game = game }
+    }
+    /// The game the file service and saves are reached through, which a kept page's next game replaces.
+    private let current: CurrentGame
     let webView: WKWebView
     private let server: GameServer
     private let hasStableOrigin: Bool
@@ -45,21 +49,24 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     }
 
     private init(game: RemoteGame) {
+        let current = CurrentGame(game)
+        self.current = current
         self.game = game
         let stable = game.webview.flatMap { app in game.host.flatMap { WebviewOriginStore().origin(computer: $0.webviewComputerKey, app: app.app) } }
         hasStableOrigin = game.webview == nil || stable != nil
-        server = GameServer(root: game.descriptor.root, responder: GameFileResponder(directoryIndex: game.webview != nil, source: { [weak game] in
-            game?.host.map { GameFileClient(host: $0) }
+        server = GameServer(root: game.descriptor.root, responder: GameFileResponder(directoryIndex: game.webview != nil, source: { [current] in
+            current.game?.host.map { GameFileClient(host: $0) }
         }), token: stable?.token ?? GameOrigin.newToken(), appPolicy: game.webview != nil,
             appEntry: game.webview?.entry, preferredPort: stable?.port)
         let device = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
-        saves = GameSaveSync(saves: game.descriptor.saves, device: device, host: { [weak game] in game?.host })
+        saves = GameSaveSync(saves: game.descriptor.saves, device: device, host: { [current] in current.game?.host })
         content = WKUserContentController()
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = game.webview == nil ? .nonPersistent() : .default()
         configuration.userContentController = content
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.allowsPictureInPictureMediaPlayback = true
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init(frame: .zero)
         backgroundColor = .black
@@ -101,12 +108,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         message.numberOfLines = 0
         message.isHidden = true
         addSubview(message)
-        game.savesFlusher = { [weak saves] in await saves?.flush() }
-        game.gamepadSink = { [weak self] state in self?.send(gamepad: state) }
-        game.inputSink = { [weak self] events in self?.send(input: events) }
-        game.stateSink = { [weak self] in self?.showState() }
-        if game.webview != nil { game.resumeSink = { [weak self] in self?.load() } }
-        game.onEnd { [weak self] in self?.end() }
+        attach(game)
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -123,6 +125,16 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Takes `game`'s input, controller, state and end.
+    private func attach(_ game: RemoteGame) {
+        game.savesFlusher = { [weak saves] in await saves?.flush() }
+        game.gamepadSink = { [weak self] state in self?.send(gamepad: state) }
+        game.inputSink = { [weak self] events in self?.send(input: events) }
+        game.stateSink = { [weak self] in self?.showState() }
+        if game.webview != nil { game.resumeSink = { [weak self] in self?.load() } }
+        game.onEnd { [weak self] in self?.end() }
+    }
 
     deinit {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
@@ -226,6 +238,7 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     private func listenAgain() {
         guard origin != nil, isRunning else { return }
         Task { [server] in _ = try? await server.start() }
+        appBridge?.resume()
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
@@ -278,7 +291,8 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
     /// WebKit ended the page (memory pressure, for one): start again from the saves written so
     /// far. A second time within a minute, the device cannot run the game.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        guard isRunning else { return }
+        // A kept page that WebKit ended has nothing left to carry on.
+        guard isRunning else { return AgentAppPages.shared.end(page: self) }
         if terminations.record(Date()) { return decline(GameDecline.terminatedTwice) }
         Task { [weak self] in
             await self?.saves.flush()
@@ -366,8 +380,51 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
 
     private static let blank = URL(string: "about:blank")!
 
-    /// The game ended: the page and its origin stop at once, and the saves it wrote still go to the computer.
+    // MARK: Kept pages
+
+    /// The display closed because Caboose left the screen: an app page is kept, and stays kept
+    /// if it is playing media (`AgentAppPages`). Returns whether it was kept.
+    private func keep() -> Bool {
+        guard AgentAppPages.shared.isParking, let game, let key = AgentAppPages.key(of: game),
+              game.state == .running, origin != nil, let appBridge else { return false }
+        appBridge.park()
+        game.releaseInput()
+        removeFromSuperview()
+        game.surface = nil
+        self.game = nil
+        AgentAppPages.shared.keep(key, page: self, adopt: { [unowned self] game in self.adopt(game) },
+                                  end: { [unowned self] in self.finish() })
+        // Only a page that is playing goes on; the system lets the app run for it.
+        let task = BackgroundTask()
+        webView.requestMediaPlaybackState { [weak self] state in
+            MainActor.assumeIsolated {
+                if let self, state != .playing { AgentAppPages.shared.end(page: self) }
+                task.end()
+            }
+        }
+        return true
+    }
+
+    /// The computer announced this kept page's app again: the page carries on as `game`, and
+    /// its bridge reconnects to the computer without a reload.
+    private func adopt(_ game: RemoteGame) -> Bool {
+        guard game.webview != nil, let appBridge else { return false }
+        self.game = game
+        game.surface = self
+        attach(game)
+        appBridge.adopt(game)
+        listenAgain()
+        return true
+    }
+
+    /// The game ended: a page leaving with Caboose may be kept; otherwise it stops.
     private func end() {
+        if keep() { return }
+        finish()
+    }
+
+    /// The page and its origin stop at once, and the saves it wrote still go to the computer.
+    private func finish() {
         stopPage()
         content.removeAllScriptMessageHandlers()
         removeFromSuperview()
@@ -375,6 +432,31 @@ final class GameSurfaceView: UIView, WKNavigationDelegate, UIGestureRecognizerDe
         let saves = saves
         Task { await saves.finish() }
     }
+}
+
+/// Time to finish a short piece of work after the app leaves the screen.
+@MainActor
+private final class BackgroundTask {
+    private var identifier = UIBackgroundTaskIdentifier.invalid
+
+    init() {
+        identifier = UIApplication.shared.beginBackgroundTask { [weak self] in
+            MainActor.assumeIsolated { self?.end() }
+        }
+    }
+
+    func end() {
+        guard identifier != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
+        identifier = .invalid
+    }
+}
+
+/// Which game a surface serves now, for the closures its file service and saves were made with.
+@MainActor
+private final class CurrentGame {
+    weak var game: RemoteGame?
+    init(_ game: RemoteGame) { self.game = game }
 }
 
 /// The page's `cabooseFS` messages, held weakly: the content controller keeps its handlers.

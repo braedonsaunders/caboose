@@ -202,3 +202,9 @@ missing or refused socket with no live recorded PID permits removing the stale s
 pidfile. Other failures require operator attention. Existing-computer component updates
 install the current `caboose-session` script for container computers. Run
 `python3 guest/container/test-system-bus.py` to check the recovery policy.
+
+Agent display and session-bus processes start through `agent-profile.py` with persistent
+private GUI state. The agent bus uses the dedicated credential activation configuration;
+its live daemon must already use that configuration or startup requests an explicit
+restart. Owner session state is unchanged. See [agent GUI profiles](../desktop-mcp/README.md#persistent-agent-gui-profiles)
+and [credential routing](../keyring/README.md#agent-credential-routing).

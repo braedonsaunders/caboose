@@ -5,6 +5,13 @@ computer's display over the Caboose Display Protocol ([docs/display.md](../../do
 
 ## Layout
 
+Tiles, app cards and snapped placements use `WindowSizePolicy.fitting` to preserve
+their viewport aspect within the app's size hints. Free resizing uses independent
+axis limits. Yard and cards bound corrections after an app changes its own size;
+the displayed surface and input retain the committed geometry while a request is
+pending. `scripts/check-desktop.sh` includes minimum-width and fixed-size acceptance
+checks; pure policy tests do not establish live app behavior.
+
 | Path | What |
 | --- | --- |
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
@@ -78,7 +85,13 @@ sh scripts/check-remote-access.sh
 Opted-in agent apps use a native WebKit view and the authenticated guest bridge, with a
 stable per-app origin. Apps that depend on computer-side browser storage stay on the
 computer; the `handoff: "files"` contract and fallback are in
-[guest/apps](../../guest/apps/README.md#native-handoff).
+[guest/apps](../../guest/apps/README.md#native-handoff). The device serves their `net`
+capability itself through `AgentAppNetServer`, the app's network origin on a second loopback
+port. A page that is playing media when Caboose leaves the screen is kept running
+(`AgentAppPages`) and taken over by the app's next announcement without a reload, which is
+why the app declares the `audio` background mode; the display's own sound still stops when
+Caboose leaves the screen, because the display session ends. App Transport Security allows
+arbitrary loads so app pages and `net` requests reach plain-http servers.
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
@@ -93,7 +106,8 @@ ranges, content types, the cache and its eviction, conflict names, the save plan
 save sync against an in-memory file service), check the game's loopback origin (request
 parsing and its bounds, the token, `Host` and method checks, response headers, and
 `GameServer` fetched over 127.0.0.1 with URLSession, closing its connections when it stops
-or when a request does not arrive), run the game page's IndexedDB and
+or when a request does not arrive), check the agent-app network origin's rules and an
+`AgentAppNetServer` that forwards, preflights and refuses over 127.0.0.1, run the game page's IndexedDB and
 gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
 them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
@@ -110,7 +124,11 @@ The native agent-app handoff has a focused simulator check using a local fake ho
 SIMULATOR_ID=<available-ios-simulator-udid> sh scripts/check-agent-app-webview.sh
 ```
 
-It exercises the real WKWebView, injected API, idle event polling, reload and takeover.
+It exercises the real WKWebView, injected API, idle event polling, reload and takeover, a
+`caboose.fetch` to a server without CORS consent through the device's network origin, and a
+page playing a stream through it that is kept when its game ends as the app leaves the screen
+and taken over, unreloaded and reconnected, by the next announcement, while a paused page is
+not kept.
 The check uses port 18765 on loopback and an unchanged temporary package copy.
 Builds without MetalFX use the software motion upscaler. Select the full Xcode
 developer directory before running the check.
@@ -138,6 +156,39 @@ The terminal's protocol, keys and connection are unit-tested over a fake transpo
 a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter LiveTerminal`
 opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
 its offset, is replaced by a second connection, exits, and checks the closes that follow.
+
+## Native surface geometry
+
+Desktop windows and panels on Home, Agents, Terminal and native bridge presentations use
+`ConcentricRectangle` with a minimum interior radius. iOS resolves the corners against
+its enclosing container on iPhone, iPad and external displays; no hardware lookup table
+is used. Title-bar controls read `containerCornerInsets`, with the same leading offset
+used for floating-desktop hit testing. Both APIs are available on the app's iOS 26 minimum.
+System sheets and navigation retain their own safe areas, and app fullscreen retains its
+existing aspect-fit policy. Tile outer margins are zero; interior resize handles remain.
+
+Run `swift test --jobs 1 --filter SwitchyardTests` in CabooseKit for edge partition and
+scroll geometry. Run `sh scripts/check-desktop.sh` for the native corner/device checks.
+A screenshot alone does not establish that a physical display corner leaves controls visible.
+
+## Switchyard drag placement
+
+Title-bar carries and the workspace fullscreen pull-tab show the native desktop snap
+palette. Its hit regions select a proposed `YardLayout`; the visible destination and
+release use that same layout and scroll position. Nearby windows fill its columns and
+stacks, while other windows remain on the track. A single window can occupy any slot;
+unfilled slots reserve space in the existing columns, without synthetic windows.
+Explicit slots retain their selected fractions across rotation. App minimum sizes
+constrain the guest content through `WindowSizePolicy.fitting`; the native surface
+fits that valid content into the slot with matching input coordinates. Only slots
+without space for native chrome and positive content are disabled. The carried
+window remains above the chooser and placement highlight. Outside the palette, existing column/stack/swap drops remain available.
+Cancellation restores the track without changing the guest or exiting fullscreen;
+rotation, connection invalidation and leaving Desktop cancel an active carry.
+
+Pure regression coverage: `swift test --jobs 1 --filter 'YardSnapTests|SwitchyardTests|FreeDesktopLayoutTests'`
+in `CabooseKit`. `scripts/check-desktop.sh` contains the coordinated UI checks; its
+printed checklist is not an automated runtime pass. No display protocol changes apply.
 
 ## Checking Switchyard on a device
 
@@ -170,7 +221,12 @@ and picture need a device with the computer awake. On the Desktop tab, with thre
    keyboard and Return, and repeat after folding and rotating.
 6. iPad set to Free, and a TV: drag a title bar to the left edge, a corner and the top
    edge; an outline shows each snap and letting go takes it. Drag the window back out: it
-   returns to its own size under the finger. Drag one window beside another: their edges
+   returns to its own size under the finger. While dragging, slide over the layout chooser:
+   each miniature region previews its full-size placement above the windows. Release into
+   thirds and both two-thirds/one-third arrangements; adjacent regions meet exactly.
+   Move away before releasing: the preview clears and the window stays free. Large-minimum
+   apps have dimmed, unavailable regions. Repeat with touch, trackpad, Reduce Motion,
+   rotation and relaunch. Drag one window beside another: their edges
    meet. Arrange three windows, rotate, rotate back: every window is where it was. Relaunch
    the app: the same places. Close a window and open the app again: it gets a fresh place.
    Under a finger, Close, Minimize and Zoom show their symbols and each takes a tap at the
@@ -340,6 +396,22 @@ A simulator or macOS report describes that host's GPU, not the phone. The report
 feature query, not a rendering test or a complete Khronos profile. Game compatibility
 still requires a real replay with the reported features.
 
+The signed Debug app has an opt-in launch diagnostic. With the rebuilt GPU framework
+installed, launch it with `CABOOSE_GPU_CAPABILITIES=1` in the app's environment:
+
+```sh
+xcrun devicectl device process launch --device "$DEVICE" --terminate-existing \
+  --environment-variables '{"CABOOSE_GPU_CAPABILITIES":"1"}' com.braedonsaunders.caboose
+xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
+  --domain-identifier com.braedonsaunders.caboose \
+  --source Library/Caches/CabooseDiagnostics/gpu-capabilities.json \
+  --destination /tmp/caboose-phone-gpu-capabilities.json
+```
+
+Wait for the background query to finish before copying. Each requested run removes the
+previous report first, so a failed query cannot leave old evidence in its place. The
+hook is absent from Release builds and does nothing on an ordinary launch.
+
 - **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
   replays at a time; a player started while another replays waits until that one stops.
 - **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
@@ -357,25 +429,41 @@ stationary half-second hold cancels that native touch sequence and sends a right
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. Mouse-only windows, including X11 apps through Xwayland, take pointer gestures:
-one finger draws, selects or drags with the primary button; two fingers scroll with momentum.
-A tap clicks, two quick taps double-click, and a two-finger tap or stationary half-second
-hold right-clicks immediately. A drag starts at the original contact point and releases
-its button on cancellation, target change or backgrounding. These rules are shared by
+one finger scrolls with momentum. Hold for half a second, feel the haptic, then move to
+select text or drag a control with the primary button; lifting releases it. Two fingers
+also scroll. A tap clicks, two quick taps double-click, and a two-finger tap right-clicks.
+Pencil strokes and hardware pointers drag directly. A held drag releases its button on
+cancellation, target change or backgrounding. The free desktop uses the same content
+pan/hold gestures; window title bars and resize handles still drag immediately. These rules are shared by
 all mouse-only windows, with no application-name overrides. A trackpad or mouse hovers,
 clicks and right-clicks precisely.
 
 Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
 coalesced once per display frame, and release velocity decays independently of refresh
-rate. Desktop two-finger scrolling and the phone trackpad use the same inertia. New
+rate. `DirectScrollCalibration` applies a 1/12 reference gain after mapping direct
+content pans to guest pixels, including inertia. Hardware scrolling and dedicated phone
+trackpads bypass it. The [unit trace](../../docs/display.md#direct-content-scroll-units)
+defines the reference response and its limits. Desktop content scrolling and the phone
+trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
-client inertia; native Wayland touch keeps the application's own fling behavior.
+client inertia; native Wayland touch keeps the application's own fling behavior. A display
+stall drops old movement and momentum while continuing to accept the finger's new movement.
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
-reversal and display stalls. On a real host, check slow and fast swipes in a native
-Wayland app and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
+reversal and display stalls. `swift test --filter ScrollGestureOwnershipTests` checks
+recognizer ownership and cancellation on finger-count changes.
+`swift test --filter DirectScrollCalibrationTests` checks the reference content distance
+through portrait, landscape, fitted/stretched surfaces, scales 1/1.5/3, fractional input,
+inertia and the hardware bypass. These pure checks do not measure an application's gain. Card and free-desktop
+scrolling retain their original connection and coordinate mapping through momentum.
+On a real host, check slow and fast swipes in a native
+Wayland app and one- and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
 that a new touch stops the fling, a held finger stops before release, pinches still
 zoom, drawing and selection still work, context clicks do not fling, and changing
-windows or backgrounding never sends old scroll input to the next window.
+windows or backgrounding never sends old scroll input to the next window. In cards,
+free Desktop and Laptop, add or lift a finger during a pan: the remainder must neither
+scroll, click nor fling; a fresh swipe works. Resize or rotate during momentum and
+reconnect during a pan: no old delta may enter the new mapping or connection.
 
 
 With the desktop on a TV the phone is its input, with the same choices as Laptop from the
@@ -392,7 +480,9 @@ unit-tested with staggered fingers, because real fingers never land or lift toge
 The iOS keyboard types through `UITextInput` (`CabooseKit/UI/RemoteTextInputView.swift`),
 and `CabooseKit/Input/TypingBuffer.swift` turns its edits into text-input commits and
 deletions, unit-tested for autocorrect, swipe words, marked text and deletes. The keyboard
-follows the app's own text-input state, and the field's purpose turns autocorrect off in
+opens from the app's own text-input state or text cursor. An unclassified Xwayland bitmap
+cursor does not establish text focus; use the keyboard control when no text-focus report is available. Tapping again does not dismiss an
+already-open keyboard; use its dismiss control. The field's purpose turns autocorrect off in
 terminals and password fields. Where the app supports text input, marked text (Chinese,
 Japanese, Korean) is a real preedit. Hardware keys are sent as keys, with ⌘ mapped to
 Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
@@ -774,6 +864,10 @@ Duo and iPad; the keys do not scroll. Remote inputs share `RemoteTextInputView` 
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
 to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
+App-owned keys use shared light UIKit haptics: the accessory row, Laptop letters,
+modifiers, Return, symbols and each held-arrow/Delete repeat. Feedback follows key
+activation, so cancellation stops repeats. System-keyboard feedback follows the iOS
+Keyboard Feedback setting; text delivery and hardware typing do not add another pulse.
 
 Check native text entry with `scripts/check-agents.sh`; this includes keyboard focus,
 IME and selection, native form traits and the sign-in sheet material.
@@ -917,6 +1011,58 @@ return-from-tab checks on a device. Pure orientation policy is covered by
 `swift test --filter DesktopChromeTests`; measurement-to-guest and dock geometry by
 `swift test --filter DeviceViewportTests`, both in CabooseKit.
 
+The device monitor saves its initial full-screen mode and the DPI selected at
+attachment, including an active desktop's existing UI scale. Its validated mode, DPI and
+render scale persist locally under the computer's identity and restore before start/resume.
+Uncached Home announces no replacement output; hello, pictures and vsync use the server's
+retained/default display until the first measured card/desktop selects a mode. External
+monitors never overwrite that device preference. Cards, keyboard and stage layout update
+window viewports without changing that monitor. The attached scene window measures the
+physical monitor independently: its full bounds in Tablet mode, its upper panel in Laptop
+mode, excluding keyboard overlap and converting the reserved division into window coordinates.
+Posture and physical rotation update dimensions at the retained render scale and DPI.
+Leaving Laptop restores the current full scene-window bounds; an old square saved mode
+does not override that measurement. External modes take
+precedence, and explicit owner zoom changes the selected DPI. Ordinary card/dialog requests honor per-axis
+size hints; app fullscreen retains compositor geometry and uses the existing aspect-fit
+presentation/input transform. No fixed minimum desktop resolution is imposed.
+
+`swift test --jobs 1 --filter 'MonitorPolicyTests|WindowSizePolicyTests|FullscreenGeometryTests|CardWindowFitTests|DeviceViewportTests|DesktopGeometryTests|CabooseDisplaySessionTests'`
+checks monitor retention/external precedence, initial DPI/render-scale preservation,
+minimum/maximum hints at the shared configure boundary, fullscreen restoration and fitted
+position/delta geometry. Desktop trackpad scrolling snapshots the shown rectangle and
+committed remote size and cancels when either changes, including during inertia. These pure
+checks do not validate Wine's live DPI transitions or actual-device fullscreen input.
+
+Hosted UIKit regressions use the `CabooseGeometry` scheme generated by `xcodegen generate`
+in `apps/ios`. Run on an available iOS Simulator with one compiler job:
+
+```sh
+xcodebuild -project Caboose.xcodeproj -scheme CabooseGeometry -destination 'platform=iOS Simulator,id=SIMULATOR_ID' -jobs 1 -parallel-testing-enabled NO -only-testing:CabooseGeometryTests test
+```
+
+`DeviceMonitorLifecycleTests` injects synthetic computer identities and a private defaults
+suite without starting connections. It exercises AppModel's actual Home → desktop/card
+order, restoration and external precedence. `DesktopSurfaceLayoutTests` hosts the production
+representable, changes the committed remote size before the parent bounds catch up, and
+asserts one full-rectangle Metal view with an identity transform and no inner fit. It also
+hosts the production Laptop upper panel and checks the content/hinge boundaries in rendered
+pixels across content appearing and disappearing. The measured hinge stays black throughout
+Laptop mode regardless of app fullscreen state; a keyboard-shortened viewport does not
+expand that matte.
+`DockOverflowTests` renders the production tiled, floating and compact Laptop docks with
+solid test icons. It checks that launch motion keeps the full icon height, including a
+hover-enlarged floating icon, while horizontally scrolled apps remain inside their viewport.
+The glass is confined to the dock background; the tiled icon viewport reserves the six-point
+bounce above its resting content without changing the dock's layout or horizontal clipping.
+For device QA, launch an app in each dock, hover the launching icon on a free desktop,
+and scroll a crowded tiled dock: icons stay whole and never cover Overview or All Apps.
+Laptop's rail and hinge boundary remain fixed.
+
+Attached-window conversion is checked with an offset probe and a changing probe viewport. The
+compositor regression `cargo test -p caboose-display empty_client_announcement_retains_default_and_previous_output`
+in `guest/display` checks both default and retained output identity for empty announcements.
+
 Run `sh apps/ios/scripts/check-laptop.sh` for the physical Duo, keyboard and monitor checks.
 Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests` in CabooseKit.
 
@@ -1022,7 +1168,51 @@ message is created until Send. The previous chat and its unsent draft remain in 
 from a signed-out chat’s Switch Agent action. Open Agent Settings and connect/sign-in
 controls there; the composer and toolbar contain no separate Connect a Model action.
 
-## Opt-in audio timing diagnostics
+### Direct-touch scroll check (device)
+
+Use a connected computer with a scrollable Xwayland application and a native Wayland
+application; repeat in a window card and on the free desktop. This checks the shared
+input path without application-name rules.
+
+1. In mouse-only content, swipe vertically and horizontally away from the scrollbar.
+   Content scrolls, coasts after lift, and stops on a new touch. No mouse selection or
+   click occurs at lift. Tap a button and a text field: each still activates once.
+2. Hold a text selection or draggable control for half a second, then move. It drags
+   instead of scrolling; lifting releases it once. Small stationary finger jitter must
+   not prevent the hold. A two-finger tap still opens the context menu.
+3. Add a second finger during a held drag, background the app, change its target, or
+   close the window. No pressed button or late click survives; a fresh touch works.
+4. On the desktop, drag a title bar and resize handle immediately; content gestures do
+   not move the window. Repeat with a mouse and Pencil: their direct strokes still drag.
+5. In native-touch content, swipe and pinch: the Linux app still owns those gestures.
+   Check a native context hold and ordinary keyboard focus as well. Laptop trackpad
+   gestures remain one finger to point and two fingers to scroll.
+
+### Opt-in close request diagnostics
+
+The Boolean app preference `CabooseCloseDiagnosticsEnabled` defaults to false. For a
+coordinated diagnostic launch, pass `-CabooseCloseDiagnosticsEnabled YES` as app launch
+arguments. With it enabled, a close request writes
+`Library/Caches/CabooseDiagnostics/close-requests.json` in the app container. The file
+contains at most the latest 64 requests from this process and is capped at 128 KiB.
+It is replaced atomically on close requests; there is no per-input disk logging or upload.
+Disable the preference or remove the launch override to stop recording; the existing
+artifact remains available for collection or deletion through the app container tools.
+
+Records contain monotonic seconds, window ID, connection generation, the validated
+server epoch, reported window geometry, initiating source file/line and available
+numeric UI context. Yard requests include whether Overview is open; free-desktop
+hit-tested requests include the cursor position. Title-bar controls include their
+measured global label bounds. These bounds are not UIKit's effective hit region and do
+not prove which physical touch activated the button. There are no stacks, window titles,
+account strings, URLs, text input, screenshots or protocol changes. Missing caller
+metadata identifies a close path that did not use the UI attribution wrapper.
+
+A record means the canonical session close method was called. It does not confirm a
+wire send: a device game still waits for its saves under the existing close policy.
+Correlate with a passive wire capture's close ID/time and subsequent window lifecycle.
+
+### Opt-in audio timing diagnostics
 
 The Boolean app preference `CabooseAudioDiagnosticsEnabled` defaults to false. Pass
 `-CabooseAudioDiagnosticsEnabled YES` as app launch arguments for a diagnostic launch.
@@ -1128,3 +1318,79 @@ sleep through the skipped silence, use libopus as its encoder, or establish phon
 quality. Run it with `swift test --jobs 1 --filter OpusStartupContinuityTests`.
 `AudioStartupDiagnosticsTests` covers window/generation boundaries, timestamp ordering,
 metadata schema, single-read placement and shared writer caps without playing audio.
+
+### Standalone muted audio rate control
+
+`scripts/audio-rate-control.swift` is an opt-in macOS mechanism probe outside the
+CabooseKit test target. Normal tests neither compile nor run it. It uses generated
+nonzero 1 kHz, stereo Float32 PCM at 48 kHz, 960 frames per packet, with the renderer
+muted before enqueue. It uses no network, media files, microphone, phone or existing
+Caboose session. Compile and run only in an available compiler/test slot:
+
+```sh
+xcrun swiftc -swift-version 5 -O -framework AVFoundation -framework CoreMedia \
+  -framework Foundation apps/ios/scripts/audio-rate-control.swift \
+  -o /private/tmp/caboose-audio-rate-control
+python3 apps/ios/scripts/run-audio-rate-control.py \
+  --binary /private/tmp/caboose-audio-rate-control \
+  > /private/tmp/caboose-audio-rate-control.json
+```
+
+The runner explicitly opts in with `CABOOSE_AUDIO_RATE_CONTROL=1` and applies a
+90-second process deadline. Timeout or interruption terminates its own child process
+group, allows two seconds for exit, then forcibly stops and reaps it if necessary.
+It never compiles, restarts an app, or touches another process group. Exit 124 means
+incomplete timeout data; an interrupted run returns 130. The binary refuses to run
+without the opt-in. A renderer-removal timeout exits 3 without starting another arm.
+
+There are two sequential 26-second arms with one renderer/synchronizer at a time,
+`.spectral` pitch processing and `delaysRateChangeUntilHasSufficientMediaData=false`.
+Arm 0 remains at rate 1. Arm 1 starts at 1, then requests five positive rates from the
+recorded five-second diagnostic snapshots at their measured relative intervals, shifted
+one second after start. The stimulus is deliberately marked partial: it does not contain
+intervening production rate writes. All timestamps, PCM and absolute 20 ms enqueue
+deadlines match between arms. Both use the same fixed one-second prefill; the positive
+stimulus accumulates about 198 ms of media lead, so a 120 ms prefill would intentionally
+starve this experiment. This supply margin is confined to the probe.
+
+The JSON includes up to 105 clock observations per arm, the five rate writes' actual
+begin/end times and before/after readings, enqueue lateness/duration maxima, and minimum
+expected remaining supply margin. Expected media progress integrates the actual Float
+rates. Each signed rate change is independently bounded between its call's begin and
+return; clock-read host brackets widen the observation envelope. This is a requested
+mapping model, not proof of when AVFoundation applied a change. The residual progress
+bounds compare the first observation at 0.75 seconds with the final observation, avoiding
+the immediate asynchronous start; all raw samples remain visible so an unsettled baseline
+can invalidate the comparison. No readiness gate, retry, seek or playback recovery runs.
+
+Rate-change and automatic-flush observers retain cumulative per-arm counts and at most
+128 recent events across the entire experiment, with dropped-event count. Observed zero
+rates are callback-time readings, not guaranteed event payloads or a zero-duration
+measurement. Observation is invalidated and observers removed before intentional stop;
+the renderer is stopped, flushed and its removal completion awaited before the next arm.
+
+Compare residual progress with the control, not raw media/host slopes: the requested
+speeds differ. Negative supply margin, renderer failure, invalid clock samples, or an
+unsettled baseline prevent attributing the difference to rate transitions. Automatic
+flush counts identify another possible source of missing media; an expected supply
+margin cannot establish that flushed samples still exist. A positive controlled result
+supports a local mechanism, not phone causality. A negative result cannot exonerate the
+actual production sequence or exclude a phone-specific problem. No production buffering,
+pitch algorithm or rate correction changes follow automatically from this probe.
+
+The optional `--compare-pitch` runner flag performs one matched algorithm comparison:
+arm 0 uses `.spectral`, arm 1 uses `.timeDomain`, and **both** apply the same five
+positive rate changes. Duration, one-second supply margin, PCM, observations and teardown
+are identical. Both algorithms preserve pitch and support these rates; the SDK describes
+spectral as higher quality and more expensive, and time-domain as less expensive and
+suitable for voice. Results identify each arm's algorithm and whether rates varied.
+This flag changes only the standalone probe, not Caboose's production algorithm.
+
+```sh
+python3 apps/ios/scripts/run-audio-rate-control.py   --binary /private/tmp/caboose-audio-rate-control --compare-pitch   > /private/tmp/caboose-audio-pitch-control.json
+```
+
+Use the same explicit compile command above after source changes. The 90-second runner
+limit still covers both 26-second arms. A time-domain improvement would establish an
+algorithm-dependent local mechanism; phone behavior and audio quality still require
+validation before claiming the production incident resolved.

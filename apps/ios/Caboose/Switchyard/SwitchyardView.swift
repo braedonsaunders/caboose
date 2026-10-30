@@ -16,6 +16,8 @@ struct SwitchyardView: View {
     @Environment(\.shellHasVerticalBar) private var verticalBar
     private var keyboard = SoftwareKeyboard.shared
     let yard: YardModel
+    @Environment(\.scenePhase) private var scenePhase
+    @GestureState private var carryingCover = false
     @State private var askingAbout: RemoteWindow?
 
     var body: some View {
@@ -36,7 +38,7 @@ struct SwitchyardView: View {
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
                     cover(window, screen: area)
-                        .zIndex(4)
+                        .zIndex(yard.carry?.window == id ? 10 : 4)
                 }
                 popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
                        size: area)
@@ -59,8 +61,18 @@ struct SwitchyardView: View {
                     .zIndex(7)
                 YardKeyCommands(yard: yard)
             }
-            .onAppear { yard.screenSize = area }
+            .coordinateSpace(name: Self.space)
+            .onAppear { yard.finishCarryGesture(); yard.screenSize = area }
             .onChange(of: area) { _, size in yard.screenSize = size }
+        }
+        .onDisappear { yard.cancelCarry() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { yard.cancelCarry() } }
+        .onChange(of: carryingCover) { _, active in
+            if !active {
+                DispatchQueue.main.async {
+                    if !carryingCover { yard.finishCarryGesture() }
+                }
+            }
         }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
@@ -76,15 +88,6 @@ struct SwitchyardView: View {
         return ZStack(alignment: .topLeading) {
             DesktopFilesView()
                 .frame(width: size.width, height: size.height)
-            if let carry = yard.carry, let preview = carry.preview {
-                RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
-                    .fill(.white.opacity(0.1))
-                    .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
-                    .frame(width: preview.width, height: preview.height)
-                    .offset(x: preview.minX, y: preview.minY)
-                    .transition(.opacity)
-                    .allowsHitTesting(false)
-            }
             ForEach(yard.layout.windows.filter { live.contains($0) && $0 != yard.coverWindow }, id: \.self) { id in
                 if let window = windows[id], let rect = tiles[id] {
                     let carried = yard.carry?.window == id
@@ -95,21 +98,36 @@ struct SwitchyardView: View {
                         .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
                                 y: carried ? yard.carry!.rect.minY : rect.minY)
                         .shadow(color: .black.opacity(carried ? 0.45 : 0), radius: 24, y: 14)
-                        .zIndex(carried ? 2 : 0)
+                        .zIndex(carried ? 10 : 0)
                         .transition(.asymmetric(insertion: .scale(scale: 0.92).combined(with: .opacity),
                                                 removal: .scale(scale: 0.86).combined(with: .opacity)))
                 }
             }
             handles
             edges
+            if let carry = yard.carry, let preview = carry.preview {
+                RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.1))
+                    .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: preview.width, height: preview.height)
+                    .offset(x: preview.minX, y: preview.minY)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+                    .zIndex(8)
+            }
+            if let palette = yard.snapPalette {
+                DesktopSnapPalette(palette: palette, selected: yard.carry?.snap, ui: 1, selectedRegion: yard.carry?.regionFrame)
+                    .allowsHitTesting(false)
+                    .zIndex(9)
+            }
+
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .coordinateSpace(name: Self.space)
         .clipped()
         // A fullscreen app covers only this workspace. The dock and shell remain usable;
         // the tiles keep their layout behind the covering window.
         .onAppear { yard.resize(to: size) }
-        .onChange(of: size) { _, size in if yard.coverWindow == nil { yard.resize(to: size) } }
+        .onChange(of: size) { _, size in yard.resize(to: size) }
         .onChange(of: yard.coverWindow) { _, cover in
             if cover == nil { yard.resize(to: size) }
             yard.apply()
@@ -118,12 +136,11 @@ struct SwitchyardView: View {
 
     // MARK: Full screen
 
-    /// The window covering the whole screen. Pulled down from its top edge it shrinks back
-    /// toward its tile under the finger, rounding its corners as it goes; let go, it settles
-    /// into the tile or springs back.
+    /// The covering window uses the same carry proposal as a tile; a cancelled drop
+    /// leaves its fullscreen state and geometry intact.
     private func cover(_ window: RemoteWindow, screen: CGSize) -> some View {
         let keyTarget = yard.keyTarget(in: model.session?.windows ?? [:])
-        let p = yard.coverProgress
+        let p = yard.carry?.window == window.id ? 1 : yard.coverProgress
         let rect = coverFrame(window.id, screen: screen)
         return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),
                            keyboard: model.keyboardVisible && keyTarget == window.id) {}
@@ -131,11 +148,12 @@ struct SwitchyardView: View {
             .background(.black)
             .clipShape(RoundedRectangle(cornerRadius: yard.metrics.cornerRadius * p + 28 * p * (1 - p), style: .continuous))
             .shadow(color: .black.opacity(0.4 * p), radius: 24, y: 10)
-            .overlay(alignment: .top) { coverHandle(screen: screen).opacity(1 - p) }
+            .overlay(alignment: .top) { coverHandle(screen: screen) }
             .offset(x: rect.minX, y: rect.minY)
     }
 
     private func coverFrame(_ id: Int, screen: CGSize) -> CGRect {
+        if let carry = yard.carry, carry.window == id { return carry.rect }
         let full = CGRect(origin: .zero, size: screen)
         // It settles into the window's place in its tile, below the tile's title bar.
         let tile = yard.contents[id] ?? full
@@ -155,9 +173,18 @@ struct SwitchyardView: View {
             .frame(width: 120, height: 26, alignment: .top)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { value in yard.dragCover(progress: max(0, value.translation.height) / max(1, screen.height * 0.5)) }
-                    .onEnded { value in yard.releaseCover(velocity: value.velocity.height) }
+                DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
+                    .updating($carryingCover) { _, active, _ in active = true }
+                    .onChanged { value in
+                        if let id = yard.coverWindow { yard.carry(id, by: value.translation, at: value.location) }
+                    }
+                    .onEnded { value in
+                        if let id = yard.coverWindow, yard.carry?.window == id {
+                            yard.carry(id, by: value.translation, at: value.location)
+                            yard.drop()
+                        }
+                        yard.finishCarryGesture()
+                    }
             )
             .onTapGesture { yard.toggleZoom() }
             .accessibilityLabel("Exit Full Screen")
@@ -253,10 +280,11 @@ struct SwitchyardView: View {
             guard let tile = yard.tiles[window.id], let content = yard.contents[window.id] else { continue }
             let covering = yard.coverWindow == window.id
             let container = covering ? coverFrame(window.id, screen: size) : content
-            let natural = CGSize(width: window.frame.width / yard.pixelsPerPoint,
-                                 height: window.frame.height / yard.pixelsPerPoint)
+            let natural = CGSize(width: window.presentationSize.width / yard.pixelsPerPoint,
+                                 height: window.presentationSize.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
-                                                       resizing: yard.stretches(window.id) || (covering && yard.coverProgress > 0))
+                                                       resizing: yard.stretches(window.id) || (covering && (yard.coverProgress > 0 || yard.carry != nil)),
+                                                       fullscreen: window.isFullscreen)
             var shown = surface.offsetBy(dx: container.minX, dy: container.minY)
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)

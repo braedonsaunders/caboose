@@ -8,6 +8,9 @@ struct WindowDrop: ViewModifier {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
+    var presentedSize: CGSize? = nil
+    /// The fitted content rectangle inside its layout viewport, including padding.
+    var presentedFrame: CGRect? = nil
     @State private var error: String?
 
     func body(content: Content) -> some View {
@@ -20,12 +23,18 @@ struct WindowDrop: ViewModifier {
                 for (provider, representation) in accepted {
                     switch representation {
                     case .text:
+                        guard let originalSession = model.session, originalSession.state == .ready,
+                              originalSession.windows[window.id] === window else { continue }
+                        let remoteSize = window.frame.size
+                        let shownSize = presentedSize ?? CGSize(width: remoteSize.width / pixelsPerPoint, height: remoteSize.height / pixelsPerPoint)
+                        let mapping = DesktopGeometry.SurfaceMapping(shown: presentedFrame ?? CGRect(origin: .zero, size: shownSize), remote: remoteSize)
+                        guard let position = mapping.point(point) else { continue }
                         _ = provider.loadObject(ofClass: NSString.self) { value, failure in
                             Task { @MainActor in
                                 guard let text = value as? String else { error = failure?.localizedDescription ?? "Could not read the dropped text."; return }
-                                guard let session = model.session, session.windows[window.id] != nil else { error = "The window is no longer connected."; return }
+                                guard let session = model.session, session === originalSession, session.state == .ready,
+                                      session.windows[window.id] === window, window.frame.size == remoteSize else { error = "The window is no longer connected."; return }
                                 session.focus(window)
-                                let position = CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
                                 session.pointerButton(in: window, button: 1, pressed: true, at: position)
                                 session.pointerButton(in: window, button: 1, pressed: false, at: position)
                                 session.type(text, in: window)

@@ -4,6 +4,7 @@ import SwiftUI
 /// The Mac-like desktop shown on an external display: floating Linux windows with native
 /// title bars, a dock of the computer's apps, and the cursor the phone's trackpad drives.
 struct DesktopView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppModel.self) private var model
     let desktop: DesktopModel
     /// A TV's desktop covers the whole screen; the phone's stays inside the bars.
@@ -17,21 +18,32 @@ struct DesktopView: View {
                 if fillsScreen { WallpaperView(store: WallpaperStore.shared) }
                 DesktopFilesView(desktop: desktop)
                     .frame(width: proxy.size.width, height: max(0, proxy.size.height - desktop.dockHeight))
+                if let session = model.session {
+                    if desktop.fullscreenWindow(in: session.windows) != nil {
+                        Color.black.frame(width: proxy.size.width, height: proxy.size.height).allowsHitTesting(false)
+                    }
+                    let surfaces = desktop.surfaceFrames(in: session.windows)
+                    ForEach(desktop.shownWindows.compactMap { session.windows[$0] }) { window in
+                        if let surface = surfaces[window.id] {
+                            DesktopWindow(window: window, desktop: desktop, surface: surface, icon: model.icon(for: window))
+                        }
+                    }
+                }
                 // Where the window being dragged would snap if let go now.
                 if let preview = desktop.snapPreview {
-                    RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous)
-                        .fill(.white.opacity(0.12))
-                        .strokeBorder(.white.opacity(0.55), lineWidth: 1.5)
-                        .background(.ultraThinMaterial.opacity(0.6), in: RoundedRectangle(cornerRadius: 12 * desktop.ui, style: .continuous))
+                    ConcentricRectangle(cornerRadius: 12 * desktop.ui)
+                        .fill(Color.accentColor.opacity(0.12))
+                        .overlay { ConcentricRectangle(cornerRadius: 12 * desktop.ui).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2) }
+                        .background(.ultraThinMaterial.opacity(0.6), in: ConcentricRectangle(cornerRadius: 12 * desktop.ui))
                         .frame(width: preview.width, height: preview.height)
                         .position(x: preview.midX, y: preview.midY)
                         .allowsHitTesting(false)
                         .transition(.opacity)
                 }
-                if let session = model.session {
-                    ForEach(desktop.shownWindows.compactMap { session.windows[$0] }) { window in
-                        DesktopWindow(window: window, desktop: desktop, icon: model.icon(for: window))
-                    }
+                if let palette = desktop.snapPalette, !palette.regions.isEmpty {
+                    DesktopSnapPalette(palette: palette, selected: desktop.pendingSnap, ui: desktop.ui)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                 }
                 if desktop.launchpadOpen {
                     Launchpad(desktop: desktop)
@@ -52,6 +64,7 @@ struct DesktopView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: desktop.snapPalette != nil)
             .coordinateSpace(name: "desktop")
             .task(id: ObjectIdentifier(desktop)) { desktop.quickSwitch = model.quickSwitch }
             .onAppear {
@@ -61,9 +74,13 @@ struct DesktopView: View {
                                                                  height: proxy.size.height * desktop.pixelsPerPoint))
                 }
             }
-            .onDisappear { if fillsScreen { WallpaperStore.shared.stop() } }
+            .onDisappear {
+                desktop.cancelWindowDrag()
+                if fillsScreen { WallpaperStore.shared.stop() }
+            }
             .onChange(of: proxy.size) { _, size in
                 guard !model.windowCardOwnsGeometry else { return }
+                desktop.cancelWindowDrag()
                 desktop.size = size
                 desktop.relayout(session: model.session)
             }
@@ -76,12 +93,52 @@ struct DesktopView: View {
     }
 }
 
+/// A translucent shelf of miniature destinations, drawn above the moving window.
+struct DesktopSnapPalette: View {
+    let palette: FreeDesktopLayout.SnapPalette
+    let selected: FreeDesktopLayout.Snap?
+    let ui: CGFloat
+    var selectedRegion: CGRect? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ConcentricRectangle(cornerRadius: 20 * ui)
+                .fill(.regularMaterial)
+                .overlay { ConcentricRectangle(cornerRadius: 20 * ui).strokeBorder(.white.opacity(0.25)) }
+                .shadow(color: .black.opacity(0.25), radius: 20 * ui, y: 8 * ui)
+                .frame(width: palette.frame.width, height: palette.frame.height)
+                .position(x: palette.frame.midX, y: palette.frame.midY)
+            Text(selected == nil ? "Drag into a layout" : "Release to snap")
+                .font(.system(size: 12 * ui, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: palette.frame.width, height: 26 * ui)
+                .position(x: palette.frame.midX, y: palette.frame.minY + 18 * ui)
+            ForEach(Array(palette.regions.enumerated()), id: \.offset) { _, region in
+                let active = region.enabled && (selectedRegion.map { $0 == region.frame } ?? (selected == region.snap))
+                ConcentricRectangle(cornerRadius: 6 * ui)
+                    .fill(active ? Color.accentColor.opacity(0.85) : Color.primary.opacity(region.enabled ? 0.16 : 0.04))
+                    .overlay {
+                        ConcentricRectangle(cornerRadius: 6 * ui)
+                            .strokeBorder(active ? Color.white.opacity(0.9) : Color.primary.opacity(0.12), lineWidth: active ? 2 : 1)
+                    }
+                    .frame(width: max(0, region.frame.width - 4 * ui), height: max(0, region.frame.height - 4 * ui))
+                    .position(x: region.frame.midX, y: region.frame.midY)
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.18), value: selected)
+        .accessibilityHidden(true)
+    }
+}
+
 /// One Linux window with a macOS-style title bar.
 struct DesktopWindow: View {
     @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let desktop: DesktopModel
+    let surface: CGRect
     let icon: UIImage?
+    @State private var fullscreenGeometry = FullscreenGeometry()
 
     private var hoveredControl: WindowTitleBar.Control? {
         switch desktop.hovered {
@@ -93,64 +150,76 @@ struct DesktopWindow: View {
     }
 
     var body: some View {
-        let chrome = desktop.chromeRect(window)
+        let chrome = desktop.presentedChrome(window, surface: surface)
         VStack(spacing: 0) {
             if !desktop.detachedChrome && !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
                 let bar = desktop.titleBar
-                HStack(spacing: 0) {
-                    // Under a finger the symbols always show; a pointer shows them on hover.
-                    WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
-                    Spacer(minLength: 8 * ui)
-                    if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
-                    Text(window.title.isEmpty ? "Window" : window.title)
-                        .font(.system(size: 13 * ui, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 8 * ui)
-                    // Balances the controls, so the title is centred on the window.
-                    Color.clear.frame(width: bar.controlsWidth)
+                GeometryReader { geometry in
+                    let clearance = EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal)
+                    HStack(spacing: 0) {
+                        // Under a finger the symbols always show; a pointer shows them on hover.
+                        WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
+                        Spacer(minLength: 8 * ui)
+                        if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
+                        Text(window.title.isEmpty ? "Window" : window.title)
+                            .font(.system(size: 13 * ui, weight: .semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8 * ui)
+                        // Balances the controls, so the title is centred on the window.
+                        Color.clear.frame(width: bar.controlsWidth)
+                    }
+                    .padding(clearance)
+                    .frame(height: bar.height)
+                    .onChange(of: clearance.leading, initial: true) { _, inset in
+                        desktop.titleBarLeadingInsets[window.id] = inset
+                    }
                 }
                 .frame(height: bar.height)
                 .background(.regularMaterial)
             }
-            RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint)
-                .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint))
+            RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint,
+                                pacer: model.session, showsVideo: model.desktopActive && !model.yardActive)
+                .frame(width: surface.width, height: surface.height)
+                .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint, presentedSize: surface.size))
         }
         .frame(width: chrome.width, height: chrome.height)
-        .clipShape(RoundedRectangle(cornerRadius: window.isFullscreen ? 0 : (window.isAuxiliary ? 6 : 11) * desktop.ui, style: .continuous))
+        .clipShape(ConcentricRectangle(corners: window.isFullscreen ? .fixed(0) : .concentric(minimum: .fixed((window.isAuxiliary ? 6 : 11) * desktop.ui))))
+        .onDisappear { desktop.titleBarLeadingInsets[window.id] = nil }
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)
-        .onChange(of: window.isFullscreen) { _, _ in
-            if !model.windowCardOwnsGeometry {
-                withAnimation(.snappy) { desktop.applyFullscreen(window, session: model.session) }
-            }
-        }
-        .onAppear {
-            if window.isFullscreen && !model.windowCardOwnsGeometry { desktop.applyFullscreen(window, session: model.session) }
+        .onChange(of: WindowGeometryState(frame: window.frame, fullscreen: window.isFullscreen), initial: true) { _, state in
+            guard !model.windowCardOwnsGeometry else { return }
+            let restore = fullscreenGeometry.observe(state)
+            desktop.applyFullscreen(window, entered: fullscreenGeometry.entered, restore: restore, session: model.session)
         }
     }
 }
 
 /// A display-only window surface; the desktop routes all input itself.
 struct RemoteWindowSurface: UIViewRepresentable {
-    @Environment(AppModel.self) private var model
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
+    var pacer: (any DisplaySession)?
+    var showsVideo = true
 
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
         view.hostsGame = true
-        view.pixelsPerPoint = pixelsPerPoint
-        view.pacer = model.session
-        view.showsVideo = model.desktopActive && !model.yardActive
+        update(view)
         return view
     }
 
-    func updateUIView(_ view: RemoteWindowView, context: Context) {
-        view.pacer = model.session
-        view.showsVideo = model.desktopActive && !model.yardActive
-        if view.remoteWindow?.id != window.id { view.attach(window) }
+    func updateUIView(_ view: RemoteWindowView, context: Context) { update(view) }
+
+    private func update(_ view: RemoteWindowView) {
+        view.pacer = pacer
+        view.pixelsPerPoint = pixelsPerPoint
+        view.showsVideo = showsVideo
+        if view.remoteWindow !== window { view.attach(window) }
+        // DesktopModel already supplies the rendered/input rectangle. Do not fit a
+        // newer remote size again inside potentially older parent layout bounds.
     }
 }
 
@@ -205,7 +274,7 @@ struct Dock: View {
                 .font(.system(size: 26 * ui, weight: .medium))
                 .foregroundStyle(.white.opacity(0.9))
                 .frame(width: 52 * ui, height: 52 * ui)
-                .background(.white.opacity(desktop.launchpadOpen ? 0.25 : 0.12), in: RoundedRectangle(cornerRadius: 12 * ui, style: .continuous))
+                .background(.white.opacity(desktop.launchpadOpen ? 0.25 : 0.12), in: ConcentricRectangle(cornerRadius: 12 * ui))
                 .scaleEffect(hot ? 1.28 : 1, anchor: .bottom)
                 .animation(.spring(duration: 0.22), value: hot)
                 .padding(.bottom, 7 * ui)
@@ -215,7 +284,10 @@ struct Dock: View {
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22 * ui))
+        // Glass shapes the background, not the elevated/launching icons.
+        .background {
+            Color.clear.glassEffect(.regular, in: .surface(cornerRadius: 22 * ui))
+        }
     }
 
     /// A continuous, thin strip below the hinge, never a floating capsule over content.
@@ -409,7 +481,7 @@ struct DesktopKeyCommands: View {
             key("Restore", .downArrow, shift: true) { snap(nil) }
             key("Zoom", "f") { front { desktop.toggleZoom($0.id, $1) } }
             key("Minimize", "m") { front { window, _ in desktop.minimize(window.id) } }
-            key("Close Window", "w") { front { $1.close($0) } }
+            key("Close Window", "w") { front { $1.closeDiagnosed($0) } }
             key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
             key("New Terminal", .return) { model.openTerminalApp() }
             QuickSwitchKeys(recent: { model.recentWindowIDs }) { desktop.switchTarget(session: model.session) }
