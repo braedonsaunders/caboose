@@ -5,7 +5,8 @@ shipping player or display handshake and does not provide a working iOS virtual
 GPU. The [macOS reference](macos-reference/README.md) contains a real-backend build
 recipe and lifecycle fixture. The Linux reference executes the private Mesa
 compute/CPU/indirect-draw oracle on lavapipe; the iOS reference links the real
-backend and stock MoltenVK. Neither establishes physical-phone execution.
+backend and stock MoltenVK. The standalone diagnostic also links with the private
+patched MoltenVK archive. Neither establishes physical-phone execution.
 
 ## Pinned source
 
@@ -119,6 +120,9 @@ readback evidence.
 `0009-propagate-compositor-pipeline-failure.patch` returns pipeline creation
 failure to `CompositorVk::create` after releasing its temporary shader modules.
 The upstream emulation initializer treats that failure as fatal. The macOS
-reference currently fails on a MoltenVK argument-buffer shader conversion error;
-a successful process exit without checking those pipeline failures is not a
-valid backend acceptance result.
+reference fails on the stock MoltenVK multi-plane argument-buffer conversion
+error. Patch 0011 to the pinned SPIRV-Cross resolves scalar immutable YCbCr
+bindings: the private macOS driver passes real two-/three-plane sampling and
+readback, and the same lifecycle fixture initializes its compositor. Descriptor
+arrays retain their previous behavior. A successful exit without checking
+pipeline failures is not a valid backend acceptance result.
