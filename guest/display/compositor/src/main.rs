@@ -12,6 +12,8 @@ mod game;
 mod gpu_supervisor;
 #[allow(dead_code)] // Grant handling remains disabled until CGB IPC is connected.
 mod gpu_grant;
+#[allow(dead_code)] // Control handling is unavailable until the private bridge is connected.
+mod gpu_control;
 mod gpu_peer;
 mod input;
 mod keymap;
