@@ -786,7 +786,15 @@ class Broker:
                 self.lease.revoke(executor.bytes, generation)
                 await session.drain()
                 await server.wait_closed(); server = None
+                for task in (sender, receiver):
+                    if task.done():
+                        task.result()
+                        raise ConnectionError('executor transport ended during retirement')
                 await self.report_lifecycle(session, 6)
+                for task in (sender, receiver):
+                    if task.done():
+                        task.result()
+                        raise ConnectionError('executor transport ended before normal close')
                 self.lease.finished(executor.bytes, generation)
                 await session.close_after_retirement()
             else:

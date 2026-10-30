@@ -25,7 +25,9 @@ async def main():
     draining = '--drain' in sys.argv[1:]
     indexed = '--indexed' in sys.argv[1:]
     withhold = '--withhold-revoked' in sys.argv[1:]
-    if withhold and not draining: raise ValueError('--withhold-revoked requires --drain')
+    invalid_after = '--invalid-after-revoked' in sys.argv[1:]
+    if (withhold or invalid_after) and not draining: raise ValueError('failure modes require --drain')
+    if withhold and invalid_after: raise ValueError('select one failure mode')
     reject = [name for name in ('v2', 'v3', 'bits') if '--reject-' + name in sys.argv[1:]]
     if len(reject) > 1 or (reject and not indexed): raise ValueError('one rejection mode requires --indexed')
     hello = (HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]) if indexed else HELLO
@@ -70,6 +72,26 @@ async def main():
                        b'X-Caboose-GPU-Executor: 00112233-4455-6677-8899-aabbccddeeff\r\n'
                        b'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
                        b'Sec-WebSocket-Protocol: caboose.gpu.live.v1\r\n\r\n')
+            async def assert_lease_latched():
+                try: unexpected = parent.recv(80)
+                except BlockingIOError: unexpected = None
+                if unexpected is not None:
+                    raise RuntimeError('unexpected compositor retirement receipt after failure')
+                listener = socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(1)
+                retry = socket.socket(); retry.connect(listener.getsockname())
+                accepted, _ = listener.accept(); listener.close()
+                try:
+                    parent.sendmsg([b'G'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [accepted.fileno()]))])
+                finally: accepted.close()
+                retry.setblocking(False)
+                retry_reader, retry_writer = await asyncio.open_connection(sock=retry)
+                try:
+                    retry_writer.write(request); await retry_writer.drain()
+                    if await asyncio.wait_for(retry_reader.read(1), 5) != b'':
+                        raise RuntimeError('failed executor lease was released')
+                finally:
+                    retry_writer.close()
+                    with suppress(OSError): await retry_writer.wait_closed()
             phone_writer.write(request); await phone_writer.drain()
             response = await asyncio.wait_for(phone_reader.readuntil(b'\r\n\r\n'), 5)
             if not response.startswith(b'HTTP/1.1 101 '): raise RuntimeError('upgrade failed')
@@ -149,8 +171,8 @@ async def main():
                         (Kind.SWAPCHAIN_MAP, 'map', Kind.SWAPCHAIN_MAPPED, 'mapped'),
                         (Kind.SWAPCHAIN_ACQUIRE, 'acquire', Kind.SWAPCHAIN_ACQUIRED, 'acquired')):
                     await local_control(request_kind, values[request_name][40:])
-                    request = await receive(request_kind)
-                    if request.payload != identity + values[request_name][40:]: raise RuntimeError('indexed request changed')
+                    forwarded = await receive(request_kind)
+                    if forwarded.payload != identity + values[request_name][40:]: raise RuntimeError('indexed request changed')
                     expected = identity + values[reply_name][40:]
                     await send(reply_kind, process.process, payload=expected)
                     if await local_reply(reply_kind) != expected: raise RuntimeError('indexed native reply changed')
@@ -205,9 +227,23 @@ async def main():
                 if withhold:
                     if await asyncio.wait_for(phone_reader.read(), 6) != b'':
                         raise RuntimeError('normal close sent without native REVOKED')
+                    await assert_lease_latched()
                     parent.shutdown(socket.SHUT_RDWR); parent.close()
                     if await asyncio.wait_for(proc.wait(), 10): raise RuntimeError('broker failed to exit')
                     print('PASS fake executor: missing REVOKED never sends normal close')
+                    return
+                if invalid_after:
+                    revoked = encode(Envelope(Kind.REVOKED, EXECUTOR, 1, 0, 0, incoming_sequence, b''))
+                    invalid = encode(Envelope(Kind.DATA, EXECUTOR, 1, 999, 999, incoming_sequence + 1, b'x'))
+                    incoming_sequence += 2
+                    phone_writer.write(client_frame(2, revoked) + client_frame(2, invalid))
+                    await phone_writer.drain()
+                    if await asyncio.wait_for(phone_reader.read(), 5) != b'':
+                        raise RuntimeError('normal close sent after malformed executor control')
+                    await assert_lease_latched()
+                    parent.shutdown(socket.SHUT_RDWR); parent.close()
+                    if await asyncio.wait_for(proc.wait(), 10): raise RuntimeError('broker failed to exit')
+                    print('PASS fake executor: malformed control after REVOKED never sends normal close')
                     return
                 await send(Kind.REVOKED)
                 retired_record = await asyncio.wait_for(asyncio.get_running_loop().sock_recv(parent, 80), 5)
