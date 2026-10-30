@@ -1,8 +1,10 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <utility>
@@ -30,8 +32,12 @@ public:
     };
     void enableAuditedCoverage() { std::lock_guard<std::mutex> lock(mutex_); if (!broken_) enabled_ = true; }
     void invalidate() { std::lock_guard<std::mutex> lock(mutex_); broken_ = true; enabled_ = false; }
-    Ticket begin(QueueKey queue) {
+    // Called while the decoder still holds its object-map lock. A release
+    // cannot prove quiescence while a lookup is between that lock and begin().
+    void prepareAdmission() { pendingAdmissions_.fetch_add(1); }
+    Ticket begin(QueueKey queue, bool prepared = false) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (prepared) pendingAdmissions_.fetch_sub(1);
         if (!enabled_ || broken_ || !queue || epoch_ == std::numeric_limits<uint64_t>::max()) {
             broken_ = true; enabled_ = false; return {};
         }
@@ -51,11 +57,11 @@ public:
     }
     IdleSnapshot beforeDeviceIdle() {
         std::lock_guard<std::mutex> lock(mutex_);
-        return {0, epoch_, enabled_ && !broken_ && !active_, true};
+        return {0, epoch_, enabled_ && !broken_ && !active_ && !pendingAdmissions_.load(), true};
     }
     IdleSnapshot beforeQueueIdle(QueueKey queue) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!enabled_ || broken_ || !queue) return {};
+        if (!enabled_ || broken_ || !queue || pendingAdmissions_.load()) return {};
         try {
             auto& entry = queues_[queue];
             return {queue, entry.last, !entry.active, false};
@@ -64,7 +70,7 @@ public:
     // success means only the actual decoded provider call returned VK_SUCCESS.
     void afterIdle(const IdleSnapshot& snapshot, bool success) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!success || !snapshot.valid || !enabled_ || broken_) return;
+        if (!success || !snapshot.valid || !enabled_ || broken_ || pendingAdmissions_.load()) return;
         if (snapshot.device) {
             if (active_ || epoch_ != snapshot.epoch) return;
             for (auto& item : queues_) item.second.completed = item.second.last;
@@ -79,7 +85,7 @@ public:
     // release call. It must never be held while awaiting an idle operation.
     ReleaseGuard tryRelease() {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (!enabled_ || broken_ || !observed_ || active_) return {};
+        if (!enabled_ || broken_ || !observed_ || active_ || pendingAdmissions_.load()) return {};
         for (const auto& item : queues_)
             if (item.second.active || item.second.completed != item.second.last) return {};
         return ReleaseGuard(std::move(lock));
@@ -87,9 +93,25 @@ public:
 private:
     struct Queue { uint64_t last = 0, completed = 0; uint32_t active = 0; };
     std::mutex mutex_;
+    std::atomic<uint64_t> pendingAdmissions_{0};
     std::map<QueueKey, Queue> queues_;
     uint64_t epoch_ = 0;
     uint64_t active_ = 0;
     bool enabled_ = false, broken_ = false, observed_ = false;
+};
+class GuestGpuWork {
+public:
+    GuestGpuWork() = default;
+    GuestGpuWork(std::shared_ptr<GuestGpuCompletion> tracker, GuestGpuCompletion::QueueKey queue,
+                 bool prepared = false)
+        : tracker_(std::move(tracker)), ticket_(tracker_ ? tracker_->begin(queue, prepared) : GuestGpuCompletion::Ticket{}) {}
+    GuestGpuWork(const GuestGpuWork&) = delete;
+    GuestGpuWork& operator=(const GuestGpuWork&) = delete;
+    GuestGpuWork(GuestGpuWork&& other) noexcept
+        : tracker_(std::move(other.tracker_)), ticket_(other.ticket_) { other.ticket_.active = false; }
+    ~GuestGpuWork() { if (tracker_) tracker_->end(ticket_); }
+private:
+    std::shared_ptr<GuestGpuCompletion> tracker_;
+    GuestGpuCompletion::Ticket ticket_{};
 };
 }

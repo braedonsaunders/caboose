@@ -30,6 +30,11 @@ int main() {
     assert(!tracker.tryRelease().valid());
     auto idle = tracker.beforeDeviceIdle(); tracker.afterIdle(idle, true);
     assert(tracker.tryRelease().valid());
+    tracker.prepareAdmission(); // lookup has begun but has not reached the gate
+    assert(!tracker.tryRelease().valid());
+    auto prepared = tracker.begin(2, true);
+    tracker.end(prepared);
+    assert(!tracker.tryRelease().valid());
     tracker.invalidate();
     assert(!tracker.tryRelease().valid());
 }
