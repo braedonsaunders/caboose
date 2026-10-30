@@ -13,9 +13,16 @@ struct PresentationQueueFamily {
     VkQueueFamilyProperties properties;
     VkBool32 presentSupported;
 };
+struct PresentationCandidateFormat {
+    VkFormat format;
+    VkFormatProperties properties;
+};
 struct PresentationSurfaceCapabilities {
     VkSurfaceCapabilitiesKHR capabilities{};
     std::vector<PresentationSurfaceFormat> formats;
+    // Real format properties for the four initially supported candidate formats,
+    // including when a surface reports VK_FORMAT_UNDEFINED.
+    std::vector<PresentationCandidateFormat> candidateFormats;
     std::vector<VkPresentModeKHR> modes;
     std::vector<PresentationQueueFamily> queueFamilies;
 };

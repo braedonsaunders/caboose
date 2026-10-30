@@ -58,13 +58,17 @@ typedef struct caboose_gpu_surface_format {
 typedef struct caboose_gpu_surface_queue_family {
     uint32_t queue_flags, queue_count, present_supported;
 } caboose_gpu_surface_queue_family;
+typedef struct caboose_gpu_candidate_format {
+    uint32_t format, linear_features, optimal_features, buffer_features;
+} caboose_gpu_candidate_format;
 typedef struct caboose_gpu_surface_capabilities_view {
     uint32_t min_image_count, max_image_count;
     uint32_t current_width, current_height, min_width, min_height, max_width, max_height;
     uint32_t max_image_array_layers, supported_transforms, current_transform;
     uint32_t supported_composite_alpha, supported_usage_flags;
-    uint32_t format_count, present_mode_count, queue_family_count;
+    uint32_t format_count, candidate_format_count, present_mode_count, queue_family_count;
     const caboose_gpu_surface_format* formats;
+    const caboose_gpu_candidate_format* candidate_formats;
     const uint32_t* present_modes;
     const caboose_gpu_surface_queue_family* queue_families;
 } caboose_gpu_surface_capabilities_view;

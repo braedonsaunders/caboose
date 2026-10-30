@@ -49,6 +49,15 @@ VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysic
             }
             result.formats.push_back(entry);
         }
+        const VkFormat candidates[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
+        result.candidateFormats.reserve(4);
+        for (VkFormat format : candidates) {
+            PresentationCandidateFormat entry{};
+            entry.format = format;
+            formatProperties(physical.physicalDevice, format, &entry.properties);
+            result.candidateFormats.push_back(entry);
+        }
         count = 0;
         status = modes(physical.physicalDevice, surface, &count, nullptr);
         if (status != VK_SUCCESS) return status;
