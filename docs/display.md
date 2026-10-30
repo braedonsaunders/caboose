@@ -218,6 +218,13 @@ for byte.
   uses the same aspect-fit transform for presentation and input. Explicit fullscreen exit
   resumes ordinary window fitting. No application-specific or fixed minimum output mode
   is inferred from a small phone viewport.
+- An output mode/origin change reconfigures existing fullscreen and maximized windows
+  through the common Wayland/X11 configure path, preserving their state flags. Removed
+  outputs first remap to the primary output. Unchanged outputs and ordinary windows do
+  not receive a geometry configure from this reconciliation. Fullscreen pictures fit
+  centered in the client viewport without transient stretching; pointer/touch input,
+  text drops and popup roots use the same fitted rectangle. Ordinary constrained tiles
+  retain their top-aligned fit.
 - The session applies size hints at the common configure boundary for every layout.
   Layout-owned tile, card and snap requests preserve the viewport aspect when
   satisfying minimum or maximum sizes permits it: a larger minimum width grows

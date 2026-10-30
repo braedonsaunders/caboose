@@ -46,7 +46,12 @@ struct FullscreenGeometryTests {
         let natural = CGSize(width: remote.width / 2, height: remote.height / 2)
         for viewport in [CGSize(width: 531, height: 943), CGSize(width: 531, height: 500),
                          CGSize(width: 1102, height: 851), CGSize(width: 851, height: 1102)] {
-            let shown = DesktopGeometry.surfaceFrame(natural: natural, available: viewport, resizing: false)
+            let shown = DesktopGeometry.surfaceFrame(natural: natural, available: viewport, resizing: false, fullscreen: true)
+            #expect(abs(shown.midX - viewport.width / 2) < 0.001)
+            #expect(abs(shown.midY - viewport.height / 2) < 0.001)
+            // A settling tile/cover drag cannot stretch an app-requested fullscreen picture.
+            #expect(DesktopGeometry.surfaceFrame(natural: natural, available: viewport, resizing: true,
+                                                 fullscreen: true) == shown)
             let center = DesktopGeometry.remotePoint(CGPoint(x: shown.midX, y: shown.midY), shown: shown, remote: remote)
             #expect(abs((center?.x ?? 0) - 1200) < 0.001)
             #expect(abs((center?.y ?? 0) - 800) < 0.001)
@@ -56,6 +61,26 @@ struct FullscreenGeometryTests {
             let release = DesktopGeometry.remotePoint(below, shown: shown, remote: remote, captured: true)
             #expect(release == CGPoint(x: 1200, y: 1600))
         }
+    }
+
+    @Test func fullscreenPortraitLetterboxingAndPopupShareCenteredRoot() throws {
+        let remote = CGSize(width: 1200, height: 800)
+        let viewport = CGSize(width: 400, height: 800)
+        let root = DesktopGeometry.surfaceFrame(natural: remote, available: viewport, resizing: false, fullscreen: true)
+        #expect(abs(root.minY - 800.0 / 3) < 0.001)
+        let mapping = DesktopGeometry.SurfaceMapping(shown: root, remote: remote)
+        #expect(mapping.point(CGPoint(x: 200, y: root.minY - 1)) == nil)
+        #expect(mapping.point(CGPoint(x: 200, y: root.maxY + 1)) == nil)
+        #expect(mapping.point(CGPoint(x: 200, y: 400)) == CGPoint(x: 600, y: 400))
+        let frames = DesktopGeometry.popupFrames(windows: [
+            1: .init(frame: CGRect(origin: .zero, size: remote), parent: nil),
+            2: .init(frame: CGRect(x: 300, y: 150, width: 120, height: 90), parent: 1)
+        ], rootFrames: [1: root], viewport: CGRect(origin: .zero, size: viewport), pixelsPerPoint: 1, covering: 1)
+        let popup = try #require(frames[2])
+        #expect(abs(popup.minX - 100) < 0.001)
+        #expect(abs(popup.minY - (root.minY + 50)) < 0.001)
+        // Ordinary constrained windows keep their established top-fit policy.
+        #expect(DesktopGeometry.surfaceFrame(natural: remote, available: viewport, resizing: false).minY == 0)
     }
 
     @Test func nestedPopupInputUsesItsDisplayedRectAfterParentFitting() throws {

@@ -7,6 +7,70 @@ import QuartzCore
 
 @MainActor
 final class DesktopSurfaceLayoutTests: XCTestCase {
+    func testHostedCardAndYardPropagateFullscreenCentering() throws {
+        let model = AppModel(collection: .init(), startsConnections: false)
+        let pixels = model.pixelsPerPoint
+        let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1200 * pixels, height: 800 * pixels),
+                                  overrideRedirect: false, surface: WindowSurface())
+        remote.isFullscreen = true
+        let host = UIHostingController(rootView: AnyView(EmptyView()))
+        host.safeAreaRegions = []
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true; window.rootViewController = nil }
+        func descendants(_ view: UIView) -> [UIView] { [view] + view.subviews.flatMap(descendants) }
+        for card in [false, true] {
+            let surface = card
+                ? AnyView(RemoteWindowCanvas(window: remote, keyboardVisible: false))
+                : AnyView(YardSurface(window: remote, pixelsPerPoint: pixels, stretch: true, keyboard: false) {})
+            host.rootView = AnyView(surface.frame(width: 400, height: 800).environment(model).ignoresSafeArea())
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+            let tile = try XCTUnwrap(descendants(host.view).compactMap { $0 as? YardSurfaceView }.first)
+            tile.layoutIfNeeded()
+            XCTAssertTrue(tile.fullscreen)
+            XCTAssertEqual(tile.content.frame.midX, tile.bounds.midX, accuracy: 0.01)
+            XCTAssertEqual(tile.content.frame.midY, tile.bounds.midY, accuracy: 0.01)
+            XCTAssertEqual(tile.content.frame.width / tile.content.frame.height, 1.5, accuracy: 0.01)
+            tile.content.attach(nil)
+        }
+    }
+
+    func testFullscreenSurfaceCentersAndInvertsTouchWhileTileIsSettling() throws {
+        let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1200, height: 800),
+                                  overrideRedirect: false, surface: WindowSurface())
+        let content = RemoteWindowView(session: nil, window: remote)
+        let tile = YardSurfaceView(content: content)
+        tile.natural = remote.frame.size
+        tile.fullscreen = true
+        tile.stretch = true
+        for viewport in [CGSize(width: 400, height: 800), CGSize(width: 800, height: 400)] {
+            tile.frame = CGRect(origin: .zero, size: viewport)
+            tile.setNeedsLayout()
+            tile.layoutIfNeeded()
+            let shown = DesktopGeometry.surfaceFrame(natural: remote.frame.size, available: viewport,
+                                                      resizing: true, fullscreen: true)
+            XCTAssertEqual(content.frame.minX, shown.minX, accuracy: 0.01)
+            XCTAssertEqual(content.frame.minY, shown.minY, accuracy: 0.01)
+            XCTAssertEqual(content.frame.width, shown.width, accuracy: 0.01)
+            XCTAssertEqual(content.frame.height, shown.height, accuracy: 0.01)
+            let center = content.convert(CGPoint(x: viewport.width / 2, y: viewport.height / 2), from: tile)
+            XCTAssertEqual(center.x, 600, accuracy: 0.01)
+            XCTAssertEqual(center.y, 400, accuracy: 0.01)
+            if shown.minY > 0 {
+                XCTAssertFalse(content.point(inside: content.convert(CGPoint(x: shown.midX, y: shown.minY - 1), from: tile), with: nil))
+            }
+        }
+        // An unchanged fullscreen-to-ordinary transition must invalidate layout too.
+        tile.stretch = false
+        tile.fullscreen = false
+        tile.frame = CGRect(x: 0, y: 0, width: 400, height: 800)
+        tile.layoutIfNeeded()
+        XCTAssertEqual(content.frame.minY, 0, accuracy: 0.01)
+        content.attach(nil)
+    }
+
     func testTileWithWideMinimumFillsTallViewportAfterCommit() throws {
         let viewport = CGSize(width: 500, height: 800)
         let committed = try XCTUnwrap(WindowSizePolicy.fitting(CGRect(origin: .zero, size: viewport),

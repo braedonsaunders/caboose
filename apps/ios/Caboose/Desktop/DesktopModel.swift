@@ -303,7 +303,8 @@ final class DesktopModel {
             let viewport = contentRect(window)
             let natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
             let local = DesktopGeometry.surfaceFrame(
-                natural: window.game == nil ? natural : viewport.size, available: viewport.size, resizing: false)
+                natural: window.game == nil ? natural : viewport.size, available: viewport.size, resizing: false,
+                fullscreen: window.isFullscreen)
             roots[window.id] = local.offsetBy(dx: viewport.minX, dy: viewport.minY)
         }
         let geometry = Dictionary(uniqueKeysWithValues: windows.values.filter { isVisible($0.id) }.map {

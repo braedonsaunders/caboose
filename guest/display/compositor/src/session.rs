@@ -360,8 +360,14 @@ impl State {
         let change = self.displays.replace(&self.dh, displays);
         let fallback = self.displays.primary().info.id;
         let ids = self.windows.ids();
+        let mut resized = Vec::new();
         for id in &ids {
             if let Some(w) = self.windows.get_mut(*id) {
+                if (w.fullscreen || w.maximized)
+                    && (change.changed.contains(&w.display) || change.removed.contains(&w.display))
+                {
+                    resized.push(*id);
+                }
                 if change.removed.contains(&w.display) {
                     w.display = fallback;
                 }
@@ -369,6 +375,13 @@ impl State {
         }
         for id in ids {
             self.assign_output(id);
+            // Output modes and origins can change without replacing their ids. Keep
+            // monitor-owned windows on the new output rectangle, through the same
+            // native/X11 configure path as an application's fullscreen request.
+            // A removed output was remapped above, so it needs the same treatment.
+            if resized.contains(&id) {
+                self.configure_window(&proto::Configure { id, ..Default::default() });
+            }
         }
         // sync_windows (next tick) sends the resulting window.update messages.
     }

@@ -389,3 +389,49 @@ Python, libX11 and libXtst; the supplied command creates a native Wayland window
 It closes its own clients on success or failure and refuses an occupied seat. Run
 the identical fixture on the previous compositor as a negative control: stale
 foreground metadata fails its foreground assertion. No owner display is involved.
+
+### X11 core wheel delivery check
+
+`scripts/check-x11-scroll.py --control /path/to/private/control.sock --compositor-pid PID` compares one
+XTest wheel-down press/release with two separate ordinary wheel scrolls through the
+compositor control socket at the same point. Source the private seat's launch
+environment first so `DISPLAY` and `XAUTHORITY` match that control socket. The check
+requires Python 3, libX11 and libXtst and refuses a nonempty seat. Before creating
+any X resource it verifies the control peer PID, matching private authority path,
+and X socket ownership by that compositor or its directly spawned Xwayland. It creates its own
+X11 parent and child, selects only core pointer events on its own child, asserts one
+button-5 press/release pair for each path, and destroys both windows on exit. It does
+not use XI event selection or RECORD on another application's windows. Run only on
+a disposable compositor: it creates windows and injects input into that private seat.
+This check covers ordinary wheel delivery; it does not measure a toolkit's response
+to precise scroll values.
+
+### Fullscreen output resize regression
+
+`scripts/check-output-resize.py` checks native Wayland and X11 GTK3 windows on a
+private, initially empty compositor. The harness must isolate its network namespace
+and home, start the compositor with a private token and sockets, and source that
+compositor's launch environment. Run with a 20-second fixture deadline:
+
+```sh
+timeout -k 2 20 python3 scripts/check-output-resize.py \
+  --control "$CABOOSE_DISPLAY_CONTROL" --compositor-pid "$PRIVATE_COMPOSITOR_PID" \
+  --token-file "$PRIVATE_TOKEN_FILE" --port 15499
+```
+
+The check requires GTK3 PyGObject and Python `websockets` with the sync API. It
+validates control/Wayland socket peers and the matching child Xwayland before
+creating clients. Each backend creates fullscreen, maximized and ordinary windows.
+The assertions cover same-id portrait mode changes, an identical output announcement
+(no additional client configure events), downstream output-origin movement, and
+removed-output fallback. Fullscreen/maximized state and window identities persist;
+ordinary window sizes/positions remain unchanged. Frame acknowledgements keep the
+private clients rendering. It sends no pointer, keyboard or focus commands and
+closes its connections and GTK children on exit. The harness must reap the private
+compositor/Xwayland too; never run it against an owner's display. The unchanged
+compositor fails the same-id portrait size assertion.
+
+The pure `DesktopGeometryTests`/`FullscreenGeometryTests` and iOS hosted
+`DesktopSurfaceLayoutTests` check ordinary top fitting, fullscreen centering during
+rotation/settling, and consistent input, popup and text-drop geometry. These are
+presentation checks; they do not establish a scroll-delivery fix.

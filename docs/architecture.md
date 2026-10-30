@@ -2271,6 +2271,13 @@ the app card, and a detached view releases its layers.
   follow their parent's displayed scale and position, including nested menus; trees whose
   owner is offscreen, or is not the covering window, are hidden. A window
   whose own minimum is wider than its tile is shown whole, scaled to fit.
+  App-requested fullscreen pictures remain aspect-fit and centered in the available
+  workspace, including during rotation and pending tile resizes. Rendering, input,
+  text drops and popup placement share that centered rectangle; ordinary constrained
+  tiles retain their top-aligned fit. When an output changes mode or origin, the
+  compositor reconfigures its fullscreen and maximized windows to that output's new
+  rectangle without clearing their states. Removing an output applies the same rule
+  after moving those windows to the primary output. Ordinary windows keep their size.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
   each, with a dot for an open app; tapping focuses or opens it and holding exposes
   its window actions. Icons keep their size and scroll horizontally when they do not fit.

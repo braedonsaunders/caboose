@@ -130,7 +130,8 @@ struct WindowScreen: View {
         let natural = DesktopGeometry.surfaceSize(
             natural: CGSize(width: window.frame.width / model.pixelsPerPoint, height: window.frame.height / model.pixelsPerPoint),
             available: size, locallyRendered: window.game != nil)
-        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false)
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false,
+                                                  fullscreen: window.isFullscreen)
         return ZStack(alignment: .topLeading) {
             RemoteWindowCanvas(window: window, keyboardVisible: model.keyboardVisible && keyTarget == window.id)
                 .frame(width: size.width, height: size.height)
@@ -389,7 +390,7 @@ struct WindowScreen: View {
         let scale = model.pixelsPerPoint
         let root = DesktopGeometry.surfaceFrame(
             natural: CGSize(width: parent.frame.width / scale, height: parent.frame.height / scale),
-            available: size, resizing: false)
+            available: size, resizing: false, fullscreen: parent.isFullscreen)
         let windows = Dictionary(uniqueKeysWithValues: ([parent] + popups).map {
             ($0.id, DesktopGeometry.WindowGeometry(frame: $0.frame, parent: $0.transientFor))
         })
@@ -448,6 +449,7 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
         view.locallyRendered = window.game != nil
+        view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,

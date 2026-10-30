@@ -22,7 +22,8 @@ struct YardTile: View {
         let natural = DesktopGeometry.surfaceSize(
             natural: CGSize(width: window.frame.width / yard.pixelsPerPoint, height: window.frame.height / yard.pixelsPerPoint),
             available: available, locallyRendered: window.game != nil)
-        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id))
+        let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id),
+                                                  fullscreen: window.isFullscreen)
         VStack(spacing: 0) {
             YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
             ZStack {
@@ -191,6 +192,7 @@ struct YardSurface: UIViewRepresentable {
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
         view.stretch = stretch
+        view.fullscreen = window.isFullscreen
         view.locallyRendered = window.game != nil
         view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
@@ -206,6 +208,7 @@ final class YardSurfaceView: UIView {
     let content: RemoteWindowView
     var onTouch: (() -> Void)?
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
+    var fullscreen = false { didSet { if fullscreen != oldValue { setNeedsLayout() } } }
     var locallyRendered = false { didSet { if locallyRendered != oldValue { setNeedsLayout() } } }
     var natural: CGSize = .zero { didSet { if natural != oldValue { setNeedsLayout() } } }
     var laptopPoint: CGPoint? { didSet { if laptopPoint != oldValue { setNeedsLayout() } } }
@@ -240,7 +243,8 @@ final class YardSurfaceView: UIView {
         let size = DesktopGeometry.surfaceSize(natural: natural, available: bounds.size, locallyRendered: locallyRendered)
         content.transform = .identity
         content.bounds = CGRect(origin: .zero, size: size)
-        let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch)
+        let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch,
+                                                  fullscreen: fullscreen)
         guard size.width > 0, size.height > 0 else { return }
         content.transform = CGAffineTransform(scaleX: shown.width / size.width, y: shown.height / size.height)
         content.center = CGPoint(x: shown.midX, y: shown.midY)

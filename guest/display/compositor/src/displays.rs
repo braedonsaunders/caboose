@@ -145,6 +145,30 @@ mod tests {
     use smithay::reexports::wayland_server::Display;
 
     #[test]
+    fn output_change_tracks_modes_downstream_origins_and_removed_ids() {
+        let server: Display<State> = Display::new().unwrap();
+        let handle = server.handle();
+        let mut displays = Displays::default();
+        let mut primary = proto::Display { id: 0, width: 1200, height: 800, scale: 1.0, refresh_hz: 60.0, hdr: false };
+        let secondary = proto::Display { id: 1, width: 640, height: 480, ..primary.clone() };
+        displays.replace(&handle, &[primary.clone(), secondary.clone()]);
+        primary.width = 800;
+        primary.height = 1200;
+        let change = displays.replace(&handle, &[primary.clone(), secondary.clone()]);
+        // The secondary's mode is unchanged, but its X11 root-space origin moved.
+        assert_eq!(change.changed, vec![0, 1]);
+        assert_eq!(displays.get(0).unwrap().logical_size(), (800, 1200).into());
+        assert_eq!(displays.get(1).unwrap().origin, (800, 0).into());
+        let unchanged = displays.replace(&handle, &[primary.clone(), secondary]);
+        assert!(unchanged.changed.is_empty());
+        assert!(unchanged.removed.is_empty());
+        let removal = displays.replace(&handle, &[primary]);
+        assert_eq!(removal.removed, vec![1]);
+        assert!(removal.changed.is_empty());
+        assert_eq!(displays.primary().info.id, 0);
+    }
+
+    #[test]
     fn empty_client_announcement_retains_default_and_previous_output() {
         let server: Display<State> = Display::new().unwrap();
         let handle = server.handle();
