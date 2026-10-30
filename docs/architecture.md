@@ -303,6 +303,42 @@ Portable object storage is explicitly enabled by its caller and
 `CABOOSE_PORTABLE_STORAGE=on`; an unset or `off` setting requires no object-storage
 credentials or service. S3-compatible storage is an archive backend, not a live disk.
 
+### Optional multi-host cold recovery
+
+`CABOOSE_CLUSTER=on` enables shared PostgreSQL ownership and portable S3-compatible
+checkpoints for Linux monolithic Cloud Hypervisor computers on Azure VMs. It requires
+explicit host identities, a shared authentication secret, compatible boot/runtime
+assets and operator-provided HTTPS routing. Personal installations require none of
+these services. Cluster mode refuses container, macOS, split-image, template and depot
+runtimes; ordinary local runtimes retain their existing behavior.
+
+PostgreSQL assigns one execution owner and a monotonically increasing generation to
+each enrolled computer. Lease expiry alone does not authorize takeover. Recovery
+permanently revokes the source host, requests Azure VM deallocation, and verifies
+`PowerState/deallocated` before claiming another generation. An ambiguous fence or
+coordinator outage prevents takeover. Local lease failure disconnects clients and
+requests runtime shutdown; that request is not proof of a provider fence. Fencing
+stops the entire source Azure VM, so cluster hosts must be dedicated to this role.
+
+Operator checkpoint requests park the computer and capture its complete disk,
+keyring and selected host state while holding lifecycle and state-write exclusion.
+Recovery verifies the archive into a new generation directory before cold boot.
+RAM and running processes are not restored, and changes since the last published
+checkpoint are lost. Checkpoints are explicit; a periodic scan attempts recovery
+of expired owners that already have compatible checkpoints.
+
+Cluster phone tokens and computer assignments use the shared database. Authorized
+location endpoints report the current host and generation; clients and ingress must
+route to that location. Automatic phone URL relocation is not implemented. The
+archived computer record never replaces current tenant authorization. An enrolled
+image root refuses local-mode startup, and a revoked Azure identity cannot rejoin.
+
+The [cluster component](../apps/host/src/cluster/README.md) documents configuration,
+operator endpoints and acceptance scripts. Disposable PostgreSQL and MinIO checks
+exercise ownership races, encrypted restore and activation using synthetic lifecycle
+and provider fixtures. Actual two-host Azure fencing and microVM recovery remain
+unverified.
+
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
 It runs as the login user without root privileges. The helper gives each guest its own
