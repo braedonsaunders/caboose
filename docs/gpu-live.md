@@ -180,7 +180,14 @@ BIND width and height may both be zero to request the real initial extent from
 the trusted visible owner layer, before the game has a swapchain image. A mixed
 zero pair is invalid. A positive pair asserts equality with the actual owner
 extent; it cannot set UIKit geometry. Missing, ambiguous or unlaid-out ownership
-returns an error, never a synthetic 1×1 surface. CAPS reports the attached
+can wait up to three seconds for real display metadata and view layout to arrive
+on the separate channel. State changes retry resolution; there is no polling or
+synthetic geometry. Expiry returns `EAGAIN`, and executor cancellation returns
+`ECANCELED`. Known wrong epochs and ambiguous owners reject immediately. Only
+the consumer worker waits; main continues processing display and layout events.
+The broker preserves this pair;
+it pins the first authenticated compositor BIND epoch to the executor and rejects
+subsequent mismatches. CAPS reports the attached
 provider's actual extent. A resize revokes the generation and requires retirement
 and detachment before replacement.
 

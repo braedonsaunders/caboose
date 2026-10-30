@@ -22,3 +22,19 @@ python3 -m unittest discover -s guest/gpu/broker -v
 The tests cover binary request/response integrity, half-close, bounded buffers,
 reverse-direction progress under backpressure, cancellation, deadlines and
 connection isolation. Every test closes its sockets and joins its threads.
+
+`live_protocol.py` and `live_surface_protocol.py` implement the bounded live
+envelope and structural surface checks described in [the contract](../../../docs/gpu-live.md).
+The JSON vector files pin bytes independently of WebSocket fragmentation. These
+codecs do not authenticate a process, validate generated Vulkan payloads, or
+establish native GPU completion.
+
+`guest/gpu/install-live.py` installs the supervised broker into a private module
+directory and an isolated Python launcher at `/usr/local/libexec/caboose-gpu-broker`.
+Installation does not start a listener or enable an ICD. The installed-layout
+test invokes the real installed command's help path from an unrelated directory
+with a hostile `PYTHONPATH`; it does not start a broker:
+
+```sh
+python3 -m unittest discover -s guest/gpu -p test_install_live.py -v
+```

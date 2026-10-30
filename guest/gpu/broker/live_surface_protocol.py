@@ -33,7 +33,8 @@ def validate_surface(kind: int, payload: bytes):
             "zero surface identity")
     if kind == 16:  # bind
         exact(64)
-        require(wide(40) and wide(48) and word(56) and word(60), "invalid bind identity/extent")
+        require(wide(40) and wide(48), "invalid bind identity")
+        require((word(56) == 0) == (word(60) == 0), "mixed-zero bind extent")
     elif kind in (17, 24):  # bound / retired
         exact(56)
         status(40)

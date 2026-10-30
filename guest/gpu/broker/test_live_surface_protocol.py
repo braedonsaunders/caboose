@@ -28,7 +28,8 @@ class SurfaceWireTests(unittest.TestCase):
         mutations = [
             ("bind", 0, bytes(16)), ("bind", 16, bytes(16)),
             ("bind", 32, bytes(8)), ("bind", 40, bytes(8)),
-            ("bind", 56, bytes(4)), ("bound", 40, struct.pack('<i', -1)),
+            ("bind", 56, bytes(4)), ("bind", 60, bytes(4)),
+            ("bound", 40, struct.pack('<i', -1)),
             ("bound", 44, struct.pack('<I', 2)), ("bound", 52, struct.pack('<I', 1)),
             ("caps", 116, struct.pack('<I', 4097)),
             ("caps", 148, bytes(4)), ("caps", 152, struct.pack('<I', 2)),

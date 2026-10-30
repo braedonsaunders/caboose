@@ -9,10 +9,14 @@ private final class LiveGPUMainResult<T>: @unchecked Sendable {
     private var result: Result<T, Error>?
     private let ready = DispatchSemaphore(value: 0)
     func perform(_ operation: @escaping @MainActor () throws -> T) throws -> T {
+        try performAsync { complete in complete(Result { try operation() }) }
+    }
+    func performAsync(_ operation: @escaping @MainActor (@escaping @MainActor (Result<T, Error>) -> Void) -> Void) throws -> T {
         precondition(!Thread.isMainThread)
         DispatchQueue.main.async { [self] in
-            result = Result { try MainActor.assumeIsolated { try operation() } }
-            ready.signal()
+            MainActor.assumeIsolated {
+                operation { value in result = value; ready.signal() }
+            }
         }
         ready.wait()
         return try result!.get()
@@ -27,7 +31,9 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
     init(owners: LiveGPUPresentationOwners) { self.owners = owners }
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
               instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
-        let lease = try liveGPUOnMain { [owners] in try owners.claim(identity: identity, windowID: window) }
+        let lease = try LiveGPUMainResult<LiveGPULayerLease>().performAsync { [owners] complete in
+            owners.requestClaim(identity: identity, windowID: window, complete: complete)
+        }
         guard (width == 0 && height == 0) ||
               (width == UInt32(lease.extent.width) && height == UInt32(lease.extent.height)) else {
             try liveGPUOnMain { [owners] in owners.release(lease) }

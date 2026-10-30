@@ -17,6 +17,7 @@ public final class LiveGPUPresentationOwners {
     private var leases: [UInt64: LiveGPULayerLease] = [:]
     private let invalidated: @MainActor () -> Void
     private var stopped = false
+    private let waiting = LiveGPUOwnerWaiter<LiveGPULayerLease>()
 
     public init(invalidated: @escaping @MainActor () -> Void) { self.invalidated = invalidated }
 
@@ -29,12 +30,14 @@ public final class LiveGPUPresentationOwners {
         })
         for window in windows.values { window.liveGPUPresentation = self }
         for lease in leases.values { validate(lease) }
+        waiting.retry()
     }
 
     /// Invalidates admission immediately on main; native GPU work and UIKit
     /// ownership remain retained until the worker retirement/main detach barrier.
     public func revoke() {
         stopped = true; epoch = nil; windows.removeAll()
+        waiting.cancel()
         for lease in leases.values { lease.invalidate() }
     }
 
@@ -42,6 +45,7 @@ public final class LiveGPUPresentationOwners {
         views = views.filter { $0.value.view != nil }
         views[ObjectIdentifier(view)] = ViewRef(view)
         for lease in leases.values where lease.view === view { validate(lease) }
+        waiting.retry()
     }
     func withdraw(_ view: RemoteWindowView) {
         views.removeValue(forKey: ObjectIdentifier(view))
@@ -79,15 +83,23 @@ public final class LiveGPUPresentationOwners {
         return CGSize(width: width, height: height)
     }
 
-    func claim(identity: LiveGPUSurfaceIdentity, windowID: UInt64) throws -> LiveGPULayerLease {
-        guard !stopped, epoch == identity.epoch, let object = windows[windowID] else { throw unavailable(ESTALE) }
+    func requestClaim(identity: LiveGPUSurfaceIdentity, windowID: UInt64,
+                      complete: @escaping @MainActor (Result<LiveGPULayerLease, Error>) -> Void) {
+        waiting.request(resolve: { [self] in try claim(identity: identity, windowID: windowID) }, complete: complete)
+    }
+    private func claim(identity: LiveGPUSurfaceIdentity, windowID: UInt64) throws -> LiveGPULayerLease {
+        guard !stopped else { throw unavailable(ECANCELED) }
+        guard let epoch else { throw unavailable(EAGAIN) }
+        guard epoch == identity.epoch else { throw unavailable(ESTALE) }
+        guard let object = windows[windowID] else { throw unavailable(EAGAIN) }
         guard leases[windowID] == nil else { throw unavailable(EBUSY) }
         let candidates = views.values.compactMap(\.view).filter {
             guard let window = $0.remoteWindow else { return false }
             return ObjectIdentifier(window) == object && eligible($0)
         }
         // A duplicated visible owner is not resolved by picking an arbitrary view.
-        guard candidates.count == 1, let view = candidates.first, let size = extent(view) else {
+        guard candidates.count < 2 else { throw unavailable(EBUSY) }
+        guard let view = candidates.first, let size = extent(view) else {
             throw unavailable(EAGAIN)
         }
         let content = LiveGPULayerView(frame: view.bounds)
