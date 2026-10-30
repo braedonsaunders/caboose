@@ -79,6 +79,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     int _bridgeFd;
     std::atomic_bool _stopping;
     std::atomic_bool _started;
+    std::atomic_bool _authStarted;
     std::atomic_bool _finishing;
     NSData* _session;
     NSData* _token;
@@ -92,7 +93,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         _networkQueue = dispatch_queue_create("org.caboose.gpu-diagnostic.network", DISPATCH_QUEUE_SERIAL);
         _workers = dispatch_group_create();
         _decoderFd = _bridgeFd = -1;
-        _stopping = false; _started = false; _finishing = false;
+        _stopping = false; _started = false; _authStarted = false; _finishing = false;
     }
     return self;
 }
@@ -191,7 +192,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     });
 }
 - (void)authenticate {
-    if (_stopping.load()) return;
+    if (_stopping.load() || _authStarted.exchange(true)) return;
     uint8_t record[64] = {'C','B','G','T','L','S','0','1'};
     std::memcpy(record + 8, _session.bytes, 16);
     for (int i = 0; i < 8; ++i) record[24 + i] = static_cast<uint8_t>(_generation >> (56 - 8 * i));
