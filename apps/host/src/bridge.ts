@@ -204,7 +204,10 @@ export function parseLocation(input: Record<string, unknown>): SharedLocation {
  * Relays file chooser and scan requests to the phone sockets while a phone is connected, and their
  * answers back. Delivery is at most once; the ids delivered are remembered for 24 hours so
  * an answer can be checked against its request. `emit` sends to the phone sockets, except
- * those of the phone `exceptPhone` when given.
+ * those of the phone `exceptPhone` when given, and only to those that scan when
+ * `scanners` is set. A scan request with no such socket (`canScan`) goes back to the guest
+ * as `computer` at once, so `caboose-scan` fails rather than waiting on a phone app that
+ * cannot answer it.
  */
 export class BridgeRelay {
   private timer: ReturnType<typeof setInterval> | undefined
@@ -214,10 +217,12 @@ export class BridgeRelay {
   private generation = 0
   /** The phone's latest appearance, applied at every wake. */
   appearance: Appearance | null = null
+  /** Whether a connected phone socket answers scan requests (opened with `?scan=1`). */
+  canScan: () => boolean = () => false
 
   constructor(
     private readonly guest: () => AgentGuest | undefined,
-    private readonly emit: (event: BridgeEvent, exceptPhone?: string) => void,
+    private readonly emit: (event: BridgeEvent, exceptPhone?: string, scanners?: boolean) => void,
     private readonly pollMs = 1000,
     private readonly now: () => number = Date.now,
   ) {}
@@ -267,18 +272,18 @@ export class BridgeRelay {
       this.prune()
       for (const raw of requests) {
         const request = parseBridgeRequest(raw)
-        if (request) {
+        if (request && (request.type !== 'scan' || this.canScan())) {
           if (this.outstanding.has(request.id)) continue
           this.outstanding.set(request.id, { type: request.type, multiple: request.multiple, directory: request.directory, filters: request.filters.length, deliveredAt: this.now() })
-          this.emit({ type: 'bridge.request', request })
+          this.emit({ type: 'bridge.request', request }, undefined, request.type === 'scan')
           continue
         }
-        // A claimed request the phone cannot be shown goes to the computer's own dialog now,
-        // rather than waiting until the phone leaves.
-        const id = record(raw)?.id
+        // A claimed request no phone can be shown (malformed, or a scan without a phone app
+        // that scans) goes back now: to the computer's own dialog, or caboose-scan fails.
+        const id = request?.id ?? record(raw)?.id
         if (typeof id === 'string' && BRIDGE_ID.test(id)) {
           await bridgeCommand(guest, ['respond', JSON.stringify({ id, response: 'computer' })])
-            .catch(error => console.error('Could not return a malformed bridge request to the computer:', message(error)))
+            .catch(error => console.error('Could not hand a bridge request back to the computer:', message(error)))
           if (generation !== this.generation) return
         }
       }

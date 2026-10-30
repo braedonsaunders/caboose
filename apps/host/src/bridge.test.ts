@@ -164,15 +164,35 @@ describe('BridgeRelay', () => {
 
   it('relays a scan and checks its answer against the format it asked for', async () => {
     const fake = fakeGuest()
-    const events: BridgeEvent[] = []
-    const relay = new BridgeRelay(() => fake.guest, event => events.push(event), 60_000)
-    fake.drain({ requests: [scan, { ...scanPages, multiple: false }], cancels: [] })
+    const events: [BridgeEvent, string | undefined, boolean | undefined][] = []
+    const relay = new BridgeRelay(() => fake.guest, (event, except, scanners) => events.push([event, except, scanners]), 60_000)
+    relay.canScan = () => true
+    fake.drain({ requests: [scan, { ...scanPages, multiple: false }, open], cancels: [] })
     await relay.poll()
-    expect(events).toEqual([{ type: 'bridge.request', request: scan }])
+    // A scan goes only to the sockets that scan; a file request to every phone socket.
+    expect(events).toEqual([[{ type: 'bridge.request', request: scan }, undefined, true], [{ type: 'bridge.request', request: open }, undefined, false]])
     expect(fake.bridgeCalls('respond').map(call => JSON.parse(call.at(-1)!))).toEqual([{ id: scanPages.id, response: 'computer' }])
     await expect(relay.answer(scan.id, { response: 'ok', paths: ['/home/caboose/a.pdf', '/home/caboose/b.pdf'] })).rejects.toThrow(BridgeInputError)
     await relay.answer(scan.id, { response: 'ok', paths: ['/home/caboose/Caboose Documents/1/Scan.pdf'], filter: 0 })
     expect(JSON.parse(fake.bridgeCalls('respond').at(-1)!.at(-1)!)).toEqual({ id: scan.id, response: 'ok', paths: ['/home/caboose/Caboose Documents/1/Scan.pdf'], filter: 0 })
+  })
+
+  it('hands a scan back to the computer at once when no phone app scans', async () => {
+    const fake = fakeGuest()
+    const events: BridgeEvent[] = []
+    const relay = new BridgeRelay(() => fake.guest, event => events.push(event), 60_000)
+    let scanners = false
+    relay.canScan = () => scanners
+    fake.drain({ requests: [scan, open], cancels: [] })
+    await relay.poll()
+    expect(events).toEqual([{ type: 'bridge.request', request: open }])
+    expect(fake.bridgeCalls('respond').map(call => JSON.parse(call.at(-1)!))).toEqual([{ id: scan.id, response: 'computer' }])
+    expect(relay.pending(scan.id)).toBe(false)
+    await expect(relay.answer(scan.id, { response: 'cancel' })).rejects.toThrow(AgentNotFoundError)
+    scanners = true
+    fake.drain({ requests: [scanPages], cancels: [] })
+    await relay.poll()
+    expect(events.at(-1)).toEqual({ type: 'bridge.request', request: scanPages })
   })
 
   it('ignores drain output that is not the contract', async () => {

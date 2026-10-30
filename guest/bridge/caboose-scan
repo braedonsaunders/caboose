@@ -102,7 +102,7 @@ def main(argv):
     if answer['response'] == 'cancel':
         fail(1, 'scanning was cancelled.')
     if answer['response'] == 'computer':
-        fail(1, 'the phone did not scan: it has no document scanner, or could not show it now.')
+        fail(1, 'the phone did not scan: its Caboose app cannot scan documents, or could not show the scanner now.')
     paths = core.chosen(request, answer)
     if paths is None:
         fail(1, 'the scan did not arrive on the computer.')

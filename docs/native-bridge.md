@@ -122,7 +122,8 @@ request through the same queue, claim and answer as the file chooser:
   `multiple` true (one image per page). `app`, `title`, `acceptLabel`, `currentName` and
   `currentFolder` are `""`, and `directory` is false.
 - The answer is `ok` with the scanned files' paths, `cancel`, or `computer` when the phone
-  cannot scan (no document scanner) or cannot show the request now. The phone uploads the scan to
+  cannot scan (no document scanner, or no connected app that answers scan requests, for
+  which the host answers) or cannot show the request now. The phone uploads the scan to
   `~/Caboose Documents/<uuid>/`.
 - With `--output`, the scan moves there: a PDF to that file (replacing it) or into that
   folder; JPEG pages into that folder, made when missing.
@@ -202,14 +203,17 @@ opened with `?phone=1` is connected, the host runs `caboose-bridge drain` as `ca
 second. It prints `{ requests: [...], cancels: [id...] }` (at most 16 of each), having moved
 each request it prints to `bridge/claimed/`. The host validates each request field by field
 (the limits above; strings without control characters; a `scan` exactly as
-[Scan](#scan) describes it) and sends to those sockets:
+[Scan](#scan) describes it) and sends to those sockets, a `scan` only to sockets also opened
+with `?scan=1` (an app that answers scan requests):
 
 | Event | Payload |
 | --- | --- |
 | `bridge.request` | `{ request }` |
 | `bridge.cancel` | `{ id }`: the application withdrew it, or it was answered from another phone |
 
-Delivery is at most once. The host remembers outstanding ids for 24 hours.
+Delivery is at most once. The host remembers outstanding ids for 24 hours. A `scan` with no
+connected foreground phone socket opened with `?scan=1` is answered `computer` at once, so
+`caboose-scan` fails promptly instead of waiting on an app that cannot answer it.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -296,6 +300,7 @@ Now Playing metadata and commands until playback returns to the computer.
   `computer`.
 - `bridge.cancel` dismisses the sheet.
 - A request the app cannot read (one from a newer computer) is answered `computer`.
+- The app opens its foreground control socket with `?foreground=1&phone=1&scan=1`.
 
 ### Scanning
 
