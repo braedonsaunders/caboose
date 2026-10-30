@@ -168,6 +168,21 @@ VkResult acquirePresentationInstance(caboose_gfx_registry* registry, uint64_t to
     return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCaboosePresentationInstance(
         it->second->context, (VkInstance)(uintptr_t)boxedInstance, out);
 }
+VkResult acquirePresentationDevice(caboose_gfx_registry* registry, uint64_t token,
+    uint64_t boxedInstance, uint64_t boxedDevice, uint64_t boxedQueue, uint32_t queueFamily,
+    std::unique_ptr<gfxstream::host::vk::CaboosePresentationDevice>* out) {
+    static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "64-bit boxed Vulkan handles required");
+    if (!out) return VK_ERROR_INITIALIZATION_FAILED;
+    out->reset();
+    if (!registry || !token || !boxedInstance || !boxedDevice || !boxedQueue)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto it = registry->processes.find(token);
+    if (it == registry->processes.end() || it->second->stopped) return VK_ERROR_INITIALIZATION_FAILED;
+    return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCaboosePresentationDevice(
+        it->second->context, (VkInstance)(uintptr_t)boxedInstance, (VkDevice)(uintptr_t)boxedDevice,
+        (VkQueue)(uintptr_t)boxedQueue, queueFamily, out);
+}
 VkResult acquirePresentationObjects(caboose_gfx_registry* registry,
     uint64_t boxedInstance, const caboose_gpu_present_info& info,
     std::unique_ptr<gfxstream::host::vk::CaboosePresentationObjects>* out) {

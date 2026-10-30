@@ -13,8 +13,9 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
     VkFence copyFence, VkCommandBuffer commandBuffer);
 // A successful return means queued presentation, not displayed-vsync completion.
-// The ready semaphore and swapchain must stay alive until the presentation
-// engine has finished using them (e.g. a proven reacquisition or present fence).
+// Caller must have queried and enabled swapchain maintenance1 on this actual
+// device. The ready semaphore and swapchain remain alive until presentFence is
+// actually signaled; timeout is not completion.
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
-    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready);
+    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence);
 }

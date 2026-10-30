@@ -80,11 +80,15 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
     } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
 }
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
-    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready) {
+    VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence) {
     if (!objects.vk || !objects.vk->vkQueuePresentKHR || !objects.queue ||
-        !objects.queueMutex || !swapchain || !ready) return VK_ERROR_INITIALIZATION_FAILED;
+        !objects.queueMutex || !swapchain || !ready || !presentFence) return VK_ERROR_INITIALIZATION_FAILED;
+    VkSwapchainPresentFenceInfoKHR fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_KHR;
+    fenceInfo.swapchainCount = 1; fenceInfo.pFences = &presentFence;
     VkPresentInfoKHR info{};
     info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    info.pNext = &fenceInfo;
     info.waitSemaphoreCount = 1; info.pWaitSemaphores = &ready;
     info.swapchainCount = 1; info.pSwapchains = &swapchain; info.pImageIndices = &imageIndex;
     std::lock_guard<std::mutex> lock(*objects.queueMutex);
