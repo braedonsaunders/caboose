@@ -1,5 +1,8 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "native_runtime.h"
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+#include "memory_audit.h"
+#endif
 #include "headless_framebuffer.h"
 #include "process_registry.h"
 #include "frame_buffer.h"
@@ -20,6 +23,9 @@ PFN_vkGetInstanceProcAddr installedGet = nullptr;
 caboose_gpu_resolve_export installedResolve = nullptr;
 caboose_gfx_registry* registry = nullptr;
 uint64_t nextToken = 1;
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+bool memoryAuditRequested = false;
+#endif
 }
 static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_export resolve,
                         unsigned mode) {
@@ -30,6 +36,9 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     if (reinterpret_cast<PFN_vkGetInstanceProcAddr>(resolve("vkGetInstanceProcAddr")) != get ||
         !resolve("vkCreateInstance") || !resolve("vkDestroyInstance")) return EINVAL;
     std::lock_guard<std::mutex> lock(mutex);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+    if (memoryAuditRequested && mode != 2) return EINVAL;
+#endif
     if (attempted) {
         if (get != installedGet || resolve != installedResolve || mode != installedMode)
             return EBUSY;
@@ -54,6 +63,9 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
 #ifdef CABOOSE_GPU_INDEXED_WSI
     features.CabooseSynchronousProof.setEnabled(mode == 2);
 #endif
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+    features.CabooseMemoryAudit.setEnabled(memoryAuditRequested);
+#endif
     features.VulkanNullOptionalStrings.setEnabled(true);
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
     features.CabooseVirtualWsi.setEnabled(virtualWsi);
@@ -65,6 +77,9 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
         (mode == 2 && actual.VulkanVirtualQueue.enabled()) ||
 #ifdef CABOOSE_GPU_INDEXED_WSI
         (actual.CabooseSynchronousProof.enabled() != (mode == 2)) ||
+#endif
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+        (actual.CabooseMemoryAudit.enabled() != memoryAuditRequested) ||
 #endif
         !actual.VulkanNullOptionalStrings.enabled()
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
@@ -131,6 +146,42 @@ caboose_gfx_registry* indexedWsiRegistry() {
 }
 #endif
 }
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+extern "C" int caboose_gpu_runtime_enable_memory_audit(void) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (attempted) return EBUSY;
+    memoryAuditRequested = true;
+    return 0;
+}
+extern "C" int caboose_gpu_runtime_memory_features(caboose_gpu_memory_features* out) {
+    if (!out) return EINVAL;
+    *out = {};
+    std::lock_guard<std::mutex> lock(mutex);
+    if (startResult || installedMode != 2 || !memoryAuditRequested) return ENODEV;
+    auto* fb = gfxstream::host::FrameBuffer::getFB();
+    if (!fb || !fb->getFeatures().CabooseMemoryAudit.enabled()) return ENODEV;
+    const auto& f = fb->getFeatures();
+    out->gl_direct_mem = f.GlDirectMem.enabled();
+    out->virtio_gpu_next = f.VirtioGpuNext.enabled();
+    out->disable_coherent_emulation = f.VulkanDisableCoherentMemoryAndEmulate.enabled();
+    out->ensure_cached_coherent = f.VulkanEnsureCachedCoherentMemoryAvailable.enabled();
+    out->allocate_device_only = f.VulkanAllocateDeviceMemoryOnly.enabled();
+    out->allocate_host_memory = f.VulkanAllocateHostMemory.enabled();
+    out->system_blob = f.SystemBlob.enabled();
+    out->dedicated_ahb_type = f.VulkanUseDedicatedAhbMemoryType.enabled();
+    out->external_blob = f.ExternalBlob.enabled();
+    out->virtual_queue = f.VulkanVirtualQueue.enabled();
+    out->submit_with_commands = f.VulkanQueueSubmitWithCommands.enabled();
+    out->synchronous_proof = f.CabooseSynchronousProof.enabled();
+    out->max_safe_heap_size = f.VulkanMaxSafeHeapSize.getValue().value_or(0);
+    return 0;
+}
+extern "C" int caboose_gpu_runtime_memory_receipts(uint64_t token, caboose_gpu_memory_receipt* out,
+                                                     size_t capacity, size_t* count) {
+    auto* r = getRegistry();
+    return r ? caboose_gfx_process_memory_receipts(r, token, out, capacity, count) : ENODEV;
+}
+#endif
 extern "C" int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet,
                                         size_t max_reply_buffer) {
     auto* r = getRegistry();

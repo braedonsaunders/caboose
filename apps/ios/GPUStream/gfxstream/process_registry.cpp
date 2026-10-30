@@ -175,6 +175,21 @@ extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64
     registry->processes.erase(it);
     return 0;
 }
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+extern "C" int caboose_gfx_process_memory_receipts(caboose_gfx_registry* registry, uint64_t token,
+    caboose_gpu_memory_receipt* out, size_t capacity, size_t* count) {
+    if (!registry || !token || !count || capacity > 256 || (capacity && !out)) return EINVAL;
+    *count = 0;
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto it = registry->processes.find(token);
+    if (it == registry->processes.end()) return ENOENT;
+    auto* fb = FrameBuffer::getFB();
+    if (!fb || !fb->getFeatures().CabooseMemoryAudit.enabled()) return ENOTSUP;
+    auto* state = gfxstream::host::vk::VkDecoderGlobalState::get();
+    if (!state) return ENODEV;
+    return state->readCabooseMemoryAudit(it->second->context, out, capacity, count) ? 0 : EOVERFLOW;
+}
+#endif
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
 namespace caboose::gpuv2 {
 VkResult acquireMappedSources(caboose_gfx_registry* registry, uint64_t token,

@@ -16,6 +16,12 @@ PATCHED_INPUTS = {
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }
+AUDIT_INPUTS = {
+    'host/vulkan/vk_decoder_global_state.cpp': 'a8b46388e081a92bba6b24724e9641f13a7e700660e5c1a2c47886ddf17e9823',
+    'host/vulkan/vk_decoder_global_state.h': 'e82d4d3ab823d8ea4b963392b36de0889c07476a06ca2045233d89336ef8935a',
+    'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
+    'host/vulkan/caboose_memory_audit.h': '79c054eeb80ef61226180379ea285206096c746e8c713cac7a1800c8f9ac6fe9',
+}
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
               'vkQueueBindSparse', 'vkQueueWaitIdle'}
 
@@ -25,7 +31,10 @@ def main():
     parser.add_argument('gfxstream', type=Path)
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--patched', action='store_true', help='verify the 0022-patched decoder')
+    parser.add_argument('--memory-audit', action='store_true', help='verify the 0024 diagnostic overlay')
     args = parser.parse_args()
+    if args.memory_audit and not args.patched:
+        raise SystemExit('--memory-audit requires --patched')
     decoder_path = args.gfxstream / 'host/vulkan/vk_decoder.cpp'
     header_path = args.gfxstream / 'host/vulkan/cereal/common/goldfish_vk_marshaling.h'
     decoder_bytes = decoder_path.read_bytes()
@@ -35,7 +44,10 @@ def main():
     if hashlib.sha256(header_bytes).hexdigest() != MARSHALING:
         raise SystemExit('marshaling header SHA-256 does not match the pinned source')
     if args.patched:
-        for relative, expected in PATCHED_INPUTS.items():
+        expected_inputs = dict(PATCHED_INPUTS)
+        if args.memory_audit:
+            expected_inputs.update(AUDIT_INPUTS)
+        for relative, expected in expected_inputs.items():
             if hashlib.sha256((args.gfxstream / relative).read_bytes()).hexdigest() != expected:
                 raise SystemExit(f'patched input SHA-256 mismatch: {relative}')
     decoder = decoder_bytes.decode()

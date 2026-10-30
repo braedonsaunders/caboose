@@ -2,11 +2,18 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+#include "memory_audit.h"
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct caboose_gfx_registry caboose_gfx_registry;
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+int caboose_gfx_process_memory_receipts(caboose_gfx_registry* registry, uint64_t token,
+    caboose_gpu_memory_receipt* out, size_t capacity, size_t* count);
+#endif
 // Requires an initialized upstream FrameBuffer. Only one registry may exist.
 // All functions return zero on success or an errno-style error.
 int caboose_gfx_registry_create(caboose_gfx_registry** out);
