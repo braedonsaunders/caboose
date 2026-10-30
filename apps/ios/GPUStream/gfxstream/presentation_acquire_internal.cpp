@@ -18,7 +18,7 @@ PresentationAcquire::~PresentationAcquire() {
     // The driver may still signal an acquired semaphore/fence. Keep all leases
     // and the internally owned fence alive on an unproven shutdown path.
     if (acquiredValid_ && !signalDone_) { (void)retained_.release(); return; }
-    if (retained_->ownsFence && retained_->observeFence)
+    if (retained_->sync && retained_->ownsFence && retained_->observeFence)
         retained_->sync->vk->vkDestroyFence(retained_->sync->device, retained_->observeFence, nullptr);
 }
 VkResult PresentationAcquire::create(
@@ -87,6 +87,13 @@ PresentationAcquire::PollResult PresentationAcquire::signalComplete() {
     if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) {
         signalDone_ = true;
         signalResult_ = result;
+        // A guest reset may be waiting on the fence gate. Release it as soon
+        // as the real signal is observed, independently of request lifetime.
+        if (retained_->ownsFence && retained_->observeFence)
+            retained_->sync->vk->vkDestroyFence(retained_->sync->device, retained_->observeFence, nullptr);
+        retained_->observeFence = VK_NULL_HANDLE;
+        retained_->ownsFence = false;
+        retained_->sync.reset();
     }
     return {result, true, false, 0};
 }
