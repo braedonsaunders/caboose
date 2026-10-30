@@ -1,0 +1,8 @@
+{
+  "name": "drop-leave",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "drop.leave", "type_id": 163, "fields": {}}
+  ],
+  "hex": "a301000000a0"
+}

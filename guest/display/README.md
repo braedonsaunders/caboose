@@ -91,13 +91,28 @@ This directory is a Cargo workspace:
   windows. A hello's `window.create` messages are all written before the next client
   message is read, so the `pong` to a ping sent after the hello follows them. A new hello
   replaces the previous connection, which may be the same client's dead one.
-- **Clipboard** (text). The phone's `clipboard` becomes the selection Wayland and X11
-  applications paste; what they copy reaches the phone (and a new client is sent the
-  current text on connect). Copying between Wayland and X11 applications on the computer
+- **Clipboard** (text, PNG and JPEG images, files). The phone's `clipboard` becomes the
+  selection Wayland and X11 applications paste; what they copy reaches the phone in the
+  types its hello lists (and a new client is sent the current copy on connect). Copies
+  are checked against the contract (types, signatures, 12 MiB together) both ways;
+  applications get 5 s to hand over a copy and 30 s to take a paste, each on its own
+  thread. Files from the phone must be in the transfer area
+  (`~/.cache/caboose/transfers`, see [guest/files](../files/README.md)) and are opened
+  without following links before they are offered. Copying between Wayland and X11 applications on the computer
   works through Xwayland's window manager. When a focused window closes, focus returns to
   the window focused before it. X11 foreground metadata (`_NET_ACTIVE_WINDOW`)
 tracks the seat’s focused X11 window and clears for Wayland or no focus. Stale XWM
 property updates are reconciled on notifications, without a polling timer.
+- **Drag and drop** (`src/dnd.rs`, `src/xdnd.rs`). A drop from the phone becomes a real
+  drag over the application under the finger: an XDND session from the compositor's own X
+  client for an X11 window, whose answer goes back as `drop.status` while it hovers, or a
+  compositor-owned Wayland drag on the seat's pointer, which enters the Wayland surface only
+  once `drop.perform` has brought the content (files in the transfer area), because
+  applications read a drag as it enters. The drag is released once the application accepts
+  and has read the content. A Wayland application's
+  drag is announced with `drag.start`; on `drag.take` the compositor moves it off every
+  window, reads it as it reads a copy while the phone's input waits, sends `drag.data`,
+  and lets the release end it as not dropped.
 - **Sound.** The compositor runs its own PulseAudio on a private socket with a null sink
   as the only, so default, output, and gives launched applications `PULSE_SERVER`. While a
   client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
@@ -143,8 +158,9 @@ property updates are reconciled on notifications, without a polling timer.
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
 memory and the compositor offers no YUV formats; tiles of opaque windows come only from
-the software encoders; the clipboard carries text only; cursors are sent by name, not as
-images; window icons are not sent; notifications are not sent
+the software encoders; the clipboard carries text, PNG and JPEG images and files, not rich
+text or other image types; cursors are sent by name, not as images; window icons are not
+sent; notifications are not sent
 on the display protocol; and characters that are not on the keymap cannot be typed into
 X11 applications.
 
@@ -175,8 +191,9 @@ malformed input, and the committed vectors against the encoder), the pixel conve
 (reference colours, damage-only and threaded conversion, changed-block detection), the
 encoders (parameter sets on keyframes), keysym mapping on the real `us` keymap, grapheme
 → byte conversion for deletions, flow control, the launch environment, configuration and
-per-instance state directories, the Xauthority format, and the control socket's key
-combinations and text escapes.
+per-instance state directories, the Xauthority format, the control socket's key
+combinations and text escapes, the clipboard's checks and type choice, bounded pipe
+transfers, and the transfer area's path and link checks.
 
 `scripts/check.py` starts the compositor with real applications and drives it with the
 probe. Every check asserts on what arrived, not on a picture:
@@ -209,6 +226,12 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
+| `clipboard-image-wayland` | a PNG copied with wl-copy reaches a phone that takes images byte for byte (and not a text-only phone); the phone's PNG pastes with wl-paste byte for byte |
+| `clipboard-image-x11` | the same through Xwayland with xclip |
+| `drop-wayland` | a file the phone uploaded, then text, dropped on a Chromium page's drop zone (a real Wayland drag, entered with the content): received by the page; a drop where the page refuses is rejected and never reaches it. |
+| `drop-x11` | the same with Chromium on X11, through XDND |
+| `drag-out` | a pointer drag of a Chromium page's draggable text that the phone takes: the phone is told of it, receives the text, and the release drops nothing on the page |
+| `clipboard-files` | a file manager's copy (`x-special/gnome-copied-files`) reaches the phone as a `text/uri-list`; a file the phone uploaded to the transfer area pastes as both lists, and a file outside it is refused |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
 | `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |

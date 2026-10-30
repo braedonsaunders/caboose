@@ -37,11 +37,24 @@ pub struct Session {
     pub scaled_motion: bool,
     /// The client offers its hardware and this instance accepts it (docs/devices.md).
     pub devices: bool,
+    /// What the client takes from the clipboard besides text.
+    pub clipboard_types: Vec<String>,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
 pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool, wasm: bool, gpu: bool) -> Vec<String> {
-    let mut f = vec!["vsync", "ack", "touch", "pencil", "text-input-v3", "cursor-named", "clipboard"];
+    let mut f = vec![
+        "vsync",
+        "ack",
+        "touch",
+        "pencil",
+        "text-input-v3",
+        "cursor-named",
+        "clipboard",
+        "clipboard-types",
+        "drop",
+        "drag",
+    ];
     if xwayland {
         f.push("xwayland");
     }
@@ -149,6 +162,7 @@ impl State {
                 hub.disconnected();
             }
         }
+        self.dnd_session_ended();
         self.video_session_ended();
         if let Some(a) = self.audio.as_mut() {
             a.stop_capture();
@@ -183,6 +197,16 @@ impl State {
         if !matches!(message, Message::Vsync { .. } | Message::Ack { .. }) {
             tracing::debug!("connection {conn}: {message:?}");
         }
+        // While a taken drag's content is read, the phone's input waits (it holds the lift
+        // that ends the drag).
+        let message = if matches!(message, Message::Touch(_) | Message::Pointer(_) | Message::Key(_)) {
+            match self.defer_input(message) {
+                Some(m) => m,
+                None => return,
+            }
+        } else {
+            message
+        };
         match message {
             Message::Vsync { display, t_us: _ } => self.on_vsync(display),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -212,9 +236,7 @@ impl State {
             Message::GameDecline { id, reason } => self.decline_game(id, &reason),
             Message::WebviewDecline { id, reason } => self.decline_webview(id, &reason),
             Message::Displays { displays } => self.set_displays(&displays),
-            Message::Touch(t) => self.touch(&t),
-            Message::Pointer(p) => self.pointer(&p),
-            Message::Key(k) => self.key(&k),
+            Message::Touch(_) | Message::Pointer(_) | Message::Key(_) => self.apply_input(message),
             Message::Text(t) => self.text(&t),
             Message::VideoKeyframe { id } => {
                 let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));
@@ -231,6 +253,11 @@ impl State {
                 }
             }
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
+            Message::DropEnter(e) => self.drop_enter(e),
+            Message::DropMotion { id, x, y } => self.drop_motion(id, x, y),
+            Message::DropLeave => self.drop_leave(),
+            Message::DropPerform(c) => self.drop_perform(c),
+            Message::DragTake => self.drag_take(),
             Message::Pencil(p) => self.pencil(&p),
             Message::Devices { devices } => {
                 if let (Some(hub), true) = (&self.devices, self.session.as_ref().is_some_and(|s| s.devices)) {
@@ -250,6 +277,17 @@ impl State {
                 }
             }
             other => tracing::debug!("connection {conn}: ignoring {}", other.name()),
+        }
+    }
+
+    /// Pointer, touch and key input from the client. The pointer waits while it drives a
+    /// drop from the phone.
+    pub fn apply_input(&mut self, message: Message) {
+        match message {
+            Message::Touch(t) => self.touch(&t),
+            Message::Pointer(p) if !self.dnd.drops() => self.pointer(&p),
+            Message::Key(k) => self.key(&k),
+            _ => {}
         }
     }
 
@@ -328,6 +366,7 @@ impl State {
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
+        let clipboard_types = hello.clipboard_types.clone().unwrap_or_default();
         self.session = Some(Session {
             conn,
             ready: true,
@@ -341,6 +380,7 @@ impl State {
             gpu,
             scaled_motion: hello.scaled_motion,
             devices,
+            clipboard_types,
         });
         self.games_session_changed();
         if audio {
@@ -359,12 +399,8 @@ impl State {
         }
         self.video_session_started();
         // What the computer's clipboard holds, so the phone can paste it.
-        if let Some(text) = self.clipboard.last_sent.clone() {
-            let message = Message::ServerClipboard(proto::Clipboard {
-                mime: crate::clipboard::MIME.into(),
-                data: (*text).clone(),
-            });
-            self.net.send(conn, &message);
+        if let Some(content) = self.clipboard.last_sent.clone() {
+            self.send_clipboard(&content);
         }
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).
@@ -449,6 +485,7 @@ impl State {
             self.release_frame_callbacks(id);
         }
         self.motion_tick();
+        self.dnd_tick();
         let session_conn = self.session.as_ref().map(|s| s.conn);
         let timeout = self.config.client_timeout;
         if let Some(conn) =

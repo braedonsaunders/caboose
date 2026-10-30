@@ -1296,6 +1296,8 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 | `POST` | `/v1/fs/move?path=…` | `{ destination }`: move or rename |
 | `DELETE` | `/v1/fs/item?path=…` | Move an item to the freedesktop home Trash |
 | `GET` | `/v1/fs/changes?anchor=…` | The change journal since `anchor` |
+| `PUT` | `/v1/fs/transfer?id=…&name=…` | Stream a file into the transfer area, `.cache/caboose/transfers/<id>/<name>` (known length, at most 512 MiB) → 201 `{ path, size }` |
+| `DELETE` | `/v1/fs/transfer?id=…` | Remove a transfer |
 | `POST` | `/v1/fs/open` | **Wakes.** `{ path, app? }` → `{ opened: true }`: open a home-relative item on the owner's display, with its default handler or with the desktop entry `app` (`*.desktop`) |
 | `POST` | `/v1/files` | **Wakes.** `{ name, data (base64), open? }` → `{ path }`: save into `~/Downloads` under a unique name (`name (2).ext`, …) and optionally open it |
 
@@ -1329,6 +1331,13 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
   keeps the last anchor through a resident freeze and resumes from it on thaw; park,
   restart or the last control socket closing resets the host's event anchor.
+- The transfer area holds files the phone hands to Linux applications through the
+  clipboard ([display.md § Clipboard](display.md#clipboard)). `id` is 32 lowercase hex
+  digits chosen by the client and `name` one path component. The levels below `.cache`
+  must belong to `caboose`, the area and each transfer are private, an existing name is
+  never replaced (409), a transfer holds at most 64 files (409), the area at most 2 GiB
+  (507), and transfers are removed a day after their last upload. The display server
+  offers applications only files that are in the area.
 - `POST /v1/files` holds the whole body in memory, so it accepts at most 16 MiB and answers
   413 beyond that; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
@@ -1834,7 +1843,7 @@ Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compos
 Xwayland. It composites nothing: each toplevel and popup is its own stream, and the phone
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
 with lossless PNG tiles for small changes and a sharpening pass once content is still),
-paces frames on the client's vsync, carries clipboard text, named cursors, touch,
+paces frames on the client's vsync, carries the clipboard (text, images and files), named cursors, touch,
 text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
 composition; marker-based passthrough is fenced because it cannot preserve arbitrary
 foreground alpha and occlusion.
@@ -3273,12 +3282,31 @@ app group and a Keychain access group.
 - **Share extension.** `CabooseShare` takes pages, text, photos and files from the iOS
   share sheet: `POST /v1/open` for a page, an upload into Downloads (optionally opened on
   the computer), or a new agent task with them attached.
-- **Drop.** Text dropped on an owner window focuses it, clicks at the drop point and types
-  the text through the display session. A dropped file or image (at most 50 MiB) is saved
-  to `~/Downloads` with `POST /v1/files` and opened with Linux's default handler, which is
-  not necessarily the window it was dropped on. Transfer failures are shown on the phone.
-  Dropping a file into a specific Linux application, and dragging out of Linux, are not
-  supported.
+- **Drop.** Text, an image or files dragged over a window are dragged over the Linux
+  application under the finger too ([display.md § Drag and drop](display.md#drag-and-drop)):
+  iOS shows the drop as allowed unless that application refuses it (X11 applications
+  answer as the drag hovers; Wayland applications only once they have the content, on
+  the drop). On drop the app uploads
+  the files (an image also as its file) to the transfer area, at most 512 MB each and 1 GB
+  together, showing progress with Cancel, and then releases the drag on the application,
+  which receives text, a PNG or JPEG, and the files as `file://` URIs. A refused,
+  unfinished or failed drop is shown in an alert.
+- **Drag out.** While a Wayland application on the computer drags text, an image or files,
+  the app shows a drop target at the bottom of the screen; lifting the finger over it brings
+  the drag to the phone instead of dropping it on the computer. iOS cannot hand a drag in
+  progress to another app, so the items land on a shelf, from which they can be dragged on
+  into any app, shared or copied; files under the computer's home (at most 256 MB together)
+  are downloaded first. Drags started by X11 applications stay on the computer.
+- **Clipboard.** The app's hello asks for images and files as well as text. A copy on the
+  computer replaces the pasteboard with its text and image; files it names under the
+  computer's home (at most 256 MB together) are downloaded through `/v1/fs` first and put
+  on the pasteboard as files with their names, and files outside the home are reported,
+  not copied. The app reads the phone's pasteboard only for an explicit Paste. Text is
+  typed into the window; otherwise it sends the image (PNG or JPEG as copied, otherwise
+  converted to JPEG) and the files, which it uploads to the transfer area first (at most
+  512 MB each and 1 GB together; an image too large for the clipboard goes as a file), as
+  the computer's clipboard and presses Control-V in the window. Failures are shown in an
+  alert.
 - **Phone handoff.** The app opens its foreground control socket with `?phone=1`. It
   prompts before opening a URL, sharing or printing, never acts silently, and defers
   prompts while inactive. After the owner agrees it downloads a staged file with

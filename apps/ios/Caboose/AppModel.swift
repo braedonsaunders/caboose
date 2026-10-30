@@ -138,6 +138,8 @@ final class AppModel {
 
     private var launchStartedAt: Date?
     private var knownWindowIDs = Set<Int>()
+    /// The pasteboard, and what the phone takes from computer drags.
+    let pasteboard = PasteboardBridge()
     private var observingWindows = false
 
     private let monitorDefaults: UserDefaults
@@ -605,11 +607,7 @@ final class AppModel {
             guard let self, let session else { return false }
             return self.session === session
         }
-        session.onClipboardText = { text in
-            guard isCurrent() else { return }
-            UIPasteboard.general.string = text
-        }
-        session.clipboardProvider = { isCurrent() ? UIPasteboard.general.string : nil }
+        pasteboard.attach(session, host: host, isCurrent: isCurrent)
         session.onBell = { if isCurrent() { UINotificationFeedbackGenerator().notificationOccurred(.warning) } }
         session.onOpenURL = { [weak self] url in if isCurrent() { self?.phone.open(url) } }
         session.onNotification = { note in if isCurrent() { Self.post(note) } }

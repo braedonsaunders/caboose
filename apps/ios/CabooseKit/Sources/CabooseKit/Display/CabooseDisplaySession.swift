@@ -34,8 +34,23 @@ public final class CabooseDisplaySession: DisplaySession {
     public var epoch: String? { server?.epoch }
     public var typingEchoMs: Int? { echo.median }
 
-    public var onClipboardText: ((String) -> Void)?
-    public var clipboardProvider: (() -> String?)?
+    /// The computer's clipboard changed: the representations this client takes, checked.
+    public var onClipboard: ((ClipboardContent) -> Void)?
+    public var onPasteItems: ((_ paste: @escaping @MainActor () -> Void) -> Bool)?
+    /// Whether the application under the phone's drop accepts it; nil when it has not
+    /// said, or answers only on the drop.
+    public private(set) var dropAccepted: Bool?
+    /// A drop from the phone ended: whether the application took it, else why not.
+    public var onDropResult: ((Bool, String?) -> Void)?
+    /// The types of a computer application's drag in progress, nil when there is none.
+    public private(set) var computerDrag: [String]?
+    /// The phone's target for taking a computer drag, in window (screen) coordinates; set
+    /// by the view that shows it.
+    public var dragOutFrame: CGRect?
+    /// Whether the finger dragging on the computer is over `dragOutFrame`.
+    public private(set) var dragOutHovering = false
+    /// What the phone took from a computer drag, checked.
+    public var onDragData: ((ClipboardContent) -> Void)?
     public var onNotification: ((RemoteNotification) -> Void)?
     public var onBell: (() -> Void)?
     public var onRaise: ((Int) -> Void)?
@@ -105,7 +120,7 @@ public final class CabooseDisplaySession: DisplaySession {
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval)] = [:]
     private var lastVsync: [Int: UInt64] = [:]
     private var preedit: (text: String, cursor: (Int, Int))?
-    private var lastClipboard: String?
+    private var lastClipboard: ClipboardContent?
 
     /// - Parameters:
     ///   - displayURL: the host's `/v1/display` WebSocket.
@@ -309,7 +324,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames, devices: devices != nil))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes))
     }
 
     // MARK: Server messages
@@ -338,10 +353,23 @@ public final class CabooseDisplaySession: DisplaySession {
                 } else if surroundingText?.window == window {
                     surroundingText = nil
                 }
-            case .clipboard(let mime, let data):
-                guard mime.hasPrefix("text/plain"), let text = String(data: data, encoding: .utf8) else { continue }
-                lastClipboard = text
-                onClipboardText?(text)
+            case .clipboard(let content):
+                guard let kept = ClipboardPolicy.accepted(content) else { continue }
+                lastClipboard = kept
+                onClipboard?(kept)
+            case .dropStatus(let accepted):
+                dropAccepted = accepted
+            case .dropResult(let ok, let reason):
+                dropAccepted = nil
+                onDropResult?(ok, reason)
+            case .dragStart(let types):
+                computerDrag = types
+                dragOutHovering = false
+            case .dragEnd:
+                computerDrag = nil
+                dragOutHovering = false
+            case .dragData(let content):
+                if let kept = ClipboardPolicy.accepted(content) { onDragData?(kept) }
             case .notification(let id, let app, let summary, let body):
                 onNotification?(RemoteNotification(id: id, appName: app, summary: summary, body: body))
             case .pong(let sent):
@@ -796,10 +824,53 @@ public final class CabooseDisplaySession: DisplaySession {
         if state == .ready || state == .authenticating { send(.displays(displays)) }
     }
 
-    public func offerClipboard(_ text: String) {
-        guard state == .ready, has("clipboard"), text != lastClipboard else { return }
-        lastClipboard = text
-        send(.clipboard(mime: "text/plain;charset=utf-8", data: Data(text.utf8)))
+    public func offerClipboard(_ content: ClipboardContent) {
+        guard state == .ready, has("clipboard") else { return }
+        // A server without `clipboard-types` takes text only.
+        let offered = has("clipboard-types") ? content : ClipboardContent(content.entries.filter { $0.mime == ClipboardPolicy.text })
+        guard let offered, offered != lastClipboard, ClipboardPolicy.validate(offered) == nil else { return }
+        lastClipboard = offered
+        send(.clipboard(offered))
+    }
+
+    // MARK: Drag and drop
+
+    public func dropEnter(_ window: RemoteWindow, at point: CGPoint, types: [String]) {
+        guard state == .ready, has("drop") else { return }
+        dropAccepted = nil
+        send(.dropEnter(window: window.id, x: Double(point.x), y: Double(point.y), types: types))
+    }
+
+    public func dropMove(_ window: RemoteWindow, at point: CGPoint) {
+        guard state == .ready, has("drop") else { return }
+        send(.dropMotion(window: window.id, x: Double(point.x), y: Double(point.y)))
+    }
+
+    public func dropLeave() {
+        guard state == .ready, has("drop") else { return }
+        dropAccepted = nil
+        send(.dropLeave)
+    }
+
+    public func dropPerform(_ content: ClipboardContent) {
+        guard state == .ready, has("drop"), ClipboardPolicy.validate(content) == nil else { return }
+        send(.dropPerform(content))
+    }
+
+    /// Follows a finger dragging on the computer: whether it is over the phone's target.
+    public func trackDragOut(at windowPoint: CGPoint) {
+        let over = computerDrag != nil && dragOutFrame?.contains(windowPoint) == true
+        if over != dragOutHovering { dragOutHovering = over }
+    }
+
+    /// Before a release: takes the computer's drag if the release is over the phone's
+    /// target. The release that follows then ends the drag on the computer as not dropped.
+    @discardableResult
+    public func takeDragIfOver(_ windowPoint: CGPoint) -> Bool {
+        guard state == .ready, has("drag"), computerDrag != nil, dragOutFrame?.contains(windowPoint) == true else { return false }
+        dragOutHovering = false
+        send(.dragTake)
+        return true
     }
 
     // MARK: Pacing

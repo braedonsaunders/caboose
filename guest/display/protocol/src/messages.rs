@@ -73,6 +73,15 @@ string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
 });
+string_enum!(
+    /// Why a drop from the client did not complete (`drop.result`).
+    DropFailure {
+        Rejected => "rejected",
+        Cancelled => "cancelled",
+        Timeout => "timeout",
+        Invalid => "invalid",
+    }
+);
 string_enum!(ByeReason {
     Auth => "auth",
     Version => "version",
@@ -246,11 +255,44 @@ pub struct Surrounding {
     pub anchor: u64,
 }
 
-/// `clipboard` (0x30 server → client, 0xA0 client → server).
+/// One representation of a copy: its MIME type and its bytes.
 #[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardEntry {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// `clipboard` (0x30 server → client, 0xA0 client → server): one copy, in its first
+/// representation (`mime`, `data`) and the same content in other types
+/// (`alternatives`, absent when there are none).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clipboard {
     pub mime: String,
     pub data: Vec<u8>,
+    pub alternatives: Vec<ClipboardEntry>,
+}
+
+impl Clipboard {
+    /// Every representation, the first one first.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        std::iter::once((self.mime.as_str(), self.data.as_slice()))
+            .chain(self.alternatives.iter().map(|e| (e.mime.as_str(), e.data.as_slice())))
+    }
+
+    /// The bytes of every representation together.
+    pub fn total_len(&self) -> usize {
+        self.entries().map(|(_, d)| d.len()).sum()
+    }
+}
+
+/// `drop.enter` (0xA1): the client drags something over window `id`, at a window-local
+/// position, offering it in `mimes` (clipboard types).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropEnter {
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub mimes: Vec<String>,
 }
 
 /// `notification` (0x31).
@@ -294,6 +336,9 @@ pub struct ClientHello {
     pub scaled_motion: bool,
     /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
     pub devices: bool,
+    /// MIME types the client takes from the computer's clipboard besides text; absent
+    /// means text only.
+    pub clipboard_types: Option<Vec<String>>,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -552,6 +597,26 @@ pub enum Message {
         id: u64,
         reason: Option<String>,
     },
+    /// Whether the application under a drop from the client accepts it; absent when it
+    /// answers only once it has the content, on the drop.
+    DropStatus {
+        accepted: Option<bool>,
+    },
+    /// A drop from the client finished: the application took it, or why not.
+    DropResult {
+        ok: bool,
+        reason: Option<DropFailure>,
+    },
+    /// An application started dragging something the client could take.
+    DragStart {
+        mimes: Vec<String>,
+    },
+    /// The application's drag ended; `taken` if the client took it.
+    DragEnd {
+        taken: bool,
+    },
+    /// What the client took from an application's drag.
+    DragData(Clipboard),
     Pong {
         t_us: u64,
     },
@@ -605,6 +670,18 @@ pub enum Message {
         device: String,
         reason: String,
     },
+    DropEnter(DropEnter),
+    DropMotion {
+        id: u64,
+        x: f64,
+        y: f64,
+    },
+    /// The client's drag left the computer's windows, or was cancelled.
+    DropLeave,
+    /// The client dropped: the content, as a clipboard copy carries it.
+    DropPerform(Clipboard),
+    /// The client takes the application's drag in progress.
+    DragTake,
     /// The client has the video frame `seq` queued for display.
     VideoAck {
         id: u64,
@@ -658,6 +735,11 @@ pub mod type_id {
     pub const TEXT_INPUT: u8 = 0x22;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
+    pub const DROP_STATUS: u8 = 0x32;
+    pub const DROP_RESULT: u8 = 0x33;
+    pub const DRAG_START: u8 = 0x34;
+    pub const DRAG_END: u8 = 0x35;
+    pub const DRAG_DATA: u8 = 0x36;
     pub const AUDIO: u8 = 0x40;
     pub const DEVICE_STATUS: u8 = 0x60;
     pub const DEVICE_OPEN: u8 = 0x61;
@@ -693,6 +775,11 @@ pub mod type_id {
     pub const DEVICE_BUTTON: u8 = 0xB6;
     pub const DEVICE_BATTERY: u8 = 0xB7;
     pub const DEVICE_ERROR: u8 = 0xB8;
+    pub const DROP_ENTER: u8 = 0xA1;
+    pub const DROP_MOTION: u8 = 0xA2;
+    pub const DROP_LEAVE: u8 = 0xA3;
+    pub const DROP_PERFORM: u8 = 0xA4;
+    pub const DRAG_TAKE: u8 = 0xA5;
     pub const PING: u8 = 0xFE;
 }
 
@@ -722,11 +809,29 @@ fn codecs_from(f: &Fields<'_>, key: &'static str) -> Result<Vec<Codec>, Protocol
 }
 
 fn clipboard_value(c: &Clipboard) -> Value {
-    MapBuilder::new().put("mime", c.mime.as_str()).put("data", c.data.clone()).build()
+    let entry = |e: &ClipboardEntry| MapBuilder::new().put("mime", e.mime.as_str()).put("data", e.data.clone()).build();
+    MapBuilder::new()
+        .put("mime", c.mime.as_str())
+        .put("data", c.data.clone())
+        .opt(
+            "alternatives",
+            (!c.alternatives.is_empty()).then(|| Value::Array(c.alternatives.iter().map(entry).collect())),
+        )
+        .build()
 }
 
 fn clipboard_from(f: &Fields<'_>) -> Result<Clipboard, ProtocolError> {
-    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")? })
+    let alternatives = match f.opt("alternatives", fields::as_array)? {
+        None => Vec::new(),
+        Some(entries) => entries
+            .iter()
+            .map(|e| {
+                let e = Fields::new("clipboard.alternatives", e)?;
+                Ok(ClipboardEntry { mime: e.string("mime")?, data: e.bytes("data")? })
+            })
+            .collect::<Result<_, ProtocolError>>()?,
+    };
+    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")?, alternatives })
 }
 
 impl Message {
@@ -744,6 +849,11 @@ impl Message {
             Message::TextInput(_) => TEXT_INPUT,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
+            Message::DropStatus { .. } => DROP_STATUS,
+            Message::DropResult { .. } => DROP_RESULT,
+            Message::DragStart { .. } => DRAG_START,
+            Message::DragEnd { .. } => DRAG_END,
+            Message::DragData(_) => DRAG_DATA,
             Message::Audio(_) => AUDIO,
             Message::DeviceStatus { .. } => DEVICE_STATUS,
             Message::DeviceOpen { .. } => DEVICE_OPEN,
@@ -787,6 +897,11 @@ impl Message {
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
+            Message::DropEnter(_) => DROP_ENTER,
+            Message::DropMotion { .. } => DROP_MOTION,
+            Message::DropLeave => DROP_LEAVE,
+            Message::DropPerform(_) => DROP_PERFORM,
+            Message::DragTake => DRAG_TAKE,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
             Message::GpuAck { .. } => GPU_ACK,
@@ -956,7 +1071,19 @@ impl Message {
                 .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
                 .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
                 .build(),
-            Message::ServerClipboard(c) | Message::ClientClipboard(c) => clipboard_value(c),
+            Message::ServerClipboard(c)
+            | Message::ClientClipboard(c)
+            | Message::DragData(c)
+            | Message::DropPerform(c) => clipboard_value(c),
+            Message::DropStatus { accepted } => MapBuilder::new().opt("accepted", *accepted).build(),
+            Message::DropResult { ok, reason } => MapBuilder::new().put("ok", *ok).opt("reason", *reason).build(),
+            Message::DragStart { mimes } => MapBuilder::new().put("mimes", mimes.clone()).build(),
+            Message::DragEnd { taken } => MapBuilder::new().put("taken", *taken).build(),
+            Message::DropEnter(m) => {
+                MapBuilder::new().put("id", m.id).put("x", m.x).put("y", m.y).put("mimes", m.mimes.clone()).build()
+            }
+            Message::DropMotion { id, x, y } => MapBuilder::new().put("id", *id).put("x", *x).put("y", *y).build(),
+            Message::DropLeave | Message::DragTake => MapBuilder::new().build(),
             Message::Notification(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("app", m.app.as_str())
@@ -1002,6 +1129,7 @@ impl Message {
                 .opt("gpu", m.gpu.then_some(true))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
+                .opt("clipboard_types", m.clipboard_types.clone())
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1154,6 +1282,17 @@ impl Message {
                 },
             }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
+            DROP_STATUS => Message::DropStatus { accepted: f.opt_bool("accepted")? },
+            DROP_RESULT => Message::DropResult {
+                ok: f.bool("ok")?,
+                reason: f.opt("reason", |v| match v {
+                    Value::Text(s) => DropFailure::parse(s),
+                    _ => None,
+                })?,
+            },
+            DRAG_START => Message::DragStart { mimes: f.strings("mimes")? },
+            DRAG_END => Message::DragEnd { taken: f.bool("taken")? },
+            DRAG_DATA => Message::DragData(clipboard_from(&f)?),
             NOTIFICATION => Message::Notification(Notification {
                 id: f.u64("id")?,
                 app: f.string("app")?,
@@ -1263,6 +1402,10 @@ impl Message {
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
+                clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
+                    None => None,
+                    Some(_) => Some(f.strings("clipboard_types")?),
+                },
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1328,6 +1471,16 @@ impl Message {
                 delete_after: f.opt_u32("delete_after")?,
             }),
             CLIENT_CLIPBOARD => Message::ClientClipboard(clipboard_from(&f)?),
+            DROP_ENTER => Message::DropEnter(DropEnter {
+                id: f.u64("id")?,
+                x: f.f64("x")?,
+                y: f.f64("y")?,
+                mimes: f.strings("mimes")?,
+            }),
+            DROP_MOTION => Message::DropMotion { id: f.u64("id")?, x: f.f64("x")?, y: f.f64("y")? },
+            DROP_LEAVE => Message::DropLeave,
+            DROP_PERFORM => Message::DropPerform(clipboard_from(&f)?),
+            DRAG_TAKE => Message::DragTake,
             PING => Message::Ping { t_us: f.u64("t_us")? },
             DEVICE_STATUS => Message::DeviceStatus { devices: devices::status_from(&f)? },
             DEVICE_OPEN => Message::DeviceOpen { device: f.string("device")?, rate_hz: f.opt_f64("rate_hz")? },
@@ -1384,6 +1537,16 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         TEXT_INPUT => "text_input",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",
+        DROP_STATUS => "drop.status",
+        DROP_RESULT => "drop.result",
+        DRAG_START => "drag.start",
+        DRAG_END => "drag.end",
+        DRAG_DATA => "drag.data",
+        DROP_ENTER => "drop.enter",
+        DROP_MOTION => "drop.motion",
+        DROP_LEAVE => "drop.leave",
+        DROP_PERFORM => "drop.perform",
+        DRAG_TAKE => "drag.take",
         AUDIO => "audio",
         PONG => "pong",
         BYE => "bye",

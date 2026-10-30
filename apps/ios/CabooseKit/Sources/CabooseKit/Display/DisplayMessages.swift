@@ -34,6 +34,11 @@ public enum DisplayProtocol {
         case textInput = 0x22
         case clipboard = 0x30
         case notification = 0x31
+        case dropStatus = 0x32
+        case dropResult = 0x33
+        case dragStart = 0x34
+        case dragEnd = 0x35
+        case dragData = 0x36
         case audio = 0x40
         // The phone's hardware as devices (docs/devices.md).
         case deviceStatus = 0x60
@@ -73,6 +78,11 @@ public enum DisplayProtocol {
         case deviceButton = 0xB6
         case deviceBattery = 0xB7
         case deviceError = 0xB8
+        case dropEnter = 0xA1
+        case dropMotion = 0xA2
+        case dropLeave = 0xA3
+        case dropPerform = 0xA4
+        case dragTake = 0xA5
         case ping = 0xFE
     }
 }
@@ -399,7 +409,18 @@ public enum ServerMessage: Sendable {
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
-    case clipboard(mime: String, data: Data)
+    case clipboard(ClipboardContent)
+    /// Whether the application under a drop from the phone accepts it; nil when it answers
+    /// only once it has the content, on the drop.
+    case dropStatus(accepted: Bool?)
+    /// A drop from the phone ended: taken, or why not.
+    case dropResult(ok: Bool, reason: String?)
+    /// An application on the computer started dragging these types.
+    case dragStart(types: [String])
+    /// The application's drag ended.
+    case dragEnd(taken: Bool)
+    /// What the phone took from the drag.
+    case dragData(ClipboardContent)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
     case pong(micros: UInt64)
@@ -457,8 +478,12 @@ public enum ServerMessage: Sendable {
                 .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
                            surrounding: SurroundingText(text: body["surrounding"]?.string, cursor: body["cursor"]?.int, anchor: body["anchor"]?.int))
             }
-        case .clipboard:
-            parsed = body["data"]?.data.map { .clipboard(mime: body["mime"]?.string ?? "text/plain;charset=utf-8", data: $0) }
+        case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
+        case .dropStatus: parsed = .dropStatus(accepted: body["accepted"]?.bool)
+        case .dropResult: parsed = body["ok"]?.bool.map { .dropResult(ok: $0, reason: body["reason"]?.string) }
+        case .dragStart: parsed = body["mimes"]?.array.map { .dragStart(types: $0.compactMap(\.string)) }
+        case .dragEnd: parsed = body["taken"]?.bool.map { .dragEnd(taken: $0) }
+        case .dragData: parsed = ClipboardContent(cbor: body).map(ServerMessage.dragData)
         case .notification:
             parsed = body["id"]?.int.map {
                 .notification(id: $0, app: body["app"]?.string ?? "", summary: body["summary"]?.string ?? "", body: body["body"]?.string ?? "")
@@ -631,9 +656,10 @@ public enum ClientMessage: Sendable {
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
     /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
+    /// `clipboardTypes`: what the client takes from the clipboard besides text; absent, text only.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
                audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
-               devices: Bool = false)
+               devices: Bool = false, clipboardTypes: [String]? = nil)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -646,7 +672,15 @@ public enum ClientMessage: Sendable {
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
-    case clipboard(mime: String, data: Data)
+    case clipboard(ClipboardContent)
+    /// The phone drags something over a window, offering these clipboard types.
+    case dropEnter(window: Int, x: Double, y: Double, types: [String])
+    case dropMotion(window: Int, x: Double, y: Double)
+    case dropLeave
+    /// The phone dropped: the content, files already in the transfer area.
+    case dropPerform(ClipboardContent)
+    /// The phone takes the application's drag in progress.
+    case dragTake
     case ping(micros: UInt64)
     /// A video frame is decoded and queued for display.
     case videoAck(video: Int, seq: Int)
@@ -682,7 +716,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let clipboardTypes):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -693,6 +727,7 @@ public enum ClientMessage: Sendable {
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
+                ("clipboard_types", clipboardTypes.map { .array($0.map { CBOR($0) }) }),
             ]))
         case .devices(let devices):
             return DisplayFrame(type: T.devices.rawValue, body: map([("devices", .array(devices.map(\.cbor)))]))
@@ -772,10 +807,47 @@ public enum ClientMessage: Sendable {
                 ("cursor", cursor.map { [CBOR($0.0), CBOR($0.1)] }),
                 ("delete_before", deleteBefore.map { CBOR($0) }), ("delete_after", deleteAfter.map { CBOR($0) }),
             ]))
-        case .clipboard(let mime, let data):
-            return DisplayFrame(type: T.clipboard.rawValue, body: map([("mime", CBOR(mime)), ("data", .bytes(data))]))
+        case .clipboard(let content):
+            return DisplayFrame(type: T.clipboard.rawValue, body: content.cbor)
+        case .dropEnter(let window, let x, let y, let types):
+            return DisplayFrame(type: T.dropEnter.rawValue, body: map([("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y)),
+                                                                       ("mimes", .array(types.map { CBOR($0) }))]))
+        case .dropMotion(let window, let x, let y):
+            return DisplayFrame(type: T.dropMotion.rawValue, body: map([("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y))]))
+        case .dropLeave:
+            return DisplayFrame(type: T.dropLeave.rawValue, body: .map([]))
+        case .dropPerform(let content):
+            return DisplayFrame(type: T.dropPerform.rawValue, body: content.cbor)
+        case .dragTake:
+            return DisplayFrame(type: T.dragTake.rawValue, body: .map([]))
         case .ping(let micros):
             return DisplayFrame(type: T.ping.rawValue, body: map([("t_us", CBOR(micros))]))
         }
+    }
+}
+
+extension ClipboardContent {
+    /// A `clipboard` payload: `mime` and `data`, then `alternatives` when there are any.
+    init?(cbor body: CBOR) {
+        guard let mime = body["mime"]?.string, let data = body["data"]?.data else { return nil }
+        var entries = [ClipboardEntry(mime: mime, data: data)]
+        if let alternatives = body["alternatives"] {
+            guard let list = alternatives.array else { return nil }
+            for entry in list {
+                guard let mime = entry["mime"]?.string, let data = entry["data"]?.data else { return nil }
+                entries.append(ClipboardEntry(mime: mime, data: data))
+            }
+        }
+        self.init(entries)
+    }
+
+    var cbor: CBOR {
+        var pairs: [(CBOR, CBOR)] = [(.text("mime"), CBOR(entries[0].mime)), (.text("data"), .bytes(entries[0].data))]
+        if entries.count > 1 {
+            pairs.append((.text("alternatives"), .array(entries.dropFirst().map {
+                .map([(.text("mime"), CBOR($0.mime)), (.text("data"), .bytes($0.data))])
+            })))
+        }
+        return .map(pairs)
     }
 }

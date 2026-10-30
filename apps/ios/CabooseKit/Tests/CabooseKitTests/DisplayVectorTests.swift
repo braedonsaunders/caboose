@@ -262,8 +262,21 @@ import Testing
     @Test func otherServerMessages() throws {
         guard case .bye("auth") = try server("bye-auth").first else { Issue.record("bye"); return }
         guard case .pong(98_765_432_100) = try server("pong").first else { Issue.record("pong"); return }
-        guard case .clipboard(_, let data) = try server("clipboard-server").first else { Issue.record("clipboard"); return }
-        #expect(String(data: data, encoding: .utf8) == "héllo ✓")
+        guard case .clipboard(let text) = try server("clipboard-server").first else { Issue.record("clipboard"); return }
+        #expect(text.text == "héllo ✓" && text.entries.count == 1)
+        guard case .clipboard(let copy) = try server("clipboard-server-types").first else { Issue.record("clipboard types"); return }
+        #expect(copy.entries.map(\.mime) == ["text/plain;charset=utf-8", "image/png", "text/uri-list"])
+        #expect(copy.filePaths == ["/home/caboose/Pictures/a b.png"])
+        #expect(ClipboardPolicy.validate(copy) == nil)
+        guard case .dropStatus(true) = try server("drop-status").first,
+              case .dropStatus(nil) = try server("drop-status-unknown").first,
+              case .dropResult(false, "rejected") = try server("drop-result-rejected").first,
+              case .dropResult(true, nil) = try server("drop-result-ok").first,
+              case .dragStart(let types) = try server("drag-start").first,
+              case .dragEnd(true) = try server("drag-end").first,
+              case .dragData(let dragged) = try server("drag-data").first else { Issue.record("drag and drop"); return }
+        #expect(types == ["text/plain;charset=utf-8", "text/uri-list"])
+        #expect(dragged.filePaths == ["/home/caboose/Documents/report.pdf"])
         guard case .notification(3, "Chromium", "Download complete", "report.pdf\n2.1 MB") = try server("notification").first else {
             Issue.record("notification"); return
         }
@@ -347,8 +360,18 @@ import Testing
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
             DisplayInfo(id: 2, width: 3840, height: 2160, scale: 2, refreshHz: 59.94, hdr: false),
         ]),
-        "clipboard-client": .clipboard(mime: "text/plain;charset=utf-8", data: Data("copied on the phone".utf8)),
+        "clipboard-client": .clipboard(ClipboardContent([ClipboardEntry(mime: "text/plain;charset=utf-8", data: Data("copied on the phone".utf8))])!),
+        "clipboard-client-image": .clipboard(ClipboardContent([ClipboardEntry(mime: "image/png", data: Self.iconPNG)])!),
         "close": .close(window: 7),
+        "drop-enter": .dropEnter(window: 7, x: 400.5, y: 812, types: ["image/jpeg", "text/uri-list"]),
+        "drop-motion": .dropMotion(window: 7, x: 420, y: 830.25),
+        "drop-leave": .dropLeave,
+        "drop-perform": .dropPerform(ClipboardContent([
+            ClipboardEntry(mime: "image/jpeg", data: Data([0xFF, 0xD8, 0xFF, 0xE0])),
+            ClipboardEntry(mime: "text/uri-list",
+                           data: Data("file:///home/caboose/.cache/caboose/transfers/0123456789abcdef0123456789abcdef/IMG_0001.jpeg\r\n".utf8)),
+        ])!),
+        "drag-take": .dragTake,
         "configure": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 2556, height: 1179), display: 1,
                                 maximized: true, activated: true),
         "displays": .displays([DisplayInfo(id: 1, width: 2556, height: 1179, scale: 3, refreshHz: 120, hdr: true)]),
@@ -388,6 +411,9 @@ import Testing
         "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
+        "client-hello-clipboard": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], clipboardTypes: ["image/png", "image/jpeg", "text/uri-list"]),
         "video-ack": .videoAck(video: 2, seq: 41),
         "video-keyframe": .videoKeyframe(video: 1),
         "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
@@ -421,6 +447,9 @@ import Testing
         "device-battery": .deviceBattery(device: "battery", BatteryReport(level: 0.75, charging: true, full: false, lowPower: false, thermal: .fair)),
         "device-error": .deviceError(device: "camera-back", reason: "Camera access is off in Settings"),
     ]
+
+    /// The vectors' 16x16 PNG (guest/display/vectors/media).
+    static let iconPNG = (try? Data(contentsOf: directory.appendingPathComponent("media/icon-16x16.png"))) ?? Data()
 
     static var clientVectors: [String] {
         names.filter { (try? vector($0).messages.contains { $0.direction == "client" }) == true }

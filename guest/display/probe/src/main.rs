@@ -34,6 +34,7 @@ OPTIONS:
                            game.destroy; a game's window is a target like any other)
     --gpu-save DIR         take Vulkan streams (gpu.*): write each to DIR/gpu-<id>.gfxr and
                            acknowledge what was written
+    --clipboard-types LIST MIME types to take from the computer's clipboard besides text
     --duration SECS        how long to run [default: 10]
     --stall-after SECS     then stop reading and sending, the socket left open (a
                            suspended client)
@@ -48,7 +49,15 @@ OPTIONS:
     --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
                            key:KEYSYM[+mod...] (press and release; mods shift, control,
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
-                           then commit), copy:STRING (the phone's clipboard), tap:X,Y,
+                           then commit), copy:STRING (the phone's clipboard),
+                           copy-file:MIME:PATH (the file's bytes as MIME on the
+                           phone's clipboard), copy-files:PATH[,PATH...] (the files as
+                           the phone's text/uri-list), tap:X,Y, press:X,Y,
+                           move:X,Y, release:X,Y (the left button),
+                           drop-enter:TYPE[|TYPE...]@X,Y (`text` for UTF-8 text),
+                           drop-move:X,Y, drop-leave,
+                           drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
+                           the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
@@ -68,6 +77,7 @@ struct Args {
     audio: bool,
     wasm: bool,
     gpu_save: Option<PathBuf>,
+    clipboard_types: Option<Vec<String>>,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
     stall_after: Option<Duration>,
@@ -109,6 +119,7 @@ fn parse_args() -> Result<Args, String> {
         audio: false,
         wasm: false,
         gpu_save: None,
+        clipboard_types: None,
         duration: Duration::from_secs(10),
         stall_after: None,
         windows: None,
@@ -142,6 +153,7 @@ fn parse_args() -> Result<Args, String> {
             "--scaled-motion" => a.scaled_motion = true,
             "--wasm" => a.wasm = true,
             "--gpu-save" => a.gpu_save = Some(value()?.into()),
+            "--clipboard-types" => a.clipboard_types = Some(value()?.split(',').map(str::to_owned).collect()),
             "--video-decoders" => {
                 a.video_decoders = Some(
                     value()?
@@ -191,6 +203,12 @@ fn parse_args() -> Result<Args, String> {
         a.displays.push(parse_display(1, "1920x1080@60x1").unwrap());
     }
     Ok(a)
+}
+
+/// FNV-1a, 64-bit: how the report identifies clipboard bytes (scripts/check.py computes
+/// the same).
+fn fnv1a(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf29ce484222325, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 
 fn monotonic_us() -> u64 {
@@ -448,7 +466,23 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "copy" => vec![Message::ClientClipboard(proto::Clipboard {
             mime: "text/plain;charset=utf-8".into(),
             data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
         })],
+        // copy-file:MIME:PATH copies the file's bytes as MIME, as copying an image does.
+        "copy-file" => {
+            let (mime, path) = arg.split_once(':').ok_or_else(|| format!("bad copy-file {arg}"))?;
+            let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            vec![Message::ClientClipboard(proto::Clipboard { mime: mime.into(), data, alternatives: Vec::new() })]
+        }
+        // copy-files:PATH,... copies files the phone uploaded, as a text/uri-list.
+        "copy-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::ClientClipboard(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
         // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
         // as an autocorrection does.
         "edit" => {
@@ -480,6 +514,46 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 points: vec![proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None }],
             })]
         }
+        // press, move and release drive the left button separately, as a drag does.
+        "press" | "move" | "release" => {
+            let (x, y) = point(arg)?;
+            let buttons = if verb == "release" { 0 } else { proto::buttons::LEFT };
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None })]
+        }
+        // drop-enter:TYPES@X,Y starts a drop from the phone offering TYPES (`|`-separated;
+        // `text` stands for text/plain;charset=utf-8, whose `;` would end the action).
+        "drop-enter" => {
+            let (types, at) = arg.split_once('@').ok_or_else(|| format!("bad drop-enter {arg}"))?;
+            let (x, y) = point(at)?;
+            vec![Message::DropEnter(proto::DropEnter {
+                id,
+                x,
+                y,
+                mimes: types
+                    .split('|')
+                    .map(|t| if t == "text" { proto::clipboard::TEXT.to_owned() } else { t.to_owned() })
+                    .collect(),
+            })]
+        }
+        "drop-move" => {
+            let (x, y) = point(arg)?;
+            vec![Message::DropMotion { id, x, y }]
+        }
+        "drop-leave" => vec![Message::DropLeave],
+        "drop-text" => vec![Message::DropPerform(proto::Clipboard {
+            mime: proto::clipboard::TEXT.into(),
+            data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
+        })],
+        "drop-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::DropPerform(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
+        "drag-take" => vec![Message::DragTake],
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
@@ -579,6 +653,7 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             gpu: args.gpu_save.is_some(),
             scaled_motion: args.scaled_motion,
+            clipboard_types: args.clipboard_types.clone(),
         }),
     )?;
 
@@ -600,6 +675,10 @@ fn run(args: Args) -> Result<bool, String> {
     let mut games: BTreeMap<u64, GameStats> = BTreeMap::new();
     let mut gpus: BTreeMap<u64, GpuStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
+    let mut clipboard_entries: Vec<(String, usize, u64)> = Vec::new();
+    // Drag and drop as the server reported it, in order: "status:true", "result:ok",
+    // "result:rejected", "start:TYPES", "data:MIME=TEXT_OR_SIZE", "end:taken".
+    let mut dnd_events: Vec<String> = Vec::new();
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
@@ -859,7 +938,32 @@ fn run(args: Args) -> Result<bool, String> {
                         g.destroyed = true;
                     }
                 }
-                Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
+                Message::ServerClipboard(c) => {
+                    clipboard = c
+                        .entries()
+                        .find(|(m, _)| *m == proto::clipboard::TEXT)
+                        .map(|(_, d)| String::from_utf8_lossy(d).into_owned());
+                    clipboard_entries = c.entries().map(|(m, d)| (m.to_owned(), d.len(), fnv1a(d))).collect();
+                }
+                Message::DropStatus { accepted } => {
+                    dnd_events.push(format!("status:{}", accepted.map(|a| a.to_string()).unwrap_or("unknown".into())))
+                }
+                Message::DropResult { ok, reason } => dnd_events
+                    .push(format!("result:{}", if ok { "ok" } else { reason.map(|r| r.as_str()).unwrap_or("failed") })),
+                Message::DragStart { mimes } => dnd_events.push(format!("start:{}", mimes.join("|"))),
+                Message::DragEnd { taken } => {
+                    dnd_events.push(format!("end:{}", if taken { "taken" } else { "not-taken" }))
+                }
+                Message::DragData(c) => {
+                    for (mime, data) in c.entries() {
+                        let shown = if mime == proto::clipboard::TEXT || mime == proto::clipboard::URI_LIST {
+                            String::from_utf8_lossy(data).trim_end().to_owned()
+                        } else {
+                            format!("{} bytes", data.len())
+                        };
+                        dnd_events.push(format!("data:{mime}={shown}"));
+                    }
+                }
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
                     videos.insert(
@@ -1011,7 +1115,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
                     "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
@@ -1074,6 +1178,12 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
             clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
+            clipboard_entries
+                .iter()
+                .map(|(mime, bytes, hash)| format!("{{\"mime\":{mime:?},\"bytes\":{bytes},\"fnv1a\":\"{hash:016x}\"}}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            dnd_events.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","),
             sound.packets,
             sound.bytes,
             sound.decoded,
