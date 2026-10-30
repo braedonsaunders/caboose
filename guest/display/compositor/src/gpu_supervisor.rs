@@ -38,16 +38,6 @@ impl GpuSupervisor {
         Ok(Self { ipc: Some(parent), child })
     }
 
-    /// Transfer a connected TCP socket without consuming its HTTP bytes.
-    /// EAGAIN leaves the caller's socket untouched, so the event loop can retry.
-    pub fn handoff(&mut self, stream: &std::net::TcpStream) -> io::Result<()> {
-        if self.child.try_wait()?.is_some() {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker exited"));
-        }
-        let ipc = self.ipc.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker closed"))?;
-        send_once(ipc, stream)
-    }
-
     pub fn clone_ipc(&mut self) -> io::Result<UnixStream> {
         if self.child.try_wait()?.is_some() {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker exited"));

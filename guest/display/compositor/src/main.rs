@@ -8,6 +8,7 @@ mod control;
 mod displays;
 mod encode;
 mod game;
+#[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
 mod input;
 mod keymap;
