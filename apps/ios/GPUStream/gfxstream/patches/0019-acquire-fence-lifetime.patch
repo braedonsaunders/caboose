@@ -70,7 +70,11 @@
 +        result->device = device;
 +        result->vk = dispatch_VkDevice(boxedDevice);
 +        if (!result->vk) return VK_ERROR_INITIALIZATION_FAILED;
-@@ -4543,0 +4585,24 @@
+@@ -4495,0 +4537,3 @@
++            // Recycled provider fences start a new boxed lifetime.
++            if (fenceReused) fenceInfo.cabooseLifetime =
++                std::make_shared<caboose::gpuv2::PresentationLifetime>();
+@@ -4543,0 +4588,24 @@
 +        // Exclude acquire leases without waiting while holding the global lock.
 +        // Keep the mutation until all normal reset and pool bookkeeping ends.
 +        std::unique_ptr<caboose::gpuv2::PresentationMutation> resetMutation;
@@ -95,7 +99,11 @@
 +            blocked->wait();
 +        }
 +
-@@ -5115,0 +5181,9 @@
+@@ -4639,0 +4708,3 @@
++                // A recycled native fence is a distinct lifetime.
++                fenceInfo.cabooseLifetime =
++                    std::make_shared<caboose::gpuv2::PresentationLifetime>();
+@@ -5115,0 +5187,9 @@
 +        std::shared_ptr<caboose::gpuv2::PresentationLifetime> lifetime;
 +        {
 +            std::lock_guard<std::mutex> lock(mMutex);
@@ -105,7 +113,7 @@
 +            lifetime->close();
 +        }
 +        lifetime->wait();
-@@ -12237,0 +12312,8 @@
+@@ -12237,0 +12318,8 @@
 +VkResult VkDecoderGlobalState::acquireCabooseAcquireSync(
 +    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkSemaphore boxedSemaphore,
 +    VkFence boxedFence, std::unique_ptr<CabooseAcquireSync>* out) {
