@@ -295,8 +295,24 @@ and executor scheduling, and do not isolate GPU execution time.
 
 The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
 flush diagnostics. Up to 128 numeric call records and one limit marker report
-serialization time, first-reply buffered-write/wait time, remaining-reply wait
-time, byte counts and results. The elapsed interval begins after validation and
-encoder-lock acquisition; it excludes those waits. The first reply includes the IOStream buffer
-commit; it is not a pure network round-trip measurement. Diagnostics preserve
-the eight-packet window and do not log handles, addresses or memory contents.
+pre-lock validation time, encoder-lock wait time, serialization time, first-reply
+buffered-write/wait time, remaining-reply wait time, byte counts and results.
+The whole-call elapsed interval begins before validation and encoder-lock
+acquisition and reports `validation_us` and `lock_wait_us` separately. The first
+reply includes the IOStream buffer commit; neither whole-call elapsed nor
+first-reply wait is a pure network round-trip measurement. Diagnostics preserve
+the eight-packet window, control/lock order and metadata budget accounting, and
+do not log handles, addresses or memory contents.
+
+The encoder also accepts `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` for bounded whole-call
+timing across ten fixed synchronous RPC entrypoints (`vkQueueSubmit`,
+`vkQueueWaitIdle`, `vkDeviceWaitIdle`, `vkResetFences`, `vkWaitForFences`,
+`vkBeginCommandBuffer`, `vkEndCommandBuffer`, `vkResetCommandBuffer`,
+`vkAllocateDescriptorSets`, `vkResetDescriptorPool`). Up to 128 periodic
+two-second numeric snapshots, a final flush snapshot on process exit, and one
+limit marker report per-opcode call/error counts, `lock_wait_sum_us`/`max_us`,
+and whole-call `elapsed_sum_us`/`max_us` alongside cumulative totals so steady
+frames remain observable after high-rate startup calls. Whole-call elapsed
+includes validation, encoder-lock wait, marshaling, buffered write and reply
+read; it is not network RTT, and records contain no handles, addresses or
+payloads.

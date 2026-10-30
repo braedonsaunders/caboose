@@ -37,6 +37,10 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_ranges.cpp -o /tmp/r
 /tmp/ranges
 c++ -std=c++17 -Wall -Wextra -Werror test_flush_window.cpp -o /tmp/flush-window
 /tmp/flush-window
+c++ -std=c++17 -Wall -Wextra -Werror test_flush_timing.cpp -o /tmp/flush-timing
+/tmp/flush-timing
+c++ -std=c++17 -Wall -Wextra -Werror test_rpc_timing.cpp -o /tmp/rpc-timing
+/tmp/rpc-timing
 ```
 
 The fixture covers 32 MiB transfers, failure without publication, original

@@ -55,5 +55,34 @@ class ShadowProtocolTests(unittest.TestCase):
                 parse_reply(payload, expected)
 
 
+
+    def test_rpc_timing_anchor_requires_exact_single_match(self):
+        import prepare_bounded_memory as prep
+        sample = '''VkResult VkEncoder::vkQueueSubmit(
+    VkQueue queue,
+    uint32_t submitCount,
+    const VkSubmitInfo* pSubmits,
+    VkFence fence,
+    uint32_t doLock) {
+    (void)doLock;
+    bool queueSubmitWithCommandsEnabled =
+        sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+    if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+    VkResult vkQueueSubmit_VkResult_return = (VkResult)0;
+    stream->read(&vkQueueSubmit_VkResult_return, sizeof(VkResult));
+    if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+    return vkQueueSubmit_VkResult_return;
+}
+'''
+        out = prep.instrument_rpc_call(sample, 'vkQueueSubmit')
+        self.assertEqual(out.count('caboose::memory::RpcCallScope caboose_rpc_timing{OP_vkQueueSubmit};'), 1)
+        self.assertEqual(out.count('caboose_rpc_timing.lock([&] { this->lock(); });'), 1)
+        self.assertEqual(out.count('caboose_rpc_timing.finish(vkQueueSubmit_VkResult_return)'), 1)
+        with self.assertRaises(ValueError):
+            prep.instrument_rpc_call(out, 'vkQueueSubmit')
+        with self.assertRaises(ValueError):
+            prep.instrument_rpc_call(sample + sample, 'vkQueueSubmit')
+
+
 if __name__ == '__main__':
     unittest.main()

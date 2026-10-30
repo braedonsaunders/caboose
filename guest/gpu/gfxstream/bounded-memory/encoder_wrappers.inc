@@ -4,14 +4,16 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     if (!sResourceTracker->usingDirectMapping() &&
         !(sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT)) {
-        const auto valid = mImpl->validation()->on_vkFlushMappedMemoryRanges(this, VK_SUCCESS, device, count, ranges);
-        if (valid != VK_SUCCESS) return valid;
+        caboose::memory::FlushCallScope timing{count};
+        const auto valid = timing.validate([&] {
+            return mImpl->validation()->on_vkFlushMappedMemoryRanges(this, VK_SUCCESS, device, count, ranges);
+        });
+        if (valid != VK_SUCCESS) return static_cast<VkResult>(timing.finish(valid));
         // Hold the same encoder across serialization and every outstanding reply.
         // doLock==0 means the caller already owns its required encoder lock.
         struct Unlock { VkEncoder* encoder; bool held; ~Unlock() { if (held) encoder->unlock(); } };
-        if (doLock) this->lock();
+        if (doLock) timing.lock([&] { this->lock(); });
         Unlock unlock{this, doLock != 0};
-        caboose::memory::FlushCallScope timing{count};
         auto stream = mImpl->stream();
         caboose::memory::FlushWindow window{
             [&](unsigned i, unsigned long long offset, unsigned long long size) {
