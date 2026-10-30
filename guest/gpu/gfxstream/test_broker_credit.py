@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from test_live_broker import broker, Writer, Kind, Decoder
+from test_live_broker import broker, Writer, Kind, Decoder, Envelope, mock
 
 
 class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
@@ -76,6 +76,51 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             credit.release()
             first.bindings.finish(first.binding_generation)
             other.bindings.finish(other.binding_generation)
+
+    async def test_cancel_at_reservation_return_releases_local_credit(self):
+        # Cancel exactly after acquisition, before reserve_data returns. With a
+        # same-task timeout, the local variable is assigned before cancellation
+        # can be delivered at the next await. This is a boundary test, not an
+        # assertion that older Python wait_for implementations leak the result.
+        session=broker.Session(None,b'a'*16,1,None,Writer())
+        class Peer:
+            uid,pid,start_ticks=1000,42,123
+            def alive(self): return True
+            def close(self): pass
+        session.session_ready.set()
+        reader=asyncio.StreamReader(); reader.feed_data(broker.HELLO)
+        decoder=Decoder(b'a'*16,1)
+        acquired=[]
+        original=session.reserve_data
+        async def cancel_on_return():
+            credit=await original()
+            acquired.append((asyncio.current_task(),credit))
+            asyncio.current_task().cancel()
+            return credit
+        session.reserve_data=cancel_on_return
+        async def next_frame(kind):
+            wire=await asyncio.wait_for(session.pending.get(),1)
+            offset=4 if wire[1]==126 else 10 if wire[1]==127 else 2
+            got=[]; decoder.feed(wire[offset:],got.append)
+            self.assertEqual(got[0].kind,kind)
+            return got[0]
+        with mock.patch.object(broker.PeerIdentity,'from_socket',return_value=Peer()):
+            task=asyncio.create_task(session.local(reader,Writer()))
+            try:
+                opened=await next_frame(Kind.PROCESS_OPEN)
+                await session.message(Envelope(Kind.PROCESS_READY,b'a'*16,1,opened.process,0,1))
+                stream=await next_frame(Kind.STREAM_OPEN)
+                await session.message(Envelope(Kind.STREAM_READY,b'a'*16,1,opened.process,stream.stream,2))
+                with self.assertRaises(asyncio.CancelledError): await task
+                self.assertEqual(len(acquired),1)
+                self.assertIs(acquired[0][0],task)
+                self.assertFalse(acquired[0][1].active)
+                self.assertEqual((session.reserved_count,session.reserved_bytes),(0,0))
+            finally:
+                task.cancel(); await asyncio.gather(task,return_exceptions=True)
+                for pending in tuple(session.lifecycle_tasks): pending.cancel()
+                await asyncio.gather(*tuple(session.lifecycle_tasks),return_exceptions=True)
+                session.bindings.finish(session.binding_generation)
 
     async def test_cancelled_capacity_wait_does_not_own_credit(self):
         session=broker.Session(None,b'a'*16,1,None,Writer())

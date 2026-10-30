@@ -511,7 +511,9 @@ class Session:
             while True:
                 credit = None
                 try:
-                    credit = await asyncio.wait_for(self.reserve_data(), 1)
+                    # Same task: no child-result handoff between reservation and assignment.
+                    async with asyncio.timeout(1):
+                        credit = await self.reserve_data()
                     payload = await asyncio.wait_for(reader.read(DATA_READ_BYTES), 1)
                     if not payload:
                         # EOF authorizes no new bytes. Retain binding until native FIN
