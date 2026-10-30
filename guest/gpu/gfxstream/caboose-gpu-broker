@@ -25,6 +25,19 @@ HELLO = (b'CBGLREF1' + bytes((2, 0, 0, 0, 16, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 
 
+async def close_owned_writer(writer, *, abort, timeout=1):
+    """Bound local or remote transport cleanup; false means cleanup timed out."""
+    if abort:
+        writer.transport.abort()
+    writer.close()
+    try:
+        await asyncio.wait_for(writer.wait_closed(), timeout)
+        return True
+    except (OSError, asyncio.TimeoutError):
+        writer.transport.abort()
+        return False
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -215,13 +228,7 @@ class Session:
             self.writer.close()
         finally:
             if peer is not None: peer.close()
-            if self.draining or self.failed:
-                writer.transport.abort()
-            writer.close()
-            try:
-                await asyncio.wait_for(writer.wait_closed(), 1)
-            except (OSError, asyncio.TimeoutError):
-                writer.transport.abort()
+            if not await close_owned_writer(writer, abort=self.draining or self.failed):
                 self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
@@ -344,8 +351,7 @@ class Broker:
             if sender or receiver or stop_wait or drain_wait:
                 await asyncio.gather(*(t for t in (sender, receiver, stop_wait, drain_wait) if t), return_exceptions=True)
             if writer:
-                writer.close()
-                with contextlib.suppress(OSError): await writer.wait_closed()
+                await close_owned_writer(writer, abort=session is None or not session.revoked.is_set())
             else: stream.close()
 
 

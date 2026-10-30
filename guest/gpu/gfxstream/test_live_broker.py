@@ -205,6 +205,27 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.failed)
         session.bindings.finish(session.binding_generation)
 
+    async def test_remote_writer_timeout_aborts_without_claiming_cleanup(self):
+        class HeldRemote(Writer):
+            def __init__(self):
+                super().__init__(); self.transport = self; self.aborted = False
+            def abort(self): self.aborted = True
+            async def wait_closed(self): await asyncio.Event().wait()
+        writer = HeldRemote()
+        result = await broker.close_owned_writer(writer, abort=False, timeout=0.01)
+        self.assertFalse(result)
+        self.assertTrue(writer.aborted)
+
+    async def test_failed_remote_writer_is_aborted_before_wait(self):
+        class FailedRemote(Writer):
+            def __init__(self):
+                super().__init__(); self.transport = self; self.unblocked = asyncio.Event(); self.aborted = False
+            def abort(self): self.aborted = True; self.unblocked.set()
+            async def wait_closed(self): await self.unblocked.wait()
+        writer = FailedRemote()
+        self.assertTrue(await broker.close_owned_writer(writer, abort=True, timeout=0.1))
+        self.assertTrue(writer.aborted)
+
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()
