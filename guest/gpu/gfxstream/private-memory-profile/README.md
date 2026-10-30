@@ -113,6 +113,15 @@ A tail failure is significant: the decoder rounds backing allocation sizes, so
 a guest allocation-end exception needs correct handling against the actual
 backing size; no acceptance is inferred from the guest validator alone.
 
+`memory_probe CHALLENGE large32` retains the same independent byte/guard oracle
+and uses a 32 MiB buffer. Its explicit flush and invalidate each cover 32 MiB;
+whole-allocation initialization and partial-map WHOLE_SIZE also exceed 32 MiB.
+Two allocations include guards and a short allocation tail. It uses the same
+ordinary Vulkan APIs, exact same-index selection, real GPU copy and bounded fence.
+This optional case leaves the default small probe unchanged. The enclosing
+private executor harness must supply a finite deadline for the synchronous
+transport and collect actual cleanup receipts; a process timeout is not a pass.
+
 For loss, run `memory_probe CHALLENGE loss-before-invalidate` under the same
 30-second outer timeout. After its flushed `READY` line, the harness revokes
 only its own transport, then sends one input byte. The probe requires

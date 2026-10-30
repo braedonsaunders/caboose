@@ -19,9 +19,10 @@ static bool same(const VkPhysicalDeviceMemoryProperties& a, const VkPhysicalDevi
     return true;
 }
 int main(int argc, char** argv) {
-    if (argc != 2 && argc != 3) { std::fprintf(stderr, "usage: memory_probe UINT32_CHALLENGE [loss-before-invalidate]\n"); return 2; }
-    const bool loss = argc == 3;
-    REQUIRE(!loss || std::strcmp(argv[2],"loss-before-invalidate")==0);
+    if (argc != 2 && argc != 3) { std::fprintf(stderr, "usage: memory_probe UINT32_CHALLENGE [loss-before-invalidate|large32]\n"); return 2; }
+    const bool loss = argc == 3 && std::strcmp(argv[2],"loss-before-invalidate")==0;
+    const bool large = argc == 3 && std::strcmp(argv[2],"large32")==0;
+    REQUIRE(argc == 2 || loss || large);
     char* end=nullptr; unsigned long challenge=std::strtoul(argv[1], &end, 10);
     REQUIRE(*argv[1] && !*end && challenge <= UINT32_MAX);
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO}; app.apiVersion=VK_API_VERSION_1_1;
@@ -56,7 +57,7 @@ int main(int argc, char** argv) {
     VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO}; di.queueCreateInfoCount=1; di.pQueueCreateInfos=&qi;
     VkDevice device{}; VK_OK(vkCreateDevice(physical,&di,nullptr,&device)); VkQueue queue{}; vkGetDeviceQueue(device,family,0,&queue);
     VkDeviceSize atom=limits.limits.nonCoherentAtomSize; REQUIRE(atom && !(atom&(atom-1)) && atom<=65536);
-    VkDeviceSize unit=std::max<VkDeviceSize>(4096,atom);
+    VkDeviceSize unit=large ? 32ULL*1024*1024 : std::max<VkDeviceSize>(4096,atom);
     VkBuffer buffers[3]{}; VkMemoryRequirements reqs[3]{};
     for(int i=0;i<3;++i) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size=unit; bi.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -73,17 +74,20 @@ int main(int argc, char** argv) {
         REQUIRE(reqs[i].alignment && !(reqs[i].alignment&(reqs[i].alignment-1)) && reqs[i].alignment<=65536);
     }
     VkDeviceSize stride=unit; uint32_t bits=~0u;
-    for(auto r:reqs) { stride=std::max(stride,r.alignment); bits &= r.memoryTypeBits; REQUIRE(r.size<=65536); stride=std::max(stride,r.size); }
+    for(auto r:reqs) { stride=std::max(stride,r.alignment); bits &= r.memoryTypeBits; REQUIRE(r.size<=(large ? unit+65536 : 65536)); stride=std::max(stride,r.size); }
     // Round stride to the largest power-of-two alignment, including the atom.
-    VkDeviceSize align=unit; for(auto r:reqs) align=std::max(align,r.alignment);
-    stride=(stride+align-1)/align*align; REQUIRE(stride<=65536);
+    VkDeviceSize align=large ? std::max<VkDeviceSize>(4096,atom) : unit;
+    for(auto r:reqs) align=std::max(align,r.alignment);
+    const VkDeviceSize span=(stride+align-1)/align*align;
+    stride=large ? align : span; REQUIRE(stride<=65536);
+    const VkDeviceSize partialBytes=large ? span+stride : 2*stride;
     uint32_t type=0;
     for(;type<props.memoryTypeCount;++type) {
         auto f=props.memoryTypes[type].propertyFlags;
         if ((bits&(1u<<type)) && (f&VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f&VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) break;
     }
     REQUIRE(type<props.memoryTypeCount);
-    VkDeviceSize bytes=5*stride+4; VkDeviceMemory memory[2]{}; uint8_t* mapped[2]{};
+    VkDeviceSize bytes=large ? span+4*stride+4 : 5*stride+4; VkDeviceMemory memory[2]{}; uint8_t* mapped[2]{};
     std::printf("selected_guest_type=%u requirements_mask=0x%x allocation=%llu bind_offset=%llu copy_bytes=%llu\n",type,bits,(unsigned long long)bytes,(unsigned long long)stride,(unsigned long long)unit);
     for(int i=0;i<2;++i) {
         VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize=bytes; ai.memoryTypeIndex=type;
@@ -98,7 +102,7 @@ int main(int argc, char** argv) {
     VK_OK(vkBindBufferMemory(device,buffers[1],memory[0],stride));
     VK_OK(vkBindBufferMemory(device,buffers[2],memory[1],stride));
     vkUnmapMemory(device,memory[0]);
-    VK_OK(vkMapMemory(device,memory[0],stride,2*stride,0,reinterpret_cast<void**>(&mapped[0])));
+    VK_OK(vkMapMemory(device,memory[0],stride,partialBytes,0,reinterpret_cast<void**>(&mapped[0])));
     REQUIRE(limits.limits.minMemoryMapAlignment);
     REQUIRE((reinterpret_cast<uintptr_t>(mapped[0])-stride)%limits.limits.minMemoryMapAlignment==0);
     std::vector<uint8_t> expected(unit); for(size_t i=0;i<expected.size();++i) expected[i]=uint8_t((challenge+i*37+(i>>8))&255);
@@ -137,9 +141,9 @@ int main(int argc, char** argv) {
     // WHOLE_SIZE ends at this partial mapping's end, not allocation end.
     source.size=VK_WHOLE_SIZE; VK_OK(vkInvalidateMappedMemoryRanges(device,1,&source));
     REQUIRE(std::memcmp(mapped[0],expected.data(),unit)==0);
-    for(VkDeviceSize i=unit;i<2*stride;++i) REQUIRE(mapped[0][i]==0x35);
+    for(VkDeviceSize i=unit;i<partialBytes;++i) REQUIRE(mapped[0][i]==0x35);
     // Legal non-atom-multiple range ending at allocation end, then zero offset.
-    dest.offset=5*stride; dest.size=4; std::memset(mapped[1]+dest.offset,0x79,4);
+    dest.offset=bytes-4; dest.size=4; std::memset(mapped[1]+dest.offset,0x79,4);
     VK_OK(vkFlushMappedMemoryRanges(device,1,&dest)); std::memset(mapped[1]+dest.offset,0x12,4);
     VK_OK(vkInvalidateMappedMemoryRanges(device,1,&dest)); for(int i=0;i<4;++i) REQUIRE(mapped[1][dest.offset+i]==0x79);
     dest.offset=0; dest.size=atom; std::memset(mapped[1],0x12,atom);
@@ -149,5 +153,6 @@ int main(int argc, char** argv) {
     for(auto b:buffers) vkDestroyBuffer(device,b,nullptr);
     for(auto m:memory) vkFreeMemory(device,m,nullptr);
     vkDestroyDevice(device,nullptr); vkDestroyInstance(instance,nullptr);
+    if (large) std::puts("PASS large32 actual-copy-bytes=33554432 explicit-flush-bytes=33554432 explicit-invalidate-bytes=33554432");
     std::puts("PASS query-aliases same-index allocation alias-copy flush invalidate partial-map allocation-end zero-offset");
 }
