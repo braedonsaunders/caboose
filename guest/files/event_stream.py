@@ -215,13 +215,17 @@ class Store:
                     data, s = self.read(base + '/transcript.jsonl', budget, offset=offset)
                     previous = self.transcripts.get(task['id'])
                     reset = offset > s.st_size or bool(previous and previous[0] != (s.st_dev, s.st_ino))
-                    if previous and offset == previous[1] and previous[2]:
-                        continuity, _ = self.read(base + '/transcript.jsonl', len(previous[2]), offset=max(0, offset-len(previous[2])))
-                        reset = reset or continuity != previous[2]
+                    boundary = previous[1].get(offset) if previous else None
+                    if boundary:
+                        continuity, _ = self.read(base + '/transcript.jsonl', len(boundary), offset=max(0, offset-len(boundary)))
+                        reset = reset or continuity != boundary
                     if reset: data, s = self.read(base + '/transcript.jsonl', budget, offset=0)
                 except (OSError, ValueError): data = b''; reset = False
                 start = 0 if reset else offset
-                if data: self.transcripts[task['id']] = ((s.st_dev, s.st_ino), start+len(data), data[-64:])
+                if data:
+                    boundaries = {} if reset or not previous else {offset: previous[1][offset]} if offset in previous[1] else {}
+                    boundaries[start+len(data)] = data[-64:]
+                    self.transcripts[task['id']] = ((s.st_dev, s.st_ino), boundaries)
                 exitcode = self.optional(base + '/exit-code', 64).decode(errors='replace').strip()
                 if not exitcode:
                     pid = self.optional(base + '/pid', 32).strip()

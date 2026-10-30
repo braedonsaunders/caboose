@@ -120,6 +120,14 @@ class Tests(unittest.TestCase):
         kw['tasks'][0]['offset']=11
         row = self.snapshot(**kw)[0]['record']
         self.assertTrue(row['reset']); self.assertEqual(row['offset'],0)
+    def test_truncation_after_lost_chunk_response(self):
+        p=self.put('Agents/'+TASK+'/transcript.jsonl',b'a'*65536)
+        self.snapshot(channels=['agent.tick'],tasks=[{'id':TASK,'offset':0}])
+        with p.open('ab') as f: f.write(b'b'*65536)
+        self.snapshot(channels=['agent.tick'],tasks=[{'id':TASK,'offset':65536}])  # response lost
+        p.write_bytes(b'c'*140000)
+        row=self.snapshot(channels=['agent.tick'],tasks=[{'id':TASK,'offset':65536}])[0]['record']
+        self.assertTrue(row['reset']); self.assertEqual(row['offset'],0)
     def test_many_tasks_reach_idle(self):
         tasks=[{'id':'%08x-1234-1234-1234-123456789abc'%i,'offset':0} for i in range(256)]
         seen=set()
