@@ -9,9 +9,16 @@ import tempfile
 import time
 
 receiver, loader = sys.argv[1:]
-hello = b'CBGLREF1' + (1).to_bytes(4, 'little') + bytes(4) + bytes.fromhex(
+hello = b'CBGLREF1' + (2).to_bytes(4, 'little') + (0x10).to_bytes(4, 'little') + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0')
-for valid in (False, True):
+cases = [
+    ('legacy v1 rejected', hello[:8] + (1).to_bytes(4, 'little') + bytes(4) + hello[16:], False),
+    ('zero mask rejected', hello[:12] + bytes(4) + hello[16:], False),
+    ('unknown bit rejected', hello[:12] + (0x30).to_bytes(4, 'little') + hello[16:], False),
+    ('fingerprint mismatch rejected', hello[:-1] + bytes([hello[-1] ^ 1]), False),
+    ('valid EOF', hello, True),
+]
+for description, offered, valid in cases:
     with tempfile.TemporaryDirectory(prefix='caboose-receiver-', dir='/tmp') as directory:
         path = pathlib.Path(directory) / 'decoder.sock'
         with tempfile.TemporaryFile() as log:
@@ -23,7 +30,7 @@ for valid in (False, True):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                     client.settimeout(5)
                     client.connect(str(path))
-                    client.sendall(hello if valid else hello[:-1] + bytes([hello[-1] ^ 1]))
+                    client.sendall(offered)
                     reply = b''
                     while len(reply) < len(hello):
                         part = client.recv(len(hello) - len(reply))
@@ -39,7 +46,7 @@ for valid in (False, True):
                 code = process.wait(timeout=30)
                 assert code == (0 if valid else 1), code
                 assert not path.exists(), 'socket was not cleaned up'
-                print(('valid EOF' if valid else 'mismatch rejected') + ' passed')
+                print(description + ' passed')
             except BaseException:
                 process.terminate()
                 try:

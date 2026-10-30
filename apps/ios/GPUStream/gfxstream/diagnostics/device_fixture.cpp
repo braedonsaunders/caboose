@@ -22,7 +22,7 @@ namespace {
 // Packet cap includes framing and range metadata around the 64 KiB guest data cap.
 constexpr size_t kMaxPacket = 256 * 1024;
 constexpr std::array<uint8_t, 48> kHello = {
-    'C','B','G','L','R','E','F','1', 1,0,0,0, 0,0,0,0,
+    'C','B','G','L','R','E','F','1', 2,0,0,0, 0x10,0,0,0,
     0x20,0xd3,0xbb,0x2e,0x30,0x33,0x7c,0xab,0xf0,0xfe,0xbb,0x00,0x6e,0xd1,0x02,0xab,
     0x25,0xcc,0xf6,0xd9,0xdd,0xbf,0xaf,0x62,0x4c,0x7e,0x68,0xf9,0x04,0x09,0x69,0xc0,
 };
@@ -87,10 +87,12 @@ extern "C" int caboose_gpu_diagnostic_start(const uint8_t session_id[16], uint64
     features.VulkanSnapshots.setEnabled(false);
     features.VulkanNativeSwapchain.setEnabled(false);
     features.VulkanQueueSubmitWithCommands.setEnabled(false);
+    features.VulkanNullOptionalStrings.setEnabled(true);
     if (!caboose::gpuv2::initializeHeadlessFramebuffer(features)) { delete d; return EIO; }
     const auto& actual = gfxstream::host::FrameBuffer::getFB()->getFeatures();
     if (actual.GlDirectMem.enabled() || actual.VirtioGpuNext.enabled() ||
-        actual.ExternalBlob.enabled() || actual.VulkanQueueSubmitWithCommands.enabled()) {
+        actual.ExternalBlob.enabled() || actual.VulkanQueueSubmitWithCommands.enabled() ||
+        !actual.VulkanNullOptionalStrings.enabled()) {
         caboose::gpuv2::finalizeHeadlessFramebuffer(); delete d; return EPROTO;
     }
     int result = caboose_gfx_registry_create(&d->registry);

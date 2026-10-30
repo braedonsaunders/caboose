@@ -20,11 +20,12 @@ The broker authenticates and binds each guest thread's separate, ordered,
 full-duplex connection to that exact process/session/generation outside this byte
 stream. The app passes an already connected socket fd to `run`, owns it until the
 call returns, and never reuses it during the call. The diagnostic checks the exact
-48-byte `CBGLREF1` v1 hello and pinned schema fingerprint, rejects any feature mask
-other than zero, and echoes the hello before the guest's existing uint32 flags and
+48-byte `CBGLREF1` v2 hello and pinned schema fingerprint, requires feature mask
+0x10 for null optional strings, and echoes the hello before the guest's existing uint32 flags and
 upstream gfxstream bytes enter the real decoder. Direct memory, VirtioGpuNext,
 ExternalBlob, decoder snapshots and queue-submit sequence numbers are disabled and
-checked against the initialized backend. This is a private test handshake, not a
+checked against the initialized backend, as is the enabled null-string feature.
+This is a private test handshake, not a
 claim of a finalized Caboose protocol. A caller must not hand over unauthenticated
 bytes; generated Vulkan unmarshalling is not hardened against malicious packets.
 

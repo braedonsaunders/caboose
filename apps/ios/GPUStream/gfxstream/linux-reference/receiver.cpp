@@ -50,10 +50,12 @@ int main(int argc, char** argv) {
     features.GlDirectMem.setEnabled(false); features.VirtioGpuNext.setEnabled(false);
     features.ExternalBlob.setEnabled(false); features.VulkanSnapshots.setEnabled(false);
     features.VulkanNativeSwapchain.setEnabled(false); features.VulkanQueueSubmitWithCommands.setEnabled(false);
+    features.VulkanNullOptionalStrings.setEnabled(true);
     if (!caboose::gpuv2::initializeHeadlessFramebuffer(features)) return 1;
     const auto& actual = gfxstream::host::FrameBuffer::getFB()->getFeatures();
     bool ok = !actual.VulkanQueueSubmitWithCommands.enabled() && !actual.GlDirectMem.enabled() &&
-              !actual.VirtioGpuNext.enabled() && !actual.ExternalBlob.enabled();
+              !actual.VirtioGpuNext.enabled() && !actual.ExternalBlob.enabled() &&
+              actual.VulkanNullOptionalStrings.enabled();
     caboose_gfx_registry* registry = nullptr;
     if (!ok || caboose_gfx_registry_create(&registry)) { caboose::gpuv2::finalizeHeadlessFramebuffer(); return 1; }
     constexpr uint64_t process = 1;
@@ -76,7 +78,7 @@ int main(int argc, char** argv) {
              setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0 &&
              setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == 0;
     }
-    std::array<unsigned char, 48> expected = {'C','B','G','L','R','E','F','1',1,0,0,0,0,0,0,0,
+    std::array<unsigned char, 48> expected = {'C','B','G','L','R','E','F','1',2,0,0,0,0x10,0,0,0,
         0x20,0xd3,0xbb,0x2e,0x30,0x33,0x7c,0xab,0xf0,0xfe,0xbb,0x00,0x6e,0xd1,0x02,0xab,
         0x25,0xcc,0xf6,0xd9,0xdd,0xbf,0xaf,0x62,0x4c,0x7e,0x68,0xf9,0x04,0x09,0x69,0xc0};
     std::array<unsigned char, 48> hello{};

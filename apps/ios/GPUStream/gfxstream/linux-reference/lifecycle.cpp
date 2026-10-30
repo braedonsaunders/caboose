@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
     features.ExternalBlob.setEnabled(false);
     features.VulkanSnapshots.setEnabled(false);
     features.VulkanNativeSwapchain.setEnabled(false);
+    features.VulkanNullOptionalStrings.setEnabled(true);
     if (!caboose::gpuv2::initializeHeadlessFramebuffer(features)) {
         std::fprintf(stderr, "real gfxstream framebuffer initialization failed\n"); return 1;
     }

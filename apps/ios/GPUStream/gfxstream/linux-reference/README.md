@@ -86,12 +86,13 @@ for a connection and uses five-second socket I/O timeouts. Run it under an outer
 the socket to untrusted clients: decoder packet fields are not fully validated.
 
 On little-endian hosts, a client sends 48 bytes before the native Mesa stream:
-ASCII `CBGLREF1`, little-endian u32 version 1, little-endian u32 feature mask,
+ASCII `CBGLREF1`, little-endian u32 version 2, little-endian u32 feature mask,
 and the 32-byte source tuple SHA-256
 `20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0`.
 The mask bits 0–3 represent sequence numbers, direct memory, VirtioGpuNext and
-ExternalBlob. This fixture verifies all four disabled on the initialized
-framebuffer and accepts only mask zero. It echoes the exact hello on a match;
+ExternalBlob; bit 4 enables null optional strings. This fixture verifies those
+four disabled and null optional strings enabled on the initialized framebuffer,
+and accepts only mask 0x10. It echoes the exact hello on a match;
 a mismatch closes before consuming client flags. The fingerprint identifies the
 pinned source tuple, not full marshaling compatibility. This diagnostic handshake
 is separate from the shipping display protocol.
