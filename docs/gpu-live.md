@@ -194,7 +194,8 @@ The remaining fields follow the common identity, without padding:
 BIND width and height may both be zero to request the real initial extent from
 the trusted visible owner layer, before the game has a swapchain image. The
 actual layer bounds and drawable use the authenticated window metadata’s server
-pixel size at contents scale one; a view transform fits the visible view independently. Phone screen scale
+pixel size at contents scale one; a sublayer transform fits the visible view independently. UIKit owns the
+container view, not the Metal layer’s pixel coordinate space. Phone screen scale
 does not multiply the drawable size. A mixed
 zero pair is invalid. A positive pair asserts equality with the actual owner
 extent; it cannot set UIKit geometry. Missing, ambiguous or unlaid-out ownership

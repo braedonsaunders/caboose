@@ -132,7 +132,7 @@ public final class LiveGPUPresentationOwners {
         content.isUserInteractionEnabled = false
         content.isOpaque = true
         content.backgroundColor = .black
-        let layer = content.layer as! CAMetalLayer
+        let layer = content.metal
         layer.contentsScale = 1
         layer.drawableSize = size
         layer.framebufferOnly = false
@@ -156,11 +156,12 @@ public final class LiveGPUPresentationOwners {
 @MainActor
 private final class LiveGPULayerView: UIView {
     let pixelExtent: CGSize
-    override class var layerClass: AnyClass { CAMetalLayer.self }
+    let metal = CAMetalLayer()
     init(frame: CGRect, pixelExtent: CGSize) {
         self.pixelExtent = pixelExtent
-        super.init(frame: .zero)
-        fit(in: frame)
+        super.init(frame: frame)
+        layer.addSublayer(metal)
+        applyDrawableExtent()
     }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -173,19 +174,21 @@ private final class LiveGPULayerView: UIView {
         applyDrawableExtent()
     }
     func fit(in target: CGRect) {
-        // MoltenVK reports bounds * contentsScale as its natural surface extent.
-        // Keep those in server pixels; only the view transform fits the UIKit slot.
-        bounds = CGRect(origin: .zero, size: pixelExtent)
-        transform = CGAffineTransform(scaleX: target.width / pixelExtent.width,
-                                      y: target.height / pixelExtent.height)
-        center = CGPoint(x: target.midX, y: target.midY)
+        frame = target
         applyDrawableExtent()
     }
     func applyDrawableExtent() {
-        contentScaleFactor = 1
-        let metal = layer as! CAMetalLayer
+        // A separate layer avoids UIKit rescaling a view's backing Metal layer.
+        // MoltenVK observes these real bounds * contentsScale as its natural extent.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metal.bounds = CGRect(origin: .zero, size: pixelExtent)
         metal.contentsScale = 1
         metal.drawableSize = pixelExtent
+        metal.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        metal.setAffineTransform(CGAffineTransform(scaleX: bounds.width / pixelExtent.width,
+                                                 y: bounds.height / pixelExtent.height))
+        CATransaction.commit()
     }
 }
 
@@ -202,7 +205,7 @@ final class LiveGPULayerLease: @unchecked Sendable {
         guard let content = content as? LiveGPULayerView else { return nil }
         content.layoutIfNeeded()
         content.applyDrawableExtent()
-        return content.layer as? CAMetalLayer
+        return content.metal
     }
     private let lock = NSLock()
     private var valid = true
