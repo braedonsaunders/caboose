@@ -2,10 +2,12 @@
 #include <vulkan/vulkan.h>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 #include "compositor_vertex_shader.h"
 #include "compositor_fragment_shader.h"
 #define CHECK(x) do { VkResult r = (x); if (r != VK_SUCCESS) { std::fprintf(stderr, "%s: %d\n", #x, r); return 1; } } while (0)
+#include "ycbcr-readback.inc"
 int main(int argc, char** argv) {
     // mode 0 original, 1 mutable sampler, 2 vertex only without binding 0, 3 vertex only original layout, 4/5 two-/three-plane YCbCr.
     int mode = argc > 1 ? std::atoi(argv[1]) : 0;
@@ -41,10 +43,11 @@ int main(int argc, char** argv) {
     VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO}; vi.vertexBindingDescriptionCount=1; vi.pVertexBindingDescriptions=&vb; vi.vertexAttributeDescriptionCount=2; vi.pVertexAttributeDescriptions=va;
     VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO}; ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     VkViewport viewport{0,0,1,1,0,1}; VkRect2D scissor{{0,0},{1,1}}; VkPipelineViewportStateCreateInfo vs{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO}; vs.viewportCount=1; vs.pViewports=&viewport; vs.scissorCount=1; vs.pScissors=&scissor;
-    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; rs.rasterizerDiscardEnable = (mode == 2 || mode == 3); rs.polygonMode=VK_POLYGON_MODE_FILL; rs.lineWidth=1; rs.cullMode=VK_CULL_MODE_BACK_BIT; rs.frontFace=VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO}; rs.rasterizerDiscardEnable = (mode == 2 || mode == 3); rs.polygonMode=VK_POLYGON_MODE_FILL; rs.lineWidth=1; rs.cullMode=VK_CULL_MODE_NONE; rs.frontFace=VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO}; ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState ba{}; ba.colorWriteMask=15; VkPipelineColorBlendStateCreateInfo bs{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO}; bs.attachmentCount=1; bs.pAttachments=&ba;
     VkGraphicsPipelineCreateInfo gp{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO}; gp.stageCount=(mode == 2 || mode == 3) ? 1 : 2; gp.pStages=stages; gp.pVertexInputState=&vi; gp.pInputAssemblyState=&ia; gp.pViewportState=&vs; gp.pRasterizationState=&rs; gp.pMultisampleState=&ms; gp.pColorBlendState=&bs; gp.layout=pl; gp.renderPass=rp;
     VkPipeline pipeline = VK_NULL_HANDLE; VkResult result = vkCreateGraphicsPipelines(device,VK_NULL_HANDLE,1,&gp,nullptr,&pipeline); std::printf("mode=%d pipeline_result=%d\n",mode,result);
-    if (pipeline) vkDestroyPipeline(device,pipeline,nullptr); vkDestroyRenderPass(device,rp,nullptr); for(auto m:mods) vkDestroyShaderModule(device,m,nullptr); vkDestroyPipelineLayout(device,pl,nullptr); vkDestroyDescriptorSetLayout(device,layout,nullptr); vkDestroySampler(device,sampler,nullptr); if (conversion) vkDestroySamplerYcbcrConversion(device,conversion,nullptr); vkDestroyDevice(device,nullptr); vkDestroyInstance(instance,nullptr); return result == VK_SUCCESS ? 0 : 1;
+    int readback = 0; if (result == VK_SUCCESS && mode >= 4) { VkFormat format = mode == 4 ? VK_FORMAT_G8_B8R8_2PLANE_420_UNORM : VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM; readback = drawYcbcr(devices[0],device,q,format,mode == 4 ? 2 : 3,conversion,layout,pl,pipeline,rp); }
+    if (pipeline) vkDestroyPipeline(device,pipeline,nullptr); vkDestroyRenderPass(device,rp,nullptr); for(auto m:mods) vkDestroyShaderModule(device,m,nullptr); vkDestroyPipelineLayout(device,pl,nullptr); vkDestroyDescriptorSetLayout(device,layout,nullptr); vkDestroySampler(device,sampler,nullptr); if (conversion) vkDestroySamplerYcbcrConversion(device,conversion,nullptr); vkDestroyDevice(device,nullptr); vkDestroyInstance(instance,nullptr); return result == VK_SUCCESS ? readback : 1;
 }

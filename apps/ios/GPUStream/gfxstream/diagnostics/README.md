@@ -68,8 +68,10 @@ no certified recovery and must report device loss rather than fake completion.
 headers from the pinned gfxstream source. Modes 0–3 compare the default layout,
 mutable sampler, and vertex-only layouts. Modes 4 and 5 use two- and three-plane
 YCbCr immutable samplers and exit 2 if the device lacks the required conversion,
-sampled-image or cosited-chroma support. Pipeline creation alone does not prove
-rendered output.
+sampled-image or cosited-chroma support. After pipeline creation they upload
+neutral-chroma YCbCr planes, sample through the compositor shader and compare a
+RGBA readback against the expected gray pixel. This readback remains unverified
+on Metal.
 
 `spirv-multiplane.cpp` builds against the core, GLSL and MSL libraries from
 SPIRV-Cross revision `6c09849fe88c48eaed08413aa022aaa136a3a057` and includes the
