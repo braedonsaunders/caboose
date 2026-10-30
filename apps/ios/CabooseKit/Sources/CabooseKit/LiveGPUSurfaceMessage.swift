@@ -112,7 +112,7 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         switch kind {
         case .surfaceBind:
             let window = try r.u64(), instance = try r.u64(), width = try r.u32(), height = try r.u32()
-            try require(window > 0 && instance > 0 && width > 0 && height > 0, "surface bind fields")
+            try require(window > 0 && instance > 0 && ((width == 0) == (height == 0)), "surface bind fields")
             body = .bind(window: window, instance: instance, width: width, height: height)
         case .surfaceBound: body = .bound(try r.status())
         case .surfaceQuery:

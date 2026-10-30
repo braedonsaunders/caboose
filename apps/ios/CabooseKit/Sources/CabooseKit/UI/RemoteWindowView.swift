@@ -14,6 +14,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public weak var session: (any DisplaySession)? {
         willSet { if session !== newValue { cancelTouches() } }
+        didSet { layoutLiveGPU() }
     }
     /// The session whose pictures this view shows, told of each refresh of the screen it is
     /// on so the server paces the window to it. Set it on display-only views too; it is
@@ -29,6 +30,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             guard showsVideo != oldValue else { return }
             laidOutVideos = nil
             if !showsVideo { releaseVideos() }
+            layoutLiveGPU()
         }
     }
     private var laidOutVideos: (window: ObjectIdentifier, layout: Int, size: CGSize, bounds: CGRect)?
@@ -42,13 +44,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         didSet {
             if !isInteractive { cancelTouches() }
             updateGestures()
+            layoutLiveGPU()
         }
     }
     /// The game this view runs over the window's picture, when the window has one and this is
     /// its main view (see `layoutGame()`).
     private weak var gameSurface: GameSurfaceView?
     /// The desktop routes input separately but owns live game/GPU content, unlike a thumbnail.
-    public var hostsGame = false
+    public var hostsGame = false { didSet { layoutLiveGPU() } }
+    private weak var liveGPUOwners: LiveGPUPresentationOwners?
     #if canImport(CabooseGPUStream)
     /// The GPU stream this view shows over the window's picture (see `layoutGPUStream()`).
     private weak var gpuStreamView: GPUStreamView?
@@ -99,6 +103,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public func attach(_ window: RemoteWindow?) {
         if window !== remoteWindow {
+            liveGPUOwners?.withdraw(self)
+            liveGPUOwners = nil
             presentedPictureSize = .zero
             releaseVideos()
             focusCheck = nil
@@ -111,10 +117,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         presentedGeneration = .max
         metalLayer.isOpaque = !(window?.hasAlpha ?? false)
         layoutGame()
+        layoutLiveGPU()
     }
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
+        layoutLiveGPU()
         if self.window == nil {
             cancelTouches()
             focusCheck = nil
@@ -139,6 +147,16 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         presentedGeneration = .max
         layoutGame()
         layoutGPUStream()
+        layoutLiveGPU()
+    }
+
+    func layoutLiveGPU() {
+        let owners = remoteWindow?.liveGPUPresentation
+        if liveGPUOwners !== owners {
+            liveGPUOwners?.withdraw(self)
+            liveGPUOwners = owners
+        }
+        owners?.observe(self)
     }
 
     // MARK: Games
@@ -934,6 +952,7 @@ private final class DisplayLinkTarget: NSObject {
         view.adoptSurroundingText()
         view.layoutGame()
         view.layoutGPUStream()
+        view.layoutLiveGPU()
         view.present()
         view.layoutVideos()
     }

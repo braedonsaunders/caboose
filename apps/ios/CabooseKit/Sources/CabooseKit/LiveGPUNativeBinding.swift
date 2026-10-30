@@ -125,6 +125,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
+    private let surfaces: LiveGPUSurfaceController?
     private let maxPacket: Int
     private let maxReply: Int
     private let lock = NSLock()
@@ -156,12 +157,29 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
         throw LiveGPUError.missingNativeBinding
         #endif
     }
+    #if canImport(UIKit)
+    /// Explicit owner-only construction. Ordinary display and agent sessions do
+    /// not create presentation registries or acquire a Metal layer.
+    public convenience init(presentationOwners: LiveGPUPresentationOwners,
+                            maxPacket: Int = 16 * 1024 * 1024,
+                            maxReplyBuffer: Int = 1024 * 1024) throws {
+        #if canImport(CabooseGPULive)
+        try self.init(backend: LinkedLiveGPURuntime(), maxPacket: maxPacket,
+            maxReplyBuffer: maxReplyBuffer,
+            surfaces: LiveGPUSurfaceController(backend: LinkedLiveGPUSurfaces(owners: presentationOwners)))
+        #else
+        throw LiveGPUError.missingNativeBinding
+        #endif
+    }
+    #endif
     init(backend: LiveGPURuntimeBackend, maxPacket: Int = 16 * 1024 * 1024,
-         maxReplyBuffer: Int = 1024 * 1024, executor: Data? = nil, generation: UInt64? = nil) throws {
+         maxReplyBuffer: Int = 1024 * 1024, executor: Data? = nil, generation: UInt64? = nil,
+         surfaces: LiveGPUSurfaceController? = nil) throws {
         guard (8...400 * 1024 * 1024).contains(maxPacket), (4096...1024 * 1024).contains(maxReplyBuffer) else {
             throw LiveGPUBindingError.protocolViolation("invalid native buffer limits")
         }
         self.backend = backend; self.maxPacket = maxPacket; maxReply = maxReplyBuffer
+        self.surfaces = surfaces
         decoder = try LiveGPUEnvelopeDecoder(executor: executor, generation: generation)
     }
     public func start(output: @escaping @Sendable (Data) -> Bool,
@@ -241,6 +259,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
                 stream.inboundFinished = true
                 guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
             }
+        case .surfaceBind, .surfaceQuery, .present, .surfaceRetire:
+            guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
+            let process = try process(frame.process)
+            let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)
+            try surfaces.consume(message, process: frame.process, token: process.token,
+                output: { [self] id, reply in
+                    try send(reply.kind, process: id, payload: reply.encoded())
+                }, failed: { [self] in fail($0) })
         case .processStop:
             let process = try process(frame.process)
             try retire(frame.process, process)
@@ -322,6 +348,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, @unchecked Sendabl
             for stream in process.streams.values { stream.closeAfterJoin() }
             process.streams.removeAll()
         }
+        do { try surfaces?.retireProcess(id) }
+        catch { retirementError = error; throw error }
         let result = backend.finish(process.token)
         lock.withLock { _ = processes.removeValue(forKey: id) }
         if result != 0 {

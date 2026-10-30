@@ -133,8 +133,13 @@ The first presentation implementation is restricted to native Wayland surfaces.
 Only the compositor can bind an actual client/surface to a current owner window;
 an application-provided window number or X11 `_NET_WM_PID` is not authority.
 The app's visible interactive owner view supplies the native layer; thumbnails
-cannot acquire it. The surface records are structurally validated by both codecs; the current Swift
-runtime binding rejects them because native surface execution is not connected.
+cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
+and linked surface backend; ordinary display and agent sessions do not. The
+registry matches the display epoch, window object and one visible eligible view.
+The executor survives an ordinary display reconnect; losing its owner, changing
+extent or moving to the background revokes admission. This path is not enabled
+by the app's default session creation, and its native presentation runtime remains
+unvalidated.
 Neither a WebSocket send, a queue-submit return nor a local cleanup callback means
 an image was displayed.
 
@@ -171,6 +176,14 @@ The remaining fields follow the common identity, without padding:
 | RETIRE | No further fields |
 | RETIRED | Status |
 
+BIND width and height may both be zero to request the real initial extent from
+the trusted visible owner layer, before the game has a swapchain image. A mixed
+zero pair is invalid. A positive pair asserts equality with the actual owner
+extent; it cannot set UIKit geometry. Missing, ambiguous or unlaid-out ownership
+returns an error, never a synthetic 1×1 surface. CAPS reports the attached
+provider's actual extent. A resize revokes the generation and requires retirement
+and detachment before replacement.
+
 Capability success contains the thirteen uint32 members of
 `VkSurfaceCapabilitiesKHR` in specification order, followed by three uint32 counts
 for formats, present modes and queue entries. Each count is at most 4096. Format
@@ -194,3 +207,20 @@ SURFACE_RETIRED success requires GPU/presentation-resource retirement followed b
 main-thread layer detachment. Process cleanup must follow that detachment because
 the native surface retains a decoder-instance lease. Unknown completion keeps the
 reservation and forbids replacement.
+
+
+## App surface lifecycle
+
+The serial Swift consumer bounds retained surfaces to 32 per executor. It keeps
+callbacks behind the corresponding submission receipt, including callbacks made
+before native `present` returns. A source-release receipt does not dispose of the
+callback: later actual device loss remains reportable. A new accepted or uncertain
+native submission joins the prior frame worker; a rejected submission does not.
+The Swift adapter retains at most the prior and attempted serial during that call.
+
+Native surface preparation, query, present and retirement run off main. Only
+layer attachment and detachment are asynchronously dispatched to main; main never
+waits for the decoder worker. Failed bind cleanup or retirement keeps its surface
+and layer reserved and prevents process finish from bypassing the instance lease.
+The controller's tests use injected native boundaries; the package and unsigned
+app link checks do not establish physical presentation or game compatibility.

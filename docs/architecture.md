@@ -2483,6 +2483,14 @@ The live GPU client retains an optional binary display identity from `gpu_live_e
 in the display hello. It accepts only 16 bytes with at least one nonzero byte. This
 identity is separate from the ordinary retained-picture epoch; parsing it alone does
 not activate native GPU rendering.
+The explicit owner executor matches this identity and the current window object to
+one visible interactive or desktop view. Its initial surface extent comes from
+that view's actual Metal layer; thumbnails do not acquire presentation ownership.
+A zero-pair BIND requests that trusted extent before swapchain creation; a positive
+pair only asserts equality. GPU retirement and main-thread layer detachment must
+finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
+The app's default session creation does not activate this private executor.
+
 
 The live executor closes through a session-scoped `EXECUTOR_DRAIN` request while
 keeping duplex transport active for native retirement and revocation receipts. A

@@ -30,6 +30,20 @@ final class LiveGPUSurfaceMessageTests: XCTestCase {
         return bytes
     }
 
+    func testInitialExtentRequestUsesZeroPairOnly() throws {
+        let identity = LiveGPUSurfaceIdentity(epoch: Data(repeating: 1, count: 16),
+            grant: Data(repeating: 2, count: 16), generation: 1)
+        let request = LiveGPUSurfaceMessage(identity: identity,
+            body: .bind(window: 7, instance: 8, width: 0, height: 0))
+        let bytes = try request.encoded()
+        XCTAssertEqual(try LiveGPUSurfaceMessage.decode(kind: .surfaceBind, payload: bytes), request)
+        for size: (UInt32, UInt32) in [(0, 480), (640, 0)] {
+            let mixed = LiveGPUSurfaceMessage(identity: identity,
+                body: .bind(window: 7, instance: 8, width: size.0, height: size.1))
+            XCTAssertThrowsError(try mixed.encoded())
+        }
+    }
+
     func testIndependentPythonGoldenVectorsAtEverySplit() throws {
         let executor = Data([0,17,34,51,68,85,102,119,136,153,170,187,204,221,238,255])
         for hex in Self.surfaceVectors {
