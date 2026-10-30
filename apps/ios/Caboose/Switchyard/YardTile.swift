@@ -71,6 +71,8 @@ struct YardTitleBar: View {
     let focused: Bool
     let onAsk: (RemoteWindow) -> Void
 
+    @GestureState private var carrying = false
+
     private var title: String { window.title.isEmpty ? "Window" : window.title }
 
     var body: some View {
@@ -96,8 +98,13 @@ struct YardTitleBar: View {
                     )
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
-                            .onChanged { value in yard.carry(window.id, by: value.translation) }
-                            .onEnded { _ in yard.drop() }
+                            .updating($carrying) { _, active, _ in active = true }
+                            .onChanged { value in yard.carry(window.id, by: value.translation, at: value.location) }
+
+                            .onEnded { value in
+                                yard.carry(window.id, by: value.translation, at: value.location)
+                                yard.drop()
+                            }
                     )
                     .contextMenu { menuContent }
                     .accessibilityLabel("Move \(title)")
@@ -119,6 +126,9 @@ struct YardTitleBar: View {
         .foregroundStyle(.white.opacity(focused ? 0.92 : 0.6))
         .buttonStyle(.plain)
         .background(Color(white: focused ? 0.16 : 0.11))
+        .onChange(of: carrying) { _, active in
+            if !active { yard.cancelCarry() }
+        }
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.45)).frame(height: 0.5) }
     }
 

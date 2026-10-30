@@ -165,6 +165,21 @@ Run `swift test --jobs 1 --filter SwitchyardTests` in CabooseKit for edge partit
 scroll geometry. Run `sh scripts/check-desktop.sh` for the native corner/device checks.
 A screenshot alone does not establish that a physical display corner leaves controls visible.
 
+## Switchyard drag placement
+
+Title-bar carries and the workspace fullscreen pull-tab show the native desktop snap
+palette. Its hit regions select a proposed `YardLayout`; the visible destination and
+release use that same layout and scroll position. Nearby windows fill its columns and
+stacks, while other windows remain on the track. A layout needs enough real windows
+(quarters need four) and must fit all participants' minimum sizes. Invalid choices are
+dimmed. Outside the palette, existing column/stack/swap drops remain available.
+Cancellation restores the track without changing the guest or exiting fullscreen;
+rotation, connection invalidation and leaving Desktop cancel an active carry.
+
+Pure regression coverage: `swift test --jobs 1 --filter 'YardSnapTests|SwitchyardTests|FreeDesktopLayoutTests'`
+in `CabooseKit`. `scripts/check-desktop.sh` contains the coordinated UI checks; its
+printed checklist is not an automated runtime pass. No display protocol changes apply.
+
 ## Checking Switchyard on a device
 
 The layout and work-area geometry are unit-tested (`swift test --filter 'SwitchyardTests|DesktopGeometryTests|FreeDesktopLayoutTests|WindowTitleBarTests|QuickSwitchTests|DockMenuTests'`).

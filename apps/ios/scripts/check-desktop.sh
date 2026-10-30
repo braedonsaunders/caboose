@@ -18,6 +18,30 @@ Native container corners (iOS 26 and 27, iPhone/iPad/external display):
    are unchanged. Repeat with VoiceOver and large text. No device radius is inferred
    from a safe-area height. Record device/OS/mode and before/after screenshots.
 
+Switchyard snap chooser (Tablet Desktop tab, Tiled, no external display):
+1. Open four ordinary windows. Drag the full-width tile's title from near its left,
+   center and right ends. The small carried picture retains the grab position, and
+   the chooser is visible above all windows. Select each half, quarter, third and
+   complementary two-thirds region. The highlighted destination must equal the
+   released tile, including title bar and interior resize gaps.
+2. Start after scrolling several columns right. Hover the two repeated left-third
+   choices: only the actual region is highlighted; its companions form the depicted
+   three-column or two-column layout on release. Unchosen windows remain on the track.
+3. Enter application fullscreen, then carry from its top pull-tab. Hover, change
+   choices and cancel by leaving Desktop or backgrounding. Fullscreen and original
+   layout return; repeat with rotation and reconnect. A valid drop exits fullscreen
+   only at release. Observe configure traffic: hovering sends no geometry requests.
+4. Release over a disabled region, palette gap, or outside the workspace: no layout
+   change. Close a participant during the drag: the stale proposal cannot commit.
+   With fewer than four windows, quarters are disabled. With minimum-size hints,
+   a companion that cannot fit disables that choice too. Repeat in portrait.
+5. Move outside the chooser onto another tile's upper/lower quarter, middle and
+   outer fifth. Stack, swap and column previews remain visible above opaque tiles;
+   edge scrolling and the final scroll position agree with the preview.
+6. Repeat with pointer, touch and Reduce Motion. Verify existing VoiceOver title/menu
+   width and fullscreen actions. Verify content scroll, fullscreen input alignment,
+   native corner controls and the black Laptop hinge with no new input interception.
+
 Floating desktop snap chooser (iPad Free/Tablet and external display):
 1. Drag an app by its title bar beyond twelve points. A translucent chooser appears
    above the windows. Sweep across full screen, halves, all four quarters, thirds,

@@ -26,10 +26,35 @@ final class YardModel {
         /// The tile's rect on screen as it is carried.
         var rect: CGRect
         var drop: YardLayout.Drop?
+        var proposal: YardLayout?
+        var proposedScroll: CGFloat?
+        var snap: FreeDesktopLayout.Snap?
+        var regionFrame: CGRect?
         /// Where it would land, on screen.
         var preview: CGRect?
     }
     private(set) var carry: Carry?
+    private var carryScroll: CGFloat?
+    var snapPalette: FreeDesktopLayout.SnapPalette? {
+        guard let carry else { return nil }
+        return FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size), allows: { snap, slots in
+            self.layout.snapping(carry.window, to: snap, layout: slots, in: self.metrics,
+                                 minimums: self.snapMinimums) != nil
+        })
+    }
+    private var snapMinimums: [Int: CGSize] {
+        (session?.windows ?? [:]).mapValues { window in
+            CGSize(width: (window.minimumSize?.width ?? 0) / pixelsPerPoint,
+                   height: (window.minimumSize?.height ?? 0) / pixelsPerPoint + metrics.titleBar.height)
+        }
+    }
+    func cancelCarry() {
+        guard carry != nil else { return }
+        if let carryScroll { scroll = carryScroll }
+        carry = nil
+        carryScroll = nil
+        coverProgress = 0
+    }
     /// The gap being dragged, while it is.
     private(set) var activeHandle: YardLayout.Handle.Kind?
     var overviewOpen = false
@@ -72,13 +97,14 @@ final class YardModel {
     private(set) var coverProgress: CGFloat = 0
     /// The workspace above the dock that a covering window fills, in points.
     var screenSize: CGSize = .zero {
-        didSet { if coverWindow != nil, screenSize != oldValue { apply() } }
+        didSet { if screenSize != oldValue { cancelCarry(); if coverWindow != nil { apply() } } }
     }
 
     // MARK: Screen
 
     func resize(to size: CGSize) {
         guard size.width > 0, size.height > 0, size != metrics.size else { return }
+        cancelCarry()
         metrics = YardMetrics(size: size)
         scroll = layout.focused.map { layout.scroll(revealing: $0, from: scroll, in: metrics) } ?? min(scroll, layout.maximumScroll(in: metrics))
         apply()
@@ -118,6 +144,7 @@ final class YardModel {
     /// application windows take a column beside the focused one (at the width their app was
     /// last given), and dialogs are fitted over the window they belong to.
     func sync(_ windows: [Int: RemoteWindow], appClass: (RemoteWindow) -> String?) {
+        if let carry, windows[carry.window] == nil { cancelCarry() }
         let tiled = windows.values.filter { !$0.isAuxiliary }
         let before = layout
         // Tiles make way for a new window, and close over a gone one, in one movement.
@@ -136,6 +163,7 @@ final class YardModel {
         }
         placedDialogs.formIntersection(windows.keys)
         if layout != before {
+            cancelCarry()
             if let focused = layout.focused, layout.focused != before.focused { reveal(focused) }
             scroll = min(scroll, layout.maximumScroll(in: metrics))
             save()
@@ -150,7 +178,7 @@ final class YardModel {
     /// Sends every tile's geometry that changed. During a gap drag it is sent at most a few
     /// times a second, and stretched pictures cover the gaps between.
     func apply(live: Bool = false) {
-        guard let session else { return }
+        guard carry == nil, let session else { return }
         if live {
             guard Date().timeIntervalSince(lastLiveApply) > 0.12 else { return }
             lastLiveApply = Date()
@@ -204,6 +232,7 @@ final class YardModel {
 
     /// The display was reconnected or reconfigured: everything is sent afresh.
     func invalidate() {
+        cancelCarry()
         sent.removeAll()
         fitting.removeAll()
         placedDialogs.removeAll()
@@ -395,25 +424,47 @@ final class YardModel {
 
     // MARK: Carrying a tile
 
-    func carry(_ window: Int, by translation: CGSize) {
+    func carry(_ window: Int, by translation: CGSize, at point: CGPoint) {
+        guard layout.contains(window) else { cancelCarry(); return }
         if carry?.window != window {
+            carryScroll = scroll
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            focus(window, animated: false)
         }
-        // Where it was picked up, on screen: the finger stays on the tile as the track scrolls.
-        guard let start = carry?.window == window ? carry?.origin : tiles[window] else { return }
-        var rect = start.offsetBy(dx: translation.width, dy: translation.height)
-        // Small enough to see where it goes.
-        let shrink = min(1, 240 / max(1, rect.width))
-        rect = CGRect(x: rect.midX - rect.width * shrink / 2, y: rect.minY, width: rect.width * shrink, height: rect.height * shrink)
-        let finger = CGPoint(x: start.midX + translation.width + scroll, y: start.minY + 14 + translation.height)
-        let drop = layout.drop(for: window, at: finger, in: metrics)
-        let preview = drop.flatMap { layout.preview(of: $0, for: window, in: metrics) }?.offsetBy(dx: -scroll, dy: 0)
-        if drop != carry?.drop, drop != nil { UISelectionFeedbackGenerator().selectionChanged() }
-        carry = Carry(window: window, origin: start, rect: rect, drop: drop, preview: preview)
-        // Carried to an edge, the track scrolls under it.
-        let edge: CGFloat = 36
-        if finger.x - scroll < edge { nudge(by: -14) } else if finger.x - scroll > metrics.size.width - edge { nudge(by: 14) }
+        guard let start = carry?.origin ?? (coverWindow == window ? CGRect(origin: .zero, size: metrics.size) : tiles[window]) else { return }
+        let shrink = min(1, 240 / max(1, start.width))
+        let grab = CGPoint(x: point.x - translation.width, y: point.y - translation.height)
+        let rect = CGRect(x: point.x - (grab.x - start.minX) * shrink,
+                          y: point.y - (grab.y - start.minY) * shrink,
+                          width: start.width * shrink, height: start.height * shrink)
+        if carry == nil { carry = Carry(window: window, origin: start, rect: rect) }
+        let palette = snapPalette
+        let region = palette?.regions.first { $0.enabled && $0.frame.contains(point) }
+        let proposal = region.flatMap { layout.snapping(window, to: $0.snap, layout: $0.layout,
+                                                        in: metrics, minimums: snapMinimums) }
+        // Palette gaps and disabled choices never fall through to the underlying tiles.
+        let overPalette = palette?.frame.contains(point) == true
+        if !overPalette {
+            if point.x < 36 { nudge(by: -14) }
+            else if point.x > metrics.size.width - 36 { nudge(by: 14) }
+        }
+        let drop = overPalette || !CGRect(origin: .zero, size: metrics.size).contains(point) ? nil : layout.drop(for: window, at: CGPoint(x: point.x + scroll, y: point.y), in: metrics)
+        var after = proposal
+        if after == nil, let drop {
+            var candidate = layout
+            if candidate.move(window, to: drop, in: metrics) { after = candidate }
+        }
+        let landingScroll = after.map { candidate -> CGFloat in
+            if let region, let frame = candidate.frames(in: metrics)[window] {
+                let slot = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+                let leading = frame.minX - metrics.outerGap - slot.minX / 6 * (metrics.size.width - 2 * metrics.outerGap + metrics.gap)
+                return min(candidate.maximumScroll(in: metrics), max(0, leading))
+            }
+            return candidate.scroll(revealing: window, from: scroll, in: metrics)
+        }
+        let preview = after?.frames(in: metrics)[window].map { $0.offsetBy(dx: -(landingScroll ?? scroll), dy: 0) }
+        if preview != carry?.preview, preview != nil { UISelectionFeedbackGenerator().selectionChanged() }
+        carry = Carry(window: window, origin: start, rect: rect, drop: drop, proposal: after,
+                      proposedScroll: landingScroll, snap: region?.snap, regionFrame: region?.frame, preview: preview)
     }
 
     private func nudge(by delta: CGFloat) {
@@ -423,13 +474,20 @@ final class YardModel {
     }
 
     func drop() {
-        guard let carry else { return }
+        guard let carry, let proposal = carry.proposal else { cancelCarry(); return }
+        let wasCover = coverWindow == carry.window
         withAnimation(.smooth(duration: 0.42, extraBounce: 0.1)) {
-            if let drop = carry.drop { memory.layout.move(carry.window, to: drop, in: metrics) }
+            memory.layout = proposal
+            scroll = carry.proposedScroll ?? scroll
             self.carry = nil
+            carryScroll = nil
+            if wasCover { zoomed = nil; coverProgress = 0 }
         }
-        UIImpactFeedbackGenerator(style: carry.drop == nil ? .soft : .medium).impactOccurred()
-        reveal(carry.window)
+        if wasCover, let remote = session?.windows[carry.window], remote.isFullscreen {
+            exitAppFullscreen(carry.window)
+        }
+        if let remote = session?.windows[carry.window] { session?.focus(remote) }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         committed()
     }
 

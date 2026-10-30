@@ -2261,10 +2261,18 @@ the app card, and a detached view releases its layers.
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
   that window's Linux geometry (`configure`, from `YardMetrics.content(ofTile:)`), so apps lay out
   at that size and its input, dialogs and popups are placed by it; a
-  resize stretches the entire last picture without cropping until the new one arrives, and drags send geometry at
-  most about eight times a second. The gaps resize (snapping to the presets, with haptic
+  resize stretches the entire last picture without cropping until the new one arrives. Gap drags send geometry at
+  most about eight times a second; title-bar carries only configure on release. The gaps resize (snapping to the presets, with haptic
   detents). Dragging a tile's title carries it to a new column, into a stack or onto
-  another tile; a tap gives the tile the keyboard, and a double tap opens the same
+  another tile. During a carry, the shared native snap palette offers full width, halves,
+  quarters, thirds and complementary one-third/two-thirds arrangements. Each choice
+  rearranges nearby real windows into ordinary Yard columns and stacks; it is disabled
+  unless enough windows exist and every participating tile fits its minimum size.
+  The palette's region rectangles are also its hit targets. The highlighted destination
+  comes from the proposed Yard layout and scroll position that release commits, above
+  the existing tiles. Palette gaps and disabled regions do not select tiles beneath them.
+  Hover changes neither the saved layout nor guest geometry; cancellation restores the
+  track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
   Screen control, the tile's menu and accessibility action, and ⌘⌥F open the same card. The card keeps Desktop selected
   underneath; dismissing it restores the tile layout. Only the presented card sends window
@@ -2277,7 +2285,8 @@ the app card, and a detached view releases its layers.
   presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
   above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
   reconnecting and returning from another tab. A pull down from the small tab at its top
-  edge shrinks it back into its tile and tells the app to exit full screen. Separate app
+  edge carries it through the same snap palette and tile-drop path; a valid release
+  commits the destination and tells the app to exit full screen. Separate app
   cards keep their own controls. Menus and dialogs appear above the covering window and
   fit within the workspace. Auxiliary windows
   follow their parent's displayed scale and position, including nested menus; trees whose

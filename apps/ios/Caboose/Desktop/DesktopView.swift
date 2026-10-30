@@ -94,10 +94,11 @@ struct DesktopView: View {
 }
 
 /// A translucent shelf of miniature destinations, drawn above the moving window.
-private struct DesktopSnapPalette: View {
+struct DesktopSnapPalette: View {
     let palette: FreeDesktopLayout.SnapPalette
     let selected: FreeDesktopLayout.Snap?
     let ui: CGFloat
+    var selectedRegion: CGRect? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -114,7 +115,7 @@ private struct DesktopSnapPalette: View {
                 .frame(width: palette.frame.width, height: 26 * ui)
                 .position(x: palette.frame.midX, y: palette.frame.minY + 18 * ui)
             ForEach(Array(palette.regions.enumerated()), id: \.offset) { _, region in
-                let active = region.enabled && selected == region.snap
+                let active = region.enabled && (selectedRegion.map { $0 == region.frame } ?? (selected == region.snap))
                 ConcentricRectangle(cornerRadius: 6 * ui)
                     .fill(active ? Color.accentColor.opacity(0.85) : Color.primary.opacity(region.enabled ? 0.16 : 0.04))
                     .overlay {
