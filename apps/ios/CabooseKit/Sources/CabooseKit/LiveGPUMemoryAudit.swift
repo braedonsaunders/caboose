@@ -38,11 +38,26 @@ enum LiveGPUMemoryAudit {
             case .outputRejected: fields["category"] = "outputRejected"
             }
         case is LiveGPUError: fields["category"] = "transportOrSession"
-        default: fields["category"] = "other"
+        default:
+            let value = error! as NSError
+            switch value.domain {
+            case NSPOSIXErrorDomain: fields["category"] = "posix"; fields["errno"] = value.code
+            case NSURLErrorDomain: fields["category"] = "url"; fields["code"] = value.code
+            case NSCocoaErrorDomain: fields["category"] = "cocoa"; fields["code"] = value.code
+            default: fields["category"] = "other"
+            }
         }
         terminal(fields)
     }
 
+    enum BindStage: String { case claim, prepare, attach, retireFailedAttach }
+    enum OwnerInvalidation: String { case session, ownership, visibility, geometry, withdrawn }
+    static func bindStage(_ stage: BindStage, code: Int32) {
+        terminal(["kind": "surfaceBindStage", "stage": stage.rawValue, "errno": code])
+    }
+    static func ownerInvalidated(_ reason: OwnerInvalidation) {
+        terminal(["kind": "ownerInvalidated", "reason": reason.rawValue])
+    }
     static func surfaceBind(_ status: LiveGPUSurfaceStatus) {
         var fields: [String: Any] = ["kind": "surfaceBind", "errno": status.nativeErrno]
         if let result = status.vkResult { fields["vkResult"] = result }

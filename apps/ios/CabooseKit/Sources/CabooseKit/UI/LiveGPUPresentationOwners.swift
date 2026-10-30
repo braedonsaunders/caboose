@@ -38,7 +38,13 @@ public final class LiveGPUPresentationOwners {
     public func revoke() {
         stopped = true; epoch = nil; windows.removeAll()
         waiting.cancel()
-        for lease in leases.values { lease.invalidate() }
+        for lease in leases.values {
+            if lease.invalidate() {
+                #if DEBUG && canImport(CabooseGPUMemoryAudit)
+                LiveGPUMemoryAudit.ownerInvalidated(.session)
+                #endif
+            }
+        }
     }
 
     func observe(_ view: RemoteWindowView) {
@@ -50,7 +56,12 @@ public final class LiveGPUPresentationOwners {
     func withdraw(_ view: RemoteWindowView) {
         views.removeValue(forKey: ObjectIdentifier(view))
         for lease in leases.values where lease.view === view {
-            if lease.invalidate() { invalidated(lease.identity) }
+            if lease.invalidate() {
+                #if DEBUG && canImport(CabooseGPUMemoryAudit)
+                LiveGPUMemoryAudit.ownerInvalidated(.withdrawn)
+                #endif
+                invalidated(lease.identity)
+            }
         }
     }
     private func validate(_ lease: LiveGPULayerLease) {
@@ -60,7 +71,18 @@ public final class LiveGPUPresentationOwners {
               let view = lease.view, let window = view.remoteWindow,
               ObjectIdentifier(window) == lease.windowIdentity, eligible(view),
               extent(view) == lease.extent else {
-            if lease.invalidate() { invalidated(lease.identity) }
+            if lease.invalidate() {
+                #if DEBUG && canImport(CabooseGPUMemoryAudit)
+                let reason: LiveGPUMemoryAudit.OwnerInvalidation
+                if stopped { reason = .session }
+                else if epoch != lease.identity.epoch || windows[lease.windowID] != lease.windowIdentity { reason = .ownership }
+                else if let view = lease.view, eligible(view) {
+                    reason = extent(view) == lease.extent ? .ownership : .geometry
+                } else { reason = .visibility }
+                LiveGPUMemoryAudit.ownerInvalidated(reason)
+                #endif
+                invalidated(lease.identity)
+            }
             return
         }
     }

@@ -2553,7 +2553,7 @@ grants including failed admissions; exhausting that bound ends admission.
 An explicitly selected diagnostic package exposes a separate memory-audit module.
 Its debug launch opt-in records immutable decoder feature flags and bounded allocation
 mapping receipts before process cleanup; it never records memory contents or credentials.
-The same opt-in records at most 64 native-run/session-stop/surface-bind metadata events per app
+The same opt-in records at most 64 native-run/session-stop/surface-bind/owner-invalidation metadata events per app
 process, followed by one overflow marker. These include native errno and fixed failure
 categories and allowlisted protocol reason labels, without error descriptions, command payloads or object addresses.
 These receipts describe allocation decisions, not proof of transferred bytes or coherence.

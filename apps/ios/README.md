@@ -1419,6 +1419,8 @@ after decoder streams join and before process cleanup. Overflow or a snapshot
 error is reported as incomplete and never skips cleanup. Requesting this audit
 without its native module fails explicitly; it is absent from ordinary builds.
 The same opt-in emits `nativeRun` and `sessionStop` records with native errno and
-fixed error categories, allowlisted protocol reason labels and surface-bind status. These terminal records are capped at 64 per app process,
+fixed error categories, allowlisted protocol reason labels, surface-bind stages and
+owner-invalidation reasons. POSIX, URL and Cocoa failures record only their numeric
+code and fixed category. These terminal records are capped at 64 per app process,
 followed by one `terminalOverflow`; they contain no error descriptions, command
 payloads or object addresses. They do not change runtime results or retirement.

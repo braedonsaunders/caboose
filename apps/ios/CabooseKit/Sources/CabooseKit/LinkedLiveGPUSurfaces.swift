@@ -31,9 +31,22 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
     init(owners: LiveGPUPresentationOwners) { self.owners = owners }
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
               instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
-        let lease = try LiveGPUMainResult<LiveGPULayerLease>().performAsync { [owners] complete in
-            owners.requestClaim(identity: identity, windowID: window, complete: complete)
+        let lease: LiveGPULayerLease
+        do {
+            lease = try LiveGPUMainResult<LiveGPULayerLease>().performAsync { [owners] complete in
+                owners.requestClaim(identity: identity, windowID: window, complete: complete)
+            }
+        } catch {
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            if let value = error as? LiveGPUBindingError, case .native(_, let code) = value {
+                LiveGPUMemoryAudit.bindStage(.claim, code: code)
+            }
+            #endif
+            throw error
         }
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.bindStage(.claim, code: 0)
+        #endif
         guard (width == 0 && height == 0) ||
               (width == UInt32(lease.extent.width) && height == UInt32(lease.extent.height)) else {
             try liveGPUOnMain { [owners] in owners.release(lease) }
@@ -50,6 +63,9 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
         bind.width = UInt32(lease.extent.width); bind.height = UInt32(lease.extent.height)
         var pointer: OpaquePointer?
         let result = caboose_gpu_surface_prepare(&bind, &pointer)
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.bindStage(.prepare, code: result)
+        #endif
         guard result == 0, let pointer else {
             try liveGPUOnMain { [owners] in owners.release(lease) }
             return .init(status: .init(nativeErrno: result > 0 ? result : EIO, vkResult: nil), resource: nil)
@@ -59,9 +75,17 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
             guard lease.isValid, let layer = lease.layer else { return ECANCELED }
             return caboose_gpu_surface_attach(pointer, layer)
         }
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.bindStage(.attach, code: attached)
+        #endif
         if attached != 0 {
             do { try resource.retire() }
             catch {
+                #if DEBUG && canImport(CabooseGPUMemoryAudit)
+                if let value = error as? LiveGPUBindingError, case .native(_, let code) = value {
+                    LiveGPUMemoryAudit.bindStage(.retireFailedAttach, code: code)
+                }
+                #endif
                 return .init(status: .init(nativeErrno: attached, vkResult: nil), resource: resource)
             }
             return .init(status: .init(nativeErrno: attached, vkResult: nil), resource: nil)
