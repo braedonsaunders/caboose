@@ -222,9 +222,18 @@ private struct DesktopStage: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
+    private var keyboard = SoftwareKeyboard.shared
 
     var body: some View {
         GeometryReader { proxy in
+            // The keyboard never resizes the computer's windows: the stage keeps its size and
+            // slides up just enough to keep where typing began above the keyboard.
+            let stage = proxy.frame(in: .global)
+            let caret = RemoteTextInputView.lastCaret.flatMap { Date().timeIntervalSince($0.at) < 60 ? $0.point.y : nil }
+            let pan = keyboard.visible
+                ? DesktopGeometry.keyboardPan(caretY: caret, stageMinY: stage.minY, stageMaxY: stage.maxY,
+                                              keyboardTopY: (keyboard.window?.bounds.height ?? stage.maxY) - keyboard.height)
+                : 0
             Group {
                 if model.deviceDesktopStyle == .tiled {
                     SwitchyardView(yard: model.yard)
@@ -245,6 +254,8 @@ private struct DesktopStage: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .offset(y: -pan)
+            .animation(.smooth(duration: 0.3), value: pan)
             .clipped()
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
@@ -253,6 +264,7 @@ private struct DesktopStage: View {
                 if tab == .desktop { model.desktopStageResized(to: proxy.size) }
             }
         }
+        .ignoresSafeArea(.keyboard)
     }
 
 

@@ -14,7 +14,12 @@ open class RemoteTextInputView: UIView, UITextInput {
     public var markedTextStyle: [NSAttributedString.Key: Any]?
     /// Where the remote caret probably is, in this view's points: the candidate bar and
     /// the dictation and IME popovers on iPad anchor to it.
-    public var caretAnchor = CGPoint.zero
+    public var caretAnchor = CGPoint.zero {
+        didSet { if window != nil { Self.lastCaret = (convert(caretAnchor, to: nil), Date()) } }
+    }
+    /// Where text entry last began in any remote window, in that view's UIWindow coordinates:
+    /// the shell keeps it above the software keyboard.
+    public private(set) static var lastCaret: (point: CGPoint, at: Date)?
 
     /// Prose gets autocorrect, capitals and spell checking; code and terminals get none.
     public var prefersProse = false {
