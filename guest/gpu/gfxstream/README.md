@@ -42,6 +42,10 @@ memory, together with proof against Vulkan synchronization requirements. The
 upstream QEMU process pipe is a separate `GLProcessPipe` exchange (native int32
 100, native uint64 process UID); the socket adapter does not implement it.
 
+Once a source download is authorized, `guest/gpu/gfxstream/fetch_mesa.sh /path/to/new/mesa`
+fetches a depth-one checkout at the exact candidate commit and refuses an existing
+destination. Fetch size depends on the remote server and has not been measured.
+
 For an isolated checkout whose `HEAD` is exactly the candidate Mesa revision,
 `python3 guest/gpu/gfxstream/prepare_mesa.py /path/to/mesa` checks SHA-256 of
 all three changed upstream files before applying the integration. It refuses an
