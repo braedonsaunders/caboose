@@ -110,6 +110,10 @@ The image contains:
   host starts them (see [Displays](#displays)).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
+- **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
+  V4L2 drivers, `v4l2loopback` built for it, `iio-sensor-proxy` and the udev rules from
+  `guest/devices`, so the phone's hardware becomes the computer's devices
+  ([devices.md](devices.md)).
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
