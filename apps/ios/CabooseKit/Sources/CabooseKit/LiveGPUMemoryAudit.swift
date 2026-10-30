@@ -6,7 +6,40 @@ import CabooseGPUMemoryAudit
 /// indices/sizes and provider results are recorded; never memory contents or credentials.
 enum LiveGPUMemoryAudit {
     private static let requested = ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_MEMORY_AUDIT"] == "1"
+    private static let terminalLock = NSLock()
+    nonisolated(unsafe) private static var terminalCount = 0
     static func enable() -> Int32 { caboose_gpu_runtime_enable_memory_audit() }
+
+    // Fixed metadata only, bounded for the lifetime of this diagnostic app process.
+    private static func terminal(_ fields: [String: Any]) {
+        guard requested else { return }
+        let ordinal = terminalLock.withLock {
+            let current = terminalCount
+            if current <= 64 { terminalCount += 1 }
+            return current
+        }
+        if ordinal < 64 { record(fields) }
+        else if ordinal == 64 { record(["kind": "terminalOverflow", "limit": 64]) }
+    }
+    static func runResult(token: UInt64, code: Int32) {
+        terminal(["kind": "nativeRun", "token": token, "errno": code])
+    }
+    static func sessionStop(_ error: Error?, normalPeerClose: Bool) {
+        var fields: [String: Any] = ["kind": "sessionStop", "normalPeerClose": normalPeerClose]
+        switch error {
+        case nil: fields["category"] = "none"
+        case let value as LiveGPUBindingError:
+            switch value {
+            case .native(_, let code): fields["category"] = "native"; fields["errno"] = code
+            case .system(_, let code): fields["category"] = "system"; fields["errno"] = code
+            case .protocolViolation: fields["category"] = "protocol"
+            case .outputRejected: fields["category"] = "outputRejected"
+            }
+        case is LiveGPUError: fields["category"] = "transportOrSession"
+        default: fields["category"] = "other"
+        }
+        terminal(fields)
+    }
 
     private static func record(_ fields: [String: Any]) {
         guard let bytes = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]),

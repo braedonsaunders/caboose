@@ -166,6 +166,9 @@ public final class LiveGPUSession: @unchecked Sendable {
         stopping = true; ingress.revoke()
         drainDeadline?.cancel(); drainDeadline = nil
         lock.unlock()
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.sessionStop(cause, normalPeerClose: normalPeerClose)
+        #endif
         transport.close()
         // A blocked socketpair writer cannot prevent revocation from interrupting it.
         cleanup.async { [self] in

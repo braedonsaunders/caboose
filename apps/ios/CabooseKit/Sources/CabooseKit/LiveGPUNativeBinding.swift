@@ -54,7 +54,11 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     }
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32 {
         #if canImport(CabooseGPULive)
-        return caboose_gpu_runtime_run(token, fd, maxPacket, maxReply)
+        let result = caboose_gpu_runtime_run(token, fd, maxPacket, maxReply)
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.runResult(token: token, code: result)
+        #endif
+        return result
         #else
         return ENODEV
         #endif

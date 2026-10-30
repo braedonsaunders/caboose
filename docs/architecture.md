@@ -2546,6 +2546,9 @@ this driver.
 An explicitly selected diagnostic package exposes a separate memory-audit module.
 Its debug launch opt-in records immutable decoder feature flags and bounded allocation
 mapping receipts before process cleanup; it never records memory contents or credentials.
+The same opt-in records at most 64 native-run/session-stop metadata events per app
+process, followed by one overflow marker. These include native errno and fixed failure
+categories, without error descriptions, command payloads or object addresses.
 These receipts describe allocation decisions, not proof of transferred bytes or coherence.
 
 ### Shell
