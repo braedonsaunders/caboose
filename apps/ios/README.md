@@ -1284,3 +1284,20 @@ margin cannot establish that flushed samples still exist. A positive controlled 
 supports a local mechanism, not phone causality. A negative result cannot exonerate the
 actual production sequence or exclude a phone-specific problem. No production buffering,
 pitch algorithm or rate correction changes follow automatically from this probe.
+
+The optional `--compare-pitch` runner flag performs one matched algorithm comparison:
+arm 0 uses `.spectral`, arm 1 uses `.timeDomain`, and **both** apply the same five
+positive rate changes. Duration, one-second supply margin, PCM, observations and teardown
+are identical. Both algorithms preserve pitch and support these rates; the SDK describes
+spectral as higher quality and more expensive, and time-domain as less expensive and
+suitable for voice. Results identify each arm's algorithm and whether rates varied.
+This flag changes only the standalone probe, not Caboose's production algorithm.
+
+```sh
+python3 apps/ios/scripts/run-audio-rate-control.py   --binary /private/tmp/caboose-audio-rate-control --compare-pitch   > /private/tmp/caboose-audio-pitch-control.json
+```
+
+Use the same explicit compile command above after source changes. The 90-second runner
+limit still covers both 26-second arms. A time-domain improvement would establish an
+algorithm-dependent local mechanism; phone behavior and audio quality still require
+validation before claiming the production incident resolved.

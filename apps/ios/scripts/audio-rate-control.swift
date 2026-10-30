@@ -8,6 +8,12 @@ private let mediaStart = 10.0
 private let hostClock = CMClockGetHostTimeClock()
 private func host() -> Double { CMTimeGetSeconds(CMClockGetTime(hostClock)) }
 private enum ProbeFailure: Error { case pcm, sample, invalidClock }
+private enum Algorithm: String, Encodable {
+    case spectral, timeDomain
+    var value: AVAudioTimePitchAlgorithm {
+        switch self { case .spectral: return .spectral; case .timeDomain: return .timeDomain }
+    }
+}
 private struct Stimulus { let offset: Double; let rate: Float }
 private let stimulus: [Stimulus] = [
     .init(offset: 1, rate: 1.029339439311),
@@ -81,6 +87,8 @@ private struct Observation: Encodable {
 }
 private struct Result: Encodable {
     let arm: Int
+    let algorithm: Algorithm
+    let varyingRates: Bool
     let hostStartSeconds: Double
     let hostEndSeconds: Double
     let packets: Int
@@ -148,10 +156,10 @@ private func expectedBounds(_ offset: Double, writes: [Write]) -> (lower: Double
     return (lower, upper)
 }
 
-private func run(arm: Int, samples: [CMSampleBuffer], events: Events) throws -> Result {
+private func run(arm: Int, algorithm: Algorithm, varyingRates: Bool, samples: [CMSampleBuffer], events: Events) throws -> Result {
     let renderer = AVSampleBufferAudioRenderer()
     renderer.isMuted = true
-    renderer.audioTimePitchAlgorithm = .spectral
+    renderer.audioTimePitchAlgorithm = algorithm.value
     let sync = AVSampleBufferRenderSynchronizer()
     sync.delaysRateChangeUntilHasSufficientMediaData = false
     sync.addRenderer(renderer)
@@ -201,7 +209,7 @@ private func run(arm: Int, samples: [CMSampleBuffer], events: Events) throws -> 
     while observation <= 104 || packet < 1300 {
         let packetTarget = packet < 1300 ? Double(packet) * packetSeconds : Double.infinity
         let observeTarget = observation <= 104 ? Double(observation) * 0.25 : Double.infinity
-        let changeTarget = arm == 1 && change < stimulus.count ? stimulus[change].offset : Double.infinity
+        let changeTarget = varyingRates && change < stimulus.count ? stimulus[change].offset : Double.infinity
         let target = min(packetTarget, min(observeTarget, changeTarget))
         let wait = start + target - host()
         if wait > 0 { Thread.sleep(forTimeInterval: wait) }
@@ -258,7 +266,7 @@ private func run(arm: Int, samples: [CMSampleBuffer], events: Events) throws -> 
         lower = final.expectedLower - baseline.expectedUpper - actual
         upper = final.expectedUpper - baseline.expectedLower - actual
     }
-    return Result(arm: arm, hostStartSeconds: start, hostEndSeconds: end, packets: 50 + packet,
+    return Result(arm: arm, algorithm: algorithm, varyingRates: varyingRates, hostStartSeconds: start, hostEndSeconds: end, packets: 50 + packet,
         maximumEnqueueLatenessSeconds: lateness, maximumEnqueueDurationSeconds: enqueueDuration,
         minimumExpectedSupplyMarginSeconds: minimumMargin, observations: observations, writes: writes,
         invalidClockSamples: invalid, failedRendererSamples: failed,
@@ -267,7 +275,7 @@ private func run(arm: Int, samples: [CMSampleBuffer], events: Events) throws -> 
 }
 
 private struct Report: Encodable {
-    let version = 1
+    let version = 2
     let stimulusIsPartial = true
     let arms: [Result]
     let eventCounts: [Counts]
@@ -279,11 +287,18 @@ guard ProcessInfo.processInfo.environment["CABOOSE_AUDIO_RATE_CONTROL"] == "1" e
     fputs("Opt-in required: use run-audio-rate-control.py after compiling this standalone source.\n", stderr)
     exit(2)
 }
+let arguments = Array(CommandLine.arguments.dropFirst())
+guard arguments.isEmpty || arguments == ["--compare-pitch"] else {
+    fputs("Supported probe option: --compare-pitch\n", stderr)
+    exit(2)
+}
+let comparePitch = arguments == ["--compare-pitch"]
 do {
     let pcm = try samples()
     let events = Events()
-    let control = try run(arm: 0, samples: pcm, events: events)
-    let variable = try run(arm: 1, samples: pcm, events: events)
+    let control = try run(arm: 0, algorithm: .spectral, varyingRates: comparePitch, samples: pcm, events: events)
+    let variable = try run(arm: 1, algorithm: comparePitch ? .timeDomain : .spectral,
+                           varyingRates: true, samples: pcm, events: events)
     let metadata = events.snapshot()
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]

@@ -21,11 +21,13 @@ def stop_group(child, sig):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, help="Previously compiled audio-rate-control executable")
+    parser.add_argument("--compare-pitch", action="store_true", help="Apply the same rate stimulus to spectral and timeDomain arms")
     args = parser.parse_args()
     env = os.environ.copy()
     env["CABOOSE_AUDIO_RATE_CONTROL"] = "1"
     signal.signal(signal.SIGTERM, interrupt)
-    child = subprocess.Popen([os.path.abspath(args.binary)], env=env, start_new_session=True)
+    command = [os.path.abspath(args.binary)] + (["--compare-pitch"] if args.compare_pitch else [])
+    child = subprocess.Popen(command, env=env, start_new_session=True)
     try:
         return child.wait(timeout=90)
     except subprocess.TimeoutExpired:
