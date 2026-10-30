@@ -29,6 +29,14 @@ struct SubprotocolCallback;
 
 impl tungstenite::handshake::server::Callback for SubprotocolCallback {
     fn on_request(self, request: &Request, mut response: Response) -> Result<Response, ErrorResponse> {
+        // Live GPU does not use the display codec. Until the private broker is
+        // connected, reject its path rather than upgrading it as a display.
+        if request.uri().path() == "/gpu" {
+            return Err(ErrorResponse::builder()
+                .status(503)
+                .body(Some("GPU broker unavailable".into()))
+                .expect("static HTTP response"));
+        }
         // The host relay asks for "binary"; echo it so the handshake completes.
         let offered = request
             .headers()
@@ -321,5 +329,28 @@ fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
             tracing::warn!("{peer}: cannot watch the socket: {e}");
             state.net().conns.remove(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_route_tests {
+    use super::*;
+    use tungstenite::handshake::server::Callback;
+
+    #[test]
+    fn unavailable_gpu_route_never_upgrades_as_display() {
+        let request = Request::builder().uri("/gpu").body(()).unwrap();
+        let response = Response::builder().body(()).unwrap();
+        let error = SubprotocolCallback.on_request(&request, response).unwrap_err();
+        assert_eq!(error.status().as_u16(), 503);
+    }
+
+    #[test]
+    fn other_paths_keep_display_subprotocol() {
+        let request = Request::builder().uri("/display")
+            .header("sec-websocket-protocol", "binary").body(()).unwrap();
+        let response = Response::builder().body(()).unwrap();
+        let response = SubprotocolCallback.on_request(&request, response).unwrap();
+        assert_eq!(response.headers().get("sec-websocket-protocol").unwrap(), "binary");
     }
 }
