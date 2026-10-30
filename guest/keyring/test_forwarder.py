@@ -15,6 +15,41 @@ f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
 
+def admission_stress():
+    from concurrent.futures import ThreadPoolExecutor
+    proxy = f.Forwarder.__new__(f.Forwarder)
+    proxy.admitted, proxy.admission_lock = 0, threading.Lock()
+    replies, scheduled = [], []
+    class Agent:
+        def send_message(self, message, flags):
+            replies.append(message)
+    proxy.agent = Agent()
+    original = GLib.idle_add
+    GLib.idle_add = lambda *args: scheduled.append(args)
+    try:
+        def submit(_):
+            request = Gio.DBusMessage.new_method_call(f.SERVICE, '/outside', 'org.freedesktop.Secret.Service', 'ReadAlias')
+            request.set_sender(':1.99')
+            request.set_serial(1)
+            proxy.filter(None, request, True, None)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(submit, range(1024)))
+        assert len(scheduled) == proxy.admitted == 128
+        assert len(replies) == 896
+        assert all(reply.get_error_name().endswith('.LimitsExceeded') for reply in replies)
+        for callback, request in scheduled:
+            callback(request)
+        assert proxy.admitted == 0
+        def unavailable(*args):
+            raise RuntimeError('synthetic scheduling failure')
+        GLib.idle_add = unavailable
+        submit(0)
+        assert proxy.admitted == 0
+    finally:
+        GLib.idle_add = original
+    print('PASS: 1024-call concurrent burst bounded to 128 queued+active calls; admission released')
+
+
 def run():
     processes, connections = [], []
     loop = GLib.MainLoop()
@@ -164,4 +199,5 @@ if __name__ == '__main__':
         f.Forwarder(f.connect(sys.argv[3]), sys.argv[2])
         GLib.MainLoop().run()
     else:
+        admission_stress()
         run()
