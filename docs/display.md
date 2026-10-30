@@ -264,8 +264,8 @@ ids it accepted, `encoders` = its encoders ∩ the client's decoders in the serv
 preference order, its `features` and its `epoch`; then sends `window.create` for every
 live window, followed by a keyframe of each.
 
-The client also parses the optional `gpu_live_epoch` as exactly 16 nonzero bytes
-(a CBOR byte string with at least one nonzero byte), separately from the text `epoch`.
+The client also parses the optional `gpu_live_epoch` as a 16-byte CBOR byte string
+with at least one nonzero byte, separately from the text `epoch`.
 Absent or malformed values leave live GPU display identity unavailable without rejecting
 the ordinary display. Parsing this identity does not enable a GPU executor or bind a layer.
 
