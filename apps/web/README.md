@@ -151,3 +151,9 @@ leases. See [capacity and usage](../../docs/capacity.md) for metric semantics an
 
 Administrator password recovery, authenticator enrollment and session management are
 documented in [account security](../../docs/account-security.md).
+
+Usage and computer overview show measured container RAM and CPU separately from
+provisioned limits, with rolling CPU seconds and coverage. Computer overview's Measure
+storage action requests a cached, bounded measurement; it does not wake the computer.
+Unavailable counters remain explicit. See [capacity and usage](../../docs/capacity.md).
+The rendering checks run with `pnpm exec vitest run src/computer-usage.test.tsx`.

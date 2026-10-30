@@ -1,3 +1,4 @@
+import { UsageMetrics } from '../components/ComputerUsage.js'
 import { PageHeader, DashboardMetricCard, DashboardPanel, MeasurementNotes, ResourceMeter } from '../components/console-ui.js'
 import * as React from 'react'
 
@@ -39,6 +40,10 @@ function CapacityView({ client, onUnauthorized, tenantId, tenantName, scopeContr
     {data && <>
       <p className="text-xs text-fg-muted">Sampled {new Date(data.sampledAt).toLocaleString()} · Refreshes every 30 seconds</p>
       {data.warnings.map(w => <Alert key={w} variant="warning"><AlertDescription>{w}</AlertDescription></Alert>)}
+      {data.computers?.map(computer => <DashboardPanel key={computer.id} title={computer.name}>
+        <p className="mb-3 text-sm text-fg-muted">Provisioned: {capacityValue({ value: computer.memoryLimitBytes }, 'bytes')} · {computer.vcpus} vCPUs · <a className="underline" href={`/computers/${computer.id}`}>Open computer and storage</a></p>
+        {computer.usage ? <UsageMetrics usage={computer.usage} /> : <p>Runtime measurements unavailable</p>}
+      </DashboardPanel>)}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <DashboardMetricCard label="Assigned memory" value={capacityValue(number(data.allocated.memoryBytes), 'bytes')} detail="All computer settings" />
         <DashboardMetricCard label="Running memory" value={capacityValue(number(data.running.memoryBytes), 'bytes')} detail="Running allocation" />
