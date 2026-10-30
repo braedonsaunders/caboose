@@ -51,3 +51,39 @@ and produce no Secret Service prompt. `cleanup` deletes only the item tagged wit
 unique check ID. Inspect the actual browser windows as well: a loaded page and no GCR dialog
 are separate checks from secret storage. Do not lock or reset a live user's collections as
 a test; wrong-password checks belong in a disposable computer.
+
+## Agent credential routing
+
+The agent bus uses `/opt/caboose/keyring/agent-bus.conf` and a private activation
+service directory. Secret Service activation starts `secret-forwarder.py`, not a
+second keyring writer. Installed system application activators, including accessibility and portals, are copied
+into that directory except keyring/KWallet writers. User-home registrations are not inherited;
+new system registrations enter it on the next component install.
+KWallet is not forwarded: it is a different API and is not a second credential backend.
+
+The forwarder accepts only the Secret Service object subtree and its standard interfaces.
+It authenticates agent clients and the canonical service as the current Unix uid using
+the bus's EXTERNAL authentication and credential queries. Each agent D-Bus sender gets
+its own upstream bus connection, preserving Secret Service cryptographic session ownership.
+Replies retain their D-Bus types, object paths and caller serials; directed signals return
+to that client. Client disconnection closes its upstream sessions. Backend disappearance
+terminates the forwarder so stale sessions cannot be reused with another daemon. No other
+agent D-Bus traffic is redirected to the owner bus. Both seats retain the existing shared
+Unix-user trust model; this does not establish a credential permission boundary between them.
+
+An agent `Prompt.Prompt` call returns
+`org.caboose.Secret.Error.InteractionRequired`: the owner must unlock or approve the
+operation interactively, then the agent retries it. The forwarder never accepts a prompt,
+reads keyring files, dumps unlocked secrets, or logs request bodies/backend diagnostics.
+Credential calls have a ten-second timeout, with at most 64 upstream clients and 128
+in-flight requests. The host's existing canonical keyring preparation remains unchanged.
+
+Existing running agent buses with the old configuration require an explicit restart.
+Seat startup checks the live bus daemon's configuration and fails without restarting it
+or resetting credentials. Component installation alone does not change a running bus.
+
+Run `python3 guest/keyring/test_forwarder.py` on Linux with `python3-gi` and `dbus-daemon`.
+It creates two disposable buses and a synthetic Secret Service, tests concurrent client
+sessions, object routing, cross-client rejection, directed signals, prompt refusal and
+exclusive service ownership and proxy crash/restart, and reaps the buses. This proves the forwarding API path;
+it does not claim a real browser sign-in, GNOME unlock dialog, or cold-boot acceptance test.
