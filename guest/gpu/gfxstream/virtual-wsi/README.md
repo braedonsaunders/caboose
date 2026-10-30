@@ -104,6 +104,12 @@ rebuild or proof that retained objects match unrelated uncommitted source.
 The toolchain image and completed checks are recorded in `verification.json`;
 the historical image used for the retained build is not established. No phone,
 compositor or Vulkan execution is established by syntax or transport fixtures.
+The completed incremental link produced a 3,008,352-byte ICD with SHA-256
+`8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff`.
+`link-verification.json` records its exact commands and 226 identified input hashes,
+including 180 thin-archive members. The library requires `libwayland-client.so.0`
+and retains `/work/sysroot/lib` as its runpath. Loader and provider execution are
+not established by this link result.
 
 ## Focused Linux verification
 
