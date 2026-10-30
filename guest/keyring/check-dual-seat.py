@@ -56,10 +56,21 @@ def agent_secret(check_id):
         assert len(unlocked) == 1 and not locked, 'Synthetic canonical item unavailable through agent bus'
         value = call(unlocked[0], 'Item', 'GetSecret', '(o)', (session,))[0][2]
         assert bytes(value) == hashlib.sha256(('caboose-test-' + check_id).encode()).digest()
-        call(session, 'Session', 'Close', '()', ())
+        request = Gio.DBusMessage.new_method_call('org.freedesktop.secrets', session,
+            'org.freedesktop.Secret.Session', 'Close')
+        assert request.get_body() is None
+        reply, _ = bus.send_message_with_reply_sync(request, Gio.DBusSendMessageFlags.NONE, 10000, None)
+        assert reply.get_message_type() == Gio.DBusMessageType.METHOD_RETURN, 'Session.Close failed'
+        assert reply.get_body() is None, 'Session.Close returned an unexpected body'
+        try:
+            call(unlocked[0], 'Item', 'GetSecret', '(o)', (session,))
+        except GLib.Error as error:
+            assert Gio.DBusError.get_remote_error(error) == 'org.freedesktop.Secret.Error.NoSession'
+        else:
+            raise AssertionError('Closed GNOME session remained usable')
     finally:
         bus.close_sync(None)
-    print('PASS: agent retrieves the synthetic item from the real canonical GNOME service')
+    print('PASS: agent retrieves the synthetic GNOME item; bodyless Close returns empty and invalidates session')
 
 
 def inside(phase, check_id):

@@ -74,7 +74,7 @@ def run():
             backend = connection(owner)
             assert f.bus_call(backend, 'GetConnectionUnixProcessID', '(s)', (f.DBUS,))[0] == processes[0].pid
             f.bus_call(backend, 'RequestName', '(su)', (f.SERVICE, 4))
-            identities, prompts = {}, []
+            identities, prompts, closed, empty_calls = {}, [], set(), []
             def fake(bus, msg, incoming, data):
                 if not incoming or msg.get_message_type() != Gio.DBusMessageType.METHOD_CALL:
                     return msg
@@ -86,10 +86,27 @@ def run():
                     answer.set_body(GLib.Variant('(vo)', (GLib.Variant('s', ''), path)))
                 elif member == 'GetSecret':
                     session = msg.get_body().unpack()[0]
-                    if identities.get(session) != msg.get_sender():
+                    if identities.get(session) != msg.get_sender() or session in closed:
                         answer = msg.new_method_error_literal('org.freedesktop.Secret.Error.NoSession', 'synthetic')
                     else:
                         answer.set_body(GLib.Variant('((oayays))', ((session, [], list(b'synthetic-sign-in'), 'text/plain'),)))
+                elif member == 'Close':
+                    # Assert the actual wire representation, not a mocked None.
+                    assert msg.get_body() is None
+                    assert msg.get_interface() == 'org.freedesktop.Secret.Session'
+                    session = msg.get_path()
+                    if identities.get(session) != msg.get_sender() or session in closed:
+                        answer = msg.new_method_error_literal('org.freedesktop.Secret.Error.NoSession', 'synthetic')
+                    else:
+                        closed.add(session)
+                        empty_calls.append(session)
+                        assert answer.get_body() is None
+                elif member == 'Set':
+                    assert msg.get_interface() == 'org.freedesktop.DBus.Properties'
+                    assert msg.get_body() is not None
+                    # A nonempty request with an empty reply exercises reply copying
+                    # independently of the bodyless request path.
+                    assert answer.get_body() is None
                 elif member == 'Prompt':
                     prompts.append(True)
                 elif member == 'ReadAlias':
@@ -155,6 +172,28 @@ def run():
                 'org.freedesktop.Secret.Collection', 'ItemChanged', GLib.Variant('(o)', (f.ROOT + '/collection/login/item',)))
             assert received.wait(5)
             assert not wrong
+            def empty_reply(conn, path, interface, member, body=None):
+                request = Gio.DBusMessage.new_method_call(f.SERVICE, path, interface, member)
+                if body is not None:
+                    request.set_body(body)
+                reply, _ = conn.send_message_with_reply_sync(request, Gio.DBusSendMessageFlags.NONE, 5000, None)
+                assert reply.get_message_type() == Gio.DBusMessageType.METHOD_RETURN, reply.get_error_name()
+                assert reply.get_body() is None
+            empty_reply(a, f.ROOT + '/collection/login/item', 'org.freedesktop.DBus.Properties', 'Set',
+                        GLib.Variant('(ssv)', ('org.freedesktop.Secret.Item', 'Label', GLib.Variant('s', 'synthetic'))))
+            # Both caller spellings serialize to a truly bodyless Session.Close.
+            # Keep client a's original session open for the restart check below.
+            extra = call(a, 'OpenSession', GLib.Variant('(sv)', ('plain', GLib.Variant('s', ''))))[1]
+            for conn, session, body in [(b, sessions[1], None), (a, extra, GLib.Variant('()', ()))]:
+                empty_reply(conn, session, 'org.freedesktop.Secret.Session', 'Close', body)
+                assert session in closed
+                try:
+                    call(conn, 'GetSecret', GLib.Variant('(o)', (session,)), 'Item', f.ROOT + '/collection/login/item')
+                    raise AssertionError('closed session remained usable')
+                except GLib.Error as error:
+                    assert 'NoSession' in str(error)
+            assert empty_calls == [sessions[1], extra]
+            print('PASS: bodyless Session.Close requests/replies, empty tuple normalization, nonempty request/empty reply')
             # A second forwarder cannot replace the first or become a second writer.
             try:
                 f.Forwarder(connection(agent), owner)

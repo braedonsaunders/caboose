@@ -72,6 +72,7 @@ The forwarder accepts only the Secret Service object subtree and its standard in
 It authenticates agent clients and the canonical service as the current Unix uid using
 the bus's EXTERNAL authentication and credential queries. Each agent D-Bus sender gets
 its own upstream bus connection, preserving Secret Service cryptographic session ownership.
+Calls and replies preserve empty bodies, including `Session.Close`.
 Replies retain their D-Bus types, object paths and caller serials; directed signals return
 to that client. Client disconnection closes its upstream sessions. Backend disappearance
 terminates the forwarder so stale sessions cannot be reused with another daemon. No other
@@ -91,7 +92,9 @@ or resetting credentials. Component installation alone does not change a running
 
 Run `python3 guest/keyring/test_forwarder.py` on Linux with `python3-gi` and `dbus-daemon`.
 It creates two disposable buses and a synthetic Secret Service, tests concurrent client
-sessions, object routing, cross-client rejection, directed signals, prompt refusal and
+sessions, bodyless `Session.Close` calls and replies (including empty-tuple callers),
+nonempty calls with empty replies, closed-session rejection, object routing, cross-client
+rejection, directed signals, prompt refusal and
 exclusive service ownership and proxy crash/restart, and reaps the buses. This proves the forwarding API path;
 it does not claim a real browser sign-in, GNOME unlock dialog, or cold-boot acceptance test.
 
@@ -165,3 +168,11 @@ a wrong-password rejection with byte-for-byte keyring preservation followed by r
 with the original test password. Each container has a 45-second deadline and verified
 removal; the volume is removed and checked absent on every path. It reports the installed
 GNOME package version and fixed pass/fail messages, never credential or keyring content.
+
+`python3 guest/keyring/check-forwarder-gnome.py --image sha256:IMAGE_ID` runs the
+agent credential oracle without displays or browsers in one network-disabled,
+256 MiB/one-CPU container with a fresh tmpfs home and a 50-second deadline. It installs
+only this directory's keyring sources and uses the integrated acceptance oracle to
+verify synthetic bytes through GNOME, a bodyless `Session.Close` with an empty reply,
+and rejection of the closed session. Container removal and absence are checked; no
+persistent volume or owner data is used. This does not establish dual-seat browser acceptance.

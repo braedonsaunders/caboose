@@ -129,7 +129,10 @@ class Forwarder:
             try:
                 bus = self.upstream(request.get_sender())
                 forwarded = Gio.DBusMessage.new_method_call(bus.secret_owner, path, interface, request.get_member())
-                forwarded.set_body(request.get_body())
+                # Gio represents a bodyless message as None, which set_body rejects.
+                body = request.get_body()
+                if body is not None:
+                    forwarded.set_body(body)
                 bus.send_message_with_reply(forwarded, Gio.DBusSendMessageFlags.NONE, 10000, None,
                                             self.replied, request)
                 scheduled = True
@@ -149,7 +152,9 @@ class Forwarder:
                 self.error(request, reply.get_error_name(), 'Canonical credential service refused the operation')
             else:
                 answer = request.new_method_reply()
-                answer.set_body(reply.get_body())
+                body = reply.get_body()
+                if body is not None:
+                    answer.set_body(body)
                 self.agent.send_message(answer, Gio.DBusSendMessageFlags.NONE)
         except Exception:
             self.error(request, 'org.freedesktop.DBus.Error.Failed', 'Canonical credential service unavailable')

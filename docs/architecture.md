@@ -224,7 +224,8 @@ available.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
 The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
-client has a separate upstream D-Bus identity, preserving session/object ownership; other
+client has a separate upstream D-Bus identity, preserving session/object ownership.
+Bodyless calls and replies, including `Session.Close`, retain their empty D-Bus bodies; other
 agent bus traffic remains on the agent bus. GUI unlock prompts return an explicit
 interaction-required error for owner recovery. No second keyring writer, KWallet proxy,
 or automatic credential reset is selected. Existing agent buses require an explicit
