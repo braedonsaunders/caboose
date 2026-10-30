@@ -3,6 +3,7 @@ from importlib.machinery import SourceFileLoader
 import importlib.util
 from pathlib import Path
 import sys
+import socket
 import unittest
 from unittest import mock
 
@@ -12,7 +13,8 @@ loader = SourceFileLoader('caboose_live_broker', str(HERE / 'caboose-gpu-broker'
 spec = importlib.util.spec_from_loader(loader.name, loader)
 broker = importlib.util.module_from_spec(spec)
 loader.exec_module(broker)
-from live_protocol import Decoder, Envelope, Kind
+from live_protocol import Decoder, Envelope, Kind, encode
+from test_gpu_websocket import client_frame
 
 
 class Writer:
@@ -26,6 +28,31 @@ class Writer:
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_socketpair_websocket_session_roundtrip(self):
+        left, right = socket.socketpair()
+        left.setblocking(False); right.setblocking(False)
+        guest_reader, guest_writer = await asyncio.open_connection(sock=left)
+        phone_reader, phone_writer = await asyncio.open_connection(sock=right)
+        session = broker.Session(None, b'a' * 16, 1, guest_reader, guest_writer)
+        sender = asyncio.create_task(session.send_loop())
+        receiver = asyncio.create_task(session.read_loop())
+        try:
+            session.send(Kind.SESSION, payload=broker.HELLO)
+            header = await asyncio.wait_for(phone_reader.readexactly(2), 1)
+            self.assertEqual(header, bytes((0x82, 112)))
+            body = await asyncio.wait_for(phone_reader.readexactly(112), 1)
+            decoded = []; Decoder(b'a' * 16, 1).feed(body, decoded.append)
+            self.assertEqual(decoded[0].kind, Kind.SESSION)
+            reply = encode(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 1, broker.HELLO))
+            phone_writer.write(client_frame(2, reply)); await phone_writer.drain()
+            await asyncio.wait_for(session.session_ready.wait(), 1)
+        finally:
+            sender.cancel(); receiver.cancel()
+            await asyncio.gather(sender, receiver, return_exceptions=True)
+            guest_writer.close(); phone_writer.close()
+            await asyncio.gather(guest_writer.wait_closed(), phone_writer.wait_closed())
+            session.bindings.finish(session.binding_generation)
+
     async def test_session_uses_exact_hello_and_actual_ready(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.send(Kind.SESSION, payload=broker.HELLO)
