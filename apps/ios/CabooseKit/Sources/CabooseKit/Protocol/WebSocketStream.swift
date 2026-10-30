@@ -120,6 +120,11 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.displayClosed(status: (task?.response as? HTTPURLResponse)?.statusCode,
+            closeCode: task?.closeCode.rawValue,
+            scoped: request.url?.path.hasPrefix("/v1/computers/") == true, error: error)
+        #endif
         backlogLock.withLock { pending.removeAll() }
         session?.invalidateAndCancel()
         onEvent?(.closed(error))

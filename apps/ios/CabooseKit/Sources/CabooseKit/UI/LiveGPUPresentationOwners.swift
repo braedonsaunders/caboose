@@ -79,6 +79,16 @@ public final class LiveGPUPresentationOwners {
                 else if let view = lease.view, eligible(view) {
                     reason = extent(view) == lease.extent ? .ownership : .geometry
                 } else { reason = .visibility }
+                if reason == .geometry {
+                    let pending = lease.view.flatMap { view in
+                        view.remoteWindow.flatMap { window in
+                            ((view.session ?? view.pacer) as? CabooseDisplaySession)?.pendingPresentationSize(window)
+                        }
+                    }
+                    LiveGPUMemoryAudit.ownerGeometry(previous: lease.extent,
+                        server: lease.view?.remoteWindow?.frame.size, visible: lease.view?.bounds.size,
+                        pending: pending)
+                }
                 LiveGPUMemoryAudit.ownerInvalidated(reason)
                 #endif
                 invalidated(lease.identity)

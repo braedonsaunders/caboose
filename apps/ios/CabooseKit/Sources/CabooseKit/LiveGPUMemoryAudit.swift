@@ -18,7 +18,11 @@ enum LiveGPUMemoryAudit {
             if current <= 64 { terminalCount += 1 }
             return current
         }
-        if ordinal < 64 { record(fields) }
+        if ordinal < 64 {
+            var stamped = fields
+            stamped["uptimeSeconds"] = ProcessInfo.processInfo.systemUptime
+            record(stamped)
+        }
         else if ordinal == 64 { record(["kind": "terminalOverflow", "limit": 64]) }
     }
     static func runResult(token: UInt64, code: Int32) {
@@ -57,6 +61,31 @@ enum LiveGPUMemoryAudit {
     }
     static func ownerInvalidated(_ reason: OwnerInvalidation) {
         terminal(["kind": "ownerInvalidated", "reason": reason.rawValue])
+    }
+    static func ownerGeometry(previous: CGSize, server: CGSize?, visible: CGSize?, pending: CGSize?) {
+        var fields: [String: Any] = ["kind": "ownerGeometry", "previousWidth": previous.width,
+                                   "previousHeight": previous.height]
+        for (prefix, size) in [("server", server), ("visible", visible), ("pending", pending)] {
+            if let size, size.width.isFinite, size.height.isFinite {
+                fields[prefix + "Width"] = size.width
+                fields[prefix + "Height"] = size.height
+            }
+        }
+        terminal(fields)
+    }
+    static func displayClosed(status: Int?, closeCode: Int?, scoped: Bool, error: Error?) {
+        var fields: [String: Any] = ["kind": "displayClosed", "scoped": scoped]
+        if let status { fields["httpStatus"] = status }
+        if let closeCode { fields["closeCode"] = closeCode }
+        if let error {
+            let value = error as NSError
+            switch value.domain {
+            case NSURLErrorDomain: fields["category"] = "url"; fields["code"] = value.code
+            case NSPOSIXErrorDomain: fields["category"] = "posix"; fields["code"] = value.code
+            default: fields["category"] = "other"
+            }
+        } else { fields["category"] = "none" }
+        terminal(fields)
     }
     static func ownerExtent(server: CGSize, view: CGSize) {
         terminal(["kind": "ownerExtent", "drawableWidth": server.width,
