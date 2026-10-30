@@ -11,6 +11,19 @@ set(CABOOSE_GFXSTREAM_HOST_GLES 1 CACHE STRING "GFXSTREAM_ENABLE_HOST_GLES used 
 if(NOT CABOOSE_GFXSTREAM_HOST_GLES MATCHES "^[01]$")
     message(FATAL_ERROR "CABOOSE_GFXSTREAM_HOST_GLES must be 0 or 1")
 endif()
+# Upstream directory-wide definitions do not propagate into an external adapter.
+# Generated Vulkan dispatch layouts must match the backend translation units.
+add_library(caboose_gfxstream_abi INTERFACE)
+target_compile_definitions(caboose_gfxstream_abi INTERFACE
+    VK_GFXSTREAM_STRUCTURE_TYPE_EXT GLM_FORCE_RADIANS GLM_FORCE_DEFAULT_ALIGNED_GENTYPES)
+foreach(version 1_0 1_1 1_2 1_3 1_4)
+    target_compile_definitions(caboose_gfxstream_abi INTERFACE
+        VK_BASE_VERSION_${version} VK_COMPUTE_VERSION_${version} VK_GRAPHICS_VERSION_${version})
+endforeach()
+if(APPLE)
+    target_compile_definitions(caboose_gfxstream_abi INTERFACE
+        VK_USE_PLATFORM_MACOS_MVK VK_USE_PLATFORM_METAL_EXT)
+endif()
 add_library(caboose_gfxstream_connection STATIC socket_stream.cpp decode_connection.cpp)
 target_compile_definitions(caboose_gfxstream_connection PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
 target_compile_features(caboose_gfxstream_connection PRIVATE cxx_std_17)
@@ -19,7 +32,7 @@ target_include_directories(caboose_gfxstream_connection PRIVATE
     "${GFXSTREAM_REPO_ROOT}/host"
     "${GFXSTREAM_REPO_ROOT}/host/vulkan"
     "${GFXSTREAM_REPO_ROOT}/host/include")
-target_link_libraries(caboose_gfxstream_connection PRIVATE gfxstream-vulkan-server gfxstream_host_iostream)
+target_link_libraries(caboose_gfxstream_connection PUBLIC caboose_gfxstream_abi PRIVATE gfxstream-vulkan-server gfxstream_host_iostream)
 
 # This retains the real upstream framebuffer and offscreen Vulkan compositor.
 # Its upstream target currently has desktop dependencies and is not iOS-ready.
@@ -31,5 +44,5 @@ if(TARGET gfxstream_backend_static)
         "${GFXSTREAM_REPO_ROOT}"
         "${GFXSTREAM_REPO_ROOT}/host/vulkan"
         "${GFXSTREAM_REPO_ROOT}/host")
-    target_link_libraries(caboose_gfxstream_framebuffer PRIVATE gfxstream_backend_static caboose_gfxstream_connection)
+    target_link_libraries(caboose_gfxstream_framebuffer PUBLIC caboose_gfxstream_abi PRIVATE gfxstream_backend_static caboose_gfxstream_connection)
 endif()
