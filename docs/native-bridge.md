@@ -45,9 +45,10 @@ serves the computer's own dialogs and the default appearance, and never reaches 
 
 ### Phone presence
 
-The Files event service touches `bridge/present` while its host subscription has a foreground phone. The phone is **present** while that
-file's modification time is less than 3 seconds old by the guest's clock. The service renews the mtime once per second while a phone's foreground control socket is connected, so presence
-follows the phone being in the foreground and connected.
+The host renews the Files presence lease once per second while a foreground phone control
+socket is connected. Each renewal touches `bridge/present`. The phone is **present** while
+that file's modification time is less than 3 seconds old by the guest's clock. Lease
+generations fence stale requests, and missing renewals expire naturally.
 
 ### File chooser
 

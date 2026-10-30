@@ -57,12 +57,27 @@ with tempfile.TemporaryDirectory(prefix='caboose-event-check-') as temp:
         for line in (pathlib.Path('/proc')/str(process.pid)/'status').read_text().splitlines():
             if 'ctxt_switches:' in line: switches+=int(line.split(':')[1])
         children=(pathlib.Path('/proc')/str(process.pid)/'task'/str(process.pid)/'children').read_text().strip()
-        return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children,'python_process_creation_events':len(audit.read_text().splitlines())}
+        return {'cpu_ticks':int(stat[13])+int(stat[14]),'context_switches':switches,'live_children':children,'python_process_creation_events':len(audit.read_text().splitlines()),'wait_completions':waits.stat().st_size}
     audit = pathlib.Path(temp)/'process-events'
     audit.write_text('')
+    waits = pathlib.Path(temp)/'wait-events'; waits.write_bytes(b'')
     # CPython audit events count fork/spawn/exec attempts, including short-lived children
     # that a /proc children snapshot misses. Native extension syscalls are outside this metric.
     wrapper = """import os,runpy,sys
+import select,selectors
+waitfd=os.open(sys.argv[3],os.O_WRONLY|os.O_APPEND)
+original_select=select.select
+original_poll_select=selectors.PollSelector.select
+def observed_select(*args,**kwargs):
+    result=original_select(*args,**kwargs)
+    os.write(waitfd,b'x')
+    return result
+def observed_poll_select(*args,**kwargs):
+    result=original_poll_select(*args,**kwargs)
+    os.write(waitfd,b'x')
+    return result
+select.select=observed_select
+selectors.PollSelector.select=observed_poll_select
 from http.server import ThreadingHTTPServer
 original_bind=ThreadingHTTPServer.server_bind
 def loopback_bind(server):
@@ -77,7 +92,7 @@ sys.addaudithook(audit)
 sys.path.insert(0,os.path.dirname(sys.argv[1]))
 runpy.run_path(sys.argv[1],run_name='__main__')
 """
-    process = subprocess.Popen([sys.executable,'-c',wrapper,str(HERE/'caboose-files.py'),str(audit)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    process = subprocess.Popen([sys.executable,'-c',wrapper,str(HERE/'caboose-files.py'),str(audit),str(waits)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
         for _ in range(100):
             try:
@@ -122,7 +137,7 @@ runpy.run_path(sys.argv[1],run_name='__main__')
                 # Wake only the synthetic queue, then ACK it.
                 queue=home/'.cache/caboose/phone/queue'; path=queue/'wake.json'; path.write_text('{"type":"phone.open","url":"https://example.com"}')
                 status,result=pending.result(); assert status==200,result
-                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'main_thread_context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children'],'python_process_creation_events':after['python_process_creation_events']-before['python_process_creation_events']}))
+                print(json.dumps({'phone':phone,'seconds':round(time.monotonic()-start,3),'cpu_ticks':after['cpu_ticks']-before['cpu_ticks'],'main_thread_context_switches':after['context_switches']-before['context_switches'],'live_children':after['live_children'],'python_process_creation_events':after['python_process_creation_events']-before['python_process_creation_events'],'wait_completions':after['wait_completions']-before['wait_completions']}))
                 status,result=call('/events',req('',acks=[r['receipt'] for r in result['records'] if 'receipt' in r])); cursor=result['cursor']
             assert call('/events/presence',{'session':session,'generation':2,'phone':False})[0]==200
             assert call('/events/presence',{'session':session,'generation':1,'phone':True})[0]==409

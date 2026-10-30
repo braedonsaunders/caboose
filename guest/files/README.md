@@ -88,3 +88,12 @@ for channels, bounds, replay and lifecycle semantics.
 Run `python3 -m unittest discover -s guest/files -p test_events.py` from the repository
 root. Linux exercises inotify and process-descriptor behavior; portable unit checks can
 run without starting Files or touching an owner's home.
+
+On an isolated Linux checkout, `python3 guest/files/check-events.py` runs the real Files
+service against a temporary synthetic home and token on loopback, checks delivery,
+acknowledgements, watch retirement and presence fencing, and reports two five-second
+idle samples plus publication latency. It terminates and waits for its own service in
+`finally`. CPU ticks have kernel clock granularity; main-thread context switches are not
+total wakeups. Instrumented select/poll wait completions report userspace wait wakeups
+(including HTTP accept timeouts), with the overhead of writing one byte per completion. CPython audit events count Python fork/spawn/exec attempts; native extension
+syscalls are outside that metric. No Docker or desktop session is required.

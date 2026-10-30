@@ -2,7 +2,7 @@
 
 Desktop notifications from the owner's apps, for the phone. Each display seat has its own
 D-Bus session bus and its own `org.freedesktop.Notifications` endpoint; only the owner's
-notifications are recorded. caboose-host drains the records while the computer runs and sends
+notifications are recorded. caboose-host accepts records through the Files event receiver while the computer runs and sends
 them as `notification` events on `/v1/control` and, with APNs configured, as pushes
 (`docs/architecture.md` § Notifications).
 
@@ -39,8 +39,8 @@ same buses, monitor and endpoints as processes (see `guest/container/README.md`)
   notification on a separate bus (`check-agent-bus.sh`), and checks that the owner's is
   recorded and the agent's is not. It needs no VM or APNs credentials.
 - `sudo bash check.sh`, inside a running computer with the owner's display up, sends a
-  notification on the owner's bus and waits for its record in the queue. The host drains the
-  queue every second while the computer runs and can consume the record before the check
+  notification on the owner's bus and waits for its record in the queue. The Files event receiver delivers and acknowledges the
+  queue while the computer runs and can consume the record before the check
   sees it.
 
 Delivery to a device needs a registered device and the host's `check-push.mjs`

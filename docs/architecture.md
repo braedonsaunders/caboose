@@ -1495,8 +1495,8 @@ the control events above. The contract is [native-bridge.md](native-bridge.md#ho
 
 ### Desktop notifications
 
-While the computer runs, the host receives the owner's notification queue through Files as
-`caboose`, reading at most 32 KiB per record and deleting each file it reads. Records with
+While the computer runs, Files reads the owner's notification queue as `caboose`, at most
+32 KiB per record. It removes each record only after the host accepts it. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
 `desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
