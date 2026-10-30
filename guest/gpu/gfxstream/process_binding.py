@@ -162,6 +162,17 @@ class ProcessBindings:
                 raise RuntimeError('bound process exited')
             return process_id, key
 
+    def find_process(self, generation, peer):
+        """Resolve a separately accepted local socket to an existing process."""
+        with self._lock:
+            if not self._active or generation != self._generation:
+                raise RuntimeError('stale generation')
+            key = (peer.uid, peer.pid, peer.start_ticks)
+            existing = self._peers.get(key)
+            if existing is None or not peer.alive() or not existing[0].alive():
+                raise PermissionError('local socket does not match a live process')
+            return existing[1]
+
     def duplicate_process_identity(self, generation, process_id):
         """Duplicate the held pidfd for a compositor BIND; caller closes it."""
         with self._lock:

@@ -98,6 +98,16 @@ class ProcessBindingsTests(unittest.TestCase):
         self.assertGreater(stream2, stream)
         registry.finish(gen)
 
+    def test_control_socket_resolves_only_an_existing_live_process(self):
+        registry = binding.ProcessBindings(); gen = registry.begin()
+        owner = FakePeer(42, 111); process, _stream = registry.bind(gen, owner)
+        self.assertEqual(registry.find_process(gen, FakePeer(42, 111)), process)
+        for other in (FakePeer(43, 111), FakePeer(42, 112), FakePeer(42, 111, 1001)):
+            with self.assertRaises(PermissionError): registry.find_process(gen, other)
+        owner.close()
+        with self.assertRaises(PermissionError): registry.find_process(gen, FakePeer(42, 111))
+        registry.finish(gen)
+
     def test_exhaustion_does_not_take_peer(self):
         registry = binding.ProcessBindings(); gen = registry.begin()
         registry._next_stream = binding.MAX_ID
