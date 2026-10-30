@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'broker'))
@@ -20,6 +21,7 @@ class Writer:
     async def drain(self): pass
     def write_eof(self): self.eof = True
     def close(self): pass
+    def get_extra_info(self, _name): return object()
     async def wait_closed(self): pass
 
 
@@ -42,6 +44,44 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.session_ready.is_set())
         with self.assertRaises(ValueError):
             await session.message(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 2, broker.HELLO))
+        session.bindings.finish(session.binding_generation)
+
+    async def test_local_stream_waits_for_real_receipts_and_relays_both_directions(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        class Peer:
+            uid, pid, start_ticks = 1000, 42, 123
+            def __init__(self): self.open = True
+            def alive(self): return self.open
+            def close(self): self.open = False
+        reader, writer = asyncio.StreamReader(), Writer()
+        reader.feed_data(broker.HELLO + b'guest request'); reader.feed_eof()
+        decoder = Decoder(b'a' * 16, 1)
+        async def next_frame(kind):
+            wire = await asyncio.wait_for(session.pending.get(), 1)
+            offset = 4 if wire[1] == 126 else 10 if wire[1] == 127 else 2
+            got = []; decoder.feed(wire[offset:], got.append)
+            self.assertEqual(got[0].kind, kind)
+            return got[0]
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
+            task = asyncio.create_task(session.local(reader, writer))
+            opened = await next_frame(Kind.PROCESS_OPEN)
+            self.assertEqual(writer.data, b'')
+            await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
+            stream = await next_frame(Kind.STREAM_OPEN)
+            self.assertEqual(writer.data, b'')
+            await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
+            data = await next_frame(Kind.DATA)
+            self.assertEqual(data.payload, b'guest request')
+            await next_frame(Kind.FIN)
+            await session.message(Envelope(Kind.DATA, b'a' * 16, 1, opened.process, stream.stream, 3, b'reply'))
+            await session.message(Envelope(Kind.FIN, b'a' * 16, 1, opened.process, stream.stream, 4))
+            stopped = await next_frame(Kind.PROCESS_STOP)
+            await session.message(Envelope(Kind.PROCESS_RETIRED, b'a' * 16, 1, stopped.process, 0, 5))
+            await asyncio.wait_for(task, 1)
+        self.assertEqual(writer.data, broker.HELLO + b'reply')
+        self.assertTrue(writer.eof)
+        self.assertFalse(session.processes)
         session.bindings.finish(session.binding_generation)
 
     async def test_unsolicited_revocation_cannot_release_lease(self):
