@@ -1198,3 +1198,30 @@ clock drift. Test event ordering without a renderer with
 empty renderer and checks object filtering, observer removal and queued-drain fencing
 on the player's serialization queue. It enqueues no media, activates no audio session,
 and uses the observer lifecycle portion of stop/restart without writing the clock rate.
+
+With audio diagnostics enabled, each five-second record includes `rateProvenance` for
+that clock's process-local numeric generation. It retains the latest 16 actual rate
+writes, cumulative write/notification/zero-observation counts, the latest notification
+and zero-observation metadata, and interruption begin/end counts and latest timestamp.
+All nesting remains subject to the artifact's 64-record/128-KiB cap; a larger record
+reduces the number of historical records retained. There are no per-event disk writes.
+
+Each write has a sequence, fixed reason (`correction`, `start`, `stop`), optional stop
+caller (`sessionStop`, `rendererFailure`, `interruptionBegan`, `interruptionEnded`, or
+`unspecified`), monotonic begin/end, begin wall time, requested Float rate represented as
+a Double, and rate readings before/after the API call. Notification counts bracket
+the write's sampling span. `openWriteSequence` identifies that sampling span, including
+its bookkeeping and before/after reads; it does not prove that the notification was
+caused by the write or occurred inside the API. A notification's observed rate is read
+at callback time, not supplied by the notification; intervening transitions can be
+missed. Zero counts count callback observations, not zero-state duration. Interruption
+timestamps record callback receipt; the subsequent stop write records queue processing.
+Missing write completion fields mean no valid completion observation was retained.
+
+The synchronizer observer filters to its exact object, is removed on destruction, and
+rejects invalidated generations. Its short latch never calls AVFoundation or takes the
+playback clock lock. Only the three existing rate-write sites and rate-change callbacks
+read the rate for this trace; there is no added per-packet polling or renderer-time read.
+The trace never feeds playback decisions or acknowledges a clock update. Category and
+activation changes elsewhere in the app are not recorded. Deterministic order, lifetime
+and size-bound tests run with `swift test --jobs 1 --filter AudioRateProvenanceTests`.

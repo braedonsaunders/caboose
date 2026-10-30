@@ -2091,8 +2091,9 @@ underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These po
 restarts are separate from AVFoundation automatic flush loss. Silence resets rate
 measurement; stopping playback resets the clock and estimator.
 Opt-in audio diagnostics retain the existing five-second timing reports and bounded
-restart summaries in an asynchronous app-cache snapshot, limited to 64 numeric records
-and 128 KiB. Recording defaults off and changes neither playback nor the wire protocol;
+restart summaries in an asynchronous app-cache snapshot, limited to 64 fixed-schema
+records and 128 KiB. Each interval can include the latest 16 rate-write traces plus
+bounded rate-change and interruption metadata; these observations never drive recovery. Recording defaults off and changes neither playback nor the wire protocol;
 [the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
 and collection path.
 

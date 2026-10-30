@@ -105,6 +105,7 @@ final class SoundPlayer: @unchecked Sendable {
         ) { [weak self] notification in
             guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            self?.clock.recordInterruption(began: type == .began)
             self?.setInterrupted(type == .began)
         }
         #endif
@@ -171,7 +172,7 @@ final class SoundPlayer: @unchecked Sendable {
             timing.update { $0.reset() }
             arrivalAt = nil
             renderer.flush()
-            clock.stop()
+            clock.stop(reason: value ? .interruptionBegan : .interruptionEnded)
         }
     }
 
@@ -226,7 +227,7 @@ final class SoundPlayer: @unchecked Sendable {
                 try activateSession()
                 if renderer.status == .failed {
                     renderer.flush()
-                    clock.stop()
+                    clock.stop(reason: .rendererFailure)
                 }
                 let rawPTS = Int64(packet.ptsMicros)
                 if let lastServerPTS, rawPTS <= lastServerPTS { timestampRegressions += 1 }
@@ -312,7 +313,7 @@ final class SoundPlayer: @unchecked Sendable {
             requestedRate: rate, observedRate: Double(observedRate), projectedMicros: projected,
             renderedMicros: rendered, timestampRegressions: timestampRegressions, rendererStatus: status,
             frameMin: minimum, frameMax: frameMax, arrivalMaxSeconds: arrivalMax, interval: interval,
-            automaticFlush: automaticFlush.update { $0.summary }))
+            automaticFlush: automaticFlush.update { $0.summary }, rateProvenance: clock.rateProvenanceSnapshot))
         reportsAt = time
         frameMin = Int.max; frameMax = 0; arrivalMax = 0
     }
@@ -324,7 +325,7 @@ final class SoundPlayer: @unchecked Sendable {
             timing.update { $0.reset() }
             arrivalAt = nil
             renderer.flush()
-            clock.stop()
+            clock.stop(reason: .sessionStop)
         }
     }
 

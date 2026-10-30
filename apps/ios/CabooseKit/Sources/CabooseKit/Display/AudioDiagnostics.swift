@@ -41,6 +41,7 @@ struct AudioDiagnosticRecord: Encodable {
     var totalMS: Int? = nil
     var finishedMonotonicSeconds: Double? = nil
     var automaticFlush: AudioAutomaticFlushState.Summary? = nil
+    var rateProvenance: AudioRateProvenanceState.Snapshot? = nil
 }
 
 /// A fixed-size mailbox plus history. At most one drain is queued/running, even if

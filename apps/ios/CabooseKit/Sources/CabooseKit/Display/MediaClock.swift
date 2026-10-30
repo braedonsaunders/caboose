@@ -15,6 +15,8 @@ public final class MediaClock: @unchecked Sendable {
     private var recovery = AudioClockRecovery()
     private var playbackRate: Double = 1
     private let hostTime: () -> CMTime
+    private let rateTrace = AudioRateProvenance()
+    private var rateObserver: NSObjectProtocol?
     // The mapping requested from AVFoundation, protected by `lock`. Its rate property
     // changes synchronously, but its timebase does not: reading currentTime immediately
     // after setRate can still return the previous timeline and trigger another flush.
@@ -30,6 +32,54 @@ public final class MediaClock: @unchecked Sendable {
         // Live packets already have a bounded jitter buffer. Waiting for every video
         // renderer to preroll can hold sound indefinitely behind an idle video stream.
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
+        let observedSynchronizer = synchronizer
+        let trace = rateTrace
+        let generation = trace.generation
+        rateObserver = NotificationCenter.default.addObserver(
+            forName: AVSampleBufferRenderSynchronizer.rateDidChangeNotification,
+            object: observedSynchronizer, queue: nil
+        ) { [weak observedSynchronizer, trace] _ in
+            guard AudioDiagnostics.enabled, let observedSynchronizer else { return }
+            // A synchronous callback during setRate must not acquire MediaClock.lock.
+            // This rate is a callback-time snapshot, not a guaranteed event payload.
+            let rate = Double(observedSynchronizer.rate)
+            let mono = ProcessInfo.processInfo.systemUptime
+            let wall = Date().timeIntervalSince1970
+            trace.update { $0.changed(generation: generation, rate: rate, monotonic: mono, wall: wall) }
+        }
+    }
+
+    deinit {
+        rateTrace.update { $0.invalidate() }
+        if let rateObserver { NotificationCenter.default.removeObserver(rateObserver) }
+    }
+
+    var rateProvenanceSnapshot: AudioRateProvenanceState.Snapshot? {
+        guard AudioDiagnostics.enabled else { return nil }
+        return rateTrace.update { $0.snapshot }
+    }
+
+    func recordInterruption(began: Bool) {
+        guard AudioDiagnostics.enabled else { return }
+        let mono = ProcessInfo.processInfo.systemUptime
+        let wall = Date().timeIntervalSince1970
+        rateTrace.update { $0.interrupted(began: began, monotonic: mono, wall: wall) }
+    }
+
+    private func writeRate(_ requested: Float, reason: AudioRateProvenanceState.Reason,
+                           stopCaller: AudioRateStopCaller? = nil, apply: () -> Void) {
+        guard AudioDiagnostics.enabled else { apply(); return }
+        let before = Double(synchronizer.rate)
+        let begin = ProcessInfo.processInfo.systemUptime
+        let wall = Date().timeIntervalSince1970
+        let ticket = rateTrace.update {
+            $0.begin(reason: reason, stopCaller: stopCaller, requested: Double(requested),
+                     before: before, monotonic: begin, wall: wall)
+        }
+        apply() // No trace lock held: AVFoundation may synchronously notify here.
+        let end = ProcessInfo.processInfo.systemUptime
+        let after = Double(synchronizer.rate)
+        if let ticket { rateTrace.update { $0.end(ticket, after: after, monotonic: end) } }
     }
 
     /// Puts a renderer (the sound, or a video layer's) on this clock.
@@ -83,7 +133,9 @@ public final class MediaClock: @unchecked Sendable {
             anchor = (media: now, host: micros)
             playbackRate = rate
             // Do not add an explicit time/host seek to a rate correction.
-            synchronizer.setRate(Float(rate), time: .invalid)
+            writeRate(Float(rate), reason: .correction) {
+                synchronizer.setRate(Float(rate), time: .invalid)
+            }
         } else if now == nil {
             _ = recovery.observe(pts: pts, host: micros, ahead: playout.delay, target: playout.delay)
         }
@@ -96,7 +148,9 @@ public final class MediaClock: @unchecked Sendable {
         defer { lock.unlock() }
         let host = hostTime()
         anchor = (media: time, host: Self.micros(host))
-        synchronizer.setRate(Float(playbackRate), time: CMTime(value: time, timescale: 1_000_000), atHostTime: host)
+        writeRate(Float(playbackRate), reason: .start) {
+            synchronizer.setRate(Float(playbackRate), time: CMTime(value: time, timescale: 1_000_000), atHostTime: host)
+        }
     }
 
     /// When a picture stamped `pts` should be shown, or nil to show it at once: the clock is
@@ -107,14 +161,16 @@ public final class MediaClock: @unchecked Sendable {
     }
 
     /// The sound stopped (a failed renderer, a closed session): pictures go back to showing at once.
-    func stop() {
+    func stop(reason: AudioRateStopCaller = .unspecified) {
         lock.lock()
         defer { lock.unlock() }
         playout.stop()
         recovery = AudioClockRecovery()
         playbackRate = 1
         anchor = nil
-        synchronizer.setRate(0, time: .invalid)
+        writeRate(0, reason: .stop, stopCaller: reason) {
+            synchronizer.setRate(0, time: .invalid)
+        }
     }
 }
 
