@@ -240,8 +240,6 @@ struct FailureView: View {
             HStack(spacing: 12) {
                 Button("Try Again") { Task { await model.wake() } }
                     .buttonStyle(.glassProminent)
-                Button("Change Computer") { model.signOut() }
-                    .buttonStyle(.glass)
             }
         }
         .padding(32)

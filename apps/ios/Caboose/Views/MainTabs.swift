@@ -110,6 +110,15 @@ struct ComputerStateView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom) {
+            if model.credentials != nil {
+                ComputerSwitcher {
+                    Label("Switch Computer", systemImage: "desktopcomputer")
+                }
+                .buttonStyle(.glass)
+                .padding(20)
+            }
+        }
     }
 }
 
