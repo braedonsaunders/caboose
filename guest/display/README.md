@@ -207,6 +207,28 @@ probe. Every check asserts on what arrived, not on a picture:
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
+`scripts/check-devices.py` checks the phone's devices ([docs/devices.md](../../docs/devices.md))
+against a real kernel, so it runs inside a computer rather than the dev container: as root,
+with the owner's display running and no phone connected, it plays a phone over the
+protocol and checks each device through the kernel's own interfaces.
+
+```sh
+sudo python3 /path/to/guest/display/scripts/check-devices.py
+sudo python3 check-devices.py --only gamepad,motion --allow-unavailable camera,depth,iio,battery   # a container computer
+```
+
+| Check | What it proves |
+| --- | --- |
+| `gamepad` | a press and a stick reach the gamepad's event device, which the owner's applications can open; a rumble effect uploaded and played through evdev arrives as `device.rumble` with its magnitudes and length |
+| `buttons` | volume up and the camera button arrive as `KEY_VOLUMEUP` and `KEY_CAMERA` presses and releases |
+| `motion` | opening the motion event device sends `device.open` at 100 Hz, a face-up sample reads `ABS_Z` 8192 (1 g), closing it sends `device.close` |
+| `iio` | the HID sensor hub became `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation` and `press`; enabling the accelerometer's buffer opens motion, and the sample reads 9.80665 m/s² through the IIO scale |
+| `battery` | the power supply reads 75%, Charging, scope Device |
+| `camera` | ffmpeg streaming from the camera's node opens it; the phone's H.264 test picture arrives as YUYV; stopping sends `device.close` |
+| `depth` | the depth node streams the phone's millimetres unchanged as `Z16` |
+| `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
+| `disconnect` | closing the connection removes the gamepad and the battery |
+
 For the `passthrough` check's cross-check against the driver's reference detector, mount
 the driver's source with `CABOOSE_DISPLAY_DOCKER_ARGS="-v $PWD/guest/vaapi:/vaapi:ro"` and
 build `cbva-detect` first (`make -C /vaapi BUILD=/tmp/vaapi`). To run the real driver

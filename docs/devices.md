@@ -26,7 +26,7 @@ the same pull request as any code that changes it.
 | Accelerometer, gyroscope, magnetometer, attitude, barometer | Core Motion, `CMAltimeter` | IIO devices `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation`, `press` | HID sensor hub over UHID: the kernel's `hid-sensor-*` drivers |
 | Motion, for games | Core Motion | evdev "iPhone Motion Sensors" (`INPUT_PROP_ACCELEROMETER`) | uinput |
 | Controllers: the on-screen controller and controllers paired with the phone | `GameController` | evdev gamepad per controller, rumble (`FF_RUMBLE`) | uinput |
-| Buttons: volume and Camera Control while a camera streams, the Action button | `AVCaptureEventInteraction`, an App Intent | evdev "iPhone Buttons": `KEY_VOLUMEUP`, `KEY_VOLUMEDOWN`, `KEY_CAMERA`, `KEY_PROG1` | uinput |
+| Buttons: volume up, and volume down or Camera Control, while a camera streams; the Action button | `AVCaptureEventInteraction`, an App Intent | evdev "iPhone Buttons": `KEY_VOLUMEUP`, `KEY_CAMERA`, `KEY_PROG1` | uinput |
 | Battery | `UIDevice` | power supply `hid-<uniq>-battery`, a device battery in UPower | HID battery over UHID |
 | Thermal state, Low Power Mode | `ProcessInfo` | `$XDG_RUNTIME_DIR/caboose-devices.json` | file |
 
@@ -43,21 +43,25 @@ supports and reports the rest to the phone as unavailable (`device.status` below
 | Needs | Kernel | microVM image | Container runtime |
 | --- | --- | --- | --- |
 | Controllers, motion evdev, buttons | `uinput` | Yes | When the host has `/dev/uinput` |
-| Sensors (IIO), battery | `uhid`, `hid-sensor-hub` and the `hid-sensor-*` drivers, `industrialio` | Yes | When the host has `/dev/uhid` and the drivers (not WSL2, whose kernel has no UHID) |
-| Cameras, depth | `videodev`, `v4l2loopback` | Yes (v4l2loopback built with DKMS) | When the host has loaded `v4l2loopback` |
+| Sensors (IIO), battery | `uhid`, `hid-sensor-hub` and the `hid-sensor-*` drivers, `industrialio` | Yes | No |
+| Cameras, depth | `videodev`, `v4l2loopback` | Yes (v4l2loopback built with DKMS) | No |
 | Microphone | none | Yes | Yes |
 
 The image's kernel is Debian's generic signed kernel (`linux-image-amd64`,
 `linux-image-arm64`); Debian's cloud flavour has none of these drivers
-([guest/image](../guest/image/README.md)). Its udev rules give the
-`caboose` group `/dev/uinput`, `/dev/uhid` and `/dev/v4l2loopback`, and the gamepads, motion
-device and buttons the computer creates (`guest/devices/70-caboose-devices.rules`).
+([guest/image](../guest/image/README.md)). Every input device made from the phone has the
+physical path `caboose/phone`. The image's udev rules give the `caboose` group
+`/dev/uinput`, `/dev/uhid` and `/dev/v4l2loopback`, and the event devices with that path
+(`guest/devices`).
 
-In the container runtime the host passes `/dev/uinput`, `/dev/uhid` and
-`/dev/v4l2loopback` to the container when they exist, bind-mounts `/dev/input` so the
-event devices the computer creates appear inside it, and allows the input and video
-character devices with device cgroup rules (`c 13:* rmw`, `c 81:* rmw`). Devices a host
-lacks stay unavailable; nothing else changes.
+A container computer shares its host's kernel. When the host has `/dev/uinput`, the host
+passes it to new containers, mounts the host's `/dev/input` so the event devices the
+computer makes appear inside, and allows input character devices (`c 13:* rmw`); the host
+needs `uinput` loaded and `guest/devices/70-caboose-phone-host.rules` installed for the
+computer's applications to open them. Devices made through UHID or v4l2loopback would
+belong to the host's kernel, outside the container, so a container computer has no IIO
+sensors, battery or cameras; they report so in `device.status`. A container created before
+its host had `/dev/uinput` gets it when it is created again.
 
 ## Consent and lifetime
 
@@ -97,7 +101,7 @@ Client → server:
 | `0xB3` | `device.audio` | `device`, `t_us`, `data: bytes`: one 20 ms Opus packet, 48 kHz mono |
 | `0xB4` | `device.motion` | `device`, `samples: [sample]`, at most 64 |
 | `0xB5` | `device.gamepad` | `device`, `buttons: uint`, `axes: [float]` (exactly 6) |
-| `0xB6` | `device.button` | `device`, `key: "volume-up" \| "volume-down" \| "camera" \| "action"`, `pressed: bool` |
+| `0xB6` | `device.button` | `device`, `key: "volume-up" \| "volume-down" \| "camera" \| "action"`, `pressed: bool`. iOS reports volume down and Camera Control as one button, which the phone sends as `camera` |
 | `0xB7` | `device.battery` | `device`, `level: float` (0…1), `charging: bool`, `full: bool`, `low_power: bool`, `thermal: "nominal" \| "fair" \| "serious" \| "critical"` |
 | `0xB8` | `device.error` | `device`, `reason: text` (at most 200 UTF-8 bytes): the phone cannot run a device it was asked to open (access denied, camera in use by another app) |
 
@@ -105,8 +109,8 @@ Server → client:
 
 | Type | Name | Fields |
 | --- | --- | --- |
-| `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]`: for every offered device, the Linux nodes or source it became (`/dev/video4`, `/dev/input/event7`, `iio:device0`, `caboose_phone_microphone`), or why it could not be created. Sent after each `devices` |
-| `0x61` | `device.open` | `device`, `rate_hz?: float` (motion: the fastest rate an application asked for) |
+| `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]`: for every offered device, the Linux nodes or source it became (`/dev/video4`, `/dev/input/event7`, `iio:device0`, `caboose_phone_microphone`), and why it, or a part of it, could not be created. Sent after each `devices`, and again as the kernel finishes making nodes |
+| `0x61` | `device.open` | `device`, `rate_hz?: float` (motion: the fastest rate an application asked for, sent again when it changes) |
 | `0x62` | `device.close` | `device` |
 | `0x63` | `device.rumble` | `device`, `strong: float`, `weak: float` (0…1), `ms: uint` (0 stops) |
 | `0x64` | `device.keyframe` | `device`: send a camera keyframe next |
@@ -197,15 +201,17 @@ reader use. When a driver powers a sensor on and sets it reporting, the composit
 `device.open` with the fastest report interval asked for; when every sensor is off, and the
 motion evdev device is closed, `device.close`.
 
-The battery is a second UHID device, "iPhone Battery": a consumer control with a battery
-strength and charging report, from which the kernel makes a device-scope power supply that
-UPower shows as the phone's battery.
+The battery is a second UHID device, "iPhone Battery": a consumer control with the
+battery's state of charge and charging flag, from which the kernel makes a device-scope
+power supply that UPower shows as the phone's battery. `hid-input` registers a battery only
+on a device that also has an input, so it declares a mute key, which is never pressed.
 
 ### Input devices
 
 - **Gamepads.** Each gamepad is a uinput device with the phone's name for it and the
   Xbox 360 controller's identity (USB `045e:028e`) and layout, which SDL, Steam and
-  browsers map: `BTN_SOUTH`, `BTN_EAST`, `BTN_NORTH`, `BTN_WEST`, `BTN_TL`, `BTN_TR`,
+  browsers map. A, B, X and Y are `BTN_A`, `BTN_B`, `BTN_X` and `BTN_Y` as Linux's xpad
+  driver reports them (X, the west button, is `BTN_X`); then `BTN_TL`, `BTN_TR`,
   `BTN_SELECT`, `BTN_START`, `BTN_MODE`, `BTN_THUMBL`, `BTN_THUMBR`; `ABS_X`, `ABS_Y`,
   `ABS_RX`, `ABS_RY` (−32768…32767, down positive), `ABS_Z`, `ABS_RZ` (0…255) and
   `ABS_HAT0X`, `ABS_HAT0Y` for the d-pad. A gamepad with `rumble` takes `FF_RUMBLE`
@@ -224,9 +230,9 @@ UPower shows as the phone's battery.
 - **Cameras.** One `AVCaptureSession` runs the camera that is open; opening another camera
   switches to it. Pictures are encoded by `VTCompressionSession` as real-time H.264
   (main profile, no reordering, a keyframe every 2 s and on `device.keyframe`) at the
-  device's `size` and `fps`, rotated upright for the phone's orientation. While a camera
-  streams, the volume buttons and Camera Control are delivered as `device.button` through
-  `AVCaptureEventInteraction`.
+  device's `size` and `fps`, rotated upright for the phone's orientation and letterboxed
+  into that size. While a camera streams, `AVCaptureEventInteraction` delivers volume up as
+  `volume-up` and its primary button (volume down or Camera Control) as `camera`.
 - **Depth** uses the LiDAR camera where the phone has one, otherwise TrueDepth, at the
   depth output's native size.
 - **Microphone.** `AVAudioEngine`'s input with voice processing, converted to 48 kHz mono
@@ -234,8 +240,9 @@ UPower shows as the phone's battery.
 - **Motion.** `CMMotionManager` device motion (attitude, rotation rate, calibrated magnetic
   field) and raw acceleration at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
   batched every 20 ms.
-- **Controllers.** The on-screen controller, when the owner chooses **Linux Controller**
-  as its output, and every `GCController` with an extended gamepad profile are gamepads.
+- **Controllers.** Every `GCController` with an extended gamepad profile is a gamepad, and
+  so is the on-screen controller when Customize gives other windows **A Linux controller**
+  rather than keys (keys are the default).
   `device.rumble` plays through `GCController.haptics`, or Core Haptics for the on-screen
   controller.
 - **Action button.** The **Press Computer Action Key** App Intent sends a press and release
@@ -243,11 +250,11 @@ UPower shows as the phone's battery.
 
 ## Checks
 
-`guest/display/scripts/check-devices.py`, as `caboose` on a computer whose kernel has the
-drivers, plays a phone over the display protocol: it offers every kind of device, then
-checks that the camera and depth nodes list their formats and stream the pictures it sent,
-that the microphone records the tone it sent, that the IIO devices read the accelerations
-it sent, that the gamepad and buttons report its presses, that a rumble effect arrives as
-`device.rumble`, that the power supply reads its battery, and that disconnecting removes
-what it should. The phone's side is covered by `DeviceCenter`'s unit tests and the device
-checks in [apps/ios/README.md](../apps/ios/README.md).
+`guest/display/scripts/check-devices.py`, as root inside a computer whose owner's display
+runs, plays a phone over the display protocol: it offers every kind of device, then checks
+each through the kernel's own interfaces (evdev, IIO buffers, the power supply, V4L2 with
+ffmpeg, PulseAudio with `parec`), that applications starting and stopping send
+`device.open` and `device.close`, that a rumble played through evdev arrives as
+`device.rumble`, and that disconnecting removes what it should
+([guest/display](../guest/display/README.md#build-and-test)). The phone's side is covered by
+`DeviceTests` in CabooseKit and the device checks in [apps/ios/README.md](../apps/ios/README.md).
