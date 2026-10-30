@@ -1,3 +1,6 @@
+import { ComputerAdmission } from './cluster/admission.js'
+import type { ClusterRuntime } from './cluster/runtime.js'
+import { OwnershipError } from './cluster/coordinator.js'
 import { GuestEvents } from './guest-events.js'
 import { UsageHistory } from './computer-usage.js'
 import type { UsageCounters, ComputerStorage as UsageStorage } from '../../../packages/capacity/types.js'
@@ -70,6 +73,8 @@ import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU } from './gpu-relay.js'
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
 export interface Controller extends ComputerDriver<Session> {
+  /** Stop execution without starting or deleting its durable disk. */
+  stopExecution?(): Promise<void>
   /** Install the lifecycle fence used for optional parked Files publication. */
   bindParkedFilesGuard?(guard: () => () => boolean): void
   parkedFilesView?(): Promise<ParkedFilesView | undefined>
@@ -1180,7 +1185,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /** What someone started on the computer that deleting it would cut short, if anything. */
     operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : commands.busy > 0 ? 'A command is running on this computer' : null,
   }
@@ -1208,6 +1213,7 @@ export interface Fleet {
 }
 
 export function createCabooseServer(options: ComputerPieces & {
+  cluster?: ClusterRuntime
   token: string; webRoot?: string
   /** The ACP agent registry; defaults to the public registry, cached in memory only. */
   registry?: AgentRegistry
@@ -1329,7 +1335,27 @@ export function createCabooseServer(options: ComputerPieces & {
 
   const pairing = new PairingCodes()
 
+  const openingRuntimes = new Map<string, Promise<void>>()
+  async function discoverRuntime(record: ComputerRecord) {
+    if (runtimes.has(record.id)) return
+    let opening = openingRuntimes.get(record.id)
+    if (!opening) {
+      opening = (async () => {
+        const pieces = await options.fleet!.open(record)
+        runtimes.set(record.id, createComputerRuntime(record.id, pieces, shared))
+      })().finally(() => { openingRuntimes.delete(record.id) })
+      openingRuntimes.set(record.id, opening)
+    }
+    await opening
+  }
+
   async function principalOf(request: IncomingMessage): Promise<Principal | undefined> {
+    if (options.cluster) {
+      await options.cluster.coordinator.assertHost()
+      await options.fleet?.computers.synchronize(async () => {})
+      await options.fleet?.phones.refresh()
+      for (const record of options.fleet?.computers.list() ?? []) await discoverRuntime(record)
+    }
     if (authenticate(request.headers.authorization, options.token)) return { kind: 'owner' }
     const header = request.headers.authorization
     if (header?.startsWith('Bearer ') && options.fleet) {
@@ -1412,6 +1438,7 @@ export function createCabooseServer(options: ComputerPieces & {
       await runtime.destroy()
       pairing.revokeComputer(runtime.id)
       await fleet.phones.revokeComputer(runtime.id)
+      if (options.cluster) { await options.cluster.coordinator.pool.query('DELETE FROM caboose_cluster_computers WHERE id=$1 AND host_id=$2', [runtime.id, options.cluster.coordinator.host.id]); options.cluster.guards.get(runtime.id)?.close(); options.cluster.guards.delete(runtime.id) }
       await fleet.computers.remove(runtime.id)
       await options.library?.depot?.forget(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
@@ -1420,8 +1447,39 @@ export function createCabooseServer(options: ComputerPieces & {
     } finally { deleting.delete(runtime.id) }
   }
 
+  const clusterAdmission = new ComputerAdmission()
+  async function reload(id: string) {
+    const record = options.fleet!.computers.get(id)
+    if (!record) throw new AgentNotFoundError('computer not found')
+    runtimes.set(id, createComputerRuntime(id, await options.fleet!.open(record), shared))
+  }
+  async function recoverExpired() {
+    if (!options.cluster) return
+    await options.cluster!.coordinator.assertHost()
+    await options.fleet!.computers.synchronize(async () => {})
+    const rows = await options.cluster!.coordinator.pool.query("SELECT id FROM caboose_cluster_computers WHERE expires_at<clock_timestamp() AND checkpoint IS NOT NULL AND host_id<>$1 AND compatibility=$2", [options.cluster!.coordinator.host.id, options.cluster!.coordinator.host.compatibility])
+    for (const row of rows.rows) await clusterAdmission.runExclusive(row.id, async () => {
+      await runtimes.get(row.id)?.shutdown()
+      await options.cluster!.recover(row.id)
+      await reload(row.id)
+      await runtimes.get(row.id)!.computer.wake('headless')
+    }).catch(error => console.error(`Cluster recovery for ${row.id} failed:`, error))
+  }
+
+  if (options.cluster) options.cluster.disconnect = id => { runtimes.get(id)?.disconnectAll() }
   const server = createServer((request, response) => {
+    let finishWork = () => {}
+    function admitRequest(id: string) {
+      if (!options.cluster) return
+      const release = clusterAdmission.enter(id, () => { request.destroy(); response.destroy() })
+      let workDone = false, transportDone = response.writableFinished || response.destroyed
+      const settled = () => { if (workDone && transportDone) release() }
+      response.once('finish', () => { transportDone = true; settled() })
+      response.once('close', () => { transportDone = true; settled() })
+      finishWork = () => { workDone = true; settled() }
+    }
     void (async () => {
+      await options.cluster?.coordinator.assertHost()
       dropUntrustedForwarding(request, trustedProxies)
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
@@ -1445,12 +1503,54 @@ export function createCabooseServer(options: ComputerPieces & {
         const id = pairing.redeem(input.code)
         const runtime = id ? runtimes.get(id) : undefined
         if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'pairing code not found or expired' })
+        admitRequest(runtime.id)
+        await options.cluster?.authorize(runtime.id)
         const { token } = await fleet.phones.mint(runtime.id, deviceName)
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
       // A session cookie proves who the browser is, not which page sent the request.
       if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl })) return json(response, 403, { error: 'cross-site request refused' })
+      const locationRoute = /^\/v1\/computers\/([^/]+)\/location$/.exec(path)
+      if (options.cluster && request.method === 'GET' && (path === '/v1/location' || locationRoute)) {
+        if (!principal) return json(response, 401, { error: 'unauthorized' })
+        const id = locationRoute?.[1] ?? (principal.kind === 'phone' ? principal.computerId : OWNER_COMPUTER)
+        if (principal.kind === 'phone' ? principal.computerId !== id : !manages(principal, id)) return json(response, 404, { error: 'computer not found' })
+        const row = await options.cluster.coordinator.lookup(id)
+        const host = row?.host_id && (await options.cluster.coordinator.pool.query('SELECT endpoint FROM caboose_cluster_hosts WHERE id=$1 AND NOT revoked', [row.host_id])).rows[0]
+        return json(response, 200, { computerId:id, generation:row?.generation ?? null, endpoint:host?.endpoint ?? null, available:!!host && !row?.expired })
+      }
+      const clusterRoute = /^\/v1\/computers\/([^/]+)\/cluster\/(claim|checkpoint|recover)$/.exec(path)
+      if (clusterRoute && options.cluster) {
+        if (!principal || principal.kind === 'phone' || !administers(principal, null)) return json(response, 403, { error: 'Cluster control requires the operator' })
+        if (request.method !== 'POST') return json(response, 405, { error: 'method not allowed' })
+        const id = clusterRoute[1]!, action = clusterRoute[2]!
+        const record = options.fleet!.computers.get(id)
+        const runtime = runtimes.get(id)
+        if (!record || !runtime) throw new AgentNotFoundError('computer not found')
+        return clusterAdmission.runExclusive(id, async () => {
+          if (action === 'checkpoint') {
+            await options.cluster!.authorize(id)
+            const operation = runtime.operation()
+            if (operation) throw new ComputerConflictError(`${operation}; checkpoint it when that finishes`)
+            // Command results must settle durably before parking or copying host state.
+            const resumeCommands = await runtime.quiesceForCheckpoint()
+            try {
+              await runtime.shutdown()
+              const sourceRoot = options.cluster!.roots.get(id)!
+              const dataDir = sourceRoot === options.cluster!.root ? options.fleet!.computers.dataDir(id) : sourceRoot
+              const ref = await options.cluster!.recovery.capture(options.cluster!.owned.get(id)!, record, runtime.settings.get(), runtime.computer, sourceRoot, dataDir)
+              return json(response, 201, { checkpoint: ref, memory: false })
+            } finally { resumeCommands(); await reload(id) }
+          }
+          if (action === 'claim') await options.cluster!.claim(id)
+          else await options.cluster!.recover(id)
+          await runtime.shutdown()
+          await reload(id)
+          if (action === 'recover') await runtimes.get(id)!.computer.wake('headless')
+          return json(response, 200, { computerId: id, generation: options.cluster!.owned.get(id)!.generation })
+        })
+      }
       const capacityTenant = /^\/v1\/tenants\/([0-9a-f-]{36})\/capacity$/.exec(path)
       if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
         const result = await capacityFor({
@@ -1469,6 +1569,8 @@ export function createCabooseServer(options: ComputerPieces & {
         if (principal.kind === 'phone') return json(response, 403, { error: 'forbidden' })
         const runtime = runtimes.get(usageRoute[1]!)
         if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
+        admitRequest(runtime.id)
+        await options.cluster?.authorize(runtime.id)
         response.setHeader('cache-control', 'no-store')
         if (!usageRoute[2] && request.method === 'GET') return json(response, 200, usage.get(runtime.id))
         if (usageRoute[2] && request.method === 'POST') {
@@ -1507,6 +1609,8 @@ export function createCabooseServer(options: ComputerPieces & {
       if (computerPath?.[1]) {
         const runtime = runtimes.get(decodeURIComponent(computerPath[1]))
         if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
+        admitRequest(runtime.id)
+        await options.cluster?.authorize(runtime.id)
         const phones = path.slice(`/v1/computers/${computerPath[1]}`.length)
         if (!phones && request.method === 'GET') return json(response, 200, describe(runtime))
         if (!phones && request.method === 'PATCH') {
@@ -1562,11 +1666,15 @@ export function createCabooseServer(options: ComputerPieces & {
       const routed = target(path, principal)
       if (routed === 'forbidden') return json(response, 403, { error: 'forbidden' })
       if (!routed) return json(response, 404, { error: 'computer not found' })
+      admitRequest(routed.runtime.id)
+      await options.cluster?.authorize(routed.runtime.id)
       // Handlers that read the request's own URL (the files relay, parked Files) see the
       // computer's path, as a phone's request would carry it.
       if (routed.path !== path) request.url = routed.path + new URL(request.url ?? '/', 'http://localhost').search
       if (await routed.runtime.handle(request, response, routed.path, principal) === NOT_FOUND) return json(response, 404, { error: 'not found' })
     })().catch(error => {
+      if (response.destroyed) return
+      if (error instanceof OwnershipError) return json(response, 409, { error: error.message })
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
@@ -1576,7 +1684,7 @@ export function createCabooseServer(options: ComputerPieces & {
       console.error('Caboose request failed:', error)
       if (!response.headersSent) json(response, 500, { error: 'computer operation failed' })
       else response.destroy()
-    })
+    }).finally(() => finishWork())
   })
 
   const accountSockets = new AccountSocketFence()
@@ -1584,27 +1692,48 @@ export function createCabooseServer(options: ComputerPieces & {
   server.once('listening', () => { if (options.usageHistoryFile) collectUsage() })
   server.once('close', () => { usageStopped = true; clearInterval(usageTimer); unsubscribeAuthorization?.(); accountSockets.dispose() })
 
-  server.on('upgrade', (request, socket, head) => void (async () => {
-    dropUntrustedForwarding(request, trustedProxies)
-    const url = new URL(request.url ?? '/', 'http://localhost')
-    const principal = await principalOf(request).catch(() => undefined)
-    if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
-    if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-    const routed = target(url.pathname, principal)
-    if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
-    if (principal.kind === 'admin') {
-      const remove = accountSockets.add(async () => {
-        const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
-        return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
-      }, () => socket.destroy())
-      socket.once('close', remove)
-      // Fence a revocation racing the initial upgrade authorization.
-      await accountSockets.revalidate()
-      if (socket.destroyed) return
-    }
-    routed.runtime.connect(request, socket, head, url, routed.path, principal)
-  })())
+  server.on('upgrade', (request, socket, head) => {
+    let finishWork = () => {}
+    void (async () => {
+      dropUntrustedForwarding(request, trustedProxies)
+      const url = new URL(request.url ?? '/', 'http://localhost')
+      const principal = await principalOf(request).catch(() => undefined)
+      if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+      if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
+      const routed = target(url.pathname, principal)
+      if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
+      if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+      if (options.cluster) {
+        const release = clusterAdmission.enter(routed.runtime.id, () => socket.destroy())
+        let workDone = false, transportDone = socket.destroyed
+        const settled = () => { if (workDone && transportDone) release() }
+        socket.once('close', () => { transportDone = true; settled() })
+        finishWork = () => { workDone = true; settled() }
+      }
+      await options.cluster?.authorize(routed.runtime.id)
+      if (options.cluster) {
+        const remove = accountSockets.add(async () => {
+          try {
+            await options.cluster!.authorize(routed.runtime.id)
+            const current = await principalOf(request)
+            return !!current && (current.kind === 'phone' ? current.computerId === routed.runtime.id : manages(current, routed.runtime.id))
+          } catch { return false }
+        }, () => socket.destroy())
+        socket.once('close', remove)
+      }
+      if (principal.kind === 'admin') {
+        const remove = accountSockets.add(async () => {
+          const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
+          return current?.kind === 'admin' && current.userId === principal.userId && manages(current, routed.runtime.id)
+        }, () => socket.destroy())
+        socket.once('close', remove)
+        // Fence a revocation racing the initial upgrade authorization.
+        await accountSockets.revalidate()
+        if (socket.destroyed) return
+      }
+      routed.runtime.connect(request, socket, head, url, routed.path, principal)
+    })().catch(() => socket.destroy()).finally(() => finishWork())
+  })
 
   async function shutdown(): Promise<void> {
     usageStopped = true; clearInterval(usageTimer); await usageWork
@@ -1613,5 +1742,5 @@ export function createCabooseServer(options: ComputerPieces & {
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
-  return { server, computer: owner.computer, shutdown }
+  return { server, computer: owner.computer, shutdown, recoverExpired }
 }

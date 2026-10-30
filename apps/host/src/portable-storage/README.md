@@ -33,6 +33,15 @@ The flat private source directory contains:
   `activities.json` are included when present. The controller must copy each
   existing file under the same state-write exclusion as its record/settings.
 
+- Up to 50 finished command receipts, `command-<32-lowercase-hex-id>.json`,
+  retain command IDs, results, output and status. The host stages these from its
+  private `commands/` directory while holding command quiescence. Active commands,
+  invalid records, mismatched IDs, oversized receipts and unsupported directory
+  entries refuse capture. Receipt JSON is bounded to 16 MiB including escaping;
+  fields retain the Run Command request/result limits. Restore validates each receipt
+  again and installs it into `commands/<id>.json` before activation. Restored finished
+  commands are never relaunched. Existing archives without receipts remain readable.
+
 No other files, directories or symlinks are accepted. A split-image adapter must
 resolve its saved system-image binding rather than the current default image.
 Template layouts must supply the complete independent disk after initialization.

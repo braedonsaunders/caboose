@@ -1,3 +1,5 @@
+import { COMMAND_LIMITS } from '../commands.js'
+import { commandReceiptName, readCommandReceipt, maxCommandReceiptBytes } from './command-receipts.js'
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open, readFile, readdir, rm } from 'node:fs/promises'
@@ -30,7 +32,7 @@ function metadata(value: PortableMetadata): void {
 }
 function names(files: string[], format: PortableMetadata['imageFormat']): void {
   const expected = [...required, ...(format === 'split' ? ['system.erofs'] : [])]
-  if (expected.some(name => !files.includes(name)) || files.some(name => ![...expected, ...stateFiles].includes(name))) throw new Error('Incomplete or unsupported portable computer files')
+  if (expected.some(name => !files.includes(name)) || files.some(name => ![...expected, ...stateFiles].includes(name) && !commandReceiptName.test(name)) || files.filter(name => commandReceiptName.test(name)).length > COMMAND_LIMITS.kept) throw new Error('Incomplete or unsupported portable computer files')
 }
 async function bounded(stream: ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = []; let size = 0
@@ -105,6 +107,7 @@ export class PortableComputerStore {
     if (manifest.version !== 1) throw new Error('Unsupported portable manifest version')
     metadata(manifest.metadata); validateSnapshotArchive(manifest.archive)
     names(manifest.archive.entries.map(entry => entry.name), manifest.metadata.imageFormat)
+    if (manifest.archive.entries.some(entry => commandReceiptName.test(entry.name) && entry.size > maxCommandReceiptBytes)) throw new Error('Command receipt exceeds size limit')
     if (target.runtime !== manifest.metadata.runtime || target.architecture !== manifest.metadata.architecture || target.runtimeVersion !== manifest.metadata.runtimeVersion) throw new Error('Incompatible portable runtime or architecture')
     return manifest
   }
@@ -127,6 +130,10 @@ export class PortableComputerStore {
 }
 
 async function validateState(directory: string, computerId: string): Promise<void> {
+  for (const name of await readdir(directory)) {
+    const match = commandReceiptName.exec(name)
+    if (match) await readCommandReceipt(join(directory, name), match[1]!)
+  }
   for (const name of ['computer.json', 'keyring-secret']) {
     const file = await open(join(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW)
     try {

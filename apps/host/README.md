@@ -818,3 +818,10 @@ The host uses headless wake for file transfers, web-app bridges and batch export
 A later desktop session promotes the running computer without another boot.
 `python3 scripts/efficiency-baseline.py --help` describes a real-host timing check;
 it only observes unless an explicit files, session or park operation is selected.
+
+### Optional multi-host cold recovery
+
+Single-desktop installs keep local storage and require no external services. Explicit
+`CABOOSE_CLUSTER=on` enables PostgreSQL ownership, portable S3 checkpoints and Azure
+provider-fenced recovery. See [cluster configuration and acceptance](src/cluster/README.md)
+for supported runtimes, deployment requirements, routing and recovery limitations.

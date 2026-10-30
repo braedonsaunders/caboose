@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { mkdir, readdir, readFile, unlink } from 'node:fs/promises'
+import { mkdir, readdir, readFile, unlink, open as openFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AgentConflictError, AgentInputError, AgentNotFoundError, AgentOperationError, AgentUnavailableError, type AgentGuest } from './agents.js'
 import type { Job } from './activities.js'
@@ -200,6 +200,32 @@ function parseRecord(value: unknown): CommandRecord {
 export class CommandStore {
   private records = new Map<string, CommandRecord>()
   private pending: Promise<void> = Promise.resolve()
+  private pendingWrites = 0
+  private failures = new Map<string, unknown>()
+  get persistenceStatus(): { pendingWrites: number; error: unknown } {
+    return { pendingWrites: this.pendingWrites, error: this.failures.values().next().value ?? null }
+  }
+
+  /** Caller excludes new mutations. Never mistake a swallowed queue rejection for durability. */
+  async drain(): Promise<void> {
+    let work: Promise<void>
+    do { work = this.pending; await work } while (work !== this.pending)
+    if (this.failures.size) throw new Error('Command receipts are not durably persisted', { cause: this.persistenceStatus.error })
+  }
+
+  private persist(id: string, operation: () => Promise<void>): Promise<void> {
+    this.pendingWrites++
+    const work = this.pending.then(async () => {
+      await operation()
+      if (this.dir) {
+        const directory = await openFile(this.dir, 'r')
+        try { await directory.sync() } finally { await directory.close() }
+      }
+      this.failures.delete(id)
+    }).catch(error => { this.failures.set(id, error); throw error }).finally(() => { this.pendingWrites-- })
+    this.pending = work.catch(() => {})
+    return work
+  }
   private constructor(private readonly dir: string | undefined, private readonly now: () => number) {}
 
   /** A store that keeps nothing beyond the process, for a host without a state directory. */
@@ -215,7 +241,7 @@ export class CommandStore {
       try {
         const record = parseRecord(await readJsonFile(join(dir, name)))
         if (record.id === match[1]) store.records.set(record.id, record)
-      } catch (error) { console.error(`Ignoring unreadable command record ${name}:`, error instanceof Error ? error.message : error) }
+      } catch (error) { store.failures.set(match[1]!, error); console.error(`Ignoring unreadable command record ${name}:`, error instanceof Error ? error.message : error) }
     }
     await store.prune()
     return store
@@ -229,17 +255,14 @@ export class CommandStore {
     this.records.set(record.id, record)
     const dir = this.dir
     if (!dir) return Promise.resolve()
-    const work = this.pending.then(() => writePrivateJson(join(dir, `${record.id}.json`), record))
-    this.pending = work.catch(() => {})
-    return work
+    return this.persist(record.id, () => writePrivateJson(join(dir, `${record.id}.json`), record))
   }
 
   async remove(id: string): Promise<void> {
     this.records.delete(id)
     const dir = this.dir
     if (!dir) return
-    const work = this.pending.then(() => unlink(join(dir, `${id}.json`)).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }))
-    this.pending = work.catch(() => {})
+    const work = this.persist(id, () => unlink(join(dir, `${id}.json`)).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error }))
     await work.catch(error => console.error('Could not remove a command record:', error instanceof Error ? error.message : error))
   }
 
@@ -296,7 +319,8 @@ export class ComputerCommands {
   /** Failed attempts to read a finished command's result; it fails after a few. */
   private collectFailures = new Map<string, number>()
   private timer: ReturnType<typeof setInterval> | undefined
-  private polling = false
+  private polling: Promise<void> | undefined
+  private checkpointHold = false
   private readonly pollMs: number
   private readonly longMs: number
   private readonly now: () => number
@@ -322,6 +346,7 @@ export class ComputerCommands {
    * computer is woken to finish them; their results are collected once it runs.
    */
   recover(): void {
+    if (this.checkpointHold) throw new AgentConflictError('Command checkpoint is in progress')
     const running = this.running()
     if (!running.length) return
     for (const record of running) {
@@ -334,6 +359,7 @@ export class ComputerCommands {
 
   /** Starts a command; the computer is running, with its file service ready. */
   async start(input: CommandRequest): Promise<CommandRecord> {
+    if (this.checkpointHold) throw new AgentConflictError('Command checkpoint is in progress')
     const id = input.id ?? randomBytes(16).toString('hex')
     if (this.store.get(id) || this.starting.has(id)) throw new AgentConflictError('a command with this id already exists')
     if (this.busy >= COMMAND_LIMITS.running) throw new AgentConflictError(`${COMMAND_LIMITS.running} commands are already running; wait for one to finish or cancel it`)
@@ -410,6 +436,7 @@ export class ComputerCommands {
 
   /** Asks the supervisor to stop a running command: SIGTERM to its process group, then SIGKILL. */
   async cancel(id: string): Promise<void> {
+    if (this.checkpointHold) throw new AgentConflictError('Command checkpoint is in progress')
     const record = this.get(id)
     if (record.status !== 'running') throw new AgentConflictError('the command has already finished')
     const guest = this.hooks.guest()
@@ -420,8 +447,8 @@ export class ComputerCommands {
 
   /** Polls while the computer runs and a command is running. */
   resume(): void {
-    if (this.timer || !this.running().length) return
-    this.timer = setInterval(() => { void this.poll() }, this.pollMs)
+    if (this.checkpointHold || this.timer || !this.running().length) return
+    this.timer = setInterval(() => { void this.poll().catch(error => console.error('Command polling failed:', error)) }, this.pollMs)
     this.timer.unref?.()
   }
 
@@ -431,8 +458,37 @@ export class ComputerCommands {
     this.timer = undefined
   }
 
+  /** Hold after request admission drains, before runtime shutdown; release after capture. */
+  async quiesceForCheckpoint(timeoutMs = 5000): Promise<() => void> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new Error('Invalid command drain timeout')
+    if (this.checkpointHold) throw new AgentConflictError('Command checkpoint is in progress')
+    // Refuse active work without stopping its result polling or releasing its lease.
+    if (this.busy) throw new AgentConflictError('A command is running; cancel it or wait for it to finish')
+    this.checkpointHold = true
+    this.pause()
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true; this.checkpointHold = false; this.resume()
+    }
+    const drained = (async () => { await this.polling; await this.store.drain() })()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([drained, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new AgentConflictError('Command persistence did not drain before the checkpoint deadline')), timeoutMs)
+      })])
+      if (this.busy) throw new AgentConflictError('A command is running; checkpoint refused')
+      return release
+    } catch (error) {
+      // Timeout does not prove persistence stopped. Keep commands fenced until it settles.
+      void drained.then(release, release)
+      throw error
+    } finally { clearTimeout(timer) }
+  }
+
   /** A cold restart ended every process in the computer. */
   async computerRestarted(): Promise<void> {
+    if (this.checkpointHold) throw new AgentConflictError('Command checkpoint is in progress')
     this.pause()
     await Promise.all(this.running().map(record => this.finish(record, {
       status: 'failed', exitCode: null, signal: null, error: 'Stopped when the computer restarted.', truncated: { stdout: false, stderr: false }, outputs: [],
@@ -440,14 +496,21 @@ export class ComputerCommands {
   }
 
   /** One guest command reads every running command's state; finished ones are then collected. */
-  async poll(): Promise<void> {
+  poll(): Promise<void> {
+    if (this.checkpointHold) return Promise.resolve()
+    if (this.polling) return this.polling
+    const work = this.pollOnce().finally(() => { this.polling = undefined })
+    this.polling = work
+    return work
+  }
+
+  private async pollOnce(): Promise<void> {
     // A command still starting has no supervisor to find yet.
     const running = this.running().filter(record => !this.collecting.has(record.id) && !this.starting.has(record.id))
     if (!this.running().length) { this.pause(); return }
     const guest = this.hooks.guest()
-    if (this.polling || !guest || !running.length) return
-    this.polling = true
-    try {
+    if (!guest || !running.length) return
+    {
       const source = await script()
       let states: Record<string, unknown>
       try {
@@ -459,7 +522,7 @@ export class ComputerCommands {
         if (state === 'done') await this.collect(guest, source, record)
         else if (state === 'gone') await this.finish(record, { status: 'failed', exitCode: null, signal: null, error: 'The command stopped without a result.', truncated: { stdout: false, stderr: false }, outputs: [] })
       }
-    } finally { this.polling = false }
+    }
   }
 
   private async collect(guest: AgentGuest, source: string, record: CommandRecord): Promise<void> {
