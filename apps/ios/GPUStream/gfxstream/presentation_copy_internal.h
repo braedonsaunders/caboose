@@ -9,6 +9,8 @@ namespace caboose::gpuv2 {
 // holds the decoder object lease until the copy fence is actually signaled.
 // Guest source must have been transitioned to GENERAL before its original wait
 // semaphores were signaled. The acquired destination is fully overwritten.
+// If acquired is null, the caller must already have observed the real acquire
+// signal completion; a guest acquire binary semaphore must never be waited twice.
 // A success means submission only; it is not an image-release receipt.
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,

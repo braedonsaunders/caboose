@@ -14,7 +14,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
     if (provider) *provider = {};
     auto* vk = objects.vk;
     if (!vk || !objects.device || !objects.queue || !objects.image || !objects.queueMutex ||
-        !destination || destination == objects.image || !acquired || !ready || acquired == ready ||
+        !destination || destination == objects.image || !ready || acquired == ready ||
         !copyFence || !commandBuffer || !vk->vkBeginCommandBuffer || !vk->vkEndCommandBuffer ||
         !vk->vkCmdPipelineBarrier || !vk->vkCmdCopyImage || !vk->vkQueueSubmit)
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -23,7 +23,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         return VK_ERROR_INITIALIZATION_FAILED;
     try {
         std::vector<VkSemaphore> waits = objects.waitSemaphores;
-        waits.push_back(acquired);
+        if (acquired) waits.push_back(acquired);
         std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
         VkCommandBufferBeginInfo begin{};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
