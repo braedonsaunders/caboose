@@ -14,6 +14,7 @@
 #include <new>
 #include <vector>
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
+#include "decode_timing_aggregate.h"
 #include <chrono>
 #include <cstdio>
 #endif
@@ -23,6 +24,40 @@ namespace caboose::gpuv2 {
 namespace {
 std::atomic_uint64_t timingStreams{0};
 std::atomic_uint timingRecords{0};
+DecodeTimingBudget<64> streamAggregateBudget;
+DecodeTimingBudget<128> periodAggregateBudget;
+
+uint64_t steadyNowMicroseconds() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
+                        uint64_t elapsed_us, const DecodeTimingSnapshot& snap,
+                        DecodeStage stage, int result) {
+    std::fprintf(stderr,
+        "%s ordinal=%u stream=%llu elapsed_us=%llu stage=%u result=%d "
+        "decode_count=%llu decode_sum_us=%llu decode_max_us=%llu "
+        "flush20025_count=%llu flush20025_sum_us=%llu flush20025_max_us=%llu "
+        "read_count=%llu read_sum_us=%llu read_max_us=%llu read_bytes=%llu "
+        "flush_count=%llu flush_sum_us=%llu flush_max_us=%llu\n",
+        prefix, ordinal, static_cast<unsigned long long>(stream),
+        static_cast<unsigned long long>(elapsed_us),
+        static_cast<unsigned>(stage), result,
+        static_cast<unsigned long long>(snap.decode_all.count),
+        static_cast<unsigned long long>(snap.decode_all.sum_us),
+        static_cast<unsigned long long>(snap.decode_all.max_us),
+        static_cast<unsigned long long>(snap.decode_20025.count),
+        static_cast<unsigned long long>(snap.decode_20025.sum_us),
+        static_cast<unsigned long long>(snap.decode_20025.max_us),
+        static_cast<unsigned long long>(snap.read_wait.count),
+        static_cast<unsigned long long>(snap.read_wait.sum_us),
+        static_cast<unsigned long long>(snap.read_wait.max_us),
+        static_cast<unsigned long long>(snap.read_bytes),
+        static_cast<unsigned long long>(snap.flush.count),
+        static_cast<unsigned long long>(snap.flush.sum_us),
+        static_cast<unsigned long long>(snap.flush.max_us));
+}
 }
 #endif
 #ifdef CABOOSE_GPU_DECODER_TESTING
@@ -44,6 +79,27 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
     if (fd < 0 || max_packet < 8 || max_packet > 400u * 1024u * 1024u ||
         max_reply_buffer < 4096 || !thread_info.m_vkInfo || !thread_info.getProcessResources()) return EINVAL;
     SocketStream stream(fd, max_reply_buffer);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+    const bool auditTiming = gfxstream::host::FrameBuffer::getFB() &&
+                             gfxstream::host::FrameBuffer::getFB()->getFeatures().CabooseMemoryAudit.enabled();
+    const uint64_t timingStream = auditTiming ? timingStreams.fetch_add(1) + 1 : 0;
+    const uint64_t streamStartUs = auditTiming ? steadyNowMicroseconds() : 0;
+    DecodeTimingAggregator timingAggregate(streamStartUs);
+    auto maybeFlushPeriod = [&](uint64_t nowUs) {
+        if (!auditTiming) return;
+        DecodeTimingSnapshot periodSnap{};
+        uint64_t periodElapsedUs = 0;
+        if (timingAggregate.pollPeriod(nowUs, periodSnap, periodElapsedUs)) {
+            const unsigned ordinal = periodAggregateBudget.take();
+            if (ordinal < 128) {
+                printAggregateLine("CABOOSE_GPU_DECODE_PERIOD", ordinal, timingStream,
+                                   periodElapsedUs, periodSnap, DecodeStage::decoder, 0);
+            } else if (ordinal == 128) {
+                std::fprintf(stderr, "CABOOSE_GPU_DECODE_PERIOD limit=128\n");
+            }
+        }
+    };
+#endif
     auto finish = [&](DecodeStage stage, int result) {
         if (diagnostic) {
             diagnostic->stage = stage;
@@ -51,6 +107,19 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             diagnostic->eof = stream.eof();
             diagnostic->stopped = stop.load();
         }
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+        if (auditTiming) {
+            const uint64_t nowUs = steadyNowMicroseconds();
+            const uint64_t elapsedUs = nowUs >= streamStartUs ? nowUs - streamStartUs : 0;
+            const unsigned ordinal = streamAggregateBudget.take();
+            if (ordinal < 64) {
+                printAggregateLine("CABOOSE_GPU_DECODE_STREAM", ordinal, timingStream,
+                                   elapsedUs, timingAggregate.total(), stage, result);
+            } else if (ordinal == 64) {
+                std::fprintf(stderr, "CABOOSE_GPU_DECODE_STREAM limit=64\n");
+            }
+        }
+#endif
         return result;
     };
     uint32_t flags;
@@ -77,7 +146,17 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         auto readMore = [&](size_t request) -> bool {
             const size_t old = pending.size();
             pending.resize(old + request);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            const uint64_t readStartUs = auditTiming ? steadyNowMicroseconds() : 0;
+#endif
             const size_t got = stream.read(pending.data() + old, request);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            if (auditTiming) {
+                const uint64_t readEndUs = steadyNowMicroseconds();
+                timingAggregate.recordRead(got, readEndUs >= readStartUs ? readEndUs - readStartUs : 0);
+                maybeFlushPeriod(readEndUs);
+            }
+#endif
             pending.resize(old + got);
             snapshot();
             return got != 0;
@@ -85,10 +164,6 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         // This must be the same immutable feature used by VkDecoder at construction.
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
-#ifdef CABOOSE_GPU_MEMORY_AUDIT
-        const bool auditTiming = gfxstream::host::FrameBuffer::getFB()->getFeatures().CabooseMemoryAudit.enabled();
-        const uint64_t timingStream = auditTiming ? timingStreams.fetch_add(1) + 1 : 0;
-#endif
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
@@ -115,30 +190,34 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             if (diagnostic) diagnostic->stage = DecodeStage::decoder;
             if (decoderEntries) ++*decoderEntries;
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
+            uint32_t frameOpcode = 0;
+            if (auditTiming && frame.size >= sizeof(frameOpcode)) {
+                std::memcpy(&frameOpcode, pending.data(), sizeof(frameOpcode));
+            }
             const auto decodeStart = auditTiming ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 #endif
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             if (auditTiming) {
+                const auto decodeEnd = std::chrono::steady_clock::now();
                 const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - decodeStart).count();
+                    decodeEnd - decodeStart).count();
+                timingAggregate.recordDecode(frameOpcode, elapsed > 0 ? static_cast<uint64_t>(elapsed) : 0);
                 if (elapsed >= 50000) {
                     unsigned ordinal = timingRecords.load();
                     while (ordinal <= 64 && !timingRecords.compare_exchange_weak(ordinal, ordinal + 1)) {}
                     if (ordinal < 64) {
-                        uint32_t opcode = 0;
-                        std::memcpy(&opcode, pending.data(), sizeof(opcode));
                         // This pinned unsequenced command has two numeric ordering fields
                         // after its opaque handle. Never record the handle or other payload.
                         uint32_t needSync = 0, sequence = 0;
-                        const bool hostSync = !sequenced && opcode == 20324 && frame.size == 24;
+                        const bool hostSync = !sequenced && frameOpcode == 20324 && frame.size == 24;
                         if (hostSync) {
                             std::memcpy(&needSync, pending.data() + 16, 4);
                             std::memcpy(&sequence, pending.data() + 20, 4);
                         }
                         std::fprintf(stderr, "CABOOSE_GPU_DECODE_TIMING stream=%llu opcode=%u elapsed_us=%lld host_sync=%u need_sync=%u sequence=%u\n",
-                            static_cast<unsigned long long>(timingStream), opcode,
+                            static_cast<unsigned long long>(timingStream), frameOpcode,
                             static_cast<long long>(elapsed), hostSync ? 1u : 0u, needSync, sequence);
                     } else if (ordinal == 64) {
                         std::fprintf(stderr, "CABOOSE_GPU_DECODE_TIMING limit=64\n");
@@ -152,7 +231,18 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             // repeat side effects, including writes from earlier flush ranges.
             if (consumed != frame.size) return finish(DecodeStage::consumption, EPROTO);
             pending.erase(pending.begin(), pending.begin() + consumed);
-            if (stream.flush() < 0) return finish(DecodeStage::flush, stream.error() ? stream.error() : EIO);
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            const uint64_t flushStartUs = auditTiming ? steadyNowMicroseconds() : 0;
+#endif
+            const int flushResult = stream.flush();
+#ifdef CABOOSE_GPU_MEMORY_AUDIT
+            if (auditTiming) {
+                const uint64_t flushEndUs = steadyNowMicroseconds();
+                timingAggregate.recordFlush(flushEndUs >= flushStartUs ? flushEndUs - flushStartUs : 0);
+                maybeFlushPeriod(flushEndUs);
+            }
+#endif
+            if (flushResult < 0) return finish(DecodeStage::flush, stream.error() ? stream.error() : EIO);
             if (diagnostic) {
                 diagnostic->lastOpcodePresent = diagnostic->headerPresent;
                 diagnostic->lastOpcode = diagnostic->opcode;
