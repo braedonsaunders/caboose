@@ -94,5 +94,12 @@ extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
 }
 extern "C" int caboose_gpu_runtime_finish(uint64_t token) {
     auto* r = getRegistry();
-    return r ? caboose_gfx_process_finish(r, token) : ENODEV;
+    if (!r) return ENODEV;
+    const int result = caboose_gfx_process_finish(r, token);
+    if (result) return result;
+    // stop enqueues cleanup before process_finish can remove this entry. The
+    // upstream barrier waits through that queued cleanup, without holding the
+    // registry or runtime mutex; cleanup itself waits for render TLS to leave.
+    gfxstream::host::FrameBuffer::getFB()->waitForAllPendingCleanups();
+    return 0;
 }

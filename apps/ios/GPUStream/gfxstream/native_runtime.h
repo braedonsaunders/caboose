@@ -18,7 +18,10 @@ int caboose_gpu_runtime_open(uint64_t* token);
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);
 // Stop revokes admission, signals upstream cleanup and shuts down its streams.
 int caboose_gpu_runtime_stop(uint64_t token);
-// Finish only after every run has returned; it does not finalize the global backend.
+// Finish only after every run has returned. Blocks for upstream queued process
+// cleanup and must run off UI/network threads; it does not finalize the backend.
+// Callers must serialize finish for a token and admit a replacement only after
+// this call succeeds. Presentation resources need their own retirement proof.
 int caboose_gpu_runtime_finish(uint64_t token);
 #ifdef __cplusplus
 }
