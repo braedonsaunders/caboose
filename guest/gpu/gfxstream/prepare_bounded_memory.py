@@ -28,6 +28,20 @@ def transform(encoder, encoder_h, tracker, tracker_h):
                              ('vkInvalidateMappedMemoryRanges', 'cabooseInvalidateMemoryChunk')]:
         encoder = replace_once(encoder, 'VkResult VkEncoder::' + original + '(',
                                 'VkResult VkEncoder::' + helper + '(')
+    begin_flush = encoder.index('VkResult VkEncoder::cabooseFlushMemoryChunk(')
+    end_flush = encoder.index('VkResult VkEncoder::cabooseInvalidateMemoryChunk(', begin_flush)
+    flush = encoder[begin_flush:end_flush]
+    flush = replace_once(flush, 'uint32_t doLock) {', 'uint32_t doLock, bool deferReply) {')
+    validation = '''    VALIDATE_RET(VkResult, VK_SUCCESS,
+                 mImpl->validation()->on_vkFlushMappedMemoryRanges(
+                     this, VK_SUCCESS, device, memoryRangeCount, pMemoryRanges));'''
+    flush = replace_once(flush, validation,
+        '    if (deferReply && (queueSubmitWithCommandsEnabled || sResourceTracker->usingDirectMapping())) return VK_ERROR_FEATURE_NOT_PRESENT;\n' +
+        '    if (!deferReply) {\n' + validation + '\n    }')
+    flush = replace_once(flush,
+        '    if (!stream->tryRead(&vkFlushMappedMemoryRanges_VkResult_return, sizeof(VkResult))) {',
+        '    if (!deferReply && !stream->tryRead(&vkFlushMappedMemoryRanges_VkResult_return, sizeof(VkResult))) {')
+    encoder = encoder[:begin_flush] + flush + encoder[end_flush:]
     begin = encoder.index('VkResult VkEncoder::cabooseInvalidateMemoryChunk(')
     end = encoder.index('void VkEncoder::vkGetDeviceMemoryCommitment(', begin)
     part = encoder[begin:end]
@@ -51,9 +65,9 @@ def transform(encoder, encoder_h, tracker, tracker_h):
     wrappers = (HERE / 'bounded-memory/encoder_wrappers.inc').read_text()
     encoder = replace_once(encoder, 'VkResult VkEncoder::cabooseFlushMemoryChunk(',
                            wrappers + '\nVkResult VkEncoder::cabooseFlushMemoryChunk(')
-    encoder = '#include "caboose-bounded-memory/ranges.h"\n' + encoder
+    encoder = '#include "caboose-bounded-memory/ranges.h"\n#include "caboose-bounded-memory/flush_window.h"\n' + encoder
     declaration = '''    VkResult cabooseFlushMemoryChunk(VkDevice device, uint32_t memoryRangeCount,
-        const VkMappedMemoryRange* pMemoryRanges, uint32_t doLock);
+        const VkMappedMemoryRange* pMemoryRanges, uint32_t doLock, bool deferReply = false);
     VkResult cabooseInvalidateMemoryChunk(VkDevice device, uint32_t memoryRangeCount,
         const VkMappedMemoryRange* pMemoryRanges, uint32_t doLock, uint8_t* socketDestination);
 '''
@@ -102,7 +116,8 @@ def apply(root, check=False):
     if target.exists(): raise ValueError('bounded memory include directory already exists')
     if check: return
     target.mkdir()
-    shutil.copyfile(HERE / 'bounded-memory/ranges.h', target / 'ranges.h')
+    for header in ('ranges.h', 'flush_window.h'):
+        shutil.copyfile(HERE / 'bounded-memory' / header, target / header)
     for name, text in zip(FILES, output):
         (root / PREFIX / name).write_text(text)
 
