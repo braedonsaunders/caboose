@@ -3,6 +3,7 @@
 #pragma once
 
 #include "gfxstream/guest/IOStream.h"
+#include <atomic>
 #include <cstddef>
 #include <vector>
 
@@ -18,7 +19,9 @@ public:
     const unsigned char* commitBufferAndReadFully(size_t size, void* buf, size_t len) override;
     const unsigned char* read(void* buf, size_t* len) override;
     int writeFully(const void* buf, size_t len) override;
+    bool indexedHandshakeReady() const { return indexedReady_.load(std::memory_order_acquire); }
 private:
+    std::atomic<bool> indexedReady_{false};
     int fd_ = -1;
     std::vector<unsigned char> buffer_;
 };

@@ -13,8 +13,13 @@
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE) && !defined(CABOOSE_GFXSTREAM_PRIVATE_ICD)
 #error Private live transport requires the private diagnostic ICD build
 #endif
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI) && (!defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE) || !defined(CABOOSE_GFXSTREAM_PRIVATE_ICD))
+#error Private indexed WSI requires the private live diagnostic ICD build
+#endif
 static constexpr unsigned char kHello[48] = {
-#if defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE)
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    'C','B','G','L','R','E','F','1', 4,0,0,0, 0x70,0,0,0,
+#elif defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE)
     'C','B','G','L','R','E','F','1', 3,0,0,0, 0x30,0,0,0,
 #else
     'C','B','G','L','R','E','F','1', 2,0,0,0, 0x10,0,0,0,
@@ -31,6 +36,7 @@ CabooseSocketStream::~CabooseSocketStream() {
     if (fd_ >= 0) close(fd_);
 }
 void CabooseSocketStream::invalidate() {
+    indexedReady_.store(false, std::memory_order_release);
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
 }
 int CabooseSocketStream::connect(const char* path) {
@@ -60,6 +66,9 @@ int CabooseSocketStream::connect(const char* path) {
         errno = EPROTO;
         return -1;
     }
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    indexedReady_.store(true, std::memory_order_release);
+#endif
     return 0;
 }
 void* CabooseSocketStream::allocBuffer(size_t size) {
