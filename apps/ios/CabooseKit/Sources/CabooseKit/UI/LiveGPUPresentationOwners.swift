@@ -86,7 +86,7 @@ public final class LiveGPUPresentationOwners {
             return
         }
         // Fitting the same server pixels to a new UIKit slot does not resize Vulkan.
-        if let view = lease.view { lease.content?.frame = view.bounds }
+        if let view = lease.view { (lease.content as? LiveGPULayerView)?.fit(in: view.bounds) }
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
         guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
@@ -133,7 +133,7 @@ public final class LiveGPUPresentationOwners {
         content.isOpaque = true
         content.backgroundColor = .black
         let layer = content.layer as! CAMetalLayer
-        layer.contentsScale = view.window?.windowScene?.screen.scale ?? view.contentScaleFactor
+        layer.contentsScale = 1
         layer.drawableSize = size
         layer.framebufferOnly = false
         layer.presentsWithTransaction = false
@@ -159,8 +159,8 @@ private final class LiveGPULayerView: UIView {
     override class var layerClass: AnyClass { CAMetalLayer.self }
     init(frame: CGRect, pixelExtent: CGSize) {
         self.pixelExtent = pixelExtent
-        super.init(frame: frame)
-        applyDrawableExtent()
+        super.init(frame: .zero)
+        fit(in: frame)
     }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -172,7 +172,21 @@ private final class LiveGPULayerView: UIView {
         super.layoutSubviews()
         applyDrawableExtent()
     }
-    func applyDrawableExtent() { (layer as! CAMetalLayer).drawableSize = pixelExtent }
+    func fit(in target: CGRect) {
+        // MoltenVK reports bounds * contentsScale as its natural surface extent.
+        // Keep those in server pixels; only the view transform fits the UIKit slot.
+        bounds = CGRect(origin: .zero, size: pixelExtent)
+        transform = CGAffineTransform(scaleX: target.width / pixelExtent.width,
+                                      y: target.height / pixelExtent.height)
+        center = CGPoint(x: target.midX, y: target.midY)
+        applyDrawableExtent()
+    }
+    func applyDrawableExtent() {
+        contentScaleFactor = 1
+        let metal = layer as! CAMetalLayer
+        metal.contentsScale = 1
+        metal.drawableSize = pixelExtent
+    }
 }
 
 /// Layer and view are touched only in main-dispatched stages. The registry keeps
