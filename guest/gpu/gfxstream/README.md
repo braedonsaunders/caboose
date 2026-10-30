@@ -109,3 +109,23 @@ The socket shadow records one active map range per allocation, validates map
 bounds, mapped flush/invalidate bounds and non-coherent atom alignment, and
 clears that range on unmap. Socket EOF or write failure shuts down the stream.
 The Python range and reply fixtures are reference cases, not native tests.
+
+## Flush and invalidate disconnection handling
+
+The preparation patch gives the two mapped-memory entrypoints a non-aborting
+read boundary: a truncated result, length or invalidate payload shuts down the
+stream and returns `VK_ERROR_DEVICE_LOST`. Invalidate data is staged and copied
+into mapped guest memory only after every range in the reply arrives and the
+host result is successful. A failed staging allocation shuts down the stream
+and reports host allocation failure. Other Vulkan calls still use upstream's
+abort-on-read-failure path, and output/write failure paths are not fully
+converted; the socket ICD gate remains closed.
+
+For a later isolated Linux build, the pinned Mesa `meson.build` requires Meson
+1.4.0 or later, C11 and C++17 compilers, Python 3.10 or later with Mako 0.8.0
+or later and `packaging` or `distutils`; its Linux libdrm baseline is 2.4.109,
+and it probes zlib 1.2.3 or later. Check the actual selected configuration's
+Meson log for further requirements. Use `--wrap-mode=nodownload` on the
+headless setup command above to prevent unplanned dependency downloads. The
+checkout and dependency sizes are unmeasured; no fetch or build is authorized
+by this file.

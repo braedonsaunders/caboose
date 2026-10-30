@@ -104,12 +104,70 @@ def prepare(root):
             }
             uint8_t* targetRange = hostPtr + offset;''')
     contents[encoder] = contents[encoder][:start] + part + contents[encoder][end:]
+    # These two entrypoints can report an incomplete response without aborting.
+    # Other entrypoints still use upstream's aborting read; the ICD gate stays.
+    start_flush = contents[encoder].index('VkResult VkEncoder::vkFlushMappedMemoryRanges(')
+    end_flush = contents[encoder].index('VkResult VkEncoder::vkInvalidateMappedMemoryRanges(', start_flush)
+    flush = contents[encoder][start_flush:end_flush]
+    flush = replace_once(flush,
+        '    stream->read(&vkFlushMappedMemoryRanges_VkResult_return, sizeof(VkResult));',
+        '''    if (!stream->tryRead(&vkFlushMappedMemoryRanges_VkResult_return, sizeof(VkResult))) {
+        if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+        return VK_ERROR_DEVICE_LOST;
+    }''')
+    contents[encoder] = contents[encoder][:start_flush] + flush + contents[encoder][end_flush:]
+    start_inv = contents[encoder].index('VkResult VkEncoder::vkInvalidateMappedMemoryRanges(')
+    end_inv = contents[encoder].index('void VkEncoder::vkGetDeviceMemoryCommitment(', start_inv)
+    inv = contents[encoder][start_inv:end_inv]
+    inv = replace_once(inv,
+        '    stream->read(&vkInvalidateMappedMemoryRanges_VkResult_return, sizeof(VkResult));',
+        '''    if (!stream->tryRead(&vkInvalidateMappedMemoryRanges_VkResult_return, sizeof(VkResult))) {
+        if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+        return VK_ERROR_DEVICE_LOST;
+    }
+    std::vector<std::pair<uint8_t*, std::vector<uint8_t>>> socketReadbacks;''')
+    inv = replace_once(inv,
+        '            stream->read(&streamSize, sizeof(uint64_t));\n            if (streamSize != actualSize)',
+        '''            if (!stream->tryRead(&streamSize, sizeof(uint64_t))) {
+                if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+                return VK_ERROR_DEVICE_LOST;
+            }
+            if (streamSize != actualSize)''')
+    inv = replace_once(inv, '''            uint8_t* targetRange = hostPtr + offset;
+            stream->read(targetRange, actualSize);''',
+        '''            try {
+                socketReadbacks.emplace_back(hostPtr + offset, std::vector<uint8_t>(actualSize));
+            } catch (const std::exception&) {
+                stream->invalidate();
+                if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+                return VK_ERROR_OUT_OF_HOST_MEMORY;
+            }
+            auto& readback = socketReadbacks.back().second;
+            if (!stream->tryRead(readback.data(), readback.size())) {
+                if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+                return VK_ERROR_DEVICE_LOST;
+            }''')
+    inv = replace_once(inv, '    ++encodeCount;', '''    if (vkInvalidateMappedMemoryRanges_VkResult_return == VK_SUCCESS) {
+        for (auto& entry : socketReadbacks)
+            memcpy(entry.first, entry.second.data(), entry.second.size());
+    }
+    ++encodeCount;''')
+    contents[encoder] = contents[encoder][:start_inv] + inv + contents[encoder][end_inv:]
+    contents[encoder] = '#include <exception>\n' + contents[encoder]
     contents[iostream] = replace_once(contents[iostream],
         '    virtual uint64_t processPipeInit() { return 0; }',
         '    virtual uint64_t processPipeInit() { return 0; }\n    virtual void invalidate() {}')
     contents[vkstream] = replace_once(contents[vkstream],
         '    // Returns whether the connection is valid.',
-        '    void invalidate() { if (mStream) mStream->invalidate(); }\n\n    // Returns whether the connection is valid.')
+        '''    void invalidate() { if (mStream) mStream->invalidate(); }
+    bool tryRead(void* data, size_t size) {
+        if (size == 0) return true;
+        if (mStream && mStream->readback(data, size)) return true;
+        invalidate();
+        return false;
+    }
+
+    // Returns whether the connection is valid.''')
     contents[tracker] = '#include <cstdlib>\n#include <new>\n' + contents[tracker]
     contents[tracker] = replace_once(contents[tracker],
         'bool ResourceTracker::usingDirectMapping() const { return true; }',
