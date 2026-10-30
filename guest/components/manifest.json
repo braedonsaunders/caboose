@@ -40,6 +40,7 @@
   "bridge/bridgecore.py",
   "bridge/caboose-bridge",
   "bridge/caboose-portal",
+  "bridge/caboose-scan",
   "bridge/caboose.portal",
   "bridge/org.freedesktop.impl.portal.desktop.caboose.service",
   "bridge/portals.conf",

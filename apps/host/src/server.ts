@@ -149,6 +149,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const foregroundClients = new Set<WebSocket>()
   const backgroundControls = new Set<WebSocket>()
   const phoneControls = new Set<WebSocket>()
+  /** Phone sockets whose app answers scan requests (`?scan=1`). */
+  const scanControls = new Set<WebSocket>()
   /** Open terminals by who opened them (a phone, or the owner), for the per-client cap. */
   const terminals = new Map<WebSocket, string>()
   /** Terminal upgrades waiting for a wake, counted against the same cap. */
@@ -306,14 +308,19 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const message = JSON.stringify(event)
     for (const socket of phoneControls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
   })
-  /** File chooser requests go to phone sockets only; an answered one is withdrawn from the other phones. */
-  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string) => {
+  /**
+   * File chooser requests go to phone sockets only, scan requests only to those that scan; an
+   * answered one is withdrawn from the other phones.
+   */
+  const bridge = new BridgeRelay(() => controller.guest(), (event: BridgeEvent, exceptPhone?: string, scanners?: boolean) => {
     const message = JSON.stringify(event)
     for (const socket of phoneControls) {
       if (exceptPhone !== undefined && phoneSockets.get(socket) === exceptPhone) continue
+      if (scanners && !scanControls.has(socket)) continue
       if (socket.readyState === WebSocket.OPEN) socket.send(message)
     }
   })
+  bridge.canScan = () => [...scanControls].some(socket => phoneControls.has(socket) && !backgroundControls.has(socket) && socket.readyState === WebSocket.OPEN)
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
   const nowPlaying = new NowPlaying(() => controller.guest(), broadcast)
@@ -1092,12 +1099,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           if (url.searchParams.get('foreground') === '0') backgroundControls.add(client)
           if (url.searchParams.get('foreground') === '1') foregroundClients.add(client)
           if (url.searchParams.get('phone') === '1') phoneControls.add(client)
+          if (url.searchParams.get('phone') === '1' && url.searchParams.get('scan') === '1') scanControls.add(client)
           if (background) release()
         }
         syncMedia()
         syncFiles()
         client.on('error', () => client.terminate())
-        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); release(); syncMedia(); syncFiles() })
+        client.once('close', () => { sockets.delete(client); phoneSockets.delete(client); controls.delete(client); foregroundClients.delete(client); backgroundControls.delete(client); phoneControls.delete(client); scanControls.delete(client); release(); syncMedia(); syncFiles() })
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))

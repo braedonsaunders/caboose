@@ -2,18 +2,21 @@
 
 Linux desktop applications ask their desktop for a few services through freedesktop
 standards: choosing files, the colour scheme, media controls, location. Caboose answers
-those standards from the phone, so unmodified applications get iOS document pickers,
-follow the phone's appearance, appear in Now Playing, and see the phone's location.
+those standards from the phone, so unmodified applications get iOS document pickers (and the
+phone's photos, camera and document scanner as places to open from), follow the phone's
+appearance, appear in Now Playing, and see the phone's location. `caboose-scan` scans a
+document with the phone from a terminal or a script.
 
 Nothing here is per application. An application that uses the standard gets the iOS
 behaviour; one that does not keeps its own.
 
 | Linux standard | Answered with | Component |
 | --- | --- | --- |
-| `org.freedesktop.impl.portal.FileChooser` | The iOS document picker; a native save and folder sheet | `caboose-portal` |
+| `org.freedesktop.impl.portal.FileChooser` | The iOS document picker, Photos, the camera and the document scanner; a native save and folder sheet | `caboose-portal` |
 | `org.freedesktop.impl.portal.Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`) | The phone's appearance, accent, contrast, Reduce Motion and text size | `caboose-portal`, `caboose-bridge` |
 | MPRIS (`org.mpris.MediaPlayer2.*`) | `MPNowPlayingInfoCenter`, `MPRemoteCommandCenter` | `caboose-bridge` |
 | GeoClue (static source) | Core Location, opt-in | the host, as root |
+| `caboose-scan`, Caboose's own command | The iOS document scanner | `caboose-scan` |
 
 This document is the contract between `guest/bridge`, the host (`apps/host/src/bridge.ts`,
 `apps/host/src/now-playing.ts`) and the app (`apps/ios/Caboose/Bridge`, CabooseKit's
@@ -33,6 +36,8 @@ into `/opt/caboose/bridge`:
   portals' dialogs open on the right display.
 - `caboose-portal`, the portal backend `org.freedesktop.impl.portal.desktop.caboose`, with
   `caboose.portal` and its D-Bus activation file.
+- `caboose-scan` (also `/usr/local/bin/caboose-scan`), which asks the phone to scan a
+  document (below).
 - `/etc/xdg/xdg-desktop-portal/portals.conf` choosing `caboose` for FileChooser and Settings
   and `gtk` for the rest.
 - What makes applications use the portal: `GTK_USE_PORTAL=1` in each seat's launch
@@ -69,7 +74,7 @@ A request:
 ```ts
 {
   id: string,              // 32 lowercase hex digits
-  type: "file.open" | "file.save",
+  type: "file.open" | "file.save" | "scan", // "scan": see Scan below
   app: string,             // the caller's application id, or ""; at most 200 characters
   title: string,           // the dialog title the application asked for; at most 200
   acceptLabel: string,     // at most 64; "" for the default
@@ -100,10 +105,34 @@ such a request with `computer`. The answer, written by `caboose-bridge respond` 
 longer claimed (withdrawn, or gone to the computer's dialog), and exits non-zero for an
 invalid answer.
 
-For `file.open` every path must exist, be a regular file (a directory when `directory`),
-and there is exactly one unless `multiple`. For `file.save` there is exactly one path, its
+For `file.open` and `scan` every path must exist, be a regular file (a directory when
+`directory`), and there is exactly one unless `multiple`. For `file.save` there is exactly one path, its
 parent directory must exist, and the application writes it after the portal returns. A
 path that fails these checks answers response 2. The portal returns `file://` URIs.
+
+### Scan
+
+`caboose-scan [--format pdf|jpeg] [--output PATH]`, run as `caboose`, asks the phone to scan
+a document and prints the path of each file it wrote, one per line. It writes a `scan`
+request through the same queue, claim and answer as the file chooser:
+
+- Its one filter names the format, and `currentFilter` is `0`: `{ name: "PDF", patterns:
+  ["*.pdf"], mimeTypes: ["application/pdf"] }` with `multiple` false (one PDF, every page),
+  or `{ name: "JPEG", patterns: ["*.jpg", "*.jpeg"], mimeTypes: ["image/jpeg"] }` with
+  `multiple` true (one image per page). `app`, `title`, `acceptLabel`, `currentName` and
+  `currentFolder` are `""`, and `directory` is false.
+- The answer is `ok` with the scanned files' paths, `cancel`, or `computer` when the phone
+  cannot scan (no document scanner, or no connected app that answers scan requests, for
+  which the host answers) or cannot show the request now. The phone uploads the scan to
+  `~/Caboose Documents/<uuid>/`.
+- With `--output`, the scan moves there: a PDF to that file (replacing it) or into that
+  folder; JPEG pages into that folder, made when missing.
+
+There is no scanner on the computer to fall back to, so where the file chooser shows the
+computer's dialog, `caboose-scan` fails: at once when the phone is not present, when the
+request is not claimed within 3 seconds, and when the phone is gone for 10 seconds while the
+request is claimed (which withdraws it). Interrupting it withdraws the request. Exit status:
+0 scanned, 1 cancelled or failed, 2 usage, 3 the phone is not there.
 
 ### Appearance
 
@@ -173,14 +202,18 @@ requires `position` and calls `SetPosition` on the track.
 opened with `?phone=1` is connected, the host runs `caboose-bridge drain` as `caboose` every
 second. It prints `{ requests: [...], cancels: [id...] }` (at most 16 of each), having moved
 each request it prints to `bridge/claimed/`. The host validates each request field by field
-(the limits above; strings without control characters) and sends to those sockets:
+(the limits above; strings without control characters; a `scan` exactly as
+[Scan](#scan) describes it) and sends to those sockets, a `scan` only to sockets also opened
+with `?scan=1` (an app that answers scan requests):
 
 | Event | Payload |
 | --- | --- |
 | `bridge.request` | `{ request }` |
 | `bridge.cancel` | `{ id }`: the application withdrew it, or it was answered from another phone |
 
-Delivery is at most once. The host remembers outstanding ids for 24 hours.
+Delivery is at most once. The host remembers outstanding ids for 24 hours. A `scan` with no
+connected foreground phone socket opened with `?scan=1` is answered `computer` at once, so
+`caboose-scan` fails promptly instead of waiting on an app that cannot answer it.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -225,18 +258,57 @@ pending dialogs and invalidates their callbacks. Native media handoff suspends t
 Now Playing metadata and commands until playback returns to the computer.
 
 
-- **Open** presents the system document picker for the filter's types (any item when no
-  type resolves), with multiple selection when asked. A file from Caboose's own File
-  Provider answers with its computer path; any other file is copied to
-  `Caboose Documents/<uuid>/<name>` and kept in sync with its original as
-  [open in place](architecture.md#open-in-place) does, so saving in the Linux application
-  writes back to iCloud Drive or wherever it came from.
+- **Open** (files, not a folder) first asks where the file comes from, in a sheet that
+  lists only the sources whose files the request accepts (judged by the current filter, else
+  by all of them), and **Use Computer Dialog**. With Files the only source, the document
+  picker opens directly. Closing a source without choosing returns to the sheet.
+  - **Files**: the system document picker for the filter's types (any item when no type
+    resolves), with multiple selection when asked. A file from Caboose's own File Provider
+    answers with its computer path; any other file is copied to
+    `Caboose Documents/<uuid>/<name>` and kept in sync with its original as
+    [open in place](architecture.md#open-in-place) does, so saving in the Linux
+    application writes back to iCloud Drive or wherever it came from.
+  - **Photos**: the system photo picker, showing photos, videos or both as accepted, with
+    multiple selection (up to 64) when asked. A Live Photo is sent as its still.
+  - **Camera**: a new photo or video, on a phone with a camera.
+  - **Scan Document**: the document scanner, where VisionKit supports it.
+- Photos, captures and scans are new files: each is uploaded to
+  `Caboose Documents/<uuid>/<name>` and answered with that path, with nothing to keep in
+  sync. A picked photo keeps the name Photos gives it; the others are named when they were
+  made (`Photo 2026-10-30 14.05.jpg`, `Video 2026-10-30 14.05.mov`,
+  `Scan 2026-10-30 14.05.pdf`, `Scan 2026-10-30 14.05 Page 2.jpg`).
+- Formats. A request accepts a type *by name* when a filter lists it, and *as anything* when
+  a filter is a wildcard, there are no filters, or a filter gives only its family
+  (`image/*`, `video/*`) or a broad type (`application/octet-stream`). A photo or video is
+  sent as it is when its type is accepted by name, or accepted as anything and widely
+  readable (JPEG, PNG, GIF, TIFF, BMP; QuickTime, MPEG-4). Otherwise it is converted to the
+  first format accepted by name, else the first accepted at all, in the order JPEG, PNG,
+  HEIC, TIFF for images (an iPhone's HEIC photo for an application that takes any image
+  becomes JPEG) and MPEG-4, QuickTime for videos. A camera photo is written the same way.
+  A scan is one PDF when PDF is accepted by name, else one image per page when an image
+  format is, else a PDF, else JPEG pages. When a request takes one file and an image scan
+  has several pages, the app offers to send the first page.
+- Metadata is kept: an original is sent byte for byte, and a conversion keeps the photo's
+  metadata (drawn upright). A photo from the library can carry where it was taken; Caboose
+  does not remove it.
 - **Choose folder** and **Save** present a native sheet browsing the computer's home:
   folders, the file name (its extension kept when a filter applies), the format from the
   application's filters, and confirmation before replacing a file.
-- Every sheet offers **Use Computer Dialog**, which answers `computer`. With **Use iPhone
-  dialogs** off in the computer's settings, every request is answered `computer`.
+- The source sheet and the Save and folder sheets offer **Use Computer Dialog**, which
+  answers `computer`; so does the alert for a file that could not be sent. With **Open and
+  Save with iPhone** off in the computer's settings, every file request is answered
+  `computer`.
 - `bridge.cancel` dismisses the sheet.
+- A request the app cannot read (one from a newer computer) is answered `computer`.
+- The app opens its foreground control socket with `?foreground=1&phone=1&scan=1`.
+
+### Scanning
+
+A `scan` request opens the document scanner at once, also with **Open and Save with
+iPhone** off: the owner asked for it from the computer. The scan is uploaded as a new file
+in the request's format, as above, and the answer is its path (each page's for JPEG).
+Cancelling answers `cancel`; a phone without the document scanner answers `computer`. Camera
+access is asked for first; without it the app says how to allow it, and answers `cancel`.
 
 ### Appearance, Now Playing and location
 

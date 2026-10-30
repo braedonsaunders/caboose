@@ -12,6 +12,11 @@ const open = {
   currentFilter: 0, currentName: '', currentFolder: '/home/caboose/Documents', created: 1_793_161_915,
 }
 const save = { ...open, id: 'fedcba9876543210fedcba9876543210', type: 'file.save', title: 'Save As', currentName: 'Report.odt', currentFilter: null }
+const scan = {
+  id: '00112233445566778899aabbccddeeff', type: 'scan', app: '', title: '', acceptLabel: '', multiple: false, directory: false,
+  filters: [{ name: 'PDF', patterns: ['*.pdf'], mimeTypes: ['application/pdf'] }], currentFilter: 0, currentName: '', currentFolder: '', created: 1_793_161_915,
+}
+const scanPages = { ...scan, multiple: true, filters: [{ name: 'JPEG', patterns: ['*.jpg', '*.jpeg'], mimeTypes: ['image/jpeg'] }] }
 
 /** A guest that answers caboose-bridge commands from the test and records every command. */
 function fakeGuest() {
@@ -46,6 +51,21 @@ describe('parseBridgeRequest', () => {
     const folder = { ...open, directory: true, filters: [], currentFilter: null, currentFolder: '' }
     expect(parseBridgeRequest(folder)).toEqual(folder)
     expect(parseBridgeRequest({ ...open, currentFolder: '/home/caboose' })?.currentFolder).toBe('/home/caboose')
+  })
+
+  it('accepts a scan in either format', () => {
+    expect(parseBridgeRequest(scan)).toEqual(scan)
+    expect(parseBridgeRequest(scanPages)).toEqual(scanPages)
+  })
+
+  it('rejects a scan that is not exactly one of its formats', () => {
+    for (const bad of [
+      { ...scan, multiple: true }, { ...scanPages, multiple: false }, { ...scan, directory: true }, { ...scan, currentName: 'a.pdf' },
+      { ...scan, currentFolder: '/home/caboose' }, { ...scan, currentFilter: null }, { ...scan, filters: [] },
+      { ...scan, filters: [...scan.filters, ...scan.filters], currentFilter: 0 },
+      { ...scan, filters: [{ name: 'PDF', patterns: ['*.pdf', '*.png'], mimeTypes: ['application/pdf'] }] },
+      { ...scan, filters: [{ name: 'Images', patterns: ['*.png'], mimeTypes: ['image/png'] }] },
+    ]) expect(parseBridgeRequest(bad), JSON.stringify(bad)).toBeNull()
   })
 
   it('rejects anything malformed', () => {
@@ -88,6 +108,20 @@ describe('parseBridgeAnswer', () => {
   })
 })
 
+describe('scan answers', () => {
+  it('takes one PDF, or one or more JPEG pages, and the computer for a phone that cannot scan', () => {
+    const pdf = { type: 'scan' as const, multiple: false, filters: 1 }
+    const pages = { ...pdf, multiple: true }
+    const one = ['/home/caboose/Caboose Documents/1/Scan 2026-10-30 14.05.pdf']
+    const two = ['/home/caboose/Caboose Documents/1/Scan Page 1.jpg', '/home/caboose/Caboose Documents/2/Scan Page 2.jpg']
+    expect(parseBridgeAnswer(scan.id, { response: 'ok', paths: one, filter: 0 }, pdf)).toEqual({ id: scan.id, response: 'ok', paths: one, filter: 0 })
+    expect(parseBridgeAnswer(scan.id, { response: 'ok', paths: two }, pages)).toEqual({ id: scan.id, response: 'ok', paths: two, filter: null })
+    expect(parseBridgeAnswer(scan.id, { response: 'computer' }, pdf)).toEqual({ id: scan.id, response: 'computer' })
+    expect(() => parseBridgeAnswer(scan.id, { response: 'ok', paths: two }, pdf)).toThrow(BridgeInputError)
+    expect(() => parseBridgeAnswer(scan.id, { response: 'ok', paths: one, filter: 1 }, pdf)).toThrow(BridgeInputError)
+  })
+})
+
 describe('parseAppearance and parseLocation', () => {
   const appearance = { colorScheme: 'dark', accent: '#0A84FF', contrast: 'normal', reducedMotion: false, textScale: 1 }
   it('accepts exactly the contract', () => {
@@ -126,6 +160,39 @@ describe('BridgeRelay', () => {
     await relay.poll()
     expect(events.at(-1)).toEqual({ type: 'bridge.cancel', id: open.id })
     expect(relay.pending(open.id)).toBe(false)
+  })
+
+  it('relays a scan and checks its answer against the format it asked for', async () => {
+    const fake = fakeGuest()
+    const events: [BridgeEvent, string | undefined, boolean | undefined][] = []
+    const relay = new BridgeRelay(() => fake.guest, (event, except, scanners) => events.push([event, except, scanners]), 60_000)
+    relay.canScan = () => true
+    fake.drain({ requests: [scan, { ...scanPages, multiple: false }, open], cancels: [] })
+    await relay.poll()
+    // A scan goes only to the sockets that scan; a file request to every phone socket.
+    expect(events).toEqual([[{ type: 'bridge.request', request: scan }, undefined, true], [{ type: 'bridge.request', request: open }, undefined, false]])
+    expect(fake.bridgeCalls('respond').map(call => JSON.parse(call.at(-1)!))).toEqual([{ id: scanPages.id, response: 'computer' }])
+    await expect(relay.answer(scan.id, { response: 'ok', paths: ['/home/caboose/a.pdf', '/home/caboose/b.pdf'] })).rejects.toThrow(BridgeInputError)
+    await relay.answer(scan.id, { response: 'ok', paths: ['/home/caboose/Caboose Documents/1/Scan.pdf'], filter: 0 })
+    expect(JSON.parse(fake.bridgeCalls('respond').at(-1)!.at(-1)!)).toEqual({ id: scan.id, response: 'ok', paths: ['/home/caboose/Caboose Documents/1/Scan.pdf'], filter: 0 })
+  })
+
+  it('hands a scan back to the computer at once when no phone app scans', async () => {
+    const fake = fakeGuest()
+    const events: BridgeEvent[] = []
+    const relay = new BridgeRelay(() => fake.guest, event => events.push(event), 60_000)
+    let scanners = false
+    relay.canScan = () => scanners
+    fake.drain({ requests: [scan, open], cancels: [] })
+    await relay.poll()
+    expect(events).toEqual([{ type: 'bridge.request', request: open }])
+    expect(fake.bridgeCalls('respond').map(call => JSON.parse(call.at(-1)!))).toEqual([{ id: scan.id, response: 'computer' }])
+    expect(relay.pending(scan.id)).toBe(false)
+    await expect(relay.answer(scan.id, { response: 'cancel' })).rejects.toThrow(AgentNotFoundError)
+    scanners = true
+    fake.drain({ requests: [scanPages], cancels: [] })
+    await relay.poll()
+    expect(events.at(-1)).toEqual({ type: 'bridge.request', request: scanPages })
   })
 
   it('ignores drain output that is not the contract', async () => {

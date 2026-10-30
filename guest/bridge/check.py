@@ -17,6 +17,7 @@ gi.require_version('Gio', '2.0')
 from gi.repository import Gio, GLib  # noqa: E402
 
 BRIDGE = '/usr/local/bin/caboose-bridge'
+SCAN = '/usr/local/bin/caboose-scan'
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 failures = []
 
@@ -121,6 +122,36 @@ def files():
         folder.rmdir()
 
 
+def scan():
+    """caboose-scan through the bridge, answered as the phone would after uploading a scan,
+    and failing at once when no phone is there."""
+    folder = core.HOME / '.cache/caboose/bridge-check-scan'
+    folder.mkdir(parents=True, exist_ok=True)
+    scanned = folder / 'Scan.pdf'
+    scanned.write_bytes(b'%PDF-1.4\n%%EOF\n')
+    output = folder / 'Receipt.pdf'
+    try:
+        host = Host(lambda r: {'id': r['id'], 'response': 'ok', 'paths': [str(scanned)], 'filter': 0})
+        host.start()
+        time.sleep(1)
+        result = subprocess.run([SCAN, '--output', str(output)], capture_output=True, text=True, timeout=20)
+        host.stop = True
+        check(len(host.seen) == 1 and host.seen[0]['type'] == 'scan' and host.seen[0]['filters'][0]['name'] == 'PDF', 'caboose-scan reaches the phone as a scan request')
+        check(result.returncode == 0 and result.stdout.strip() == str(output) and output.exists() and not scanned.exists(),
+              f'the scan moves to --output and its path is printed ({result.stderr.strip()})')
+        time.sleep(core.PRESENT_SECONDS + 1)
+        if core.present():
+            print('skip  a phone is connected, so caboose-scan without one is not checked')
+            return
+        started = time.time()
+        result = subprocess.run([SCAN], capture_output=True, text=True, timeout=20)
+        check(result.returncode == 3 and time.time() - started < 2, 'without a phone caboose-scan fails at once with status 3')
+    finally:
+        for f in folder.iterdir():
+            f.unlink()
+        folder.rmdir()
+
+
 PLAYER_XML = '''<node><interface name="org.mpris.MediaPlayer2"><property name="Identity" type="s" access="read"/></interface>
 <interface name="org.mpris.MediaPlayer2.Player"><method name="Play"/><method name="Pause"/><method name="PlayPause"/><method name="Next"/><method name="Previous"/>
 <method name="SetPosition"><arg type="o" direction="in"/><arg type="x" direction="in"/></method><method name="Seek"><arg type="x" direction="in"/></method>
@@ -179,6 +210,7 @@ def now_playing():
 if __name__ == '__main__':
     appearance()
     files()
+    scan()
     now_playing()
     if failures:
         sys.exit(f'{len(failures)} bridge check(s) failed')

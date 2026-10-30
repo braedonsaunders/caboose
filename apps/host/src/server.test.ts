@@ -339,6 +339,51 @@ it('relays phone events only to authenticated phone controls and serves staged f
   await Promise.all([once(phone, 'close'), once(control, 'close')])
 })
 
+it('delivers scan requests only to phone controls that scan, and hands them back without one', async () => {
+  const scan = (id: string) => ({
+    id, type: 'scan', app: '', title: '', acceptLabel: '', multiple: false, directory: false,
+    filters: [{ name: 'PDF', patterns: ['*.pdf'], mimeTypes: ['application/pdf'] }], currentFilter: 0, currentName: '', currentFolder: '', created: 1,
+  })
+  const first = 'a'.repeat(32), second = 'b'.repeat(32)
+  const queued: unknown[][] = [[scan(first)]]
+  const answers: unknown[] = []
+  const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+    if (!args.includes('/usr/local/bin/caboose-bridge')) return args.includes('drain') ? '[]' : ''
+    if (args.includes('drain')) return JSON.stringify({ requests: queued.shift() ?? [], cancels: [] })
+    if (args.includes('respond')) { answers.push(JSON.parse(args.at(-1)!)); return '{"answered":true}' }
+    return ''
+  }) }
+  const controller: Controller = { wake: async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }),
+    park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {},
+    displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => guest }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1'); await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const auth = { authorization: 'Bearer owner' }
+  expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: auth })).status).toBe(200)
+  const listen = (query: string) => {
+    const socket = new WebSocket(base.replace('http:', 'ws:') + '/v1/control?' + query, { headers: auth })
+    const requests: string[] = []
+    socket.on('message', data => { const event = JSON.parse(String(data)); if (event.type === 'bridge.request') requests.push(event.request.id) })
+    return { socket, requests }
+  }
+  // An app that does not scan: the scan goes straight back as `computer`.
+  const older = listen('foreground=1&phone=1')
+  await once(older.socket, 'open')
+  await vi.waitFor(() => expect(answers).toEqual([{ id: first, response: 'computer' }]), { timeout: 3000 })
+  // One that does gets the next one; the older app does not.
+  const scanner = listen('foreground=1&phone=1&scan=1')
+  await once(scanner.socket, 'open')
+  queued.push([scan(second)])
+  await vi.waitFor(() => expect(scanner.requests).toEqual([second]), { timeout: 3000 })
+  expect(older.requests).toEqual([])
+  expect(answers).toHaveLength(1)
+  older.socket.close(); scanner.socket.close()
+  await Promise.all([once(older.socket, 'close'), once(scanner.socket, 'close')])
+})
+
 it('runs only a whitelisted installed Craft app and publishes job progress', async () => {
   const job = '0123456789abcdef0123456789abcdef'
   let finish!: () => void

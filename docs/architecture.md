@@ -493,8 +493,9 @@ pending requests, and both expire after 24 hours. See [Phone handoff](#phone-han
 calls from the phone: the FileChooser and Settings portals (`caboose-portal`, with
 `xdg-desktop-portal-gtk` for the rest and as the fallback without a phone), and
 `caboose-bridge`, the host's commands and the owner seat's daemon for Now Playing and the
-appearance. GeoClue's static source serves a shared location. See
-[native-bridge.md](native-bridge.md).
+appearance. `caboose-scan` asks the phone to scan a document and prints where the scan was
+saved, failing at once without the phone. GeoClue's static source serves a shared
+location. See [native-bridge.md](native-bridge.md).
 
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
@@ -1014,7 +1015,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
 | `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
-| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events |
+| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
@@ -1051,7 +1052,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
 | `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
-| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request, and its withdrawal. Only to sockets opened with `?phone=1` |
+| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request or `caboose-scan`'s scan, and its withdrawal. Only to sockets opened with `?phone=1`; a scan only to those also opened with `?scan=1` |
 | `now-playing.changed`, `now-playing.stopped` | see [native bridge](native-bridge.md#now-playing-relay) | The computer's media player for Now Playing, while a display client is connected |
 
 ### Management
@@ -1598,9 +1599,9 @@ from `position`, then `POST …/control { action: "pause" }`; when the phone sto
 
 ### Native bridge
 
-File requests from the computer's portal, the phone's appearance and location, and the
-computer's Now Playing, relayed with the routes `/v1/bridge/*` and `/v1/now-playing*` and
-the control events above. The contract is [native-bridge.md](native-bridge.md#host).
+File and scan requests from the computer's portal and `caboose-scan`, the phone's
+appearance and location, and the computer's Now Playing, relayed with the routes
+`/v1/bridge/*` and `/v1/now-playing*` and the control events above. The contract is [native-bridge.md](native-bridge.md#host).
 
 ### Desktop notifications
 
@@ -2945,11 +2946,14 @@ app group and a Keychain access group.
 
 ### Native bridge on the phone
 
-Linux file dialogs open the iOS document picker (Open) or a native sheet browsing the
-computer (Save, Choose Folder); a picked file outside the computer is copied to it and kept
-in sync like [an opened document](#open-in-place). The computer follows the phone's
-appearance, its media appears in Now Playing, and, when the owner turns it on, it gets the
-phone's location while Caboose is open. Computer settings has the switches. See
+Linux file dialogs open from Files (the iOS document picker), Photos, the camera or the
+document scanner, as the application's filters accept them (Open), or a native sheet
+browsing the computer (Save, Choose Folder); a picked file outside the computer is copied
+to it and kept in sync like [an opened document](#open-in-place), and photos, captures and
+scans become new files in `Caboose Documents`, converted to a format the application takes
+when needed. `caboose-scan` opens the scanner from the computer. The computer follows the
+phone's appearance, its media appears in Now Playing, and, when the owner turns it on, it
+gets the phone's location while Caboose is open. Computer settings has the switches. See
 [native-bridge.md](native-bridge.md#app).
 
 ## 7. Security model
