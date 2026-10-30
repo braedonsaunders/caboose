@@ -156,6 +156,7 @@ const host = describeHost(deployment, process.env, { push: !!sender, liveActivit
 const app = createCabooseServer({
   token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
   capacityRoot: deployment.imageRoot,
+  usageHistoryFile: join(deployment.imageRoot, 'usage-history.json'),
   machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
   identity,

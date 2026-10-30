@@ -2923,3 +2923,18 @@ files in the task directory. Provider-side conversation retention is unchanged.
 `agent.task.deleted` informs connected phones. Agents > Chats offers native swipe Delete
 with confirmation; active chats show Stop and Delete. Successful deletion clears the
 selection, drafts, title and cached transcript, and fences late responses for that chat.
+
+### Computer resource measurements
+
+The console's Usage dashboard and computer overview distinguish configured limits
+from measured consumption. Authorized per-computer usage reads expose container
+cgroup memory charge, inactive file cache, runtime memory limit, CPU activity normalized
+to the runtime vCPU limit, and measured CPU seconds with coverage over a rolling 30-day
+window. A bounded host collector reads local Docker Engine counters without executing
+inside or waking a computer. Hourly aggregates persist under the image root; missing
+intervals, counter resets and host restarts never fabricate historical CPU time.
+AppKit desk does not expose VM resource counters, so VM RAM and CPU are unavailable.
+Explicit container storage refresh reports dedicated-home allocated file blocks and
+Docker logical layer sizes separately; shared/reflink bytes are never attributed as
+unique physical cost. See [capacity and usage](capacity.md) for authorization,
+measurement definitions, collection bounds and supported runtime limitations.

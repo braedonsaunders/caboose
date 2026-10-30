@@ -17,5 +17,22 @@ export interface Capacity {
     loadAverage1m: Measurement
     diskTotalBytes: Measurement; diskAvailableBytes: Measurement
   }
+  computers?: Array<{ id: string; name: string; memoryLimitBytes: number; vcpus: number; usage: ComputerUsage | null }>
   warnings: string[]
+}
+
+/** Cgroup charge includes cache; RSS includes shared pages and is not unique RAM. */
+export interface UsageCounters {
+  identity: string; at: number; cpuSeconds: number; vcpus: number
+  memoryBytes: number; cacheBytes: number | null; memoryLimitBytes: number | null
+  memoryKind: 'cgroup' | 'resident'
+}
+export interface ComputerUsage {
+  sampledAt: number | null; memoryBytes: number | null; cacheBytes: number | null
+  memoryLimitBytes: number | null; memoryKind: 'cgroup' | 'resident' | 'unavailable'
+  cpuPercent: number | null; cpuSeconds30d: number; coveredSeconds30d: number
+  collectingSince: number | null; reason?: string
+}
+export interface ComputerStorage {
+  sampledAt: number; home: StorageCategory; writableLayerLogicalBytes: Measurement; sharedImageLogicalBytes: Measurement
 }

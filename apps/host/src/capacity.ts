@@ -18,6 +18,7 @@ export interface CapacityContext {
   computers(): CapacityComputer[]
   quotas(id: string): Promise<{ memoryMb: number | null; vcpus: number | null; diskGb: number | null } | null>
   queued(): number | null
+  usage?(id: string): import('../../../packages/capacity/types.js').ComputerUsage
   sampler: CapacitySampler
 }
 
@@ -49,7 +50,7 @@ export async function capacityFor(context: CapacityContext, principal: TenancyPr
     if (host.memoryTotalBytes.value !== null && allocated.memoryBytes! > host.memoryTotalBytes.value) warnings.push('Assigned memory exceeds OS-visible memory. Not all computers may fit when running together.')
     if (host.cpuBusyPercent.value !== null && host.cpuBusyPercent.value > 90) warnings.push('Measured CPU busy time exceeds 90%. Review running workloads before waking more computers.')
   }
-  return { status: 200, body: { sampledAt: new Date().toISOString(), scope: tenantId === undefined ? 'host' : 'tenant', allocated, running, counts, storage, quotas: q, headroom, ...(host ? { host } : {}), warnings } }
+  return { status: 200, body: { sampledAt: new Date().toISOString(), scope: tenantId === undefined ? 'host' : 'tenant', allocated, running, counts, storage, quotas: q, headroom, ...(host ? { host } : {}), warnings, computers: computers.map(c => ({ id: c.id, name: (c.settings as { name?: string }).name ?? c.id, memoryLimitBytes: c.settings.memoryMb * 1024 ** 2, vcpus: c.settings.vcpus, usage: context.usage?.(c.id) ?? null })) } }
 }
 function totals(resources: Array<{ memoryMb: number; vcpus: number } | null>): ResourceTotals {
   if (resources.some(r => r === null)) return { memoryBytes: null, vcpus: null }
