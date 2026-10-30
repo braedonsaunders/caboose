@@ -112,6 +112,10 @@ The image contains:
   GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
+  Its optional private live-GPU supervisor starts only on an authenticated owner seat
+  with both private Unix socket paths configured; the paths share an owner-only
+  directory. The broker uses the per-wake display token and is stopped with its
+  compositor. The private transport does not enable a public GPU ICD.
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and

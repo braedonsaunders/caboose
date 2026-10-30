@@ -21,7 +21,23 @@ pub struct GpuSupervisor {
 impl GpuSupervisor {
     /// Starts exactly one child at owner-compositor startup, not on an incoming
     /// HTTP request. `token_file` is a path, never a bearer token in argv.
-    pub fn start(token_file: &Path, local_socket: &Path) -> io::Result<Self> {
+    pub fn start(token_file: &Path, local_socket: &Path, surface_socket: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let parent = local_socket.parent().ok_or_else(|| io::Error::other("missing GPU socket directory"))?;
+        if surface_socket.parent() != Some(parent) || local_socket == surface_socket {
+            return Err(io::Error::other("invalid GPU socket paths"));
+        }
+        let metadata = std::fs::symlink_metadata(parent)?;
+        let missing = |path: &Path| match std::fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+            Ok(_) => Ok(false),
+            Err(error) => Err(error),
+        };
+        // SAFETY: geteuid has no arguments or memory-safety preconditions.
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != unsafe { libc::geteuid() } ||
+            metadata.permissions().mode() & 0o7777 != 0o700 || !missing(local_socket)? || !missing(surface_socket)? {
+            return Err(io::Error::other("GPU socket directory is not private or sockets exist"));
+        }
         let mut fds = [-1; 2];
         // SAFETY: fds points to two writable integers for a local socketpair.
         let result = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) };
@@ -39,6 +55,8 @@ impl GpuSupervisor {
             .arg(token_file)
             .arg("--socket")
             .arg(local_socket)
+            .arg("--surface-socket")
+            .arg(surface_socket)
             .stdin(input)
             .spawn()?;
         Ok(Self { ipc: Some(parent), child })
@@ -285,12 +303,14 @@ pub struct GpuRouter {
 }
 
 impl GpuRouter {
+    pub fn available(&self) -> bool { !self.stop.load(Ordering::Acquire) }
     pub fn start(
         token_file: &Path,
         local_socket: &Path,
+        surface_socket: &Path,
         deliver: impl Fn(RouteEvent) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let mut supervisor = GpuSupervisor::start(token_file, local_socket)?;
+        let mut supervisor = GpuSupervisor::start(token_file, local_socket, surface_socket)?;
         let ipc = supervisor.clone_ipc()?;
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let deliver: std::sync::Arc<dyn Fn(RouteEvent) + Send + Sync> = std::sync::Arc::new(deliver);

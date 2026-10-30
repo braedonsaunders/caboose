@@ -122,7 +122,7 @@ impl Net {
         Ok(Self { conns: HashMap::new(), next_id: 1, local, gpu_router: None })
     }
 
-    pub fn gpu_enabled(&self) -> bool { self.gpu_router.is_some() }
+    pub fn gpu_enabled(&self) -> bool { self.gpu_router.as_ref().is_some_and(|router| router.available()) }
 
     /// Install only for the authenticated owner seat after the private broker
     /// has been installed and its complete bridge has passed integration.
@@ -132,13 +132,14 @@ impl Net {
         &mut self,
         token_file: &std::path::Path,
         local_socket: &std::path::Path,
+        surface_socket: &std::path::Path,
         handle: &LoopHandle<'static, S>,
     ) -> io::Result<()> {
         if self.gpu_router.is_some() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "GPU router already active"));
         }
         let (tx, rx) = channel::<crate::gpu_supervisor::RouteEvent>();
-        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, move |event| {
+        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, surface_socket, move |event| {
             let _ = tx.send(event);
         })?;
         let control = router.clone_control()?;
@@ -331,7 +332,7 @@ impl Net {
 }
 
 fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
-    if let Some(router) = state.net().gpu_router.as_mut() {
+    if let Some(router) = state.net().gpu_router.as_mut().filter(|router| router.available()) {
         if let Err(e) = router.accept(stream, peer) {
             tracing::warn!("{peer}: GPU router refused connection: {e}");
         }

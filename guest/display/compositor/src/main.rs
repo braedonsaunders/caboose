@@ -449,6 +449,13 @@ fn run(config: Config) -> Result<(), String> {
         refine_timer: None,
     };
 
+    if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
+        let grants = gpu_grant::Grants::new().map_err(|e| format!("private GPU entropy: {e}"))?;
+        let token = state.config.token_file.as_ref().ok_or("private GPU requires authentication")?;
+        state.net.enable_private_gpu(token, stream, surface, &handle).map_err(|e| format!("private GPU supervisor: {e}"))?;
+        state.gpu_grants = Some(grants);
+    }
+
     if state.config.audio {
         let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
         state.audio = audio::Audio::start(&state.config.instance_dir(&runtime_dir));
