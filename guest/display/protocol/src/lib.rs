@@ -6,6 +6,7 @@
 //! payload is one canonical CBOR map. The stream is parsed as bytes; WebSocket message
 //! boundaries carry no meaning.
 
+pub mod atlas;
 pub mod cbor;
 mod fields;
 mod messages;

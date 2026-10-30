@@ -198,6 +198,7 @@ pub struct State {
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
+    pub scene: crate::scene::SceneServer,
     pub control: crate::control::Control,
     pub clipboard: crate::clipboard::Clipboard,
     /// The compositor's PulseAudio, when it runs.

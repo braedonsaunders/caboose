@@ -117,6 +117,10 @@ The image contains:
   GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
+- **OS Decomposition (`guest/scene`).** `libcaboose_scene_cairo.so` (the `LD_PRELOAD`-compatible
+  Cairo/GTK/Qt vector and glyph scene interceptor), `caboose-chromium-scene.conf` (Chromium and
+  Electron Wayland subsurface delegation and smooth-scroll flags), and `libcaboose_wsi_promote.so`
+  (`VK_LAYER_CABOOSE_wsi_promote`, implicit Vulkan WSI and Mesa Zink promotion on the owner seat).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
@@ -472,9 +476,36 @@ within the existing shared Unix user, not an arbitrary-command security boundary
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_GAME_SOCKET` on the owner's
-display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
-passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` (its non-blocking
+scene-graph socket), `CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
+`CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display (never on the agent seat), plus
+`LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed.
+
+**OS Decomposition ("Zero Server Video") & Headless Liveness Invariant.** When a client
+connects with `atlas: true` in `ClientHello` (including zero-video `decoders: []`),
+`caboose-display` replies with `"atlas"` in `ServerHello.features` (and `"scene"` when
+`scene: true` is also requested) and skips per-window H.264/HEVC video encoding (`0x10` `frame`):
+- **Layer 0 — Surface Atlas (`0x23` `surface.batch`, `0x24` `surface.reset`)**: Damaged regions
+  are decomposed into `CopyRect` vertical scroll copies (`detect_scroll_copy` using `XXH64` row
+  hashes), solid RGBA8888 `fills`, 64×64 `XXH64`-addressed cached tile `refs`, and newly encoded
+  lossless tiles compressed with the adaptive UI micro-codec (`pal2-lz4` for 1–2 colors,
+  `pal16-lz4` for 3–16 colors, `rgba-lz4` for >16 colors, or `png`). `surface.reset` (`0x24`)
+  resets the client's `XXH64` tile cache on a new cache epoch.
+- **Layer 1 — Scene Graph (`0x25` `scene.font`, `0x26` `scene.commit`, `0x9A` `scene.scroll`)**:
+  `guest/scene` (`libcaboose_scene_cairo.so`) intercepts Cairo/GTK/Qt drawing via `RTLD_NEXT`
+  with zero link-time `libcairo` dependency, hashes font faces with `XXH64` (`seed = 0`) so each
+  `(font, index)` is registered once via `0x25` `scene.font`, and emits canonical RFC 8949 CBOR
+  `0x26` `scene.commit` updates (with `group`, `clip`, `rclip`, `scroll`, `rect`, `border`,
+  `shadow`, `glyphs` packed as 10-byte `(u16 glyph_id, f32 x, f32 y)` little-endian records,
+  `path`, and `surface` nodes). Client-predicted 120 Hz scroll offsets return via `0x9A`
+  `scene.scroll`.
+- **Headless Liveness Invariant**: Unattended work on the server computer must never block or
+  fail when the phone disconnects or on the headless agent seat. If `$CABOOSE_SCENE_SOCKET` is
+  unset, missing, refuses connection, or returns `EAGAIN`/`EPIPE`/`ECONNRESET` on write, the
+  `guest/scene` client immediately drops into non-blocking local passthrough mode without
+  stalling or raising `SIGPIPE`. Likewise, `VK_LAYER_CABOOSE_wsi_promote` (`libcaboose_wsi_promote.so`)
+  only promotes 3D/Vulkan/Mesa Zink swapchains when `CABOOSE_WSI_AUTO_PROMOTE=1` on the owner
+  seat and never on `CABOOSE_SEAT=agent` or denylisted 2D desktop/Electron processes. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The agent launch environment also publishes `HOME`, its four XDG state directories,
 `CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
@@ -2392,17 +2423,24 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 
 **CabooseKit** (a Swift package without UI dependencies) implements one display client,
 `CabooseDisplaySession`, behind the `DisplaySession` window model the app works against.
-It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
-acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
-the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption. Placement samples host time once against the requested anchor;
-renderer timebase updates never drive backlog recovery. Live
+It speaks the Caboose Display Protocol: canonical CBOR, `atlas` and `scene` capability
+negotiation (supporting zero-video `decoders: []` when `atlas: true` is advertised),
+byte-perfect `surface.batch` (`0x23`) and `surface.reset` (`0x24`) Surface Atlas updates
+(`CopyRect` scroll blits, solid RGBA fills, `XXH64` 64×64 tile cache refs, and lossless
+`pal2-lz4` / `pal16-lz4` / `rgba-lz4` tiles), retained vector and glyph scene graphs
+(`0x25` `scene.font`, `0x26` `scene.commit`, and 120 Hz client-predicted `0x9A` `scene.scroll`
+feedback), legacy per-window video with acknowledgements and keyframe recovery, video streams
+layered into windows, Opus sound on the server timeline, and vsync pacing. Audio uses an
+explicit server/host clock anchor, cleared on interruption. Placement samples host time once
+against the requested anchor; renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
-Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
-device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every write to a
-window's texture is a blit on one shared Metal queue, which runs command buffers in commit
-order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
+Metal `WindowSurface`. Decoding uses the Surface Atlas LZ4 micro-codec and `XXH64` tile cache
+for `surface.batch`, CoreText and Metal for `scene.commit` vector/glyph trees,
+`VTDecompressionSession` for H.264, HEVC and, where the device has a hardware decoder, AV1,
+and ImageIO for PNG and WebP tiles. Every write to a window's texture is a blit on one shared
+Metal queue, which runs command buffers in commit order, so no draw waits for the GPU before
+the next frame or batch is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 The iOS app omits `video_decoders`. The compositor also requests local decode for

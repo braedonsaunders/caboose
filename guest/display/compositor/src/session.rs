@@ -1,6 +1,7 @@
 //! The client session: handshake, the messages a client sends, and the per-tick
 //! render → encode → send pipeline with its pacing.
 
+use crate::atlas::AtlasCacheTracker;
 use crate::encode::{align_up, Backend, CpuImage};
 use crate::net::{ConnId, NetEvent};
 use crate::render::{Canvas, Rendered};
@@ -11,6 +12,7 @@ use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// A connection must say hello within this long.
@@ -37,6 +39,12 @@ pub struct Session {
     pub scaled_motion: bool,
     /// The client offers its hardware and this instance accepts it (docs/devices.md).
     pub devices: bool,
+    /// The client accepts lossless `surface.batch` and `surface.reset` updates.
+    pub atlas: bool,
+    /// The client accepts retained vector & glyph `scene.font` and `scene.commit` updates.
+    pub scene: bool,
+    /// Session-wide LRU cache of 64×64 RGBA8888 tile hashes held by the client.
+    pub atlas_cache: Arc<Mutex<AtlasCacheTracker>>,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -153,6 +161,7 @@ impl State {
         if let Some(a) = self.audio.as_mut() {
             a.stop_capture();
         }
+        self.scene.reset_session();
         self.session = None;
         self.games_session_changed();
         self.generation += 1;
@@ -187,6 +196,7 @@ impl State {
             Message::Vsync { display, t_us: _ } => self.on_vsync(display),
             Message::Ack { id, pts_us, decoded_us } => {
                 let now = self.now_us();
+                let mut reset_epoch = None;
                 if let Some(w) = self.windows.get_mut(id) {
                     if w.stream.ack(pts_us) {
                         tracing::trace!(
@@ -197,13 +207,26 @@ impl State {
                     if decoded_us < 0 {
                         w.stream.need_keyframe = true;
                         w.stream.dirty = true;
+                        if let Some(s) = self.session.as_ref().filter(|s| s.atlas) {
+                            reset_epoch = Some(s.atlas_cache.lock().unwrap().reset());
+                        }
                     }
+                }
+                if let Some(epoch) = reset_epoch {
+                    self.net.send(conn, &Message::SurfaceReset { epoch });
                 }
             }
             Message::RequestKeyframe { id } => {
+                let mut reset_epoch = None;
                 if let Some(w) = self.windows.get_mut(id) {
                     w.stream.need_keyframe = true;
                     w.stream.dirty = true;
+                    if let Some(s) = self.session.as_ref().filter(|s| s.atlas) {
+                        reset_epoch = Some(s.atlas_cache.lock().unwrap().reset());
+                    }
+                }
+                if let Some(epoch) = reset_epoch {
+                    self.net.send(conn, &Message::SurfaceReset { epoch });
                 }
             }
             Message::Configure(c) => self.configure_window(&c),
@@ -216,6 +239,7 @@ impl State {
             Message::Pointer(p) => self.pointer(&p),
             Message::Key(k) => self.key(&k),
             Message::Text(t) => self.text(&t),
+            Message::SceneScroll(scroll) => self.on_scene_scroll(scroll),
             Message::VideoKeyframe { id } => {
                 let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));
                 if let Some(w) = motion {
@@ -267,12 +291,23 @@ impl State {
             return;
         }
         let offered = self.encoders.codecs();
-        let Some(codec) = choose_codec(&offered, &hello.decoders) else {
-            tracing::warn!("connection {conn}: no common codec (server {offered:?}, client {:?})", hello.decoders);
-            self.net.close_with(conn, Some(&Message::Bye { reason: ByeReason::Protocol }));
-            return;
+        let chosen_codec = choose_codec(&offered, &hello.decoders);
+        let backend = match chosen_codec {
+            Some(codec) => self.encoders.backend_for(codec).unwrap().clone(),
+            None if hello.atlas => {
+                // Zero-video mode: no video codec needed for window streams!
+                self.encoders
+                    .backends
+                    .first()
+                    .cloned()
+                    .unwrap_or(Backend::Software(Codec::H264))
+            }
+            None => {
+                tracing::warn!("connection {conn}: no common codec (server {offered:?}, client {:?})", hello.decoders);
+                self.net.close_with(conn, Some(&Message::Bye { reason: ByeReason::Protocol }));
+                return;
+            }
         };
-        let backend = self.encoders.backend_for(codec).unwrap().clone();
         // One client at a time: the newest wins.
         if let Some(old) = self.session.take() {
             tracing::info!("connection {conn} replaces {}", old.conn);
@@ -297,6 +332,8 @@ impl State {
         };
         let webview = webview_grant.is_some();
         let devices = hello.devices && self.devices.is_some();
+        let atlas = hello.atlas;
+        let scene = hello.scene;
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -320,14 +357,25 @@ impl State {
                     if devices {
                         supported.push("devices".into());
                     }
+                    if atlas {
+                        supported.push("atlas".into());
+                    }
+                    if scene {
+                        supported.push("scene".into());
+                    }
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
             }),
         );
-        tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
+        if let Some(codec) = chosen_codec {
+            tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
+        } else {
+            tracing::info!("connection {conn}: session started, zero-video atlas mode");
+        }
         let video_decoders = hello.video_decoders.clone().unwrap_or_default();
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
+        self.scene.reset_session();
         self.session = Some(Session {
             conn,
             ready: true,
@@ -341,6 +389,9 @@ impl State {
             gpu,
             scaled_motion: hello.scaled_motion,
             devices,
+            atlas,
+            scene,
+            atlas_cache: Arc::new(Mutex::new(AtlasCacheTracker::new())),
         });
         self.games_session_changed();
         if audio {
@@ -478,38 +529,44 @@ impl State {
     pub fn render_streams(&mut self) {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return };
         let backend = session.backend.clone();
+        let atlas = session.atlas;
+        let atlas_cache = session.atlas_cache.clone();
         let generation = self.generation;
-        let align = backend.alignment();
+        let align = if atlas { 1 } else { backend.alignment() };
         let now_us = self.now_us();
         for id in self.windows.ids() {
             if self.game_shown(id) {
                 continue; // the client runs the window's game; there is nothing to show
             }
             let Some(w) = self.windows.get(id) else { continue };
-            if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
-                let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
-                let w = self.windows.get_mut(id).unwrap();
-                let image = w.stream.image.take().unwrap();
-                let job = Job {
-                    window: id,
-                    generation,
-                    pts_us: w.stream.refine_pts(now_us),
-                    image,
-                    shm: None,
-                    detect: false,
-                    alpha: w.kind == proto::WindowKind::Popup,
-                    keyframe: false,
-                    refine: true,
-                    damage: None,
-                    rect,
-                    crop: w.stream.crop,
-                    backend: backend.clone(),
-                    settings: self.encoders.settings.clone(),
-                    motion: None,
-                    ends_motion: None,
-                };
-                w.stream.submit(job, &self.done_tx);
-                continue;
+            if !atlas {
+                if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
+                    let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
+                    let w = self.windows.get_mut(id).unwrap();
+                    let image = w.stream.image.take().unwrap();
+                    let job = Job {
+                        window: id,
+                        generation,
+                        pts_us: w.stream.refine_pts(now_us),
+                        image,
+                        shm: None,
+                        detect: false,
+                        alpha: w.kind == proto::WindowKind::Popup,
+                        atlas: false,
+                        atlas_cache: None,
+                        keyframe: false,
+                        refine: true,
+                        damage: None,
+                        rect,
+                        crop: w.stream.crop,
+                        backend: backend.clone(),
+                        settings: self.encoders.settings.clone(),
+                        motion: None,
+                        ends_motion: None,
+                    };
+                    w.stream.submit(job, &self.done_tx);
+                    continue;
+                }
             }
             if w.announced.is_none() || !w.stream.dirty || !w.stream.can_send() {
                 continue;
@@ -603,7 +660,7 @@ impl State {
                     w.stream.return_image(image);
                     w.stream.dirty = false;
                 }
-                Ok(Rendered::Unchanged) if !w.stream.need_keyframe && ending.is_none() => {
+                Ok(Rendered::Unchanged) if !w.stream.need_keyframe && ending.is_some() == false => {
                     self.stats.unchanged_renders += 1;
                     w.stream.return_image(image);
                     w.stream.dirty = false;
@@ -645,6 +702,8 @@ impl State {
                         shm,
                         detect,
                         alpha,
+                        atlas,
+                        atlas_cache: atlas.then(|| atlas_cache.clone()),
                         keyframe: w.stream.need_keyframe,
                         refine: false,
                         damage,
@@ -652,12 +711,16 @@ impl State {
                         crop: Rect::new(0, 0, pic_w, pic_h),
                         backend: backend.clone(),
                         settings: self.encoders.settings.clone(),
-                        motion: w.stream.motion.as_ref().filter(|m| !m.ending).map(|m| MotionJob {
-                            id: m.id,
-                            rect: m.rect,
-                            keyframe: m.need_keyframe,
-                            scaled: m.scaled,
-                        }),
+                        motion: (!atlas)
+                            .then(|| {
+                                w.stream.motion.as_ref().filter(|m| !m.ending).map(|m| MotionJob {
+                                    id: m.id,
+                                    rect: m.rect,
+                                    keyframe: m.need_keyframe,
+                                    scaled: m.scaled,
+                                })
+                            })
+                            .flatten(),
                         ends_motion: ending.map(|(id, _)| id),
                     };
                     w.stream.submit(job, &self.done_tx);
@@ -723,6 +786,16 @@ impl State {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut refined = false;
         let mut frame_sent = false;
+        if let Some((batch, cpu_us)) = done.surface_batch {
+            let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
+            w.stream.in_flight.push_back(done.pts_us);
+            self.stats.frames += 1;
+            self.stats.tiles += batch.tiles.len() as u64;
+            self.stats.bytes += tile_bytes as u64;
+            self.stats.encode_cpu_us += cpu_us;
+            self.net.send(conn, &Message::SurfaceBatch(batch));
+            frame_sent = true;
+        }
         match done.result {
             None => {}
             // The relay carries at most 16 MiB per message; a picture that does not fit
@@ -839,7 +912,8 @@ impl State {
     /// Whether this window's motion can be its own video stream for the client.
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
-        self.config.motion
+        !session.atlas
+            && self.config.motion
             && self.windows.get(window).is_some_and(|w| w.kind != proto::WindowKind::Popup)
             && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))

@@ -50,6 +50,10 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
     /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
     public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// Whether to negotiate Surface & Tile Atlas rendering (`atlas` in the hello). Set before `connect()`.
+    public var rendersSurfaceAtlas = false
+    /// Whether to negotiate Retained Vector & Glyph Scene Graph rendering (`scene` in the hello). Set before `connect()`.
+    public var rendersSceneGraph = false
     /// The phone's hardware offered to the computer as devices (docs/devices.md), attached
     /// while a connection whose server accepts them is up. Set before `connect()`.
     public var devices: DeviceCenter?
@@ -113,7 +117,10 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
     public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders,
+                  videoDecoders: Self.hardwareDecoders)
+        rendersSurfaceAtlas = true
+        rendersSceneGraph = true
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
@@ -309,7 +316,8 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames, devices: devices != nil))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil,
+                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph))
     }
 
     // MARK: Server messages
@@ -373,7 +381,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 }
             case .deviceStatus, .deviceOpen, .deviceClose, .deviceRumble, .deviceKeyframe:
                 devices?.handle(message)
-            case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+            case .frame, .tile, .surfaceBatch, .surfaceReset, .sceneFont, .sceneCommit, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }
@@ -856,6 +864,11 @@ public final class CabooseDisplaySession: DisplaySession {
 
     public func resetScroll() {}
 
+    /// Reports a 120 Hz local scroll on scene node `nodeID` in `window` back to the compositor.
+    public func scrollSceneNode(_ nodeID: UInt64, in window: RemoteWindow, offset: CGPoint) {
+        send(.sceneScroll(window: window.id, node: Int(nodeID), sx: Double(offset.x), sy: Double(offset.y)))
+    }
+
     /// The window keys and text go to: `window`, or the focused window when none is named.
     private func inputTarget(_ window: RemoteWindow?) -> RemoteWindow? {
         window ?? focusedWindow.flatMap { windows[$0] }
@@ -1049,6 +1062,8 @@ private final class Incoming: @unchecked Sendable {
     private let retire: @Sendable (Int, UInt64) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
+    private let tileCache = TileAtlasCache()
+    private let fontCache = SceneFontCache()
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
@@ -1085,6 +1100,16 @@ private final class Incoming: @unchecked Sendable {
                 pipeline.frame(picture)
             case .tile(let tile):
                 pipelines[tile.window]?.tile(tile)
+            case .surfaceBatch(let batch):
+                echo.drew(batch.window)
+                pipelines[batch.window]?.surfaceBatch(batch, cache: tileCache)
+            case .surfaceReset(let epoch):
+                tileCache.reset(epoch: epoch)
+            case .sceneFont(let font):
+                fontCache.register(font)
+            case .sceneCommit(let commit):
+                echo.drew(commit.window)
+                pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
             case .videoFrame(let frame):
                 videos[frame.video]?.frame(frame)
             case .videoPresent(let id, let seq, let pts):

@@ -15,13 +15,15 @@
 //! - an alpha window (a popup) is sent only as RGBA tiles, under the same flow control,
 //!   and has no encoder, sharpening, motion stream or marker detection.
 
+use crate::atlas::{AtlasCacheTracker, AtlasWindowEncoder};
 use crate::encode::alpha::AlphaTiler;
 use crate::encode::{Backend, CpuImage, Encoder, Input, Pixels, Settings, ShmPicture};
 use crate::motion;
 use crate::render::Canvas;
-use caboose_display_protocol::{Codec, Rect};
+use caboose_display_protocol::{Codec, Rect, SurfaceBatch};
 use smithay::reexports::calloop::channel::Sender;
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const MAX_UNACKED: usize = 2;
@@ -38,6 +40,9 @@ pub struct Job {
     pub detect: bool,
     /// The picture keeps the window's alpha: it goes as RGBA tiles, never as a frame.
     pub alpha: bool,
+    /// Encode as a lossless `SurfaceBatch` (Surface Atlas Engine) rather than video/PNG.
+    pub atlas: bool,
+    pub atlas_cache: Option<Arc<Mutex<AtlasCacheTracker>>>,
     pub keyframe: bool,
     /// Sharpen the previous picture instead of encoding `image` (which only travels
     /// back with the answer).
@@ -144,6 +149,8 @@ pub struct Done {
     pub ends_motion: Option<u64>,
     /// Small changes sent as lossless tiles instead of a window picture.
     pub tiles: Option<TilesDone>,
+    /// Atomic lossless `SurfaceBatch` produced when `job.atlas` is true.
+    pub surface_batch: Option<(SurfaceBatch, u64)>,
 }
 
 pub struct TilesDone {
@@ -217,6 +224,86 @@ struct Encoders {
     motion: Option<(u64, Rect, Box<dyn Encoder>)>,
     /// An alpha window's shadow of what the client shows, at the picture size.
     alpha: Option<AlphaTiler>,
+    /// Surface Atlas encoder for `job.atlas` mode.
+    atlas: Option<AtlasWindowEncoder>,
+}
+
+/// Encodes a window picture into a `SurfaceBatch` (and optional motion stream + marker detection)
+/// without ever opening a base video encoder (`libx264`/`libx265`/`nvenc`).
+fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
+    let mut done = Done {
+        hits: job.detect.then(|| detect(&job)),
+        window: job.window,
+        generation: job.generation,
+        pts_us: job.pts_us,
+        image: CpuImage::new(0, 0),
+        result: None,
+        rect: job.rect,
+        crop: job.crop,
+        changed: Vec::new(),
+        motion: None,
+        ends_motion: job.ends_motion,
+        tiles: None,
+        surface_batch: None,
+    };
+    encoders.window = None;
+    encoders.alpha = None;
+    let enc = encoders.atlas.get_or_insert_with(AtlasWindowEncoder::new);
+    let cpu0 = thread_cpu_us();
+    let width = job.crop.w.max(0) as u32;
+    let height = job.crop.h.max(0) as u32;
+    let excluded = job.motion.as_ref().map(|m| m.rect);
+    let input = match &job.shm {
+        Some(shm) => Input::Shm(shm),
+        None => Input::Cpu(&job.image),
+    };
+    let mut fallback_cache = AtlasCacheTracker::new();
+    let batch_res = match &job.atlas_cache {
+        Some(shared) => {
+            let mut guard = shared.lock().unwrap();
+            enc.encode_input(
+                job.window,
+                job.pts_us,
+                job.rect,
+                width,
+                height,
+                input,
+                job.alpha,
+                job.keyframe,
+                job.damage.as_deref(),
+                excluded,
+                &mut guard,
+            )
+        }
+        None => enc.encode_input(
+            job.window,
+            job.pts_us,
+            job.rect,
+            width,
+            height,
+            input,
+            job.alpha,
+            job.keyframe,
+            job.damage.as_deref(),
+            excluded,
+            &mut fallback_cache,
+        ),
+    };
+    match batch_res {
+        Ok((Some(batch), changed)) => {
+            done.changed = changed;
+            done.surface_batch = Some((batch, thread_cpu_us().saturating_sub(cpu0)));
+        }
+        Ok((None, changed)) => {
+            done.changed = changed;
+        }
+        Err(e) => {
+            encoders.atlas = None;
+            done.result = Some(Err(e));
+        }
+    }
+    done.image = job.image;
+    done
 }
 
 /// The tiles for an alpha window's picture; its answer never carries a frame.
@@ -235,9 +322,11 @@ fn work_alpha(job: Job, encoders: &mut Encoders) -> Done {
         motion: None,
         ends_motion: None,
         tiles: None,
+        surface_batch: None,
     };
     encoders.window = None;
     encoders.motion = None;
+    encoders.atlas = None;
     if encoders.alpha.as_ref().is_none_or(|t| t.size() != size) {
         encoders.alpha = Some(AlphaTiler::new(size.0, size.1));
     }
@@ -292,6 +381,10 @@ fn encode_with(
 }
 
 fn work(job: Job, encoders: &mut Encoders) -> Done {
+    if job.atlas {
+        return work_atlas(job, encoders);
+    }
+    encoders.atlas = None;
     if job.alpha {
         return work_alpha(job, encoders);
     }
@@ -311,6 +404,7 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         motion: None,
         ends_motion: job.ends_motion,
         tiles: None,
+        surface_batch: None,
     };
     if job.refine && !reuse {
         // The encoder whose picture this sharpens is gone; the window starts over with
@@ -485,7 +579,9 @@ impl Worker {
                         Ok(job) => job,
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if !refining {
-                                encoders = Encoders::default();
+                                encoders.window = None;
+                                encoders.motion = None;
+                                encoders.alpha = None;
                             }
                             continue;
                         }
@@ -754,6 +850,8 @@ mod tests {
             shm: None,
             detect: false,
             alpha: false,
+            atlas: false,
+            atlas_cache: None,
             keyframe: false,
             refine,
             damage: None,
@@ -787,6 +885,8 @@ mod tests {
             shm: None,
             detect: false,
             alpha: false,
+            atlas: false,
+            atlas_cache: None,
             keyframe: false,
             refine: false,
             damage: Some(vec![Rect::new(0, 0, 16, 16)]),
@@ -818,6 +918,8 @@ mod tests {
             shm: None,
             detect: false,
             alpha: false,
+            atlas: false,
+            atlas_cache: None,
             keyframe: false,
             refine: false,
             damage,
@@ -865,6 +967,8 @@ mod tests {
             shm: None,
             detect: true,
             alpha: true,
+            atlas: false,
+            atlas_cache: None,
             keyframe,
             refine: false,
             damage,

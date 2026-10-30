@@ -69,6 +69,30 @@ string_enum!(
     VideoSource { Passthrough => "passthrough", Surface => "surface", Motion => "motion" }
 );
 string_enum!(TileFormat { Png => "png", WebpLossless => "webp-lossless" });
+string_enum!(
+    /// Lossless micro-codec formats for `surface.batch` tiles.
+    AtlasTileFormat {
+        Pal2Lz4 => "pal2-lz4",
+        Pal16Lz4 => "pal16-lz4",
+        RgbaLz4 => "rgba-lz4",
+        Png => "png",
+    }
+);
+string_enum!(
+    /// Node kinds in a retained vector/glyph `scene.commit` tree.
+    SceneNodeKind {
+        Group => "group",
+        Clip => "clip",
+        RClip => "rclip",
+        Scroll => "scroll",
+        Rect => "rect",
+        Border => "border",
+        Shadow => "shadow",
+        Glyphs => "glyphs",
+        Path => "path",
+        Surface => "surface",
+    }
+);
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
@@ -246,6 +270,249 @@ pub struct Surrounding {
     pub anchor: u64,
 }
 
+/// Self-copy (`CopyRect`) within the window's retained texture before fills and tiles.
+/// Encoded in CBOR as `[dx, dy, rect.x, rect.y, rect.w, rect.h]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceCopy {
+    pub dx: i32,
+    pub dy: i32,
+    pub rect: Rect,
+}
+
+impl SurfaceCopy {
+    fn to_value(self) -> Value {
+        Value::Array(vec![
+            self.dx.into(),
+            self.dy.into(),
+            self.rect.x.into(),
+            self.rect.y.into(),
+            self.rect.w.into(),
+            self.rect.h.into(),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [dx, dy, x, y, w, h] => Some(Self {
+                dx: fields::as_i32(dx)?,
+                dy: fields::as_i32(dy)?,
+                rect: Rect {
+                    x: fields::as_i32(x)?,
+                    y: fields::as_i32(y)?,
+                    w: fields::as_i32(w)?,
+                    h: fields::as_i32(h)?,
+                },
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Solid RGBA8888 fill within a `surface.batch`.
+/// Encoded in CBOR as `[rect.x, rect.y, rect.w, rect.h, rgba]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceFill {
+    pub rect: Rect,
+    /// 0xRRGGBBAA
+    pub rgba: u32,
+}
+
+impl SurfaceFill {
+    fn to_value(self) -> Value {
+        Value::Array(vec![
+            self.rect.x.into(),
+            self.rect.y.into(),
+            self.rect.w.into(),
+            self.rect.h.into(),
+            self.rgba.into(),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [x, y, w, h, rgba] => Some(Self {
+                rect: Rect {
+                    x: fields::as_i32(x)?,
+                    y: fields::as_i32(y)?,
+                    w: fields::as_i32(w)?,
+                    h: fields::as_i32(h)?,
+                },
+                rgba: fields::as_u32(rgba)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Reference to a previously cached 64×64 tile by its `XXH64` content hash.
+/// Encoded in CBOR as `[x, y, hash]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceTileRef {
+    pub x: i32,
+    pub y: i32,
+    pub hash: u64,
+}
+
+impl SurfaceTileRef {
+    fn to_value(self) -> Value {
+        Value::Array(vec![self.x.into(), self.y.into(), self.hash.into()])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [x, y, hash] => Some(Self {
+                x: fields::as_i32(x)?,
+                y: fields::as_i32(y)?,
+                hash: fields::as_u64(hash)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// A newly encoded lossless UI tile in `surface.batch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceTile {
+    pub rect: Rect,
+    pub hash: Option<u64>,
+    pub format: AtlasTileFormat,
+    pub data: Vec<u8>,
+}
+
+impl SurfaceTile {
+    fn to_value(&self) -> Value {
+        MapBuilder::new()
+            .put("x", self.rect.x)
+            .put("y", self.rect.y)
+            .put("w", self.rect.w)
+            .put("h", self.rect.h)
+            .put("fmt", self.format)
+            .opt("hash", self.hash)
+            .put("data", self.data.clone())
+            .build()
+    }
+
+    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
+        let f = Fields::new("surface.batch.tiles", v)?;
+        Ok(Self {
+            rect: Rect {
+                x: f.req("x", fields::as_i32)?,
+                y: f.req("y", fields::as_i32)?,
+                w: f.req("w", fields::as_i32)?,
+                h: f.req("h", fields::as_i32)?,
+            },
+            hash: f.opt_u64("hash")?,
+            format: enum_field(&f, "fmt", AtlasTileFormat::parse)?,
+            data: f.bytes("data")?,
+        })
+    }
+}
+
+/// `surface.batch` (0x23): atomic byte-perfect surface damage batch (Layer 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceBatch {
+    pub id: u64,
+    pub seq: u64,
+    pub pts_us: u64,
+    pub size: Size,
+    pub rect: Rect,
+    pub keyframe: bool,
+    pub copies: Vec<SurfaceCopy>,
+    pub fills: Vec<SurfaceFill>,
+    pub refs: Vec<SurfaceTileRef>,
+    pub tiles: Vec<SurfaceTile>,
+}
+
+/// `scene.font` (0x25): outline font face registration for `scene.commit` glyph runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFont {
+    pub font: u64,
+    pub index: u32,
+    pub family: Option<String>,
+    pub data: Vec<u8>,
+}
+
+/// A retained node in a `scene.commit` vector/glyph scene graph (Layer 1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneNode {
+    pub id: u64,
+    pub kind: SceneNodeKind,
+    pub rect: Option<Rect>,
+    pub radius: Option<[u32; 4]>,
+    pub color: Option<u32>,
+    pub scroll: Option<Rect>,
+    pub children: Option<Vec<u64>>,
+    pub font: Option<u64>,
+    pub size: Option<f64>,
+    pub glyphs: Option<Vec<u8>>,
+    pub path: Option<Vec<u8>>,
+    pub surface: Option<u64>,
+}
+
+impl SceneNode {
+    fn to_value(&self) -> Value {
+        MapBuilder::new()
+            .put("id", self.id)
+            .put("kind", self.kind)
+            .opt("rect", self.rect)
+            .opt(
+                "radius",
+                self.radius.map(|r| Value::Array(vec![r[0].into(), r[1].into(), r[2].into(), r[3].into()])),
+            )
+            .opt("color", self.color)
+            .opt("scroll", self.scroll)
+            .opt(
+                "children",
+                self.children.as_ref().map(|c| Value::Array(c.iter().map(|&id| Value::from(id)).collect())),
+            )
+            .opt("font", self.font)
+            .opt("size", self.size)
+            .opt("glyphs", self.glyphs.clone())
+            .opt("path", self.path.clone())
+            .opt("surface", self.surface)
+            .build()
+    }
+
+    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
+        let f = Fields::new("scene.commit.nodes", v)?;
+        Ok(Self {
+            id: f.u64("id")?,
+            kind: enum_field(&f, "kind", SceneNodeKind::parse)?,
+            rect: f.opt_rect("rect")?,
+            radius: f.opt("radius", fields::as_u32_quad)?,
+            color: f.opt_u32("color")?,
+            scroll: f.opt_rect("scroll")?,
+            children: f.opt("children", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?,
+            font: f.opt_u64("font")?,
+            size: f.opt_f64("size")?,
+            glyphs: f.opt_bytes("glyphs")?,
+            path: f.opt_bytes("path")?,
+            surface: f.opt_u64("surface")?,
+        })
+    }
+}
+
+/// `scene.commit` (0x26): retained vector/glyph scene-graph update (Layer 1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneCommit {
+    pub id: u64,
+    pub seq: u64,
+    pub pts_us: u64,
+    pub root: u64,
+    pub reset: bool,
+    pub nodes: Vec<SceneNode>,
+    pub remove: Vec<u64>,
+}
+
+/// `scene.scroll` (0x9A): client-predicted scroll offset synced back to the guest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneScroll {
+    pub id: u64,
+    pub node: u64,
+    pub sx: f64,
+    pub sy: f64,
+}
+
 /// `clipboard` (0x30 server → client, 0xA0 client → server).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Clipboard {
@@ -294,6 +561,10 @@ pub struct ClientHello {
     pub scaled_motion: bool,
     /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
     pub devices: bool,
+    /// The client renders byte-perfect `surface.batch` and `surface.reset` messages. Sent only when true.
+    pub atlas: bool,
+    /// The client renders retained vector and glyph `scene.font` and `scene.commit` messages. Sent only when true.
+    pub scene: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -499,6 +770,12 @@ pub enum Message {
         name: String,
     },
     TextInput(TextInputState),
+    SurfaceBatch(SurfaceBatch),
+    SurfaceReset {
+        epoch: u64,
+    },
+    SceneFont(SceneFont),
+    SceneCommit(SceneCommit),
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
@@ -584,6 +861,7 @@ pub enum Message {
     Pointer(Pointer),
     Key(Key),
     Text(Text),
+    SceneScroll(SceneScroll),
     ClientClipboard(Clipboard),
     /// The complete set of devices the phone offers now.
     Devices {
@@ -656,6 +934,10 @@ pub mod type_id {
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
+    pub const SURFACE_BATCH: u8 = 0x23;
+    pub const SURFACE_RESET: u8 = 0x24;
+    pub const SCENE_FONT: u8 = 0x25;
+    pub const SCENE_COMMIT: u8 = 0x26;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
     pub const AUDIO: u8 = 0x40;
@@ -683,6 +965,7 @@ pub mod type_id {
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
+    pub const SCENE_SCROLL: u8 = 0x9A;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const DEVICES: u8 = 0xB0;
     pub const DEVICE_CAMERA: u8 = 0xB1;
@@ -742,6 +1025,10 @@ impl Message {
             Message::Cursor(_) => CURSOR,
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
+            Message::SurfaceBatch(_) => SURFACE_BATCH,
+            Message::SurfaceReset { .. } => SURFACE_RESET,
+            Message::SceneFont(_) => SCENE_FONT,
+            Message::SceneCommit(_) => SCENE_COMMIT,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::Audio(_) => AUDIO,
@@ -786,6 +1073,7 @@ impl Message {
             Message::Pointer(_) => POINTER,
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
+            Message::SceneScroll(_) => SCENE_SCROLL,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
@@ -956,6 +1244,64 @@ impl Message {
                 .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
                 .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
                 .build(),
+            Message::SurfaceBatch(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("pts_us", m.pts_us)
+                .put("size", m.size)
+                .put("rect", m.rect)
+                .opt("keyframe", m.keyframe.then_some(true))
+                .opt(
+                    "copies",
+                    (!m.copies.is_empty())
+                        .then(|| Value::Array(m.copies.iter().map(|c| c.to_value()).collect())),
+                )
+                .opt(
+                    "fills",
+                    (!m.fills.is_empty())
+                        .then(|| Value::Array(m.fills.iter().map(|f| f.to_value()).collect())),
+                )
+                .opt(
+                    "refs",
+                    (!m.refs.is_empty())
+                        .then(|| Value::Array(m.refs.iter().map(|r| r.to_value()).collect())),
+                )
+                .opt(
+                    "tiles",
+                    (!m.tiles.is_empty())
+                        .then(|| Value::Array(m.tiles.iter().map(SurfaceTile::to_value).collect())),
+                )
+                .build(),
+            Message::SurfaceReset { epoch } => MapBuilder::new().put("epoch", *epoch).build(),
+            Message::SceneFont(m) => MapBuilder::new()
+                .put("font", m.font)
+                .put("index", m.index)
+                .opt("family", m.family.clone())
+                .put("data", m.data.clone())
+                .build(),
+            Message::SceneCommit(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("pts_us", m.pts_us)
+                .put("root", m.root)
+                .opt("reset", m.reset.then_some(true))
+                .opt(
+                    "nodes",
+                    (!m.nodes.is_empty())
+                        .then(|| Value::Array(m.nodes.iter().map(SceneNode::to_value).collect())),
+                )
+                .opt(
+                    "remove",
+                    (!m.remove.is_empty())
+                        .then(|| Value::Array(m.remove.iter().map(|&id| Value::from(id)).collect())),
+                )
+                .build(),
+            Message::SceneScroll(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("node", m.node)
+                .put("sx", m.sx)
+                .put("sy", m.sy)
+                .build(),
             Message::ServerClipboard(c) | Message::ClientClipboard(c) => clipboard_value(c),
             Message::Notification(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1002,6 +1348,8 @@ impl Message {
                 .opt("gpu", m.gpu.then_some(true))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
+                .opt("atlas", m.atlas.then_some(true))
+                .opt("scene", m.scene.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1153,6 +1501,54 @@ impl Message {
                     }
                 },
             }),
+            SURFACE_BATCH => Message::SurfaceBatch(SurfaceBatch {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                pts_us: f.u64("pts_us")?,
+                size: f.size("size")?,
+                rect: f.rect("rect")?,
+                keyframe: f.opt_bool("keyframe")?.unwrap_or(false),
+                copies: f
+                    .opt("copies", |v| fields::as_array(v)?.iter().map(SurfaceCopy::from_value).collect())?
+                    .unwrap_or_default(),
+                fills: f
+                    .opt("fills", |v| fields::as_array(v)?.iter().map(SurfaceFill::from_value).collect())?
+                    .unwrap_or_default(),
+                refs: f
+                    .opt("refs", |v| fields::as_array(v)?.iter().map(SurfaceTileRef::from_value).collect())?
+                    .unwrap_or_default(),
+                tiles: match f.opt("tiles", fields::as_array)? {
+                    None => Vec::new(),
+                    Some(tiles) => tiles.iter().map(SurfaceTile::from_value).collect::<Result<_, ProtocolError>>()?,
+                },
+            }),
+            SURFACE_RESET => Message::SurfaceReset { epoch: f.u64("epoch")? },
+            SCENE_FONT => Message::SceneFont(SceneFont {
+                font: f.u64("font")?,
+                index: f.u32("index")?,
+                family: f.opt_string("family")?,
+                data: f.bytes("data")?,
+            }),
+            SCENE_COMMIT => Message::SceneCommit(SceneCommit {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                pts_us: f.u64("pts_us")?,
+                root: f.u64("root")?,
+                reset: f.opt_bool("reset")?.unwrap_or(false),
+                nodes: match f.opt("nodes", fields::as_array)? {
+                    None => Vec::new(),
+                    Some(nodes) => nodes.iter().map(SceneNode::from_value).collect::<Result<_, ProtocolError>>()?,
+                },
+                remove: f
+                    .opt("remove", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?
+                    .unwrap_or_default(),
+            }),
+            SCENE_SCROLL => Message::SceneScroll(SceneScroll {
+                id: f.u64("id")?,
+                node: f.u64("node")?,
+                sx: f.f64("sx")?,
+                sy: f.f64("sy")?,
+            }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
             NOTIFICATION => Message::Notification(Notification {
                 id: f.u64("id")?,
@@ -1263,6 +1659,8 @@ impl Message {
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
+                atlas: f.opt_bool("atlas")?.unwrap_or(false),
+                scene: f.opt_bool("scene")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1382,6 +1780,11 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
+        SURFACE_BATCH => "surface.batch",
+        SURFACE_RESET => "surface.reset",
+        SCENE_FONT => "scene.font",
+        SCENE_COMMIT => "scene.commit",
+        SCENE_SCROLL => "scene.scroll",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",
         AUDIO => "audio",

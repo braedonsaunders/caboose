@@ -32,6 +32,10 @@ public enum DisplayProtocol {
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
+        case surfaceBatch = 0x23
+        case surfaceReset = 0x24
+        case sceneFont = 0x25
+        case sceneCommit = 0x26
         case clipboard = 0x30
         case notification = 0x31
         case audio = 0x40
@@ -63,6 +67,7 @@ public enum DisplayProtocol {
         case gpuAck = 0x96
         case gameDecline = 0x97
         case webviewDecline = 0x98
+        case sceneScroll = 0x9A
         case clipboard = 0xA0
         case devices = 0xB0
         case deviceCamera = 0xB1
@@ -370,6 +375,236 @@ public struct WebviewDescriptor: Equatable, Sendable {
     }
 }
 
+public enum AtlasTileFormat: String, Equatable, Sendable {
+    case pal2Lz4 = "pal2-lz4"
+    case pal16Lz4 = "pal16-lz4"
+    case rgbaLz4 = "rgba-lz4"
+    case png = "png"
+}
+
+public struct SurfaceCopy: Equatable, Sendable {
+    public var dx: Int
+    public var dy: Int
+    public var rect: CGRect
+    public init(dx: Int, dy: Int, rect: CGRect) { self.dx = dx; self.dy = dy; self.rect = rect }
+    init?(_ value: CBOR) {
+        guard let v = value.ints, v.count == 6, v[4] >= 0, v[5] >= 0 else { return nil }
+        self.init(dx: v[0], dy: v[1], rect: CGRect(x: v[2], y: v[3], width: v[4], height: v[5]))
+    }
+}
+
+public struct SurfaceFill: Equatable, Sendable {
+    public var rect: CGRect
+    public var rgba: UInt32
+    public init(rect: CGRect, rgba: UInt32) { self.rect = rect; self.rgba = rgba }
+    init?(_ value: CBOR) {
+        guard let arr = value.array, arr.count == 5,
+              let x = arr[0].int, let y = arr[1].int, let w = arr[2].int, let h = arr[3].int,
+              w >= 0, h >= 0, let rgba = arr[4].uint64, rgba <= UInt64(UInt32.max) else { return nil }
+        self.init(rect: CGRect(x: x, y: y, width: w, height: h), rgba: UInt32(rgba))
+    }
+}
+
+public struct SurfaceTileRef: Equatable, Sendable {
+    public var x: Int
+    public var y: Int
+    public var hash: UInt64
+    public init(x: Int, y: Int, hash: UInt64) { self.x = x; self.y = y; self.hash = hash }
+    init?(_ value: CBOR) {
+        guard let arr = value.array, arr.count == 3,
+              let x = arr[0].int, let y = arr[1].int, let hash = arr[2].uint64 else { return nil }
+        self.init(x: x, y: y, hash: hash)
+    }
+}
+
+public struct SurfaceTile: Equatable, Sendable {
+    public var rect: CGRect
+    public var hash: UInt64?
+    public var format: AtlasTileFormat
+    public var data: Data
+    public init(rect: CGRect, hash: UInt64? = nil, format: AtlasTileFormat, data: Data) {
+        self.rect = rect; self.hash = hash; self.format = format; self.data = data
+    }
+    init?(_ body: CBOR) {
+        guard let x = body["x"]?.int, let y = body["y"]?.int,
+              let w = body["w"]?.int, let h = body["h"]?.int, w > 0, h > 0,
+              let fmtStr = body["fmt"]?.string, let format = AtlasTileFormat(rawValue: fmtStr),
+              let data = body["data"]?.data else { return nil }
+        let hash: UInt64?
+        if let hVal = body["hash"] {
+            guard let u = hVal.uint64 else { return nil }
+            hash = u
+        } else {
+            hash = nil
+        }
+        self.init(rect: CGRect(x: x, y: y, width: w, height: h), hash: hash, format: format, data: data)
+    }
+}
+
+public struct SurfaceBatch: Equatable, Sendable {
+    public var window: Int
+    public var seq: UInt64
+    public var ptsMicros: UInt64
+    public var size: CGSize
+    public var rect: CGRect
+    public var keyframe: Bool
+    public var copies: [SurfaceCopy]
+    public var fills: [SurfaceFill]
+    public var refs: [SurfaceTileRef]
+    public var tiles: [SurfaceTile]
+
+    public init(window: Int, seq: UInt64, ptsMicros: UInt64, size: CGSize, rect: CGRect, keyframe: Bool = false,
+                copies: [SurfaceCopy] = [], fills: [SurfaceFill] = [], refs: [SurfaceTileRef] = [], tiles: [SurfaceTile] = []) {
+        self.window = window; self.seq = seq; self.ptsMicros = ptsMicros; self.size = size; self.rect = rect
+        self.keyframe = keyframe; self.copies = copies; self.fills = fills; self.refs = refs; self.tiles = tiles
+    }
+
+    init?(_ body: CBOR) {
+        guard let window = body["id"]?.int,
+              let seq = body["seq"]?.uint64,
+              let pts = body["pts_us"]?.uint64,
+              let size = body["size"].flatMap(WindowFields.size), size.width > 0, size.height > 0,
+              let rect = body["rect"].flatMap(WindowFields.rect) else { return nil }
+        var copies: [SurfaceCopy] = []
+        if let raw = body["copies"]?.array {
+            for item in raw { guard let c = SurfaceCopy(item) else { return nil }; copies.append(c) }
+        }
+        var fills: [SurfaceFill] = []
+        if let raw = body["fills"]?.array {
+            for item in raw { guard let f = SurfaceFill(item) else { return nil }; fills.append(f) }
+        }
+        var refs: [SurfaceTileRef] = []
+        if let raw = body["refs"]?.array {
+            for item in raw { guard let r = SurfaceTileRef(item) else { return nil }; refs.append(r) }
+        }
+        var tiles: [SurfaceTile] = []
+        if let raw = body["tiles"]?.array {
+            for item in raw { guard let t = SurfaceTile(item) else { return nil }; tiles.append(t) }
+        }
+        self.init(window: window, seq: seq, ptsMicros: pts, size: size, rect: rect,
+                  keyframe: body["keyframe"]?.bool ?? false,
+                  copies: copies, fills: fills, refs: refs, tiles: tiles)
+    }
+}
+
+public struct SceneFontDescriptor: Equatable, Sendable {
+    public var font: UInt64
+    public var index: Int
+    public var family: String?
+    public var data: Data
+    public init(font: UInt64, index: Int, family: String? = nil, data: Data) {
+        self.font = font; self.index = index; self.family = family; self.data = data
+    }
+    init?(_ body: CBOR) {
+        guard let font = body["font"]?.uint64, let index = body["index"]?.int, index >= 0,
+              let data = body["data"]?.data else { return nil }
+        self.init(font: font, index: index, family: body["family"]?.string, data: data)
+    }
+}
+
+public enum SceneNodeKind: String, Equatable, Sendable {
+    case group, clip, rclip, scroll, rect, border, shadow, glyphs, path, surface
+}
+
+public struct SceneNode: Equatable, Sendable {
+    public var id: UInt64
+    public var kind: SceneNodeKind
+    public var rect: CGRect?
+    public var radius: [Int]?
+    public var color: UInt32?
+    public var scroll: CGRect?
+    public var children: [UInt64]?
+    public var font: UInt64?
+    public var size: Double?
+    public var glyphs: Data?
+    public var path: Data?
+    public var surface: UInt64?
+
+    public init(id: UInt64, kind: SceneNodeKind, rect: CGRect? = nil, radius: [Int]? = nil, color: UInt32? = nil,
+                scroll: CGRect? = nil, children: [UInt64]? = nil, font: UInt64? = nil, size: Double? = nil,
+                glyphs: Data? = nil, path: Data? = nil, surface: UInt64? = nil) {
+        self.id = id; self.kind = kind; self.rect = rect; self.radius = radius; self.color = color
+        self.scroll = scroll; self.children = children; self.font = font; self.size = size
+        self.glyphs = glyphs; self.path = path; self.surface = surface
+    }
+
+    init?(_ body: CBOR) {
+        guard let id = body["id"]?.uint64,
+              let kindStr = body["kind"]?.string,
+              let kind = SceneNodeKind(rawValue: kindStr) else { return nil }
+        let radius: [Int]?
+        if let rVal = body["radius"] {
+            guard let ints = rVal.ints, ints.count == 4 else { return nil }
+            radius = ints
+        } else {
+            radius = nil
+        }
+        let color: UInt32?
+        if let cVal = body["color"] {
+            guard let u = cVal.uint64, u <= UInt64(UInt32.max) else { return nil }
+            color = UInt32(u)
+        } else {
+            color = nil
+        }
+        let children: [UInt64]?
+        if let chVal = body["children"] {
+            guard let arr = chVal.array else { return nil }
+            var ids: [UInt64] = []
+            for item in arr { guard let u = item.uint64 else { return nil }; ids.append(u) }
+            children = ids
+        } else {
+            children = nil
+        }
+        self.init(
+            id: id,
+            kind: kind,
+            rect: body["rect"].flatMap(WindowFields.rect),
+            radius: radius,
+            color: color,
+            scroll: body["scroll"].flatMap(WindowFields.rect),
+            children: children,
+            font: body["font"]?.uint64,
+            size: body["size"]?.double,
+            glyphs: body["glyphs"]?.data,
+            path: body["path"]?.data,
+            surface: body["surface"]?.uint64
+        )
+    }
+}
+
+public struct SceneCommit: Equatable, Sendable {
+    public var window: Int
+    public var seq: UInt64
+    public var ptsMicros: UInt64
+    public var root: UInt64
+    public var reset: Bool
+    public var nodes: [SceneNode]
+    public var remove: [UInt64]
+
+    public init(window: Int, seq: UInt64, ptsMicros: UInt64, root: UInt64, reset: Bool = false,
+                nodes: [SceneNode] = [], remove: [UInt64] = []) {
+        self.window = window; self.seq = seq; self.ptsMicros = ptsMicros; self.root = root
+        self.reset = reset; self.nodes = nodes; self.remove = remove
+    }
+
+    init?(_ body: CBOR) {
+        guard let window = body["id"]?.int,
+              let seq = body["seq"]?.uint64,
+              let pts = body["pts_us"]?.uint64,
+              let root = body["root"]?.uint64 else { return nil }
+        var nodes: [SceneNode] = []
+        if let raw = body["nodes"]?.array {
+            for item in raw { guard let n = SceneNode(item) else { return nil }; nodes.append(n) }
+        }
+        var remove: [UInt64] = []
+        if let raw = body["remove"]?.array {
+            for item in raw { guard let id = item.uint64 else { return nil }; remove.append(id) }
+        }
+        self.init(window: window, seq: seq, ptsMicros: pts, root: root,
+                  reset: body["reset"]?.bool ?? false, nodes: nodes, remove: remove)
+    }
+}
+
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
@@ -399,6 +634,10 @@ public enum ServerMessage: Sendable {
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
+    case surfaceBatch(SurfaceBatch)
+    case surfaceReset(epoch: UInt64)
+    case sceneFont(SceneFontDescriptor)
+    case sceneCommit(SceneCommit)
     case clipboard(mime: String, data: Data)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
@@ -457,6 +696,10 @@ public enum ServerMessage: Sendable {
                 .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
                            surrounding: SurroundingText(text: body["surrounding"]?.string, cursor: body["cursor"]?.int, anchor: body["anchor"]?.int))
             }
+        case .surfaceBatch: parsed = SurfaceBatch(body).map(ServerMessage.surfaceBatch)
+        case .surfaceReset: parsed = body["epoch"]?.uint64.map { .surfaceReset(epoch: $0) }
+        case .sceneFont: parsed = SceneFontDescriptor(body).map(ServerMessage.sceneFont)
+        case .sceneCommit: parsed = SceneCommit(body).map(ServerMessage.sceneCommit)
         case .clipboard:
             parsed = body["data"]?.data.map { .clipboard(mime: body["mime"]?.string ?? "text/plain;charset=utf-8", data: $0) }
         case .notification:
@@ -633,7 +876,7 @@ public enum ClientMessage: Sendable {
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
                audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
-               devices: Bool = false)
+               devices: Bool = false, atlas: Bool = false, scene: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -658,6 +901,7 @@ public enum ClientMessage: Sendable {
     /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
     case gameDecline(id: Int, reason: String)
     case webviewDecline(id: Int, reason: String)
+    case sceneScroll(window: Int, node: Int, sx: Double, sy: Double)
     /// The complete set of devices the phone offers now.
     case devices([DeviceDescriptor])
     /// One H.264 access unit of a camera, Annex-B, with SPS and PPS on keyframes.
@@ -682,7 +926,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let atlas, let scene):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -693,6 +937,12 @@ public enum ClientMessage: Sendable {
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
+                ("atlas", atlas ? CBOR(true) : nil),
+                ("scene", scene ? CBOR(true) : nil),
+            ]))
+        case .sceneScroll(let window, let node, let sx, let sy):
+            return DisplayFrame(type: T.sceneScroll.rawValue, body: map([
+                ("id", CBOR(window)), ("node", CBOR(node)), ("sx", CBOR(sx)), ("sy", CBOR(sy)),
             ]))
         case .devices(let devices):
             return DisplayFrame(type: T.devices.rawValue, body: map([("devices", .array(devices.map(\.cbor)))]))
