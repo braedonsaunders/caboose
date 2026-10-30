@@ -122,7 +122,7 @@ request through the same queue, claim and answer as the file chooser:
   `multiple` true (one image per page). `app`, `title`, `acceptLabel`, `currentName` and
   `currentFolder` are `""`, and `directory` is false.
 - The answer is `ok` with the scanned files' paths, `cancel`, or `computer` when the phone
-  cannot scan (no camera or document scanner). The phone uploads the scan to
+  cannot scan (no document scanner) or cannot show the request now. The phone uploads the scan to
   `~/Caboose Documents/<uuid>/`.
 - With `--output`, the scan moves there: a PDF to that file (replacing it) or into that
   folder; JPEG pages into that folder, made when missing.
