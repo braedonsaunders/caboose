@@ -35,12 +35,39 @@ Release-only waits can expire without closing the connection; they send no
 request and create no uncertain submission. `waitAnyReleased` can poll with an
 already expired deadline. Other operation deadlines terminate the transport.
 
-This directory is not connected to Mesa entrypoints. It provides no swapchain,
-capability advertisement, acquire synchronization, coherent memory support or
-game presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
+`../prepare_virtual_wsi_surface.py` installs the native Wayland instance and
+physical-device query overrides from `mesa_surface.inc` into a separately prepared
+private Mesa tree. It checks the exact pinned upstream blobs and each insertion
+anchor before writing, refuses duplicate application, and leaves `prepare_mesa.py`
+unchanged. `--check` validates the tree without writing. The overrides require
+both private build defines and a Wayland build; the ordinary diagnostic is unchanged.
+
+The private surface wrapper comes from Mesa's actual Wayland WSI allocator.
+Binding uses `wl_proxy_get_id` on the supplied `wl_surface`, an explicit
+`CABOOSE_GFXSTREAM_SURFACE_SOCKET`, and a ten-second bind deadline. Query replies
+populate the base capabilities, format and mode enumeration APIs, including their
+base `*2` forms. Unknown extension chains fail explicitly. Local transport errors
+map to the WSI API's surface-loss result; they never become claimed provider
+device-loss results. Uncertain bind or retirement retains the bounded wrapper and
+instance lease. Destruction completes only after actual native retirement.
+
+The private device advertises no swapchain or dependent presentation extensions,
+and surface support returns false: the implemented swapchain path is absent.
+Other surface-platform extensions are disabled for this private path. The query
+values are unmodified actual provider properties, not claims of a usable device.
+This source provides no swapchain, acquire synchronization, coherent memory support
+or game presentation. `SOURCE_RELEASED` proves source-read completion only; it is not
 Vulkan swapchain acquisition or semaphore/fence signaling. The current record set
 has no native swapchain create/acquire operation, source-to-provider-index mapping
 or acquire semaphore/fence ownership contract.
+
+The Mesa check is syntax-only against the retained generated headers and compiler
+command. `check_mesa_surface.py COMPILE_COMMANDS_JSON TRANSLATED_DEVICE_CPP`
+removes compiler output/dependency flags, enables the private Wayland query guard,
+prints the exact argv and source hash, and gives the single compiler sixty seconds.
+It does not link an ICD or validate runtime compositor integration. The current
+toolchain image is identified in `verification.json`; its historical use for the
+retained build is not established.
 
 ## Focused Linux verification
 

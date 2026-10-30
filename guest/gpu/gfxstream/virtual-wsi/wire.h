@@ -78,4 +78,25 @@ inline Record decode(const Bytes& b) {
     }
     return r;
 }
+struct ProviderCaps {
+    std::array<uint32_t,13> values;
+    std::vector<std::array<uint32_t,2>> formats;
+    std::vector<uint32_t> modes;
+    std::vector<std::array<uint32_t,4>> queues;
+};
+inline ProviderCaps providerCaps(const Bytes& body) {
+    // Validate complete provider success before exposing any output fields.
+    decode(packet(19,body));
+    const auto s=status(body,48);
+    require(s.success() && s.hasVk);
+    ProviderCaps caps{};
+    for (size_t i=0;i<13;++i) caps.values[i]=u32(body,64+4*i);
+    size_t at=128;
+    for (uint32_t i=0;i<u32(body,116);++i,at+=8)
+        caps.formats.push_back({u32(body,at),u32(body,at+4)});
+    for (uint32_t i=0;i<u32(body,120);++i,at+=4) caps.modes.push_back(u32(body,at));
+    for (uint32_t i=0;i<u32(body,124);++i,at+=16)
+        caps.queues.push_back({u32(body,at),u32(body,at+4),u32(body,at+8),u32(body,at+12)});
+    return caps;
+}
 } // namespace caboose::wsi

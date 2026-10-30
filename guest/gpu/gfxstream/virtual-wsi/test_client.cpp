@@ -62,7 +62,18 @@ static void exercise(int scenario) {
     try { client.bind(7,13,0,480,deadline); } catch (const ProtocolError&) { mixedRejected=true; }
     assert(mixedRejected);
     assert(status(client.bind(7,13,0,0,deadline).body,48).success());
-    assert(client.query(1,11,deadline).body.size()==156);
+    auto queried=client.query(1,11,deadline).body;
+    const auto caps=providerCaps(queried);
+    const std::array<uint32_t,13> expectedCaps={2,4,640,480,1,1,4096,4096,1,1,1,1,2};
+    assert(caps.values==expectedCaps);
+    assert((caps.formats==std::vector<std::array<uint32_t,2>>{{44,0}}));
+    assert(caps.modes==std::vector<uint32_t>{2});
+    assert((caps.queues==std::vector<std::array<uint32_t,4>>{{0,7,1,1}}));
+    auto failedCaps=queried;
+    failedCaps.resize(64); failedCaps[56]=0xfc; failedCaps[57]=failedCaps[58]=failedCaps[59]=0xff;
+    bool failureRejected=false;
+    try { providerCaps(failedCaps); } catch (const ProtocolError&) { failureRejected=true; }
+    assert(failureRejected);
     Bytes present; for (auto v:{4,11,13,15}) put64(present,v);
     for (auto v:{44,640,480,1,0,2}) put32(present,v);
     put64(present,17); put64(present,19);
