@@ -49,7 +49,10 @@ destination. Fetch size depends on the remote server and has not been measured.
 For an isolated checkout whose `HEAD` is exactly the candidate Mesa revision,
 `python3 guest/gpu/gfxstream/prepare_mesa.py /path/to/mesa` checks SHA-256 of
 all eight changed upstream files before applying the integration. It refuses an
-already patched or different tree. For an isolated Linux build environment with
+already patched or different tree. Then run
+`python3 guest/gpu/gfxstream/fix_instance_gate.py /path/to/mesa`: the original
+Mesa instance creation only treats one initialization error as failure, so this
+second patch is required to reject socket mode before any encoder lookup. For an isolated Linux build environment with
 the required Mesa build dependencies available, the headless configuration is:
 
 ```sh
@@ -130,3 +133,26 @@ Meson log for further requirements. Use `--wrap-mode=nodownload` on the
 headless setup command above to prevent unplanned dependency downloads. The
 dependency availability depends on the build environment; this file does not
 fetch or install dependencies.
+
+## Private manifest and socket gate check
+
+`python3 guest/gpu/gfxstream/make_manifest.py LIBRARY SHA256 OUTPUT 1.3.358`
+checks an existing library hash and writes a private ICD manifest with its
+absolute path. It refuses to replace a manifest. Resolve the library's dynamic
+dependencies in the intended Linux environment before loading it.
+
+After building the two source patches, run the private gate check with
+`timeout 20 python3 guest/gpu/gfxstream/check_instance_gate.py LIBRARY PRIVATE_DIR`.
+It calls the ICD's `vkCreateInstance` through `vk_icdGetInstanceProcAddr` with
+a listening Unix socket, and requires `VK_ERROR_INCOMPATIBLE_DRIVER`, an
+unchanged instance output and no incoming socket connection. This is a negative
+gate check, not proof of working remoting.
+
+The Linux receiver opens one process context through
+`caboose_gfx_process_open(registry, process_id)` and runs each authenticated
+thread stream through `caboose_gfx_process_run(registry, process_id, fd,
+max_packet, max_buffer)`. The broker binds those streams to that context outside
+the raw protocol and calls stop and finish for its lifetime. Each Mesa thread
+sends native uint32 zero client flags; the socket path does not implement the
+QEMU `GLProcessPipe` exchange. The socket path still lacks feature/seqno
+negotiation and the no-render-control initialization path. It remains gated.
