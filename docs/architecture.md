@@ -2562,8 +2562,10 @@ remain fenced until actual cleanup succeeds. A controller retains at most 256
 grants including failed admissions; exhausting that bound ends admission.
 
 The private indexed memory preparation splits explicit mapped-memory transfers
-into bounded synchronous RPCs and publishes invalidate results only after the
-complete original call succeeds. Its [staging limits and checks](../guest/gpu/gfxstream/bounded-memory/README.md)
+into bounded RPCs. Flush pipelines at most eight 64 KiB packets on one locked
+encoder and consumes every queued result before another window; a provider error
+stops later windows, and transport loss invalidates the stream. Invalidate stays
+sequential and publishes results only after the complete original call succeeds. Its [staging limits and checks](../guest/gpu/gfxstream/bounded-memory/README.md)
 are private-profile constraints; public coherent-memory support remains absent.
 
 An explicitly selected diagnostic package exposes a separate memory-audit module.
