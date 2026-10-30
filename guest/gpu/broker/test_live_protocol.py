@@ -18,6 +18,25 @@ class LiveProtocolTests(unittest.TestCase):
     def decoder(self):
         return Decoder(IDENTITY, 7)
 
+    def test_independent_v4_vectors_preserve_v3_fixture(self):
+        vectors = json.loads(Path(__file__).with_name("live-v4-vectors.json").read_text())
+        for vector in vectors:
+            payload = bytes.fromhex(vector["payload"])
+            kind = Kind[vector["kind"]]
+            if kind in (Kind.SESSION, Kind.SESSION_READY):
+                self.assertEqual(payload[:16], b"CBGLREF1\x04\0\0\0\x70\0\0\0")
+                self.assertEqual(payload[16:], HELLO[16:])
+                self.assertNotEqual(payload, HELLO)
+            message = Envelope(kind, IDENTITY, 7, vector["process"], vector["stream"], 1, payload)
+            wire = bytes.fromhex(vector["wire"])
+            self.assertEqual(encode(message), wire)
+            for split in range(len(wire) + 1):
+                got, parser = [], self.decoder()
+                parser.feed(wire[:split], got.append)
+                parser.feed(wire[split:], got.append)
+                parser.finish()
+                self.assertEqual(got, [message])
+
     def test_golden_vectors(self):
         vectors = json.loads(Path(__file__).with_name("live-vectors.json").read_text())
         for vector in vectors:

@@ -89,7 +89,8 @@ are monotonic and never reused within a generation. The initial admission limits
 are 16 active processes and 64 active streams; retirement releases capacity without
 resetting identity counters.
 
-The live hello is ASCII `CBGLREF1`, little-endian version 3, mask `0x30`, and the
+The retained version-3 live hello is ASCII `CBGLREF1`, little-endian version 3,
+mask `0x30`, and the
 32-byte source tuple fingerprint
 `20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0`.
 Bit 4 requires actual `VulkanNullOptionalStrings`; bit 5 requires the explicit
@@ -98,6 +99,14 @@ the base sources, not general schema compatibility or hostile-input safety.
 The separate version-2 diagnostic does not negotiate virtual WSI and is rejected
 by this live contract. The versioned native start symbol prevents a retained
 non-WSI framework from claiming this mode.
+
+The indexed version-4 wire uses version 4 and mask `0x70`, with the same source
+fingerprint and additional bit 6 requiring actual indexed acquisition. Its exact
+SESSION and SESSION_READY records are in `live-v4-vectors.json`; the version-3
+records remain unchanged in `live-vectors.json`. Endpoint mode selection requires
+an exact match, not a subset of bits. `caboose_gpu_live_start_v4` strongly links the
+actual indexed runtime; a version-3 artifact cannot authorize version 4. These
+wire fixtures do not initialize a provider or activate the driver.
 
 ## Readiness and retirement
 
