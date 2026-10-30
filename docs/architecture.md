@@ -2934,7 +2934,9 @@ window. A bounded host collector reads local Docker Engine counters without exec
 inside or waking a computer. Hourly aggregates persist under the image root; missing
 intervals, counter resets and host restarts never fabricate historical CPU time.
 AppKit desk does not expose VM resource counters, so VM RAM and CPU are unavailable.
-Explicit container storage refresh reports dedicated-home allocated file blocks and
+Explicit container storage refresh validates the configured named volume or exact
+absolute bind-home source against the inspected `/home/caboose` mount and reports
+dedicated-home allocated file blocks and
 Docker logical layer sizes separately; shared/reflink bytes are never attributed as
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.

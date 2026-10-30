@@ -27,6 +27,18 @@ export function dockerCounters(info: any, stats: any, at = Date.now()): UsageCou
     memoryLimitBytes: info.HostConfig.Memory > 0 ? info.HostConfig.Memory : null, memoryKind: 'cgroup' }
 }
 let storageBusy = false
+/** Only the configured home may authorize a scan; inspection is not a source of candidates. */
+export function containerHomeSource(home: string, mounts: unknown): string | undefined {
+  if (!Array.isArray(mounts)) return undefined
+  if (home.startsWith('/')) {
+    // Reject root, traversal and ambiguous spellings rather than normalizing into another path.
+    if (home.includes('\0') || home.slice(1).split('/').some(part => !part || part === '.' || part === '..')) return undefined
+    return mounts.some(m => m?.Type === 'bind' && m.Destination === '/home/caboose' && m.Source === home) ? home : undefined
+  }
+  if (home.includes('/') || home.includes('\0')) return undefined
+  const mount = mounts.find(m => m?.Type === 'volume' && m.Name === home && m.Destination === '/home/caboose')
+  return typeof mount?.Source === 'string' ? mount.Source : undefined
+}
 export function containerUsage(name: string, home: string, socket: () => Promise<string>) {
   let storage: Promise<ComputerStorage> | undefined, storageAt = 0
   const info = async (size = false) => engineJson(await socket(), `/containers/${encodeURIComponent(name)}/json${size ? '?size=true' : ''}`)
@@ -48,9 +60,9 @@ export function containerUsage(name: string, home: string, socket: () => Promise
         const unknown = unavailable('Home volume is not locally accessible or scan is incomplete')
         let homeUsage = { logicalBytes: unknown, allocatedBytes: unknown }
         const container = await info(true)
-        const mount = container.Mounts?.find((m: any) => m.Type === 'volume' && m.Name === home && m.Destination === '/home/caboose')
-        if (mount && typeof mount.Source === 'string') {
-          try { homeUsage = await allocatedVolume(mount.Source) } catch {}
+        const source = containerHomeSource(home, container.Mounts)
+        if (source !== undefined) {
+          try { homeUsage = await allocatedVolume(source) } catch {}
         }
         return { sampledAt: Date.now(), home: homeUsage,
           writableLayerLogicalBytes: typeof container.SizeRw === 'number' ? measured(container.SizeRw) : unavailable('Docker writable layer size unavailable'),
