@@ -231,7 +231,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
 | `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | The computers' image (container); pulled when missing if it names a registry. |
 | `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` (container). |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). Explicit storage measurement requires the matching inspected home mount and a locally accessible directory; bind paths must be absolute, without root-only, traversal or noncanonical slash spellings. |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |
 | `CABOOSE_GPU` | `auto` | `wsl`, `nvidia`, `dri` or `none`; `auto` detects `/dev/dxg`, then NVIDIA, then `/dev/dri/renderD128` (container). |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the computer reach private networks. |

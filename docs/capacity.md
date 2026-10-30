@@ -129,8 +129,13 @@ failures are logged; in-memory measurements remain available until restart.
 Container storage is cached for fifteen minutes, including failures, and only one
 storage refresh runs at a time. Docker inspection with `size=true` supplies writable
 layer and shared-image **logical** sizes; these are not allocated physical costs and
-exclude mounted volumes. The dedicated `/home/caboose` named volume is measured only
-when its Engine-reported directory is locally accessible. A separate Python 3 worker
+exclude mounted volumes. The dedicated `/home/caboose` home is measured only when
+its directory is locally accessible. A named volume must match the configured home
+name, mount type `volume`, and exact destination `/home/caboose`. An absolute
+`CABOOSE_CONTAINER_HOME` path (with the computer ID suffix for other computers)
+must exactly match an inspected mount's source, type `bind`, and destination
+`/home/caboose`. Root, relative paths, traversal components and noncanonical slash
+spellings are rejected; no other inspected mount is selected as a fallback. A separate Python 3 worker
 counts logical file sizes and allocated file blocks with inode deduplication, opens each directory with `O_DIRECTORY | O_NOFOLLOW` and uses retained directory
 descriptors for child lookups, without following symlinks. Changed directory identities,
 mount boundaries and unsupported entries reject the scan. Python 3 and descriptor-relative
