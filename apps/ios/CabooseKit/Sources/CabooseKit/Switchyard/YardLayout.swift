@@ -482,3 +482,47 @@ public struct YardLayout: Codable, Equatable, Sendable {
 
     static func even(_ count: Int) -> [CGFloat] { Array(repeating: 1 / CGFloat(max(1, count)), count: count) }
 }
+
+extension YardLayout {
+    /// A proposed native palette arrangement, expressed entirely as ordinary Yard columns.
+    /// The source stays untouched until release. All slots require real windows.
+    public func snapping(_ window: Int, to snap: FreeDesktopLayout.Snap,
+                         layout slots: [FreeDesktopLayout.Snap], in metrics: YardMetrics,
+                         minimums: [Int: CGSize] = [:]) -> YardLayout? {
+        guard let source = columnIndex(of: window), slots.contains(snap),
+              Set(slots).count == slots.count, windows.count >= slots.count else { return nil }
+        let ordered = Array(columns[source...].flatMap(\.windows)) + columns[..<source].flatMap(\.windows)
+        var others = ordered.filter { $0 != window }.makeIterator()
+        let assignments = slots.map { ($0, $0 == snap ? window : others.next()!) }
+        let unit = CGRect(x: 0, y: 0, width: 6, height: 6)
+        let groups = Dictionary(grouping: assignments) { FreeDesktopLayout.rect(for: $0.0, in: unit).minX }
+        var result = self
+        let chosen = Set(assignments.map(\.1))
+        // Preserve every unchosen window and its relative order.
+        for id in chosen { result.remove(id, in: metrics) }
+        let insertion = min(source, result.columns.count)
+        var arranged: [Column] = []
+        for x in groups.keys.sorted() {
+            let group = groups[x]!.sorted {
+                FreeDesktopLayout.rect(for: $0.0, in: unit).minY < FreeDesktopLayout.rect(for: $1.0, in: unit).minY
+            }
+            let fraction = FreeDesktopLayout.rect(for: group[0].0, in: unit).width / 6
+            guard fraction >= metrics.minimumFraction - 0.0001 else { return nil }
+            var column = Column(id: result.nextColumnID, window: group[0].1, width: fraction, pinned: true)
+            result.nextColumnID += 1
+            column.windows = group.map(\.1)
+            column.heights = group.map { FreeDesktopLayout.rect(for: $0.0, in: unit).height / 6 }
+            arranged.append(column)
+        }
+        result.columns.insert(contentsOf: arranged, at: insertion)
+        result.focus(window)
+        let frames = result.frames(in: metrics)
+        for id in chosen {
+            guard let frame = frames[id] else { return nil }
+            let minimum = minimums[id] ?? .zero
+            guard frame.width >= max(metrics.minimumTile.width, minimum.width),
+                  frame.height >= max(metrics.minimumTile.height, minimum.height) else { return nil }
+        }
+        return result
+    }
+}

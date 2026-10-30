@@ -199,13 +199,15 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public struct SnapPalette: Equatable, Sendable {
         public struct Region: Equatable, Sendable {
             public let snap: Snap
+            public let layout: [Snap]
             public let frame: CGRect
             public let enabled: Bool
         }
         public let frame: CGRect
         public let regions: [Region]
 
-        public init(in area: CGRect, scale: CGFloat = 1, minimum: CGSize = .zero) {
+        public init(in area: CGRect, scale: CGFloat = 1, minimum: CGSize = .zero,
+                    allows: ((Snap, [Snap]) -> Bool)? = nil) {
             let scale = max(0.5, scale)
             let gap = 10 * scale, inset = 12 * scale
             let columns = area.width >= 900 * scale ? 6 : (area.width >= 600 * scale ? 3 : 2)
@@ -229,8 +231,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
                                   y: frame.minY + header + inset + CGFloat(index / columns) * (cardHeight + gap),
                                   width: cardWidth, height: cardHeight)
                 for snap in layout {
-                    result.append(Region(snap: snap, frame: FreeDesktopLayout.rect(for: snap, in: card),
-                                         enabled: FreeDesktopLayout.allows(snap, in: area, minimum: minimum)))
+                    result.append(Region(snap: snap, layout: layout, frame: FreeDesktopLayout.rect(for: snap, in: card),
+                                         enabled: FreeDesktopLayout.allows(snap, in: area, minimum: minimum) && (allows?(snap, layout) ?? true)))
                 }
             }
             regions = result

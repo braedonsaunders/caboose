@@ -385,3 +385,65 @@ struct SwitchyardTests {
         #expect(YardMetrics.titleBar.controls == [.close, .zoom])
     }
 }
+
+struct YardSnapTests {
+    private let metrics = YardMetrics(size: CGSize(width: 1024, height: 768))
+
+    @Test func everyPaletteRegionProducesAnOrdinaryYardWithoutMutatingTheSource() throws {
+        var original = YardLayout()
+        for id in 1...6 { original.insert(id, in: metrics) }
+        let before = original
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size))
+        for region in palette.regions {
+            let result = try #require(original.snapping(3, to: region.snap, layout: region.layout, in: metrics))
+            #expect(original == before)
+            #expect(result.focused == 3)
+            #expect(Set(result.windows) == Set(original.windows))
+            #expect(result.windows.count == original.windows.count)
+            let frame = try #require(result.frames(in: metrics)[3])
+            let slot = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+            #expect(abs(frame.width - metrics.points(forFraction: slot.width / 6)) < 0.001)
+            #expect(abs(frame.height - (slot.height == 6 ? metrics.columnHeight : (metrics.columnHeight - metrics.gap) / 2)) <= 1)
+            #expect(palette.selection(at: CGPoint(x: region.frame.midX, y: region.frame.midY)) == region.snap)
+            let all = Array(result.frames(in: metrics).values)
+            for i in all.indices {
+                for j in all.indices where j > i { #expect(!all[i].intersects(all[j])) }
+            }
+        }
+    }
+
+    @Test func quarterNeedsFourWindowsAndRespectsEveryParticipantsMinimum() {
+        let slots: [FreeDesktopLayout.Snap] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        var yard = YardLayout()
+        for id in 1...3 { yard.insert(id, in: metrics) }
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) == nil)
+        yard.insert(4, in: metrics)
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics,
+                              minimums: [2: CGSize(width: 600, height: 200)]) == nil)
+        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
+        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) == nil)
+    }
+
+    @Test func repeatedThirdChoicesRetainTheirOwnCompanionLayout() throws {
+        var yard = YardLayout()
+        for id in 1...3 { yard.insert(id, in: metrics) }
+        let thirds = try #require(yard.snapping(1, to: .leftThird,
+            layout: [.leftThird, .centerThird, .rightThird], in: metrics))
+        let pair = try #require(yard.snapping(1, to: .leftThird,
+            layout: [.leftThird, .rightTwoThirds], in: metrics))
+        #expect(thirds.columns.filter { $0.pinned }.count == 3)
+        #expect(pair.columns.filter { $0.pinned }.count == 2)
+        #expect(pair.columns.contains { abs($0.width - 2.0 / 3) < 0.001 })
+    }
+
+    @Test func disabledPaletteRegionsCannotSelectOrFallThrough() {
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size),
+            allows: { snap, _ in snap == .maximized })
+        for region in palette.regions {
+            let point = CGPoint(x: region.frame.midX, y: region.frame.midY)
+            #expect(palette.frame.contains(point))
+            #expect(palette.selection(at: point) == (region.snap == .maximized ? .maximized : nil))
+        }
+    }
+}
