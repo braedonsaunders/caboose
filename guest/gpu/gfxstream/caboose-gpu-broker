@@ -128,6 +128,25 @@ async def close_owned_writer(writer, *, abort, timeout=1):
         return False
 
 
+DATA_READ_BYTES = 65536
+DATA_CREDIT_BYTES = DATA_READ_BYTES + 64 + 10  # CGLV header + maximum WS header
+CONTROL_HEADROOM_BYTES = 65536
+CONTROL_HEADROOM_MESSAGES = 8
+
+
+class DataCredit:
+    def __init__(self, owner):
+        self.owner = owner
+        self.active = True
+
+    def release(self):
+        if not self.active: return
+        self.active = False
+        self.owner.reserved_bytes -= DATA_CREDIT_BYTES
+        self.owner.reserved_count -= 1
+        self.owner.capacity_changed.set()
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -142,6 +161,10 @@ class Session:
         self.pending = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
         self.pending_bytes = 0
         self.pending_count = 0
+        self.reserved_bytes = 0
+        self.reserved_count = 0
+        self.capacity_changed = asyncio.Event()
+        self.sender_stopped = False
         self.processes, self.streams, self.surfaces = {}, {}, {}
         self.surface_epoch = None
         self.session_ready = asyncio.Event()
@@ -156,18 +179,38 @@ class Session:
         self.failed = False
         self.closing_ws = False
 
-    def enqueue_frame(self, frame):
-        if self.pending_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes:
+    async def reserve_data(self):
+        # Reserve before reading a local payload: waiting readers cannot retain
+        # another unaccounted 64 KiB each outside the shared queue budget.
+        while True:
+            if self.failed or self.closing_ws or self.draining or self.sender_stopped:
+                raise ConnectionError('session failed or draining')
+            if (self.pending_count + self.reserved_count < MAX_QUEUED_MESSAGES - CONTROL_HEADROOM_MESSAGES and
+                DATA_CREDIT_BYTES <= MAX_QUEUED_BYTES - CONTROL_HEADROOM_BYTES - self.pending_bytes - self.reserved_bytes):
+                credit = DataCredit(self)
+                self.reserved_count += 1
+                self.reserved_bytes += DATA_CREDIT_BYTES
+                return credit
+            self.capacity_changed.clear()
+            await self.capacity_changed.wait()
+
+    def enqueue_frame(self, frame, credit=None):
+        if credit is not None:
+            if credit.owner is not self or not credit.active or len(frame) > DATA_CREDIT_BYTES:
+                raise RuntimeError('invalid data credit')
+            # No await between releasing the reservation and publishing its frame.
+            credit.release()
+        if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
         self.pending.put_nowait(frame)
         self.pending_bytes += len(frame)
         self.pending_count += 1
 
-    def send(self, kind, process=0, stream=0, payload=b''):
-        if self.failed or self.closing_ws: raise ConnectionError('session failed or closing')
+    def send(self, kind, process=0, stream=0, payload=b'', *, credit=None):
+        if self.failed or self.closing_ws or self.sender_stopped: raise ConnectionError('session failed or closing')
         data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
         frame = server_frame(2, data)
-        self.enqueue_frame(frame)
+        self.enqueue_frame(frame, credit)
         self.sequence += 1
 
     async def close_after_retirement(self):
@@ -179,13 +222,19 @@ class Session:
         await asyncio.wait_for(self.pending.join(), 2)
 
     async def send_loop(self):
-        while True:
-            data = await self.pending.get()
-            self.writer.write(data)
-            await self.writer.drain()
-            self.pending_bytes -= len(data)
-            self.pending_count -= 1
-            self.pending.task_done()
+        try:
+            while True:
+                data = await self.pending.get()
+                self.writer.write(data)
+                await self.writer.drain()
+                self.pending_bytes -= len(data)
+                self.pending_count -= 1
+                self.pending.task_done()
+                self.capacity_changed.set()
+        finally:
+            # A dead sender cannot release queued bytes as successfully drained.
+            self.sender_stopped = True
+            self.capacity_changed.set()
 
     async def message(self, frame):
         if frame.kind == Kind.SESSION_READY:
@@ -195,6 +244,7 @@ class Session:
         if frame.kind == Kind.EXECUTOR_DRAIN:
             if self.draining: raise ValueError('duplicate drain')
             self.draining = True
+            self.capacity_changed.set()
             await self.broker.report_lifecycle(self, 5)
             self.drain_requested.set()
             return
@@ -377,6 +427,7 @@ class Session:
     async def drain(self):
         """Cancel local work, retire surfaces, then wait for native processes."""
         self.draining = True
+        self.capacity_changed.set()
         # The drain path becomes the sole owner of process retirement.
         for task in tuple(self.lifecycle_tasks): task.cancel()
         if self.lifecycle_tasks:
@@ -385,6 +436,7 @@ class Session:
         if self.local_tasks:
             await asyncio.wait_for(asyncio.gather(*tuple(self.local_tasks), return_exceptions=True), 2)
         if self.failed: raise ConnectionError('local transport cleanup failed')
+        if self.reserved_count or self.reserved_bytes: raise RuntimeError('local read credits remain after drain')
         # Compositor LOST queues every REVOKE_GRANT. Only its authenticated
         # records cause SURFACE_RETIRE; never infer a native surface retirement.
         surfaces = tuple(self.surfaces.values())
@@ -457,20 +509,26 @@ class Session:
             await asyncio.wait_for(stream['ready'].wait(), 10)
             writer.write(self.hello); await writer.drain()
             while True:
+                credit = None
                 try:
-                    payload = await asyncio.wait_for(reader.read(65536), 1)
-                except asyncio.TimeoutError:
+                    credit = await asyncio.wait_for(self.reserve_data(), 1)
+                    payload = await asyncio.wait_for(reader.read(DATA_READ_BYTES), 1)
+                    if not payload:
+                        # EOF authorizes no new bytes. Retain binding until native FIN
+                        # and actual retirement even if the creator has exited.
+                        self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                        stream['local_eof'] = True
+                        self.send(Kind.FIN, process_id, stream_id, credit=credit)
+                        break
                     self.bindings.identity(self.binding_generation, stream_id)
-                    continue
-                if not payload:
-                    # EOF authorizes no new bytes. Retain binding until native FIN
-                    # and actual process retirement, even if the creator has exited.
-                    self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
-                    stream['local_eof'] = True
-                    break
-                self.bindings.identity(self.binding_generation, stream_id)
-                self.send(Kind.DATA, process_id, stream_id, payload)
-            self.send(Kind.FIN, process_id, stream_id)
+                    self.send(Kind.DATA, process_id, stream_id, payload, credit=credit)
+                except asyncio.TimeoutError:
+                    # Waiting for credit is not an idle peer read: EOF may be
+                    # queued behind backpressure after a legitimate creator exit.
+                    self.bindings.identity(self.binding_generation, stream_id,
+                                           require_alive=credit is not None)
+                finally:
+                    if credit is not None: credit.release()
             await asyncio.wait_for(stream['remote_fin'].wait(), 10)
         except OverflowError:
             # Reject an excess local stream without taking ownership or poisoning
