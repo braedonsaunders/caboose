@@ -72,8 +72,8 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
-Golden images omit package documentation except copyright notices, info pages and
-lintian overrides. Persistent dpkg exclusions apply to later installs too; manual
+Golden images omit info pages, lintian overrides and package documentation other
+than copyright notices. Persistent dpkg exclusions apply to later installs too; manual
 pages and translations remain available. The generic Debian kernel remains selected
 for phone-device drivers.
 
