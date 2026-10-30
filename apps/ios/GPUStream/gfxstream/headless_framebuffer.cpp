@@ -4,6 +4,7 @@
 #include "gfxstream/host/features.h"
 
 namespace caboose::gpuv2 {
+namespace { bool ownsFramebuffer = false; }
 bool initializeHeadlessFramebuffer(const gfxstream::host::FeatureSet& features) {
     using gfxstream::host::FrameBuffer;
     // GuestVulkanOnly selects upstream's real offscreen Vulkan compositor.
@@ -16,7 +17,13 @@ bool initializeHeadlessFramebuffer(const gfxstream::host::FeatureSet& features) 
         FrameBuffer::finalize();
         return false;
     }
+    ownsFramebuffer = true;
     return true;
 }
-void finalizeHeadlessFramebuffer() { gfxstream::host::FrameBuffer::finalize(); }
+void finalizeHeadlessFramebuffer() {
+    if (ownsFramebuffer) {
+        gfxstream::host::FrameBuffer::finalize();
+        ownsFramebuffer = false;
+    }
+}
 }
