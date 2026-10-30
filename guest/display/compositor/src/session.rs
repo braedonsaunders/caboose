@@ -323,6 +323,7 @@ impl State {
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
+                gpu_live_epoch: None,
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());

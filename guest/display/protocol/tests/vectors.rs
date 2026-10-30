@@ -82,3 +82,19 @@ fn every_type_id_has_a_vector() {
         }
     }
 }
+
+#[test]
+fn malformed_live_gpu_epoch_does_not_break_display_hello() {
+    use caboose_display_protocol::{cbor::Value, type_id, Message};
+    let original = vectors::all(&media()).into_iter().find(|v| v.name == "server-hello-epoch").unwrap();
+    let Entry::Message(message) = &original.entries[0] else { panic!("expected hello") };
+    for bad in [Value::Bytes(vec![0; 16]), Value::Bytes(vec![1; 15]), Value::Text("bad".into()), Value::Null] {
+        let Value::Map(mut fields) = message.to_value() else { panic!("expected map") };
+        fields.push(("gpu_live_epoch".into(), bad));
+        let Some(Message::ServerHello(hello)) = Message::from_value(type_id::HELLO, &Value::Map(fields)).unwrap() else {
+            panic!("ordinary hello should still decode");
+        };
+        assert_eq!(hello.gpu_live_epoch, None);
+        assert_eq!(hello.epoch.as_deref(), Some("5f3a9c01d2e4b678"));
+    }
+}
