@@ -1400,3 +1400,17 @@ Use the same explicit compile command above after source changes. The 90-second 
 limit still covers both 26-second arms. A time-domain improvement would establish an
 algorithm-dependent local mechanism; phone behavior and audio quality still require
 validation before claiming the production incident resolved.
+
+### Configure Shortcuts
+
+Open **Computer settings > Shortcuts** to browse Caboose’s actions or create a shortcut
+in Apple Shortcuts. Add **Export Files**, choose an app, files and an output format,
+and connect its output to Save File, Share or another action. Parameters can use an
+earlier action’s output or Ask Each Time. PhotoCraft converts 1–20 images, LightCraft
+develops one photo, and FilmCraft exports one project; install the selected app in
+Library first. **Combine PDFs** is a separate action. The settings screen also explains
+app launch and file actions and remains available when the host is offline.
+
+Run `swift test --filter FileExportTests` in `CabooseKit` for export validation. On a
+paired phone, follow `sh scripts/check-shortcuts.sh` to verify the system editor and
+end-to-end file results.
