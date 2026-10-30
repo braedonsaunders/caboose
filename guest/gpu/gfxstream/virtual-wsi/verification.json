@@ -28,7 +28,9 @@
     "../prepare_virtual_wsi_surface.py": "9ca0911608acbe5405ce1ebe194c6e0a792d404f88f3f2447fb8e13e1b2666eb",
     "test_indexed.cpp": "4bd83cf66870b47aec510a4602066d7fdf0f9c38d440ade81e302e5fdce919b2",
     "mesa_swapchain.inc": "032a78b4842dd390046d5fc6e63c9d36ea992b74db8ced60f1e1eff206d69f95",
-    "relink_private.py": "9e65605c9ebeb2e9855b1bab979a9e4587bcd4dfddd4aebac0f07e1aa43050b9"
+    "relink_private.py": "9e65605c9ebeb2e9855b1bab979a9e4587bcd4dfddd4aebac0f07e1aa43050b9",
+    "loader_negative.c": "181a156a9ceb4f9774d81d7e9c3dca375f8a3548283aa9ae098ddf37e1c95d9f",
+    "check_loader_negative.sh": "aef2dcf6769144586e082e5774d6a299ebdcf0fcbece15ebfafa2322a1793251"
   },
   "mesaSurfaceSyntax": {
     "scope": "one device translation unit, syntax only, no link or runtime evidence",
@@ -120,5 +122,64 @@
       "relink_private.py": "9e65605c9ebeb2e9855b1bab979a9e4587bcd4dfddd4aebac0f07e1aa43050b9"
     },
     "limitations": "Incremental retained-object link, not a clean-source rebuild; no loader, Vulkan, compositor or phone execution."
+  },
+  "loaderNegative": {
+    "image": "sha256:b94dd0452b1d2164d52115722c333cbb51f903e736fa7e7e782d21c52cf40442",
+    "icdSha256": "8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff",
+    "loaderSha256": "bbd6827e9fe418e9b9740aea57ce6d21fcea03e9876b4b17835c5a9c58f849fc",
+    "headersArchiveSha256": "296d88ca93723e954a0398e81f569851d7a8823f9b65bd0083113c9803183efc",
+    "resources": {
+      "network": "none",
+      "cpus": 1,
+      "memoryMiB": 512,
+      "pids": 64,
+      "uid": 1000,
+      "root": "read-only",
+      "tmpfs": "/tmp:rw,exec,nosuid,nodev,size=16m,mode=1777"
+    },
+    "outerTimeoutSeconds": 45,
+    "compileTimeoutSeconds": 30,
+    "runTimeoutSeconds": 15,
+    "exit": 0,
+    "exactIcdLoaded": true,
+    "negotiatedInterface": 7,
+    "instanceExtensionCount": 4,
+    "createInstanceResult": -9,
+    "instanceCreated": false,
+    "containerRemoved": true,
+    "attempts": [
+      {
+        "attempt": 1,
+        "exit": 1,
+        "stage": "c399 missing loader before compile",
+        "containerRemoved": true,
+        "stdout": "/icd/libvulkan_gfxstream.so: OK\n8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff  /icd/libvulkan_gfxstream.so\n181a156a9ceb4f9774d81d7e9c3dca375f8a3548283aa9ae098ddf37e1c95d9f  /slice/loader_negative.c\n6fd99391195b3524d9ecf1a38916800532297ac8bff15645005ece03f5930858  /slice/check_loader_negative.sh\n",
+        "stderr": "sha256sum: /usr/lib/x86_64-linux-gnu/libvulkan.so.1: No such file or directory\n"
+      },
+      {
+        "attempt": 2,
+        "exit": 1,
+        "stage": "b94 /tmp ENOSPC before compile",
+        "containerRemoved": true,
+        "stdout": "/icd/libvulkan_gfxstream.so: OK\n/usr/lib/x86_64-linux-gnu/libvulkan.so.1: OK\n8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff  /icd/libvulkan_gfxstream.so\nbbd6827e9fe418e9b9740aea57ce6d21fcea03e9876b4b17835c5a9c58f849fc  /usr/lib/x86_64-linux-gnu/libvulkan.so.1\n181a156a9ceb4f9774d81d7e9c3dca375f8a3548283aa9ae098ddf37e1c95d9f  /slice/loader_negative.c\naef2dcf6769144586e082e5774d6a299ebdcf0fcbece15ebfafa2322a1793251  /slice/check_loader_negative.sh\n",
+        "stderr": "mktemp: failed to create directory via template '/tmp/caboose-loader-check-XXXXXX': No space left on device\n"
+      },
+      {
+        "attempt": 3,
+        "exit": 126,
+        "stage": "b94 compile passed but tmpfs execution denied",
+        "containerRemoved": true,
+        "stdout": "/icd/libvulkan_gfxstream.so: OK\n/usr/lib/x86_64-linux-gnu/libvulkan.so.1: OK\n8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff  /icd/libvulkan_gfxstream.so\nbbd6827e9fe418e9b9740aea57ce6d21fcea03e9876b4b17835c5a9c58f849fc  /usr/lib/x86_64-linux-gnu/libvulkan.so.1\n181a156a9ceb4f9774d81d7e9c3dca375f8a3548283aa9ae098ddf37e1c95d9f  /slice/loader_negative.c\naef2dcf6769144586e082e5774d6a299ebdcf0fcbece15ebfafa2322a1793251  /slice/check_loader_negative.sh\n",
+        "stderr": "env: '/tmp/caboose-loader-check-oWFz9P/check': Permission denied\n"
+      },
+      {
+        "attempt": 4,
+        "exit": 0,
+        "stage": "b94 explicit executable tmpfs; negative check passed",
+        "containerRemoved": true,
+        "stdout": "/icd/libvulkan_gfxstream.so: OK\n/usr/lib/x86_64-linux-gnu/libvulkan.so.1: OK\n8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff  /icd/libvulkan_gfxstream.so\nbbd6827e9fe418e9b9740aea57ce6d21fcea03e9876b4b17835c5a9c58f849fc  /usr/lib/x86_64-linux-gnu/libvulkan.so.1\n181a156a9ceb4f9774d81d7e9c3dca375f8a3548283aa9ae098ddf37e1c95d9f  /slice/loader_negative.c\naef2dcf6769144586e082e5774d6a299ebdcf0fcbece15ebfafa2322a1793251  /slice/check_loader_negative.sh\nexact_icd_loaded=1 negotiated_interface=7\ninstance_extension_count_result=0 count=4\ninstance_extension_list_result=0 count=4\nextension=VK_EXT_debug_report version=10\nextension=VK_EXT_debug_utils version=2\nextension=VK_KHR_portability_enumeration version=1\nextension=VK_LUNARG_direct_driver_loading version=1\ncreate_instance_result=-9 instance_created=0\nPASS: no instance or device established without the private handshake\n",
+        "stderr": ""
+      }
+    ]
   }
 }

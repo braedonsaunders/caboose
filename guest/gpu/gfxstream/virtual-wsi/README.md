@@ -111,6 +111,15 @@ including 180 thin-archive members. The library requires `libwayland-client.so.0
 and retains `/work/sysroot/lib` as its runpath. Loader and provider execution are
 not established by this link result.
 
+`check_loader_negative.sh` verifies the exact ICD and existing b94 loader hashes,
+loads the ICD with `RTLD_NOW`, checks its loader exports, then uses the ordinary
+Vulkan loader with explicitly nonexistent private broker endpoints. The isolated
+UID-1000 check passed: interface 7, four loader instance extensions and
+`VK_ERROR_INCOMPATIBLE_DRIVER` from instance creation. No instance or device was
+created. The run requires an executable 16-MiB `/tmp` tmpfs with a read-only root;
+the c399 build image has no system Vulkan loader. Earlier prerequisite failures
+and the passing result are recorded separately in `verification.json`.
+
 ## Focused Linux verification
 
 With an existing C++17 toolchain in an isolated Linux environment:
