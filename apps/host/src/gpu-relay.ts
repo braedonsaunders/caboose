@@ -4,6 +4,7 @@ export const GPU_PROTOCOL = 'caboose.gpu.live.v1'
 export const GPU_MAX_MESSAGE = 256 * 1024
 export const GPU_MAX_PENDING = 1024 * 1024
 export const GPU_MAX_PENDING_MESSAGES = 64
+export const GPU_CLOSE_TIMEOUT_MS = 1000
 
 /** The owner's existing guest service; never a client-supplied destination. */
 export function gpuUpstreamURL(displayURL: string): string {
@@ -44,6 +45,7 @@ export function relayGPU(client: WebSocket, options: {
   })
   return new Promise(resolve => {
     let closed = 0
+    let closeTimer: ReturnType<typeof setTimeout> | undefined
     const endpoints = [client, upstream]
     const pending = [0, 0]
     const pendingMessages = [0, 0]
@@ -53,10 +55,20 @@ export function relayGPU(client: WebSocket, options: {
     for (const [index, source] of endpoints.entries()) {
       const destination = endpoints[1 - index]!
       source.on('error', stop)
-      source.once('close', () => {
+      source.once('close', (code: number) => {
         closed++
-        stop()
-        if (closed === 2) resolve()
+        if (closed === 2) {
+          if (closeTimer) clearTimeout(closeTimer)
+          resolve()
+          return
+        }
+        // Preserve the broker's normal close after its native retirement
+        // exchange. Abrupt/error paths never manufacture that receipt.
+        if (code === 1000 && destination.readyState === WebSocket.OPEN) {
+          closeTimer ??= setTimeout(stop, GPU_CLOSE_TIMEOUT_MS)
+          destination.resume() // a paused peer must be able to acknowledge Close
+          destination.close(1000)
+        } else stop()
       })
       source.on('message', (data: RawData, binary: boolean) => {
         const bytes = size(data)

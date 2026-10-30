@@ -199,3 +199,16 @@ it('revokes a phone while its executor upgrade is waiting for interactive readin
   await new Promise(resolve => setImmediate(resolve))
   expect(f.requests).toHaveLength(0)
 })
+
+
+it('preserves a real broker normal-close receipt through the authenticated relay', async () => {
+  const f = await fixture()
+  const client = f.connect()
+  await once(client, 'open')
+  const reply = once(client, 'message'); client.send(Buffer.from([1])); await reply
+  const closed = once(client, 'close')
+  const upstream = [...f.upstream.clients][0]!
+  upstream.close(1000)
+  expect((await closed)[0]).toBe(1000)
+  await vi.waitFor(() => expect(f.upstream.clients.size).toBe(0))
+})
