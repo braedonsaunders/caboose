@@ -802,3 +802,5 @@ CHROME_CONFIG_HOME, CHROME_USER_DATA_DIR and PATH. VSCODE_IPC_HOOK_CLI is empty 
 reusing an inherited editor instance. The guest agent-profile launcher supplies these
 values; the owner compositor's environment contract is unchanged. This changes no display
 wire messages. See [persistent agent profiles](../guest/desktop-mcp/README.md#persistent-agent-gui-profiles).
+
+The isolated phone acceptance profile sets `CABOOSE_ATLAS_NO_REFS=1` on the compositor. It sends full lossless tiles instead of cache references while cache publication ordering is under validation. Copies and fills remain available; this profile does not establish cache-reference correctness.

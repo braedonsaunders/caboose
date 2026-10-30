@@ -374,7 +374,7 @@ impl AtlasWindowEncoder {
 
                 if tw == TILE_SIZE && th == TILE_SIZE {
                     let hash = xxh64(&tile_buf, 0);
-                    if !is_keyframe && cache.contains_and_touch(hash) {
+                    if !is_keyframe && std::env::var_os("CABOOSE_ATLAS_NO_REFS").is_none() && cache.contains_and_touch(hash) {
                         refs.push(SurfaceTileRef { x: x0, y: y0, hash });
                     } else {
                         cache.insert(hash);
