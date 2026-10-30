@@ -493,8 +493,9 @@ pending requests, and both expire after 24 hours. See [Phone handoff](#phone-han
 calls from the phone: the FileChooser and Settings portals (`caboose-portal`, with
 `xdg-desktop-portal-gtk` for the rest and as the fallback without a phone), and
 `caboose-bridge`, the host's commands and the owner seat's daemon for Now Playing and the
-appearance. GeoClue's static source serves a shared location. See
-[native-bridge.md](native-bridge.md).
+appearance. `caboose-scan` asks the phone to scan a document and prints where the scan was
+saved, failing at once without the phone. GeoClue's static source serves a shared
+location. See [native-bridge.md](native-bridge.md).
 
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
@@ -1522,9 +1523,9 @@ from `position`, then `POST …/control { action: "pause" }`; when the phone sto
 
 ### Native bridge
 
-File requests from the computer's portal, the phone's appearance and location, and the
-computer's Now Playing, relayed with the routes `/v1/bridge/*` and `/v1/now-playing*` and
-the control events above. The contract is [native-bridge.md](native-bridge.md#host).
+File and scan requests from the computer's portal and `caboose-scan`, the phone's
+appearance and location, and the computer's Now Playing, relayed with the routes
+`/v1/bridge/*` and `/v1/now-playing*` and the control events above. The contract is [native-bridge.md](native-bridge.md#host).
 
 ### Desktop notifications
 
