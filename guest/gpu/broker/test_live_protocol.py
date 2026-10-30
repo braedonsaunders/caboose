@@ -6,7 +6,7 @@ import unittest
 from live_protocol import Decoder, Envelope, HEADER, Kind, MAX_MESSAGE, MAX_PAYLOAD, ProtocolError, encode
 
 IDENTITY = bytes.fromhex("00112233445566778899aabbccddeeff")
-HELLO = (b"CBGLREF1" + (2).to_bytes(4, "little") + (16).to_bytes(4, "little")
+HELLO = (b"CBGLREF1" + (3).to_bytes(4, "little") + (48).to_bytes(4, "little")
          + bytes.fromhex("20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0"))
 
 
