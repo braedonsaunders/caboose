@@ -1050,12 +1050,26 @@ def transform_deferred_replies(encoder):
         '    VkResult vkResetFences_VkResult_return = VK_SUCCESS;\n'
         '    stream->flush();\n'
         '    caboose::memory::deferredReplies.add(this, 1, packetSize_vkResetFences);\n')
+    encoder = encoder[:begin] + part + encoder[end:]
     # The reset's bytes are known only after counting; reserve before reserving stream space.
     begin, end = body('vkResetFences')
     part = replace_once(encoder[begin:end],
         '    uint8_t* streamPtr = stream->reserve(packetSize_vkResetFences);\n',
         '    caboose::memory::deferredReplies.reserve(this, stream, packetSize_vkResetFences);\n'
         '    uint8_t* streamPtr = stream->reserve(packetSize_vkResetFences);\n')
+    encoder = encoder[:begin] + part + encoder[end:]
+
+    # Pending replies return in the submit's round trip, within the transport's in-flight limit.
+    begin, end = body('cabooseQueueSubmitWithStagedCommands')
+    part = replace_once(encoder[begin:end], drain, take)
+    part = replace_once(part,
+        '    uint8_t* streamPtr = stream->reserve(stagedSize + packetSize_vkQueueSubmit);\n',
+        '    caboose::memory::deferredReplies.reserve(this, stream, stagedSize + packetSize_vkQueueSubmit);\n'
+        '    uint8_t* streamPtr = stream->reserve(stagedSize + packetSize_vkQueueSubmit);\n')
+    part = replace_once(part,
+        '    if (!stream->tryRead(replies, totalReplies * sizeof(VkResult))) {\n',
+        '    caboose::memory::deferredReplies.drain(this, stream);\n'
+        '    if (!stream->tryRead(replies, totalReplies * sizeof(VkResult))) {\n')
     encoder = encoder[:begin] + part + encoder[end:]
     return encoder
 

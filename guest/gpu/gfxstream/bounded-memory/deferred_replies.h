@@ -9,10 +9,10 @@
 
 namespace caboose::memory {
 
-// Commands whose result the caller does not need (flush, fence reset, queue
-// submit) are sent without waiting; their 4-byte results stay queued on the
-// stream. Every later encoder call drains them before writing its own command,
-// so replies are consumed in stream order and only one round-trip is paid.
+// Commands whose result the caller does not need (memory flush, fence reset)
+// are sent without waiting; their 4-byte results stay queued on the stream.
+// Every later encoder call drains them before it reads its own reply, so
+// replies are consumed in stream order and only one round-trip is paid.
 // A non-success deferred result cannot be returned to its caller any more; it
 // is reported once on stderr. A transport failure invalidates the stream.
 template<class Stream>
