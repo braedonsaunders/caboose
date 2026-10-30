@@ -232,6 +232,18 @@ creating the real swapchain. This does not resize an in-use swapchain or impleme
 old-swapchain replacement. Owner layout must retain the configured buffer extent;
 fitting the view does not modify it.
 
+The separately enabled memory-audit build records bounded layer-extent metadata
+when the runtime audit opt-in is active. `CABOOSE_GPU_LAYER_EXTENT` stages are
+0 before mutation, 1 after bounds, 2 after contents scale, 3 after drawable size,
+4 after transaction commit and 5 readback. Event 0 is a snapshot, 1 an exception,
+2 a readback mismatch and 3 verified equality. Exception categories are 1 invalid
+argument, 2 range, 3 internal inconsistency and 4 other; no exception text is
+recorded. The five finite-mask bits describe bounds width/height, contents scale
+and drawable width/height. A cleared bit reports unavailable/nonfinite, with a
+zero placeholder. Sampling exceptions have their own category. The process emits
+at most 64 rows and one overflow marker; the ordinary build emits none. These
+observations do not change the configuration or retirement result.
+
 Capability success contains the thirteen uint32 members of
 `VkSurfaceCapabilitiesKHR` in specification order, followed by three uint32 counts
 for formats, present modes and queue entries. Each count is at most 4096. Format
