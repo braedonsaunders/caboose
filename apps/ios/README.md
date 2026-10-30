@@ -217,12 +217,38 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
-  an explicit monotonic host/server anchor, with decoded sample durations keeping nearby
-  packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
+  an explicit monotonic host/server anchor. Placement samples host time once against
+  that requested anchor. Decoded sample durations
+  keep nearby packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
   server. Playback starts 120 ms behind the first packet; a late packet adds 20 ms (up to
-  240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
-  drift does not flush queued sound. A backlog beyond another 300 ms is dropped. Interruptions reset the anchor. The display closes
+  240 ms). Playback runs at unity rate between explicit start, rebuffer and stop
+  operations; ordinary packets never write the synchronizer rate. Rate or route changes
+  can automatically discard queued sound in AVFoundation. Caboose observes
+  renderer-specific automatic-flush notifications and serializes cleanup with enqueue on
+  the playback queue. Cleanup leaves the clock and rate running; it does not replay lost
+  packets or establish that a requested clock mapping has taken effect. Separately, the
+  explicit playout policy restarts for backlog beyond another 300 ms. There is no continuous
+  sample-clock correction: sustained source/host clock mismatch can require rebuffering,
+  and hardware/host clock drift can accumulate between explicit rebufferings. Interruptions
+  reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
+  The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
+  `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
+  `incoming_wait` callback-to-parser entry, and `incoming` synchronous parsing/frame dispatch.
+  `rx_dispatch` measures callback-to-audio dispatch, `queue` audio queue wait, `decode`
+  decoder setup/conversion, `prepare` activation/placement/sample preparation, and
+  `enqueue` the renderer enqueue call. `dispatch_gap`, `entry_gap`, `decoded_gap`, and
+  `enqueued_gap` identify where packet cadence changes; all these keys have `_ms` suffixes.
+  `total_ms` ends after enqueue and clock startup. Counts `rx_n` and `timed_n` cover callbacks
+  and audio attempts in that interval. Gaps span adjacent reports, but stop/interruption
+  clears them. Timing uses `systemUptime`; `mono_s` identifies the observation time.
+  Restart notices retain the first-ten/then-every-fiftieth bound, snapshot the clock before
+  flush, and log after enqueue finishes (`finished_s`, or `-1` for an incomplete stage).
+  `rate` (restart: `requested_rate`) is the requested playback speed; `observed_rate` and
+  `rendered` are asynchronous synchronizer observations and never drive recovery.
+  These diagnostics contain no packet payloads and do not distinguish wire latency from
+  URLSession delivery delay before the app's callback. Test aggregation without a renderer
+  or real-time waits using `swift test --filter AudioTimingTests` in `CabooseKit`.
 - **One device at a time.** The computer's display shows on one device. When another takes
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and
   does not reconnect on its own; Show Here takes it back. A ping every 5 s keeps the server
@@ -930,3 +956,110 @@ menu and select another agent. The empty/new composer names the selected agent; 
 message is created until Send. The previous chat and its unsent draft remain in Chats. Repeat
 from a signed-out chat’s Switch Agent action. Open Agent Settings and connect/sign-in
 controls there; the composer and toolbar contain no separate Connect a Model action.
+
+## Opt-in audio timing diagnostics
+
+The Boolean app preference `CabooseAudioDiagnosticsEnabled` defaults to false. Pass
+`-CabooseAudioDiagnosticsEnabled YES` as app launch arguments for a diagnostic launch.
+The existing five-second audio reports and bounded restart summaries (first ten, then
+one per fifty restarts) also enter a numeric flight record. No extra per-packet renderer
+clock reads occur, and recording does not change playback or recovery.
+
+`Library/Caches/CabooseDiagnostics/audio-timing.json` is an atomic JSON snapshot of at
+most the latest 64 records from this process, capped at 128 KiB by dropping oldest
+records. A serial utility queue encodes and writes snapshots; the sound queue only
+submits fixed-size records to a bounded mailbox. Slow storage coalesces pending writes
+instead of accumulating jobs. I/O failures do not affect playback. Invalid nonfinite
+records are omitted. Disable the preference or remove the launch override to stop
+recording; the existing cache file remains available for collection or deletion.
+
+Each record has `kind` (`interval` or `restart`), monotonic seconds, Unix wall-clock
+seconds, counters, rates, media-clock values and available renderer status/sample-frame
+counts. Interval durations are seconds and are maxima, not averages; restart stage fields
+ending in `MS` are milliseconds. Restart clock values precede the flush, while
+`finishedMonotonicSeconds` and stage durations cover completion. Wall timestamps support
+correlation, but changing the phone's wall clock does not change playback. No audio,
+packet payloads, log/error text, URLs, account identifiers or tokens enter the schema.
+
+Retrieve the file with the app-container tools, including `devicectl device copy from`
+with the `appDataContainer` domain, app bundle identifier, and the relative cache path
+above. The artifact requires the preference to have been enabled during playback; an
+older retained file does not establish a current capture. Run the deterministic mailbox,
+byte-bound and schema tests with `swift test --jobs 1 --filter AudioDiagnosticsTests`
+in `apps/ios/CabooseKit`. These tests do not use a renderer or write the app cache.
+
+The five-second flight record also includes `automaticFlush`: cumulative accepted
+notification and cleanup counts, plus the latest event's observer generation, monotonic
+and wall timestamps, and available first-discarded-sample timestamp. The fixed reason
+`rendererNotification` identifies the event, not its cause: AVFoundation does not say
+whether a route or rate change triggered it. Notifications coalesce behind one bounded
+latch; stop/interruption removes the observer and invalidates its pending callbacks.
+The next active playback registers a new generation. An enqueue already in progress
+can finish before cleanup; surviving buffers are flushed serially before subsequent
+enqueues. Explicit cleanup does not reset the rate or clock. These counts do not measure
+clock drift. Test event ordering without a renderer with
+`swift test --jobs 1 --filter AudioAutomaticFlushTests` in `apps/ios/CabooseKit`.
+
+`AudioAutomaticFlushWiringTests` also posts the real automatic-flush notification to an
+empty renderer and checks object filtering, observer removal and queued-drain fencing
+on the player's serialization queue. It enqueues no media, activates no audio session,
+and uses the observer lifecycle portion of stop/restart without writing the clock rate.
+
+With audio diagnostics enabled, each five-second record includes `rateProvenance` for
+that clock's process-local numeric generation. It retains the latest 16 actual rate
+writes, cumulative write/notification/zero-observation counts, the latest notification
+and zero-observation metadata, and interruption begin/end counts and latest timestamp.
+All nesting remains subject to the artifact's 64-record/128-KiB cap; a larger record
+reduces the number of historical records retained. There are no per-event disk writes.
+
+Each write has a sequence, fixed reason (`start`, `stop`), optional stop
+caller (`sessionStop`, `rendererFailure`, `interruptionBegan`, `interruptionEnded`, or
+`unspecified`), monotonic begin/end, begin wall time, requested Float rate represented as
+a Double, and rate readings before/after the API call. Notification counts bracket
+the write's sampling span. `openWriteSequence` identifies that sampling span, including
+its bookkeeping and before/after reads; it does not prove that the notification was
+caused by the write or occurred inside the API. A notification's observed rate is read
+at callback time, not supplied by the notification; intervening transitions can be
+missed. Zero counts count callback observations, not zero-state duration. Interruption
+timestamps record callback receipt; the subsequent stop write records queue processing.
+Missing write completion fields mean no valid completion observation was retained.
+
+The synchronizer observer filters to its exact object, is removed on destruction, and
+rejects invalidated generations. Its short latch never calls AVFoundation or takes the
+playback clock lock. Only the two lifecycle rate-write sites and rate-change callbacks
+read the rate for this trace; there is no added per-packet polling or renderer-time read.
+The trace never feeds playback decisions or acknowledges a clock update. Category and
+activation changes elsewhere in the app are not recorded. Deterministic order, lifetime
+and size-bound tests run with `swift test --jobs 1 --filter AudioRateProvenanceTests`.
+
+Steady and batched packet placement, explicit lifecycle writes, and the finite-buffer
+clock-mismatch limitation are covered without renderer playback by
+`swift test --jobs 1 --filter UnityRatePlaybackTests`.
+
+With the same diagnostic opt-in, `startup` records summarize the first twelve seconds
+of incoming audio and restart that observation window after an ingress gap of at least
+one second. Nonempty 250 ms buckets close on the next packet or stop/interruption;
+a final partial bucket waits for one of those events. The recorder retains at most
+48 startup buckets across window generations within the existing total 64-record,
+128-KiB cap. Byte limits can shorten history further. There is one pending accumulator
+on the playback queue, no timer or additional queue. Disabled diagnostics collect none
+of this metadata.
+
+Each bucket identifies its clock and window generation, ingress/wall boundaries,
+raw-minus-placed PTS and consecutive PTS step ranges, decoded frame count, declared PCM
+buffer bytes and copied sample bytes, byte-count mismatches, min/max placement lead,
+late-placement count and stage timing maxima. Lead uses the placement's existing host
+sample; a stopped clock has no lead. Startup records omit observed rate and renderer
+position rather than sampling them per packet. Their outer cumulative counters are
+sampled when the bucket closes. These records retain no waveform, encoded data, PCM
+summary, text or URL and do not change playback.
+
+`OpusStartupContinuityTests` uses generated stereo tone through Apple's Opus encoder
+and the product decoder, retaining both codec states over the server's silence
+suppression contract: fifty encoded silent packets, then no codec input until resume.
+It checks finite values, stereo agreement, amplitude, phase-independent tone residual
+and sample/buffer-boundary steps starting with the first output sample. It does not
+sleep through the skipped silence, use libopus as its encoder, or establish phone output
+quality. Run it with `swift test --jobs 1 --filter OpusStartupContinuityTests`.
+`AudioStartupDiagnosticsTests` covers window/generation boundaries, timestamp ordering,
+metadata schema, single-read placement and shared writer caps without playing audio.

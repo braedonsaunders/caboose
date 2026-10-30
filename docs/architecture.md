@@ -2102,12 +2102,37 @@ requests half-resolution software-encoded motion streams and upscales them with 
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
-The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then adjusts playback continuously with pitch preservation. This accommodates virtual
-machines whose clocks run at a different rate without repeatedly discarding sound.
-The initial jitter buffer is 120 ms, grows by 20 ms after underruns up to 240 ms, and
-only discards a backlog beyond another 300 ms. Silence resets rate measurement; stopping
-playback resets the clock and estimator.
+Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
+payload. Excess or empty packets are rejected before dispatch, counted as
+`ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
+After rejection, the next admitted packet retains its server timestamp instead of joining
+across the missing duration; the Opus decoder remains alive, with no synthetic concealment
+packet or replay. Packet loss can therefore be audible. Existing playout thresholds govern
+any rebuffer. Stop and interruption invalidate old jobs without releasing their memory
+budget until those jobs exit.
+Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
+packets do not write the synchronizer rate. AVFoundation may automatically
+flush queued audio on a rate or route change. The phone coalesces renderer-specific
+notifications and flushes surviving buffers on its playback queue before subsequent
+enqueues, without resetting the running clock or rate. Stop and interruption invalidate
+that observer generation. Discarded packets are not replayed; this recovery does not
+acknowledge asynchronous clock changes or correct renderer-clock divergence.
+The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
+underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
+restarts are separate from AVFoundation automatic flush loss. Stopping playback clears
+the clock anchor. There is no continuous sample-clock correction: sustained source/host
+clock mismatch can require rebuffering, and hardware/host clock drift can accumulate
+between explicit rebufferings.
+Opt-in audio diagnostics retain the existing five-second timing reports and bounded
+restart summaries in an asynchronous app-cache snapshot, limited to 64 fixed-schema
+records and 128 KiB. With the same opt-in, the first twelve seconds of audio after
+start or an ingress gap of at least one second also produce nonempty 250 ms startup
+metadata buckets, limited to 48 within that shared cap. They reuse placement's host
+sample and retain numeric timing/format metadata, never PCM or encoded payloads.
+Each interval can include the latest 16 rate-write traces plus
+bounded rate-change and interruption metadata; these observations never drive recovery. Recording defaults off and changes neither playback nor the wire protocol;
+[the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
+and collection path.
 
 The window picture and its video layers use the same mapping from the confirmed surface
 size to the view's bounds, including while a resize stretches the previous picture.
