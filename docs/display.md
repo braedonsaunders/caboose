@@ -313,10 +313,14 @@ client's hello says `atlas: true`; and `scene` when the client's hello says `sce
 
 - `pts_us` is the server's `CLOCK_MONOTONIC` at the surface commit, in microseconds.
 - The client sends `vsync` once per refresh of each display that shows a window. Frame
-  callbacks of a window are released on a vsync of its display, and only while fewer than
-  2 of its frames or surface batches are unacknowledged (`ack` matches by `pts_us`). A window
-  whose display sends no vsync is throttled like a minimised one: it gets frame callbacks once
-  a second.
+  callbacks are released on that display's vsync while fewer than 2 video frames or 12
+  negotiated atlas batches are unacknowledged (`ack` matches by `pts_us`). Atlas also releases
+  a pending callback when an acknowledgment creates room, provided that display's vsync
+  is still current. Video callbacks retain vsync pacing. Each window has at most one encode
+  in progress, counted against callback admission. A display without current vsync gets
+  callbacks once a second. The connection's existing 48 MiB WebSocket write-buffer cap
+  still applies; exceeding it closes the connection rather than accumulating more data.
+  These limits bound work in flight; they do not guarantee a frame rate.
 - **Tiles (legacy mode).** When `atlas` is not negotiated, a small change (typing, a caret, a
   small widget) can arrive as `tile`s instead of a frame: lossless PNGs, 8-bit RGB, of the
   changed 16×16 blocks. `tile.rect` is in picture pixels, the space of `frame.crop`, and maps

@@ -6,7 +6,8 @@
 //! - one picture per window is at the encoder at a time, and the newest content wins:
 //!   commits that arrive meanwhile only leave the window dirty, so stale pictures are
 //!   never queued or encoded;
-//! - at most [`MAX_UNACKED`] encoded frames per window wait for the client's `ack`, and
+//! - at most [`MAX_UNACKED`] video frames or [`MAX_ATLAS_UNACKED`] atlas batches per
+//!   window wait for the client's `ack`, and
 //!   frame callbacks are held while the window is at that limit, so the application
 //!   slows to what the link and the client can show;
 //! - an encoder that refines says when its quiet areas are due (`refine_at_us`); a
@@ -27,8 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub const MAX_UNACKED: usize = 2;
-/// Surface Atlas (`surface.batch`) encodes in sub-millisecond deltas and CopyRects;
-/// a deeper in-flight window prevents network RTT from capping 120 Hz scroll/playback at ~30 fps.
+/// Atlas keeps a bounded deeper window of batches in flight to reduce RTT stalls.
+/// Actual rendering speed depends on the content, device and connection.
 pub const MAX_ATLAS_UNACKED: usize = 12;
 
 /// A picture for the worker to encode.
@@ -1030,6 +1031,27 @@ mod tests {
         assert!(!s.can_release_callbacks());
         s.encoding = false;
         assert!(s.can_release_callbacks());
+    }
+
+    #[test]
+    fn atlas_limit_keeps_one_encoder_and_does_not_change_video_limit() {
+        let mut s = Stream::default();
+        s.in_flight.extend(1..=2);
+        assert!(!s.can_send_for(false) && !s.can_release_callbacks_for(false));
+        assert!(s.can_send_for(true) && s.can_release_callbacks_for(true));
+        s.in_flight.extend(3..=11);
+        s.encoding = true;
+        assert!(!s.can_send_for(true) && !s.can_release_callbacks_for(true));
+        s.encoding = false;
+        assert!(s.can_send_for(true) && s.can_release_callbacks_for(true));
+        s.in_flight.push_back(12);
+        assert!(!s.can_send_for(true) && !s.can_release_callbacks_for(true));
+        assert!(!s.ack(99));
+        assert!(!s.can_send_for(true));
+        assert!(s.ack(1));
+        assert!(s.can_send_for(true));
+        s.reset_for_client();
+        assert!(s.in_flight.is_empty() && s.can_send_for(false));
     }
 
     #[test]

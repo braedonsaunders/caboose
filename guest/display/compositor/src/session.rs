@@ -211,7 +211,7 @@ impl State {
                             "window {id}: frame {pts_us} acked after {} µs (decode {decoded_us} µs)",
                             now.saturating_sub(pts_us)
                         );
-                        if paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(atlas) {
+                        if atlas && paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(true) {
                             release_cb = true;
                         }
                     }
