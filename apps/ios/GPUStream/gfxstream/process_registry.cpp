@@ -156,6 +156,40 @@ extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64
 }
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
 namespace caboose::gpuv2 {
+VkResult acquireMappedSources(caboose_gfx_registry* registry, uint64_t token,
+    uint64_t boxedInstance, uint64_t boxedDevice, uint32_t format, uint32_t width, uint32_t height,
+    uint32_t usage, uint32_t count, const uint64_t* boxedImages,
+    std::unique_ptr<gfxstream::host::vk::CabooseMappedSources>* out) {
+    static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "64-bit boxed Vulkan handles required");
+    if (!out) return VK_ERROR_INITIALIZATION_FAILED;
+    out->reset();
+    if (!registry || !token || !boxedInstance || !boxedDevice || !count || count > 256 || !boxedImages)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    try {
+        std::vector<VkImage> images;
+        images.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) images.push_back((VkImage)(uintptr_t)boxedImages[i]);
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        auto it = registry->processes.find(token);
+        if (it == registry->processes.end() || it->second->stopped) return VK_ERROR_INITIALIZATION_FAILED;
+        return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCabooseMappedSources(
+            it->second->context, (VkInstance)(uintptr_t)boxedInstance, (VkDevice)(uintptr_t)boxedDevice,
+            static_cast<VkFormat>(format), width, height, usage, count, images.data(), out);
+    } catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
+}
+VkResult acquireSwapchainDevice(caboose_gfx_registry* registry, uint64_t token,
+    uint64_t boxedInstance, uint64_t boxedDevice,
+    std::unique_ptr<gfxstream::host::vk::CabooseSwapchainDevice>* out) {
+    static_assert(sizeof(uintptr_t) == sizeof(uint64_t), "64-bit boxed Vulkan handles required");
+    if (!out) return VK_ERROR_INITIALIZATION_FAILED;
+    out->reset();
+    if (!registry || !token || !boxedInstance || !boxedDevice) return VK_ERROR_INITIALIZATION_FAILED;
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto it = registry->processes.find(token);
+    if (it == registry->processes.end() || it->second->stopped) return VK_ERROR_INITIALIZATION_FAILED;
+    return gfxstream::host::vk::VkDecoderGlobalState::get()->acquireCabooseSwapchainDevice(
+        it->second->context, (VkInstance)(uintptr_t)boxedInstance, (VkDevice)(uintptr_t)boxedDevice, out);
+}
 VkResult acquirePresentationSync(caboose_gfx_registry* registry, uint64_t token,
     uint64_t boxedInstance, uint64_t boxedDevice, uint64_t boxedSemaphore, uint64_t boxedFence,
     std::unique_ptr<gfxstream::host::vk::CabooseAcquireSync>* out) {

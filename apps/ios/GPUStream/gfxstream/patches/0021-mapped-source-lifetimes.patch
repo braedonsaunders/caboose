@@ -1,0 +1,81 @@
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -77,0 +78,6 @@
++};
++
++// Atomic mapped source set, ordered by native swapchain index.
++struct CabooseMappedSources {
++    caboose::gpuv2::PresentationLease lease;
++    std::vector<VkImage> images;
+@@ -142,0 +149,4 @@
++    VkResult acquireCabooseMappedSources(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, VkFormat format, uint32_t width, uint32_t height,
++        VkImageUsageFlags requiredUsage, uint32_t count, const VkImage* boxedImages,
++        std::unique_ptr<CabooseMappedSources>* out);
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -400,0 +401,54 @@
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
++
++    VkResult acquireCabooseMappedSources(uint32_t contextId, VkInstance boxedInstance,
++        VkDevice boxedDevice, VkFormat format, uint32_t width, uint32_t height,
++        VkImageUsageFlags requiredUsage, uint32_t count, const VkImage* boxedImages,
++        std::unique_ptr<CabooseMappedSources>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedInstance || !boxedDevice || !width || !height ||
++            !count || count > 256 || !boxedImages) return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CabooseMappedSources>();
++        result->images.reserve(count);
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkInstance instance = try_unbox_VkInstance(boxedInstance);
++        VkDevice device = try_unbox_VkDevice(boxedDevice);
++        auto* inst = gfxstream::base::find(mInstanceInfo, instance);
++        auto* dev = gfxstream::base::find(mDeviceInfo, device);
++        if (!inst || !dev || inst->boxed != boxedInstance || inst->contextId != contextId ||
++            dev->boxed != boxedDevice) return VK_ERROR_INITIALIZATION_FAILED;
++        auto* phys = gfxstream::base::find(mPhysdevInfo, dev->physicalDevice);
++        if (!phys || phys->instance != instance) return VK_ERROR_INITIALIZATION_FAILED;
++        if (!result->lease.acquire(inst->cabooseLifetime) || !result->lease.acquire(dev->cabooseLifetime))
++            return VK_ERROR_INITIALIZATION_FAILED;
++        for (uint32_t i = 0; i < count; ++i) {
++            VkImage image = try_unbox_VkImage(boxedImages[i]);
++            auto* info = gfxstream::base::find(mImageInfo, image);
++            if (!image || !info || info->boxed != boxedImages[i] || info->device != device ||
++                std::find(result->images.begin(), result->images.end(), image) != result->images.end())
++                return VK_ERROR_INITIALIZATION_FAILED;
++            const auto& ci = info->imageCreateInfoShallow;
++            if (ci.imageType != VK_IMAGE_TYPE_2D || ci.format != format || ci.extent.width != width ||
++                ci.extent.height != height || ci.extent.depth != 1 || ci.mipLevels != 1 ||
++                ci.arrayLayers != 1 || ci.samples != VK_SAMPLE_COUNT_1_BIT || ci.flags ||
++                ci.tiling != VK_IMAGE_TILING_OPTIMAL || ci.sharingMode != VK_SHARING_MODE_EXCLUSIVE ||
++                (ci.usage & (requiredUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) !=
++                    (requiredUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) || info->externalHandleTypes ||
++                info->anbInfo || info->compressInfo || info->boundColorBuffer || !info->memory)
++                return VK_ERROR_FEATURE_NOT_PRESENT;
++            auto* memory = gfxstream::base::find(mMemoryInfo, info->memory);
++            if (!memory || memory->device != device || memory->boundColorBuffer || memory->sharedMemory ||
++                memory->privateMemory || memory->blobId || memory->directMapped || memory->virtioGpuMapped ||
++                memory->boundBuffer || !memory->bufferMemoryRanges.empty()) return VK_ERROR_FEATURE_NOT_PRESENT;
++            for (const auto& [other, otherInfo] : mImageInfo)
++                if (other != image && otherInfo.memory == info->memory) return VK_ERROR_FEATURE_NOT_PRESENT;
++            for (const auto& [buffer, bufferInfo] : mBufferInfo) {
++                (void)buffer;
++                if (bufferInfo.memory == info->memory) return VK_ERROR_FEATURE_NOT_PRESENT;
++            }
++            if (!result->lease.acquire(info->cabooseLifetime) ||
++                !result->lease.acquire(memory->cabooseLifetime)) return VK_ERROR_INITIALIZATION_FAILED;
++            result->images.push_back(image);
++        }
+@@ -12358,0 +12413,9 @@
++VkResult VkDecoderGlobalState::acquireCabooseMappedSources(
++    uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkFormat format,
++    uint32_t width, uint32_t height, VkImageUsageFlags requiredUsage, uint32_t count,
++    const VkImage* boxedImages, std::unique_ptr<CabooseMappedSources>* out) {
++    try { return mImpl->acquireCabooseMappedSources(contextId, boxedInstance, boxedDevice, format,
++        width, height, requiredUsage, count, boxedImages, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++
