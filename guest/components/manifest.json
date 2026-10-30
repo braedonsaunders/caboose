@@ -86,6 +86,7 @@
   "gpu/gfxstream/process_binding.py",
   "gpu/gfxstream/executor_lease.py",
   "gpu/gfxstream/control_protocol.py",
+  "gpu/gfxstream/surface_local_protocol.py",
   "gpu/caboose-gpu-run",
   "gpu/profile.json",
   "apps/install.sh",

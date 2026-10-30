@@ -25,6 +25,8 @@ class InstalledBrokerTests(unittest.TestCase):
             shutil.copyfile(HERE / "caboose-gpu-broker-launcher", source / "caboose-gpu-broker-launcher")
             for name in ("live_protocol.py", "live_surface_protocol.py"):
                 shutil.copyfile(HERE / "broker" / name, source / "broker" / name)
+            shutil.copyfile(HERE / "gfxstream/surface_local_protocol.py",
+                            source / "gfxstream/surface_local_protocol.py")
             destination = base / "root"
             installer.install(source, destination)
             hostile = base / "untrusted"

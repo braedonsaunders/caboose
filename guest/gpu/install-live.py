@@ -6,7 +6,8 @@ from pathlib import Path
 import tempfile
 
 MODULES = ("gpu_admission.py", "gpu_websocket.py", "ipc_handoff.py",
-           "process_binding.py", "executor_lease.py", "control_protocol.py")
+           "process_binding.py", "executor_lease.py", "control_protocol.py",
+           "surface_local_protocol.py")
 
 
 def install(source: Path, destination: Path):
