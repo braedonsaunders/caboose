@@ -5,7 +5,7 @@ import { CapacitySampler, capacityFor } from './capacity.js'
 import { recoveryRoute } from './recovery.js'
 import { AccountSocketFence } from './identity/socket-fence.js'
 import { computerSizes, expandSize } from './sizes.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { proxyFiles, proxyWebview, type FileService } from './fs-proxy.js'
@@ -62,6 +62,7 @@ import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journa
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
 import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
+import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU } from './gpu-relay.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -153,6 +154,11 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   /** Terminal upgrades waiting for a wake, counted against the same cap. */
   const pendingTerminals = new Map<string, number>()
   const wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, handleProtocols: protocols => protocols.has('binary') ? 'binary' : false })
+  const gpuWss = new WebSocketServer({ noServer: true, maxPayload: GPU_MAX_MESSAGE, perMessageDeflate: false,
+    handleProtocols: protocols => protocols.size === 1 && protocols.has(GPU_PROTOCOL) ? GPU_PROTOCOL : false })
+  const gpuSockets = new Set<WebSocket>()
+  const pendingGPUSockets = new Map<Duplex, string | undefined>()
+  let gpuReservation: object | undefined
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -344,7 +350,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     return {
       state: computer.state, settings: desired, limits: settings.limits, sizes: computerSizes(shared.gpuEnabled), activeResources: active,
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
-      clients: { display: sockets.size - controls.size - terminals.size, control: controls.size, terminal: terminals.size },
+      clients: { display: sockets.size - controls.size - terminals.size - gpuSockets.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
       capabilities: { restart: typeof controller.restart === 'function', push: !!push },
       upgrade, keyring,
@@ -366,7 +372,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     } finally { release() }
   }
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
-  function closeSockets(): void { for (const socket of sockets) socket.terminate() }
+  function closeSockets(): void {
+    for (const socket of sockets) socket.terminate()
+    for (const socket of pendingGPUSockets.keys()) socket.destroy()
+  }
   let previousState = computer.state
   computer.subscribe(state => {
     const resumed = state === 'running' && previousState === 'frozen'
@@ -953,8 +962,52 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }).catch(() => socket.destroy())
   }
 
+  function connectGPU(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, principal: Principal): void {
+    const refuse = (status: string) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`) }
+    const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
+    // No agent route, arbitrary destination, client-supplied executor or query credentials.
+    if (url.search || offered.length !== 1 || offered[0] !== GPU_PROTOCOL) return refuse('400 Bad Request')
+    if (!computer.acceptsConnections || gpuReservation) return refuse('409 Conflict')
+    const reservation = {}
+    gpuReservation = reservation
+    const release = computer.acquire()
+    let upgraded = false
+    const finish = () => {
+      if (gpuReservation !== reservation) return
+      gpuReservation = undefined
+      pendingGPUSockets.delete(socket)
+      release()
+    }
+    pendingGPUSockets.set(socket, principal.phoneId)
+    socket.once('close', () => { pendingGPUSockets.delete(socket); if (!upgraded) finish() })
+    void computer.wake().then(session => {
+      if (socket.destroyed) return finish()
+      if (!computer.acceptsConnections || session.display.protocol !== 'caboose-display') {
+        refuse('409 Conflict'); finish(); return
+      }
+      try {
+        gpuWss.handleUpgrade(request, socket, head, client => {
+          upgraded = true
+          pendingGPUSockets.delete(socket)
+          sockets.add(client)
+          gpuSockets.add(client)
+          if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
+          client.on('error', () => client.terminate())
+          client.once('close', () => { sockets.delete(client); gpuSockets.delete(client); phoneSockets.delete(client) })
+          // Only trusted host identities and the guest's current per-wake token cross
+          // this boundary. The guest authenticates before trusting these headers.
+          try {
+            void relayGPU(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
+              computer: id, executor: randomUUID() }).then(finish, () => { client.terminate(); finish() })
+          } catch { client.terminate(); finish() }
+        })
+      } catch { socket.destroy(); finish() }
+    }, () => { refuse('502 Bad Gateway'); finish() })
+  }
+
   function connect(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, path: string, principal: Principal): void {
     if (path === '/v1/terminal') return connectTerminal(request, socket, head, url, principal)
+    if (path === '/v1/gpu') return connectGPU(request, socket, head, url, principal)
     if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     if (path === '/v1/display' && !offered.includes('binary')) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
@@ -1004,6 +1057,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
 
   function disconnectPhone(phoneId: string): void {
     for (const [socket, phone] of phoneSockets) if (phone === phoneId) socket.terminate()
+    for (const [socket, phone] of pendingGPUSockets) if (phone === phoneId) socket.destroy()
   }
 
   async function shutdown(): Promise<void> {
@@ -1441,7 +1495,7 @@ export function createCabooseServer(options: ComputerPieces & {
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+    if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
     if (principal.kind === 'admin') {
       const remove = accountSockets.add(async () => {
         const current = await identity?.principal(webHeaders(request), { disableRefresh: true })
