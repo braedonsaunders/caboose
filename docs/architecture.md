@@ -113,7 +113,8 @@ The image contains:
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
   V4L2 drivers, `v4l2loopback` built for it, `iio-sensor-proxy` and the udev rules from
   `guest/devices`, so the phone's hardware becomes the computer's devices
-  ([devices.md](devices.md)).
+  ([devices.md](devices.md)). Container computers expose the microphone only; shared host input, camera and
+  UHID devices are not passed through to computers.
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).

@@ -161,19 +161,6 @@ export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = exist
   }
 }
 
-/**
- * `docker run` arguments for the phone's hardware (docs/devices.md): uinput, so the phone's
- * controllers, motion and buttons become event devices, with the host's /dev/input mounted so
- * the event devices the computer makes appear inside the container. UHID and v4l2loopback
- * devices would be made by the host's kernel where the container cannot see them, so a
- * container computer has no IIO sensors, battery or cameras.
- */
-export function phoneDeviceArgs(exists: (path: string) => boolean = existsSync): string[] {
-  return exists('/dev/uinput')
-    ? ['--device', '/dev/uinput', '-v', '/dev/input:/dev/input', '--device-cgroup-rule', 'c 13:* rmw']
-    : []
-}
-
 export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
@@ -227,7 +214,6 @@ export function createContainerController(config: Config, dependencies: { docker
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
       ...securityArgs(config.containerArgs),
       ...gpuArgs(gpu, dependencies.exists),
-      ...phoneDeviceArgs(dependencies.exists),
       ...config.containerArgs,
       config.containerImage,
     ]

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneDeviceArgs, withContainerPorts, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -158,11 +158,16 @@ describe('GPU selection', () => {
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
   })
 
-  it('hands the container uinput and the host input devices when the host has uinput', () => {
-    expect(phoneDeviceArgs(path => path === '/dev/uinput')).toEqual([
-      '--device', '/dev/uinput', '-v', '/dev/input:/dev/input', '--device-cgroup-rule', 'c 13:* rmw',
-    ])
-    expect(phoneDeviceArgs(() => false)).toEqual([])
+  it('does not expose shared host input devices to a computer', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController({ ...settings, gpu: 'none' }, {
+      fence: async () => {}, docker: fake.docker, exists: () => true,
+    })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!
+    expect(run).not.toContain('/dev/uinput')
+    expect(run).not.toContain('/dev/input:/dev/input')
+    expect(run).not.toContain('c 13:* rmw')
   })
 
   it('uses a configured GPU over detection', async () => {
