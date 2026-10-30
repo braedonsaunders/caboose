@@ -19,6 +19,13 @@ import threading
 import time
 
 
+def frame_ack(kind, fields):
+    """Only encoded frames have presentation timestamps and consume ACK credit."""
+    if kind == 0x10:
+        return dict(id=fields['id'], pts_us=fields['pts_us'], decoded_us=0)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--control', required=True)
@@ -106,8 +113,9 @@ def main():
                     assert len(packet) >= 5 + size
                     fields, _ = codec.decode(packet[5:5 + size])
                     packet = packet[5 + size:]
-                    if kind in (0x10, 0x11):
-                        send(0x83, dict(id=fields['id'], pts_us=fields['pts_us'], decoded_us=0))
+                    ack = frame_ack(kind, fields)
+                    if ack is not None:
+                        send(0x83, ack)
                     assert kind != 0x7f, 'Private session rejected'
         except Exception as error:
             if not stop.is_set():
