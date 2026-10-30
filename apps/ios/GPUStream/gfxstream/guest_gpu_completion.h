@@ -109,6 +109,7 @@ public:
     GuestGpuWork& operator=(const GuestGpuWork&) = delete;
     GuestGpuWork(GuestGpuWork&& other) noexcept
         : tracker_(std::move(other.tracker_)), ticket_(other.ticket_) { other.ticket_.active = false; }
+    void invalidate() { if (tracker_) tracker_->invalidate(); }
     ~GuestGpuWork() { if (tracker_) tracker_->end(ticket_); }
 private:
     std::shared_ptr<GuestGpuCompletion> tracker_;

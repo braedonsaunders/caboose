@@ -91,6 +91,21 @@
 +    return mImpl->onCabooseQueueSubmit2KHR(queue, count, submits, fence);
 +}
 +
+@@ -13707,0 +13769,2 @@
++    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
++    asyncWork.invalidate();
+@@ -13715,0 +13779,2 @@
++    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
++    asyncWork.invalidate();
+@@ -13721,0 +13787,2 @@
++    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
++    asyncWork.invalidate();
+@@ -13729,0 +13797,2 @@
++    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
++    asyncWork.invalidate();
+@@ -13805,0 +13875,2 @@
++    auto asyncWork = mImpl->beginCabooseGuestQueueWork(queue);
++    asyncWork.invalidate();
 --- a/host/vulkan/vk_decoder.cpp
 +++ b/host/vulkan/vk_decoder.cpp
 @@ -1557 +1557 @@
@@ -101,7 +116,7 @@
 +                        m_state->onCabooseQueueSubmit2KHR(queue, submitCount, pSubmits, fence);
 --- /dev/null
 +++ b/host/vulkan/caboose_guest_gpu_completion.h
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,118 @@
 +// Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 +#pragma once
 +#include <atomic>
@@ -213,6 +228,7 @@
 +    GuestGpuWork& operator=(const GuestGpuWork&) = delete;
 +    GuestGpuWork(GuestGpuWork&& other) noexcept
 +        : tracker_(std::move(other.tracker_)), ticket_(other.ticket_) { other.ticket_.active = false; }
++    void invalidate() { if (tracker_) tracker_->invalidate(); }
 +    ~GuestGpuWork() { if (tracker_) tracker_->end(ticket_); }
 +private:
 +    std::shared_ptr<GuestGpuCompletion> tracker_;

@@ -938,10 +938,40 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
     }
     surface->device.reset();
     std::unique_lock<std::mutex> lock(swapchain->mutex);
-    if (swapchain->requests || swapchain->quarantined || !swapchain->indices->mayRetire())
-        return fail(EBUSY);
-    // Acquired-but-unused images remain quarantined: this path has no proof yet
-    // that guest GPU operations touching the mapped source have completed.
+    if (swapchain->requests || swapchain->quarantined) return fail(EBUSY);
+    std::vector<uint32_t> acquired;
+    try {
+        if (!swapchain->indices->acquiredUnused(&acquired)) return fail(EBUSY);
+    } catch (const std::bad_alloc&) { return fail(ENOMEM); }
+    std::shared_ptr<GuestGpuCompletion> completion;
+    GuestGpuCompletion::ReleaseGuard proof;
+    if (!acquired.empty()) {
+        // Coverage stays disabled until every submission path and cross-stream
+        // admission are proven. The guard excludes admissions through release.
+        completion = swapchain->device->guestCompletion;
+        if (!completion) return fail(EBUSY);
+        proof = completion->tryRelease();
+        if (!proof.valid()) return fail(EBUSY);
+        PresentationProviderResult provider{};
+        VkResult result;
+        {
+            std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
+            result = releaseUnusedVirtualImages(*swapchain->device, swapchain->handle,
+                static_cast<uint32_t>(swapchain->nativeImages.size()),
+                static_cast<uint32_t>(acquired.size()), acquired.data(), &provider);
+        }
+        if (result != VK_SUCCESS) {
+            if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
+            return fail(errorFor(result));
+        }
+        for (uint32_t index : acquired) {
+            if (!swapchain->indices->markUnusedReleased(index)) {
+                swapchain->quarantined = true;
+                return fail(EIO);
+            }
+        }
+    }
+    if (!swapchain->indices->mayRetire()) return fail(EBUSY);
     if (surface->indexed != swapchain || !swapchain->device || !swapchain->device->vk ||
         !swapchain->device->vk->vkDestroySwapchainKHR) return fail(EIO);
     {

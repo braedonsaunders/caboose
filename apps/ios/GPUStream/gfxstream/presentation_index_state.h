@@ -90,7 +90,8 @@ public:
         if (!out || !frames_.empty()) return false;
         out->clear();
         for (uint32_t i = 0; i < indices_.size(); ++i) {
-            if (indices_[i].quarantined || indices_[i].pending) return false;
+            if (indices_[i].quarantined || indices_[i].pending ||
+                (indices_[i].acquired && !indices_[i].ready)) return false;
             if (indices_[i].acquired) out->push_back(i);
         }
         return true;
