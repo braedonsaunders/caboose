@@ -81,6 +81,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     std::atomic_bool _started;
     std::atomic_bool _authStarted;
     std::atomic_bool _finishing;
+    std::atomic_int _decoderResult;
     NSData* _session;
     NSData* _token;
     NSData* _pin;
@@ -93,7 +94,7 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         _networkQueue = dispatch_queue_create("org.caboose.gpu-diagnostic.network", DISPATCH_QUEUE_SERIAL);
         _workers = dispatch_group_create();
         _decoderFd = _bridgeFd = -1;
-        _stopping = false; _started = false; _authStarted = false; _finishing = false;
+        _stopping = false; _started = false; _authStarted = false; _finishing = false; _decoderResult = 0;
     }
     return self;
 }
@@ -131,10 +132,17 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     dispatch_group_enter(_workers);
     nw_connection_receive(_connection, 1, 16384, ^(dispatch_data_t data, nw_content_context_t context, bool complete, nw_error_t error) {
         (void)context;
-        if (error || complete || !data) {
-            [self abort:error ? [NSString stringWithFormat:@"TLS receive failed: %d", nw_error_get_error_code(error)] : @"TLS stream closed; inspect guest oracle and decoder status."];
+        const bool hadError = error != nil;
+        const int errorCode = error ? nw_error_get_error_code(error) : 0;
+        const bool hasData = data && dispatch_data_get_size(data) != 0;
+        if (!hasData) {
+            if (error) [self abort:[NSString stringWithFormat:@"TLS receive failed: %d", errorCode]];
+            else if (complete) shutdown(self->_bridgeFd, SHUT_WR);
+            else [self abort:@"TLS receive returned no data without EOF."];
             dispatch_group_leave(self->_workers); return;
         }
+        // Network.framework can deliver bytes with EOF or an error. Write all
+        // bytes before acting on the terminal indication.
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             __block int sendError = 0;
             dispatch_data_apply(data, ^bool(dispatch_data_t region, size_t offset, const void* bytes, size_t size) {
@@ -149,6 +157,10 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
                 return !self->_stopping.load();
             });
             if (sendError) [self abort:[NSString stringWithFormat:@"Decoder input failed: %d", sendError]];
+            else if (hadError) {
+                [self report:[NSString stringWithFormat:@"TLS receive failed after data: %d", errorCode]];
+                shutdown(self->_bridgeFd, SHUT_WR);
+            } else if (complete) shutdown(self->_bridgeFd, SHUT_WR);
             else if (!self->_stopping.load()) [self receiveFromBroker];
             dispatch_group_leave(self->_workers);
         });
@@ -167,7 +179,12 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     [self receiveFromBroker];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         int result = caboose_gpu_diagnostic_run(self->_diagnostic, self->_decoderFd, 10000);
-        [self abort:[NSString stringWithFormat:@"Decoder stream ended: %d. Check guest oracle independently.", result]];
+        self->_decoderResult.store(result);
+        // Preserve any decoder replies already queued to the bridge before
+        // teardown; the output worker reports EOF after forwarding them.
+        shutdown(self->_decoderFd, SHUT_WR);
+        if (result && result != ECONNRESET && result != ECANCELED)
+            [self abort:[NSString stringWithFormat:@"Decoder stream failed: %d", result]];
         dispatch_group_leave(self->_workers);
     });
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
@@ -175,7 +192,15 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
         while (!self->_stopping.load()) {
             ssize_t n = recv(self->_bridgeFd, buffer, sizeof(buffer), 0);
             if (n < 0 && errno == EINTR) continue;
-            if (n <= 0) { [self abort:@"Decoder output stream closed."]; break; }
+            if (n <= 0) {
+                if (n < 0 && !self->_stopping.load())
+                    [self abort:[NSString stringWithFormat:@"Decoder output receive failed: %d", errno]];
+                else {
+                    const int result = self->_decoderResult.load();
+                    [self abort:[NSString stringWithFormat:@"Decoder stream ended: %d. Check guest oracle independently.", result]];
+                }
+                break;
+            }
             NSData* chunk = [NSData dataWithBytes:buffer length:(NSUInteger)n];
             dispatch_data_t data = dispatch_data_create(chunk.bytes, chunk.length, self->_networkQueue, ^{ (void)chunk; });
             dispatch_semaphore_t done = dispatch_semaphore_create(0);
@@ -200,8 +225,13 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     NSData* bytes = [NSData dataWithBytes:record length:sizeof(record)];
     std::memset(record, 0, sizeof(record));
     dispatch_data_t data = dispatch_data_create(bytes.bytes, bytes.length, _networkQueue, ^{ (void)bytes; });
+    dispatch_group_enter(_workers);
     nw_connection_send(_connection, data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true, ^(nw_error_t error) {
-        if (error) { [self abort:[NSString stringWithFormat:@"TLS authentication send failed: %d", nw_error_get_error_code(error)]]; return; }
+        if (error || self->_stopping.load()) {
+            if (error) [self abort:[NSString stringWithFormat:@"TLS authentication send failed: %d", nw_error_get_error_code(error)]];
+            dispatch_group_leave(self->_workers); return;
+        }
+        dispatch_group_enter(self->_workers);
         nw_connection_receive(self->_connection, 1, 1, ^(dispatch_data_t reply, nw_content_context_t context, bool complete, nw_error_t err) {
             (void)context;
             __block uint8_t ack = 0xff; __block size_t count = 0;
@@ -210,11 +240,15 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
                 if (n == 1 && count == 0) { ack = *static_cast<const uint8_t*>(p); count = 1; return true; }
                 count += n; return false;
             });
-            if (err || complete || count != 1 || ack != 0) { [self abort:@"Broker authentication rejected or incomplete."]; return; }
-            self->_token = nil;
-            [self report:@"Broker authenticated; starting real decoder stream."];
-            [self beginBridge];
+            if (err || complete || count != 1 || ack != 0) [self abort:@"Broker authentication rejected or incomplete."];
+            else if (!self->_stopping.load()) {
+                self->_token = nil;
+                [self report:@"Broker authenticated; starting real decoder stream."];
+                [self beginBridge];
+            }
+            dispatch_group_leave(self->_workers);
         });
+        dispatch_group_leave(self->_workers);
     });
 }
 - (void)start {
@@ -245,21 +279,29 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
     if (!device || !driver) { [self abort:@"Executor identity is not valid UTF-8."]; return; }
     [self report:[NSString stringWithFormat:@"Executor %@ (%@), Vulkan driver %u; session %@, generation %llu, process %llu.",
                   device, driver, info.driver_version, env[@"CABOOSE_GPU_SESSION"], _generation, _process]];
-    nw_protocol_options_t tls = nw_tls_create_options();
-    sec_protocol_options_t security = nw_tls_copy_sec_protocol_options(tls);
-    sec_protocol_options_set_min_tls_protocol_version(security, tls_protocol_version_TLSv13);
-    sec_protocol_options_set_max_tls_protocol_version(security, tls_protocol_version_TLSv13);
     NSData* pin = _pin;
-    sec_protocol_options_set_verify_block(security, ^(sec_protocol_metadata_t metadata, sec_trust_t trust, sec_protocol_verify_complete_t complete) {
-        (void)metadata; complete(certMatches(trust, pin));
-    }, _networkQueue);
-    nw_parameters_t params = nw_parameters_create_secure_tcp(tls, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    nw_parameters_t params = nw_parameters_create_secure_tcp(^(nw_protocol_options_t options) {
+        sec_protocol_options_t security = nw_tls_copy_sec_protocol_options(options);
+        sec_protocol_options_set_min_tls_protocol_version(security, tls_protocol_version_TLSv13);
+        sec_protocol_options_set_max_tls_protocol_version(security, tls_protocol_version_TLSv13);
+        sec_protocol_options_set_verify_block(security, ^(sec_protocol_metadata_t metadata, sec_trust_t trust, sec_protocol_verify_complete_t complete) {
+            (void)metadata; complete(certMatches(trust, pin));
+        }, self->_networkQueue);
+    }, NW_PARAMETERS_DEFAULT_CONFIGURATION);
+    if (!params) { [self abort:@"Could not configure pinned TLS."]; return; }
     nw_endpoint_t endpoint = nw_endpoint_create_host(host.UTF8String, port.UTF8String);
+    if (!endpoint) { [self abort:@"Could not configure broker endpoint."]; return; }
     _connection = nw_connection_create(endpoint, params);
+    if (!_connection) { [self abort:@"Could not create broker connection."]; return; }
     nw_connection_set_queue(_connection, _networkQueue);
+    // Network.framework guarantees cancelled is the final state callback and
+    // all outstanding sends/receives finish before it. Hold one group entry
+    // until then so cleanup cannot invalidate stream state early.
+    dispatch_group_enter(_workers);
     nw_connection_set_state_changed_handler(_connection, ^(nw_connection_state_t state, nw_error_t error) {
         if (state == nw_connection_state_ready) [self authenticate];
         else if (state == nw_connection_state_failed) [self abort:[NSString stringWithFormat:@"Pinned TLS connection failed: %d", error ? nw_error_get_error_code(error) : 0]];
+        else if (state == nw_connection_state_cancelled) dispatch_group_leave(self->_workers);
     });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 90 * NSEC_PER_SEC), _networkQueue, ^{ [self abort:@"Diagnostic deadline expired."]; });
     nw_connection_start(_connection);
