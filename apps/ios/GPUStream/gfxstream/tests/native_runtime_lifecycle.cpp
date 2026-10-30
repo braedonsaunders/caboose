@@ -1,9 +1,12 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 // Real backend lifecycle smoke check. The caller supplies a real Vulkan provider.
 #include "native_runtime.h"
+#include "frame_buffer.h"
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <dlfcn.h>
+#include <future>
 #include <thread>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -46,9 +49,28 @@ int main(int argc, char** argv) {
     close(fd[0]); close(fd[1]);
     if (!check("stop second", stopResult, 0) ||
         !(runResult == 0 || runResult == ECANCELED) ||
-        !check("finish second", caboose_gpu_runtime_finish(second), 0) ||
-        !check("stop third", caboose_gpu_runtime_stop(third), 0) ||
-        !check("finish third", caboose_gpu_runtime_finish(third), 0)) return 1;
+        !check("finish second", caboose_gpu_runtime_finish(second), 0)) return 1;
+    // Exercise the real upstream cleanup worker: a queued blocker must keep
+    // finish pending until earlier cleanup work is allowed to complete.
+    std::promise<void> entered, release;
+    auto releaseFuture = release.get_future().share();
+    gfxstream::host::FrameBuffer::getFB()->enqueueAsyncCleanup([&] {
+        entered.set_value();
+        releaseFuture.wait();
+    });
+    entered.get_future().wait();
+    int thirdStop = caboose_gpu_runtime_stop(third);
+    std::promise<void> finishStarted;
+    auto finish = std::async(std::launch::async, [&] {
+        finishStarted.set_value();
+        return caboose_gpu_runtime_finish(third);
+    });
+    finishStarted.get_future().wait();
+    bool premature = finish.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+    release.set_value();
+    int thirdFinish = finish.get();
+    if (!check("stop third", thirdStop, 0) || premature ||
+        !check("finish third", thirdFinish, 0)) return 1;
     // Deliberately keep the single provider loaded until process exit.
     std::puts("real process lifetime lifecycle passed");
     return 0;

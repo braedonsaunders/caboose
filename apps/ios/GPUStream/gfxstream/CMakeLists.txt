@@ -69,8 +69,11 @@ if(TARGET gfxstream_backend_static)
     if(CABOOSE_GFXSTREAM_RUNTIME_TESTS)
         add_executable(caboose_gpu_native_runtime_lifecycle tests/native_runtime_lifecycle.cpp)
         target_compile_features(caboose_gpu_native_runtime_lifecycle PRIVATE cxx_std_17)
-        target_include_directories(caboose_gpu_native_runtime_lifecycle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-        target_link_libraries(caboose_gpu_native_runtime_lifecycle PRIVATE caboose_gpu_native_runtime ${CMAKE_DL_LIBS})
+        target_compile_definitions(caboose_gpu_native_runtime_lifecycle PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
+        target_include_directories(caboose_gpu_native_runtime_lifecycle PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}" "${GFXSTREAM_REPO_ROOT}" "${GFXSTREAM_REPO_ROOT}/host"
+            "${GFXSTREAM_REPO_ROOT}/host/vulkan")
+        target_link_libraries(caboose_gpu_native_runtime_lifecycle PRIVATE caboose_gpu_native_runtime gfxstream_backend_static ${CMAKE_DL_LIBS})
         if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
             target_link_libraries(caboose_gpu_native_runtime_lifecycle PRIVATE "-framework OpenGL")
         endif()
