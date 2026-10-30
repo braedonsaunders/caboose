@@ -34,7 +34,8 @@ typedef enum caboose_gpu_present_event {
 } caboose_gpu_present_event;
 
 // Callback runs off main/network queues. SOURCE_RELEASED or DEVICE_LOST ends a
-// serial; FAILED_UNRETIRED is nonterminal and may be followed by a terminal event.
+// source use; FAILED_UNRETIRED is nonterminal. DEVICE_LOST may also follow
+// SOURCE_RELEASED when loss is observed while waiting for presentation retirement.
 // SOURCE_RELEASED says only that the native GPU is done reading the source; it is
 // not display/vsync confirmation. Caller keeps context valid until terminal event
 // and successful worker retirement. It must not synchronously wait for main work.

@@ -183,8 +183,11 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f) {
         if (r == VK_SUCCESS) f.presentRetired = true;
         else if (r == VK_ERROR_DEVICE_LOST) {
             f.deviceLost = true;
-            if (!f.sourceReleased && f.callback) f.callback(f.context, f.serial, CABOOSE_GPU_DEVICE_LOST,
-                driverResult(CABOOSE_GPU_SUBMIT_UNCERTAIN, r));
+            if (!f.reportedDeviceLoss && f.callback) {
+                f.reportedDeviceLoss = true;
+                f.callback(f.context, f.serial, CABOOSE_GPU_DEVICE_LOST,
+                           driverResult(CABOOSE_GPU_SUBMIT_UNCERTAIN, r));
+            }
         } else return errorFor(r);
     }
     return f.deviceLost || (f.sourceReleased && f.presentRetired) ? 0 : EBUSY;
