@@ -141,8 +141,15 @@ import Testing
     @Test func aLiveFrameIsShownOnArrival() async throws {
         let sent = Sent()
         let video = try video(source: "surface", sent: sent)
+        defer { video.close() }
         video.frame(VideoFrame(video: 3, seq: 41, keyframe: true, ptsMicros: 1, data: try keyframe()))
-        try await settle(video)
+        video.flush()
+        // Renderer readiness is asynchronous even after decoding and enqueue finish.
+        // Observe the actual layer rather than assuming a fixed 150 ms sleep settles it.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while !(await MainActor.run { video.layer.isReadyForDisplay }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(sent.acks == [41])
         #expect(video.layer.sampleBufferRenderer.status == .rendering)
         #expect(video.layer.isReadyForDisplay)
