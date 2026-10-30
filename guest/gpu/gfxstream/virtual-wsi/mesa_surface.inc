@@ -14,6 +14,7 @@
 #include <mutex>
 #include <system_error>
 #include "goldfish_vk_private_defs.h"
+#include "Resources.h"
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
 #include "SocketStream.h"
 #endif
@@ -90,7 +91,7 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
         }
         if (surface.query==UINT64_MAX) throw ProtocolError("query ID exhausted");
         auto reply=surface.client.query(++surface.query,
-            uint64_t(reinterpret_cast<uintptr_t>(device->internal_object)),deadline());
+            get_host_u64_VkPhysicalDevice(device->internal_object),deadline());
         auto result=apiStatus(status(reply.body,48));
         if (result==VK_SUCCESS) caps=std::move(reply.body);
         return result;
@@ -110,7 +111,7 @@ static VkResult VKAPI_CALL create(VkInstance instance, const VkWaylandSurfaceCre
         auto surface=std::make_shared<Surface>();
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
-        surface->boxedInstance=uint64_t(reinterpret_cast<uintptr_t>(owner->internal_object));
+        surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
         surface->object=wl_proxy_get_id(proxy);
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
         // The private WSI never creates a Linux presentation buffer. Keep the

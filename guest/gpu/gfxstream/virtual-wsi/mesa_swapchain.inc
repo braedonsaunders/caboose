@@ -85,7 +85,7 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
         // Native receives every base creation field and rejects unsupported values.
         if (surface->query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes request; put64(request,++surface->query);
-        put64(request,uint64_t(reinterpret_cast<uintptr_t>(device->internal_object))); put64(request,old);
+        put64(request,get_host_u64_VkDevice(device->internal_object)); put64(request,old);
         for (uint32_t word:{info->flags,info->minImageCount,uint32_t(info->imageFormat),uint32_t(info->imageColorSpace),
              info->imageExtent.width,info->imageExtent.height,info->imageArrayLayers,info->imageUsage,
              uint32_t(info->preTransform),uint32_t(info->compositeAlpha),uint32_t(info->presentMode),info->clipped,
@@ -165,7 +165,7 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 if (result!=VK_SUCCESS) return cleanup(result);
                 result=encoder->vkBindImageMemory(device->internal_object,image.image,image.memory,0,true);
                 if (result!=VK_SUCCESS) return cleanup(result);
-                images.push_back(uint64_t(reinterpret_cast<uintptr_t>(image.image)));
+                images.push_back(get_host_u64_VkImage(image.image));
             }
             auto mapped=surface->client.mapSwapchain(swap->native,images,deadline());
             result=apiStatus(status(mapped.body,48)); if (result!=VK_SUCCESS) return cleanup(result);
@@ -219,13 +219,13 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             VK_FROM_HANDLE(gfxstream_vk_semaphore, value, semaphore);
             if (value->vk.base.device!=&gfxstream_vk_device_from_handle(device)->vk ||
                 value->vk.type!=VK_SEMAPHORE_TYPE_BINARY || value->vk.temporary) return VK_ERROR_INITIALIZATION_FAILED;
-            boxedSemaphore=uint64_t(reinterpret_cast<uintptr_t>(value->internal_object));
+            boxedSemaphore=get_host_u64_VkSemaphore(value->internal_object);
         }
         if (fence) {
             VK_FROM_HANDLE(gfxstream_vk_fence, value, fence);
             if (value->vk.base.device!=&gfxstream_vk_device_from_handle(device)->vk || value->vk.temporary)
                 return VK_ERROR_INITIALIZATION_FAILED;
-            boxedFence=uint64_t(reinterpret_cast<uintptr_t>(value->internal_object));
+            boxedFence=get_host_u64_VkFence(value->internal_object);
         }
         if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t request=++surface.query;
@@ -274,7 +274,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             VK_FROM_HANDLE(gfxstream_vk_semaphore, value, info->pWaitSemaphores[i]);
             if (!value || value->vk.base.device!=&queue->device->vk || value->vk.type!=VK_SEMAPHORE_TYPE_BINARY ||
                 value->vk.temporary) return VK_ERROR_INITIALIZATION_FAILED;
-            waits.push_back(uint64_t(reinterpret_cast<uintptr_t>(value->internal_object)));
+            waits.push_back(get_host_u64_VkSemaphore(value->internal_object));
         }
         auto& surface=*swap->surface;
         // Native capacity is one frame per surface; only its final retirement
@@ -285,7 +285,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         if (surface.presentSerial==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t serial=++surface.presentSerial;
         auto reply=surface.client.presentIndexed(swap->native,serial,
-            uint64_t(reinterpret_cast<uintptr_t>(queue->internal_object)),index,swap->family,waits,deadline());
+            get_host_u64_VkQueue(queue->internal_object),index,swap->family,waits,deadline());
         auto result=apiStatus(status(reply.body,48));
         if (u32(reply.body,64)==1) swap->images[index].serial=serial;
         else { swap->poisoned=true; if (result==VK_SUCCESS) result=VK_ERROR_SURFACE_LOST_KHR; }

@@ -252,3 +252,20 @@ process binding while draining native replies and FIN, including when the origin
 creator has exited; replies to an exited creator are discarded. Only the actual
 PROCESS_RETIRED receipt releases the process identity. New bytes, sockets and
 surface requests still require the original live peer identity.
+
+### Private WSI handle mapping
+
+The local WSI control records carry the encoder's host-boxed Vulkan IDs. Mesa
+`internal_object` values are guest gfxstream handles, so instance, physical device,
+device, queue, image, semaphore and fence fields use the pinned
+`get_host_u64_Vk*` mappings before serialization. Ordinary encoder and
+ResourceTracker calls still receive their guest handles. Surface and swapchain
+wrapper pointers remain local; the control protocol identifies their native
+objects with authenticated grants and returned swapchain IDs.
+
+`virtual-wsi/check_host_handles.py COMPILE_DATABASE SOURCE OUT` runs from the
+retained Mesa build directory, compiles the real `Resources.cpp`, and executes all
+eight control-wire expressions with host IDs distinct from guest addresses.
+`SOURCE` contains the WSI include files and `wire.h`; `OUT` is a new private
+directory. `--expect-reject` verifies the same fixture rejects the original
+pointer-cast implementation. This check uses no Vulkan loader or GPU.
