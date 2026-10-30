@@ -3,6 +3,7 @@ import array
 import os
 from importlib.machinery import SourceFileLoader
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import socket
@@ -32,6 +33,38 @@ class Writer:
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_indexed_session_requires_exact_v4_hello(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True)
+        expected = b'CBGLREF1' + struct.pack('<II', 4, 0x70) + bytes.fromhex(
+            '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0')
+        self.assertEqual(session.hello, expected)
+        vectors = json.loads((HERE.parent / 'broker' / 'live-v4-vectors.json').read_text())
+        golden = next(v for v in vectors if v['kind'] == 'SESSION_READY')
+        self.assertEqual(session.hello, bytes.fromhex(golden['payload']))
+        for bad in (broker.HELLO, expected[:12] + struct.pack('<I', 0xf0) + expected[16:]):
+            with self.assertRaises(ValueError):
+                await session.message(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 1, bad))
+        await session.message(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 1, expected))
+        self.assertTrue(session.session_ready.is_set())
+        session.bindings.finish(session.binding_generation)
+
+    async def test_indexed_swapchain_real_reply_correlation(self):
+        values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
+        vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
+        state = broker.IndexedSurface()
+        state.send(25, vectors['create'][40:])
+        state.reply(26, vectors['created'])
+        state.send(27, vectors['map'][40:])
+        state.reply(28, vectors['mapped'])
+        state.send(29, vectors['acquire'][40:])
+        with self.assertRaises(ValueError): state.send(29, vectors['acquire'][40:])
+        state.reply(30, vectors['acquired'])
+        state.send(31, vectors['cancel-acquire'][40:])  # completed acquire cancellation is a no-op
+        state.send(34, vectors['indexed-present'][40:])
+        with self.assertRaises(ValueError): state.send(34, vectors['indexed-present'][40:])
+        state.send(32, vectors['retire-swapchain'][40:])
+        state.reply(33, vectors['retired-swapchain'])
+        self.assertFalse(state.swaps)
     async def test_real_socketpair_websocket_session_roundtrip(self):
         left, right = socket.socketpair()
         left.setblocking(False); right.setblocking(False)
@@ -363,6 +396,69 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         await deliver(Kind.PRESENT_RESULT, result(5, 0, 0, -3))
         self.assertNotIn(5, surface['presents'])
         with self.assertRaises(ValueError): await deliver(Kind.PRESENT_RESULT, result(5, 0, 0, -3))
+        session.bindings.finish(session.binding_generation)
+
+    async def test_frame_retirement_requires_actual_result_and_source_release(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        session.processes[1] = {}
+        surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(maxsize=64), 'reply_bytes': 0,
+                   'verify_peer': lambda: None, 'presents': {9: {'result': True, 'release': False, 'terminal': False, 'swap': 5}}}
+        session.surfaces[key] = surface
+        retired = Envelope(Kind.PRESENT_RETIRED, b'a' * 16, 1, 1, 0, 1, identity + struct.pack('<QQ', 5, 9))
+        with mock.patch.object(session, 'indexed_enabled', True):
+            with self.assertRaises(ValueError): await session.message(retired)
+            release = Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 2, identity + struct.pack('<Q', 9))
+            await session.message(release)
+            await session.message(retired)
+            self.assertNotIn(9, surface['presents'])
+            with self.assertRaises(ValueError): await session.message(retired)
+            for serial in range(10, 110):
+                surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': 5}
+                body = identity + struct.pack('<QiIiIII', serial, 0, 1, 0, 0, 1, 0)
+                await session.message(Envelope(Kind.PRESENT_RESULT, b'a' * 16, 1, 1, 0, 3, body))
+                await session.message(Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 4, identity + struct.pack('<Q', serial)))
+                await session.message(Envelope(Kind.PRESENT_RETIRED, b'a' * 16, 1, 1, 0, 5, identity + struct.pack('<QQ', 5, serial)))
+                while not surface['replies'].empty():
+                    packet = surface['replies'].get_nowait(); surface['reply_bytes'] -= len(packet)
+                self.assertFalse(surface['presents'])
+        session.bindings.finish(session.binding_generation)
+
+    async def test_surface_reply_does_not_outlive_original_peer(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        session.processes[1] = {}
+        def dead(): raise PermissionError('original peer exited')
+        surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(), 'verify_peer': dead}
+        session.surfaces[key] = surface
+        payload = identity + struct.pack('<iIiI', 0, 1, 0, 0)
+        with self.assertRaises(PermissionError):
+            await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 1, payload))
+        self.assertTrue(surface['replies'].empty())
+        session.bindings.finish(session.binding_generation)
+
+    async def test_owner_surface_revocation_notifies_client_and_requests_compositor(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        session.processes[1] = {}
+        surface = {'process': 1, 'window': 12, 'replies': asyncio.Queue(), 'reply_bytes': 0,
+                   'verify_peer': lambda: None, 'indexed': broker.IndexedSurface()}
+        session.surfaces[key] = surface
+        session.broker = mock.Mock(send_control=mock.AsyncMock())
+        frame = Envelope(Kind.SURFACE_REVOKE_REQUEST, b'a' * 16, 1, 1, 0, 1, identity)
+        with mock.patch.object(session, 'indexed_enabled', True):
+            await session.message(frame)
+            self.assertTrue(surface['indexed'].revoking)
+            self.assertEqual(control_protocol.decode(session.broker.send_control.await_args.args[0], 0),
+                             control_protocol.RevokeRequest(*key))
+            self.assertEqual(surface['replies'].get_nowait()[16:], identity)
+            with self.assertRaises(ValueError): await session.message(frame)
         session.bindings.finish(session.binding_generation)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')

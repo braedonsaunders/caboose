@@ -28,6 +28,91 @@ from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
+HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
+
+
+class IndexedSurface:
+    """Bounded correlation; native replies remain the authority for results."""
+    def __init__(self):
+        self.requests = 0
+        self.native_highwater = 0
+        self.creating = {}
+        self.swaps = {}
+        self.revoking = False
+
+    def request(self, request):
+        if request <= self.requests: raise ValueError('reused surface request')
+        self.requests = request
+
+    def send(self, kind, body):
+        swap = struct.unpack_from('<Q', body)[0]
+        if self.revoking and kind != 31: raise ValueError('surface revoked')
+        if kind == 25:
+            request, _device, old = struct.unpack_from('<QQQ', body)
+            self.request(request)
+            if len(self.creating) + len(self.swaps) >= 64 or (old and old not in self.swaps):
+                raise ValueError('swapchain creation unavailable')
+            self.creating[request] = old
+            return
+        state = self.swaps.get(swap)
+        if state is None: raise ValueError('unknown swapchain')
+        if kind == 27:
+            if state['mapping'] or state['mapped'] or state['retiring'] or struct.unpack_from('<I', body, 8)[0] != state['count']:
+                raise ValueError('invalid swapchain mapping')
+            state['mapping'] = True
+        elif kind == 29:
+            request = struct.unpack_from('<Q', body, 8)[0]
+            self.request(request)
+            if not state['mapped'] or state['retiring'] or state['acquire'] is not None:
+                raise ValueError('acquire unavailable')
+            state['acquire'] = request
+        elif kind == 31:
+            request = struct.unpack_from('<Q', body, 8)[0]
+            if request not in (state['acquire'], state['last_acquire']): raise ValueError('unknown acquire cancellation')
+        elif kind == 32:
+            if state['retiring']: raise ValueError('duplicate swapchain retirement')
+            state['retiring'] = True
+        elif kind == 34:
+            index = struct.unpack_from('<I', body, 24)[0]
+            if not state['mapped'] or state['retiring'] or index not in state['acquired']:
+                raise ValueError('present source not acquired')
+            state['acquired'].remove(index)
+        else: raise ValueError('invalid indexed request')
+
+    def reply(self, kind, payload):
+        first = struct.unpack_from('<Q', payload, 40)[0]
+        if kind == 26:
+            if first not in self.creating: raise ValueError('unknown create reply')
+            del self.creating[first]
+            swap = struct.unpack_from('<Q', payload, 48)[0]
+            if swap:
+                if swap <= self.native_highwater: raise ValueError('reused native swapchain')
+                self.native_highwater = swap
+                self.swaps[swap] = dict(count=struct.unpack_from('<I', payload, 72)[0], mapping=False,
+                    mapped=False, retiring=False, acquire=None, last_acquire=None, acquired=set())
+            return
+        state = self.swaps.get(first)
+        if state is None: raise ValueError('unknown swapchain reply')
+        if kind == 28:
+            if not state['mapping']: raise ValueError('unexpected map reply')
+            state['mapping'] = False
+            error, has_vk, vk, _ = struct.unpack_from('<iIiI', payload, 48)
+            state['mapped'] = error == 0 and (not has_vk or vk == 0)
+        elif kind == 30:
+            request = struct.unpack_from('<Q', payload, 48)[0]
+            if request != state['acquire']: raise ValueError('unexpected acquire reply')
+            state['acquire'] = None
+            state['last_acquire'] = request
+            has_index, index = struct.unpack_from('<II', payload, 72)
+            if has_index:
+                if index >= state['count'] or index in state['acquired']: raise ValueError('invalid acquired image')
+                state['acquired'].add(index)
+        elif kind == 33:
+            if not state['retiring'] or state['acquire'] is not None or state['mapping']:
+                raise ValueError('unexpected swapchain retirement')
+            error, has_vk, vk, _ = struct.unpack_from('<iIiI', payload, 48)
+            if error == 0 and (not has_vk or vk == 0): del self.swaps[first]
+        else: raise ValueError('invalid indexed response')
 
 
 async def close_owned_writer(writer, *, abort, timeout=1):
@@ -44,9 +129,11 @@ async def close_owned_writer(writer, *, abort, timeout=1):
 
 
 class Session:
-    def __init__(self, broker, executor, generation, reader, writer):
+    def __init__(self, broker, executor, generation, reader, writer, indexed=False):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
+        self.indexed_enabled = indexed
+        self.hello = HELLO_V4 if indexed else HELLO
         self.decoder = EnvelopeDecoder(executor, generation)
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
@@ -90,7 +177,7 @@ class Session:
 
     async def message(self, frame):
         if frame.kind == Kind.SESSION_READY:
-            if self.session_ready.is_set() or frame.payload != HELLO: raise ValueError('bad session receipt')
+            if self.session_ready.is_set() or frame.payload != self.hello: raise ValueError('bad session receipt')
             self.session_ready.set(); return
         if not self.session_ready.is_set(): raise ValueError('session not ready')
         if frame.kind == Kind.EXECUTOR_DRAIN:
@@ -110,7 +197,9 @@ class Session:
         if frame.kind == Kind.PROCESS_RETIRED:
             if not process['stopping'] or process['retired'].is_set() or process['surfaces']: raise ValueError('bad process retirement')
             process['retired'].set(); return
-        if frame.kind in (Kind.SURFACE_BOUND, Kind.SURFACE_CAPS, Kind.PRESENT_RESULT, Kind.SOURCE_RELEASED):
+        if frame.kind in (Kind.SURFACE_BOUND, Kind.SURFACE_CAPS, Kind.PRESENT_RESULT, Kind.SOURCE_RELEASED,
+                          Kind.SWAPCHAIN_CREATED, Kind.SWAPCHAIN_MAPPED, Kind.SWAPCHAIN_ACQUIRED,
+                          Kind.SWAPCHAIN_RETIRED, Kind.SURFACE_REVOKE_REQUEST, Kind.PRESENT_RETIRED):
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
             surface = self.surfaces.get(key)
             if surface is None or surface['process'] != frame.process or surface.get('replies') is None:
@@ -124,6 +213,24 @@ class Session:
                 query = struct.unpack_from('<Q', frame.payload, 40)[0]
                 if query not in surface['queries']: raise ValueError('unknown surface query')
                 surface['queries'].remove(query)
+            elif frame.kind in (Kind.SWAPCHAIN_CREATED, Kind.SWAPCHAIN_MAPPED, Kind.SWAPCHAIN_ACQUIRED, Kind.SWAPCHAIN_RETIRED):
+                if not self.indexed_enabled: raise ValueError('indexed executor not enabled')
+                if frame.kind == Kind.SWAPCHAIN_RETIRED:
+                    swap = struct.unpack_from('<Q', frame.payload, 40)[0]
+                    if any(item.get('swap') == swap for item in surface['presents'].values()):
+                        raise ValueError('swapchain frames not retired')
+                surface['indexed'].reply(frame.kind, frame.payload)
+            elif frame.kind == Kind.SURFACE_REVOKE_REQUEST:
+                if not self.indexed_enabled or surface['indexed'].revoking: raise ValueError('unexpected surface revoke')
+                surface['indexed'].revoking = True
+                await self.broker.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
+            elif frame.kind == Kind.PRESENT_RETIRED:
+                if not self.indexed_enabled: raise ValueError('indexed executor not enabled')
+                swap, serial = struct.unpack_from('<QQ', frame.payload, 40)
+                pending = surface['presents'].get(serial)
+                if pending is None or pending.get('swap') != swap or not pending['result'] or not pending['release']:
+                    raise ValueError('unexpected present retirement')
+                del surface['presents'][serial]
             else:
                 serial = struct.unpack_from('<Q', frame.payload, 40)[0]
                 pending = surface['presents'].get(serial)
@@ -154,9 +261,14 @@ class Session:
             surface = self.surfaces.get(key)
             if surface is None or not surface['retiring'] or surface['process'] != frame.process:
                 raise ValueError('unexpected surface retirement')
+            if self.indexed_enabled and (surface['indexed'].creating or surface['presents'] or
+                    any(swap['acquire'] is not None or swap['mapping'] for swap in surface['indexed'].swaps.values())):
+                raise ValueError('surface retired before pending operation completion')
             error, has_vk, vk, _reserved = struct.unpack_from('<iIiI', frame.payload, 40)
             if error != 0 or (has_vk and vk != 0):
                 raise ValueError('surface retirement failed')
+            if surface.get('replies') is not None:
+                surface['verify_peer']()
             await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
             if surface.get('replies') is not None:
                 data = surface_wire.encode_reply(frame.kind, frame.payload)
@@ -290,7 +402,7 @@ class Session:
                 return
             peer = PeerIdentity.from_socket(sock, os.getuid())
             offered = await asyncio.wait_for(reader.readexactly(48), 5)
-            if offered != HELLO: raise ValueError('local hello mismatch')
+            if offered != self.hello: raise ValueError('local hello mismatch')
             if self.draining:
                 return
             process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
@@ -307,7 +419,7 @@ class Session:
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
             await asyncio.wait_for(stream['ready'].wait(), 10)
-            writer.write(HELLO); await writer.drain()
+            writer.write(self.hello); await writer.drain()
             while True:
                 self.bindings.identity(self.binding_generation, stream_id)
                 try:
@@ -343,9 +455,10 @@ class Session:
 
 
 class Broker:
-    def __init__(self, control, token_file, socket_path, surface_path=None):
+    def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False):
         self.control, self.token_file, self.socket_path = control, token_file, socket_path
         self.surface_path = surface_path
+        self.indexed = indexed
         self.compositor_pid = os.getppid()
         self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
         self.lease = ExecutorLease()
@@ -470,7 +583,8 @@ class Broker:
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
             surface['replies'] = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
-            surface.update(bound=None, queries=set(), presents={}, last_query=0, last_present=0, reply_bytes=0, verify_peer=verify_peer)
+            surface.update(bound=None, queries=set(), presents={}, last_query=0, last_present=0, reply_bytes=0,
+                           verify_peer=verify_peer, indexed=IndexedSurface())
             sender = asyncio.create_task(send_replies(surface['replies']))
             def sender_done(task):
                 if not task.cancelled() and task.exception() is not None:
@@ -484,20 +598,35 @@ class Broker:
                 try: kind, body = await asyncio.wait_for(receive(), 1)
                 except asyncio.TimeoutError: continue
                 verify_peer()
+                if session.indexed_enabled and surface['indexed'].revoking and kind not in (23, 31):
+                    raise ValueError('surface revoked')
                 if kind == 18:
                     query = struct.unpack_from('<Q', body)[0]
                     if not surface['bound'] or query <= surface['last_query'] or len(surface['queries']) >= 64:
                         raise ValueError('invalid query state')
                     surface['last_query'] = query
+                    if session.indexed_enabled: surface['indexed'].request(query)
                     surface['queries'].add(query)
                     session.send(Kind.SURFACE_QUERY, process_id, payload=identity + body)
                 elif kind == 20:
+                    if session.indexed_enabled: raise ValueError('legacy presentation is not indexed')
                     serial = struct.unpack_from('<Q', body)[0]
                     if not surface['bound'] or serial <= surface['last_present'] or len(surface['presents']) >= 64:
                         raise ValueError('invalid present state')
                     surface['last_present'] = serial
                     surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False}
                     session.send(Kind.PRESENT, process_id, payload=identity + body)
+                elif kind in (25, 27, 29, 31, 32, 34):
+                    if not session.indexed_enabled or not surface['bound']:
+                        raise ValueError('indexed executor not enabled')
+                    if kind == 34:
+                        swap, serial = struct.unpack_from('<QQ', body)
+                        if serial <= surface['last_present'] or len(surface['presents']) >= 64:
+                            raise ValueError('invalid indexed present serial')
+                        surface['last_present'] = serial
+                        surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap}
+                    surface['indexed'].send(kind, body)
+                    session.send(Kind(kind), process_id, payload=identity + body)
                 elif kind == 23:
                     if not surface['retiring']:
                         await self.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
@@ -568,11 +697,11 @@ class Broker:
                 raise ValueError('token file too large')
             _computer, executor, response = admit(raw, token.strip())
             generation = self.lease.admit(executor.bytes)
-            session = Session(self, executor.bytes, generation, reader, writer)
+            session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed)
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
-            session.send(Kind.SESSION, payload=HELLO)
+            session.send(Kind.SESSION, payload=session.hello)
             await asyncio.wait_for(session.session_ready.wait(), 10)
             await self.report_lifecycle(session, 4)
             self.lease.ready(executor.bytes, generation)
@@ -677,11 +806,14 @@ def main():
     parser.add_argument('--token-file', type=Path, required=True)
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--surface-socket', type=Path)
+    parser.add_argument('--private-indexed', action='store_true')
     args = parser.parse_args()
+    if args.private_indexed and args.surface_socket is None:
+        parser.error('--private-indexed requires --surface-socket')
     control = socket.socket(fileno=args.control_fd)
     if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
         raise SystemExit('private Unix sequenced-packet control socket required')
-    asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket).run())
+    asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed).run())
 
 
 if __name__ == '__main__': main()
