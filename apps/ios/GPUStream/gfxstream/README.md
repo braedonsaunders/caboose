@@ -6,7 +6,10 @@ GPU. The [macOS reference](macos-reference/README.md) contains a real-backend bu
 recipe and lifecycle fixture. The Linux reference executes the private Mesa
 compute/CPU/indirect-draw oracle on lavapipe; the iOS reference links the real
 backend and stock MoltenVK. The standalone diagnostic also links with the private
-patched MoltenVK archive. Neither establishes physical-phone execution.
+patched MoltenVK archive. The private physical-phone test executes the unchanged
+compute/CPU/indirect-draw fixture on an Apple A20 Pro GPU and passes its independent
+pixel oracle. It uses explicit non-coherent flush/invalidate and offscreen readback;
+it does not establish on-screen presentation, game compatibility or a general driver.
 
 ## Pinned source
 
@@ -78,7 +81,8 @@ call uses one socket on its calling thread. Stop revokes admission, signals gues
 process death and shuts down active sockets. Finish rejects processes with active
 runs; destruction waits for upstream asynchronous cleanup. A connection error is
 returned to its caller and does not stop unrelated processes. The registry is linked into the iOS reference and its two-process lifecycle is
-exercised by the Linux reference. Physical-device cleanup remains unverified.
+exercised by the Linux reference. The bounded physical-phone fixture observes decoder cleanup before process termination;
+this does not establish retirement of future presentation resources.
 
 ## Real backend and loader
 
@@ -112,8 +116,13 @@ remain unimplemented or unproven. Explicit non-coherent GPU feedback and a
 CPU-dependent indirect draw pass through the private Linux receiver. No feature bits or existing game settings are changed.
 
 The [compute acceptance fixtures](../../../../guest/gpu/emulation-check/README.md)
-require actual GPU words and a CPU-dependent second draw. A physical-phone run of
-that live path, along with lifecycle and synchronization tests, is absent. The
+require actual GPU words and a CPU-dependent second draw. The physical-phone run uses seed `2956451331`, returns GPU words
+`[6, 1, 0, 0, 3709642742]`, and passes all four independent pixel samples. The
+32 KiB RGBA SHA-256 is
+`00a06364928c2f82f290b50aa14097d4757fcbcc2cdd914b4f0e409b525bafe1`.
+The guest, broker and session exit successfully, phone decoder cleanup is observed,
+and owned processes, sockets and credentials are absent after cleanup. Coherent
+memory, on-screen presentation and game execution remain unverified. The
 macOS lifecycle fixture sends startup flags and EOF only; it is not compute or
 readback evidence.
 

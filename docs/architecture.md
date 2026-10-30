@@ -2512,9 +2512,12 @@ the computer's static profile or the renderer's advertised capabilities.
 
 The isolated live-transport source in `guest/gpu/gfxstream`, `guest/gpu/broker`, and
 `apps/ios/GPUStream/gfxstream` is not connected to this display handshake or player.
-It contains pinned source checks, socket adapters and bounded duplex transport;
-the experimental guest socket selection rejects initialization. It does not expose
-a working virtual GPU, provide coherent remote memory, or enable phone GPU feedback.
+Its default guest socket selection rejects initialization. The separate private diagnostic
+executes the unchanged Vulkan compute/CPU/indirect-draw acceptance fixture on an
+Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
+explicit non-coherent memory transfers and is not a general driver or on-screen
+game presentation. The bounded live envelope codec is specified in
+[gpu-live.md](gpu-live.md); it is separate from the legacy capture protocol.
 
 ### Shell
 
