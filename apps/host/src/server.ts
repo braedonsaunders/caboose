@@ -17,8 +17,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
-import { NOT_FOUND, json, noContent, readJson } from './http.js'
+import { NOT_FOUND, RequestTooLargeError, json, noContent, readJson } from './http.js'
 import { createDesktopShortcut, parseAppLaunch, type AppAction } from './guest-apps.js'
+import { crossSite } from './cross-site.js'
+import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
 import type { Architecture } from './app-catalog-data.js'
@@ -101,6 +103,8 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
+/** `POST /v1/files` holds its whole file in memory as base64; larger files stream through `PUT /v1/fs/content`. */
+const FILE_BODY_LIMIT = 16 * 1024 * 1024
 
 
 /** Who a request is from: the owner (the host's own token), or a phone signed in to one computer. */
@@ -876,7 +880,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const phoneFile = /^\/v1\/phone\/files\/([^/]+)$/.exec(path)
     if (request.method === 'GET' && phoneFile?.[1]) return json(response, 200, await leased(() => readPhoneFile(controller.guest(), phoneFile[1]!)))
     if (request.method === 'POST' && path === '/v1/files') {
-      const input = await readJson(request, Number.MAX_SAFE_INTEGER)
+      const input = await readJson(request, FILE_BODY_LIMIT)
       if (typeof input.name !== 'string' || !input.name.trim()) throw new AgentInputError('name is required')
       if (input.open !== undefined && typeof input.open !== 'boolean') throw new AgentInputError('open must be a boolean')
       const data = decodeBase64(input.data, 'data')
@@ -1144,12 +1148,17 @@ export function createCabooseServer(options: ComputerPieces & {
   fleet?: Fleet
   /** Accounts and tenants. Without it the owner token and phones are the only principals. */
   identity?: Identity
+  /** Reverse proxies whose forwarding headers are believed (`CABOOSE_TRUSTED_PROXIES`); loopback always is. */
+  trustedProxies?: TrustedProxies
+  /** `CABOOSE_PUBLIC_URL`: an origin the console is served at besides the one in `Host`. */
+  publicUrl?: string | null
 }) {
   const capacitySampler = new CapacitySampler(options.capacityRoot, options.host?.runtime)
   const usage = new UsageHistory(options.usageHistoryFile)
   const identity = options.identity
   const authHandler = identity ? toNodeHandler(request => identity.handleAuthentication(request)) : undefined
-  const throttle = new SignInThrottle()
+  const trustedProxies = options.trustedProxies ?? []
+  const throttle = new SignInThrottle({ trustedProxies })
   const shared = {
     registry: options.registry ?? new AgentRegistry(),
     gpuEnabled: options.host?.runtime === 'container' && options.host.gpu !== null && options.host.gpu !== 'none',
@@ -1331,6 +1340,7 @@ export function createCabooseServer(options: ComputerPieces & {
 
   const server = createServer((request, response) => {
     void (async () => {
+      dropUntrustedForwarding(request, trustedProxies)
       const path = new URL(request.url ?? '/', 'http://localhost').pathname
       if (path !== '/v1' && !path.startsWith('/v1/')) {
         // Until the host is claimed, its setup page requires the one-time setup code.
@@ -1357,6 +1367,8 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
+      // A session cookie proves who the browser is, not which page sent the request.
+      if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl })) return json(response, 403, { error: 'cross-site request refused' })
       const capacityTenant = /^\/v1\/tenants\/([0-9a-f-]{36})\/capacity$/.exec(path)
       if (request.method === 'GET' && (path === '/v1/host/capacity' || capacityTenant)) {
         const result = await capacityFor({
@@ -1476,6 +1488,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
+      if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })
       if (error instanceof PairingRateLimitError || error instanceof BridgeRateLimitError) return json(response, 429, { error: error.message })
       if (error instanceof AgentOperationError || error instanceof TerminalServiceError) return json(response, 502, { error: error.message })
       console.error('Caboose request failed:', error)
@@ -1490,9 +1503,11 @@ export function createCabooseServer(options: ComputerPieces & {
   server.once('close', () => { usageStopped = true; clearInterval(usageTimer); unsubscribeAuthorization?.(); accountSockets.dispose() })
 
   server.on('upgrade', (request, socket, head) => void (async () => {
+    dropUntrustedForwarding(request, trustedProxies)
     const url = new URL(request.url ?? '/', 'http://localhost')
     const principal = await principalOf(request).catch(() => undefined)
     if (!principal) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+    if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     const routed = target(url.pathname, principal)
     if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
     if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }

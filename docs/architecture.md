@@ -765,6 +765,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose forwarding headers are believed: IPv4 or IPv6 addresses or CIDR ranges, separated by commas; loopback always is. From a trusted proxy, `X-Forwarded-For` names the client whose sign-in attempts are counted (the last address no trusted proxy added) and `X-Forwarded-Proto` the scheme of the request's origin; from anyone else both are ignored |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -1028,6 +1029,9 @@ A request is from one of three kinds of caller:
   direct LAN HTTP uses host-only HTTP cookies. Both use the same accounts and session
   store, even when `CABOOSE_PUBLIC_URL` advertises HTTPS. Sign-out clears the matching
   transport's cookies.
+  A request that is not a `GET`, `HEAD` or `OPTIONS`, and every
+  WebSocket upgrade, is accepted on a cookie only from the console's own origin
+  ([Security model](#7-security-model)); otherwise it answers 403 `cross-site request refused`.
 - **A phone token**, which reaches only its own computer's routes, without a computer in the
   path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
 
@@ -1042,15 +1046,16 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
 | 401 | Missing or unknown token or session |
-| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs; or a session cookie sent by a page on another site |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 413 | A JSON body beyond the route's limit |
 | 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
@@ -1244,7 +1249,8 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
   keeps the last anchor through a resident freeze and resumes from it on thaw; park,
   restart or the last control socket closing resets the host's event anchor.
-- `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
+- `POST /v1/files` holds the whole body in memory, so it accepts at most 16 MiB and answers
+  413 beyond that; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
 
@@ -3029,8 +3035,16 @@ it can enable Tailscale HTTPS and can continue to the console without pairing.
   sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
   is closed: the first account comes from setting the host up with its one-time code, the
   rest from single-use invitation links. The host allows twenty sign-in, setup or
-  invitation attempts per client in ten minutes, then answers 429. An administrator
-  sees only their tenants' computers; only the operator sees the host itself.
+  invitation attempts per client in ten minutes, then answers 429; behind a reverse proxy,
+  the client is the address the proxy forwarded only when the proxy is in
+  `CABOOSE_TRUSTED_PROXIES` or on loopback. A session cookie proves who the browser is,
+  not which page sent the request, so a state-changing request or a WebSocket upgrade
+  carrying one is refused (403, before the route runs) unless the browser vouches for the
+  page: `Sec-Fetch-Site` of `same-origin` or `none`, or an `Origin` equal to the host's own
+  origin (the `Host` header, over HTTPS when a trusted proxy says so) or to
+  `CABOOSE_PUBLIC_URL`'s. Bearer tokens need no such check: another site cannot attach
+  them. An administrator sees only their tenants' computers; only the operator sees the
+  host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
