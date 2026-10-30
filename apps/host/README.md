@@ -796,3 +796,10 @@ VM counters and remote Docker endpoints are unavailable. Explicit container stor
 measurement requires locally accessible home-volume metadata; Docker logical layer
 sizes are separate from allocated blocks. See [capacity and usage](../../docs/capacity.md)
 for API authorization, sampling overhead, history gaps, storage deadlines and focused tests.
+
+### Optional multi-host cold recovery
+
+Single-desktop installs keep local storage and require no external services. Explicit
+`CABOOSE_CLUSTER=on` enables PostgreSQL ownership, portable S3 checkpoints and Azure
+provider-fenced recovery. See [cluster configuration and acceptance](src/cluster/README.md)
+for supported runtimes, deployment requirements, routing and recovery limitations.

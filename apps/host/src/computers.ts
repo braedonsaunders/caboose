@@ -1,3 +1,4 @@
+import type pg from 'pg'
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto'
 import { join } from 'node:path'
 import { MAX_SLOTS } from './network.js'
@@ -210,12 +211,26 @@ function phoneEntry(value: unknown): PhoneEntry {
 export class PhoneTokens {
   private pending: Promise<void> = Promise.resolve()
   private lastPersisted = new Map<string, number>()
-  private constructor(private path: string, private entries: PhoneEntry[]) {}
+  private constructor(private path: string, private entries: PhoneEntry[], private pool?: pg.Pool) {}
 
-  static async open(path: string): Promise<PhoneTokens> {
+  static async open(path: string, pool?: pg.Pool): Promise<PhoneTokens> {
+    if (pool) {
+      await pool.query("CREATE TABLE IF NOT EXISTS caboose_cluster_phones (id integer PRIMARY KEY CHECK(id=1), entries jsonb NOT NULL)")
+      const local = await readJsonFile(path)
+      await pool.query('INSERT INTO caboose_cluster_phones VALUES(1,$1) ON CONFLICT DO NOTHING', [JSON.stringify(local ?? [])])
+      const tokens = new PhoneTokens(path, [], pool)
+      await tokens.refresh()
+      return tokens
+    }
     const value = await readJsonFile(path)
     if (value !== undefined && !Array.isArray(value)) throw new Error('Invalid phone sign-in store')
     return new PhoneTokens(path, (value ?? []).map(phoneEntry))
+  }
+
+  async refresh(): Promise<void> {
+    if (!this.pool) return
+    const result = await this.pool.query('SELECT entries FROM caboose_cluster_phones WHERE id=1')
+    this.entries = result.rows[0].entries.map(phoneEntry)
   }
 
   /** An in-memory store, for a host that keeps none on disk (tests). */
@@ -223,9 +238,21 @@ export class PhoneTokens {
 
   private save(change: (entries: PhoneEntry[]) => PhoneEntry[]): Promise<void> {
     const work = this.pending.then(async () => {
-      const next = change(this.entries.map(e => ({ ...e })))
-      if (this.path) await writePrivateJson(this.path, next)
-      this.entries = next
+      if (this.pool) {
+        const client = await this.pool.connect()
+        try {
+          await client.query('BEGIN')
+          const result = await client.query('SELECT entries FROM caboose_cluster_phones WHERE id=1 FOR UPDATE')
+          const next = change(result.rows[0].entries.map(phoneEntry))
+          await client.query('UPDATE caboose_cluster_phones SET entries=$1 WHERE id=1', [JSON.stringify(next)])
+          await client.query('COMMIT')
+          this.entries = next
+        } catch(error) { await client.query('ROLLBACK'); throw error } finally { client.release() }
+      } else {
+        const next = change(this.entries.map(e => ({ ...e })))
+        if (this.path) await writePrivateJson(this.path, next)
+        this.entries = next
+      }
     })
     this.pending = work.catch(() => {})
     return work

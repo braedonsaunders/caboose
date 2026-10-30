@@ -364,6 +364,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         throw error
       }
     },
+    async stopExecution() {
+      clearHeartbeat()
+      await closeRelays()
+      await host.shutdown(id)
+      desk = undefined
+      displayToken = ''
+      resources = null
+    },
     async promote() { await ownerDisplay(); return session() },
     canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
     async freeze() {
