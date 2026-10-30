@@ -27,7 +27,7 @@ def validate_surface(kind: int, payload: bytes):
         require(has_vk == 1 or vk == 0, "absent Vulkan result")
         return error, has_vk, vk
 
-    require(16 <= kind <= 24, "unknown surface kind")
+    require(16 <= kind <= 35, "unknown surface kind")
     require(len(payload) >= 40, "truncated surface identity")
     require(payload[:16] != bytes(16) and payload[16:32] != bytes(16) and wide(32) != 0,
             "zero surface identity")
@@ -78,5 +78,71 @@ def validate_surface(kind: int, payload: bytes):
     elif kind == 22:  # real source-read completion
         exact(48)
         require(wide(40), "invalid release serial")
-    else:  # surface retire
+    elif kind in (23, 35):  # retire / authenticated owner revoke request
         exact(40)
+    elif kind == 25:  # create; request, device, old swapchain, actual create fields
+        require(len(payload) >= 120, "truncated swapchain create")
+        require(wide(40) and wide(48), "invalid create identity")
+        require(all(word(offset) for offset in (68, 72, 80, 84, 88, 92)),
+                "invalid create parameters")
+        require(word(108) in (0, 1) and word(112) in (0, 1), "invalid create enum")
+        count = word(116)
+        require(count <= 64, "queue family limit")
+        exact(120 + 4 * count)
+        families = [word(offset) for offset in range(120, len(payload), 4)]
+        require(len(set(families)) == count, "duplicate queue families")
+        require((word(112) == 0 and count == 0) or (word(112) == 1 and count >= 2),
+                "invalid sharing families")
+    elif kind == 26:  # created: request, native swapchain ID, actual result/count
+        exact(80)
+        require(wide(40) and word(76) == 0, "invalid created response")
+        error, has_vk, vk = status(56)
+        success = error == 0 and has_vk == 1 and vk == 0
+        if success:
+            require(wide(48) and 1 <= word(72) <= 256, "invalid actual image count")
+        else:
+            require(error != 0 or (has_vk and vk != 0), "creation needs actual result")
+            require(wide(48) == 0 and word(72) == 0, "failed create has resources")
+    elif kind == 27:  # map exactly the provider count, checked by native state
+        require(len(payload) >= 56 and wide(40), "invalid swapchain map")
+        count = word(48)
+        require(1 <= count <= 256 and word(52) == 0, "invalid source count")
+        exact(56 + 8 * count)
+        images = [wide(offset) for offset in range(56, len(payload), 8)]
+        require(all(images) and len(set(images)) == count, "invalid source images")
+    elif kind in (28, 33):
+        exact(64)
+        require(wide(40), "invalid swapchain identity")
+        status(48)
+    elif kind == 29:  # one native acquire operation with a guest timeout
+        exact(88)
+        require(wide(40) and wide(48) and (wide(56) or wide(64)), "invalid acquire identity")
+        require(word(80) == 1 and word(84) == 0, "unsupported acquire device mask")
+    elif kind == 30:
+        exact(88)
+        require(wide(40) and wide(48), "invalid acquired identity")
+        error, has_vk, vk = status(56)
+        success = error == 0 and has_vk == 1 and vk in (0, 1000001003)
+        require(word(72) == int(success), "acquire index requires actual success")
+        require(word(76) < 256 if success else word(76) == 0, "invalid acquired index")
+        require(error != 0 or has_vk == 1, "acquire requires actual or local failure")
+        reason = word(80)
+        require(reason <= 3 and word(84) == 0, "invalid acquire completion reason")
+        require((reason == 0 and error == 0) or
+                (reason != 0 and error != 0 and has_vk == 0),
+                "acquire completion provenance")
+    elif kind == 31:
+        exact(56)
+        require(wide(40) and wide(48), "invalid acquire cancellation")
+    elif kind == 32:
+        exact(48)
+        require(wide(40), "invalid swapchain retirement")
+    elif kind == 34:
+        require(len(payload) >= 80, "truncated indexed present")
+        require(all(wide(offset) for offset in (40, 48, 56)), "invalid indexed present identity")
+        require(word(64) < 256 and word(72) == 1, "invalid indexed present layout/index")
+        count = word(76)
+        require(count <= 64, "present semaphore limit")
+        exact(80 + 8 * count)
+        waits = [wide(offset) for offset in range(80, len(payload), 8)]
+        require(all(waits) and len(set(waits)) == count, "invalid binary waits")

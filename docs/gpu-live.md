@@ -231,3 +231,89 @@ waits for the decoder worker. Failed bind cleanup or retirement keeps its surfac
 and layer reserved and prevents process finish from bypassing the instance lease.
 The controller's tests use injected native boundaries; the package and unsigned
 app link checks do not establish physical presentation or game compatibility.
+
+## Indexed swapchain wire
+
+The structural codec also covers kinds 25–35, with complete independent records
+in `live-swapchain-vectors.json`. These controls are inactive: the native indexed
+swapchain implementation and the private Mesa path are not integrated. They are
+not an extension of the acquire-at-present behavior of kind 20. An executor must
+implement the actual acquire path before negotiating live hello version 4, mask
+`0x70`; the additional bit identifies this behavior. The retained version 3
+package cannot supply it. Diagnostic version 2 remains separate.
+
+All records retain the common 40-byte surface identity and process envelope
+scope. Field sizes below exclude that identity. All integers are little-endian.
+Request IDs and present serials are nonzero, monotonic per surface and never
+reused. Native-created swapchain IDs are nonzero and never reused within a surface.
+The native state checks identities, actual image counts and operation ordering;
+structural parsing alone does not prove them.
+
+| Kind | Name | Fields after common identity |
+| --- | --- | --- |
+| 25 | SWAPCHAIN_CREATE | request ID, boxed device, old swapchain ID (3 u64); 14 u32 creation fields; queue-family array |
+| 26 | SWAPCHAIN_CREATED | request ID, actual swapchain ID (2 u64); status; actual image count, reserved zero (2 u32) |
+| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, reserved zero (2 u32); ordered boxed source images (u64 each) |
+| 28 | SWAPCHAIN_MAPPED | swapchain ID (u64); status |
+| 29 | SWAPCHAIN_ACQUIRE | swapchain ID, request ID, boxed binary semaphore, boxed fence, timeout nanoseconds (5 u64); device mask, reserved zero (2 u32) |
+| 30 | SWAPCHAIN_ACQUIRED | swapchain ID, request ID (2 u64); status; has-index, index, local reason, reserved zero (4 u32) |
+| 31 | SWAPCHAIN_CANCEL_ACQUIRE | swapchain ID, acquire request ID (2 u64) |
+| 32 | SWAPCHAIN_RETIRE | swapchain ID (u64) |
+| 33 | SWAPCHAIN_RETIRED | swapchain ID (u64); status |
+| 34 | SWAPCHAIN_PRESENT | swapchain ID, serial, boxed queue (3 u64); image index, queue family, actual layout, wait count (4 u32); boxed binary waits (u64 each) |
+| 35 | SURFACE_REVOKE_REQUEST | no additional fields |
+
+The creation fields, in order, are flags, minimum image count, format, color
+space, width, height, array layers, usage, pre-transform, composite alpha,
+present mode, clipped, sharing mode, and queue-family count. Exclusive sharing
+has no transmitted family list; concurrent sharing has 2–64 distinct families.
+The guest rejects unsupported `pNext` rather than dropping it. The native path
+honors every accepted parameter or returns an explicit error. Creation has no
+queue argument. A nonzero old swapchain names an existing object in the same
+surface; it does not authorize early destruction or identity reuse.
+
+Creation success carries actual `VK_SUCCESS`, the native ID and the provider's
+complete image count (1–256). Failure carries no ID or image count. MAP supplies
+exactly that many unique decoder-owned images, with index order matching the
+provider. Mapping validates and retains image and backing-memory ownership
+atomically. It cannot invent a count from the requested minimum.
+
+ACQUIRE uses the original same-device binary semaphore and/or fence; at least
+one is nonzero. The initial device mask is exactly 1. Only actual provider
+`VK_SUCCESS` or `VK_SUBOPTIMAL_KHR` can return an index, and the native state must
+check it against the created count. Actual timeout-zero polling produces real
+`VK_NOT_READY` without an index. Waiting uses a paced monotonic deadline outside
+decoder, network and global locks. An unsuccessful local deadline or cancellation
+is distinct from provider results: local reason is none (0), deadline (1),
+cancelled (2), or other local failure (3), with positive native errno, absent
+VkResult and no index for nonzero reasons. This avoids interpreting an Apple errno
+number as a Linux errno. The guest maps a confirmed finite local expiry to its
+own `VK_TIMEOUT`; it does not relabel it as a provider result.
+
+There is at most one outstanding acquire operation per swapchain. CANCEL
+serializes with provider polling and produces the single terminal ACQUIRED reply.
+If real acquisition won the race, that reply preserves its index and signals;
+cancellation cannot discard them. Cancellation of the latest already completed
+request is a no-op, not a second terminal reply. Stale or foreign cancellation
+fails. Executor revocation stops polling, but an acquired image and pending
+signals remain owned until safely retired. A transport timeout is not proof of
+cancellation and cannot allow a retry of an uncertain acquire.
+
+Indexed PRESENT names an acquired mapped image and the application's actual
+queue, uses actual `GENERAL` layout, and consumes at most 64 distinct original
+binary waits exactly once. Kind 21 and 22 report its surface-wide serial. Native
+acquisition and source-copy completion are independent conditions for source
+reuse. The native path retains acquire-signal, copy and maintenance1 present
+fence records independently, including across reacquisition. Retirement releases
+unused acquired images only with the real enabled maintenance extension and
+proof their operations are safe; unknown completion quarantines the resources.
+
+Kind 35 travels from the authenticated phone to the broker for an existing
+surface. The broker notifies its owning local WSI socket with CGLS kind 35 and
+requests compositor revocation through CGB kind 8. Compositor kind 3 precedes
+native SURFACE_RETIRE; only successful SURFACE_RETIRED permits CGB kind 7 and a
+fresh grant. This revokes one surface without retiring its process. Background
+or computer replacement still drains the executor. CGLS requests for kinds
+25, 27, 29, 31, 32 and 34 omit the common identity; the authenticated broker adds
+it. Replies retain the full native payload. The CGLS parser does not activate
+these operations or imply that a native implementation exists.

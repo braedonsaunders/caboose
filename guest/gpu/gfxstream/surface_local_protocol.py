@@ -25,7 +25,7 @@ def decode_request(data):
     elif kind == 18:
         if len(body) != 16 or not all(struct.unpack('<QQ', body)):
             raise ValueError('invalid query')
-    elif kind == 20:
+    elif kind in (20, 25, 27, 29, 31, 32, 34):
         validate_surface(kind, _IDENTITY + body)
     elif kind == 23:
         if body:
@@ -41,7 +41,7 @@ def encode_reply(kind, body):
         if len(body) != 64 or not struct.unpack_from('<Q', body)[0]:
             raise ValueError('invalid bind reply')
         validate_surface(kind, body[8:])
-    elif kind in (19, 21, 22, 24):
+    elif kind in (19, 21, 22, 24, 26, 28, 30, 33, 35):
         validate_surface(kind, body)
     elif kind == 0x7fff:
         if len(body) != 16:

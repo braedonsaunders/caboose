@@ -1,5 +1,7 @@
 import struct
 import unittest
+import json
+from pathlib import Path
 
 import surface_local_protocol as protocol
 
@@ -9,6 +11,22 @@ def request(kind, body):
 
 
 class LocalSurfaceProtocolTests(unittest.TestCase):
+    def test_indexed_records_preserve_native_payloads_and_request_scope(self):
+        vectors = json.loads((Path(__file__).parents[1] / 'broker/live-swapchain-vectors.json').read_text())
+        for vector in vectors:
+            wire = bytes.fromhex(vector['wire'])
+            kind = struct.unpack_from('<H', wire, 6)[0]
+            payload = bytes.fromhex(vector['payload'])
+            if kind in (25, 27, 29, 31, 32, 34):
+                self.assertEqual(protocol.decode_request(request(kind, payload[40:])),
+                                 (kind, payload[40:]))
+                with self.assertRaises(ValueError):
+                    protocol.encode_reply(kind, payload)
+            else:
+                self.assertEqual(protocol.encode_reply(kind, payload), request(kind, payload))
+                with self.assertRaises(ValueError):
+                    protocol.decode_request(request(kind, payload[40:]))
+
     def test_bind_preserves_zero_or_asserted_extent(self):
         for width, height in ((0, 0), (1280, 720)):
             body = struct.pack('<QIIII', 7, 9, width, height, 0)
