@@ -412,6 +412,8 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         retained.removeAll()
         for window in windows.values where window.game.map({ !announcedGames.contains($0.id) }) == true { endGame(of: window) }
+        // Every app this computer runs here is announced: a kept page none took ends.
+        if let computer = gameHost?.webviewComputerKey { AgentAppPages.shared.settled(computer: computer) }
         windowsAnnounced &+= 1
     }
 
@@ -625,6 +627,8 @@ public final class CabooseDisplaySession: DisplaySession {
             self.declineGame(game, reason: reason)
         }
         window.game = game
+        // The app's page kept playing while Caboose was away: it carries on as this game.
+        AgentAppPages.shared.adopt(game)
     }
 
     /// Asks the computer to run `game` itself (`game.decline`): only once its saves are

@@ -25,7 +25,7 @@ SCHEME = 'caboose-app'
 ID = re.compile(r'[a-z][a-z0-9-]{0,47}')
 MANIFEST = 'app.json'
 MANIFEST_LIMIT = 64 * 1024
-CAPABILITIES = ('exec', 'files', 'notify', 'open')
+CAPABILITIES = ('exec', 'files', 'notify', 'open', 'net')
 # The Desktop Menu Specification's main categories.
 CATEGORIES = ('AudioVideo', 'Audio', 'Video', 'Development', 'Education', 'Game', 'Graphics',
               'Network', 'Office', 'Science', 'Settings', 'System', 'Utility')

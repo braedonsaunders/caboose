@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:?expected image-vm, image-container, vm or container}
 case "$mode" in image-vm|image-container|vm|container) ;; *) exit 2;; esac
 export DEBIAN_FRONTEND=noninteractive
-packages=(gnome-keyring appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi gir1.2-gtk-3.0 python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1 libvulkan1 libxcb-keysyms1 xdg-desktop-portal xdg-desktop-portal-gtk geoclue-2.0 flatpak gir1.2-flatpak-1.0 gir1.2-webkit2-4.1)
+packages=(gnome-keyring appstream gir1.2-appstream-1.0 cups cups-filters desktop-file-utils xdg-utils libnotify-bin python3-gi gir1.2-gtk-3.0 python3-websockets dbus-user-session libgl1-mesa-dri mesa-vulkan-drivers libgl1 libvulkan1 libxcb-keysyms1 xdg-desktop-portal xdg-desktop-portal-gtk geoclue-2.0 flatpak gir1.2-flatpak-1.0 gir1.2-webkit2-4.1 curl)
 # Steam's native amd64 client still launches a 32-bit reaper and overlay outside
 # its bundled runtime. Keep their host loader/GL dependencies available to all
 # titles. Debian's amd64 libc6-i386 supplies /lib/ld-linux.so.2; libgl1:i386

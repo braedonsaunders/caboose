@@ -331,6 +331,7 @@ final class AppModel {
         do { try Credentials.clear() }
         catch { pairingFailure = error.localizedDescription; return }
         if let oldPairing { Task { await appListCache.remove(pairing: oldPairing) } }
+        AgentAppPages.shared.endAll()
         resetConnection()
         credentials = nil
         savedComputers = (try? Credentials.loadCollection().computers) ?? []
@@ -476,7 +477,8 @@ final class AppModel {
         wakes.invalidate()
         link.stop()
         if let session { cacheFrames(of: session) }
-        session?.disconnect()
+        // An app page playing media on this device keeps playing in the background.
+        AgentAppPages.shared.parking { session?.disconnect() }
         session = nil
         agents.detach()
         knownWindowIDs.removeAll()

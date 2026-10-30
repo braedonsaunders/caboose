@@ -659,9 +659,26 @@ name. Ids are `[a-z][a-z0-9-]{0,47}`. The format, the API and the runtime's rule
   that admits only the current document. It offers the capabilities `app.json` declares:
   `exec` (programs, with bounded arguments, output, time and concurrency, each in its own
   process group, ended when the document is replaced or the app quits), `files`
-  (symlink-safe file operations in the home), `notify` (a desktop notification, which
-  reaches the phone) and `open`. Declared capabilities describe the app; they are not a
-  sandbox. An app runs as `caboose`, and `exec` has that user's full authority.
+  (symlink-safe file operations in the home), `net`, `notify` (a desktop
+  notification, which reaches the phone) and `open`. Declared capabilities describe the
+  app; they are not a sandbox. An app runs as `caboose`, and `exec` has that user's full
+  authority.
+- `net` gives the page a network origin: a loopback HTTP server that one run of the app
+  knows by a random token, on its own port, so it is never the app's origin and what it
+  fetches is never the app's script. `<base><scheme>/<authority><path>?<query>` makes that
+  request to any http or https URL with the page's method, headers and body, and streams
+  the answer back with CORS headers for the app's page; `caboose.fetch` and
+  `caboose.net.url` build these URLs. On the computer the runtime serves it with curl; on a
+  device that runs the app natively, CabooseKit's `AgentAppNetServer` serves it with the
+  device's own network. Requests carry no cookie jar.
+- A handed-off page that is playing media when Caboose leaves the screen keeps running on
+  the device (CabooseKit's `AgentAppPages`) instead of closing with the display connection,
+  so its sound, Picture in Picture video, timers and `net` requests carry on, with the
+  system's media controls through WebKit's Media Session support; its computer bridge is
+  cut meanwhile. The computer's next announcement of the app takes the kept page over
+  without a reload; once the computer has announced its apps without it, it ends. The app
+  has the `audio` background mode for this, and allows plain-http loads (App Transport
+  Security's arbitrary loads) so pages and `net` requests reach any server.
 - App files live under `~/.local/share/caboose/apps/<id>/files/`. Apps that opt in to
   handoff keep persistent app state in those files: WebKitGTK storage and device WebKit
   storage are separate and are not migrated. Device origins are stable per computer and app.

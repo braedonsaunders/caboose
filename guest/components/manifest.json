@@ -74,6 +74,7 @@
   "apps/install.sh",
   "apps/caboose-app",
   "apps/appcore.py",
+  "apps/net.py",
   "apps/remote.py",
   "apps/page.js",
   "apps/world.js",

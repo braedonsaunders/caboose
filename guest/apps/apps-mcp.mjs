@@ -30,7 +30,8 @@ const tools = [
     name: 'app_guide',
     description: 'Read this before making an app. Caboose apps are web apps (HTML, CSS, JavaScript) in ~/Apps/<id>/ '
       + 'that run as real applications with their own window and icon in the owner\'s Apps screen, opened from '
-      + 'their phone. They can run programs, use files, notify and open links through window.caboose. Returns the '
+      + 'their phone. Through window.caboose they can run programs, use files, reach any http or https address '
+      + 'without CORS, notify and open links, and play sound and video that keep going in the background on the phone. Returns the '
       + 'app.json format, the window.caboose API and the design rules.',
     inputSchema: { type: 'object', properties: {} },
   },

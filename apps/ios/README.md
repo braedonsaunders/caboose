@@ -84,7 +84,13 @@ sh scripts/check-remote-access.sh
 Opted-in agent apps use a native WebKit view and the authenticated guest bridge, with a
 stable per-app origin. Apps that depend on computer-side browser storage stay on the
 computer; the `handoff: "files"` contract and fallback are in
-[guest/apps](../../guest/apps/README.md#native-handoff).
+[guest/apps](../../guest/apps/README.md#native-handoff). The device serves their `net`
+capability itself through `AgentAppNetServer`, the app's network origin on a second loopback
+port. A page that is playing media when Caboose leaves the screen is kept running
+(`AgentAppPages`) and taken over by the app's next announcement without a reload, which is
+why the app declares the `audio` background mode; the display's own sound still stops when
+Caboose leaves the screen, because the display session ends. App Transport Security allows
+arbitrary loads so app pages and `net` requests reach plain-http servers.
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
@@ -99,7 +105,8 @@ ranges, content types, the cache and its eviction, conflict names, the save plan
 save sync against an in-memory file service), check the game's loopback origin (request
 parsing and its bounds, the token, `Host` and method checks, response headers, and
 `GameServer` fetched over 127.0.0.1 with URLSession, closing its connections when it stops
-or when a request does not arrive), run the game page's IndexedDB and
+or when a request does not arrive), check the agent-app network origin's rules and an
+`AgentAppNetServer` that forwards, preflights and refuses over 127.0.0.1, run the game page's IndexedDB and
 gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
 them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
@@ -111,7 +118,11 @@ The native agent-app handoff has a focused simulator check using a local fake ho
 SIMULATOR_ID=<available-ios-simulator-udid> sh scripts/check-agent-app-webview.sh
 ```
 
-It exercises the real WKWebView, injected API, idle event polling, reload and takeover.
+It exercises the real WKWebView, injected API, idle event polling, reload and takeover, a
+`caboose.fetch` to a server without CORS consent through the device's network origin, and a
+page playing a stream through it that is kept when its game ends as the app leaves the screen
+and taken over, unreloaded and reconnected, by the next announcement, while a paused page is
+not kept.
 The check uses port 18765 on loopback and an unchanged temporary package copy.
 Builds without MetalFX use the software motion upscaler. Select the full Xcode
 developer directory before running the check.

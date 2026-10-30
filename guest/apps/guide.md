@@ -2,9 +2,11 @@
 
 A Caboose app is a small web app that runs as a real application on this computer. It has
 its own window, its own icon in the Apps screen, its own saved data, and, when it asks for
-them, native powers: running programs, reading and writing files, sending notifications and
-opening links. The owner opens it from their phone like any other app; on iPhone it fills
-the screen, on iPad or a TV it is a window.
+them, native powers: running programs, reading and writing files, reaching anything on the
+network, sending notifications and opening links; and everything the web platform does,
+including sound and video that keep playing when the owner leaves the app. The owner opens
+it from their phone like any other app; on iPhone it fills the screen, on iPad or a TV it is
+a window.
 
 ## Steps
 
@@ -45,8 +47,8 @@ and data).
 | `entry` | | The page that opens, default `index.html`. |
 | `icon` | | An `.svg` or `.png` in the app directory, square, at least 128 px. Without one the app gets a monogram. |
 | `categories` | | Any of `AudioVideo`, `Audio`, `Video`, `Development`, `Education`, `Game`, `Graphics`, `Network`, `Office`, `Science`, `Settings`, `System`, `Utility`. Default `Utility`. |
-| `capabilities` | | Which parts of `window.caboose` the app uses: `exec`, `files`, `notify`, `open`. Calls to an undeclared one fail. Changes apply the next time the app starts. |
-| `handoff` | | Set to `"files"` only when all persistent app state uses `caboose.files`; the phone may run the page locally. Browser storage is not transferred between the phone and computer. Without it the app runs on the computer. |
+| `capabilities` | | Which parts of `window.caboose` the app uses: `exec`, `files`, `net`, `notify`, `open`. Calls to an undeclared one fail. Changes apply the next time the app starts. |
+| `handoff` | | Set to `"files"` only when all persistent app state uses `caboose.files`; the phone may run the page locally. Browser storage is not transferred between the phone and computer. Without it the app runs on the computer. An app whose sound should keep playing on the phone in the background needs it. |
 | `window` | | Opening size and limits in pixels, and `background`, the colour shown before the page paints (`#rrggbb`). |
 
 Unknown fields are errors, so a typo is caught at publish.
@@ -75,8 +77,9 @@ templates at run time. WebAssembly works. Stylesheets, fonts and images may come
 anywhere, but local copies keep the app working offline. Links to other sites open in the
 browser, and remote pages cannot be embedded in frames.
 
-`fetch` from the app follows the web's cross-origin rules. For an API that does not allow
-it, call it with `curl` through `caboose.exec`.
+`fetch` from the app follows the web's cross-origin rules, and the page is a secure origin
+that may not load plain `http`. Declare `net` and use `caboose.fetch` (below) to reach
+anything else.
 
 ## `window.caboose`
 
@@ -136,6 +139,31 @@ await caboose.files.remove(path, { recursive: true })
 
 A file read or write is at most 64 MB.
 
+**`net`** — the whole network: any `http` or `https` URL, with no CORS, plain `http`
+allowed, any method, headers and body, and the response streamed.
+
+```js
+const response = await caboose.fetch('http://192.168.1.20/api/state', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+  body: JSON.stringify({ on: true }),
+})
+const data = await response.json()       // a standard Response: json(), text(), body streams
+response.headers.get('X-Caboose-Url')    // the final URL, after redirects
+
+img.src = caboose.net.url('http://camera.local/snapshot.jpg')    // a URL for any element
+audio.src = caboose.net.url('http://stream.example:8000/live')   // <audio>, <video>, <img>,
+new EventSource(caboose.net.url('https://api.example/events'))   // CSS, EventSource, fetch
+```
+
+`caboose.fetch` takes the same arguments as `fetch` and also sends the headers a page may not
+set itself (`Cookie`, `User-Agent`, `Referer`, `Origin`). Requests carry no cookies of their
+own: send what a service needs in headers, and read the cookies it sets from the response's
+`X-Caboose-Set-Cookie` headers. A server that cannot be reached answers `502` with the reason
+in `X-Caboose-Error`. Requests go out from wherever the page runs: the computer, or the
+owner's phone when the app runs there (`handoff`), so `localhost` and LAN addresses mean that
+machine's. WebSockets (`wss:`) connect directly without `net`.
+
 **`notify`** — a notification, which reaches the owner's phone.
 
 ```js
@@ -151,6 +179,23 @@ await caboose.open('~/Documents/report.pdf')
 ```
 
 Every call returns a promise that rejects with an `Error` whose message says what to fix.
+
+## Sound and video
+
+Play anything the web plays: `<audio>`, `<video>`, Web Audio, from the app's files or from
+the network (`caboose.net.url` for a source the page cannot reach itself). When the app runs
+on the owner's phone (it needs `handoff: "files"`), a page that is playing when they leave Caboose or lock the phone keeps
+running in the background, so the sound goes on; a video goes on in Picture in Picture when
+they start it from its controls. Describe what plays with the
+[Media Session API](https://developer.mozilla.org/docs/Web/API/Media_Session_API)
+(`navigator.mediaSession.metadata` and action handlers) and the system's media controls (the
+Lock Screen, Control Center, headphones and AirPlay) show and control it. While the phone
+keeps the page running, its `net` requests and timers carry on, but calls that reach the
+computer (`exec`, `files`, `notify`, `open`) fail until the owner opens Caboose again, when
+the same page reconnects without reloading. The phone's WebKit does not play Ogg streams
+(Vorbis or Opus): check a stream with `ffprobe` and prefer its MP3, AAC or HLS version. On
+the computer, sound plays through the display, so it stops reaching the phone when Caboose
+leaves the screen.
 
 ## Making it beautiful
 
@@ -210,10 +255,13 @@ page construction separately from Caboose input routing before changing either.
 
 An app is code in the owner's home that runs as the owner's user, and its own code is
 trusted with everything its capabilities give it. One that declares `exec` can do anything
-a terminal can. Declared capabilities say what the app uses; they are not a sandbox.
+a terminal can; one that declares `net` can reach anything the machine it runs on can,
+including its own services and the owner's network. Declared capabilities say what the app
+uses; they are not a sandbox.
 
 What the runtime keeps out is the web: script runs only from the app's own files, only the
 app's top frame can reach `window.caboose`, and the page cannot be navigated to another
-site. That holds only while the app's own code does not run what it downloads (for
+site. What `caboose.fetch` and `caboose.net.url` bring in comes from a different origin, so
+it is data, never the app's script. That holds only while the app's own code does not run what it downloads (for
 example, by passing fetched text to `caboose.exec` as a program). Put text from the network
 or from files into the page with `textContent` rather than `innerHTML`.
