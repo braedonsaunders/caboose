@@ -254,22 +254,26 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
-  an explicit monotonic host/server anchor. Placement samples host time once so a
-  scheduling delay cannot be counted twice when changing rate. Decoded sample durations
+  an explicit monotonic host/server anchor. Placement samples host time once against
+  that requested anchor. Decoded sample durations
   keep nearby packets contiguous despite capture-timestamp jitter. Gaps over 200 ms reanchor to the
   server. Playback starts 120 ms behind the first packet; a late packet adds 20 ms (up to
-  240 ms). A rolling sample-clock estimate adjusts playback speed with pitch preservation;
-  rate changes can automatically discard queued sound in AVFoundation. Caboose observes
+  240 ms). Playback runs at unity rate between explicit start, rebuffer and stop
+  operations; ordinary packets never write the synchronizer rate. Rate or route changes
+  can automatically discard queued sound in AVFoundation. Caboose observes
   renderer-specific automatic-flush notifications and serializes cleanup with enqueue on
   the playback queue. Cleanup leaves the clock and rate running; it does not replay lost
   packets or establish that a requested clock mapping has taken effect. Separately, the
-  explicit playout policy restarts for backlog beyond another 300 ms. Interruptions reset the anchor. The display closes
+  explicit playout policy restarts for backlog beyond another 300 ms. There is no continuous
+  sample-clock correction: sustained source/host clock mismatch can require rebuffering,
+  and hardware/host clock drift can accumulate between explicit rebufferings. Interruptions
+  reset the anchor. The display closes
   when the app goes to the background, and the sound with it.
   The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
   `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
   `incoming_wait` callback-to-parser entry, and `incoming` synchronous parsing/frame dispatch.
   `rx_dispatch` measures callback-to-audio dispatch, `queue` audio queue wait, `decode`
-  decoder setup/conversion, `prepare` activation/clock recovery/sample preparation, and
+  decoder setup/conversion, `prepare` activation/placement/sample preparation, and
   `enqueue` the renderer enqueue call. `dispatch_gap`, `entry_gap`, `decoded_gap`, and
   `enqueued_gap` identify where packet cadence changes; all these keys have `_ms` suffixes.
   `total_ms` ends after enqueue and clock startup. Counts `rx_n` and `timed_n` cover callbacks
@@ -1206,7 +1210,7 @@ and zero-observation metadata, and interruption begin/end counts and latest time
 All nesting remains subject to the artifact's 64-record/128-KiB cap; a larger record
 reduces the number of historical records retained. There are no per-event disk writes.
 
-Each write has a sequence, fixed reason (`correction`, `start`, `stop`), optional stop
+Each write has a sequence, fixed reason (`start`, `stop`), optional stop
 caller (`sessionStop`, `rendererFailure`, `interruptionBegan`, `interruptionEnded`, or
 `unspecified`), monotonic begin/end, begin wall time, requested Float rate represented as
 a Double, and rate readings before/after the API call. Notification counts bracket
@@ -1220,11 +1224,15 @@ Missing write completion fields mean no valid completion observation was retaine
 
 The synchronizer observer filters to its exact object, is removed on destruction, and
 rejects invalidated generations. Its short latch never calls AVFoundation or takes the
-playback clock lock. Only the three existing rate-write sites and rate-change callbacks
+playback clock lock. Only the two lifecycle rate-write sites and rate-change callbacks
 read the rate for this trace; there is no added per-packet polling or renderer-time read.
 The trace never feeds playback decisions or acknowledges a clock update. Category and
 activation changes elsewhere in the app are not recorded. Deterministic order, lifetime
 and size-bound tests run with `swift test --jobs 1 --filter AudioRateProvenanceTests`.
+
+Steady and batched packet placement, explicit lifecycle writes, and the finite-buffer
+clock-mismatch limitation are covered without renderer playback by
+`swift test --jobs 1 --filter UnityRatePlaybackTests`.
 
 ### Standalone muted audio rate control
 

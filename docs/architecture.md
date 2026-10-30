@@ -2064,8 +2064,8 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
 acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
 the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption. Placement and rate correction use one host-time sample for
-both coordinates of the anchor; renderer timebase updates never drive backlog recovery. Live
+cleared on interruption. Placement samples host time once against the requested anchor;
+renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
@@ -2079,8 +2079,8 @@ requests half-resolution software-encoded motion streams and upscales them with 
 or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
 decoded picture. PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
-The phone estimates the source sample-clock rate over a bounded rolling arrival window,
-then requests rate adjustments with pitch preservation. AVFoundation may automatically
+Playback runs at unity rate between explicit start, rebuffer and stop operations; ordinary
+packets do not write the synchronizer rate. AVFoundation may automatically
 flush queued audio on a rate or route change. The phone coalesces renderer-specific
 notifications and flushes surviving buffers on its playback queue before subsequent
 enqueues, without resetting the running clock or rate. Stop and interruption invalidate
@@ -2088,8 +2088,10 @@ that observer generation. Discarded packets are not replayed; this recovery does
 acknowledge asynchronous clock changes or correct renderer-clock divergence.
 The explicit playout policy starts with a 120 ms jitter buffer, grows it by 20 ms after
 underruns up to 240 ms, and restarts for backlog beyond another 300 ms. These policy
-restarts are separate from AVFoundation automatic flush loss. Silence resets rate
-measurement; stopping playback resets the clock and estimator.
+restarts are separate from AVFoundation automatic flush loss. Stopping playback clears
+the clock anchor. There is no continuous sample-clock correction: sustained source/host
+clock mismatch can require rebuffering, and hardware/host clock drift can accumulate
+between explicit rebufferings.
 Opt-in audio diagnostics retain the existing five-second timing reports and bounded
 restart summaries in an asynchronous app-cache snapshot, limited to 64 fixed-schema
 records and 128 KiB. Each interval can include the latest 16 rate-write traces plus

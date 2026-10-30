@@ -6,7 +6,7 @@ enum AudioRateStopCaller: String, Encodable {
 
 /// Fixed-schema diagnostics only. No playback decision reads this state.
 struct AudioRateProvenanceState {
-    enum Reason: String, Encodable { case correction, start, stop }
+    enum Reason: String, Encodable { case start, stop }
     struct Ticket: Equatable { let generation: UInt64; let sequence: UInt64 }
     struct Write: Encodable {
         var sequence: UInt64

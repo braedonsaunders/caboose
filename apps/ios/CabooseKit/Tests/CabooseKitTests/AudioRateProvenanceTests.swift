@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct AudioRateProvenanceTests {
     private func begin(_ state: inout AudioRateProvenanceState, time: Double = 1) -> AudioRateProvenanceState.Ticket? {
-        state.begin(reason: .correction, stopCaller: nil, requested: 1.001, before: 1,
+        state.begin(reason: .start, stopCaller: nil, requested: 1.001, before: 1,
                     monotonic: time, wall: 1_790_000_000 + time)
     }
 

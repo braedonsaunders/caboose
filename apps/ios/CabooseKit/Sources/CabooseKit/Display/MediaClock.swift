@@ -12,9 +12,9 @@ public final class MediaClock: @unchecked Sendable {
     public let synchronizer = AVSampleBufferRenderSynchronizer()
     private let lock = NSLock()
     private var playout = PlayoutDelay()
-    private var recovery = AudioClockRecovery()
-    private var playbackRate: Double = 1
     private let hostTime: () -> CMTime
+    /// Optional test sink observes exact lifecycle writes without running a renderer.
+    private let rateWriter: ((Float, CMTime, CMTime?) -> Void)?
     private let rateTrace = AudioRateProvenance()
     private var rateObserver: NSObjectProtocol?
     // The mapping requested from AVFoundation, protected by `lock`. Its rate property
@@ -27,8 +27,9 @@ public final class MediaClock: @unchecked Sendable {
     }
 
     /// An injectable monotonic clock keeps scheduling policy tests independent of devices.
-    init(hostTime: @escaping () -> CMTime) {
+    init(hostTime: @escaping () -> CMTime, rateWriter: ((Float, CMTime, CMTime?) -> Void)? = nil) {
         self.hostTime = hostTime
+        self.rateWriter = rateWriter
         // Live packets already have a bounded jitter buffer. Waiting for every video
         // renderer to preroll can hold sound indefinitely behind an idle video stream.
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
@@ -82,6 +83,12 @@ public final class MediaClock: @unchecked Sendable {
         if let ticket { rateTrace.update { $0.end(ticket, after: after, monotonic: end) } }
     }
 
+    private func applyRate(_ rate: Float, time: CMTime, host: CMTime?) {
+        if let rateWriter { rateWriter(rate, time, host) }
+        else if let host { synchronizer.setRate(rate, time: time, atHostTime: host) }
+        else { synchronizer.setRate(rate, time: time) }
+    }
+
     /// Puts a renderer (the sound, or a video layer's) on this clock.
     public func add(_ renderer: some AVQueuedSampleBufferRendering) {
         synchronizer.addRenderer(renderer)
@@ -101,7 +108,7 @@ public final class MediaClock: @unchecked Sendable {
     /// Called with `lock` held; this is the same host/media mapping supplied to the renderer.
     private func projectedTime(at host: Int64? = nil) -> Int64? {
         guard let anchor else { return nil }
-        return anchor.media + Int64(Double((host ?? Self.micros(hostTime())) - anchor.host) * playbackRate)
+        return anchor.media + ((host ?? Self.micros(hostTime())) - anchor.host)
     }
 
     private static func micros(_ time: CMTime) -> Int64 {
@@ -111,7 +118,8 @@ public final class MediaClock: @unchecked Sendable {
     /// How far the sound plays behind the server, in microseconds.
     public var delay: Int64 { lock.lock(); defer { lock.unlock() }; return playout.delay }
 
-    var rate: Double { lock.lock(); defer { lock.unlock() }; return playbackRate }
+    /// Running playback is always natural speed; only explicit lifecycle operations write rate.
+    var rate: Double { 1 }
 
     /// Where a sound packet goes: the clock is to be started, started again, or left running.
     /// The caller enqueues the packet first and then calls `start(at:)`, so a renderer's slow
@@ -121,24 +129,9 @@ public final class MediaClock: @unchecked Sendable {
         defer { lock.unlock() }
         let host = hostTime()
         let micros = Self.micros(host)
-        // Sample once: a rate correction must pair the media position with the exact
-        // host instant used to compute it. A second read after a scheduling delay
-        // would anchor the later media position to the earlier host time, counting
-        // that delay twice and permanently advancing the projected clock.
+        // Placement uses one host sample. Ordinary packets never change AVFoundation's
+        // rate: a positive-to-positive write can temporarily stop the renderer.
         let now = projectedTime(at: micros)
-        if let now, let rate = recovery.observe(pts: pts, host: micros, ahead: pts - now, target: playout.delay),
-           abs(rate - playbackRate) >= 0.001 {
-            // Request a rate change without seeking. AVFoundation may still flush audio
-            // automatically; SoundPlayer handles that notification on its playback queue.
-            anchor = (media: now, host: micros)
-            playbackRate = rate
-            // Do not add an explicit time/host seek to a rate correction.
-            writeRate(Float(rate), reason: .correction) {
-                synchronizer.setRate(Float(rate), time: .invalid)
-            }
-        } else if now == nil {
-            _ = recovery.observe(pts: pts, host: micros, ahead: playout.delay, target: playout.delay)
-        }
         return playout.place(pts: pts, now: now)
     }
 
@@ -148,8 +141,8 @@ public final class MediaClock: @unchecked Sendable {
         defer { lock.unlock() }
         let host = hostTime()
         anchor = (media: time, host: Self.micros(host))
-        writeRate(Float(playbackRate), reason: .start) {
-            synchronizer.setRate(Float(playbackRate), time: CMTime(value: time, timescale: 1_000_000), atHostTime: host)
+        writeRate(1, reason: .start) {
+            applyRate(1, time: CMTime(value: time, timescale: 1_000_000), host: host)
         }
     }
 
@@ -165,11 +158,9 @@ public final class MediaClock: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         playout.stop()
-        recovery = AudioClockRecovery()
-        playbackRate = 1
         anchor = nil
         writeRate(0, reason: .stop, stopCaller: reason) {
-            synchronizer.setRate(0, time: .invalid)
+            applyRate(0, time: .invalid, host: nil)
         }
     }
 }
@@ -213,43 +204,4 @@ struct PlayoutDelay: Equatable {
     }
 
     mutating func stop() { running = false }
-}
-
-
-/// Estimate the sender's sample clock against local monotonic arrival time. Regression
-/// over several seconds rejects packet batching; a small phase correction drains excess
-/// buffered audio without dropping it. Silence/discontinuities restart measurement only.
-struct AudioClockRecovery {
-    private struct Point { let media: Int64; let host: Int64 }
-    private var points: [Point] = []
-    private var previous: Point?
-    private var updatedAt: Int64?
-    private(set) var frequency: Double = 1
-
-    mutating func observe(pts: Int64, host: Int64, ahead: Int64, target: Int64) -> Double? {
-        let current = Point(media: pts, host: host)
-        defer { previous = current }
-        if let previous, pts <= previous.media || host < previous.host ||
-            pts - previous.media > 500_000 || host - previous.host > 500_000 {
-            points.removeAll(keepingCapacity: true)
-            updatedAt = nil
-        }
-        guard points.last.map({ host - $0.host >= 100_000 }) ?? true else { return nil }
-        points.append(current)
-        if points.count > 64 { points.removeFirst(points.count - 64) }
-        guard let first = points.first, host - first.host >= 2_000_000,
-              updatedAt.map({ host - $0 >= 250_000 }) ?? true else { return nil }
-        updatedAt = host
-        let n = Double(points.count)
-        let xs = points.map { Double($0.host - first.host) / 1_000_000 }
-        let ys = points.map { Double($0.media - first.media) / 1_000_000 }
-        let mx = xs.reduce(0, +) / n, my = ys.reduce(0, +) / n
-        let variance = xs.reduce(0) { $0 + ($1 - mx) * ($1 - mx) }
-        guard variance > 0 else { return nil }
-        let slope = zip(xs, ys).reduce(0) { $0 + ($1.0 - mx) * ($1.1 - my) } / variance
-        guard (0.75...1.25).contains(slope) else { return nil }
-        frequency = frequency * 0.5 + slope * 0.5
-        let phase = min(0.03, max(-0.03, Double(ahead - target) / 4_000_000))
-        return min(1.25, max(0.75, frequency + phase))
-    }
 }
