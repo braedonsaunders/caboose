@@ -14,6 +14,13 @@ final class LiveGPUDrawableGeometryTests: XCTestCase {
         XCTAssertNil(LiveGPUDrawableGeometry.extent(serverPixels: old, visibleBounds: view, requestedPixels: requested))
         XCTAssertEqual(LiveGPUDrawableGeometry.extent(serverPixels: requested, visibleBounds: view, requestedPixels: requested), requested)
     }
+    func testRequestUsesAssignedOutputQuantization() {
+        XCTAssertEqual(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 763, height: 1116), scale: 2), CGSize(width: 764, height: 1116))
+        let fractional = LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: 180.0 / 96.0)
+        XCTAssertEqual(fractional, CGSize(width: 763, height: 1116))
+        XCTAssertNil(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: .nan))
+        XCTAssertNil(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: 0))
+    }
     func testNewServerPixelSizeChangesDrawable() {
         XCTAssertEqual(LiveGPUDrawableGeometry.extent(serverPixels: CGSize(width: 1280, height: 960), visibleBounds: CGSize(width: 320, height: 240)), CGSize(width: 1280, height: 960))
     }

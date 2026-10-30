@@ -2491,6 +2491,9 @@ not activate native GPU rendering.
 The explicit owner executor matches this identity and the current window object to
 one visible interactive or desktop view. Its initial surface extent comes from
 that view's actual Metal layer; thumbnails do not acquire presentation ownership.
+Initial attachment waits for a pending size request's physical-to-logical-to-physical
+round trip on the same authenticated output and scale. It uses the actual returned
+server geometry; this equivalence is not a general configure acknowledgment.
 A zero-pair BIND requests that trusted extent before swapchain creation; a positive
 pair only asserts equality. GPU retirement and main-thread layer detachment must
 finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
