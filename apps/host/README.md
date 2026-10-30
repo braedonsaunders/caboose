@@ -643,7 +643,9 @@ provider, instructions, approval default and owner-editable memories. Profile AP
 available while the computer is parked. Tasks select `profileId`; new conversations receive
 its current context snapshot and share `~/AgentWorkspaces/<profile UUID>`. Existing
 conversations retain their snapshot. Archiving a profile prevents new starts and preserves
-its workspace. See the architecture contract for endpoints and limits.
+its workspace. Ordinary chats use a host-created default identity for their agent, so they
+have memory and routine tools in their own task directory; chats from before it receive it
+on their next idle reply. See the architecture contract for endpoints and limits.
 
 Agent model discovery uses `POST /v1/agents/:id/models`, backed by an ACP session with
 no prompts or MCP servers. Task creation accepts an advertised `model` id. Read a chat's
@@ -811,3 +813,8 @@ VM counters and remote Docker endpoints are unavailable. Explicit container stor
 measurement requires locally accessible home-volume metadata; Docker logical layer
 sizes are separate from allocated blocks. See [capacity and usage](../../docs/capacity.md)
 for API authorization, sampling overhead, history gaps, storage deadlines and focused tests.
+
+The host uses headless wake for file transfers, web-app bridges and batch exports.
+A later desktop session promotes the running computer without another boot.
+`python3 scripts/efficiency-baseline.py --help` describes a real-host timing check;
+it only observes unless an explicit files, session or park operation is selected.
