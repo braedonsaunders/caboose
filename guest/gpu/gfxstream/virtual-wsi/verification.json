@@ -1,0 +1,20 @@
+{
+  "scope": "CGLS client only; fake local peer, no Vulkan execution",
+  "image": "sha256:b94dd0452b1d2164d52115722c333cbb51f903e736fa7e7e782d21c52cf40442",
+  "resources": {"network": "none", "cpus": 1, "memoryMiB": 512, "pids": 64},
+  "compile": "timeout 60 c++ -std=c++17 -Wall -Wextra -Werror client.cpp test_client.cpp -o /tmp/test-wsi",
+  "results": {
+    "compileExit": 0,
+    "seqpacketLifecycleScenarios": 5,
+    "independentVectorAndMalformedChecks": 764,
+    "containerRemoved": true
+  },
+  "sha256": {
+    "client.h": "5036db9ec287cec38ff244d1d513742371fe8acfc885271a5287a70c1378a0c7",
+    "wire.h": "80714e6aa27e540ac0dc388b05185d6780afa5337e89cab172c34d295a987d92",
+    "client.cpp": "e815de5394f9ed81c1f79f41e7b3c8c4f95f07902c8022dce99afca3160d3b2e",
+    "test_client.cpp": "4268cb6cfd1b7efba9865255b1dc61f8eec3ef2d1769a69ccd961142938c70bb",
+    "check_vectors.py": "7c281ec7c1ac9ca3eeb08f3ee88a7e5575172b63f8d033aacbbc00f487d2a2e4",
+    "../../broker/live-surface-vectors.json": "463f422473d7994fef3eab55717c68b6931619e02752eba41060a547bd520cde"
+  }
+}
