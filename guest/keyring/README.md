@@ -58,7 +58,8 @@ The agent bus uses `/opt/caboose/keyring/agent-bus.conf` and a private activatio
 service directory. Secret Service activation starts `secret-forwarder.py`, not a
 second keyring writer. Installed system application activators, including accessibility and portals, are copied
 into that directory except keyring/KWallet writers. User-home registrations are not inherited;
-new system registrations enter it on the next component install.
+new system registrations enter it on the next component install. Reinstallation removes
+stale or newly blocked managed registrations and atomically replaces each allowed file.
 KWallet is not forwarded: it is a different API and is not a second credential backend.
 
 The forwarder accepts only the Secret Service object subtree and its standard interfaces.
@@ -76,7 +77,7 @@ An agent `Prompt.Prompt` call returns
 operation interactively, then the agent retries it. The forwarder never accepts a prompt,
 reads keyring files, dumps unlocked secrets, or logs request bodies/backend diagnostics.
 Credential calls have a ten-second timeout, with at most 64 upstream clients and 128
-in-flight requests. The host's existing canonical keyring preparation remains unchanged.
+queued and in-flight requests combined, admitted before main-loop dispatch. The host's existing canonical keyring preparation remains unchanged.
 
 Existing running agent buses with the old configuration require an explicit restart.
 Seat startup checks the live bus daemon's configuration and fails without restarting it
@@ -87,3 +88,43 @@ It creates two disposable buses and a synthetic Secret Service, tests concurrent
 sessions, object routing, cross-client rejection, directed signals, prompt refusal and
 exclusive service ownership and proxy crash/restart, and reaps the buses. This proves the forwarding API path;
 it does not claim a real browser sign-in, GNOME unlock dialog, or cold-boot acceptance test.
+
+Run `python3 guest/keyring/test_install_services.py` for synthetic activation-directory
+reconciliation and symlink rejection. The forwarding harness also submits 1,024 concurrent
+calls with main-loop dispatch held, checking that only 128 callbacks are admitted and that
+rejected/scheduling-error paths release their admission slots.
+
+### Disposable integrated acceptance
+
+`check-dual-seat.py` runs against an already-built, integrated Debian Caboose container
+image. It does not build, pull or install dependencies. Required image contents are the
+matching compositor/probe and component bundle, Chromium with its sandbox enabled,
+GNOME Keyring, dbus-daemon, python3-gi, python3-websockets, sudo/runuser and the normal
+Caboose session scripts. The host requires Docker and Python 3; the checked-in guest
+seccomp policy permits Chromium's namespace sandbox. No GPU or device mounts are used.
+
+After reserving the resource slot, run from the reviewed checkout on the Linux worker:
+
+```
+python3 guest/keyring/check-dual-seat.py \
+  --image sha256:FULL_IMMUTABLE_LOCAL_IMAGE_ID \
+  --seccomp guest/container/caboose-seccomp.json
+```
+
+The driver uses two sequential containers, each bounded to 180 seconds, 2 CPUs, 2 GiB RAM,
+256 PIDs, 256 MiB shared memory, private tmpfs runtime/temp directories and no network.
+It mounts only this test directory read-only and a fresh, uniquely named synthetic home
+volume with image-home copying disabled. It refuses a nonempty seed home. The synthetic
+keyring password travels only through stdin and is never printed or placed in arguments.
+The volume survives the transition between the two containers and is removed afterward;
+no owner profile, display, device or service volume is accepted.
+
+The seed phase starts both displays concurrently, opens one Chromium on each seat, checks
+seat-specific synthetic cookies/localStorage via window titles, and repeats an agent
+launch while verifying the owner's window remains alone. Chromium closes through its
+private loopback debugging endpoint for a clean profile shutdown. The next cold container
+verifies the same profile markers and synthetic canonical GNOME item. Both seats retrieve
+the same synthetic credential, and exactly one GNOME keyring writer must exist. The driver
+removes each container and checks its absence on success, failure or timeout, then removes
+the synthetic volume. This is a scripted acceptance check, not an executed-result claim;
+Firefox/Code-specific GUI checks and real account sign-in are outside this script.
