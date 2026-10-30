@@ -433,3 +433,21 @@ it('serves the MCP Library to an authorized client without ever returning its ke
   expect((await req('/v1/mcp/discover?page=x')).status).toBe(400)
   expect(await readFile(join(dir, 'mcp-library.json'), 'utf8')).toContain(key)
 })
+
+it('refuses a legacy file upload beyond 16 MiB with 413 before waking anything', async () => {
+  const wake = vi.fn(async () => ({ state: 'running', display: { path: '/v1/display', token: 'd', protocol: 'caboose-display' as const }, computer: { name: 'Caboose', image: 'Debian', memoryMb: 2048, vcpus: 2 } }))
+  const controller: Controller = { wake, park: async () => {}, activeResources: () => null, hasSavedState: () => false, stats: () => ({}), apps: async () => [], launch: async () => {}, displayUrl: 'ws://127.0.0.1:1', agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
+  const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 60_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
+  const app = createCabooseServer({ token: 'owner', settings, controller })
+  app.server.listen(0, '127.0.0.1')
+  await once(app.server, 'listening')
+  close.push(() => app.shutdown())
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
+  const headers = { authorization: 'Bearer owner' }
+  const oversized = await fetch(`${base}/v1/files`, { method: 'POST', headers, body: JSON.stringify({ name: 'big.bin', data: 'A'.repeat(16 * 1024 * 1024) }) })
+  expect(oversized.status).toBe(413)
+  expect((await oversized.json()).error).toMatch(/too large/)
+  expect(wake).not.toHaveBeenCalled()
+  // The rest of the body was let through unread, so the host still answers.
+  expect((await fetch(`${base}/v1/health`, { headers })).status).toBe(200)
+})
