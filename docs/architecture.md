@@ -125,7 +125,7 @@ The image contains:
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
-- **Services.** The file service, the notification monitor and endpoints, phone handoff
+- **Services.** The file service, the notification endpoints, phone handoff
   (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
@@ -162,8 +162,8 @@ to build it or which variable names a published one.
 
 ### Guest components
 
-Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+Caboose's own guest plumbing (the file and terminal services, the notification endpoints,
+phone handoff, `caboose-game-run` with the game bundles Caboose ships in
 `/usr/local/share/caboose/games`, the agent runner and the agent app runtime) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
@@ -302,7 +302,7 @@ and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
-                             # notification monitor and endpoint, and the owner's display
+                             # notification endpoint, and the owner's display
 caboose-session ready        # wait for the owner's display, then its accessibility bus
 caboose-session start-agent  # the agent seat: its bus, endpoint, display and accessibility bus
 caboose-session start-files  # the file service on 14700
@@ -472,13 +472,27 @@ environment, and answers `{ session }` for a client to attach to; the agent runn
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
 
-**Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
-`org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
-private record in `/home/caboose/.cache/caboose/notifications/<uuid>.json`:
-`{ id, app, summary, body, created }`, with `app` at most 200 characters, `summary` 500,
-`body` 1000 and `created` in Unix seconds. It keeps the newest 100 records. `daemon.py`
-owns the notification name on each seat's bus. The agent seat has its own bus, so its
-notifications never enter the owner's queue.
+**Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
+owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
+display) supports `actions`, `body` and `inline-reply`, keeps its live notifications in
+memory (at most 256), and writes each as a private record in
+`/home/caboose/.cache/caboose/notifications/<id>.json`:
+`{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }`. `id` is a
+UUID; a notification that replaces a live one keeps its `id`, and its record overwrites one
+not yet read. `app` is at most 200 characters, `summary` 500, `body` 1000; `created` is in
+Unix seconds; `desktopEntry` is the `desktop-entry` hint as a desktop file ID without
+`.desktop` (`[A-Za-z0-9][A-Za-z0-9._+-]{0,254}`) or null; `actions` is at most 4
+`{ key, label }` buttons (keys 1–64 characters without control characters, labels one line of
+1–64), without `default` and `inline-reply`; `defaultAction` is whether the application
+offered `default`; `reply` is `{ label, placeholder }` (at most 64 and 100 characters) when it
+offered `inline-reply`, else null. It keeps the newest 100 records.
+`caboose-notify respond <id> --action=KEY | --reply=TEXT`, run as `caboose`, asks the owner's
+endpoint to emit `ActionInvoked` or `NotificationReplied` (TEXT 1–2000 characters) and then
+`NotificationClosed` (reason 2) unless the notification is `resident`; it prints
+`{"result": "responded" | "unknown-action" | "unknown-notification"}`. Live notifications
+end when the owner's display or endpoint stops. The agent seat has its own bus and an
+endpoint that supports nothing and records nothing, so its notifications never enter the
+owner's queue. See [guest/notifications](../guest/notifications/README.md).
 
 **Phone handoff.** `guest/phone` installs `caboose-open URL` and `caboose-share FILE...`,
 registers `caboose-phone.desktop` as the handler for the `mailto`, `tel`, `sms`, `facetime`,

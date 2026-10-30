@@ -70,13 +70,20 @@ else
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-notifications.service caboose-bridge.service var-lib-caboose-depot.mount
+  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-bridge.service var-lib-caboose-depot.mount
   systemctl disable cups.service cups.socket cups.path caboose-phone-printer.service
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
   systemctl restart caboose-vsock-services.service
-  systemctl restart caboose-notifications.service
+  # The owner's display requires its notification endpoint, so restarting the endpoint would
+  # restart the display. Ending it is no stop job: the display keeps running while the
+  # endpoint starts again with the new code.
+  if systemctl is-active --quiet caboose-notification-daemon.service; then
+    systemctl kill caboose-notification-daemon.service
+    for _ in $(seq 1 50); do systemctl is-active --quiet caboose-notification-daemon.service || break; sleep 0.1; done
+    systemctl start caboose-notification-daemon.service
+  fi
   systemctl restart caboose-files.service
   systemctl restart caboose-terminal.service
   # Only a host that shares its runtime depot gives the computer the caboose-depot tag.

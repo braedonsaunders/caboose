@@ -385,11 +385,10 @@ environment is written once it is.
 
 On a Debian 13 system with the release binaries built, `install.sh [TARGET_DIR]`
 installs the runtime libraries, the binaries, both units (not enabled), the readiness
-check, and the D-Bus notification endpoint and monitor from
-[guest/notifications](../notifications). The monitor forwards notifications through the
-host, separately from the display protocol. Run `guest/notifications/check-container.sh`
-to exercise the monitor without a VM; `guest/notifications/check.sh` checks a running
-guest.
+check, and the D-Bus notification endpoints from [guest/notifications](../notifications).
+The owner's endpoint records notifications, which reach the phone through the host,
+separately from the display protocol. Run `guest/notifications/check-container.sh` to
+exercise the endpoints without a VM; `guest/notifications/check.sh` checks a running guest.
 
 ### Window decoration check
 
