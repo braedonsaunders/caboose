@@ -411,6 +411,16 @@ pub fn decode_atlas_tile(fmt: AtlasTileFormat, data: &[u8], w: u32, h: u32) -> R
 ///
 /// Both buffers are RGBA8888 with row stride `stride_px` pixels.
 /// Requires `damage.w >= 64 && damage.h >= 64`.
+///
+/// To remain accurate on real browser/editor windows with scrollbars, window borders, and large
+/// expanses of uniform background whitespace:
+/// 1. When `damage.w >= 128`, row hashes exclude a narrow left/right gutter (`<= 32` px) so a
+///    stationary or counter-moving scrollbar thumb does not corrupt scanline hashes. Any 64×64
+///    tiles on the scrollbar edge that differ after the copy are patched bit-exactly by the
+///    subsequent tile pass in `AtlasWindowEncoder`.
+/// 2. Candidate shifts `dy` are scored primarily on **vertically informative scanlines**
+///    (`curr_hashes[r] != curr_hashes[r - 1]`), preventing consecutive identical background
+///    rows on sparse pages (such as `example.com`) from falsely favoring `|dy| = 1`.
 pub fn detect_scroll_copy(
     prev_rgba: &[u8],
     curr_rgba: &[u8],
@@ -433,24 +443,38 @@ pub fn detect_scroll_copy(
         return None;
     }
 
+    let margin_px = if damage.w >= 128 { ((damage.w as usize) / 8).min(32) } else { 0 };
+    let hash_x_bytes = x_bytes + margin_px * 4;
+    let hash_w_bytes = w_bytes - margin_px * 8;
+
     let h = damage.h as usize;
     let mut prev_hashes = Vec::with_capacity(h);
     let mut curr_hashes = Vec::with_capacity(h);
 
     for r in 0..h {
         let y = (damage.y as usize) + r;
-        let row_start = y * stride_bytes + x_bytes;
-        let row_end = row_start + w_bytes;
+        let row_start = y * stride_bytes + hash_x_bytes;
+        let row_end = row_start + hash_w_bytes;
         prev_hashes.push(xxh64(&prev_rgba[row_start..row_end], 0));
         curr_hashes.push(xxh64(&curr_rgba[row_start..row_end], 0));
     }
 
-    let max_dy = (damage.h / 2 - 1).min(512);
+    let mut curr_informative = vec![false; h];
+    let mut total_informative = 0usize;
+    for r in 1..h {
+        if curr_hashes[r] != curr_hashes[r - 1] {
+            curr_informative[r] = true;
+            total_informative += 1;
+        }
+    }
+
+    let max_dy = (damage.h / 2 - 1).min(768);
     if max_dy < 1 {
         return None;
     }
 
     let mut best_dy = 0i32;
+    let mut best_info_matches = 0usize;
     let mut best_matches = 0usize;
 
     for abs_dy in 1..=max_dy {
@@ -465,30 +489,56 @@ pub fn detect_scroll_copy(
             };
 
             let mut matches = 0usize;
+            let mut info_in_overlap = 0usize;
+            let mut info_matches = 0usize;
             for i in 0..overlap {
-                if curr_hashes[curr_start + i] == prev_hashes[prev_start + i] {
+                let c_idx = curr_start + i;
+                let p_idx = prev_start + i;
+                let is_info = curr_informative[c_idx];
+                if is_info {
+                    info_in_overlap += 1;
+                }
+                if curr_hashes[c_idx] == prev_hashes[p_idx] {
                     matches += 1;
+                    if is_info {
+                        info_matches += 1;
+                    }
                 }
             }
 
-            // Require at least 60% of overlapping rows to match: matches * 5 >= overlap * 3
-            if matches * 5 >= overlap * 3 && matches > best_matches {
-                // Verify sampled bytes on matching rows
+            // Require at least 60% of overlapping rows to match overall, and when the region
+            // contains vertically distinct content rows, require at least half of those
+            // informative rows in the overlap to match.
+            let info_ok = if total_informative >= 4 {
+                info_in_overlap >= 4 && info_matches * 2 >= info_in_overlap
+            } else {
+                true
+            };
+            let better = if total_informative >= 4 {
+                info_matches > best_info_matches
+                    || (info_matches == best_info_matches && matches > best_matches)
+            } else {
+                matches > best_matches
+            };
+
+            if matches * 5 >= overlap * 3 && info_ok && better {
+                // Verify sampled bytes on matching rows (preferring informative rows)
                 let mut verified = true;
                 let step = (overlap / 8).max(1);
                 for i in (0..overlap).step_by(step) {
                     if curr_hashes[curr_start + i] == prev_hashes[prev_start + i] {
                         let cy = (damage.y as usize) + curr_start + i;
                         let py = (damage.y as usize) + prev_start + i;
-                        let c_off = cy * stride_bytes + x_bytes;
-                        let p_off = py * stride_bytes + x_bytes;
-                        if curr_rgba[c_off..c_off + w_bytes] != prev_rgba[p_off..p_off + w_bytes] {
+                        let c_off = cy * stride_bytes + hash_x_bytes;
+                        let p_off = py * stride_bytes + hash_x_bytes;
+                        if curr_rgba[c_off..c_off + hash_w_bytes] != prev_rgba[p_off..p_off + hash_w_bytes] {
                             verified = false;
                             break;
                         }
                     }
                 }
                 if verified {
+                    best_info_matches = info_matches;
                     best_matches = matches;
                     best_dy = dy;
                 }
@@ -614,5 +664,49 @@ mod tests {
         assert_eq!(copy.dx, 0);
         assert_eq!(copy.dy, -16);
         assert_eq!(copy.rect, Rect::new(0, 0, 128, 112));
+    }
+
+    #[test]
+    fn scroll_copy_detector_locks_onto_text_on_mostly_blank_page_with_scrollbar() {
+        // Model a mostly-white/gray page like example.com (256x256) with a 24px text band
+        // and a counter-moving scrollbar thumb in the rightmost 16px column.
+        let w = 256u32;
+        let h = 256u32;
+        let render_page = |text_top: u32, thumb_top: u32| -> Vec<u8> {
+            let mut buf = vec![0xEEu8; (w * h * 4) as usize];
+            for px in buf.chunks_exact_mut(4) {
+                px[3] = 0xFF;
+            }
+            for y in text_top..(text_top + 24) {
+                for x in 40..200 {
+                    let off = ((y * w + x) * 4) as usize;
+                    buf[off] = ((y - text_top) * 9 + (x & 7)) as u8;
+                    buf[off + 1] = ((x * 5) & 0xFF) as u8;
+                    buf[off + 2] = 0x22;
+                    buf[off + 3] = 0xFF;
+                }
+            }
+            // Right-hand scrollbar track + thumb in rightmost 16px (x = 240..256)
+            for y in 0..h {
+                for x in 240..256 {
+                    let off = ((y * w + x) * 4) as usize;
+                    let is_thumb = y >= thumb_top && y < thumb_top + 40;
+                    let c = if is_thumb { 0x60 } else { 0xD0 };
+                    buf[off] = c;
+                    buf[off + 1] = c;
+                    buf[off + 2] = c;
+                    buf[off + 3] = 0xFF;
+                }
+            }
+            buf
+        };
+
+        // Scroll content up by 36px (text moves from y=100 to y=64; thumb moves down from y=20 to y=40)
+        let prev = render_page(100, 20);
+        let curr = render_page(64, 40);
+        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32)).unwrap();
+        assert_eq!(copy.dx, 0);
+        assert_eq!(copy.dy, -36);
+        assert_eq!(copy.rect, Rect::new(0, 0, 256, 220));
     }
 }

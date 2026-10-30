@@ -13,12 +13,16 @@ use caboose_display_protocol::{
 use std::collections::{HashMap, VecDeque};
 
 pub const ATLAS_CACHE_CAPACITY: usize = 32_768;
+/// Conservative server-side LRU capacity (leaving a 4,096-tile margin below the client's
+/// 32,768-tile cache so minor LRU ordering differences never reference a client-evicted tile).
+pub const SERVER_ATLAS_CACHE_CAPACITY: usize = ATLAS_CACHE_CAPACITY - 4_096;
 const TILE_SIZE: i32 = 64;
 
 /// Tracks which 64×64 RGBA8888 tile hashes the connected display client currently holds in
-/// its session-wide LRU cache (up to 32,768 tiles).
+/// its session-wide LRU cache (up to 32,768 tiles on the client, tracked conservatively up to
+/// [`SERVER_ATLAS_CACHE_CAPACITY`] on the server).
 ///
-/// Entries are only inserted/touched via [`AtlasCacheTracker::record_published_batch`] when a
+/// Entries are only inserted/touched via [`AtlasCacheTracker::try_record_published_batch`] when a
 /// [`SurfaceBatch`] is actually sent to the client on the main event loop, ensuring workers
 /// never emit [`SurfaceTileRef`]s for intra-batch duplicate new tiles or unpublished frames.
 #[derive(Clone)]
@@ -38,7 +42,7 @@ impl Default for AtlasCacheTracker {
 
 impl AtlasCacheTracker {
     pub fn new() -> Self {
-        Self::with_capacity(ATLAS_CACHE_CAPACITY)
+        Self::with_capacity(SERVER_ATLAS_CACHE_CAPACITY)
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
@@ -106,9 +110,13 @@ impl AtlasCacheTracker {
         self.compact_if_needed();
     }
 
-    /// Records all `refs` (LRU touch) and 64×64 `tiles` (LRU insert) in `batch` once the batch
-    /// is published to the client connection.
-    pub fn record_published_batch(&mut self, batch: &SurfaceBatch) {
+    /// Verifies that every `SurfaceTileRef` in `batch` is still present in the session cache
+    /// (not evicted by a concurrent window's batch since worker encoding), and if so, touches
+    /// all `refs` and inserts all 64×64 `tiles`.
+    pub fn try_record_published_batch(&mut self, batch: &SurfaceBatch) -> bool {
+        if !batch.refs.iter().all(|r| self.entries.contains_key(&r.hash)) {
+            return false;
+        }
         for r in &batch.refs {
             let _ = self.contains_and_touch(r.hash);
         }
@@ -119,6 +127,14 @@ impl AtlasCacheTracker {
                 }
             }
         }
+        true
+    }
+
+    /// Records all `refs` (LRU touch) and 64×64 `tiles` (LRU insert) in `batch` once the batch
+    /// is published to the client connection.
+    #[allow(dead_code)]
+    pub fn record_published_batch(&mut self, batch: &SurfaceBatch) {
+        let _ = self.try_record_published_batch(batch);
     }
 
     fn compact_if_needed(&mut self) {
@@ -151,7 +167,7 @@ impl AtlasWindowEncoder {
     /// Encodes a window picture from `Input` (`CpuImage` or `ShmPicture`) into an atomic
     /// `SurfaceBatch`, updating `self.shadow` while consulting `cache` read-only.
     ///
-    /// Callers must invoke [`AtlasCacheTracker::record_published_batch`] when the returned
+    /// Callers must invoke [`AtlasCacheTracker::try_record_published_batch`] when the returned
     /// `SurfaceBatch` is actually sent to the client.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_input(
@@ -764,7 +780,7 @@ mod tests {
             .encode_input(1, 1000, rect, w, h, Input::Cpu(&img), false, true, None, None, &cache)
             .unwrap();
         let batch = batch.expect("keyframe must emit SurfaceBatch");
-        cache.record_published_batch(&batch);
+        assert!(cache.try_record_published_batch(&batch));
         assert!(batch.keyframe);
         assert!(!batch.fills.is_empty(), "top-left uniform tile should emit SurfaceFill");
         assert!(!batch.tiles.is_empty(), "patterned tiles should emit SurfaceTile");
@@ -802,7 +818,7 @@ mod tests {
             .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &cache)
             .unwrap();
         let batch0 = batch0.unwrap();
-        cache.record_published_batch(&batch0);
+        assert!(cache.try_record_published_batch(&batch0));
 
         let mut client_surface = Vec::new();
         let mut client_size = (0, 0);
@@ -816,7 +832,7 @@ mod tests {
             .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &cache)
             .unwrap();
         let batch1 = batch1.expect("scroll frame must emit SurfaceBatch");
-        cache.record_published_batch(&batch1);
+        assert!(cache.try_record_published_batch(&batch1));
 
         assert_eq!(batch1.copies.len(), 1, "must detect vertical scroll copy");
         assert_eq!(batch1.copies[0].dx, 0);
@@ -829,6 +845,54 @@ mod tests {
 
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &batch1).unwrap();
         assert_eq!(client_surface, enc.shadow, "client surface after CopyRect + exposed strip must be bit-exact");
+    }
+
+    #[test]
+    fn scroll_with_stationary_scrollbar_emits_copy_and_reconstructs_bit_exact() {
+        let (w, h) = (256u32, 192u32);
+        let make_frame = |y_offset: u32, thumb_y: u32| -> CpuImage {
+            let mut img = paint_test_image(w, h, y_offset);
+            // Paint a 16px right-edge scrollbar track and counter-moving thumb
+            for y in 0..h {
+                for x in (w - 16)..w {
+                    let off = (y as usize) * img.stride + (x as usize) * 4;
+                    let c = if y >= thumb_y && y < thumb_y + 32 { 0x55 } else { 0xCC };
+                    img.data[off..off + 4].copy_from_slice(&[c, c, c, 0x00]);
+                }
+            }
+            img
+        };
+
+        let img0 = make_frame(10, 16);
+        let img1 = make_frame(42, 48); // Content scrolls up by 32px; scrollbar thumb moves down by 32px
+        let mut enc = AtlasWindowEncoder::new();
+        let mut cache = AtlasCacheTracker::new();
+        let rect = Rect::new(0, 0, w as i32, h as i32);
+
+        let mut client_surface = Vec::new();
+        let mut client_size = (0, 0);
+        let mut client_cache = HashMap::new();
+
+        let (b0, _) = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &cache)
+            .unwrap();
+        let b0 = b0.unwrap();
+        assert!(cache.try_record_published_batch(&b0));
+        reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b0).unwrap();
+
+        let damage = [Rect::new(0, 0, w as i32, h as i32)];
+        let (b1, _) = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &cache)
+            .unwrap();
+        let b1 = b1.unwrap();
+        assert!(cache.try_record_published_batch(&b1));
+        assert_eq!(b1.copies.len(), 1, "must still emit CopyRect despite counter-moving scrollbar");
+        assert_eq!(b1.copies[0].dy, -32);
+        // Out of 12 total 64x64 tiles (4x3), the 6 interior scrolled tiles in the top 2 rows are skipped!
+        assert!(b1.tiles.len() <= 6, "interior scrolled tiles must be skipped by CopyRect");
+
+        reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
+        assert_eq!(client_surface, enc.shadow, "scrollbar + scrolled content must reconstruct bit-exactly");
     }
 
     #[test]
@@ -849,7 +913,7 @@ mod tests {
             .encode_input(1, 1000, rect, w, h, Input::Cpu(&tab_a), false, true, None, None, &cache)
             .unwrap();
         let b1 = b1.unwrap();
-        cache.record_published_batch(&b1);
+        assert!(cache.try_record_published_batch(&b1));
         assert_eq!(b1.tiles.len(), 4);
         assert_eq!(b1.refs.len(), 0);
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
@@ -860,7 +924,7 @@ mod tests {
             .encode_input(1, 2000, rect, w, h, Input::Cpu(&tab_b), false, false, None, None, &cache)
             .unwrap();
         let b2 = b2.unwrap();
-        cache.record_published_batch(&b2);
+        assert!(cache.try_record_published_batch(&b2));
         assert_eq!(b2.tiles.len(), 4);
         assert_eq!(b2.refs.len(), 0);
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b2).unwrap();
@@ -870,7 +934,7 @@ mod tests {
             .encode_input(1, 3000, rect, w, h, Input::Cpu(&tab_a), false, false, None, None, &cache)
             .unwrap();
         let b3 = b3.unwrap();
-        cache.record_published_batch(&b3);
+        assert!(cache.try_record_published_batch(&b3));
         assert_eq!(b3.tiles.len(), 0, "revisited tab must encode 0 tile bytes");
         assert_eq!(b3.refs.len(), 4, "revisited tab must emit 4 SurfaceTileRef entries");
 
@@ -896,14 +960,14 @@ mod tests {
             .encode_input(1, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
             .unwrap();
         let b1 = b1.unwrap();
-        cache.record_published_batch(&b1);
+        assert!(cache.try_record_published_batch(&b1));
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
 
         let (b2_init, _) = enc2
             .encode_input(2, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
             .unwrap();
         let b2_init = b2_init.unwrap();
-        cache.record_published_batch(&b2_init);
+        assert!(cache.try_record_published_batch(&b2_init));
 
         // 2. Construct an image where BOTH 64x64 tiles (x=0..64 and x=64..128) have the EXACT SAME
         //    new textured pattern (never seen before in `cache`).
@@ -943,7 +1007,37 @@ mod tests {
         assert_eq!(client_surface, enc1.shadow);
 
         // Now publish `delta1` to the session cache tracker.
-        cache.record_published_batch(&delta1);
+        assert!(cache.try_record_published_batch(&delta1));
         assert!(cache.contains(delta1.tiles[0].hash.unwrap()));
+    }
+
+    #[test]
+    fn try_record_published_batch_rejects_evicted_ref_from_concurrent_window() {
+        let mut cache = AtlasCacheTracker::with_capacity(2);
+        cache.insert(0x1111);
+        cache.insert(0x2222);
+        assert!(cache.contains(0x1111));
+
+        // Window A snapshots `cache` when 0x1111 is present and builds a batch referencing 0x1111.
+        let batch_a = SurfaceBatch {
+            id: 1,
+            seq: 2,
+            pts_us: 2000,
+            size: Size { w: 64, h: 64 },
+            rect: Rect::new(0, 0, 64, 64),
+            keyframe: false,
+            copies: Vec::new(),
+            fills: Vec::new(),
+            refs: vec![SurfaceTileRef { x: 0, y: 0, hash: 0x1111 }],
+            tiles: Vec::new(),
+        };
+
+        // Meanwhile Window B publishes a new tile 0x3333, evicting 0x1111 from the 2-entry cache.
+        cache.insert(0x3333);
+        assert!(!cache.contains(0x1111));
+
+        // When Window A's batch reaches publication on the main loop, `try_record_published_batch`
+        // must reject it so the session schedules a clean keyframe instead of sending a stale ref.
+        assert!(!cache.try_record_published_batch(&batch_a));
     }
 }

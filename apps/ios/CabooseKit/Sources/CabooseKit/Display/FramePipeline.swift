@@ -199,12 +199,7 @@ final class FramePipeline: @unchecked Sendable {
                 send(.ack(window: windowID, ptsMicros: batch.ptsMicros, decodedMicros: -1))
                 return
             }
-            let hasAllRefs = batch.refs.allSatisfy { cache.get(hash: $0.hash) != nil }
-            if hasAllRefs, let image = atlasRenderer.apply(batch, cache: cache) {
-                if batch.rect.minX == 0 && batch.rect.minY == 0 {
-                    surface.resize(width: Int(batch.rect.width.rounded(.up)), height: Int(batch.rect.height.rounded(.up)))
-                }
-                surface.upload(image: image, into: batch.rect)
+            if atlasRenderer.applyAndUpload(batch, cache: cache, to: surface) {
                 placement = (CGRect(origin: .zero, size: batch.size), batch.rect)
                 showsLivePicture = true
                 awaitingKeyframe = false

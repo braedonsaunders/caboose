@@ -68,6 +68,8 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
     ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
+    ("OZONE_PLATFORM", "wayland"),
+    ("CHROMIUM_USER_FLAGS", "--ozone-platform-hint=auto"),
 ];
 
 fn main() {
@@ -608,6 +610,8 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
+        assert_eq!(get(&env, "OZONE_PLATFORM"), Some("wayland"));
+        assert_eq!(get(&env, "CHROMIUM_USER_FLAGS"), Some("--ozone-platform-hint=auto"));
         assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
