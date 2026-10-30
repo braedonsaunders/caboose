@@ -52,5 +52,27 @@ int main() {
     table.add(&a, 1, 10);
     assert(table.drain(&a, &first) && first.next == 4);
     assert(table.drain(&a, &first) && first.next == 4);
+
+    // A successful prefetched wait marks its fence signaled, in stream order.
+    DeferredReplies fences;
+    Stream waits{{0, 0, 2, 0, 0, 0}};
+    const uint64_t f1 = 0x10, f2 = 0x20, f3 = 0x30;
+    const uint64_t both[] = {f1, f2};
+    fences.add(&a, 1, 4);
+    fences.addFenceWait(&a, f1, 4);
+    fences.addFenceWait(&a, f2, 4);
+    assert(!fences.signaled(&f1, 1, true));
+    assert(fences.drain(&a, &waits) && waits.next == 3);
+    assert(fences.signaled(&f1, 1, true) && !fences.signaled(&f2, 1, true));
+    assert(!fences.signaled(both, 2, true) && fences.signaled(both, 2, false));
+
+    // Reset forgets the result and discards a prefetch still in flight.
+    fences.forgetFence(f1);
+    assert(!fences.signaled(&f1, 1, true));
+    fences.addFenceWait(&a, f3, 4);
+    fences.forgetFence(f3);
+    fences.addFenceWait(&a, f1, 4);
+    assert(fences.drain(&a, &waits) && waits.next == 5);
+    assert(!fences.signaled(&f3, 1, true) && fences.signaled(&f1, 1, false));
     return 0;
 }

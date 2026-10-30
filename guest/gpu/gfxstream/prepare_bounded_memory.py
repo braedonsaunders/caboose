@@ -1074,6 +1074,103 @@ def transform_deferred_replies(encoder):
     return encoder
 
 
+def transform_fence_prefetch(encoder, tracker, tracker_h):
+    """Send the frame fence's wait with its submit; answer the later wait locally."""
+    def body(text, signature):
+        begin = text.index('\n' + signature) + 1
+        return begin, text.index('\n}\n', begin) + 3
+
+    def at_entry(text, signature, statement):
+        begin, end = body(text, signature)
+        part = text[begin:end]
+        entry = part.index('{\n') + 2
+        return text[:begin] + part[:entry] + statement + part[entry:] + text[end:]
+
+    forget = 'caboose::memory::deferredReplies.forgetFence(uint64_t(uintptr_t('
+    encoder = at_entry(encoder, 'VkResult VkEncoder::vkResetFences(',
+        '    for (uint32_t i = 0; i < fenceCount; ++i) ' + forget + 'pFences[i])));\n')
+    encoder = at_entry(encoder, 'void VkEncoder::vkDestroyFence(',
+        '    ' + forget + 'fence)));\n')
+    encoder = at_entry(encoder, 'VkResult VkEncoder::vkImportFenceFdKHR(',
+        '    if (pImportFenceFdInfo) ' + forget + 'pImportFenceFdInfo->fence)));\n')
+
+    begin, end = body(encoder, 'VkResult VkEncoder::vkWaitForFences(')
+    part = encoder[begin:end]
+    part = replace_once(part,
+        '    caboose::memory::deferredReplies.drain(this, stream);\n',
+        '    caboose::memory::deferredReplies.drain(this, stream);\n'
+        '    if (!caboose::memory::sendingPrefetchedFenceWait &&\n'
+        '        caboose::memory::deferredReplies.signaled(pFences, fenceCount, waitAll)) {\n'
+        '        if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();\n'
+        '        return static_cast<VkResult>(caboose_rpc_timing.finish(VK_SUCCESS));\n'
+        '    }\n')
+    part = replace_once(part,
+        '    uint8_t* streamPtr = stream->reserve(packetSize_vkWaitForFences);\n',
+        '    if (caboose::memory::sendingPrefetchedFenceWait)\n'
+        '        caboose::memory::deferredReplies.reserve(this, stream, packetSize_vkWaitForFences);\n'
+        '    uint8_t* streamPtr = stream->reserve(packetSize_vkWaitForFences);\n')
+    part = replace_once(part,
+        '    stream->read(&vkWaitForFences_VkResult_return, sizeof(VkResult));\n',
+        '    if (caboose::memory::sendingPrefetchedFenceWait) {\n'
+        '        stream->flush();\n'
+        '        caboose::memory::deferredReplies.addFenceWait(\n'
+        '            this, uint64_t(uintptr_t(local_pFences[0])), packetSize_vkWaitForFences);\n'
+        '    } else {\n'
+        '        stream->read(&vkWaitForFences_VkResult_return, sizeof(VkResult));\n'
+        '    }\n')
+    encoder = encoder[:begin] + part + encoder[end:]
+
+    # Timeline waits may depend on commands sent later; a blocked device stream would stall them.
+    begin, end = body(encoder, 'VkResult VkEncoder::cabooseQueueSubmitWithStagedCommands(')
+    part = replace_once(encoder[begin:end],
+        '    return static_cast<VkResult>(caboose_rpc_timing.finish(finalResult));\n',
+        '    bool timelineSubmit = false;\n'
+        '    for (uint32_t i = 0; i < submitCount; ++i)\n'
+        '        for (auto* next = static_cast<const VkBaseInStructure*>(pSubmits[i].pNext); next;\n'
+        '             next = next->pNext)\n'
+        '            timelineSubmit |= next->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;\n'
+        '    VkDevice fenceDevice = finalResult == VK_SUCCESS && fence != VK_NULL_HANDLE && !timelineSubmit\n'
+        '        ? ResourceTracker::get()->caboosePrefetchFenceDevice(fence) : VK_NULL_HANDLE;\n'
+        '    if (fenceDevice != VK_NULL_HANDLE) {\n'
+        '        caboose::memory::sendingPrefetchedFenceWait = true;\n'
+        '        this->vkWaitForFences(fenceDevice, 1, &fence, VK_TRUE,\n'
+        '                              caboose::memory::prefetchedFenceWaitNs, 0 /* doLock */);\n'
+        '        caboose::memory::sendingPrefetchedFenceWait = false;\n'
+        '    }\n'
+        '    return static_cast<VkResult>(caboose_rpc_timing.finish(finalResult));\n')
+    encoder = encoder[:begin] + part + encoder[end:]
+
+    tracker_h = replace_once(tracker_h, '    uint32_t getStreamFeatures() const;',
+        '    VkDevice caboosePrefetchFenceDevice(VkFence fence);\n'
+        '    uint32_t getStreamFeatures() const;')
+    method = '''// Fences backed by a sync file are waited on in the guest, never prefetched.
+VkDevice ResourceTracker::caboosePrefetchFenceDevice(VkFence fence) {
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+    auto found = info_VkFence.find(fence);
+    if (found == info_VkFence.end() || found->second.external) return VK_NULL_HANDLE;
+#if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+    if (found->second.syncFd) return VK_NULL_HANDLE;
+#endif
+    return found->second.device;
+}
+
+'''
+    tracker = replace_once(tracker, 'VkDeviceSize ResourceTracker::getMappedSize(',
+                            method + 'VkDeviceSize ResourceTracker::getMappedSize(')
+    begin = tracker.index('VkResult ResourceTracker::on_vkCreateFence(')
+    end = tracker.index('\n}\n', begin)
+    part = replace_once(tracker[begin:end],
+        '    if (input_result != VK_SUCCESS) return input_result;\n',
+        '    if (input_result != VK_SUCCESS) return input_result;\n'
+        '    {\n'
+        '        std::lock_guard<std::recursive_mutex> lock(mLock);\n'
+        '        auto created = info_VkFence.find(*pFence);\n'
+        '        if (created != info_VkFence.end()) created->second.device = device;\n'
+        '    }\n')
+    tracker = tracker[:begin] + part + tracker[end:]
+    return encoder, tracker, tracker_h
+
+
 def transform(encoder, encoder_h, tracker, tracker_h):
     if 'cabooseFlushMemoryChunk' in encoder or 'cabooseMappedRange' in tracker:
         raise ValueError('bounded memory patch already applied')
@@ -1174,6 +1271,7 @@ def transform(encoder, encoder_h, tracker, tracker_h):
         encoder, encoder_h, tracker, tracker_h
     )
     encoder = transform_deferred_replies(encoder)
+    encoder, tracker, tracker_h = transform_fence_prefetch(encoder, tracker, tracker_h)
     return encoder, encoder_h, tracker, tracker_h
 
 
