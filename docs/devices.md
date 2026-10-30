@@ -239,9 +239,8 @@ on a device that also has an input, so it declares a mute key, which is never pr
 - **Depth** uses the LiDAR camera where the phone has one, otherwise TrueDepth, at the
   depth output's native size.
 - **Microphone.** `AVAudioEngine`'s input with voice processing, converted to 48 kHz mono
-  and encoded to Opus by AudioToolbox in 20 ms packets. Voice processing cancels the echo
-  only of sound the engine itself plays; the computer's sound plays through its own
-  renderer. Speakerphone echo cancellation has not been verified on a physical device.
+  and encoded to Opus by AudioToolbox in 20 ms packets. Speakerphone echo cancellation
+  has not been verified on a physical device.
 - **Motion.** `CMMotionManager` device motion (attitude, rotation rate, calibrated magnetic
   field, and acceleration as gravity plus user acceleration) at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
   batched every 20 ms.
