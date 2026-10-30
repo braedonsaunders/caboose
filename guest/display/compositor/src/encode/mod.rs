@@ -3,8 +3,10 @@
 //! Every encoder implements [`Encoder`]. Which ones a stream can get is decided once at
 //! start-up by [`Encoders::probe`], which opens each candidate and encodes a test
 //! picture: NVENC (h264/hevc/av1_nvenc through libavcodec, from system memory) and the
-//! software encoders (libx264, libx265), which always work.
+//! software encoders (libx264, libx265), which always work. Alpha windows (popups) have
+//! no encoder: [`alpha::AlphaTiler`] sends them as RGBA tiles.
 
+pub mod alpha;
 pub mod convert;
 pub mod lavc;
 pub mod refine;
@@ -137,8 +139,8 @@ pub struct Copied {
     pub changed: Vec<Rect>,
 }
 
-/// Changed areas sent as tiles: each rectangle (picture pixels) with its RGB pixels,
-/// rows packed.
+/// Changed areas sent as tiles: each rectangle (picture pixels) with its RGB pixels
+/// (RGBA from an [`alpha::AlphaTiler`]), rows packed.
 pub struct Tiles {
     pub tiles: Vec<(Rect, Vec<u8>)>,
     /// As in [`Picture`].

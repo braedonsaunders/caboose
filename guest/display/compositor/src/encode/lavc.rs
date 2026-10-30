@@ -13,7 +13,7 @@
 use super::{convert, refine, scroll, Copied, CpuImage, EncodeError, Encoder, Input, Picture, Pixels, Settings, Tiles};
 
 /// More changed runs than this go into a picture rather than tiles.
-const MAX_TILES: usize = 32;
+pub(super) const MAX_TILES: usize = 32;
 /// More updates than this within `TILE_WINDOW_MS` are an animation: pictures, not tiles
 /// (typing reaches about 15 keys a second).
 const MAX_TILE_UPDATES: usize = 7;
@@ -21,7 +21,7 @@ const TILE_WINDOW_MS: u64 = 500;
 
 /// Joins runs that span the same columns in consecutive rows, so a glyph is one tile
 /// rather than one per macroblock row.
-fn merge_columns(runs: &[Rect]) -> Vec<Rect> {
+pub(super) fn merge_columns(runs: &[Rect]) -> Vec<Rect> {
     let mut out: Vec<Rect> = Vec::with_capacity(runs.len());
     for r in runs {
         match out.iter_mut().find(|o| o.x == r.x && o.w == r.w && o.y + o.h == r.y) {

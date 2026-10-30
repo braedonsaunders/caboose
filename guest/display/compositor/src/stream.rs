@@ -16,8 +16,11 @@
 //!   reproduce, but only while the client shows exactly what the encoder last had: a
 //!   window's `base` counts every event that could break that, and a copy needs the
 //!   last picture sent to be of the current base and acknowledged.
+//! - an alpha window (a popup) is sent only as RGBA tiles, under the same flow control,
+//!   and has no encoder, sharpening, motion stream or marker detection.
 
-use crate::encode::{Backend, CpuImage, Encoder, Input, Settings, ShmPicture};
+use crate::encode::alpha::AlphaTiler;
+use crate::encode::{Backend, CpuImage, Encoder, Input, Pixels, Settings, ShmPicture};
 use crate::motion;
 use crate::render::Canvas;
 use caboose_display_protocol::{Codec, Rect};
@@ -37,6 +40,8 @@ pub struct Job {
     pub shm: Option<ShmPicture>,
     /// Look for passthrough video markers in the picture.
     pub detect: bool,
+    /// The picture keeps the window's alpha: it goes as RGBA tiles, never as a frame.
+    pub alpha: bool,
     pub keyframe: bool,
     /// Sharpen the previous picture instead of encoding `image` (which only travels
     /// back with the answer).
@@ -176,14 +181,14 @@ pub struct TilesDone {
     pub cpu_us: u64,
 }
 
-/// An RGB rectangle as a PNG, compressed for speed.
-pub(crate) fn png(w: u32, h: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::with_capacity(rgb.len() / 4 + 64);
+/// An RGB (or, with `alpha`, straight RGBA) rectangle as a PNG, compressed for speed.
+pub(crate) fn png(w: u32, h: u32, pixels: &[u8], alpha: bool) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(pixels.len() / 4 + 64);
     let mut encoder = png::Encoder::new(&mut out, w, h);
-    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_color(if alpha { png::ColorType::Rgba } else { png::ColorType::Rgb });
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
-    encoder.write_header().and_then(|mut w| w.write_image_data(rgb)).map_err(|e| e.to_string())?;
+    encoder.write_header().and_then(|mut w| w.write_image_data(pixels)).map_err(|e| e.to_string())?;
     Ok(out)
 }
 
@@ -238,6 +243,54 @@ struct Encoders {
     window: Option<(Backend, Box<dyn Encoder>)>,
     /// For the motion stream with this id, at this rectangle.
     motion: Option<(u64, Rect, Box<dyn Encoder>)>,
+    /// An alpha window's shadow of what the client shows, at the picture size.
+    alpha: Option<AlphaTiler>,
+}
+
+/// The tiles for an alpha window's picture; its answer never carries a frame.
+fn work_alpha(job: Job, encoders: &mut Encoders) -> Done {
+    let size = (job.image.width, job.image.height);
+    let mut done = Done {
+        hits: None,
+        window: job.window,
+        generation: job.generation,
+        pts_us: job.pts_us,
+        image: CpuImage::new(0, 0),
+        result: None,
+        rect: job.rect,
+        crop: job.crop,
+        changed: Vec::new(),
+        motion: None,
+        ends_motion: None,
+        tiles: None,
+        copy: None,
+        base: job.base,
+    };
+    encoders.window = None;
+    encoders.motion = None;
+    if encoders.alpha.as_ref().is_none_or(|t| t.size() != size) {
+        encoders.alpha = Some(AlphaTiler::new(size.0, size.1));
+    }
+    let cpu0 = thread_cpu_us();
+    let damage = if job.keyframe { None } else { job.damage.as_deref() };
+    let pixels = Pixels { data: &job.image.data, stride: job.image.stride };
+    let tiles: Result<Vec<(Rect, Vec<u8>)>, String> =
+        encoders.alpha.as_mut().unwrap().tiles(&pixels, damage).map_err(|e| e.to_string()).and_then(|t| {
+            t.tiles.iter().map(|(r, rgba)| png(r.w as u32, r.h as u32, rgba, true).map(|p| (*r, p))).collect()
+        });
+    match tiles {
+        Ok(tiles) => {
+            done.changed = tiles.iter().map(|(r, _)| *r).collect();
+            done.tiles = Some(TilesDone { tiles, refine_in_ms: None, cpu_us: thread_cpu_us().saturating_sub(cpu0) });
+        }
+        Err(e) => {
+            // What the client shows is unknown now; the next picture is a whole one.
+            encoders.alpha = None;
+            done.result = Some(Err(e));
+        }
+    }
+    done.image = job.image;
+    done
 }
 
 /// Encodes with `enc`, timing it.
@@ -269,6 +322,10 @@ fn encode_with(
 }
 
 fn work(job: Job, encoders: &mut Encoders) -> Done {
+    if job.alpha {
+        return work_alpha(job, encoders);
+    }
+    encoders.alpha = None;
     let size = (job.image.width, job.image.height);
     let reuse = encoders.window.as_ref().is_some_and(|(b, e)| *b == job.backend && e.coded_size() == size);
     let mut done = Done {
@@ -391,7 +448,7 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         match enc.tiles(input, d, tile_max_px) {
             Ok(Some(t)) => {
                 let tiles: Result<Vec<_>, String> =
-                    t.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb).map(|p| (*r, p))).collect();
+                    t.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb, false).map(|p| (*r, p))).collect();
                 match tiles {
                     Ok(tiles) => {
                         done.changed = tiles.iter().map(|(r, _)| *r).collect();
@@ -853,6 +910,7 @@ mod tests {
             image,
             shm: None,
             detect: false,
+            alpha: false,
             keyframe: false,
             refine,
             damage: None,
@@ -887,6 +945,7 @@ mod tests {
             image,
             shm: None,
             detect: false,
+            alpha: false,
             keyframe: false,
             refine: false,
             damage: Some(vec![Rect::new(0, 0, 16, 16)]),
@@ -919,6 +978,7 @@ mod tests {
             image,
             shm: None,
             detect: false,
+            alpha: false,
             keyframe: false,
             refine: false,
             damage,
@@ -969,6 +1029,7 @@ mod tests {
             image,
             shm: None,
             detect: false,
+            alpha: false,
             keyframe,
             refine: false,
             damage: Some(vec![Rect::new(0, 0, w, h)]),
@@ -1133,5 +1194,43 @@ mod tests {
         assert_eq!(s.next_pts(), 200);
         s.mark_dirty(200);
         assert_eq!(s.next_pts(), 201);
+    }
+    #[test]
+    fn an_alpha_window_gets_rgba_tiles_and_never_a_frame() {
+        let mut encoders = Encoders::default();
+        let job = |image, keyframe, damage| Job {
+            window: 1,
+            generation: 1,
+            pts_us: 1,
+            image,
+            shm: None,
+            detect: true,
+            alpha: true,
+            keyframe,
+            refine: false,
+            damage,
+            rect: Rect::new(0, 0, 32, 16),
+            crop: Rect::new(0, 0, 32, 16),
+            backend: Backend::Software(caboose_display_protocol::Codec::H264),
+            settings: Settings::default(),
+            motion: Some(MotionJob { id: 7, rect: Rect::new(0, 0, 16, 16), keyframe: true, scaled: false }),
+            ends_motion: None,
+            base: 1,
+            copy: None,
+        };
+        let first = work(job(CpuImage::new(32, 16), true, None), &mut encoders);
+        assert!(first.result.is_none() && first.motion.is_none() && first.hits.is_none());
+        let tiles = first.tiles.unwrap().tiles;
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].0, Rect::new(0, 0, 32, 16));
+        let reader = png::Decoder::new(std::io::Cursor::new(&tiles[0].1)).read_info().unwrap();
+        assert_eq!((reader.info().color_type, reader.info().bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
+        assert!(encoders.window.is_none() && encoders.motion.is_none());
+        // Unchanged pixels send nothing; a keyframe request is the whole picture again.
+        let image = first.image;
+        let quiet = work(job(image, false, Some(vec![Rect::new(0, 0, 32, 16)])), &mut encoders);
+        assert!(quiet.result.is_none() && quiet.tiles.unwrap().tiles.is_empty());
+        let key = work(job(quiet.image, true, None), &mut encoders);
+        assert_eq!(key.tiles.unwrap().tiles.len(), 1);
     }
 }

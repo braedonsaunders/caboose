@@ -508,6 +508,7 @@ impl State {
                     image,
                     shm: None,
                     detect: false,
+                    alpha: w.kind == proto::WindowKind::Popup,
                     keyframe: false,
                     refine: true,
                     damage: None,
@@ -538,9 +539,12 @@ impl State {
             let pic_h = (local.size.h as f64 * scale).round().max(1.0) as i32;
             let rect = w.announced.as_ref().map(|a| Rect::new(0, 0, a.geometry.w, a.geometry.h)).unwrap();
             let size = (pic_w, pic_h).into();
+            // A popup keeps its alpha (window.create `alpha`): composed over transparent
+            // and sent as RGBA tiles, with no motion stream or marker detection.
+            let alpha = w.kind == proto::WindowKind::Popup;
             let w = self.windows.get_mut(id).unwrap();
-            if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale)) {
-                w.stream.canvas = Some(Canvas::new(size, scale));
+            if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale, alpha)) {
+                w.stream.canvas = Some(Canvas::new(size, scale, alpha));
                 w.stream.need_keyframe = true;
                 w.stream.new_base();
                 // The keyframe repaints everything; a motion region is found afresh.
@@ -560,11 +564,15 @@ impl State {
             let started = Instant::now();
             // A window that is one shm buffer is streamed from it: read in place by the
             // encoder when the picture needs no padding, otherwise copied (damage only).
+            // Not a window with alpha: an XRGB buffer's alpha byte is anything.
             let in_place = coded_w == pic_w as u32 && coded_h == pic_h as u32;
             let key = if in_place { crate::render::SHM_IN_PLACE } else { image_id };
             let since = w.stream.direct.filter(|d| d.image_id == key).map(|d| d.commit);
-            let direct =
-                if self.config.always_compose { None } else { crate::render::direct(&root, local, size, since) };
+            let direct = if self.config.always_compose || alpha {
+                None
+            } else {
+                crate::render::direct(&root, local, size, since)
+            };
             let mut shm = None;
             let rendered = match direct {
                 Some(d) => {
@@ -644,7 +652,8 @@ impl State {
                     // A scroll can be a copy within the client's picture when the client shows
                     // what the encoder last had, at the picture's own size (a copy in a
                     // scaled picture would not land on whole pixels).
-                    let copy = (copies
+                    let copy = (!alpha
+                        && copies
                         && ending.is_none()
                         && (pic_w, pic_h) == (rect.w, rect.h)
                         && w.stream.copy_ready()
@@ -653,7 +662,8 @@ impl State {
                         let per_window_px = (pic_w as f64 / rect.w as f64, pic_h as f64 / rect.h as f64);
                         CopyJob { hints: w.stream.scroll_hints(now_us, per_window_px) }
                     });
-                    let detect = !self.videos.streams.by_id.is_empty()
+                    let detect = !alpha
+                        && !self.videos.streams.by_id.is_empty()
                         && self
                             .videos
                             .streams
@@ -665,6 +675,7 @@ impl State {
                         image,
                         shm,
                         detect,
+                        alpha,
                         keyframe: w.stream.need_keyframe,
                         refine: false,
                         damage,
@@ -883,6 +894,7 @@ impl State {
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
         self.config.motion
+            && self.windows.get(window).is_some_and(|w| w.kind != proto::WindowKind::Popup)
             && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))
     }

@@ -72,7 +72,9 @@ final class FramePipeline: @unchecked Sendable {
         queue.async { [self] in
             // Metadata may precede the replacement picture. Keep the old picture's
             // coordinate space until its successor is decoded, so overlays scale with it.
-            if !showsLivePicture { surface.resize(width: width, height: height) }
+            // A window shown only as tiles (one with alpha) has no replacement frame to
+            // wait for: its next picture is a whole tile at the new size.
+            if !showsLivePicture || decoder == nil { surface.resize(width: width, height: height) }
         }
     }
 

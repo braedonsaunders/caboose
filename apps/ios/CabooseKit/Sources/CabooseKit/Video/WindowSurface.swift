@@ -58,7 +58,9 @@ public final class WindowSurface: @unchecked Sendable {
         return (backing, generation)
     }
 
-    /// Resizes the backing store, preserving the overlapping top-left content.
+    /// Resizes the backing store, preserving the overlapping top-left content. The rest of
+    /// the new texture is transparent (a new texture's pixels are undefined), so a window
+    /// with alpha shows nothing where no picture has landed yet.
     public func resize(width: Int, height: Int) {
         guard width > 0, height > 0 else { return }
         lock.lock()
