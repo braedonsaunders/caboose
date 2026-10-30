@@ -70,7 +70,7 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
     }
 }
 
-private final class LinkedLiveGPUSurface: LiveGPUSurfaceResource, @unchecked Sendable {
+private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchecked Sendable {
     private var pointer: OpaquePointer?
     private let bind: caboose_gpu_surface_bind_info
     private let lease: LiveGPULayerLease
@@ -85,11 +85,34 @@ private final class LinkedLiveGPUSurface: LiveGPUSurfaceResource, @unchecked Sen
         self.pointer = pointer; self.bind = bind; self.lease = lease; self.owners = owners
         nativeLifetime = self
     }
+    func create(_ request: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?) {
+        guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
+        var info = caboose_gpu_swapchain_create_info()
+        info.identity = bind.identity; info.boxed_device = request.device; info.old_swapchain_id = request.oldSwapchain
+        info.create_flags = request.flags; info.min_image_count = request.minImageCount
+        info.vk_format = request.format; info.color_space = request.colorSpace
+        info.width = request.width; info.height = request.height; info.image_array_layers = request.arrayLayers
+        info.image_usage = request.usage; info.pre_transform = request.preTransform
+        info.composite_alpha = request.compositeAlpha; info.present_mode = request.presentMode
+        info.clipped = request.clipped ? 1 : 0; info.sharing_mode = request.sharingMode
+        info.queue_family_count = UInt32(request.families.count)
+        var output: OpaquePointer?, id: UInt64 = 0, count: UInt32 = 0
+        var status = caboose_gpu_query_status()
+        let code = request.families.withUnsafeBufferPointer {
+            info.queue_families = $0.baseAddress
+            return caboose_gpu_virtual_swapchain_create(pointer, &info, &output, &id, &count, &status)
+        }
+        let actual = indexedStatus(status)
+        let value = output.map { LinkedLiveGPUIndexedSwapchain(pointer: $0, id: id, count: count,
+                                                             identity: bind.identity, parent: self) }
+        if code != 0 && actual.querySucceeded { return (.init(nativeErrno: EIO, vkResult: nil), value) }
+        return (actual, value)
+    }
     func query(physicalDevice: UInt64) -> (LiveGPUSurfaceStatus, LiveGPUSurfaceCapabilities?) {
         guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
         var snapshot: OpaquePointer?
         var status = caboose_gpu_query_status()
-        let code = caboose_gpu_surface_query(pointer, physicalDevice, &snapshot, &status)
+        let code = caboose_gpu_surface_query_indexed(pointer, physicalDevice, &snapshot, &status)
         defer { if let snapshot { caboose_gpu_surface_capabilities_release(snapshot) } }
         let actual = LiveGPUSurfaceStatus(nativeErrno: status.native_error,
                                           vkResult: status.has_vulkan_result == 1 ? status.vulkan_result : nil)
@@ -179,6 +202,116 @@ private final class LinkedLiveGPUSurface: LiveGPUSurfaceResource, @unchecked Sen
         }
         callbackLock.withLock { callbacks.removeAll() }
         nativeLifetime = nil
+    }
+}
+
+private func indexedStatus(_ status: caboose_gpu_query_status) -> LiveGPUSurfaceStatus {
+    .init(nativeErrno: status.native_error, vkResult: status.has_vulkan_result == 1 ? status.vulkan_result : nil)
+}
+private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unchecked Sendable {
+    let id: UInt64
+    let imageCount: UInt32
+    private var pointer: OpaquePointer?
+    private let identity: caboose_gpu_surface_identity
+    private let parent: LinkedLiveGPUSurface
+    private var nativeLifetime: LinkedLiveGPUIndexedSwapchain?
+    private let lock = NSLock()
+    private var callbacks: [UInt64: @Sendable (LiveGPUSurfaceMessage.Body) -> Void] = [:]
+    init(pointer: OpaquePointer, id: UInt64, count: UInt32,
+         identity: caboose_gpu_surface_identity, parent: LinkedLiveGPUSurface) {
+        self.pointer = pointer; self.id = id; imageCount = count; self.identity = identity; self.parent = parent
+        nativeLifetime = self
+    }
+    func map(_ images: [UInt64]) -> LiveGPUSurfaceStatus {
+        guard let pointer else { return .init(nativeErrno: ESTALE, vkResult: nil) }
+        let code = images.withUnsafeBufferPointer { caboose_gpu_virtual_swapchain_map(pointer, $0.baseAddress, UInt32($0.count)) }
+        return .init(nativeErrno: code, vkResult: nil)
+    }
+    func beginAcquire(_ info: LiveGPUSwapchainAcquire) -> (LiveGPUSurfaceStatus, (any LiveGPUAcquireOperation)?) {
+        guard let pointer else { return (.init(nativeErrno: ESTALE, vkResult: nil), nil) }
+        var native = caboose_gpu_acquire_info()
+        native.boxed_binary_semaphore = info.semaphore; native.boxed_fence = info.fence; native.device_mask = info.deviceMask
+        var request: OpaquePointer?, status = caboose_gpu_query_status()
+        let code = caboose_gpu_acquire_begin(pointer, &native, &request, &status)
+        let actual = indexedStatus(status)
+        let operation = request.map { LinkedLiveGPUAcquireOperation(pointer: $0, parent: self) }
+        if code != 0 && actual.succeeded { return (.init(nativeErrno: EIO, vkResult: nil), operation) }
+        return (actual, operation)
+    }
+    func present(_ request: LiveGPUIndexedPresent,
+                 event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
+        guard let pointer else { return .init(status: .init(nativeErrno: ESTALE, vkResult: nil), disposition: .rejected) }
+        var info = caboose_gpu_mapped_present_info()
+        info.identity = identity; info.present_serial = request.serial; info.boxed_queue = request.queue
+        info.queue_family = request.family; info.image_index = request.index; info.vk_image_layout = request.layout
+        info.wait_semaphore_count = UInt32(request.waits.count)
+        lock.withLock { callbacks[request.serial] = event }
+        let result = request.waits.withUnsafeBufferPointer {
+            info.boxed_wait_semaphores = $0.baseAddress
+            return caboose_gpu_virtual_swapchain_present(pointer, &info, { context, serial, kind, result in
+                guard let context else { return }
+                Unmanaged<LinkedLiveGPUIndexedSwapchain>.fromOpaque(context).takeUnretainedValue()
+                    .receive(serial: serial, kind: kind, result: result)
+            }, Unmanaged.passUnretained(self).toOpaque())
+        }
+        let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
+        if disposition == .rejected { _ = lock.withLock { callbacks.removeValue(forKey: request.serial) } }
+        return .init(status: .init(nativeErrno: result.native_error,
+            vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil), disposition: disposition)
+    }
+    private func receive(serial: UInt64, kind: caboose_gpu_present_event, result: caboose_gpu_submit_result) {
+        // Copy the closure before releasing its dictionary entry. The raw native
+        // context remains retained through successful swapchain/surface retirement.
+        let callback = lock.withLock { callbacks[serial] }
+        guard let callback else { return }
+        switch kind {
+        case CABOOSE_GPU_SOURCE_RELEASED: callback(.sourceReleased(serial: serial))
+        case CABOOSE_GPU_PRESENT_RETIRED:
+            callback(.swapchain(.presentRetired(swapchain: id, serial: serial)))
+            _ = lock.withLock { callbacks.removeValue(forKey: serial) }
+        default:
+            callback(.presentResult(serial: serial,
+                status: .init(nativeErrno: result.native_error, vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil),
+                disposition: .uncertain, event: kind == CABOOSE_GPU_DEVICE_LOST ? .deviceLost : .failedUnretired))
+        }
+    }
+    func retire() -> LiveGPUSurfaceStatus {
+        guard pointer != nil else { return .init(nativeErrno: 0, vkResult: nil) }
+        var status = caboose_gpu_query_status()
+        let code = caboose_gpu_virtual_swapchain_retire(&pointer, &status)
+        let actual = indexedStatus(status)
+        if code == 0 && actual.succeeded && pointer == nil {
+            lock.withLock { callbacks.removeAll() }; nativeLifetime = nil
+            return actual
+        }
+        return actual.succeeded ? .init(nativeErrno: code > 0 ? code : EIO, vkResult: nil) : actual
+    }
+}
+private final class LinkedLiveGPUAcquireOperation: LiveGPUAcquireOperation, @unchecked Sendable {
+    private var pointer: OpaquePointer?
+    private let parent: LinkedLiveGPUIndexedSwapchain
+    private var nativeLifetime: LinkedLiveGPUAcquireOperation?
+    init(pointer: OpaquePointer, parent: LinkedLiveGPUIndexedSwapchain) {
+        self.pointer = pointer; self.parent = parent; nativeLifetime = self
+    }
+    func poll() -> LiveGPUAcquireCompletion {
+        let result = caboose_gpu_acquire_poll(pointer)
+        var value = LiveGPUAcquireCompletion(status: .init(nativeErrno: result.native_error,
+            vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil),
+            index: result.has_image_index == 1 ? result.image_index : nil,
+            reason: LiveGPUAcquireLocalReason(rawValue: result.local_reason) ?? .other)
+        value.invalidNativeShape = result.has_image_index > 1 || result.has_vulkan_result > 1 ||
+            LiveGPUAcquireLocalReason(rawValue: result.local_reason) == nil ||
+            (result.has_vulkan_result == 0 && result.vulkan_result != 0)
+        return value
+    }
+    func cancel() -> Int32 { caboose_gpu_acquire_cancel(pointer) }
+    func observeSignal() -> LiveGPUSurfaceStatus { indexedStatus(caboose_gpu_acquire_observe(pointer)) }
+    func release() -> Int32 {
+        guard pointer != nil else { return EINVAL }
+        let code = caboose_gpu_acquire_request_release(&pointer)
+        if code == 0 && pointer == nil { nativeLifetime = nil; return 0 }
+        return code > 0 ? code : EIO
     }
 }
 #endif

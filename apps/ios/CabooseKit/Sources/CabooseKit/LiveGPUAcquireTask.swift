@@ -13,11 +13,13 @@ struct LiveGPUAcquireCompletion: Equatable, Sendable {
     let status: LiveGPUSurfaceStatus
     let index: UInt32?
     let reason: LiveGPUAcquireLocalReason
+    var invalidNativeShape = false
     var acquired: Bool {
         status.nativeErrno == 0 && (status.vkResult == 0 || status.vkResult == 1000001003) && index != nil
     }
     var pending: Bool { status.nativeErrno == 0 && (status.vkResult == 1 || status.vkResult == 2) && index == nil }
     func validate() throws {
+        guard !invalidNativeShape else { throw LiveGPUAcquireFailure.contradictoryResult }
         // The independent wire parser also checks contradictory actual/local status.
         _ = try LiveGPUSwapchainMessage.acquired(swapchain: 1, request: 1, status: status,
                                                 index: index, reason: reason).encodedFields()

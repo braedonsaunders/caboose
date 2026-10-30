@@ -25,7 +25,7 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     // initialization remains failed for process lifetime; reconnect never retries it.
     private static let startResult: Int32 = {
         #if canImport(CabooseGPULive)
-        return caboose_gpu_live_start_v3()
+        return caboose_gpu_live_start_v4()
         #else
         return ENODEV
         #endif
@@ -268,7 +268,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPUSurfaceRevo
                 stream.inboundFinished = true
                 guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
             }
-        case .surfaceBind, .surfaceQuery, .present, .surfaceRetire:
+        case .surfaceBind, .surfaceQuery, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent:
             guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
             let process = try process(frame.process)
             let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)

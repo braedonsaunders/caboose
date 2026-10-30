@@ -2530,9 +2530,13 @@ Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
 explicit non-coherent memory transfers and is not a general driver or on-screen
 game presentation. The bounded live envelope codec is specified in
 [gpu-live.md](gpu-live.md); it is separate from the legacy capture protocol.
-The indexed swapchain codec separates actual acquisition from source release and
-preserves provider results separately from local cancellation. Codec support does
-not enable the driver.
+The indexed app adapter links the native creation, mapping, acquisition and
+presentation APIs under exact version-4 negotiation. It separates actual
+acquisition from source release and preserves provider results separately from
+local cancellation. Independent acquire observers release signal leases without
+waiting behind surface work. The private Mesa swapchain path and physical
+presentation validation remain incomplete; default app sessions do not activate
+this driver.
 
 ### Shell
 

@@ -99,12 +99,16 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         let identity: LiveGPUSurfaceIdentity
         let resource: any LiveGPUSurfaceResource
         var lastSerial: UInt64 = 0
+        var lastRequest: UInt64 = 0
+        var indexed: LiveGPUIndexedSurface?
         var receipts: LiveGPUPresentReceipts?
         var retiring = false
         var revokeRequested = false
     }
     private let backend: any LiveGPUSurfaceBackend
     private var entries: [Data: Entry] = [:]
+    private let workBudget = LiveGPUBudget()
+    private let acquireBudget = LiveGPUBudget()
     private let limit: Int
     init(backend: any LiveGPUSurfaceBackend, limit: Int = 32) {
         precondition(limit > 0 && limit <= 256)
@@ -160,9 +164,52 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             }
         }
         switch message.body {
+        case .swapchain(let control):
+            guard !entry.retiring else { throw violation("indexed control during retirement") }
+            switch control {
+            case .create(let info):
+                guard info.request > entry.lastRequest else { throw violation("stale create request") }
+                entry.lastRequest = info.request
+            case .acquire(let info):
+                guard info.request > entry.lastRequest else { throw violation("stale acquire request") }
+                entry.lastRequest = info.request
+            case .present(let info):
+                guard info.serial > entry.lastSerial else { throw violation("stale indexed present") }
+                entry.lastSerial = info.serial
+            default: break
+            }
+            if entry.revokeRequested {
+                switch control {
+                case .cancelAcquire, .retire: break
+                case .present(let info):
+                    entries[identity.grant] = entry
+                    try emit(.presentResult(serial: info.serial, status: .init(nativeErrno: ESTALE, vkResult: nil),
+                                            disposition: .rejected, event: .submission)); return
+                case .acquire(let info):
+                    entries[identity.grant] = entry
+                    try emit(.swapchain(.acquired(swapchain: info.swapchain, request: info.request,
+                        status: .init(nativeErrno: ESTALE, vkResult: nil), index: nil, reason: .other))); return
+                case .create(let info):
+                    entries[identity.grant] = entry
+                    try emit(.swapchain(.created(request: info.request, swapchain: 0,
+                        status: .init(nativeErrno: ESTALE, vkResult: nil), count: 0))); return
+                case .map(let id, _):
+                    try emit(.swapchain(.mapped(swapchain: id, status: .init(nativeErrno: ESTALE, vkResult: nil)))); return
+                default: throw violation("wrong-direction indexed message")
+                }
+            }
+            if entry.indexed == nil {
+                guard let resource = entry.resource as? any LiveGPUIndexedSurfaceResource else {
+                    throw violation("indexed native API unavailable")
+                }
+                entry.indexed = LiveGPUIndexedSurface(resource: resource, budget: workBudget, acquireBudget: acquireBudget, emit: emit, failed: failed)
+            }
+            entries[identity.grant] = entry
+            try entry.indexed!.enqueue(control)
         case .query(let request, let physical):
-            guard !entry.retiring else { throw violation("query during retirement") }
-            let (status, capabilities) = entry.resource.query(physicalDevice: physical)
+            guard !entry.retiring, request > entry.lastRequest else { throw violation("query during retirement or stale request") }
+            entry.lastRequest = request; entries[identity.grant] = entry
+            let (status, capabilities) = entry.indexed?.query(physicalDevice: physical) ?? entry.resource.query(physicalDevice: physical)
             guard status.querySucceeded == (capabilities != nil) else { throw violation("incomplete native query") }
             try emit(.capabilities(request: request, status: status, value: capabilities))
         case .present(let request):
@@ -177,7 +224,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             try receipts.submit(result)
         case .retire:
             entry.retiring = true; entries[identity.grant] = entry
-            do { try entry.resource.retire() }
+            do { try entry.indexed?.retire(); try entry.resource.retire() }
             catch let error as LiveGPUBindingError {
                 if case .native(_, let code) = error, code > 0 {
                     try emit(.retired(.init(nativeErrno: code, vkResult: nil))); return
@@ -206,7 +253,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
         var firstError: Error?
         for (grant, var entry) in entries where entry.process == process {
             entry.retiring = true; entries[grant] = entry
-            do { try entry.resource.retire(); entries.removeValue(forKey: grant) }
+            do { try entry.indexed?.retire(); try entry.resource.retire(); entries.removeValue(forKey: grant) }
             catch { if firstError == nil { firstError = error } }
         }
         if let firstError { throw firstError }

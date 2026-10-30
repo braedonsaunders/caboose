@@ -233,7 +233,10 @@ callbacks behind the corresponding submission receipt, including callbacks made
 before native `present` returns. A source-release receipt does not dispose of the
 callback: later actual device loss remains reportable. A new accepted or uncertain
 native submission joins the prior frame worker; a rejected submission does not.
-The Swift adapter retains at most the prior and attempted serial during that call.
+The indexed Swift adapter retains each accepted serial through its final
+PRESENT_RETIRED callback. It then removes the frame record while keeping the
+monotonic serial high-water mark. Rejected submissions keep their acquired image
+and original wait set available to the caller.
 
 Owner-view invalidation enters the bounded serial consumer queue and emits kind
 35 once for the complete retained grant. It preserves the process and callback
@@ -252,13 +255,22 @@ app link checks do not establish physical presentation or game compatibility.
 
 ## Indexed swapchain wire
 
-The structural codec also covers kinds 25–36, with complete independent records
-in `live-swapchain-vectors.json`. These controls are inactive: the native indexed
-swapchain implementation and the private Mesa path are not integrated. They are
-not an extension of the acquire-at-present behavior of kind 20. An executor must
-implement the actual acquire path before negotiating live hello version 4, mask
-`0x70`; the additional bit identifies this behavior. The retained version 3
-package cannot supply it. Diagnostic version 2 remains separate.
+The codec and linked Swift/native adapter cover kinds 25–36, with independent
+records in `live-swapchain-vectors.json`. The app adapter requires live hello
+version 4, mask `0x70`, and the strongly linked indexed runtime. It rejects the
+acquire-at-present behavior of kind 20 and earlier hello versions. The private
+Mesa path remains incomplete, and default app session creation does not activate
+this adapter. Diagnostic version 2 remains separate.
+
+Each retained surface serializes native creation, mapping, querying, submission
+and retirement on an off-main worker. Acquire polling and signal observation use
+independent workers so a decoder reset waiting for signal retirement cannot block
+the observer needed to release it. The executor bounds these outstanding requests
+to 64. Cancellation races preserve a real acquired index; local deadlines remain
+distinct from provider results. A present waits for the actual acquire signal
+observation and the prior frame retirement before consuming its original waits.
+Cleanup cancels pending polls and waits for safe request and frame retirement;
+unknown outcomes retain native resources and prevent replacement.
 
 All records retain the common 40-byte surface identity and process envelope
 scope. Field sizes below exclude that identity. All integers are little-endian.
