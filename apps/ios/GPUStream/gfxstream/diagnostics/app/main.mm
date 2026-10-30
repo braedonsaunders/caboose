@@ -119,6 +119,10 @@ bool certMatches(sec_trust_t trust, NSData* pin) {
 }
 - (void)abort:(NSString*)reason {
     if (_stopping.exchange(true)) return;
+    {
+        std::lock_guard<std::mutex> lock(_closeMutex);
+        _closeState.cancel();
+    }
     [self report:reason];
     std::lock_guard<std::recursive_mutex> stateLock(_stateMutex);
     if (_connection) nw_connection_cancel(_connection);

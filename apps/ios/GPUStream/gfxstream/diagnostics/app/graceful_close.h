@@ -5,19 +5,26 @@ namespace caboose::gpuv2::diagnostic {
 enum class CloseAction { none, send_final, wait, fail };
 class GracefulClose {
 public:
-    CloseAction inputEof() { input_eof_ = true; return CloseAction::wait; }
+    CloseAction inputEof() {
+        if (cancelled_) return CloseAction::none;
+        input_eof_ = true;
+        return CloseAction::wait;
+    }
     CloseAction outputEof() {
-        if (output_eof_) return CloseAction::none;
+        if (cancelled_ || output_eof_) return CloseAction::none;
         output_eof_ = true;
         return CloseAction::send_final;
     }
     CloseAction finalSendComplete(bool error) {
+        if (cancelled_) return CloseAction::none;
         if (!output_eof_ || final_complete_) return CloseAction::fail;
         final_complete_ = true;
         return error ? CloseAction::fail : CloseAction::wait;
     }
+    void cancel() { cancelled_ = true; }
     bool inputClosed() const { return input_eof_; }
 private:
+    bool cancelled_ = false;
     bool input_eof_ = false;
     bool output_eof_ = false;
     bool final_complete_ = false;
