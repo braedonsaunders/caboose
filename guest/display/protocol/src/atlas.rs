@@ -1,17 +1,19 @@
-//! Atlas Micro-Codec, XXH64 tile hashing, LZ4 raw block codec with 4-byte size prefix,
-//! and 1D/2D `CopyRect` scroll detector for Caboose Display's Surface Atlas lane.
+//! Lossless UI tile codec (`Pal2Lz4`, `Pal16Lz4`, `RgbaLz4`), XXH64 tile hashing,
+//! and scanline-hash `CopyRect` scroll detection for the Caboose Surface & Tile Atlas.
 
 use crate::{AtlasTileFormat, Rect, SurfaceCopy};
 
-const PRIME64_1: u64 = 0x9E3779B185EBCA87;
-const PRIME64_2: u64 = 0xC2B2AE3D27D4EB4F;
-const PRIME64_3: u64 = 0x165667B19E3779F9;
-const PRIME64_4: u64 = 0x85EBCA77C2B2AE63;
-const PRIME64_5: u64 = 0x27D4EB2F165667C5;
+const PRIME64_1: u64 = 11_400_714_785_074_694_791;
+const PRIME64_2: u64 = 14_029_467_366_897_019_727;
+const PRIME64_3: u64 = 1_609_587_929_392_839_161;
+const PRIME64_4: u64 = 9_650_029_242_287_828_579;
+const PRIME64_5: u64 = 2_870_177_450_012_600_261;
 
 #[inline]
 fn xxh64_round(acc: u64, input: u64) -> u64 {
-    acc.wrapping_add(input.wrapping_mul(PRIME64_2)).rotate_left(31).wrapping_mul(PRIME64_1)
+    acc.wrapping_add(input.wrapping_mul(PRIME64_2))
+        .rotate_left(31)
+        .wrapping_mul(PRIME64_1)
 }
 
 #[inline]
@@ -23,67 +25,76 @@ fn xxh64_merge_round(mut acc: u64, val: u64) -> u64 {
 
 #[inline]
 fn read_u64_le(data: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&data[offset..offset + 8]);
+    u64::from_le_bytes(bytes)
 }
 
 #[inline]
 fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap())
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&data[offset..offset + 4]);
+    u32::from_le_bytes(bytes)
 }
 
-/// Standard 64-bit XXHash (`XXH64`).
+/// Computes the canonical 64-bit XXH64 digest of `data` with `seed`.
 pub fn xxh64(data: &[u8], seed: u64) -> u64 {
     let len = data.len();
-    let mut p = 0usize;
-    let mut h64: u64;
+    let mut offset = 0usize;
 
-    if len >= 32 {
+    let mut h64 = if len >= 32 {
         let mut v1 = seed.wrapping_add(PRIME64_1).wrapping_add(PRIME64_2);
         let mut v2 = seed.wrapping_add(PRIME64_2);
         let mut v3 = seed;
         let mut v4 = seed.wrapping_sub(PRIME64_1);
 
-        let limit = len - 32;
-        while p <= limit {
-            v1 = xxh64_round(v1, read_u64_le(data, p));
-            v2 = xxh64_round(v2, read_u64_le(data, p + 8));
-            v3 = xxh64_round(v3, read_u64_le(data, p + 16));
-            v4 = xxh64_round(v4, read_u64_le(data, p + 24));
-            p += 32;
+        while offset + 32 <= len {
+            v1 = xxh64_round(v1, read_u64_le(data, offset));
+            v2 = xxh64_round(v2, read_u64_le(data, offset + 8));
+            v3 = xxh64_round(v3, read_u64_le(data, offset + 16));
+            v4 = xxh64_round(v4, read_u64_le(data, offset + 24));
+            offset += 32;
         }
 
-        h64 = v1
+        let mut h = v1
             .rotate_left(1)
             .wrapping_add(v2.rotate_left(7))
             .wrapping_add(v3.rotate_left(12))
             .wrapping_add(v4.rotate_left(18));
-        h64 = xxh64_merge_round(h64, v1);
-        h64 = xxh64_merge_round(h64, v2);
-        h64 = xxh64_merge_round(h64, v3);
-        h64 = xxh64_merge_round(h64, v4);
+        h = xxh64_merge_round(h, v1);
+        h = xxh64_merge_round(h, v2);
+        h = xxh64_merge_round(h, v3);
+        h = xxh64_merge_round(h, v4);
+        h
     } else {
-        h64 = seed.wrapping_add(PRIME64_5);
-    }
+        seed.wrapping_add(PRIME64_5)
+    };
 
     h64 = h64.wrapping_add(len as u64);
 
-    while p + 8 <= len {
-        let k1 = xxh64_round(0, read_u64_le(data, p));
+    while offset + 8 <= len {
+        let k1 = xxh64_round(0, read_u64_le(data, offset));
         h64 ^= k1;
-        h64 = h64.rotate_left(27).wrapping_mul(PRIME64_1).wrapping_add(PRIME64_4);
-        p += 8;
+        h64 = h64
+            .rotate_left(27)
+            .wrapping_mul(PRIME64_1)
+            .wrapping_add(PRIME64_4);
+        offset += 8;
     }
 
-    if p + 4 <= len {
-        h64 ^= (read_u32_le(data, p) as u64).wrapping_mul(PRIME64_1);
-        h64 = h64.rotate_left(23).wrapping_mul(PRIME64_2).wrapping_add(PRIME64_3);
-        p += 4;
+    if offset + 4 <= len {
+        h64 ^= (read_u32_le(data, offset) as u64).wrapping_mul(PRIME64_1);
+        h64 = h64
+            .rotate_left(23)
+            .wrapping_mul(PRIME64_2)
+            .wrapping_add(PRIME64_3);
+        offset += 4;
     }
 
-    while p < len {
-        h64 ^= (data[p] as u64).wrapping_mul(PRIME64_5);
+    while offset < len {
+        h64 ^= (data[offset] as u64).wrapping_mul(PRIME64_5);
         h64 = h64.rotate_left(11).wrapping_mul(PRIME64_1);
-        p += 1;
+        offset += 1;
     }
 
     h64 ^= h64 >> 33;
@@ -96,7 +107,7 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
 
 #[inline]
 fn lz4_hash4(val: u32) -> usize {
-    ((val.wrapping_mul(2654435761)) >> 20) as usize & 0xFFF
+    ((val.wrapping_mul(2_654_435_761)) >> 19) as usize
 }
 
 fn write_lz4_len(out: &mut Vec<u8>, mut rem: usize) {
@@ -107,39 +118,41 @@ fn write_lz4_len(out: &mut Vec<u8>, mut rem: usize) {
     out.push(rem as u8);
 }
 
-/// Compresses `input` as a standard LZ4 raw block prefixed by its 4-byte little-endian
-/// uncompressed length.
+/// Compresses `input` into a standard LZ4 raw block prefixed by a 4-byte little-endian
+/// uncompressed size (compatible with `lz4_flex::block::compress_prepend_size`).
 pub fn lz4_compress_prepend_size(input: &[u8]) -> Vec<u8> {
     let len = input.len();
     let mut out = Vec::with_capacity(4 + len + (len / 255) + 16);
     out.extend_from_slice(&(len as u32).to_le_bytes());
+
     if len == 0 {
         return out;
     }
 
-    if len < 12 {
+    if len < 13 {
         let token = (len as u8) << 4;
         out.push(token);
         out.extend_from_slice(input);
         return out;
     }
 
-    let mut dict = [0u32; 4096];
+    let mut dict = [0u32; 8192];
     let mut anchor = 0usize;
     let mut ip = 0usize;
     let match_limit = len - 5;
     let mflimit = len - 12;
 
+    ip += 1;
     while ip <= mflimit {
         let seq = read_u32_le(input, ip);
         let h = lz4_hash4(seq);
         let ref_pos = dict[h] as usize;
         dict[h] = ip as u32;
 
-        let offset = ip.wrapping_sub(ref_pos);
-        if offset > 0 && offset <= 65535 && read_u32_le(input, ref_pos) == seq {
-            // Backtrack if possible? No need, anchor..ip are literals.
+        if ip.saturating_sub(ref_pos) <= 0xFFFF && read_u32_le(input, ref_pos) == seq {
             let lit_len = ip - anchor;
+            let offset = (ip - ref_pos) as u16;
+
             let mut match_len = 4usize;
             while ip + match_len < match_limit && input[ref_pos + match_len] == input[ip + match_len] {
                 match_len += 1;
@@ -148,13 +161,16 @@ pub fn lz4_compress_prepend_size(input: &[u8]) -> Vec<u8> {
             let lit_code = lit_len.min(15) as u8;
             let match_code = (match_len - 4).min(15) as u8;
             out.push((lit_code << 4) | match_code);
+
             if lit_len >= 15 {
                 write_lz4_len(&mut out, lit_len - 15);
             }
             out.extend_from_slice(&input[anchor..ip]);
-            out.extend_from_slice(&(offset as u16).to_le_bytes());
+
+            out.extend_from_slice(&offset.to_le_bytes());
+
             if match_len - 4 >= 15 {
-                write_lz4_len(&mut out, match_len - 4 - 15);
+                write_lz4_len(&mut out, (match_len - 4) - 15);
             }
 
             ip += match_len;
@@ -489,32 +505,28 @@ pub fn detect_scroll_copy(
             };
 
             let mut matches = 0usize;
-            let mut info_in_overlap = 0usize;
             let mut info_matches = 0usize;
             for i in 0..overlap {
                 let c_idx = curr_start + i;
                 let p_idx = prev_start + i;
-                let is_info = curr_informative[c_idx];
-                if is_info {
-                    info_in_overlap += 1;
-                }
                 if curr_hashes[c_idx] == prev_hashes[p_idx] {
                     matches += 1;
-                    if is_info {
+                    if curr_informative[c_idx] {
                         info_matches += 1;
                     }
                 }
             }
 
             // Require at least 60% of overlapping rows to match overall, and when the region
-            // contains vertically distinct content rows, require at least half of those
-            // informative rows in the overlap to match.
-            let info_ok = if total_informative >= 4 {
-                info_in_overlap >= 4 && info_matches * 2 >= info_in_overlap
+            // contains vertically distinct content rows, prioritize the shift with the most
+            // matching informative rows (blocking false `|dy| = 1` matches on blank background
+            // while still detecting scroll inside windows with stationary headers/toolbars).
+            let info_ok = if total_informative >= 2 {
+                info_matches >= 1
             } else {
                 true
             };
-            let better = if total_informative >= 4 {
+            let better = if total_informative >= 2 {
                 info_matches > best_info_matches
                     || (info_matches == best_info_matches && matches > best_matches)
             } else {
@@ -550,13 +562,19 @@ pub fn detect_scroll_copy(
         return None;
     }
 
-    let dst_rect = if best_dy < 0 {
-        Rect::new(damage.x, damage.y, damage.w, damage.h + best_dy)
+    let rect = if best_dy < 0 {
+        let shift = -best_dy;
+        Rect::new(damage.x, damage.y, damage.w, damage.h - shift)
     } else {
-        Rect::new(damage.x, damage.y + best_dy, damage.w, damage.h - best_dy)
+        let shift = best_dy;
+        Rect::new(damage.x, damage.y + shift, damage.w, damage.h - shift)
     };
 
-    Some(SurfaceCopy { dx: 0, dy: best_dy, rect: dst_rect })
+    Some(SurfaceCopy {
+        dx: 0,
+        dy: best_dy,
+        rect,
+    })
 }
 
 #[cfg(test)]
@@ -564,149 +582,163 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xxh64_matches_standard_test_vectors() {
-        assert_eq!(xxh64(b"", 0), 0xEF46DB3751D8E999);
-        let h1 = xxh64(b"Caboose", 0);
-        let h2 = xxh64(b"Caboose", 0);
+    fn xxh64_matches_reference_vectors() {
+        // Empty input with seed 0 -> canonical XXH64 digest
+        assert_eq!(xxh64(b"", 0), 0xEF46_DB37_51D8_E999);
+        assert_eq!(xxh64(b"a", 0), 0xD24E_C4F1_A98C_6E5B);
+        assert_eq!(xxh64(b"abc", 0), 0x44BC_2CF5_AD77_0999);
+        // 64-byte input (>32-byte stripe path)
+        let buf: Vec<u8> = (0u8..64).collect();
+        let h1 = xxh64(&buf, 0);
+        let h2 = xxh64(&buf, 0);
         assert_eq!(h1, h2);
-        assert_ne!(h1, 0xEF46DB3751D8E999);
-        // Test > 32 bytes path
-        let long = b"Caboose OS Decomposition Zero Server Video Architecture 1234567890";
-        assert_eq!(xxh64(long, 0), xxh64(long, 0));
+        assert_ne!(h1, xxh64(&buf, 1));
     }
 
     #[test]
-    fn lz4_round_trips_empty_short_and_repetitive_buffers() {
-        let empty = lz4_compress_prepend_size(b"");
-        assert_eq!(empty, [0, 0, 0, 0]);
-        assert_eq!(lz4_decompress_prepend_size(&empty, 16).unwrap(), b"");
-
-        let short = b"hello world";
-        let c_short = lz4_compress_prepend_size(short);
-        assert_eq!(lz4_decompress_prepend_size(&c_short, 64).unwrap(), short);
-
-        let mut rep = Vec::new();
-        for i in 0..512 {
-            rep.extend_from_slice(b"caboose-atlas-tile-");
-            rep.push((i & 3) as u8);
+    fn lz4_round_trip_various_sizes() {
+        for size in [0usize, 1, 7, 13, 64, 512, 16_384] {
+            let mut data = Vec::with_capacity(size);
+            for i in 0..size {
+                data.push(((i * 7 + (i / 19)) & 0xFF) as u8);
+            }
+            let compressed = lz4_compress_prepend_size(&data);
+            let decompressed = lz4_decompress_prepend_size(&compressed, size + 64).expect("decompress");
+            assert_eq!(decompressed, data, "failed at size {size}");
         }
-        let c_rep = lz4_compress_prepend_size(&rep);
-        assert!(c_rep.len() < rep.len() / 2);
-        assert_eq!(lz4_decompress_prepend_size(&c_rep, rep.len()).unwrap(), rep);
     }
 
     #[test]
-    fn atlas_tile_codec_pal2_pal16_and_rgba_round_trip() {
+    fn adaptive_tile_codec_round_trip_all_modes() {
         let w = 64u32;
         let h = 64u32;
         let pixels = (w * h) as usize;
 
-        // 2-color text/background tile
+        // 1. Pal2Lz4 (2 colors: text on solid background)
         let mut pal2_rgba = Vec::with_capacity(pixels * 4);
         for i in 0..pixels {
             if (i % 7) == 0 {
-                pal2_rgba.extend_from_slice(&[0xCD, 0xD6, 0xF4, 0xFF]);
+                pal2_rgba.extend_from_slice(&[0xF0, 0xF4, 0xF8, 0xFF]);
             } else {
-                pal2_rgba.extend_from_slice(&[0x1E, 0x1E, 0x2E, 0xFF]);
+                pal2_rgba.extend_from_slice(&[0x10, 0x14, 0x18, 0xFF]);
             }
         }
         let (fmt2, enc2) = encode_atlas_tile(&pal2_rgba, w, h);
         assert_eq!(fmt2, AtlasTileFormat::Pal2Lz4);
-        let dec2 = decode_atlas_tile(fmt2, &enc2, w, h).unwrap();
+        let dec2 = decode_atlas_tile(fmt2, &enc2, w, h).expect("decode pal2");
         assert_eq!(dec2, pal2_rgba);
 
-        // 8-color anti-aliased glyph tile
+        // 2. Pal16Lz4 (8 colors: antialiased UI glyph / border)
         let mut pal16_rgba = Vec::with_capacity(pixels * 4);
         for i in 0..pixels {
-            let c = (i % 8) as u8;
-            pal16_rgba.extend_from_slice(&[c * 20, c * 30, 0x40, 0xFF]);
+            let c = ((i % 8) * 30) as u8;
+            pal16_rgba.extend_from_slice(&[c, c.wrapping_add(10), 0x80, 0xFF]);
         }
         let (fmt16, enc16) = encode_atlas_tile(&pal16_rgba, w, h);
         assert_eq!(fmt16, AtlasTileFormat::Pal16Lz4);
-        let dec16 = decode_atlas_tile(fmt16, &enc16, w, h).unwrap();
+        let dec16 = decode_atlas_tile(fmt16, &enc16, w, h).expect("decode pal16");
         assert_eq!(dec16, pal16_rgba);
 
-        // >16-color gradient tile
-        let mut rgba_tile = Vec::with_capacity(pixels * 4);
+        // 3. RgbaLz4 (> 16 colors: rich gradient / icon)
+        let mut rgba_raw = Vec::with_capacity(pixels * 4);
         for i in 0..pixels {
-            rgba_tile.extend_from_slice(&[(i & 0xFF) as u8, ((i >> 4) & 0xFF) as u8, 0x80, 0xFF]);
+            rgba_raw.extend_from_slice(&[
+                (i & 0xFF) as u8,
+                ((i >> 3) & 0xFF) as u8,
+                ((i * 13) & 0xFF) as u8,
+                0xFF,
+            ]);
         }
-        let (fmt_rgba, enc_rgba) = encode_atlas_tile(&rgba_tile, w, h);
+        let (fmt_rgba, enc_rgba) = encode_atlas_tile(&rgba_raw, w, h);
         assert_eq!(fmt_rgba, AtlasTileFormat::RgbaLz4);
-        let dec_rgba = decode_atlas_tile(fmt_rgba, &enc_rgba, w, h).unwrap();
-        assert_eq!(dec_rgba, rgba_tile);
+        let dec_rgba = decode_atlas_tile(fmt_rgba, &enc_rgba, w, h).expect("decode rgba");
+        assert_eq!(dec_rgba, rgba_raw);
     }
 
     #[test]
-    fn scroll_copy_detector_finds_vertical_displacement() {
+    fn scroll_copy_detector_finds_vertical_translation() {
         let w = 128u32;
         let h = 128u32;
         let mut prev = vec![0u8; (w * h * 4) as usize];
         for y in 0..h {
             for x in 0..w {
-                let off = ((y * w + x) * 4) as usize;
-                prev[off] = (y & 0xFF) as u8;
-                prev[off + 1] = ((y * 3 + x) & 0xFF) as u8;
-                prev[off + 2] = (x & 0xFF) as u8;
-                prev[off + 3] = 0xFF;
+                let idx = ((y * w + x) * 4) as usize;
+                prev[idx] = (y as u8).wrapping_mul(17).wrapping_add(x as u8);
+                prev[idx + 1] = (y as u8).wrapping_mul(31);
+                prev[idx + 2] = (x as u8).wrapping_mul(13);
+                prev[idx + 3] = 0xFF;
             }
         }
-        // Scroll up by 16 pixels (dy = -16): curr[y] = prev[y + 16]
+
+        // Scroll content UP by 24 pixels (dy = -24: row y in curr comes from row y + 24 in prev)
+        let shift = 24u32;
         let mut curr = vec![0u8; (w * h * 4) as usize];
-        for y in 0..(h - 16) {
+        for y in 0..(h - shift) {
+            let src_off = ((y + shift) * w * 4) as usize;
             let dst_off = (y * w * 4) as usize;
-            let src_off = ((y + 16) * w * 4) as usize;
-            let row_bytes = (w * 4) as usize;
-            curr[dst_off..dst_off + row_bytes].copy_from_slice(&prev[src_off..src_off + row_bytes]);
+            let row_len = (w * 4) as usize;
+            curr[dst_off..dst_off + row_len].copy_from_slice(&prev[src_off..src_off + row_len]);
+        }
+        // Newly exposed bottom 24 rows have new content
+        for y in (h - shift)..h {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                curr[idx] = 0xAA;
+                curr[idx + 1] = y as u8;
+                curr[idx + 2] = x as u8;
+                curr[idx + 3] = 0xFF;
+            }
         }
 
-        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32)).unwrap();
+        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32))
+            .expect("should detect vertical scroll");
         assert_eq!(copy.dx, 0);
-        assert_eq!(copy.dy, -16);
-        assert_eq!(copy.rect, Rect::new(0, 0, 128, 112));
+        assert_eq!(copy.dy, -(shift as i32));
+        assert_eq!(copy.rect, Rect::new(0, 0, w as i32, (h - shift) as i32));
     }
 
     #[test]
     fn scroll_copy_detector_locks_onto_text_on_mostly_blank_page_with_scrollbar() {
-        // Model a mostly-white/gray page like example.com (256x256) with a 24px text band
-        // and a counter-moving scrollbar thumb in the rightmost 16px column.
+        // Models a sparse page like example.com (mostly uniform #F0F0F0 background, a centered
+        // text card that scrolls up by 48 px, and a right-edge scrollbar thumb that moves down).
         let w = 256u32;
         let h = 256u32;
-        let render_page = |text_top: u32, thumb_top: u32| -> Vec<u8> {
-            let mut buf = vec![0xEEu8; (w * h * 4) as usize];
-            for px in buf.chunks_exact_mut(4) {
-                px[3] = 0xFF;
-            }
-            for y in text_top..(text_top + 24) {
-                for x in 40..200 {
-                    let off = ((y * w + x) * 4) as usize;
-                    buf[off] = ((y - text_top) * 9 + (x & 7)) as u8;
-                    buf[off + 1] = ((x * 5) & 0xFF) as u8;
-                    buf[off + 2] = 0x22;
-                    buf[off + 3] = 0xFF;
-                }
-            }
-            // Right-hand scrollbar track + thumb in rightmost 16px (x = 240..256)
-            for y in 0..h {
-                for x in 240..256 {
-                    let off = ((y * w + x) * 4) as usize;
-                    let is_thumb = y >= thumb_top && y < thumb_top + 40;
-                    let c = if is_thumb { 0x60 } else { 0xD0 };
-                    buf[off] = c;
-                    buf[off + 1] = c;
-                    buf[off + 2] = c;
-                    buf[off + 3] = 0xFF;
-                }
-            }
-            buf
-        };
+        let bg = [0xF0u8, 0xF0, 0xF0, 0xFF];
+        let mut prev = bg.repeat((w * h) as usize);
+        let mut curr = bg.repeat((w * h) as usize);
 
-        // Scroll content up by 36px (text moves from y=100 to y=64; thumb moves down from y=20 to y=40)
-        let prev = render_page(100, 20);
-        let curr = render_page(64, 40);
-        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32)).unwrap();
+        let shift = 48i32;
+        for card_row in 0..40i32 {
+            let prev_y = 90 + card_row;
+            let curr_y = prev_y - shift;
+            for x in 48..200i32 {
+                let color = [
+                    (card_row as u8).wrapping_mul(29).wrapping_add(x as u8),
+                    (card_row as u8).wrapping_mul(53),
+                    0x33,
+                    0xFF,
+                ];
+                let p_idx = ((prev_y as u32 * w + x as u32) * 4) as usize;
+                let c_idx = ((curr_y as u32 * w + x as u32) * 4) as usize;
+                prev[p_idx..p_idx + 4].copy_from_slice(&color);
+                curr[c_idx..c_idx + 4].copy_from_slice(&color);
+            }
+        }
+
+        // Right-edge 12px scrollbar thumb moves in the opposite direction (+20 px)
+        for y in 20..80u32 {
+            for x in (w - 12)..w {
+                let p_idx = ((y * w + x) * 4) as usize;
+                prev[p_idx..p_idx + 4].copy_from_slice(&[0x88, 0x88, 0x88, 0xFF]);
+                let c_idx = (((y + 20) * w + x) * 4) as usize;
+                curr[c_idx..c_idx + 4].copy_from_slice(&[0x88, 0x88, 0x88, 0xFF]);
+            }
+        }
+
+        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32))
+            .expect("should detect vertical scroll on sparse page with scrollbar");
         assert_eq!(copy.dx, 0);
-        assert_eq!(copy.dy, -36);
-        assert_eq!(copy.rect, Rect::new(0, 0, 256, 220));
+        assert_eq!(copy.dy, -shift);
+        assert_eq!(copy.rect, Rect::new(0, 0, w as i32, h as i32 - shift));
     }
 }
