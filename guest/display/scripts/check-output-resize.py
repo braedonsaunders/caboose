@@ -74,16 +74,37 @@ def decode(data, at=0):
 
 
 def gtk_client(path):
+    windows, counts = {}, {}
+    last_phase = None
+    def publish(phase):
+        nonlocal last_phase
+        result = {}
+        for kind, window in windows.items():
+            native = window.get_window()
+            state = native.get_state() if native else 0
+            result[kind] = dict(size=list(window.get_size()), mapped=window.get_mapped(),
+                                fullscreen=bool(state & Gdk.WindowState.FULLSCREEN),
+                                maximized=bool(state & Gdk.WindowState.MAXIMIZED),
+                                configures=counts[kind])
+        pending = Path(path + '.pending')
+        pending.write_text(json.dumps(dict(phase=phase, windows=result)))
+        pending.replace(path)
+        if phase != last_phase:
+            print(json.dumps(dict(phase=phase, pid=os.getpid())), flush=True)
+            last_phase = phase
+        return True
+    publish('importing-gtk')
     import gi
     gi.require_version('Gtk', '3.0')
     from gi.repository import Gtk, Gdk, GLib
-    windows, counts = {}, {}
     for kind in ('fullscreen', 'maximized', 'ordinary'):
+        publish('creating-' + kind)
         window = Gtk.Window(title='caboose-output-fixture-' + kind)
         window.set_decorated(False)
         window.set_default_size(320, 240)
         window.add(Gtk.DrawingArea())
         counts[kind] = 0
+        windows[kind] = window
         def configured(_window, _event, kind=kind):
             counts[kind] += 1
             return False
@@ -92,23 +113,10 @@ def gtk_client(path):
             window.fullscreen()
         elif kind == 'maximized':
             window.maximize()
+        publish('mapping-' + kind)
         window.show_all()
-        windows[kind] = window
-
-    def publish():
-        result = {}
-        for kind, window in windows.items():
-            native = window.get_window()
-            state = native.get_state()
-            result[kind] = dict(size=list(window.get_size()),
-                                fullscreen=bool(state & Gdk.WindowState.FULLSCREEN),
-                                maximized=bool(state & Gdk.WindowState.MAXIMIZED),
-                                configures=counts[kind])
-        pending = Path(path + '.pending')
-        pending.write_text(json.dumps(result))
-        pending.replace(path)
-        return True
-    GLib.timeout_add(25, publish)
+        publish('mapped-' + kind)
+    GLib.timeout_add(25, lambda: publish('running'))
     # The supervisor has a tighter deadline; this also bounds an orphan after failure.
     GLib.timeout_add_seconds(20, lambda: (Gtk.main_quit(), False)[1])
     Gtk.main()
@@ -213,32 +221,56 @@ def main():
         send(0x81, dict(version=0, token=Path(args.token_file).read_text().strip(), decoders=['h264'],
                         displays=[output(0, 1200, 800)]))
         reader.start()
+        initial_deadline = min(deadline, time.monotonic() + 10)
+        def snapshot():
+            states = {backend: dict(pid=process.pid, exit=process.poll(),
+                                   state=json.loads(path.read_text()) if path.exists() else None)
+                      for backend, process, path in clients}
+            windows = seat()['windows']
+            assert all(w['pid'] in [p.pid for _, p, _ in clients] for w in windows), 'Foreign client'
+            metadata = [{k: w[k] for k in ('id', 'pid', 'x11', 'display', 'rect')} for w in windows]
+            return states, windows, dict(clients=states, windows=metadata)
+
+        # Let one backend reach its event loop before starting the next. Partial
+        # phases and seat state remain available if import/map/event-loop startup stalls.
         for backend in ('wayland', 'x11'):
             path = runtime / (backend + '-geometry.json')
             env = dict(os.environ, GDK_BACKEND=backend, GTK_CSD='0', NO_AT_BRIDGE='1')
             process = subprocess.Popen([sys.executable, __file__, '--client', str(path)], env=env,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             clients.append((backend, process, path))
+            last = None
+            while time.monotonic() < initial_deadline:
+                states, windows, last = snapshot()
+                assert not errors, (errors, last)
+                assert process.poll() is None, ('GTK client exited', last)
+                state = states[backend]['state']
+                if (state and state['phase'] == 'running' and len(state['windows']) == 3
+                        and all(w['mapped'] for w in state['windows'].values())
+                        and sum(w['pid'] == process.pid for w in windows) == 3):
+                    print(json.dumps(dict(stage=backend + '-ready', **last)), flush=True)
+                    break
+                time.sleep(.025)
+            else:
+                raise AssertionError(('initial-readiness-' + backend, last))
         ordinary = {}
         identities = None
-        def wait_geometry(stage, width, height, display=0, origin=0):
+        def wait_geometry(stage, width, height, display=0, origin=0, until=None):
             nonlocal identities
             last = None
-            until = min(deadline, time.monotonic() + 3)
+            until = min(deadline, time.monotonic() + 3) if until is None else until
             while time.monotonic() < until:
-                assert not errors, errors
-                assert all(p.poll() is None for _, p, _ in clients), 'GTK client exited'
-                if not all(path.exists() for _, _, path in clients):
-                    time.sleep(.025)
-                    continue
-                rows = {b: json.loads(path.read_text()) for b, _, path in clients}
-                windows = seat()['windows']
-                assert all(w['pid'] in [p.pid for _, p, _ in clients] for w in windows), 'Foreign client'
-                last = dict(clients=rows, windows=[{k: w[k] for k in ('id', 'pid', 'x11', 'display', 'rect')} for w in windows])
+                states, windows, last = snapshot()
+                assert not errors, (errors, last)
+                assert all(p.poll() is None for _, p, _ in clients), ('GTK client exited', last)
+                rows = {b: state['state']['windows'] if state['state'] else {} for b, state in states.items()}
                 good = len(windows) == 6
                 for backend, proc, _ in clients:
                     for kind in ('fullscreen', 'maximized', 'ordinary'):
-                        row = rows[backend][kind]
+                        row = rows[backend].get(kind)
+                        if row is None:
+                            good = False
+                            continue
                         found = [w for w in windows if w['pid'] == proc.pid and w['title'] == 'caboose-output-fixture-' + kind]
                         if len(found) != 1:
                             good = False
@@ -261,7 +293,7 @@ def main():
                     return windows, rows
                 time.sleep(.025)
             raise AssertionError((stage, last))
-        windows, _ = wait_geometry('initial', 1200, 800)
+        windows, _ = wait_geometry('initial', 1200, 800, until=initial_deadline)
         send(0x87, dict(displays=[output(0, 800, 1200)]))
         wait_geometry('same-id-portrait', 800, 1200)
         # Settle toolkit events before checking a repeated identical announcement.
@@ -282,16 +314,16 @@ def main():
         wait_geometry('removed-output-fallback', 600, 1200)
         print('PASS: Wayland and X11 fullscreen/maximized follow rotation, origin shift and removal; ordinary windows and unchanged output remain unchanged', flush=True)
     finally:
-        for _, process, _ in clients:
+        for backend, process, _ in clients:
             if process.poll() is None:
                 process.terminate()
             try:
-                _, stderr = process.communicate(timeout=1)
+                stdout, stderr = process.communicate(timeout=1)
             except subprocess.TimeoutExpired:
                 process.kill()
-                _, stderr = process.communicate(timeout=1)
-            if stderr:
-                print(stderr.decode(errors='replace')[-2000:], file=sys.stderr)
+                stdout, stderr = process.communicate(timeout=1)
+            print(json.dumps(dict(backend=backend, pid=process.pid, exit=process.returncode,
+                                  stdout=stdout.decode(errors='replace'), stderr=stderr.decode(errors='replace'))), flush=True)
         stop.set()
         connection.close()
         if reader.ident is not None:
