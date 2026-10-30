@@ -9,6 +9,7 @@ import argparse
 import array
 import asyncio
 import contextlib
+from collections import deque
 import errno
 import os
 from pathlib import Path
@@ -165,6 +166,7 @@ class Session:
         self.reserved_bytes = 0
         self.reserved_count = 0
         self.capacity_changed = asyncio.Event()
+        self.credit_waiters = deque()
         self.sender_stopped = False
         self.processes, self.streams, self.surfaces = {}, {}, {}
         self.surface_epoch = None
@@ -198,17 +200,28 @@ class Session:
     async def reserve_data(self):
         # Reserve before reading a local payload: waiting readers cannot retain
         # another unaccounted 64 KiB each outside the shared queue budget.
-        while True:
-            if self.failed or self.closing_ws or self.draining or self.sender_stopped:
-                raise ConnectionError('session failed or draining')
-            if (self.pending_count + self.reserved_count < MAX_QUEUED_MESSAGES - CONTROL_HEADROOM_MESSAGES and
-                DATA_CREDIT_BYTES <= MAX_QUEUED_BYTES - CONTROL_HEADROOM_BYTES - self.pending_bytes - self.reserved_bytes):
-                credit = DataCredit(self)
-                self.reserved_count += 1
-                self.reserved_bytes += DATA_CREDIT_BYTES
-                return credit
-            self.capacity_changed.clear()
-            await self.capacity_changed.wait()
+        # FIFO admission prevents idle streams from immediately reclaiming their
+        # timed-out reservation ahead of a stream whose bytes are ready to read.
+        waiter = object()
+        self.credit_waiters.append(waiter)
+        try:
+            while True:
+                if self.failed or self.closing_ws or self.draining or self.sender_stopped:
+                    raise ConnectionError('session failed or draining')
+                if (self.credit_waiters[0] is waiter and
+                    self.pending_count + self.reserved_count < MAX_QUEUED_MESSAGES - CONTROL_HEADROOM_MESSAGES and
+                    DATA_CREDIT_BYTES <= MAX_QUEUED_BYTES - CONTROL_HEADROOM_BYTES - self.pending_bytes - self.reserved_bytes):
+                    credit = DataCredit(self)
+                    self.reserved_count += 1
+                    self.reserved_bytes += DATA_CREDIT_BYTES
+                    return credit
+                self.capacity_changed.clear()
+                await self.capacity_changed.wait()
+        finally:
+            # Cancellation while queued owns no credit. Wake the next waiter on
+            # both admission and cancellation; assignment remains in this task.
+            self.credit_waiters.remove(waiter)
+            self.capacity_changed.set()
 
     def enqueue_frame(self, frame, credit=None):
         if credit is not None:

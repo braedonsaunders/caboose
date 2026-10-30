@@ -22,6 +22,52 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((session.reserved_count, session.reserved_bytes), (0, 0))
         session.bindings.finish(session.binding_generation)
 
+    async def test_idle_reader_cannot_steal_credit_from_waiting_stream(self):
+        session = broker.Session(None, b'a'*16, 1, None, Writer())
+        credits = [await session.reserve_data() for _ in range(14)]
+        order = []
+        async def waiting_reader():
+            credit = await session.reserve_data()
+            try: order.append('waiting')
+            finally: credit.release()
+        waiting = asyncio.create_task(waiting_reader())
+        await asyncio.sleep(0)
+        credits.pop().release()
+        try:
+            # No scheduling point between an idle read timeout releasing credit
+            # and its next reserve_data call: this is the actual local loop.
+            async with asyncio.timeout(1):
+                retry = await session.reserve_data()
+            order.append('retry')
+            credits.append(retry)
+            self.assertEqual(order, ['waiting', 'retry'])
+            self.assertEqual(session.reserved_count, 14)
+            self.assertLessEqual(session.reserved_bytes + session.pending_bytes,
+                                 broker.MAX_QUEUED_BYTES - broker.CONTROL_HEADROOM_BYTES)
+        finally:
+            waiting.cancel(); await asyncio.gather(waiting, return_exceptions=True)
+            for credit in credits: credit.release()
+            self.assertFalse(session.credit_waiters)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_cancelled_front_waiter_allows_next_reader(self):
+        session = broker.Session(None, b'a'*16, 1, None, Writer())
+        credits = [await session.reserve_data() for _ in range(14)]
+        first = asyncio.create_task(session.reserve_data())
+        second = asyncio.create_task(session.reserve_data())
+        await asyncio.sleep(0)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        credits.pop().release()
+        try:
+            credits.append(await asyncio.wait_for(second, 1))
+            self.assertEqual(session.reserved_count, 14)
+            self.assertFalse(session.credit_waiters)
+        finally:
+            second.cancel(); await asyncio.gather(second, return_exceptions=True)
+            for credit in credits: credit.release()
+            session.bindings.finish(session.binding_generation)
+
     async def test_commit_preserves_sequence_and_waits_for_actual_drain(self):
         class HeldWriter(Writer):
             def __init__(self): super().__init__(); self.entered=asyncio.Event(); self.allowed=asyncio.Event()
