@@ -116,6 +116,14 @@ This directory is a Cargo workspace:
   says `wasm: true` gets `game.create` after the window's `window.create` and
   `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
   `--no-games` turns it off (the agent seat).
+- **Phone devices** ([docs/devices.md](../../docs/devices.md), `src/devices`). For a client
+  whose hello says `devices: true`, a hub thread makes the phone's hardware the computer's:
+  gamepads, the motion device and buttons through uinput, the motion sensors (IIO) and
+  battery as HID devices through UHID, cameras and depth as v4l2loopback devices, and the
+  microphone as a source in the display's PulseAudio. It tells the phone with
+  `device.open` and `device.close` when applications start and stop using a device, and
+  writes `$XDG_RUNTIME_DIR/caboose-devices.json`. `--no-devices` turns it off (the agent
+  seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
@@ -259,6 +267,7 @@ summary.
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--no-games` | | Do not listen for game launchers |
+| `--no-devices` | | Do not accept the phone's hardware as devices ([docs/devices.md](../../docs/devices.md)) |
 | `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |

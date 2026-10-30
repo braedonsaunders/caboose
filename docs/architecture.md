@@ -373,6 +373,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
 | Game handoff | `$XDG_RUNTIME_DIR/caboose-game.sock` | None (`--no-games`) |
+| Phone devices | The phone's hardware ([devices.md](devices.md)) | None (`--no-devices`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |

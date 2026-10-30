@@ -84,6 +84,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
 | Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
+| Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
