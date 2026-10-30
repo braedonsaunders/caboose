@@ -112,12 +112,12 @@ struct AgentSignInView: View {
             }
             if let page, pane == .page || terminal == nil {
                 SignInWebView(url: page) { back in deliver(back, for: page.absoluteString) }
-                    .clipShape(.rect(cornerRadius: 18))
+                    .clipShape(.surface(cornerRadius: 18))
                     .overlay {
                         if delivering {
                             ProgressView("Finishing on your computer…")
                                 .padding(20)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                                .glassEffect(.regular, in: .surface(cornerRadius: 16))
                         }
                     }
                     .padding(.horizontal, 12)
@@ -130,7 +130,7 @@ struct AgentSignInView: View {
                     .padding(.horizontal, 18)
                 TerminalSurface(view: terminal.view)
                     .padding(8)
-                    .background(Color(uiColor: TerminalTheme.background), in: .rect(cornerRadius: 18))
+                    .background(Color(uiColor: TerminalTheme.background), in: .surface(cornerRadius: 18))
                     .padding(.horizontal, 12)
                     .onAppear { terminal.show(host: model.host) }
                     .onDisappear { terminal.hide() }

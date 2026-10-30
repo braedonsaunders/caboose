@@ -30,14 +30,16 @@ const tools = [
     name: 'app_guide',
     description: 'Read this before making an app. Caboose apps are web apps (HTML, CSS, JavaScript) in ~/Apps/<id>/ '
       + 'that run as real applications with their own window and icon in the owner\'s Apps screen, opened from '
-      + 'their phone. They can run programs, use files, notify and open links through window.caboose. Returns the '
+      + 'their phone. Through window.caboose they can run programs, use files, reach any http or https address '
+      + 'without CORS, notify and open links, and play sound and video that keep going in the background on the phone. Returns the '
       + 'app.json format, the window.caboose API and the design rules.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'app_publish',
     description: 'Check ~/Apps/<id>/ and list it in the owner\'s Apps screen. Returns every problem to fix if it is '
-      + 'not valid. Publishing again after edits is safe; an open window reloads by itself when files change.',
+      + 'not valid, plus static input-layout warnings. Publishing is not an interaction test: complete the '
+      + 'app_guide acceptance checks before claiming the app is ready. Publishing again after edits is safe.',
     inputSchema: { type: 'object', properties: { id }, required: ['id'] },
   },
   {
@@ -83,13 +85,14 @@ const handlers = {
   async app_publish({ id: value }) {
     const result = await runtime('publish', appId(value))
     if (!result.ok) throw new Error(`${value} is not published:\n- ${(result.errors ?? []).join('\n- ')}`)
-    return json({ published: true, id: value, name: result.manifest.name, capabilities: result.manifest.capabilities })
+    return json({ published: true, id: value, name: result.manifest.name, capabilities: result.manifest.capabilities,
+      warnings: result.warnings ?? [] })
   },
   app_list: async () => json((await runtime('list')).apps),
   async app_open({ id: value }) {
     const result = await runtime('check', appId(value))
     if (!result.ok) throw new Error(`${value} cannot open:\n- ${(result.errors ?? []).join('\n- ')}`)
-    Object.assign(seatEnv, await ensureAgentSeat(), { DISPLAY: DISPLAY ?? ':101' })
+    Object.assign(seatEnv, await ensureAgentSeat(), { DISPLAY: DISPLAY ?? ':101', HOME: process.env.HOME })
     const child = spawn(RUNTIME, ['run', value], { env: seatEnv, detached: true, stdio: 'ignore' })
     child.unref()
     return [{ type: 'text', text: `Opened ${result.manifest.name} on your display. Use list_windows or screenshot to see it. `

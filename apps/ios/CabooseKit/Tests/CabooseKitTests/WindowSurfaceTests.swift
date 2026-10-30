@@ -18,6 +18,24 @@ import Testing
         bytes.withUnsafeBytes { surface.upload(bgra: $0.baseAddress!, rowBytes: rowBytes, x: x, y: y, width: width, height: height) }
     }
 
+    @Test @MainActor func presentationRetainsPictureAcrossEarlyGeometry() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 80, height: 50)
+        let window = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 80, height: 50),
+                                  overrideRedirect: false, surface: surface)
+        let before = try #require(surface.presentation())
+        window.frame.size = CGSize(width: 80, height: 26)
+        #expect(window.presentationSize == CGSize(width: 80, height: 50))
+        surface.resize(width: 80, height: 26)
+        let after = try #require(surface.presentation())
+        #expect(before.texture.height == 50)
+        #expect(after.texture.height == 26)
+        #expect(after.generation > before.generation)
+        #expect(window.presentationSize.height == 50)
+        window.adoptPictureSize(CGSize(width: after.texture.width, height: after.texture.height))
+        #expect(window.presentationSize == CGSize(width: 80, height: 26))
+    }
+
     @Test func cpuUploadsLandInCommitOrder() throws {
         let surface = WindowSurface()
         surface.resize(width: 8, height: 8)

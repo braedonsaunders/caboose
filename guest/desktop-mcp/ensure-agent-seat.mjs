@@ -26,7 +26,7 @@ export function controlAlive(env) {
 export function seatStarter(execute = run, alive = controlAlive, exists = existsSync) {
   let starting, cached
   const read = async () => {
-    const { stdout } = await execute('/bin/sh', ['-c', 'set -a; unset CABOOSE_DISPLAY_CONTROL; . /run/caboose/agent-display.env; env -0'], { timeout: 5000 })
+    const { stdout } = await execute('/usr/bin/python3', ['/opt/caboose/agent-profile.py', 'exec', '/bin/sh', '-c', 'set -a; unset CABOOSE_DISPLAY_CONTROL; . /run/caboose/agent-display.env; env -0'], { timeout: 5000 })
     return Object.fromEntries(stdout.split('\0').filter(line => line.includes('=')).map(line => {
       const at = line.indexOf('=')
       return [line.slice(0, at), line.slice(at + 1)]

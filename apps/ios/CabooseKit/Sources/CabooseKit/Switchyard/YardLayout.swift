@@ -23,6 +23,15 @@ public struct YardLayout: Codable, Equatable, Sendable {
         /// Set once the person chooses a width; until then the column shares the screen
         /// evenly with the others, as Split View would.
         public internal(set) var pinned: Bool
+        /// Empty portions of a snapped arrangement, without synthetic windows/columns.
+        /// Optional for compatibility with saved yards predating sparse arrangements.
+        public internal(set) var leadingVacancy: CGFloat?
+        public internal(set) var trailingVacancy: CGFloat?
+        /// A lone window occupying the top (0) or bottom (1) half of its column.
+        public internal(set) var halfSlot: Int?
+        /// Explicit palette slots keep their viewport fraction. App size hints constrain
+        /// the guest content, which is fitted into this viewport by the native surface.
+        public internal(set) var snapSized: Bool?
 
         init(id: Int, window: Int, width: CGFloat, pinned: Bool) {
             self.id = id
@@ -57,17 +66,25 @@ public struct YardLayout: Codable, Equatable, Sendable {
     /// The column's width on this screen, in points. A width too narrow for this screen
     /// becomes the narrowest preset that fits, so folding a phone never leaves a sliver.
     public func width(of column: Column, in metrics: YardMetrics) -> CGFloat {
-        metrics.points(forFraction: metrics.effectiveFraction(column.width))
+        metrics.points(forFraction: column.snapSized == true ? column.width : metrics.effectiveFraction(column.width))
     }
 
     /// Each column's rect on the track.
     public func columnFrames(in metrics: YardMetrics) -> [Int: CGRect] {
         var frames: [Int: CGRect] = [:]
-        var x = metrics.gap
+        var x = metrics.outerGap
         for column in columns {
             let width = width(of: column, in: metrics)
-            frames[column.id] = CGRect(x: x, y: metrics.gap, width: width, height: metrics.columnHeight)
-            x += width + metrics.gap
+            let stride = metrics.size.width - 2 * metrics.outerGap + metrics.gap
+            let preservesSlots = (column.snapSized == true || column.width >= metrics.minimumFraction - 0.0001)
+            x += preservesSlots ? (column.leadingVacancy ?? 0) * stride : 0
+            var frame = CGRect(x: x, y: metrics.outerGap, width: width, height: metrics.columnHeight)
+            if let slot = column.halfSlot, (0...1).contains(slot),
+               (column.snapSized == true || (metrics.columnHeight - metrics.gap) / 2 >= metrics.minimumTile.height) {
+                frame = Self.split(frame, heights: [0.5, 0.5], gap: metrics.gap)[slot]
+            }
+            frames[column.id] = frame
+            x += width + metrics.gap + (preservesSlots ? (column.trailingVacancy ?? 0) * stride : 0)
         }
         return frames
     }
@@ -87,7 +104,13 @@ public struct YardLayout: Codable, Equatable, Sendable {
 
     /// The track's whole width, gaps at both ends included.
     public func trackWidth(in metrics: YardMetrics) -> CGFloat {
-        columns.reduce(metrics.gap) { $0 + width(of: $1, in: metrics) + metrics.gap }
+        let stride = metrics.size.width - 2 * metrics.outerGap + metrics.gap
+        let widths = columns.reduce(CGFloat(0)) { sum, column in
+            let vacancy = (column.snapSized == true || column.width >= metrics.minimumFraction - 0.0001)
+                ? (column.leadingVacancy ?? 0) + (column.trailingVacancy ?? 0) : 0
+            return sum + width(of: column, in: metrics) + vacancy * stride
+        }
+        return 2 * metrics.outerGap + widths + CGFloat(max(0, columns.count - 1)) * metrics.gap
     }
 
     static func split(_ frame: CGRect, heights: [CGFloat], gap: CGFloat) -> [CGRect] {
@@ -125,6 +148,7 @@ public struct YardLayout: Codable, Equatable, Sendable {
               let position = columns[index].windows.firstIndex(of: other) else { return false }
         columns[index].windows.insert(window, at: position + 1)
         columns[index].heights = Self.even(columns[index].windows.count)
+        columns[index].halfSlot = nil
         focused = window
         return true
     }
@@ -276,6 +300,7 @@ public struct YardLayout: Codable, Equatable, Sendable {
             guard let target = columns.firstIndex(where: { $0.id == targetID }) else { return false }
             columns[target].windows.insert(window, at: min(at, columns[target].windows.count))
             columns[target].heights = Self.even(columns[target].windows.count)
+            columns[target].halfSlot = nil
         }
         focused = window
         share(in: metrics)
@@ -287,6 +312,10 @@ public struct YardLayout: Codable, Equatable, Sendable {
     /// Sets a column's width, as a fraction of the screen, and pins it.
     public mutating func setWidth(_ fraction: CGFloat, column id: Int, in metrics: YardMetrics) {
         guard let index = columns.firstIndex(where: { $0.id == id }) else { return }
+        columns[index].snapSized = nil
+        columns[index].leadingVacancy = nil
+        columns[index].trailingVacancy = nil
+        columns[index].halfSlot = nil
         columns[index].width = min(1, max(metrics.minimumFraction, fraction))
         columns[index].pinned = true
     }
@@ -353,7 +382,11 @@ public struct YardLayout: Codable, Equatable, Sendable {
     mutating func share(in metrics: YardMetrics) {
         let loose = columns.indices.filter { !columns[$0].pinned }
         guard !loose.isEmpty else { return }
-        let pinnedWidth = columns.filter(\.pinned).reduce(0) { $0 + metrics.effectiveFraction($1.width) }
+        let pinnedWidth = columns.filter(\.pinned).reduce(CGFloat(0)) { total, column in
+            let fraction = column.snapSized == true ? column.width : metrics.effectiveFraction(column.width)
+            let preservesSlots = column.snapSized == true || column.width >= metrics.minimumFraction - 0.0001
+            return total + fraction + (preservesSlots ? (column.leadingVacancy ?? 0) + (column.trailingVacancy ?? 0) : 0)
+        }
         let room = 1 - pinnedWidth
         let each = room / CGFloat(loose.count)
         // The widest preset that gives each loose column an even share; once they no longer
@@ -375,8 +408,8 @@ public struct YardLayout: Codable, Equatable, Sendable {
         let maximum = maximumScroll(in: metrics)
         var stops: Set<CGFloat> = [0, maximum]
         for frame in columnFrames(in: metrics).values {
-            stops.insert(min(maximum, max(0, frame.minX - metrics.gap)))
-            stops.insert(min(maximum, max(0, frame.maxX + metrics.gap - metrics.size.width)))
+            stops.insert(min(maximum, max(0, frame.minX - metrics.outerGap)))
+            stops.insert(min(maximum, max(0, frame.maxX + metrics.outerGap - metrics.size.width)))
         }
         return stops.sorted()
     }
@@ -394,8 +427,8 @@ public struct YardLayout: Codable, Equatable, Sendable {
         let maximum = maximumScroll(in: metrics)
         var scroll = min(maximum, max(0, scroll))
         // Half a point of slack: column edges are sums of fractions and seldom exact.
-        if frame.minX - metrics.gap < scroll - 0.5 { scroll = frame.minX - metrics.gap }
-        else if frame.maxX + metrics.gap > scroll + metrics.size.width + 0.5 { scroll = frame.maxX + metrics.gap - metrics.size.width }
+        if frame.minX - metrics.outerGap < scroll - 0.5 { scroll = frame.minX - metrics.outerGap }
+        else if frame.maxX + metrics.outerGap > scroll + metrics.size.width + 0.5 { scroll = frame.maxX + metrics.outerGap - metrics.size.width }
         return min(maximum, max(0, scroll))
     }
 
@@ -480,4 +513,61 @@ public struct YardLayout: Codable, Equatable, Sendable {
     }
 
     static func even(_ count: Int) -> [CGFloat] { Array(repeating: 1 / CGFloat(max(1, count)), count: count) }
+}
+
+extension YardLayout {
+    /// A proposed native palette arrangement, expressed entirely as ordinary Yard columns.
+    /// The source stays untouched until release. Unfilled slots reserve space in the
+    /// existing column geometry; they do not create windows or a second layout engine.
+    public func snapping(_ window: Int, to snap: FreeDesktopLayout.Snap,
+                         layout slots: [FreeDesktopLayout.Snap], in metrics: YardMetrics) -> YardLayout? {
+        guard let source = columnIndex(of: window), slots.contains(snap),
+              Set(slots).count == slots.count else { return nil }
+        let ordered = Array(columns[source...].flatMap(\.windows)) + columns[..<source].flatMap(\.windows)
+        var others = ordered.filter { $0 != window }.makeIterator()
+        let assignments: [(FreeDesktopLayout.Snap, Int)] = slots.compactMap { slot in
+            guard let id = slot == snap ? window : others.next() else { return nil }
+            return (slot, id)
+        }
+        let unit = CGRect(x: 0, y: 0, width: 6, height: 6)
+        let groups = Dictionary(grouping: assignments) { FreeDesktopLayout.rect(for: $0.0, in: unit).minX }
+        var result = self
+        let chosen = Set(assignments.map(\.1))
+        // Preserve every unchosen window and its relative order.
+        for id in chosen { result.remove(id, in: metrics) }
+        let insertion = min(source, result.columns.count)
+        var arranged: [Column] = []
+        var end: CGFloat = 0
+        for x in groups.keys.sorted() {
+            let group = groups[x]!.sorted {
+                FreeDesktopLayout.rect(for: $0.0, in: unit).minY < FreeDesktopLayout.rect(for: $1.0, in: unit).minY
+            }
+            let fraction = FreeDesktopLayout.rect(for: group[0].0, in: unit).width / 6
+            var column = Column(id: result.nextColumnID, window: group[0].1, width: fraction, pinned: true)
+            result.nextColumnID += 1
+            column.snapSized = true
+            column.windows = group.map(\.1)
+            column.heights = Self.even(group.count)
+            column.leadingVacancy = max(0, x / 6 - end)
+            if group.count == 1 {
+                let slot = FreeDesktopLayout.rect(for: group[0].0, in: unit)
+                if slot.height == 3 {
+                    column.halfSlot = slot.minY == 0 ? 0 : 1
+                }
+            }
+            end = x / 6 + fraction
+            arranged.append(column)
+        }
+        if !arranged.isEmpty { arranged[arranged.count - 1].trailingVacancy = max(0, 1 - end) }
+        result.columns.insert(contentsOf: arranged, at: insertion)
+        result.focus(window)
+        let frames = result.frames(in: metrics)
+        for id in chosen {
+            guard let frame = frames[id] else { return nil }
+            // Native chrome must leave positive content space. App hints are applied
+            // later by WindowSizePolicy.fitting, never by enlarging this target slot.
+            guard frame.width > 0, frame.height > metrics.titleBar.height else { return nil }
+        }
+        return result
+    }
 }

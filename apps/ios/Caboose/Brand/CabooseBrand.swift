@@ -355,3 +355,29 @@ struct CubicBezier {
         return 3 * u * u * p1 + 6 * u * t * (p2 - p1) + 3 * t * t * (1 - p2)
     }
 }
+
+// Screen-facing surfaces inherit the system container's corners. Interior surfaces retain
+// their design radius. Do not substitute a device-model radius or safe-area height.
+extension ConcentricRectangle {
+    init(cornerRadius: CGFloat) {
+        self.init(corners: .concentric(minimum: .fixed(cornerRadius)))
+    }
+
+    // ConcentricRectangle is a Shape, not an InsettableShape. Clip a doubled stroke to
+    // its native path to keep the entire border inside the surface.
+    func strokeBorder<S: ShapeStyle>(_ style: S, lineWidth: CGFloat = 1) -> some View {
+        stroke(style, lineWidth: lineWidth * 2).clipShape(self)
+    }
+
+    func strokeBorder<S: ShapeStyle>(_ content: S, style: StrokeStyle) -> some View {
+        var inside = style
+        inside.lineWidth *= 2
+        return stroke(content, style: inside).clipShape(self)
+    }
+}
+
+extension Shape where Self == ConcentricRectangle {
+    static func surface(cornerRadius: CGFloat) -> ConcentricRectangle {
+        ConcentricRectangle(cornerRadius: cornerRadius)
+    }
+}

@@ -86,8 +86,10 @@ public protocol DisplaySession: AnyObject {
     func pencil(_ sample: PencilSample, in window: RemoteWindow)
 
     /// The display a window is shown on is about to refresh, at `targetTimestamp` (the
-    /// CADisplayLink's). Servers that pace on the client's vsync release frames on it.
-    func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval)
+    /// CADisplayLink's). Nil selects the announced primary (or retained hello primary
+    /// during unselected bootstrap); explicit IDs are never redirected. Servers that
+    /// pace on the client's vsync release frames on it.
+    func displayWillRefresh(_ display: Int?, targetTimestamp: CFTimeInterval)
 
     /// The shape of the pointer, by name, bumped on every change so a view can tell a fresh
     /// answer from a stale one.
@@ -148,7 +150,7 @@ public extension DisplaySession {
     func compose(_ preedit: String, selection: NSRange, in window: RemoteWindow?) {}
     func touch(_ points: [TouchPoint], in window: RemoteWindow) {}
     func pencil(_ sample: PencilSample, in window: RemoteWindow) {}
-    func displayWillRefresh(_ display: Int, targetTimestamp: CFTimeInterval) {}
+    func displayWillRefresh(_ display: Int?, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
     var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { nil }
     var isReplaced: Bool { false }

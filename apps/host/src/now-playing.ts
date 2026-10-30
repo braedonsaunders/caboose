@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import { AgentUnavailableError, type AgentGuest } from './agents.js'
 
 /**
@@ -116,7 +117,7 @@ interface Observed { state: NowPlayingState; raw: string; observedAt: number }
 
 export class NowPlaying {
   private observed: Observed | null = null
-  private timer: ReturnType<typeof setInterval> | undefined
+  private timer: (() => void) | undefined
   private polling = false
   private seq = 0
   /** The first read after polling starts is announced even if unchanged: no client saw it. */
@@ -127,17 +128,16 @@ export class NowPlaying {
     private readonly emit: (event: NowPlayingEvent) => void,
     private readonly pollMs = 1000,
     private readonly now: () => number = Date.now,
+    private readonly subscribe?: EventSubscribe,
   ) {}
 
   /** Polling runs while `active`: the computer is running and a display client is connected. */
   setActive(active: boolean): void {
     if (active && !this.timer) {
       this.announce = true
-      this.timer = setInterval(() => { void this.poll() }, this.pollMs)
-      this.timer.unref()
-      void this.poll()
+      this.timer = this.subscribe?.('now-playing', record => this.accept(record)) ?? (() => {})
     } else if (!active && this.timer) {
-      clearInterval(this.timer)
+      this.timer()
       this.timer = undefined
     }
   }
@@ -171,6 +171,15 @@ export class NowPlaying {
     if (!running) return null
     if (!this.active) await this.poll()
     return this.current()
+  }
+
+  accept(raw: unknown): void {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const value = raw as Record<string, unknown>
+    if (typeof value.guestClockMs !== 'number' || !Number.isFinite(value.guestClockMs)) return
+    const announce = this.announce
+    this.announce = false
+    this.apply(this.parse(JSON.stringify(value.state) + NOW_MARKER + value.guestClockMs), announce)
   }
 
   async poll(): Promise<void> {

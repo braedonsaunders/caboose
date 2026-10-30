@@ -7,7 +7,8 @@
   const handler = window.webkit.messageHandlers.caboose
   const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('')
   // Register even a page that makes no API calls, so edits and disconnects reach it.
-  handler.postMessage(JSON.stringify({ document: token, method: '__caboose.ready', params: {} })).catch(() => {})
+  const register = () => handler.postMessage(JSON.stringify({ document: token, method: '__caboose.ready', params: {} })).catch(() => {})
+  register()
   window.addEventListener('message', event => {
     if (event.source !== window || event.origin !== location.origin) return
     const data = event.data
@@ -23,6 +24,9 @@
       answer => window.postMessage({ caboose: 'reply', id: data.id, ...JSON.parse(answer) }, '*'),
       error => window.postMessage({ caboose: 'reply', id: data.id, ok: false, error: String(error?.message ?? error) }, '*'))
   })
+  // The runtime calls this, in this world, to register the page again on a new connection
+  // (a page the device kept running while Caboose was away).
+  Object.defineProperty(globalThis, '__cabooseReconnect', { value: register })
   // The runtime calls this, in this world, with process output and exits.
   Object.defineProperty(globalThis, '__cabooseEvent', {
     value: json => window.postMessage({ caboose: 'event', ...JSON.parse(json) }, '*'),

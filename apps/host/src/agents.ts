@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import { modelId, publicModels, type AgentModels } from './agent-models.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { CONFIRM_JOURNAL, emptyJournal, JOURNAL_LIMIT, MAX_OPERATIONS, operationId, PUBLISH_PROMPT, READ_DELIVERY, readJournal, readPublishedPrompt, UUID, WRITE_JOURNAL, type DeliveryJournal, type QueuedReply, type StoredAttachment } from './agent-delivery.js'
@@ -6,7 +7,7 @@ import { decodeBase64, sanitizeFileName, uniqueName, writeGuestFile } from './fi
 import type { AgentLaunch } from './registry.js'
 import { AGENT_DISPLAY_ENV_PATH } from './display.js'
 import type { AgentToolJournal } from './agent-tools-journal.js'
-import { pollAgentTools } from './agent-tools-mailbox.js'
+import { acceptAgentTools } from './agent-tools-mailbox.js'
 
 /**
  * Agent tasks: any Agent Client Protocol (ACP) agent from the registry, run inside the
@@ -36,7 +37,8 @@ export interface PendingApproval {
 
 export interface AgentDraft { turn: number; kind: 'text' | 'thought'; text: string }
 
-export interface AgentProfileSnapshot { id: string; instructions: string; workspace: string }
+/** `workspace` absent: the conversation keeps its own task directory, as an ordinary chat does. */
+export interface AgentProfileSnapshot { id: string; instructions: string; workspace?: string }
 export interface AgentStartOptions { id?: string; profile?: AgentProfileSnapshot }
 
 export interface AgentTask {
@@ -128,12 +130,20 @@ export interface AgentTaskOptions {
   resolver: AgentResolver
   /** Enables profile tools only after a host-owned binding is persisted. */
   toolJournal?: () => Promise<AgentToolJournal | null>
+  /**
+   * The host-owned identity of ordinary chats with a registry agent, used with `toolJournal` to give
+   * them memory and routine tools. Throws an actionable error (for example an archived identity)
+   * rather than returning a chat without them.
+   */
+  defaultIdentity?: (agent: string, agentName: string) => Promise<AgentProfileSnapshot>
   craftServers?: () => Promise<Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }>>
   /**
    * Brings the computer's MCP Library up to date before a runner starts, and says whether new
    * chats get it (the `caboose-library` server). Its secrets never enter the task's records.
    */
   mcpLibrary?: () => Promise<boolean>
+  subscribe?: EventSubscribe
+  eventsChanged?: () => void
   pollMs?: number
   /** Starts the agent seat's display; defaults to the microVM's systemd unit. */
   ensureSeat?: () => Promise<void>
@@ -189,6 +199,43 @@ const fd=fs.openSync(d,'r');try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}
 }
 })().catch(e=>{console.error(e.message);process.exitCode=1});`
 
+/**
+ * Gives an unprofiled chat its host-bound identity: $1 task directory, $2 profile UUID, $3 staged
+ * instructions. Runner processes still alive in the directory are retired only when provably
+ * idle (the current turn's completion receipt exists and no prompt waits), so no turn is
+ * interrupted; the command waits until none remains. task.json gains
+ * only profileId and agentTools; profile-id, the restore marker, is written last. Prints ready,
+ * busy (not provably idle) or conflict (a different identity is recorded).
+ */
+export const ATTACH_IDENTITY = `// caboose attach identity
+const fs=require('fs'),p=require('path'),[d,id,staged]=process.argv.slice(1);
+const read=n=>{try{return fs.readFileSync(p.join(d,n),'utf8')}catch(e){if(e.code==='ENOENT')return undefined;throw e}};
+const sync=f=>{const h=fs.openSync(f,'r');try{fs.fsyncSync(h)}finally{fs.closeSync(h)}};
+const put=(n,t)=>{const f=p.join(d,n),x=f+'.part';fs.writeFileSync(x,t,{mode:0o600});sync(x);fs.renameSync(x,f)};
+const proc=process.env.CABOOSE_PROC_ROOT||'/proc';
+const live=pid=>{try{const s=fs.readFileSync(proc+'/'+pid+'/stat','utf8');if(s.slice(s.lastIndexOf(')')+2).startsWith('Z'))return false;
+const a=fs.readFileSync(proc+'/'+pid+'/cmdline','utf8').split('\\0').join(' ');return a.includes('caboose-agentd.mjs run')&&fs.readlinkSync(proc+'/'+pid+'/cwd')===d}catch(e){if(['ENOENT','ESRCH','EACCES','EPERM'].includes(e.code))return false;throw e}};
+const runners=()=>fs.readdirSync(proc).filter(n=>/^[0-9]+$/.test(n)&&live(n)).map(Number);
+const done=out=>{fs.rmSync(p.join(d,staged),{force:true});console.log(out)};
+(async()=>{
+const found=runners();
+if(found.length){
+const turn=String(Number.parseInt(read('turns')??'',10)||1).padStart(6,'0');let r;try{r=JSON.parse(read('receipts/'+turn+'.json')??'null')}catch{}
+const waiting=(fs.existsSync(p.join(d,'inbox'))?fs.readdirSync(p.join(d,'inbox')):[]).some(n=>n.endsWith('.prompt.json')&&!n.startsWith('.'));
+if(r?.state!=='completed'||waiting)return done('busy');
+const pid=Number((read('pid')??'').trim());
+for(const target of [...(found.includes(pid)?[-pid]:[]),...found])try{process.kill(target,'SIGTERM')}catch(e){if(e.code!=='ESRCH')throw e}
+let gone=false;for(let i=0;i<50&&!(gone=!runners().length);i++)await new Promise(r=>setTimeout(r,100));
+if(!gone)return done('busy')}
+const cfg=JSON.parse(read('task.json'));const marker=read('profile-id')?.trim();
+if((cfg.profileId!==undefined&&cfg.profileId!==id)||(marker&&marker!==id))return done('conflict');
+if(cfg.profileId!==id||read('profile-instructions.txt')===undefined){fs.renameSync(p.join(d,staged),p.join(d,'profile-instructions.txt'));sync(p.join(d,'profile-instructions.txt'))}
+else fs.rmSync(p.join(d,staged),{force:true});
+if(cfg.profileId!==id||cfg.agentTools!==true)put('task.json',JSON.stringify({...cfg,profileId:id,agentTools:true}));
+if(marker!==id)put('profile-id',id);
+sync(d);console.log('ready');
+})().catch(e=>{console.error(e.message);process.exitCode=1});`
+
 const HOME = '/home/caboose'
 const RUNUSER = '/usr/sbin/runuser'
 export const AGENTD = '/opt/caboose/agentd/caboose-agentd.mjs'
@@ -217,7 +264,9 @@ const LEGACY_AGENTS: Readonly<Record<string, string>> = { claude: 'claude-acp', 
 const LAUNCH = [
   // The seat's launch environment (its Wayland socket, Xwayland :101 and cookie, control socket), when it is up.
   `if [ -r ${AGENT_DISPLAY_ENV_PATH} ]; then set -a; . ${AGENT_DISPLAY_ENV_PATH}; set +a; fi`,
-  'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
+  // GUI profiles belong to wrappers; preserve the runner CLI authentication home.
+  'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME CABOOSE_SEAT MOZ_NO_REMOTE VSCODE_PORTABLE CHROME_CONFIG_HOME CHROME_USER_DATA_DIR VSCODE_IPC_HOOK_CLI',
+  'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/usr/local/libexec/caboose-agent-seat-bin:/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
   `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,
   'rm -f exit-code',
   `setsid sh -c 'node ${AGENTD} run "$PWD" >> stderr.log 2>&1; echo $? > exit-code' > /dev/null 2>&1 < /dev/null &`,
@@ -417,6 +466,8 @@ export function parseRequest(id: string, json: string): { request: PendingApprov
 interface Tracked {
   task: AgentTask
   offset: number
+  lastEventDigest?: string
+  discardLine?: boolean
   carry: Buffer
   /** The turn the transcript is in, by its latest `user` line; output of older turns is not shown. */
   turn: number
@@ -432,20 +483,24 @@ interface Tracked {
   completedTurn?: number
   deleting?: boolean
   replyChain?: Promise<unknown>
+  /** This process confirmed the chat's host-bound identity and runner configuration. */
+  identity?: boolean
 }
 
 export class AgentTasks {
   private readonly tracked = new Map<string, Tracked>()
   private readonly releases = new Map<string, () => void>()
-  private timer: ReturnType<typeof setInterval> | undefined
+  private timer: (() => void) | undefined
+  private eventGeneration = 0
+  private readonly subscribe?: EventSubscribe
+  private readonly eventsChanged?: () => void
   private polling = false
   private readonly resolver: AgentResolver
   private readonly toolJournal?: AgentTaskOptions["toolJournal"]
-  private toolPolling = false
+  private readonly defaultIdentity?: AgentTaskOptions["defaultIdentity"]
   private toolWork?: Promise<void>
   private readonly craftServers?: AgentTaskOptions["craftServers"]
   private readonly mcpLibrary?: AgentTaskOptions["mcpLibrary"]
-  private readonly pollMs: number
   private readonly ensureSeat?: () => Promise<void>
   private readonly idleMs: number
   private readonly home?: HomeOwnership
@@ -458,9 +513,11 @@ export class AgentTasks {
   ) {
     this.resolver = options.resolver
     this.toolJournal = options.toolJournal
+    this.defaultIdentity = options.toolJournal ? options.defaultIdentity : undefined
     this.craftServers = options.craftServers
     this.mcpLibrary = options.mcpLibrary
-    this.pollMs = options.pollMs ?? 1000
+    this.subscribe = options.subscribe
+    this.eventsChanged = options.eventsChanged
     this.ensureSeat = options.ensureSeat
     this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS
     this.home = options.home
@@ -491,11 +548,8 @@ export class AgentTasks {
 
   private async startTask(input: Record<string, unknown>, options?: AgentStartOptions): Promise<AgentTask> {
     const stableId = options?.id
-    const profile = options?.profile
-    if (profile && (!UUID.test(profile.id) || profile.workspace !== `${HOME}/AgentWorkspaces/${profile.id}` ||
-      typeof profile.instructions !== 'string' || profile.instructions.includes('\0') || profile.instructions.length > 100_000)) {
-      throw new AgentInputError('Invalid persistent agent snapshot')
-    }
+    let profile = options?.profile
+    if (profile) checkSnapshot(profile)
     if (input.profileId !== undefined && input.profileId !== profile?.id) throw new AgentInputError('Resolve the agent profile before starting a task')
     const requestedModel = modelId(input.model)
     const prompt = readPrompt(input.prompt)
@@ -505,7 +559,7 @@ export class AgentTasks {
     const files = readAttachments(input.attachments)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
-    const original = fingerprint(input, files, true, profile)
+    let original = fingerprint(input, files, true, profile)
     const id = stableId ?? randomUUID()
     if (stableId) {
       await this.restoring
@@ -519,9 +573,22 @@ export class AgentTasks {
     }
     const agentId = this.readAgent(input.agent)
     const launch = await this.resolver.launch(agentId)
+    // An ordinary chat (no profile, no stable id) takes its agent's host-owned default identity.
+    const implicit = !profile && !stableId && this.defaultIdentity !== undefined
+    if (implicit) {
+      profile = await this.defaultIdentity!(agentId, launch.name)
+      checkSnapshot(profile)
+      original = fingerprint(input, files, true, profile)
+    }
     const journal: DeliveryJournal = { ...emptyJournal(), original, turns: 1, intent: { id: randomUUID(), turn: 1, replies: [] } }
     const toolJournal = profile && this.toolJournal ? await this.toolJournal() : null
-    if (profile && toolJournal) await toolJournal.bindTask(id, profile.id)
+    if (implicit && !toolJournal) throw new AgentIdentityError('Memory and routine tools are unavailable on this computer, so the chat was not started.')
+    if (profile && toolJournal) {
+      try { await toolJournal.bindTask(id, profile.id) } catch (error) {
+        if (!implicit) throw error
+        throw new AgentIdentityError(`Cannot attach memory and routine tools, so the chat was not started: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     const dir = `${HOME}/Agents/${id}`
     const staging = `${HOME}/Agents/.${id}.${randomUUID()}`
     const attachments = files.map(file => `${dir}/attachments/${file.name}`)
@@ -537,7 +604,7 @@ export class AgentTasks {
       // A Library that cannot be brought up to date is left out of this chat, not fatal to it.
       const library = await this.mcpLibrary?.().catch(error => { console.error('MCP Library unavailable for a new chat:', error instanceof Error ? error.message : error); return false }) ?? false
       if (profile) {
-        await asCaboose(guest, 'mkdir -p -- "$1"', [profile.workspace])
+        if (profile.workspace) await asCaboose(guest, 'mkdir -p -- "$1"', [profile.workspace])
         await writeGuestFile(guest, `${staging}/profile-id`, Buffer.from(profile.id))
         await writeGuestFile(guest, `${staging}/profile-instructions.txt`, Buffer.from(profile.instructions))
       }
@@ -555,7 +622,7 @@ export class AgentTasks {
       id, ...(requestedModel ? { requestedModel } : {}), ...(profile ? { profileId: profile.id } : {}), agent: agentId, agentName: launch.name, prompt, status: 'running', startedAt: new Date().toISOString(), turns: 1, approvals,
       ...(attachments.length ? { attachments } : {}),
     }
-    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [], journal })
+    this.tracked.set(id, { task, offset: 0, carry: Buffer.alloc(0), turn: 0, resumable: true, pending: [], queue: [], journal, ...(toolJournal ? { identity: true } : {}) })
     this.releases.set(id, this.acquire())
     this.emit({ type: 'agent.task.started', id, agent: agentId, agentName: launch.name, prompt })
     this.ensurePolling()
@@ -672,6 +739,8 @@ export class AgentTasks {
     const key = typeof input.operationId === 'string' ? input.operationId : randomUUID()
     const hash = fingerprint(input, files)
     const previous = entry.journal.operations.find(op => op.id === key)
+    // An idle chat gets its identity before admission, so a failure admits nothing.
+    if (!previous && !isLive(entry.task.status) && !entry.task.delivery && !entry.journal.intent) await this.ensureIdentity(entry)
     if (previous) {
       if (previous.hash !== hash) throw new AgentConflictError('operationId already exists with a different original payload')
       // A retry can follow an earlier ambiguous fsync failure; establish durability again.
@@ -752,6 +821,8 @@ export class AgentTasks {
       if (intent && (futureIntent || !cancelledCurrent || entry.queue.some(reply => intent.replies.includes(reply.id)))) return entry.task
     }
     if (!entry.queue.length) return entry.task
+    // Waiting replies stay queued when the identity cannot be attached yet.
+    await this.ensureIdentity(entry, cancelledCurrent ? 20_000 : 5000)
     const guest = this.guest()
     if (!guest) throw new AgentUnavailableError()
     const turn = Math.max(entry.task.turns, entry.journal.turns ?? 1) + 1
@@ -783,6 +854,53 @@ export class AgentTasks {
     this.markRunning(entry, intent.turn)
     if (['claimed', 'uncertain'].includes(outcome.trim())) await this.recoverDelivery(entry)
     this.emit({ type: 'agent.task.replied', id: entry.task.id, prompt, turn: intent.turn })
+  }
+
+  /**
+   * An ordinary chat from before default identities gets one before its next turn: the host
+   * binding is persisted first, then the guest configuration, so every crash point is retried
+   * the same way. The guest's profile marker is never authority; tools need the host binding.
+   * The next runner resumes the same session, cwd, model and approvals with the tools attached.
+   */
+  private async ensureIdentity(entry: Tracked, waitMs = 5000): Promise<void> {
+    if (entry.identity || !this.defaultIdentity || !entry.resumable) return
+    const task = entry.task
+    const journal = await this.toolJournal!()
+    if (!journal) throw new AgentIdentityError('Memory and routine tools are unavailable on this computer; nothing was sent.')
+    const bound = journal.profileForTask(task.id)
+    if (task.profileId) {
+      if (bound && bound !== task.profileId) throw new AgentIdentityError('This chat\'s recorded identity does not match its host binding; nothing was sent.')
+      // A profile chat keeps its admitted identity; one from before tools stays without them.
+      entry.identity = true
+      return
+    }
+    if (!AGENT_ID.test(task.agent) || task.agent === 'unknown') throw new AgentIdentityError('This chat\'s agent is unknown, so it cannot get memory and routine tools.')
+    const identity = await this.defaultIdentity(task.agent, task.agentName ?? task.agent)
+    checkSnapshot(identity)
+    if (identity.workspace !== undefined) throw new AgentInputError('Invalid persistent agent snapshot')
+    if (bound && bound !== identity.id) throw new AgentIdentityError('This chat is bound to a different identity; nothing was sent.')
+    if (!bound) {
+      try { await journal.bindTask(task.id, identity.id) } catch (error) {
+        throw new AgentIdentityError(`Cannot attach memory and routine tools; nothing was sent: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const guest = this.guest()
+    if (!guest) throw new AgentUnavailableError()
+    const dir = `${HOME}/Agents/${task.id}`
+    // A turn that just ended or was just cancelled writes its completion receipt moments later.
+    const deadline = Date.now() + waitMs
+    let outcome: string
+    for (;;) {
+      const staged = `.profile-instructions-${randomUUID()}.part`
+      await writeGuestFile(guest, `${dir}/${staged}`, Buffer.from(identity.instructions))
+      outcome = (await asCaboose(guest, 'exec node -e "$2" "$1" "$3" "$4"', [dir, ATTACH_IDENTITY, identity.id, staged], 30_000)).trim()
+      if (outcome !== 'busy' || Date.now() >= deadline) break
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+    if (outcome === 'busy') throw new AgentIdentityError('The previous agent session is still finishing; try again in a moment. Nothing was sent.')
+    if (outcome !== 'ready') throw new AgentIdentityError('This chat records a different identity; nothing was sent.')
+    task.profileId = identity.id
+    entry.identity = true
   }
 
   private markRunning(entry: Tracked, turn: number): void {
@@ -953,6 +1071,7 @@ export class AgentTasks {
         await this.toolWork
         await asCaboose(guest, 'exec node -e "$2" "$1"', [`${HOME}/Agents/${id}`, DELETE_TASK], 20_000)
         this.tracked.delete(id)
+        this.eventsChanged?.()
         this.releases.get(id)?.(); this.releases.delete(id)
         this.emit({ type: 'agent.task.deleted', id })
         return true
@@ -1103,8 +1222,10 @@ export class AgentTasks {
 
   /** Stops tailing (the computer is parking); running tasks resume being tailed on wake. */
   pause(): void {
-    if (this.timer) clearInterval(this.timer)
+    this.eventGeneration++
+    if (this.timer) this.timer()
     this.timer = undefined
+    this.eventsChanged?.()
   }
 
   /** After pause, wait for any mailbox guest command and admitted dispatch to settle. */
@@ -1123,35 +1244,70 @@ export class AgentTasks {
     if ([...this.tracked.values()].some(entry => isLive(entry.task.status))) this.ensurePolling()
   }
 
-  private ensurePolling(): void {
-    if (this.timer) return
-    this.timer = setInterval(() => {
-      void this.poll()
-      if (!this.toolWork) {
-        const work = this.pollTools()
-        this.toolWork = work
-        void work.finally(() => { if (this.toolWork === work) this.toolWork = undefined })
-      }
-    }, this.pollMs)
-    this.timer.unref()
+  /** Only host-tracked live tasks are eligible for guest watches. */
+  eventTasks(): Array<{ id: string; offset: number; turn: number }> {
+    return [...this.tracked.values()].filter(entry => !entry.deleting && isLive(entry.task.status))
+      .map(entry => ({ id: entry.task.id, offset: entry.offset, turn: entry.task.turns }))
   }
 
-  private async pollTools(): Promise<void> {
-    if (this.toolPolling || !this.toolJournal || !this.timer) return
+  private ensurePolling(): void {
+    if (!this.timer) {
+      const tick = this.subscribe?.('agent.tick', record => this.acceptTick(record))
+      const mailbox = this.subscribe?.('agent.mailbox', record => this.acceptMailbox(record))
+      this.timer = () => { tick?.(); mailbox?.() }
+    }
+    this.eventsChanged?.()
+  }
+
+  async acceptTick(raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const value = raw as Record<string, unknown>
+    if (typeof value.id !== 'string' || !TASK_ID.test(value.id) || typeof value.output !== 'string'
+      || Buffer.byteLength(value.output) > 1048576 || !Number.isSafeInteger(value.offset) || (value.offset as number) < 0
+      || !Number.isSafeInteger(value.nextOffset) || (value.nextOffset as number) < 0
+      || !Number.isSafeInteger(value.chunk) || (value.chunk as number) < 1 || (value.chunk as number) > POLL_BUDGET) return
+    const entry = this.tracked.get(value.id)
+    if (!entry || entry.deleting || !isLive(entry.task.status)) return
+    const digest = createHash('sha256').update(JSON.stringify(value)).digest('hex')
+    if (entry.lastEventDigest === digest) return
+    const report = parsePoll(value.output).get(value.id)
+    if (!report || report.data.length > (value.chunk as number)) return
+    const offset = value.reset === true ? 0 : entry.offset
+    if (value.offset !== offset || value.nextOffset !== offset + report.data.length) return
+    if (value.reset === true) { entry.offset = 0; entry.carry = Buffer.alloc(0); entry.discardLine = false }
+    const previous = { offset: entry.offset, carry: entry.carry, discardLine: entry.discardLine, turn: entry.turn }
+    try { this.apply(entry, report, value.chunk as number) }
+    catch (error) { Object.assign(entry, previous); throw error }
+    entry.lastEventDigest = digest
+    if (!entry.replying) await entry.replyChain
+  }
+
+  async acceptMailbox(raw: unknown): Promise<void> {
+    const work = this.consumeMailbox(raw)
+    this.toolWork = work
+    try { await work } finally { if (this.toolWork === work) this.toolWork = undefined }
+  }
+
+  private async consumeMailbox(raw: unknown): Promise<void> {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !this.toolJournal || !this.timer) return
+    const value = raw as Record<string, unknown>
+    if (typeof value.id !== 'string' || !TASK_ID.test(value.id) || typeof value.request !== 'string'
+      || value.request.length > 90000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value.request)) return
     const guest = this.guest()
-    if (!guest) return
-    this.toolPolling = true
-    try {
-      const journal = await this.toolJournal()
-      if (!journal || !this.timer) return
-      const live = [...this.tracked.values()].flatMap(({ task }) => task.status === 'running' && task.profileId && journal.profileForTask(task.id) === task.profileId
-        ? [{ id: task.id, profileId: task.profileId, turn: task.turns }] : [])
-      await pollAgentTools(guest, journal, live, task => {
-        const current = this.tracked.get(task.id)?.task
-        return Boolean(!this.tracked.get(task.id)?.deleting && this.timer && current?.status === 'running' && current.profileId === task.profileId && current.turns === task.turn)
-      })
-    } catch (error) { console.error('Agent tool mailbox failed:', error) }
-    finally { this.toolPolling = false }
+    if (!guest) throw new AgentUnavailableError()
+    const generation = this.eventGeneration
+    const journal = await this.toolJournal()
+    if (!journal || generation !== this.eventGeneration) return
+    const entry = this.tracked.get(value.id)
+    if (!entry?.task.profileId || entry.deleting || entry.task.status !== 'running') return
+    let request: unknown
+    try { request = JSON.parse(Buffer.from(value.request, 'base64').toString('utf8')) } catch { return }
+    if (!request || typeof request !== 'object' || !('id' in request)) return
+    const task = { id: entry.task.id, profileId: entry.task.profileId, turn: entry.task.turns }
+    await acceptAgentTools(guest, journal, [task], current => generation === this.eventGeneration && !!this.timer
+      && this.tracked.get(current.id) === entry && !entry.deleting && entry.task.status === 'running'
+      && entry.task.turns === current.turn && entry.task.profileId === current.profileId,
+      [[task.id, request.id, value.request]])
   }
 
   /**
@@ -1191,6 +1347,7 @@ export class AgentTasks {
     let result: TurnResult | undefined
     let began = false
     for (let end = buffer.indexOf(10); end >= 0; start = end + 1, end = buffer.indexOf(10, start)) {
+      if (entry.discardLine || end - start > 2097152) { entry.discardLine = false; continue }
       const line = buffer.subarray(start, end).toString('utf8')
       if (!line.trim()) continue
       try {
@@ -1212,7 +1369,8 @@ export class AgentTasks {
       }
       if (interpreted.result?.turn === entry.task.turns) result ??= interpreted.result
     }
-    entry.carry = Buffer.from(buffer.subarray(start))
+    if (entry.discardLine || buffer.length - start > 2097152) { entry.carry = Buffer.alloc(0); entry.discardLine = true }
+    else entry.carry = Buffer.from(buffer.subarray(start))
     // Ignore snapshots from an older turn or beyond the transcript bytes consumed this tick.
     const draft = report.draft
     this.setDraft(entry, !result && report.data.length < chunk && draft?.turn === entry.task.turns
@@ -1293,6 +1451,7 @@ export class AgentTasks {
     if (!isLive(entry.task.status)) return
     this.setDraft(entry, null)
     entry.task.status = status
+    this.eventsChanged?.()
     // Restoring old history is not a new completion. Legacy records without a
     // durable timestamp stay undated rather than resurfacing after every restart.
     entry.task.finishedAt = finishedAt ?? (announce ? new Date().toISOString() : undefined)
@@ -1326,6 +1485,10 @@ export class AgentTasks {
     } catch (error) {
       // The queue stays, to go with the owner's next reply.
       console.error('Queued reply was not delivered:', error)
+      if (entry.task.status === status && error instanceof AgentIdentityError) {
+        entry.task.status = 'failed'; entry.task.summary = `${error.message} Your waiting messages are kept; reply or Send Now to retry.`.slice(0, 2000)
+        status = 'failed'
+      }
       if (entry.task.status === status) {
         this.releases.get(entry.task.id)?.()
         this.releases.delete(entry.task.id)
@@ -1337,6 +1500,13 @@ export class AgentTasks {
   private announceFinished(entry: Tracked): void {
     const { id, status, summary = '', signIn } = entry.task
     this.emit({ type: 'agent.task.finished', id, status, summary, ...(signIn ? { signIn } : {}) })
+  }
+}
+
+function checkSnapshot(profile: AgentProfileSnapshot): void {
+  if (!UUID.test(profile.id) || (profile.workspace !== undefined && profile.workspace !== `${HOME}/AgentWorkspaces/${profile.id}`) ||
+    typeof profile.instructions !== 'string' || profile.instructions.includes('\0') || profile.instructions.length > 100_000) {
+    throw new AgentInputError('Invalid persistent agent snapshot')
   }
 }
 
@@ -1476,6 +1646,8 @@ export class AgentUnavailableError extends Error {
 export class AgentConflictError extends Error {}
 /** Something in the computer failed while carrying out an agent operation, such as an install (502). */
 export class AgentOperationError extends Error {}
+/** An ordinary chat cannot get its memory and routine tools; nothing was started or sent without them. */
+export class AgentIdentityError extends AgentConflictError {}
 export class AgentNotFoundError extends Error {
   constructor(message = 'task not found') { super(message) }
 }

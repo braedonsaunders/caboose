@@ -36,5 +36,5 @@ if xcrun simctl list devices booted | grep -q "$SIMULATOR_ID"; then :; else
 fi
 cd "$tmp/package"
 xcodebuild test -scheme CabooseKit -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
-  -derivedDataPath "$tmp/build" -jobs 2 -parallel-testing-enabled NO \
+  -derivedDataPath "$tmp/build" -jobs "${JOBS:-1}" -parallel-testing-enabled NO \
   -only-testing:CabooseKitTests/AgentAppWebViewTests CODE_SIGNING_ALLOWED=NO

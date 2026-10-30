@@ -734,7 +734,7 @@ async function discoverModels(spec) {
 
 export const PRESENTATION_GUIDANCE = `Caboose displays your replies in a native iPhone/iPad chat and gives you the computer's tools.
 For an interactive chart, calculator, dashboard or animated widget, return a complete fenced inline-html block containing self-contained HTML with inline CSS, JavaScript and SVG. Use accessible controls and a responsive layout. No external dependencies, network requests, file access, popups or navigation are available inside a widget. Embed required data in the document after obtaining it with your computer tools. Keep each HTML block under 512 KiB. Use text or a downloadable file when a widget does not help.
-When the owner asks for an app, or for a tool, dashboard or game they will come back to, make a Caboose app instead of a widget: a web app in ~/Apps/<id>/ that gets its own icon in their Apps screen, its own window and saved data, and can run programs and use files. Read the app_guide tool (or run caboose-app guide) first, publish it with app_publish, and open it with app_open to check it on your display.
+When the owner asks for an app, or for a tool, dashboard or game they will come back to, make a Caboose app instead of a widget: a web app in ~/Apps/<id>/ that gets its own icon in their Apps screen, its own window and saved data, and can run programs, use files, reach any address on the network, and play sound and video that keep going on the owner's phone when they leave it. Read the app_guide tool (or run caboose-app guide) first, publish it with app_publish, and open it with app_open to check it on your display. Complete the guide's interaction acceptance checks at phone and desktop sizes, address input-layout warnings, and preserve existing app data. Report the interactions actually tested and any phone touch checks you could not run; a screenshot or successful publish alone does not verify input.
 Link downloadable computer files with Markdown links to absolute /home/caboose/... paths or home-relative paths. Use image Markdown for PNG/JPEG previews. Caboose authenticates these file previews; never include credentials in an artifact.
 An interactive widget may call window.Caboose.compose(message) to propose a follow-up in the native composer. This does not send it or run tools; the owner reviews and sends it. Describe the proposed action clearly on the control. Use the agent's computer tools for actual work, and report real outcomes.`
 
@@ -790,6 +790,7 @@ export class Task {
     let message
     try { message = JSON.parse(text) } catch { throw new Error('Invalid inbox JSON') }
     if (message?.type === 'prompt') {
+      this.idle = false
       if (!Number.isSafeInteger(message.turn) || message.turn < 1 || message.turn > 999999
           || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 32000
           || (message.deliveryId !== undefined && (typeof message.deliveryId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(message.deliveryId)))
@@ -827,6 +828,8 @@ export class Task {
     const deadline = Date.now() + waitMs
     for (;;) {
       for (const name of await this.entries()) {
+        // A runner being stopped between turns never claims a prompt meant for its successor.
+        if (this.interrupted) return undefined
         const message = await this.take(name)
         if (message?.type === 'prompt' && typeof message.text === 'string' && Number.isSafeInteger(message.turn)) return message
       }
@@ -838,6 +841,7 @@ export class Task {
   async run() {
     await this.load()
     await mkdir(this.approvals, { recursive: true })
+    this.idle = true
     let message = await this.nextPrompt(STARTUP_WAIT_MS)
     while (message) {
       const keepGoing = await this.runTurn(message)
@@ -848,6 +852,8 @@ export class Task {
       if (this.transcript.error) throw this.transcript.error
       const transcript = await open(join(this.dir, 'transcript.jsonl'), 'r')
       try { await transcript.sync() } finally { await transcript.close() }
+      // The terminal event is durable: stopping from here on interrupts nothing.
+      this.idle = true
       await writeJson(join(this.dir, 'receipts', `${String(message.turn).padStart(6, '0')}.json`), {
         turn: message.turn, deliveryId: message.deliveryId ?? null, state: 'completed', result: this.transcript.lastResult,
       })
@@ -1701,7 +1707,8 @@ async function main(argv) {
     const task = new Task(argument)
     const stop = async signal => {
       task.interrupted = true
-      await task.transcript.write({ type: 'notice', text: 'Runner interrupted; the active turn may have performed external actions. Delivery is uncertain and is not replayed.' }).catch(() => {})
+      // Between turns nothing is in flight: the host retires idle runners to reload their configuration.
+      if (!task.idle) await task.transcript.write({ type: 'notice', text: 'Runner interrupted; the active turn may have performed external actions. Delivery is uncertain and is not replayed.' }).catch(() => {})
       await task.agent?.close().catch(() => {})
       await task.transcript.flushed()
       process.exit(signal === 'SIGTERM' ? 143 : 130)

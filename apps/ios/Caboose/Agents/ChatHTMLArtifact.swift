@@ -41,9 +41,9 @@ struct ChatHTMLArtifact: View {
                 }.padding(16)
             }
         }
-        .background(.thinMaterial, in: .rect(cornerRadius: 16))
-        .clipShape(.rect(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.primary.opacity(0.1)))
+        .background(.thinMaterial, in: .surface(cornerRadius: 16))
+        .clipShape(.surface(cornerRadius: 16))
+        .overlay(ConcentricRectangle(cornerRadius: 16).stroke(.primary.opacity(0.1)))
         .task(id: html) {
             do { export = try ChatArtifactFile(data: Data(html.utf8), name: "Interactive.html") }
             catch { self.error = "HTML export could not be prepared: \(error.localizedDescription)" }

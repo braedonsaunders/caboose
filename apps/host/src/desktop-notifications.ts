@@ -1,3 +1,4 @@
+import type { EventSubscribe } from './event-adapters.js'
 import type { AgentGuest } from './agents.js'
 
 export interface DesktopNotification { id: string; app: string; summary: string; body: string; created: number }
@@ -21,16 +22,18 @@ for f in "$d"/*.json; do
   rm -f -- "$f"
 done`
 export class DesktopNotifications {
-  private timer?: ReturnType<typeof setInterval>
+  private timer?: () => void
   private polling = false
   private pending?: Promise<void>
-  constructor(private guest: () => AgentGuest | undefined, private emit: (event: DesktopNotification) => void) {}
+  constructor(private guest: () => AgentGuest | undefined, private emit: (event: DesktopNotification) => void, private subscribe?: EventSubscribe) {}
   setActive(active: boolean) {
     if (active && !this.timer) {
-      this.timer = setInterval(() => { void this.poll() }, 1000)
-      this.timer.unref()
-      void this.poll()
-    } else if (!active && this.timer) { clearInterval(this.timer); this.timer = undefined }
+      this.timer = this.subscribe?.('notification', record => this.accept(record)) ?? (() => {})
+    } else if (!active && this.timer) { this.timer(); this.timer = undefined }
+  }
+  accept(raw: unknown): void {
+    const event = parseDesktopNotification(JSON.stringify(raw))
+    if (event) this.emit(event)
   }
   async poll() {
     const guest = this.guest()

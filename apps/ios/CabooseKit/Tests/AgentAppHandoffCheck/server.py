@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
 """Local fake host for the simulator-only WKWebView handoff check."""
+import io
 import json
+import math
+import struct
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 
 PAGE = b'<!doctype html><title>handoff check</title>'
+
+
+def tone(seconds=20, rate=22050):
+    out = io.BytesIO()
+    with wave.open(out, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b''.join(struct.pack('<h', int(4000 * math.sin(2 * math.pi * 440 * i / rate)))
+                               for i in range(seconds * rate)))
+    return out.getvalue()
+
+
+# A server elsewhere on the network, with no CORS consent: only the app's network origin reads it.
+TONE = tone()
 lock = Lock()
 state = {'revision': -1, 'document': None, 'grant': 'a' * 32, 'log': []}
 
@@ -24,9 +43,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.answer(PAGE, content_type='text/html')
         if self.path == '/test/state':
             with lock: return self.answer(state)
+        if self.path == '/upstream/tone.wav':
+            return self.answer(TONE, content_type='audio/wav')
+        if self.path == '/upstream/echo':
+            return self.echo('')
         self.answer({}, 404)
+    def echo(self, body):
+        return self.answer({'method': self.command, 'body': body, 'headers': {k.lower(): v for k, v in self.headers.items()}})
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        raw = self.rfile.read(int(self.headers.get('Content-Length') or 0))
+        if self.path == '/upstream/echo':
+            return self.echo(raw.decode())
+        body = json.loads(raw)
         with lock:
             if self.path == '/test/takeover':
                 state.update(grant='b' * 32, revision=-1, document=None)
@@ -40,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
                 if revision < state['revision'] or (revision == state['revision'] and doc != state['document']):
                     return self.answer({'ok':False, 'error':'This page has been replaced'})
                 state.update(revision=revision, document=doc)
-                value = {'id':'check', 'name':'Check'}
+                value = {'id':'check', 'name':'Check', 'capabilities': ['exec', 'files', 'net', 'media']}
             elif doc != state['document']:
                 return self.answer({'ok':False, 'error':'This page has been replaced'})
             elif op == 'close':

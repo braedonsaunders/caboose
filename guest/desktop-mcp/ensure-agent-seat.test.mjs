@@ -8,7 +8,7 @@ test('coalesces concurrent seat starts and retries after failure', async () => {
   const start = seatStarter(async (command, args) => {
     calls.push([command, args])
     if (command === 'sudo' && fail) { fail = false; throw new Error('unavailable') }
-    return { stdout: command === '/bin/sh' ? 'DISPLAY=:101\0WAYLAND_DISPLAY=wayland-agent\0' : '' }
+    return { stdout: command === '/usr/bin/python3' ? 'DISPLAY=:101\0WAYLAND_DISPLAY=wayland-agent\0' : '' }
   })
   await assert.rejects(start(), /unavailable/)
   const [a, b] = await Promise.all([start(), start()])
@@ -35,8 +35,10 @@ test('caches a healthy seat and recovers after its socket dies', async () => {
 })
 
 test('adopts an existing live environment without sudo', async () => {
-  const start = seatStarter(async command => {
-    assert.equal(command, '/bin/sh')
+  const start = seatStarter(async (command, args) => {
+    assert.equal(command, '/usr/bin/python3')
+    assert.deepEqual(args.slice(0, 4), ['/opt/caboose/agent-profile.py', 'exec', '/bin/sh', '-c'])
+    assert.match(args[4], /unset CABOOSE_DISPLAY_CONTROL/)
     return { stdout: 'CABOOSE_DISPLAY_CONTROL=/existing/control.sock\0' }
   }, async () => true, () => true)
   assert.equal((await start()).CABOOSE_DISPLAY_CONTROL, '/existing/control.sock')
