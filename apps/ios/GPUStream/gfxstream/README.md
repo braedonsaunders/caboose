@@ -38,12 +38,26 @@ Neither transport receipt nor decoder progress means GPU execution completed.
 
 `decode_connection.*` consumes the upstream client-flags word, then buffers and
 decodes the ordered stream using real upstream process resources and TLS. The
-non-direct flush command can append resource bytes beyond the packet's declared
-length, so the loop retains additional bytes on zero progress up to its cap.
-Unknown opcodes also cause zero progress; cancellation, EOF or the cap terminates
-that case. Upstream generated field unmarshalling is not bounds-validated, and an
-incomplete multi-range flush may already copy earlier ranges before a retry.
-This is not a safe public endpoint for hostile payloads.
+non-direct flush command appends resource bytes beyond the packet's declared
+length. `packet_framing.*` buffers its null-`pNext` metadata and complete range
+payloads before entering the decoder once. Unknown opcodes, malformed framing,
+unsupported flush extensions and zero decoder progress terminate the connection.
+`decoder-opcodes.inc` is generated from hash-verified pinned decoder source.
+General generated field unmarshalling and object handles are not validated by
+this framing check. This is not a safe public endpoint for hostile payloads.
+
+The GPU-independent fragmentation fixture covers every prefix of a two-range
+flush, with and without sequence numbers, and rejects unknown opcodes and
+unsupported extensions. Build and run it separately:
+
+```sh
+c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/packet_framing_test.cpp \
+  apps/ios/GPUStream/gfxstream/packet_framing.cpp -o /tmp/caboose-framing-test
+/tmp/caboose-framing-test
+```
+
+The framing changes and this fixture have not been compiled or run.
 
 ## Process lifetime
 
@@ -57,8 +71,8 @@ registry destruction and framebuffer finalization against every API call. A run
 call uses one socket on its calling thread. Stop revokes admission, signals guest
 process death and shuts down active sockets. Finish rejects processes with active
 runs; destruction waits for upstream asynchronous cleanup. A connection error is
-returned to its caller and does not stop unrelated processes. This registry source
-has not been compiled or exercised.
+returned to its caller and does not stop unrelated processes. The registry passes a macOS syntax check against the pinned upstream headers;
+linking and runtime behavior remain unverified.
 
 ## Real backend and loader
 
@@ -77,7 +91,7 @@ teardown are serialized. Decoder threads and processes must finish and cleanup
 must complete before framebuffer finalization.
 
 The adapter CMake target requires upstream backend targets. The macOS reference
-retains the real GL-capable desktop backend and its AppKit dependencies. The two
+retains the real GL-capable desktop backend and its AppKit dependencies. The
 patches in `patches/` contain uncompiled GLES-disabled factoring; their remaining
 Apple symbol issues are recorded in [the source audit](patches/apple-source-audit.md).
 Patch application is not evidence of an iOS linkable target.

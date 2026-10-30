@@ -24,7 +24,7 @@ if(APPLE)
     target_compile_definitions(caboose_gfxstream_abi INTERFACE
         VK_USE_PLATFORM_MACOS_MVK VK_USE_PLATFORM_METAL_EXT)
 endif()
-add_library(caboose_gfxstream_connection STATIC socket_stream.cpp decode_connection.cpp)
+add_library(caboose_gfxstream_connection STATIC socket_stream.cpp packet_framing.cpp decode_connection.cpp)
 target_compile_definitions(caboose_gfxstream_connection PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
 target_compile_features(caboose_gfxstream_connection PRIVATE cxx_std_17)
 target_include_directories(caboose_gfxstream_connection PRIVATE
@@ -56,4 +56,11 @@ if(TARGET gfxstream_backend_static)
         target_include_directories(caboose_gfxstream_framebuffer PRIVATE
             "${GFXSTREAM_REPO_ROOT}/host/gl/glsnapshot")
     endif()
+endif()
+
+option(CABOOSE_GFXSTREAM_FRAMING_TESTS "Build portable decoder framing fixtures" OFF)
+if(CABOOSE_GFXSTREAM_FRAMING_TESTS)
+    add_executable(caboose_gfxstream_framing_test tests/packet_framing_test.cpp packet_framing.cpp)
+    target_compile_features(caboose_gfxstream_framing_test PRIVATE cxx_std_17)
+    target_include_directories(caboose_gfxstream_framing_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()

@@ -110,6 +110,7 @@ extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t 
                                                            threadInfo, process->stopped);
             // Decoder work has ended. Clear the TLS identities while admission is locked;
             // the TLS object is destroyed before that lock is released.
+            if (result != 0) shutdown(fd, SHUT_RDWR);
             lock.lock();
             threadInfo.setProcessResources(nullptr);
             threadInfo.setPuid(0);
@@ -117,6 +118,7 @@ extern "C" int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t 
             registry->activeSockets.erase(fd);
             return result;
         } catch (...) {
+            shutdown(fd, SHUT_RDWR);
             if (!lock.owns_lock()) lock.lock();
             process->sockets.erase(fd);
             registry->activeSockets.erase(fd);
