@@ -71,6 +71,9 @@ BUDGET_SECONDS = 8.0
 NOT_FOUND = 3
 # An accessibility bus the caller named in AT_SPI_BUS_ADDRESS; then it is the only one used.
 CALLER_BUS = None
+SERVING = False
+ACTIVE_ARGS = None
+WARM_BUS = None
 
 
 def emit(value, code=0):
@@ -154,6 +157,10 @@ class Display:
             raise Failure(f"cannot open display {name}")
         self.root = self.x.XDefaultRootWindow(self.handle)
         self._atoms = {}
+
+    def __del__(self):
+        if getattr(self, "handle", None):
+            self.close()
 
     def close(self):
         if self.handle:
@@ -713,6 +720,8 @@ class Bus:
         Atspi.init()
         Atspi.set_timeout(2000, 5000)
         self.desktop = Atspi.get_desktop(0)
+        if SERVING:
+            self.desktop.set_cache_mask(Atspi.Cache.NONE)
 
     def retry(self, display):
         """Re-run against the next bus that might hold the application; False if none."""
@@ -723,6 +732,15 @@ class Bus:
             return False
         env = dict(os.environ, CABOOSE_A11Y_BUS_STATE=json.dumps(self.state))
         env.pop("AT_SPI_BUS_ADDRESS", None)
+        if SERVING:
+            args = ACTIVE_ARGS
+            command = [sys.executable, os.path.abspath(__file__), args.command, f"--display={args.display}"]
+            for key in ("element", "action", "text", "query", "role"):
+                value = getattr(args, key, None)
+                if value is not None:
+                    command.append(f"--{key}={value}")
+            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
+            raise ServedResult(json.loads(result.stdout))
         sys.stdout.flush()
         os.execve(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env)
         return True  # not reached
@@ -738,6 +756,20 @@ class Bus:
             except Exception:
                 continue
         return None
+
+
+class ServedResult(Exception):
+    def __init__(self, result):
+        self.result = result
+
+
+def get_bus(display):
+    global WARM_BUS
+    if not SERVING:
+        return Bus(display)
+    if WARM_BUS is None:
+        WARM_BUS = Bus(display)
+    return WARM_BUS
 
 
 # --- The tree --------------------------------------------------------------------------
@@ -838,6 +870,35 @@ class Tree:
             name = (self.text(node, MAX_NAME * 2) or "").replace("￼", " ")
         name = " ".join(name.split())
         return name[:MAX_NAME]
+
+    def value(self, node, role, states):
+        if role in _roles(self.Atspi, "PASSWORD_TEXT"):
+            return None
+        try:
+            attributes = node.get_attributes() or []
+            if isinstance(attributes, dict):
+                attributes = [f"{key}:{value}" for key, value in attributes.items()]
+            if any(str(a).lower() in ("password:true", "sensitive:true", "text-input-type:password") for a in attributes):
+                return None
+        except Exception:
+            return None
+        numeric = role in _roles(self.Atspi, "SPIN_BUTTON", "SLIDER")
+        combo = role in _roles(self.Atspi, "COMBO_BOX")
+        if self.has(states, "EDITABLE") or role in _roles(self.Atspi, "ENTRY", "AUTOCOMPLETE", "EDITBAR") or numeric or combo:
+            value = self.text(node, MAX_NAME)
+            if value:
+                return value
+            try:
+                if numeric and node.get_value_iface() is not None:
+                    return str(self.Atspi.Value.get_current_value(node))
+                if combo and node.get_selection_iface() is not None:
+                    child = self.Atspi.Selection.get_selected_child(node, 0)
+                    value = child.get_name() if child else None
+                    if value and value != self.name(node, role, states):
+                        return value[:MAX_NAME]
+            except Exception:
+                pass
+        return None
 
     def label(self, node):
         """The name of the element that labels this one (a GTK entry's mnemonic label)."""
@@ -1017,7 +1078,7 @@ class Target:
         if not self.screen.confined(self.pid):
             self.note = "The focused window's application also has windows on another display, so it is not read."
             return
-        self.bus = Bus(self.screen.bus_display())
+        self.bus = get_bus(self.screen.bus_display())
         self.app = self.bus.application(self.pid)
         if self.app is None:
             self.bus.retry(self.screen.bus_display())
@@ -1090,6 +1151,9 @@ def collect(target, query=None, role=None):
             "id": element_id(target.xid, target.pid, path, tree.fingerprint(node_role, name)),
             "role": role_name, "name": name, "states": tree.state_names(states), "bounds": bounds,
         })
+        value = tree.value(node, node_role, states)
+        if value is not None and value != "":
+            found[-1]["value"] = value
         return True
 
     clip, origin = [None], [None]
@@ -1198,7 +1262,7 @@ def resolve(display_name, element):
     screen = make_screen(display_name)
     if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid):
         raise Failure("element not found", NOT_FOUND)
-    bus = Bus(screen.bus_display())
+    bus = get_bus(screen.bus_display())
     app = bus.application(pid)
     if app is None:
         bus.retry(screen.bus_display())
@@ -1268,7 +1332,11 @@ def act(display_name, element, action, text):
             focused = False
         if not focused:
             raise Failure("element cannot take focus to type into")
-        time.sleep(0.15)
+        deadline = time.monotonic() + 0.15
+        while not tree.has(tree.states(node), "FOCUSED"):
+            if time.monotonic() >= deadline:
+                raise Failure("element did not take focus to type into")
+            time.sleep(0.01)
         screen.replace_text(xid, text)
         return
     raise Failure(f"unknown action {action}", 2)
@@ -1397,7 +1465,7 @@ def main(argv):
         CALLER_BUS = os.environ.get("AT_SPI_BUS_ADDRESS") or None
     parser = Parser(prog="a11y.py", description="Read and act on a display's focused window through AT-SPI.")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=Parser)
-    for name in ("elements", "text", "bus"):
+    for name in ("elements", "text", "bus", "serve"):
         sub = commands.add_parser(name)
         sub.add_argument("--display", required=True)
         if name == "bus":
@@ -1422,15 +1490,43 @@ def main(argv):
             joined.append(argv[index])
             index += 1
     args = parser.parse_args(joined)
+    if args.command == "serve":
+        serve(args.display)
+        return
+    result, code = execute(args)
+    emit(result, code)
+
+
+def serve(display):
+    global SERVING, ACTIVE_ARGS
+    SERVING = True
+    for line in sys.stdin:
+        try:
+            request = json.loads(line)
+            op = request.pop("op")
+            if op not in ("elements", "find", "act", "text") or request.get("display", display) != display:
+                raise ValueError("invalid worker request")
+            ACTIVE_ARGS = argparse.Namespace(command=op, display=display, query=request.get("query"),
+                role=request.get("role"), element=request.get("element"), action=request.get("action"), text=request.get("text"))
+            result, _ = execute(ACTIVE_ARGS)
+        except ServedResult as result_error:
+            result = result_error.result
+        except Exception as error:
+            result = {"error": str(error)}
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+
+
+def execute(args):
     is_act = args.command == "act"
     try:
         display_number(args.display)
         os.environ["DISPLAY"] = args.display
         if args.command == "bus":
-            emit(command_bus(args.display, args.wait))
+            return command_bus(args.display, args.wait), 0
         if is_act:
             act(args.display, args.element, args.action, args.text)
-            emit({"ok": True})
+            return {"ok": True}, 0
         target = Target(args.display)
         result = {"window": target.window}
         if args.command == "text":
@@ -1444,15 +1540,15 @@ def main(argv):
             result["elements"] = collect(target, query, role) if target.app is not None else []
         if target.note:
             result["note"] = target.note
-        emit(result)
+        return result, 0
     except Failure as failure:
         message = str(failure)
-        emit({"ok": False, "error": message} if is_act else {"error": message}, failure.code)
-    except SystemExit:
+        return ({"ok": False, "error": message} if is_act else {"error": message}), failure.code
+    except (SystemExit, ServedResult):
         raise
     except Exception as error:  # an unexpected library failure still answers in JSON
         message = f"{type(error).__name__}: {error}"
-        emit({"ok": False, "error": message} if is_act else {"error": message}, 1)
+        return ({"ok": False, "error": message} if is_act else {"error": message}), 1
 
 
 if __name__ == "__main__":

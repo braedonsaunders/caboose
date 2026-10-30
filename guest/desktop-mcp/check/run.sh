@@ -202,6 +202,7 @@ mcp() {  # one tool call per server process, so calls run strictly in order
 }
 on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat.log" ready; sleep 1
+check 'high-APM persistent MCP contract' on agent timeout 60 node /src/check/high-apm.mjs
 check 'mcp list_windows shows the dialog' yes "$(mcp list_windows '{}' | py "any(w['title'] == 'Save changes?' for w in json.loads(d['result']['content'][0]['text']))")"
 centre() {
   seat find --display :101 --query "$1" ${2:+--role "$2"} |

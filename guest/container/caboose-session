@@ -89,7 +89,7 @@ a11y_bus() {
 # (port, sockets, X display).
 start_display() {
   local name=$1 port=$2 bus=$3 envfile=$4 video_socket=$5; shift 5
-  if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
+  if [ -s "$envfile" ] && caboose-display-ready 1 "$port" "$envfile" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
   local libs=

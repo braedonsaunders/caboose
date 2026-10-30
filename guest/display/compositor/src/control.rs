@@ -327,10 +327,11 @@ impl State {
                     .filter(|w| w.stream.callbacks_pending && w.stream.can_release_callbacks())
                     .map(|w| w.id)
                     .collect();
+                let released = ids.len();
                 for id in ids {
                     self.release_frame_callbacks(id);
                 }
-                Ok(b"{\"ok\":true}\n".to_vec())
+                Ok(format!("{{\"ok\":true,\"released\":{released}}}\n").into_bytes())
             }
             "screenshot" => match args.first() {
                 Some(a) => match a.parse::<u64>().ok().filter(|id| self.windows.get(*id).is_some()) {
