@@ -73,6 +73,27 @@ def agent_secret(check_id):
     print('PASS: agent retrieves the synthetic GNOME item; bodyless Close returns empty and invalidates session')
 
 
+def verify_windows(agent_count, check_id):
+    # The control socket deliberately accepts only the compositor's UID. Keep
+    # this whole polling loop in one owner process, not the root setup driver.
+    assert Path('/.dockerenv').exists() and os.getuid() == 1000
+    assert os.environ.get('CABOOSE_DISPOSABLE_ACCEPTANCE') == check_id
+    assert Path('/home/caboose/.caboose-synthetic-seat-acceptance').read_text() == check_id
+    assert agent_count in (1, 2)
+    spec = importlib.util.spec_from_file_location('acceptance_seat', '/opt/caboose/seat.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    seats = {name: module.Seat('/run/user/1000/caboose-display/wayland-caboose-' + suffix + '/control.sock')
+             for name, suffix in [('owner', '0'), ('agent', 'agent')]}
+    for _ in range(450):
+        windows = {name: seat.windows()['windows'] for name, seat in seats.items()}
+        if (len(windows['owner']) == 1 and len(windows['agent']) == agent_count
+            and all(name + '-PASS' in str(w.get('title', '')) for name, rows in windows.items() for w in rows)):
+            return
+        time.sleep(0.1)
+    raise AssertionError('Synthetic browser windows/profile values did not remain on their own seats')
+
+
 def inside(phase, check_id):
     assert Path('/.dockerenv').exists() and os.getuid() == 0
     assert os.environ.get('CABOOSE_DISPOSABLE_ACCEPTANCE') == check_id
@@ -138,22 +159,9 @@ def inside(phase, check_id):
             children.append(child)
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(launch, ['owner', 'agent']))
-        spec = importlib.util.spec_from_file_location('acceptance_seat', '/opt/caboose/seat.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        seats = {name: module.Seat('/run/user/1000/caboose-display/wayland-caboose-' + suffix + '/control.sock')
-                 for name, suffix in [('owner', '0'), ('agent', 'agent')]}
-        def verify_windows(agent_count):
-            for _ in range(450):
-                windows = {name: seat.windows()['windows'] for name, seat in seats.items()}
-                if (len(windows['owner']) == 1 and len(windows['agent']) == agent_count
-                    and all(name + '-PASS' in str(w.get('title', '')) for name, rows in windows.items() for w in rows)):
-                    return
-                time.sleep(0.1)
-            raise AssertionError('Synthetic browser windows/profile values did not remain on their own seats')
-        verify_windows(1)
+        as_owner(['/usr/bin/python3', __file__, '--windows', '1', check_id])
         launch('agent')
-        verify_windows(2)
+        as_owner(['/usr/bin/python3', __file__, '--windows', '2', check_id])
         # Close each browser through its own test-only localhost debugging endpoint,
         # ensuring SQLite/local storage has a normal shutdown before the cold boot.
         async def close(port):
@@ -224,6 +232,8 @@ if __name__ == '__main__':
         inside(*sys.argv[2:])
     elif sys.argv[1:2] == ['--agent-secret']:
         agent_secret(sys.argv[2])
+    elif sys.argv[1:2] == ['--windows']:
+        verify_windows(int(sys.argv[2]), sys.argv[3])
     else:
         parser = argparse.ArgumentParser(description=__doc__)
         parser.add_argument('--image', required=True)
