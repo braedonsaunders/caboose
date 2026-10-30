@@ -26,6 +26,17 @@ def checked(args, **kwargs):
     return subprocess.run(args, check=True, timeout=60, **kwargs)
 
 
+def resource_snapshot(stage):
+    values = {}
+    for name in ('pids.current', 'pids.events', 'pids.peak', 'pids.max', 'memory.events'):
+        try:
+            values[name] = (Path('/sys/fs/cgroup') / name).read_text().strip()
+        except OSError as error:
+            values[name] = type(error).__name__
+    print(json.dumps({'phase': stage, 'cgroup': values,
+                      'affinity': sorted(os.sched_getaffinity(0))}), flush=True)
+
+
 def as_owner(args, **kwargs):
     return checked(['runuser', '-u', 'caboose', '--', 'env', 'HOME=/home/caboose',
         'XDG_RUNTIME_DIR=/run/user/1000', 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus', *args], **kwargs)
@@ -146,6 +157,7 @@ def inside(phase, check_id):
     server = http.server.ThreadingHTTPServer(('127.0.0.1', 18991), Page)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
+    resource_snapshot("before-browser-launch")
     children = []
     browser_logs = []
     try:
@@ -159,9 +171,9 @@ def inside(phase, check_id):
                 '--remote-debugging-port=' + ('18992' if seat == 'owner' else '18993'),
                 '--new-window', 'http://127.0.0.1:18991/' + seat]
             log = open('/tmp/caboose-seat-' + seat + '-' + uuid.uuid4().hex + '.log', 'w+b')
-            browser_logs.append((seat, log))
             child = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
             children.append(child)
+            browser_logs.append((seat, log, child))
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(launch, ['owner', 'agent']))
         as_owner(['/usr/bin/python3', __file__, '--windows', '1', check_id])
@@ -187,7 +199,10 @@ def inside(phase, check_id):
         as_owner(['/usr/bin/python3', __file__, '--agent-secret', check_id])
         print(f'PASS: {phase}: owner/agent Chromium windows, repeated agent launch, synthetic cookie/localStorage, canonical GNOME item')
     finally:
-        for seat, log in browser_logs:
+        resource_snapshot('browser-finally')
+        for seat, log, child in browser_logs:
+            print(json.dumps({'phase': 'browser-exit', 'seat': seat,
+                              'pid': child.pid, 'returncode': child.poll()}), flush=True)
             log.flush()
             log.seek(max(0, os.fstat(log.fileno()).st_size - 8192))
             print(json.dumps({'phase': 'browser-log', 'seat': seat, 'tail': log.read().decode(errors='replace')}), flush=True)
@@ -199,13 +214,17 @@ def inside(phase, check_id):
         # including any browser descendants, display daemons and timeout failures.
 
 
-def host(image, seccomp, overlay_source=None):
+def host(image, seccomp, overlay_source=None, pids_limit=256):
+    assert pids_limit in (256, 512)
+    cpus = sorted(os.sched_getaffinity(0))[:2]
+    assert len(cpus) == 2, "Two allowed CPUs are required"
     image_id = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], text=True).strip()
     assert image.startswith('sha256:') and image == image_id, 'Supply the full immutable local image ID; no pull/build occurs'
     seccomp = Path(seccomp).resolve(strict=True)
     check_id = uuid.uuid4().hex
     volume = 'caboose-seat-acceptance-' + check_id
     password = secrets.token_hex(32).encode()
+    print(json.dumps({'phase': 'fixture', 'volume': volume, 'cpus': cpus, 'pids_limit': pids_limit}), flush=True)
     checked(['docker', 'volume', 'create', volume], stdout=subprocess.DEVNULL)
     try:
         for phase in ('seed', 'verify'):
@@ -221,7 +240,7 @@ def host(image, seccomp, overlay_source=None):
                         'sh /acceptance/install-acceptance-overlay.sh /seat-src && exec /usr/bin/python3 /acceptance/check-dual-seat.py "$@"',
                         'acceptance-overlay', '--inside', phase, check_id]
                 subprocess.run(['docker', 'run', '--name', name, '--init', '-i', '--network', 'none',
-                    '--memory', '2g', '--cpus', '2', '--pids-limit', '256', '--shm-size', '256m',
+                    '--memory', '2g', '--cpus', '2', '--cpuset-cpus', ','.join(map(str, cpus)), '--pids-limit', str(pids_limit), '--shm-size', '256m',
                     '--security-opt', 'seccomp=' + str(seccomp), '--tmpfs', '/tmp:rw,nosuid,size=256m',
                     '--tmpfs', '/run:rw,nosuid,size=128m', '--env', 'CABOOSE_GPU=none',
                     '--env', 'CABOOSE_DISPOSABLE_ACCEPTANCE=' + check_id,
@@ -230,10 +249,14 @@ def host(image, seccomp, overlay_source=None):
                     *overlay_args, '--entrypoint', *entrypoint],
                     input=password, check=True, timeout=180)
             finally:
-                checked(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL)
+                try:
+                    subprocess.run(['docker', 'inspect', '--format', '{{json .State}}', name], timeout=10)
+                finally:
+                    checked(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL)
                 assert subprocess.run(['docker', 'inspect', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
     finally:
         checked(['docker', 'volume', 'rm', volume], stdout=subprocess.DEVNULL)
+        assert subprocess.run(['docker', 'volume', 'inspect', volume], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode != 0
     print('PASS: both disposable containers reaped and synthetic home volume removed')
 
 
@@ -249,5 +272,7 @@ if __name__ == '__main__':
         parser.add_argument('--image', required=True)
         parser.add_argument('--seccomp', required=True)
         parser.add_argument('--overlay-source', help='Read-only source export plus out/ binaries; install the narrow overlay inside each test container')
+        parser.add_argument('--pids-limit', type=int, choices=(256, 512), default=256,
+                            help='Use 512 only after measured PID exhaustion at 256')
         args = parser.parse_args()
-        host(args.image, args.seccomp, args.overlay_source)
+        host(args.image, args.seccomp, args.overlay_source, args.pids_limit)

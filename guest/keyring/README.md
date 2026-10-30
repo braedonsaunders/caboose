@@ -121,12 +121,16 @@ python3 guest/keyring/check-dual-seat.py \
 ```
 
 The driver uses two sequential containers, each bounded to 180 seconds, 2 CPUs, 2 GiB RAM,
-256 PIDs, 256 MiB shared memory, private tmpfs runtime/temp directories and no network.
+256 PIDs, affinity restricted to two CPUs from the allowed mask, 256 MiB shared memory, private tmpfs runtime/temp directories and no network.
 It mounts only this test directory read-only and a fresh, uniquely named synthetic home
 volume with image-home copying disabled. It refuses a nonempty seed home. The synthetic
 keyring password travels only through stdin and is never printed or placed in arguments.
 The volume survives the transition between the two containers and is removed afterward;
 no owner profile, display, device or service volume is accepted.
+CPU quota alone does not restrict software renderer thread sizing. The fixture records
+PID current/peak/limit/events, memory events and browser exit status before cleanup.
+`--pids-limit 512` permits a bounded retry after measured PID exhaustion at 256;
+unrelated failures require investigation before another trial.
 
 The seed phase starts both displays concurrently, opens one Chromium on each seat, checks
 seat-specific synthetic cookies/localStorage via window titles, and repeats an agent
