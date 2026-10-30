@@ -2838,6 +2838,29 @@ appearance, its media appears in Now Playing, and, when the owner turns it on, i
 phone's location while Caboose is open. Computer settings has the switches. See
 [native-bridge.md](native-bridge.md#app).
 
+The Windows x64 installer embeds its Rust supervisor and installation scripts. It
+checksums the same release's Linux host bundle and dedicated Debian WSL root filesystem,
+imports a `Caboose` distribution with systemd and Docker, and selects the container runtime
+with WSL GPU support. It reuses the transactional mirrored-networking configuration,
+registers a per-user S4U startup task and a login tray app, and preserves the distribution
+on uninstall unless purge is explicitly selected. Its pairing window reads the local
+owner credential through WSL and sends it only as an HTTP bearer header. Unattended
+startup requires the documented real Windows cold-boot acceptance check.
+
+The macOS disk image carries a self-installing `Caboose.app`. Its embedded runtime
+archive contains the host and a bare menu app, without a recursive payload. On first
+launch or version change it runs the bundled per-user installer and preserves settings
+and computer disks. The native pairing window opens account setup in the browser when
+needed, then uses the local owner-token file only as an HTTP bearer header to mint
+phone codes. Closing the window cancels its status polling. The login menu runs from
+the installed version; a first GUI installation starts that menu at the next login.
+
+After initial web setup creates the operator account and household, the console shows
+phone pairing before opening the dashboard. Pairing uses the owner's computer and its
+single-use ten-minute code, with reachable addresses from the host and console origin.
+The page observes new phone sign-ins and image download status without waking the computer;
+it can enable Tailscale HTTPS and can continue to the console without pairing.
+
 ## 7. Security model
 
 - **Owner token.** One bearer token (`CABOOSE_OWNER_TOKEN`, or generated into the state
