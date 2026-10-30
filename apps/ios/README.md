@@ -1085,7 +1085,8 @@ the upper panel through its bottom edge; delayed window metadata or a settling s
 must not leave the initial cascade frame surrounded by wallpaper.
 ## Paired computer menu
 
-Tap the name and chevron on Home to select a saved computer or Add Computer. Adding a
+Tap the name and chevron on Home to select a saved computer or Add Computer. Computer
+selection is available only on Home; Desktop, retry screens, and other tabs follow it. Adding a
 pairing keeps the others. Manage Computers opens the host console, where an authorized
 administrator signs in to provision computers and generate pairing codes. The phone lists
 only computers explicitly paired here. Keychain failures appear as sign-in errors and do

@@ -2559,7 +2559,9 @@ foreground. Desktop Full Screen opens a borderless window card with a return han
 The desktop app launcher accepts horizontal swipes as well as its page arrows.
 
 The name on Home opens a menu of explicitly paired computers, with the active computer
-checked. Add Computer uses the existing pairing flow and retains the other pairings.
+checked. Home is the only screen that offers computer selection; Desktop, connection
+recovery, and all other screens follow that shared selection without their own switcher.
+Add Computer uses the existing pairing flow and retains the other pairings.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing
 migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;
