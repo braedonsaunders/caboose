@@ -111,6 +111,19 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     }
     func create(_ request: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?) {
         guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
+        // The game chooses buffer pixels independently of its desktop placement.
+        // Native reserves and validates the real surface before any layer mutation.
+        let configured: Int32
+        do {
+            configured = try liveGPUOnMain { [self] in
+                lease.configurePresentationExtent(CGSize(width: CGFloat(request.width), height: CGFloat(request.height))) { layer in
+                    var identity = bind.identity
+                    return caboose_gpu_surface_configure_extent(pointer, &identity, layer, request.width, request.height)
+                }
+            }
+        } catch { return (.init(nativeErrno: EIO, vkResult: nil), nil) }
+        guard configured == 0 else { return (.init(nativeErrno: configured > 0 ? configured : EIO, vkResult: nil), nil) }
+        guard lease.isValid else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
         var info = caboose_gpu_swapchain_create_info()
         info.identity = bind.identity; info.boxed_device = request.device; info.old_swapchain_id = request.oldSwapchain
         info.create_flags = request.flags; info.min_image_count = request.minImageCount
@@ -136,7 +149,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
         var snapshot: OpaquePointer?
         var status = caboose_gpu_query_status()
-        let code = caboose_gpu_surface_query_indexed(pointer, physicalDevice, &snapshot, &status)
+        let code = caboose_gpu_surface_query_variable_extent(pointer, physicalDevice, &snapshot, &status)
         defer { if let snapshot { caboose_gpu_surface_capabilities_release(snapshot) } }
         let actual = LiveGPUSurfaceStatus(nativeErrno: status.native_error,
                                           vkResult: status.has_vulkan_result == 1 ? status.vulkan_result : nil)

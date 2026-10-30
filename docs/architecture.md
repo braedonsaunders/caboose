@@ -2495,7 +2495,13 @@ Initial attachment waits for a pending size request's physical-to-logical-to-phy
 round trip on the same authenticated output and scale. It uses the actual returned
 server geometry; this equivalence is not a general configure acknowledgment.
 A zero-pair BIND requests that trusted extent before swapchain creation; a positive
-pair only asserts equality. GPU retirement and main-thread layer detachment must
+pair only asserts equality.
+Indexed Wayland swapchains choose render-buffer pixels separately from desktop
+placement. Variable-extent queries retain actual provider bounds. Before CREATE,
+the native surface verifies that no swapchain or work remains, configures the real
+Metal sublayer on main, and checks the provider's actual extent again. Layout keeps
+the chosen buffer size while fitting it to the authenticated window geometry;
+changes to that window geometry still revoke the owner lease. GPU retirement and main-thread layer detachment must
 finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
 The app's default session creation does not activate this private executor.
 Debug-only `CABOOSE_PRIVATE_GPU_INDEXED=1` connects the owner AppModel to the

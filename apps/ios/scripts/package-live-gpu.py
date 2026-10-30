@@ -41,6 +41,7 @@ ARCHIVES = (
 PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h", "presentation_swapchain_api_draft.h")
 REQUIRED_NATIVE = {
     "caboose_gpu_runtime_start_v4", "caboose_gpu_surface_query_indexed",
+    "caboose_gpu_surface_query_variable_extent", "caboose_gpu_surface_configure_extent",
     "caboose_gpu_virtual_swapchain_create", "caboose_gpu_virtual_swapchain_map",
     "caboose_gpu_acquire_begin", "caboose_gpu_acquire_poll", "caboose_gpu_acquire_cancel",
     "caboose_gpu_acquire_observe", "caboose_gpu_acquire_request_release",
@@ -124,6 +125,10 @@ import CabooseGPULive
         _ = caboose_gpu_surface_present(surface, &present, nil, nil)
         _ = caboose_gpu_surface_query_indexed(surface, 0, &snapshot, &status)
         caboose_gpu_surface_capabilities_release(snapshot)
+        _ = caboose_gpu_surface_query_variable_extent(surface, 0, &snapshot, &status)
+        caboose_gpu_surface_capabilities_release(snapshot)
+        var identity = bind.identity
+        _ = caboose_gpu_surface_configure_extent(surface, &identity, CAMetalLayer(), 640, 480)
         var create = caboose_gpu_swapchain_create_info()
         var swapchain: OpaquePointer?
         var swapchainID: UInt64 = 0
@@ -257,6 +262,7 @@ def main():
                    "liveHelloVersion": 4, "liveHelloFeatureMask": 0x70, "virtualWSI": True,
                    "memoryAuditModule": args.memory_audit,
                    "indexedAcquireAPILink": "passed (not executed)",
+                   "variableExtentAPILink": "passed (not executed)",
                    "inputs": input_hashes, "swiftImportAndLink": "passed",
                    "linkProbeSHA256": digest(work / "LinkProbe"),
                    "registrySHA256": digest(registry), "headerSHA256": digest(public_header),

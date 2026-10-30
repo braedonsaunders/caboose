@@ -46,6 +46,7 @@ class ProviderExportsTests(unittest.TestCase):
     def test_indexed_link_probe_references_every_acquire_lifetime_operation(self):
         source = package.swift_link_probe()
         for name in ("caboose_gpu_surface_query_indexed", "caboose_gpu_virtual_swapchain_create",
+                     "caboose_gpu_surface_query_variable_extent", "caboose_gpu_surface_configure_extent",
                      "caboose_gpu_virtual_swapchain_map", "caboose_gpu_acquire_begin", "caboose_gpu_acquire_poll",
                      "caboose_gpu_acquire_cancel", "caboose_gpu_acquire_observe", "caboose_gpu_acquire_request_release",
                      "caboose_gpu_virtual_swapchain_present", "caboose_gpu_virtual_swapchain_retire"):

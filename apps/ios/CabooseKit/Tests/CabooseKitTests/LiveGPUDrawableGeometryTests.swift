@@ -16,8 +16,10 @@ final class LiveGPUDrawableGeometryTests: XCTestCase {
     }
     func testRequestUsesAssignedOutputQuantization() {
         XCTAssertEqual(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 763, height: 1116), scale: 2), CGSize(width: 764, height: 1116))
-        let fractional = LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: 180.0 / 96.0)
-        XCTAssertEqual(fractional, CGSize(width: 763, height: 1116))
+        for dpi in [138.0, 180.0] {
+            let fractional = LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: dpi / 96.0)
+            XCTAssertEqual(fractional, CGSize(width: 763, height: 1116))
+        }
         XCTAssertNil(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: .nan))
         XCTAssertNil(LiveGPUDrawableGeometry.quantizedRequest(CGSize(width: 764, height: 1116), scale: 0))
     }

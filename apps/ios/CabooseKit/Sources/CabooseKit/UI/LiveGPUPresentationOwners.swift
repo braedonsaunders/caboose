@@ -162,7 +162,7 @@ public final class LiveGPUPresentationOwners {
 
 @MainActor
 private final class LiveGPULayerView: UIView {
-    let pixelExtent: CGSize
+    private(set) var pixelExtent: CGSize
     let metal = CAMetalLayer()
     init(frame: CGRect, pixelExtent: CGSize) {
         self.pixelExtent = pixelExtent
@@ -178,6 +178,10 @@ private final class LiveGPULayerView: UIView {
     }
     override func layoutSubviews() {
         super.layoutSubviews()
+        applyDrawableExtent()
+    }
+    func adoptPresentationExtent(_ size: CGSize) {
+        pixelExtent = size
         applyDrawableExtent()
     }
     func fit(in target: CGRect) {
@@ -213,6 +217,15 @@ final class LiveGPULayerLease: @unchecked Sendable {
         content.layoutIfNeeded()
         content.applyDrawableExtent()
         return content.metal
+    }
+    /// Main-only, after native verifies there are no live swapchain resources.
+    /// Display placement remains `extent`; only the independently owned buffer changes.
+    @MainActor func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
+        guard isValid, let content = content as? LiveGPULayerView else { return ECANCELED }
+        guard LiveGPUDrawableGeometry.extent(serverPixels: size, visibleBounds: content.bounds.size) != nil else { return EINVAL }
+        let code = configure(content.metal)
+        if code == 0 { content.adoptPresentationExtent(size) }
+        return code
     }
     private let lock = NSLock()
     private var valid = true
