@@ -408,6 +408,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                    'verify_peer': lambda: None, 'presents': {9: {'result': True, 'release': False, 'terminal': False, 'swap': 5}}}
         session.surfaces[key] = surface
         retired = Envelope(Kind.PRESENT_RETIRED, b'a' * 16, 1, 1, 0, 1, identity + struct.pack('<QQ', 5, 9))
+        with self.assertRaises(ValueError): await session.message(retired)  # v3 never accepts indexed replies
         with mock.patch.object(session, 'indexed_enabled', True):
             with self.assertRaises(ValueError): await session.message(retired)
             release = Envelope(Kind.SOURCE_RELEASED, b'a' * 16, 1, 1, 0, 2, identity + struct.pack('<Q', 9))
@@ -501,6 +502,69 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(task, return_exceptions=True)
                 client.close()
                 session.bindings.finish(session.binding_generation)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_local_indexed_sequence_preserves_native_frame_retirement(self):
+        local, client = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        local.setblocking(False); client.setblocking(False)
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True)
+        session.session_ready.set(); session.processes[1] = {'surfaces': set()}
+        session.send = mock.Mock()
+        peer = mock.Mock(); peer.alive.return_value = True
+        result = control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 12, 7)
+        identity = result.epoch + result.grant + struct.pack('<Q', result.generation)
+        key = (result.epoch, result.grant, result.generation)
+        values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
+        vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
+        async def bind(_session, _process, _obj):
+            session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
+            return result
+        instance = broker.Broker.__new__(broker.Broker); instance.request_bind = bind
+        loop = asyncio.get_running_loop()
+        async def local_send(kind, body):
+            data = struct.pack('<4sHHII', b'CGLS', 1, kind, 16 + len(body), 0) + body
+            count = session.send.call_count
+            await loop.sock_sendall(client, data)
+            for _ in range(100):
+                if session.send.call_count > count: return
+                await asyncio.sleep(.001)
+            self.fail('surface request was not forwarded')
+        async def remote(kind, payload):
+            frame = Envelope(Kind(kind), b'a' * 16, 1, 1, 0, 1, identity + payload[40:])
+            await session.message(frame)
+            reply = await asyncio.wait_for(loop.sock_recv(client, 1024), 1)
+            self.assertEqual(struct.unpack_from('<H', reply, 6)[0], kind)
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=peer), \
+             mock.patch.object(session.bindings, 'find_process', return_value=1):
+            task = asyncio.create_task(instance.surface_client(session, local))
+            try:
+                await local_send(16, struct.pack('<QIIII', 8, 9, 0, 0, 0))
+                bound = identity + struct.pack('<iIiI', 0, 1, 0, 0)
+                await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, 1, 0, 1, bound))
+                await asyncio.wait_for(loop.sock_recv(client, 1024), 1)
+                for req, name, reply_kind, reply_name in ((25, 'create', 26, 'created'),
+                        (27, 'map', 28, 'mapped'), (29, 'acquire', 30, 'acquired')):
+                    await local_send(req, vectors[name][40:])
+                    await remote(reply_kind, vectors[reply_name])
+                await local_send(34, vectors['indexed-present'][40:])
+                serial = struct.unpack_from('<Q', vectors['indexed-present'], 48)[0]
+                first_waits = session.send.call_args.kwargs['payload'][80:]
+                rejected = identity + struct.pack('<QiIiIII', serial, 0, 1, -3, 0, 0, 0)
+                await remote(21, rejected)
+                retry = bytearray(vectors['indexed-present'][40:])
+                serial += 1
+                struct.pack_into('<Q', retry, 8, serial)
+                await local_send(34, retry)
+                self.assertEqual(session.send.call_args.kwargs['payload'][80:], first_waits)
+                result_body = identity + struct.pack('<QiIiIII', serial, 0, 1, 0, 0, 1, 0)
+                await remote(21, result_body)
+                await remote(22, identity + struct.pack('<Q', serial))
+                self.assertIn(serial, session.surfaces[key]['presents'])
+                await remote(36, identity + struct.pack('<QQ', 5, serial))
+                self.assertNotIn(serial, session.surfaces[key]['presents'])
+            finally:
+                task.cancel(); await asyncio.gather(task, return_exceptions=True)
+                client.close(); session.bindings.finish(session.binding_generation)
 
 
 if __name__ == '__main__': unittest.main()

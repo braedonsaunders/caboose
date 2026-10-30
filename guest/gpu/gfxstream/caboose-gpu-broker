@@ -219,6 +219,12 @@ class Session:
                     swap = struct.unpack_from('<Q', frame.payload, 40)[0]
                     if any(item.get('swap') == swap for item in surface['presents'].values()):
                         raise ValueError('swapchain frames not retired')
+                if frame.kind == Kind.SWAPCHAIN_ACQUIRED and struct.unpack_from('<I', frame.payload, 72)[0]:
+                    swap = struct.unpack_from('<Q', frame.payload, 40)[0]
+                    index = struct.unpack_from('<I', frame.payload, 76)[0]
+                    if any(item.get('swap') == swap and item.get('index') == index and not item['result']
+                           for item in surface['presents'].values()):
+                        raise ValueError('image acquired before present outcome')
                 surface['indexed'].reply(frame.kind, frame.payload)
             elif frame.kind == Kind.SURFACE_REVOKE_REQUEST:
                 if not self.indexed_enabled or surface['indexed'].revoking: raise ValueError('unexpected surface revoke')
@@ -244,7 +250,16 @@ class Session:
                         if pending['result']: raise ValueError('duplicate submission result')
                         if disposition == 0 and pending['release']: raise ValueError('rejected source was released')
                         pending['result'] = True
-                        if disposition == 0: del surface['presents'][serial]
+                        if disposition == 0:
+                            if pending.get('swap') is not None:
+                                swap = surface['indexed'].swaps.get(pending['swap'])
+                                index = pending['index']
+                                if swap is None or index in swap['acquired']:
+                                    raise ValueError('rejected image ownership conflict')
+                                # The native result explicitly says submission never
+                                # consumed the application waits or acquisition.
+                                swap['acquired'].add(index)
+                            del surface['presents'][serial]
                     else:
                         if not pending['result'] or pending['terminal']: raise ValueError('unexpected terminal present event')
                         pending['terminal'] = True
@@ -621,10 +636,11 @@ class Broker:
                         raise ValueError('indexed executor not enabled')
                     if kind == 34:
                         swap, serial = struct.unpack_from('<QQ', body)
+                        index = struct.unpack_from('<I', body, 24)[0]
                         if serial <= surface['last_present'] or len(surface['presents']) >= 64:
                             raise ValueError('invalid indexed present serial')
                         surface['last_present'] = serial
-                        surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap}
+                        surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap, 'index': index}
                     surface['indexed'].send(kind, body)
                     session.send(Kind(kind), process_id, payload=identity + body)
                 elif kind == 23:
