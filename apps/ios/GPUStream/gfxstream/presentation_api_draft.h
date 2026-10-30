@@ -30,15 +30,19 @@ typedef struct caboose_gpu_submit_result {
 typedef enum caboose_gpu_present_event {
     CABOOSE_GPU_SOURCE_RELEASED = 1, // real GPU completion; source may be reacquired
     CABOOSE_GPU_DEVICE_LOST = 2,     // actual terminal device loss; do not reuse objects
-    CABOOSE_GPU_FAILED_UNRETIRED = 3 // explicit error; source still not releasable
+    CABOOSE_GPU_FAILED_UNRETIRED = 3, // explicit error; resources remain retained
+    CABOOSE_GPU_PRESENT_RETIRED = 4 // indexed path: both fences and frame cleanup complete
 } caboose_gpu_present_event;
 
 // Callback runs off main/network queues. SOURCE_RELEASED or DEVICE_LOST ends a
 // source use; FAILED_UNRETIRED is nonterminal. DEVICE_LOST may also follow
 // SOURCE_RELEASED when loss is observed while waiting for presentation retirement.
 // SOURCE_RELEASED says only that the native GPU is done reading the source; it is
-// not display/vsync confirmation. Caller keeps context valid until terminal event
-// and successful worker retirement. It must not synchronously wait for main work.
+// not display/vsync confirmation. For indexed presents, PRESENT_RETIRED is the
+// final callback for that serial, after both real fences and frame cleanup; it is
+// neither display/vsync completion nor acquisition. DEVICE_LOST does not imply
+// PRESENT_RETIRED. Caller keeps context valid through surface retirement/detach.
+// It must not synchronously wait for main work.
 typedef void (*caboose_gpu_present_callback)(void* context, uint64_t present_serial,
     caboose_gpu_present_event event, caboose_gpu_submit_result result);
 

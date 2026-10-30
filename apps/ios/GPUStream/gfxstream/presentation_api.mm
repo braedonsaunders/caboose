@@ -106,6 +106,7 @@ struct Frame {
     bool sourceReleased = false, presentRetired = false, deviceLost = false;
     bool failureReported = false;
     bool reportedDeviceLoss = false;
+    bool resourcesDestroyed = false;
     uint64_t serial = 0;
     caboose_gpu_present_callback callback = nullptr;
     void* context = nullptr;
@@ -136,6 +137,7 @@ struct caboose_gpu_surface {
 };
 namespace {
 void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
+    if (f.resourcesDestroyed) return;
     auto* vk = s.device->vk;
     if (f.copyFence) vk->vkDestroyFence(s.device->device, f.copyFence, nullptr);
     if (f.presentFence) vk->vkDestroyFence(s.device->device, f.presentFence, nullptr);
@@ -143,6 +145,7 @@ void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
     if (f.ready) vk->vkDestroySemaphore(s.device->device, f.ready, nullptr);
     if (f.pool) vk->vkDestroyCommandPool(s.device->device, f.pool, nullptr);
     f.source.reset();
+    f.resourcesDestroyed = true;
 }
 VkResult allocateFrame(caboose_gpu_surface& s, Frame& f, PresentationProviderResult* provider) {
     *provider = {};
@@ -253,6 +256,25 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f) {
     }
     return f.deviceLost || (f.sourceReleased && f.presentRetired) ? 0 : EBUSY;
 }
+#ifdef CABOOSE_GPU_INDEXED_WSI
+// Called by the frame worker, or the serialized retirement worker, only after
+// both real fences completed. No later callback may be issued for this serial.
+int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame) {
+    if (!frame.indexed || frame.deviceLost || !frame.sourceReleased || !frame.presentRetired)
+        return EBUSY;
+    destroyFrameResources(surface, frame);
+    {
+        std::lock_guard<std::mutex> lock(frame.indexed->mutex);
+        if (!frame.indexed->indices->forgetRetired(frame.serial)) {
+            frame.indexed->quarantined = true;
+            return EBUSY;
+        }
+    }
+    if (frame.callback) frame.callback(frame.context, frame.serial, CABOOSE_GPU_PRESENT_RETIRED,
+                                       driverResult(CABOOSE_GPU_SUBMIT_QUEUED, VK_SUCCESS));
+    return 0;
+}
+#endif
 }
 
 extern "C" int caboose_gpu_surface_prepare(const caboose_gpu_surface_bind_info* bind,
@@ -663,13 +685,6 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
         }
         if (surface->worker.joinable()) surface->worker.join();
         if (surface->frame) {
-            if (surface->frame->indexed) {
-                std::lock_guard<std::mutex> lock(swapchain->mutex);
-                if (!swapchain->indices->forgetRetired(surface->frame->serial)) {
-                    swapchain->quarantined = true;
-                    return rejected(EIO);
-                }
-            }
             destroyFrameResources(*surface, *surface->frame);
             surface->frame.reset(); surface->frameDone = false;
         }
@@ -748,6 +763,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
         try {
             surface->worker = std::thread([surface] {
                 int result = advanceFrame(*surface, *surface->frame);
+                if (!result) result = finishIndexedFrame(*surface, *surface->frame);
                 std::lock_guard<std::mutex> lock(surface->mutex);
                 surface->frameDone = result == 0;
             });
@@ -911,11 +927,8 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         }
         if (!surface->frameDone) {
             int result = advanceFrame(*surface, *surface->frame);
+            if (!result) result = finishIndexedFrame(*surface, *surface->frame);
             if (result) return fail(result);
-        }
-        {
-            std::lock_guard<std::mutex> lock(swapchain->mutex);
-            if (!swapchain->indices->forgetRetired(surface->frame->serial)) return fail(EBUSY);
         }
         destroyFrameResources(*surface, *surface->frame);
         surface->frame.reset(); surface->frameDone = false;
