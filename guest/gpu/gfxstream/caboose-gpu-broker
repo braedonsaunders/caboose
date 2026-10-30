@@ -154,17 +154,29 @@ class Session:
         self.local_tasks = set()
         self.lifecycle_tasks = set()
         self.failed = False
+        self.closing_ws = False
 
-    def send(self, kind, process=0, stream=0, payload=b''):
-        if self.failed: raise ConnectionError('session failed')
-        data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
-        frame = server_frame(2, data)
+    def enqueue_frame(self, frame):
         if self.pending_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes:
             raise BufferError('executor queue full')
         self.pending.put_nowait(frame)
         self.pending_bytes += len(frame)
         self.pending_count += 1
+
+    def send(self, kind, process=0, stream=0, payload=b''):
+        if self.failed or self.closing_ws: raise ConnectionError('session failed or closing')
+        data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
+        frame = server_frame(2, data)
+        self.enqueue_frame(frame)
         self.sequence += 1
+
+    async def close_after_retirement(self):
+        if self.failed or self.closing_ws or not self.revoking or not self.revoked.is_set():
+            raise RuntimeError('normal close requires actual native retirement')
+        self.closing_ws = True
+        self.enqueue_frame(server_frame(8, struct.pack('!H', 1000)))
+        # The sender is the only WebSocket writer; join includes its drain.
+        await asyncio.wait_for(self.pending.join(), 2)
 
     async def send_loop(self):
         while True:
@@ -397,9 +409,8 @@ class Session:
             for kind, payload in events:
                 if kind == 'close': raise ConnectionError('executor closed')
                 if kind == 'ping':
-                    frame = server_frame(10, payload)
-                    if self.pending_count >= MAX_QUEUED_MESSAGES or len(frame) > MAX_QUEUED_BYTES - self.pending_bytes: raise BufferError('queue full')
-                    self.pending.put_nowait(frame); self.pending_bytes += len(frame); self.pending_count += 1
+                    if not self.closing_ws:
+                        self.enqueue_frame(server_frame(10, payload))
                 if kind != 'binary': continue
                 messages = []
                 def collect(message):
@@ -777,6 +788,7 @@ class Broker:
                 await server.wait_closed(); server = None
                 await self.report_lifecycle(session, 6)
                 self.lease.finished(executor.bytes, generation)
+                await session.close_after_retirement()
             else:
                 for task in done: task.result()
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):

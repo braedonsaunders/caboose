@@ -33,6 +33,24 @@ class Writer:
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_normal_close_is_queued_only_after_native_retirement(self):
+        writer = Writer()
+        session = broker.Session(None, b'a' * 16, 1, None, writer)
+        with self.assertRaises(RuntimeError): await session.close_after_retirement()
+        session.revoking = True
+        with self.assertRaises(RuntimeError): await session.close_after_retirement()
+        session.send(Kind.REVOKE)
+        session.revoked.set()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            await session.close_after_retirement()
+            self.assertEqual(bytes(writer.data)[-4:], b'\x88\x02\x03\xe8')
+            self.assertGreater(len(writer.data), 4)
+            with self.assertRaises(ConnectionError): session.send(Kind.REVOKE)
+        finally:
+            sender.cancel(); await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
     async def test_indexed_session_requires_exact_v4_hello(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True)
         expected = b'CBGLREF1' + struct.pack('<II', 4, 0x70) + bytes.fromhex(
