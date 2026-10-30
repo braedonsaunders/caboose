@@ -8,6 +8,12 @@ extern "C" {
 
 typedef struct caboose_gpu_diagnostic caboose_gpu_diagnostic;
 typedef void* (*caboose_gpu_resolve_export)(const char* name);
+typedef struct {
+    char device_name[256];
+    char driver_info[256];
+    uint32_t driver_version, api_version, vendor_id, device_id, device_type;
+    uint64_t device_memory;
+} caboose_gpu_device_info;
 // Diagnostic only. The caller must explicitly authorize invocation and bind
 // every connection to this process/session/generation before passing its fd.
 // Loader callbacks must use the same process-owned MoltenVK provider as query,
@@ -21,6 +27,9 @@ int caboose_gpu_diagnostic_start(const uint8_t session_id[16], uint64_t generati
 int caboose_gpu_diagnostic_identity(const caboose_gpu_diagnostic* diagnostic,
                                     uint8_t session_id[16], uint64_t* generation,
                                     uint64_t* process_id);
+// Real device selected by upstream VkEmulation; serialize against finish.
+int caboose_gpu_diagnostic_device_info(const caboose_gpu_diagnostic* diagnostic,
+                                       caboose_gpu_device_info* info);
 // Blocking; caller retains fd until return. One call per guest encoder thread.
 // hello_timeout_ms bounds the diagnostic handshake, not Vulkan execution.
 int caboose_gpu_diagnostic_run(caboose_gpu_diagnostic* diagnostic, int fd,

@@ -9,6 +9,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <new>
 #include <set>
@@ -107,6 +109,24 @@ extern "C" int caboose_gpu_diagnostic_identity(const caboose_gpu_diagnostic* d,
     std::memcpy(session_id, d->session.data(), d->session.size());
     *generation = d->generation;
     *process_id = d->process;
+    return 0;
+}
+extern "C" int caboose_gpu_diagnostic_device_info(const caboose_gpu_diagnostic* d,
+                                                   caboose_gpu_device_info* info) {
+    if (!d || !info) return EINVAL;
+    auto* fb = gfxstream::host::FrameBuffer::getFB();
+    if (!fb) return ENODEV;
+    char* name = nullptr;
+    char* driver = nullptr;
+    caboose_gpu_device_info value{};
+    const bool ok = fb->getVulkanEmulationDeviceInfo(&name, &driver, &value.driver_version,
+        &value.api_version, &value.vendor_id, &value.device_id, &value.device_type,
+        &value.device_memory);
+    if (!ok || !name || !driver) { std::free(name); std::free(driver); return EIO; }
+    std::snprintf(value.device_name, sizeof(value.device_name), "%s", name);
+    std::snprintf(value.driver_info, sizeof(value.driver_info), "%s", driver);
+    std::free(name); std::free(driver);
+    *info = value;
     return 0;
 }
 extern "C" int caboose_gpu_diagnostic_run(caboose_gpu_diagnostic* d, int fd, uint32_t timeout_ms) {
