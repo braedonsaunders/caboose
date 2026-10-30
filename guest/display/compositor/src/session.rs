@@ -497,6 +497,7 @@ impl State {
                     image,
                     shm: None,
                     detect: false,
+                    alpha: w.kind == proto::WindowKind::Popup,
                     keyframe: false,
                     refine: true,
                     damage: None,
@@ -525,9 +526,12 @@ impl State {
             let pic_h = (local.size.h as f64 * scale).round().max(1.0) as i32;
             let rect = w.announced.as_ref().map(|a| Rect::new(0, 0, a.geometry.w, a.geometry.h)).unwrap();
             let size = (pic_w, pic_h).into();
+            // A popup keeps its alpha (window.create `alpha`): composed over transparent
+            // and sent as RGBA tiles, with no motion stream or marker detection.
+            let alpha = w.kind == proto::WindowKind::Popup;
             let w = self.windows.get_mut(id).unwrap();
-            if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale)) {
-                w.stream.canvas = Some(Canvas::new(size, scale));
+            if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale, alpha)) {
+                w.stream.canvas = Some(Canvas::new(size, scale, alpha));
                 w.stream.need_keyframe = true;
                 // The keyframe repaints everything; a motion region is found afresh.
                 w.stream.tracker = None;
@@ -545,11 +549,15 @@ impl State {
             let started = Instant::now();
             // A window that is one shm buffer is streamed from it: read in place by the
             // encoder when the picture needs no padding, otherwise copied (damage only).
+            // Not a window with alpha: an XRGB buffer's alpha byte is anything.
             let in_place = coded_w == pic_w as u32 && coded_h == pic_h as u32;
             let key = if in_place { crate::render::SHM_IN_PLACE } else { image_id };
             let since = w.stream.direct.filter(|d| d.image_id == key).map(|d| d.commit);
-            let direct =
-                if self.config.always_compose { None } else { crate::render::direct(&root, local, size, since) };
+            let direct = if self.config.always_compose || alpha {
+                None
+            } else {
+                crate::render::direct(&root, local, size, since)
+            };
             let mut shm = None;
             let rendered = match direct {
                 Some(d) => {
@@ -623,7 +631,8 @@ impl State {
                         .map(|d| d.iter().map(|r| r.w.max(0) as u64 * r.h.max(0) as u64).sum::<u64>().min(picture))
                         .unwrap_or(picture);
                     let pts_us = w.stream.next_pts();
-                    let detect = !self.videos.streams.by_id.is_empty()
+                    let detect = !alpha
+                        && !self.videos.streams.by_id.is_empty()
                         && self
                             .videos
                             .streams
@@ -635,6 +644,7 @@ impl State {
                         image,
                         shm,
                         detect,
+                        alpha,
                         keyframe: w.stream.need_keyframe,
                         refine: false,
                         damage,
@@ -830,6 +840,7 @@ impl State {
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
         self.config.motion
+            && self.windows.get(window).is_some_and(|w| w.kind != proto::WindowKind::Popup)
             && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))
     }

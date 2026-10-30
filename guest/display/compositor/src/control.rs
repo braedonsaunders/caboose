@@ -504,7 +504,7 @@ impl State {
             let local = win.local_geometry();
             let size = (listed.rect.size.w, listed.rect.size.h).into();
             let mut image = CpuImage::new(listed.rect.size.w as u32, listed.rect.size.h as u32);
-            let mut canvas = Canvas::new(size, 1.0);
+            let mut canvas = Canvas::new(size, 1.0, false);
             if let Err(e) = canvas.render(&mut self.renderer, &root, local.loc, &mut image, 0) {
                 tracing::debug!("control: window {}: {e}", listed.id);
                 continue;
@@ -529,7 +529,7 @@ impl State {
                 }
             }
         }
-        let png = crate::stream::png(w as u32, h as u32, &rgb)?;
+        let png = crate::stream::png(w as u32, h as u32, &rgb, false)?;
         let mut out =
             format!("{{\"ok\":true,\"png\":{},\"rect\":[{},{},{},{}]}}\n", png.len(), area.loc.x, area.loc.y, w, h)
                 .into_bytes();
