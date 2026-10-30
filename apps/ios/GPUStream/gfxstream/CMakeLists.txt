@@ -33,6 +33,13 @@ target_include_directories(caboose_gfxstream_connection PRIVATE
     "${GFXSTREAM_REPO_ROOT}/host/vulkan"
     "${GFXSTREAM_REPO_ROOT}/host/include")
 target_link_libraries(caboose_gfxstream_connection PUBLIC caboose_gfxstream_abi PRIVATE gfxstream-vulkan-server gfxstream_host_iostream)
+# RenderThreadInfo's GLES variant includes gles_v2_decoder.h, which includes
+# gl_snapshot.h. Upstream GLSnapshot exposes this directory, but the Vulkan
+# server target does not propagate it to this external adapter.
+if(CABOOSE_GFXSTREAM_HOST_GLES STREQUAL "1")
+    target_include_directories(caboose_gfxstream_connection PRIVATE
+        "${GFXSTREAM_REPO_ROOT}/host/gl/glsnapshot")
+endif()
 
 # This retains the real upstream framebuffer and offscreen Vulkan compositor.
 # Its upstream target currently has desktop dependencies and is not iOS-ready.
@@ -45,4 +52,8 @@ if(TARGET gfxstream_backend_static)
         "${GFXSTREAM_REPO_ROOT}/host/vulkan"
         "${GFXSTREAM_REPO_ROOT}/host")
     target_link_libraries(caboose_gfxstream_framebuffer PUBLIC caboose_gfxstream_abi PRIVATE gfxstream_backend_static caboose_gfxstream_connection)
+    if(CABOOSE_GFXSTREAM_HOST_GLES STREQUAL "1")
+        target_include_directories(caboose_gfxstream_framebuffer PRIVATE
+            "${GFXSTREAM_REPO_ROOT}/host/gl/glsnapshot")
+    endif()
 endif()
