@@ -77,12 +77,18 @@ struct SwitchyardView: View {
                 YardKeyCommands(yard: yard)
             }
             .coordinateSpace(name: Self.space)
-            .onAppear { yard.screenSize = area }
+            .onAppear { yard.finishCarryGesture(); yard.screenSize = area }
             .onChange(of: area) { _, size in yard.screenSize = size }
         }
         .onDisappear { yard.cancelCarry() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { yard.cancelCarry() } }
-        .onChange(of: carryingCover) { _, active in if !active { yard.cancelCarry() } }
+        .onChange(of: carryingCover) { _, active in
+            if !active {
+                DispatchQueue.main.async {
+                    if !carryingCover { yard.finishCarryGesture() }
+                }
+            }
+        }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
@@ -172,8 +178,11 @@ struct SwitchyardView: View {
                         if let id = yard.coverWindow { yard.carry(id, by: value.translation, at: value.location) }
                     }
                     .onEnded { value in
-                        if let id = yard.coverWindow { yard.carry(id, by: value.translation, at: value.location) }
-                        yard.drop()
+                        if let id = yard.coverWindow, yard.carry?.window == id {
+                            yard.carry(id, by: value.translation, at: value.location)
+                            yard.drop()
+                        }
+                        yard.finishCarryGesture()
                     }
             )
             .onTapGesture { yard.toggleZoom() }

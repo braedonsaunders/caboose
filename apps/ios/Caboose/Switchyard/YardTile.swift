@@ -100,10 +100,12 @@ struct YardTitleBar: View {
                         DragGesture(minimumDistance: 8, coordinateSpace: .named(SwitchyardView.space))
                             .updating($carrying) { _, active, _ in active = true }
                             .onChanged { value in yard.carry(window.id, by: value.translation, at: value.location) }
-
                             .onEnded { value in
-                                yard.carry(window.id, by: value.translation, at: value.location)
-                                yard.drop()
+                                if yard.carry?.window == window.id {
+                                    yard.carry(window.id, by: value.translation, at: value.location)
+                                    yard.drop()
+                                }
+                                yard.finishCarryGesture()
                             }
                     )
                     .contextMenu { menuContent }
@@ -127,7 +129,13 @@ struct YardTitleBar: View {
         .buttonStyle(.plain)
         .background(Color(white: focused ? 0.16 : 0.11))
         .onChange(of: carrying) { _, active in
-            if !active { yard.cancelCarry() }
+            if !active {
+                // SwiftUI may reset GestureState before delivering onEnded. Let that
+                // callback commit first; a cancellation has no onEnded and restores here.
+                DispatchQueue.main.async {
+                    if !carrying { yard.finishCarryGesture() }
+                }
+            }
         }
         .overlay(alignment: .bottom) { Rectangle().fill(.black.opacity(0.45)).frame(height: 0.5) }
     }

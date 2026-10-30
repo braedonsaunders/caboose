@@ -412,11 +412,11 @@ struct YardSnapTests {
         }
     }
 
-    @Test func quarterNeedsFourWindowsAndRespectsEveryParticipantsMinimum() {
+    @Test func quarterSupportsVacanciesAndRespectsEveryParticipantsMinimum() {
         let slots: [FreeDesktopLayout.Snap] = [.topLeft, .topRight, .bottomLeft, .bottomRight]
         var yard = YardLayout()
         for id in 1...3 { yard.insert(id, in: metrics) }
-        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) == nil)
+        #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
         yard.insert(4, in: metrics)
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics,
@@ -445,5 +445,51 @@ struct YardSnapTests {
             #expect(palette.frame.contains(point))
             #expect(palette.selection(at: point) == (region.snap == .maximized ? .maximized : nil))
         }
+    }
+}
+
+
+extension YardSnapTests {
+    @Test func oneWindowCanReachEveryPaletteSlotWithoutInventingWindows() throws {
+        var yard = YardLayout()
+        yard.insert(1, in: metrics)
+        let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size))
+        for region in palette.regions {
+            let result = try #require(yard.snapping(1, to: region.snap, layout: region.layout, in: metrics))
+            #expect(result.windows == [1])
+            #expect(result.columns.count == 1)
+            #expect(abs(result.trackWidth(in: metrics) - metrics.size.width) < 0.001)
+            let frame = try #require(result.frames(in: metrics)[1])
+            let slot = FreeDesktopLayout.rect(for: region.snap, in: CGRect(x: 0, y: 0, width: 6, height: 6))
+            let stride = metrics.size.width + metrics.gap
+            #expect(abs(frame.minX - slot.minX / 6 * stride) < 0.001)
+            #expect(abs(frame.width - metrics.points(forFraction: slot.width / 6)) < 0.001)
+            if slot.height == 3 {
+                #expect(abs(frame.height - (metrics.size.height - metrics.gap) / 2) <= 1)
+                if slot.minY == 3 { #expect(frame.maxY == metrics.size.height) }
+                else { #expect(frame.minY == 0) }
+            } else { #expect(frame.height == metrics.size.height) }
+            let data = try JSONEncoder().encode(result)
+            let restored = try JSONDecoder().decode(YardLayout.self, from: data)
+            #expect(restored == result)
+            #expect(restored.frames(in: metrics) == result.frames(in: metrics))
+        }
+    }
+
+    @Test func sparseQuarterAcceptsAStackAndCollapsesOnNarrowRotation() throws {
+        var yard = YardLayout()
+        yard.insert(1, in: metrics)
+        var snapped = try #require(yard.snapping(1, to: .bottomRight,
+            layout: [.topLeft, .topRight, .bottomLeft, .bottomRight], in: metrics))
+        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
+        #expect(snapped.frames(in: phone)[1]?.width == 390)
+        #expect(snapped.frames(in: phone)[1]?.minX == 0)
+        #expect(snapped.trackWidth(in: phone) == 390)
+        #expect(snapped.insert(2, below: 1, in: metrics))
+        #expect(snapped.columns[0].halfSlot == nil)
+        let frames = snapped.frames(in: metrics)
+        #expect(frames[1]?.minY == 0)
+        #expect(frames[2]?.maxY == metrics.size.height)
+        #expect(!frames[1]!.intersects(frames[2]!))
     }
 }

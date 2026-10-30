@@ -35,6 +35,7 @@ final class YardModel {
     }
     private(set) var carry: Carry?
     private var carryScroll: CGFloat?
+    private var carryCancelled = false
     var snapPalette: FreeDesktopLayout.SnapPalette? {
         guard let carry else { return nil }
         return FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size), allows: { snap, slots in
@@ -50,10 +51,17 @@ final class YardModel {
     }
     func cancelCarry() {
         guard carry != nil else { return }
+        carryCancelled = true
         if let carryScroll { scroll = carryScroll }
         carry = nil
         carryScroll = nil
         coverProgress = 0
+    }
+    /// Called after the recognizer ends or resets; a lifecycle cancellation fences
+    /// remaining changed/ended callbacks until this gesture is finished.
+    func finishCarryGesture() {
+        cancelCarry()
+        carryCancelled = false
     }
     /// The gap being dragged, while it is.
     private(set) var activeHandle: YardLayout.Handle.Kind?
@@ -425,6 +433,7 @@ final class YardModel {
     // MARK: Carrying a tile
 
     func carry(_ window: Int, by translation: CGSize, at point: CGPoint) {
+        guard !carryCancelled else { return }
         guard layout.contains(window) else { cancelCarry(); return }
         if carry?.window != window {
             carryScroll = scroll

@@ -2266,8 +2266,10 @@ the app card, and a detached view releases its layers.
   detents). Dragging a tile's title carries it to a new column, into a stack or onto
   another tile. During a carry, the shared native snap palette offers full width, halves,
   quarters, thirds and complementary one-third/two-thirds arrangements. Each choice
-  rearranges nearby real windows into ordinary Yard columns and stacks; it is disabled
-  unless enough windows exist and every participating tile fits its minimum size.
+  places the carried window in ordinary Yard columns and stacks, with nearby real
+  windows filling the other slots. Unfilled slots reserve space in those columns;
+  they create no synthetic windows. A choice is disabled when a participating tile
+  cannot fit its minimum size.
   The palette's region rectangles are also its hit targets. The highlighted destination
   comes from the proposed Yard layout and scroll position that release commits, above
   the existing tiles. Palette gaps and disabled regions do not select tiles beneath them.

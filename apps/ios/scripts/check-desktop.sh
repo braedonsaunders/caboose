@@ -33,8 +33,9 @@ Switchyard snap chooser (Tablet Desktop tab, Tiled, no external display):
    only at release. Observe configure traffic: hovering sends no geometry requests.
 4. Release over a disabled region, palette gap, or outside the workspace: no layout
    change. Close a participant during the drag: the stale proposal cannot commit.
-   With fewer than four windows, quarters are disabled. With minimum-size hints,
-   a companion that cannot fit disables that choice too. Repeat in portrait.
+   Repeat with one, two and three windows: every fitting quarter remains selectable,
+   empty slots stay vacant and no fake dock/Overview windows appear. With minimum-size
+   hints, a companion that cannot fit disables that choice too. Repeat in portrait.
 5. Move outside the chooser onto another tile's upper/lower quarter, middle and
    outer fifth. Stack, swap and column previews remain visible above opaque tiles;
    edge scrolling and the final scroll position agree with the preview.

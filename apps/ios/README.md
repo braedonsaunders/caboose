@@ -170,9 +170,9 @@ A screenshot alone does not establish that a physical display corner leaves cont
 Title-bar carries and the workspace fullscreen pull-tab show the native desktop snap
 palette. Its hit regions select a proposed `YardLayout`; the visible destination and
 release use that same layout and scroll position. Nearby windows fill its columns and
-stacks, while other windows remain on the track. A layout needs enough real windows
-(quarters need four) and must fit all participants' minimum sizes. Invalid choices are
-dimmed. Outside the palette, existing column/stack/swap drops remain available.
+stacks, while other windows remain on the track. A single window can occupy any slot;
+unfilled slots reserve space in the existing columns, without synthetic windows.
+All participants must fit their minimum sizes; invalid choices are dimmed. Outside the palette, existing column/stack/swap drops remain available.
 Cancellation restores the track without changing the guest or exiting fullscreen;
 rotation, connection invalidation and leaving Desktop cancel an active carry.
 
