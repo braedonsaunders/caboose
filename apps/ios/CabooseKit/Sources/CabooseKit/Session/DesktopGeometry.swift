@@ -120,14 +120,13 @@ public enum DesktopGeometry {
     }
 
     /// The entire remote picture stays visible, including while a new size is arriving.
-    /// During resize ordinary windows stretch to the tile; otherwise minimum-size
-    /// windows fit at the top. Fullscreen pictures always keep their aspect and center.
+    /// Resize requests never change the aspect of retained pixels. Minimum-size
+    /// windows fit at the top. Fullscreen pictures keep their aspect and center.
     public static func surfaceFrame(natural: CGSize, available: CGSize, resizing: Bool,
                                     fullscreen: Bool = false) -> CGRect {
         guard natural.width > 0, natural.height > 0, available.width > 0, available.height > 0 else {
             return CGRect(origin: .zero, size: available)
         }
-        if resizing && !fullscreen { return CGRect(origin: .zero, size: available) }
         let scale = min(1, available.width / natural.width, available.height / natural.height)
         let shown = CGSize(width: natural.width * scale, height: natural.height * scale)
         return CGRect(x: max(0, (available.width - shown.width) / 2),

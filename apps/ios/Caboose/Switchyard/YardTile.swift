@@ -20,7 +20,7 @@ struct YardTile: View {
         let shape = ConcentricRectangle(cornerRadius: radius)
         let available = yard.metrics.content(ofTile: rect).size
         let natural = DesktopGeometry.surfaceSize(
-            natural: CGSize(width: window.frame.width / yard.pixelsPerPoint, height: window.frame.height / yard.pixelsPerPoint),
+            natural: CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint),
             available: available, locallyRendered: window.game != nil)
         let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id),
                                                   fullscreen: window.isFullscreen)
@@ -181,7 +181,7 @@ struct YardTitleBar: View {
 }
 
 /// The live window inside a tile. Linux draws it at the tile's size; until a new size
-/// arrives, its last picture is stretched over the tile so a resize never shows a seam. A
+/// arrives, its last picture fits proportionally inside the moving tile. A
 /// window that keeps a size of its own is shown at it, centred.
 struct YardSurface: UIViewRepresentable {
     @Environment(AppModel.self) private var model
@@ -212,7 +212,7 @@ struct YardSurface: UIViewRepresentable {
         view.stretch = stretch
         view.fullscreen = window.isFullscreen
         view.locallyRendered = window.game != nil
-        view.natural = CGSize(width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
+        view.natural = CGSize(width: window.presentationSize.width / pixelsPerPoint, height: window.presentationSize.height / pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
@@ -237,6 +237,15 @@ final class YardSurfaceView: UIView {
         super.init(frame: .zero)
         clipsToBounds = true
         addSubview(content)
+        // Core Animation can retain the preceding drawable until the GPU presents.
+        // Keep that drawable proportional across the atomic picture-size handoff too.
+        content.layer.contentsGravity = .resizeAspect
+        content.onPictureSizeChanged = { [weak self] size in
+            guard let self else { return }
+            self.natural = CGSize(width: size.width / self.content.pixelsPerPoint,
+                                  height: size.height / self.content.pixelsPerPoint)
+            self.layoutIfNeeded()
+        }
         laptopCursor.tintColor = .white
         laptopCursor.isUserInteractionEnabled = false
         laptopCursor.layer.shadowColor = UIColor.black.cgColor
@@ -259,8 +268,11 @@ final class YardSurfaceView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let size = DesktopGeometry.surfaceSize(natural: natural, available: bounds.size, locallyRendered: locallyRendered)
-        content.transform = .identity
-        content.bounds = CGRect(origin: .zero, size: size)
+        // A picture replacement changes the coordinate space atomically. Animating
+        // its bounds independently of the uniform fit would stretch the Metal pixels.
+        UIView.performWithoutAnimation {
+            content.bounds = CGRect(origin: .zero, size: size)
+        }
         let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch,
                                                   fullscreen: fullscreen)
         guard size.width > 0, size.height > 0 else { return }

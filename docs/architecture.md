@@ -2333,7 +2333,7 @@ the app card, and a detached view releases its layers.
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
   that window's Linux geometry (`configure`, from `YardMetrics.content(ofTile:)`), so apps lay out
   at that size and its input, dialogs and popups are placed by it; a
-  resize stretches the entire last picture without cropping until the new one arrives. Gap drags send geometry at
+  resize fits the entire retained picture proportionally until the new one arrives. Gap drags send geometry at
   most about eight times a second; title-bar carries only configure on release. The gaps resize (snapping to the presets, with haptic
   detents). Dragging a tile's title carries it to a new column, into a stack or onto
   another tile. During a carry, the shared native snap palette offers full width, halves,
@@ -3086,6 +3086,14 @@ Window content and input retain the server-reported size while a resize is pendi
 Apps can constrain or decline a requested size without answering again; such windows
 remain fitted at their actual aspect ratio. Optimistic placement moves the window's
 origin only, and a reported content size is applied even during placement reconciliation.
+
+Keyboard-driven tile and card transitions retain the last Metal picture's dimensions
+independently of guest configure metadata. The slot moves with native layout animation;
+the picture uses a uniform fit, and replacement picture bounds change atomically before
+presentation. Popup roots and text drops use that same fitted rectangle; direct input
+inverts it into the currently reported guest coordinates. Tablet consumes SwiftUI's
+keyboard-adjusted proposal once, while Laptop alone measures keyboard occlusion. Neither
+path changes physical monitor DPI.
 
 Chat deletion uses `DELETE /v1/agent/tasks/:id` with `{ "stop": true }` for an
 explicit stop-and-delete operation; omitting `stop` rejects a running, paused, or queued

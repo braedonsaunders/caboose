@@ -224,7 +224,11 @@ for byte.
   not receive a geometry configure from this reconciliation. Fullscreen pictures fit
   centered in the client viewport without transient stretching; pointer/touch input,
   text drops and popup roots use the same fitted rectangle. Ordinary constrained tiles
-  retain their top-aligned fit.
+  retain their top-aligned fit, including pending keyboard and tile resizes. Configure
+  metadata can precede decoded pixels: presentation retains the picture dimensions
+  until Metal adopts its successor, without animating picture bounds between aspects.
+  The slot may animate, but its picture scale remains uniform. Popup roots, drops and
+  input use the same fitted rectangle.
 - The session applies size hints at the common configure boundary for every layout.
   Layout-owned tile, card and snap requests preserve the viewport aspect when
   satisfying minimum or maximum sizes permits it: a larger minimum width grows

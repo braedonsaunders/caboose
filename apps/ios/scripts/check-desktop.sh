@@ -252,3 +252,16 @@ Direct touch on mouse-only windows:
 - Native Wayland browser swipes, canvas gestures, sliders and pinch remain native.
   With a hardware mouse/trackpad, primary drag and precise scrolling still work.
 CHECK
+
+cat <<'KEYBOARD_CHECK'
+Retained-picture keyboard transition (Desktop/Tablet and app card):
+  Open an ordinary browser window and repeatedly focus a text field, hide the software
+  keyboard, and reopen it during dismissal. Repeat in portrait and landscape, with a
+  minimum-sized window and with app fullscreen. Check circular icons remain circular
+  throughout; retained pixels may letterbox while the guest catches up, never stretch.
+  During keyboard motion, click toolbar controls and open a popup: pointer targets,
+  text drops and popup roots must follow the fitted picture. Repeat in Laptop with the
+  globe keyboard: upper content stays above occlusion and the hinge stays fixed.
+  Confirm physical monitor dimensions/DPI are unchanged by keyboard show/hide; rotate
+  with the keyboard visible and verify fullscreen centering and restored tablet size.
+KEYBOARD_CHECK

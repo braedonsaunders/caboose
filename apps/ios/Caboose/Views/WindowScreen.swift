@@ -128,7 +128,7 @@ struct WindowScreen: View {
         let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
         let frames = popupFrames(popups, over: window, size: size)
         let natural = DesktopGeometry.surfaceSize(
-            natural: CGSize(width: window.frame.width / model.pixelsPerPoint, height: window.frame.height / model.pixelsPerPoint),
+            natural: CGSize(width: window.presentationSize.width / model.pixelsPerPoint, height: window.presentationSize.height / model.pixelsPerPoint),
             available: size, locallyRendered: window.game != nil)
         let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false,
                                                   fullscreen: window.isFullscreen)
@@ -389,7 +389,7 @@ struct WindowScreen: View {
     private func popupFrames(_ popups: [RemoteWindow], over parent: RemoteWindow, size: CGSize) -> [Int: CGRect] {
         let scale = model.pixelsPerPoint
         let root = DesktopGeometry.surfaceFrame(
-            natural: CGSize(width: parent.frame.width / scale, height: parent.frame.height / scale),
+            natural: CGSize(width: parent.presentationSize.width / scale, height: parent.presentationSize.height / scale),
             available: size, resizing: false, fullscreen: parent.isFullscreen)
         let windows = Dictionary(uniqueKeysWithValues: ([parent] + popups).map {
             ($0.id, DesktopGeometry.WindowGeometry(frame: $0.frame, parent: $0.transientFor))
@@ -452,8 +452,8 @@ struct RemoteWindowCanvas: UIViewRepresentable {
         view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
-        view.natural = CGSize(width: window.frame.width / model.pixelsPerPoint,
-                              height: window.frame.height / model.pixelsPerPoint)
+        view.natural = CGSize(width: window.presentationSize.width / model.pixelsPerPoint,
+                              height: window.presentationSize.height / model.pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboardVisible && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }

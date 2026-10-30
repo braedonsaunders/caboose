@@ -108,7 +108,7 @@ struct DesktopGeometryTests {
         let tile = CGSize(width: 300, height: 700)
         let frame = DesktopGeometry.surfaceFrame(natural: CGSize(width: 1000, height: 600),
                                                 available: tile, resizing: true)
-        #expect(frame == CGRect(origin: .zero, size: tile))
+        #expect(frame == CGRect(x: 0, y: 0, width: 300, height: 180))
     }
 
     @Test func minimumSizedWindowFitsWholeAtTop() {
@@ -119,4 +119,24 @@ struct DesktopGeometryTests {
                                                available: CGSize(width: 300, height: 400), resizing: false)
         #expect(tall == CGRect(x: 70, y: 0, width: 160, height: 400))
     }
+    @Test func keyboardTransitionRetainsAspectAndInputAtEverySlotHeight() {
+        for fullscreen in [false, true] {
+            for remote in [CGSize(width: 1600, height: 1000), CGSize(width: 1600, height: 520)] {
+                for height in stride(from: 250, through: 800, by: 5) {
+                    let slot = CGSize(width: 800, height: height)
+                    let shown = DesktopGeometry.surfaceFrame(natural: remote, available: slot,
+                                                             resizing: true, fullscreen: fullscreen)
+                    #expect(abs(shown.width / shown.height - remote.width / remote.height) < 0.000001)
+                    #expect(shown.maxX <= slot.width && shown.maxY <= slot.height)
+                    let mapping = DesktopGeometry.SurfaceMapping(shown: shown, remote: remote)
+                    let center = mapping.point(CGPoint(x: shown.midX, y: shown.midY))
+                    #expect(abs((center?.x ?? -1) - remote.width / 2) < 0.000001)
+                    #expect(abs((center?.y ?? -1) - remote.height / 2) < 0.000001)
+                    #expect(shown == DesktopGeometry.surfaceFrame(natural: remote, available: slot,
+                                                                  resizing: false, fullscreen: fullscreen))
+                }
+            }
+        }
+    }
+
 }

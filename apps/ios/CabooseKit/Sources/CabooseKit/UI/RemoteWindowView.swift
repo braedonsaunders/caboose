@@ -35,6 +35,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var hostedVideos: [CALayer] = []
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
+    /// The containing slot adopts the drawable's size before it is presented.
+    public var onPictureSizeChanged: ((CGSize) -> Void)?
     /// When false the view only displays (thumbnails, previews).
     public var isInteractive = true {
         didSet {
@@ -56,6 +58,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
+    private var presentedPictureSize: CGSize = .zero
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
@@ -256,14 +259,20 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     fileprivate func present() {
-        guard let surface = remoteWindow?.surface, let texture = surface.texture else { return }
-        let generation = surface.generation
+        guard let picture = remoteWindow?.surface.presentation() else { return }
+        let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
         let size = CGSize(width: texture.width, height: texture.height)
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
         guard let drawable = metalLayer.nextDrawable(),
               let commands = SurfaceRenderer.shared.queue.makeCommandBuffer(),
               let blit = commands.makeBlitCommandEncoder() else { return }
+        if presentedPictureSize != size {
+            presentedPictureSize = size
+            remoteWindow?.adoptPictureSize(size)
+            // Guest picture replacement is atomic; slot geometry keeps its animation.
+            UIView.performWithoutAnimation { onPictureSizeChanged?(size) }
+        }
         let target = drawable.texture
         let width = min(texture.width, target.width), height = min(texture.height, target.height)
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
@@ -277,8 +286,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     // MARK: Pointer mapping
 
-    private func pixelPoint(_ point: CGPoint) -> CGPoint {
-        CGPoint(x: point.x * pixelsPerPoint, y: point.y * pixelsPerPoint)
+    func pixelPoint(_ point: CGPoint) -> CGPoint {
+        guard let remoteWindow, bounds.width > 0, bounds.height > 0 else { return .zero }
+        return CGPoint(x: point.x * remoteWindow.frame.width / bounds.width,
+                       y: point.y * remoteWindow.frame.height / bounds.height)
     }
 
     private func move(to point: CGPoint) {
@@ -672,7 +683,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let point = pixelPoint(touch.location(in: self))
             let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
             points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
-                                     radius: Double(touch.majorRadius * pixelsPerPoint)))
+                                     radius: Double(touch.majorRadius * window.frame.width / max(1, bounds.width))))
             if phase == .up || phase == .cancel {
                 touchSlots.release(key)
                 activeTouches[key] = nil
@@ -757,7 +768,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                       session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
                       self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
                 else { return false }
-                session.scroll(in: remoteWindow, dx: delta.x * scale, dy: delta.y * scale, at: anchor)
+                session.scroll(in: remoteWindow, dx: delta.x * size.width / max(1, geometry.width),
+                               dy: delta.y * size.height / max(1, geometry.height), at: anchor)
                 return true
             }
             appendScroll(gesture, at: now)
@@ -913,8 +925,8 @@ private final class DisplayLinkTarget: NSObject {
         view.adoptSurroundingText()
         view.layoutGame()
         view.layoutGPUStream()
-        view.layoutVideos()
         view.present()
+        view.layoutVideos()
     }
 }
 #endif

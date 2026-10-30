@@ -7,6 +7,39 @@ import QuartzCore
 
 @MainActor
 final class DesktopSurfaceLayoutTests: XCTestCase {
+    func testKeyboardSlotFitsRetainedPictureBeforeMetadataAndDecodeCatchUp() {
+        let surface = WindowSurface()
+        surface.resize(width: 1600, height: 1000)
+        let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+                                  overrideRedirect: false, surface: surface)
+        let content = RemoteWindowView(session: nil, window: remote)
+        content.pixelsPerPoint = 2
+        let tile = YardSurfaceView(content: content)
+        tile.natural = CGSize(width: 800, height: 500)
+        tile.stretch = true
+        // Metadata arrives ahead of the replacement picture, as FramePipeline permits.
+        remote.frame.size = CGSize(width: 1600, height: 520)
+        XCTAssertEqual(remote.presentationSize, CGSize(width: 1600, height: 1000))
+        for height in [500, 400, 300, 260, 300, 400, 500] {
+            tile.frame = CGRect(x: 0, y: 0, width: 800, height: height)
+            tile.setNeedsLayout()
+            tile.layoutIfNeeded()
+            XCTAssertEqual(content.frame.width / content.frame.height, 1.6, accuracy: 0.000001)
+            XCTAssertEqual(content.transform.a, content.transform.d, accuracy: 0.000001)
+            let localCenter = content.convert(CGPoint(x: content.frame.midX, y: content.frame.midY), from: tile)
+            XCTAssertEqual(content.pixelPoint(localCenter).x, 800, accuracy: 0.000001)
+            XCTAssertEqual(content.pixelPoint(localCenter).y, 260, accuracy: 0.000001)
+            XCTAssertEqual(content.layer.contentsGravity, .resizeAspect)
+        }
+        // The same callback used immediately before Metal presents the new drawable.
+        remote.adoptPictureSize(CGSize(width: 1600, height: 520))
+        content.onPictureSizeChanged?(remote.presentationSize)
+        tile.layoutIfNeeded()
+        XCTAssertEqual(content.bounds.size, CGSize(width: 800, height: 260))
+        XCTAssertEqual(content.frame.width / content.frame.height, 1600.0 / 520, accuracy: 0.000001)
+        content.attach(nil)
+    }
+
     func testHostedCardAndYardPropagateFullscreenCentering() throws {
         let model = AppModel(collection: .init(), startsConnections: false)
         let pixels = model.pixelsPerPoint

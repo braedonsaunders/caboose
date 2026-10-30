@@ -280,8 +280,8 @@ struct SwitchyardView: View {
             guard let tile = yard.tiles[window.id], let content = yard.contents[window.id] else { continue }
             let covering = yard.coverWindow == window.id
             let container = covering ? coverFrame(window.id, screen: size) : content
-            let natural = CGSize(width: window.frame.width / yard.pixelsPerPoint,
-                                 height: window.frame.height / yard.pixelsPerPoint)
+            let natural = CGSize(width: window.presentationSize.width / yard.pixelsPerPoint,
+                                 height: window.presentationSize.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
                                                        resizing: yard.stretches(window.id) || (covering && (yard.coverProgress > 0 || yard.carry != nil)),
                                                        fullscreen: window.isFullscreen)
