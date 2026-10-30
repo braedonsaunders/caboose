@@ -27,7 +27,7 @@ pub struct Grant {
 enum Phase { Idle, Ready, Lost }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum GrantPhase { Active, RevokeQueued, AwaitingRetirement }
+enum GrantPhase { Active, RevokeQueued, AwaitingRetirement, RetiredBeforeSendCallback }
 
 pub struct Grants {
     epoch: [u8; 16],
@@ -82,6 +82,10 @@ impl Grants {
                 *phase = GrantPhase::AwaitingRetirement;
                 Ok(())
             }
+            Some((current, GrantPhase::RetiredBeforeSendCallback)) if *current == grant => {
+                self.windows.remove(&grant.window);
+                self.finish_retirement()
+            }
             _ => Err(io::Error::other("stale grant revoke")),
         }
     }
@@ -94,6 +98,23 @@ impl Grants {
                 self.finish_retirement()
             }
             _ => Err(io::Error::other("stale surface retirement")),
+        }
+    }
+
+    pub fn surface_retired_by_identity(&mut self, epoch: [u8; 16], token: [u8; 16], generation: u64) -> io::Result<()> {
+        let entry = self.windows.values_mut().find(|(grant, _)|
+            grant.epoch == epoch && grant.token == token && grant.generation == generation)
+            .ok_or_else(|| io::Error::other("unknown surface retirement"))?;
+        let grant = entry.0;
+        match entry.1 {
+            GrantPhase::RevokeQueued => {
+                // The kernel send completion and control reply can be delivered
+                // to the event loop in either order; require both before reuse.
+                entry.1 = GrantPhase::RetiredBeforeSendCallback;
+                Ok(())
+            }
+            GrantPhase::AwaitingRetirement => self.surface_retired(grant),
+            _ => Err(io::Error::other("unexpected surface retirement")),
         }
     }
 
@@ -190,6 +211,19 @@ mod tests {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
         assert!(grants.bind(1, peer, &candidates).is_err());
+    }
+
+    #[test]
+    fn retirement_and_send_callbacks_can_arrive_in_either_order() {
+        let mut grants = Grants::new().unwrap();
+        grants.ready([1; 16], 1).unwrap();
+        let peer = (1000, 42, 123, 17);
+        let grant = grants.bind(1, peer, &[7]).unwrap();
+        grants.begin_revoke(7).unwrap();
+        grants.surface_retired_by_identity(grant.epoch, grant.token, grant.generation).unwrap();
+        assert!(grants.bind(1, peer, &[7]).is_err());
+        grants.revoke_sent(grant).unwrap();
+        assert!(grants.bind(1, peer, &[7]).is_ok());
     }
 
     #[test]

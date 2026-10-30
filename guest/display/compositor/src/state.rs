@@ -27,7 +27,7 @@ use smithay::utils::{Clock, IsAlive, Monotonic, Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     get_parent, is_sync_subsurface, with_surface_tree_downward, CompositorClientState, CompositorHandler,
-    CompositorState, SurfaceAttributes, TraversalAction,
+    BufferAssignment, CompositorState, SurfaceAttributes, TraversalAction,
 };
 use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::fractional_scale::{with_fractional_scale, FractionalScaleHandler};
@@ -302,6 +302,11 @@ impl State {
                     self.gpu_control_failed();
                 }
             }
+            Record::SurfaceRetired { epoch, grant, generation } => {
+                if self.gpu_grants.as_mut().is_none_or(|grants| grants.surface_retired_by_identity(epoch, grant, generation).is_err()) {
+                    self.gpu_control_failed();
+                }
+            }
             Record::Lifecycle { kind, executor, generation } => {
                 let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
                 match kind {
@@ -549,6 +554,20 @@ impl BufferHandler for State {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
+fn is_explicit_buffer_detach(buffer: Option<&BufferAssignment>) -> bool {
+    matches!(buffer, Some(BufferAssignment::Removed))
+}
+
+#[cfg(test)]
+mod gpu_detach_tests {
+    use super::{is_explicit_buffer_detach, BufferAssignment};
+    #[test]
+    fn only_explicit_null_buffer_is_a_detach() {
+        assert!(!is_explicit_buffer_detach(None));
+        assert!(is_explicit_buffer_detach(Some(&BufferAssignment::Removed)));
+    }
+}
+
 impl CompositorHandler for State {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor
@@ -562,6 +581,19 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // Smithay's renderer consumes this assignment, so inspect it first.
+        // A missing buffer assignment is not an explicit unmap.
+        let detached = smithay::wayland::compositor::with_states(surface, |states| {
+            is_explicit_buffer_detach(states.cached_state.get::<SurfaceAttributes>().current().buffer.as_ref())
+        });
+        if detached {
+            if let Some(id) = self.windows.by_surface(surface) {
+                let revoke = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+                if let Some(grant) = revoke {
+                    if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+                }
+            }
+        }
         on_commit_buffer_handler::<Self>(surface);
         let Renderer::Pixman(r) = &mut self.renderer;
         // Import now so a client's shm buffer is released as early as possible.

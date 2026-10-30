@@ -18,6 +18,7 @@ pub struct Bind {
 #[derive(Debug)]
 pub enum Record {
     Bind(Bind),
+    SurfaceRetired { epoch: [u8; 16], grant: [u8; 16], generation: u64 },
     Lifecycle { kind: u16, executor: [u8; 16], generation: u64 },
 }
 
@@ -70,6 +71,13 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
                 (u64_at(data, 16), u64_at(data, 24), u32_at(data, 32), u32_at(data, 36), u64_at(data, 40), u32_at(data, 48));
             if request == 0 || process == 0 || pid == 0 || start_ticks == 0 || object == 0 { return Err(invalid()); }
             Ok(Record::Bind(Bind { request, process, uid, pid, start_ticks, object, pidfd: fds.pop().unwrap() }))
+        }
+        7 if data.len() == 64 && fds.is_empty() && u64_at(data, 56) == 0 => {
+            let epoch: [u8; 16] = data[16..32].try_into().unwrap();
+            let grant: [u8; 16] = data[32..48].try_into().unwrap();
+            let generation = u64_at(data, 48);
+            if epoch == [0; 16] || grant == [0; 16] || generation == 0 { return Err(invalid()); }
+            Ok(Record::SurfaceRetired { epoch, grant, generation })
         }
         kind @ 4..=6 if data.len() == 48 && fds.is_empty() && u64_at(data, 40) == 0 => {
             let executor: [u8; 16] = data[16..32].try_into().unwrap();
@@ -191,5 +199,15 @@ mod tests {
         assert_eq!(revoke.len(), 64);
         assert_eq!(u16_at(&revoke, 6), 3);
         assert_eq!(u64_at(&revoke, 48), 8);
+        let (mut sender, receiver) = pair();
+        let mut retired = revoke;
+        retired[6..8].copy_from_slice(&7u16.to_le_bytes());
+        sender.write_all(&retired).unwrap();
+        match receive(&receiver).unwrap() {
+            Record::SurfaceRetired { epoch, grant, generation } => {
+                assert_eq!(epoch, [1; 16]); assert_eq!(grant, [2; 16]); assert_eq!(generation, 8);
+            }
+            _ => panic!("expected surface retirement"),
+        }
     }
 }

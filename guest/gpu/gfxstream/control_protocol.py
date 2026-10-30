@@ -41,6 +41,13 @@ class RevokeGrant:
 
 
 @dataclass(frozen=True)
+class GrantRetired:
+    epoch: bytes
+    grant: bytes
+    generation: int
+
+
+@dataclass(frozen=True)
 class ExecutorLifecycle:
     kind: int  # 4 ready, 5 lost, 6 retired
     executor: bytes
@@ -82,6 +89,15 @@ def encode_revoke(value):
         raise ControlError('revoke field out of range') from error
 
 
+def encode_grant_retired(value):
+    if not _nonzero(value.epoch) or not _nonzero(value.grant) or not value.generation:
+        raise ControlError('invalid grant retirement')
+    try:
+        return _REVOKE.pack(b'CGB1', 1, 7, _REVOKE.size, 0, value.epoch, value.grant, value.generation, 0)
+    except (struct.error, OverflowError) as error:
+        raise ControlError('retirement field out of range') from error
+
+
 def encode_lifecycle(value):
     if value.kind not in (4, 5, 6) or not _nonzero(value.executor) or not value.generation:
         raise ControlError('invalid executor lifecycle')
@@ -114,12 +130,16 @@ def decode(data, fd_count):
         value = BindResult(request, status, epoch, grant, window, generation)
         encode_result(value)
         return value
-    if kind == 3:
-        if length != _REVOKE.size or fd_count: raise ControlError('invalid revoke record')
+    if kind in (3, 7):
+        if length != _REVOKE.size or fd_count: raise ControlError('invalid revoke/retirement record')
         _, _, _, _, _, epoch, grant, generation, tail = _REVOKE.unpack(data)
         if tail: raise ControlError('nonzero reserved field')
-        value = RevokeGrant(epoch, grant, generation)
-        encode_revoke(value)
+        if kind == 3:
+            value = RevokeGrant(epoch, grant, generation)
+            encode_revoke(value)
+        else:
+            value = GrantRetired(epoch, grant, generation)
+            encode_grant_retired(value)
         return value
     if kind in (4, 5, 6):
         if length != _LIFECYCLE.size or fd_count: raise ControlError('invalid lifecycle record')
