@@ -1,13 +1,26 @@
-//! Lossless UI tile codec (`Pal2Lz4`, `Pal16Lz4`, `RgbaLz4`), XXH64 tile hashing,
-//! and scanline-hash `CopyRect` scroll detection for the Caboose Surface & Tile Atlas.
+//! Surface Atlas Engine (Layer 0) lossless tile codec, XXH64 tile hashing,
+//! raw LZ4 block compression/decompression, and vertical scroll `CopyRect` detection.
+//!
+//! All algorithms in this module are pure Rust with zero external C/crate dependencies
+//! so the protocol crate builds identically across Linux, macOS, and WASM targets.
 
 use crate::{AtlasTileFormat, Rect, SurfaceCopy};
 
-const PRIME64_1: u64 = 11_400_714_785_074_694_791;
-const PRIME64_2: u64 = 14_029_467_366_897_019_727;
-const PRIME64_3: u64 = 1_609_587_929_392_839_161;
-const PRIME64_4: u64 = 9_650_029_242_287_828_579;
-const PRIME64_5: u64 = 2_870_177_450_012_600_261;
+const PRIME64_1: u64 = 0x9E37_79B1_85EB_CA87;
+const PRIME64_2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+const PRIME64_3: u64 = 0x1656_67B1_9E37_79F9;
+const PRIME64_4: u64 = 0x85EB_CA77_C2B2_AE63;
+const PRIME64_5: u64 = 0x27D4_EB2F_1656_67C5;
+
+#[inline]
+fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(buf[offset..offset + 8].try_into().unwrap())
+}
+
+#[inline]
+fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap())
+}
 
 #[inline]
 fn xxh64_round(acc: u64, input: u64) -> u64 {
@@ -24,23 +37,19 @@ fn xxh64_merge_round(mut acc: u64, val: u64) -> u64 {
 }
 
 #[inline]
-fn read_u64_le(data: &[u8], offset: usize) -> u64 {
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(&data[offset..offset + 8]);
-    u64::from_le_bytes(bytes)
+fn xxh64_avalanche(mut h: u64) -> u64 {
+    h ^= h >> 33;
+    h = h.wrapping_mul(PRIME64_2);
+    h ^= h >> 29;
+    h = h.wrapping_mul(PRIME64_3);
+    h ^= h >> 32;
+    h
 }
 
-#[inline]
-fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    let mut bytes = [0u8; 4];
-    bytes.copy_from_slice(&data[offset..offset + 4]);
-    u32::from_le_bytes(bytes)
-}
-
-/// Computes the canonical 64-bit XXH64 digest of `data` with `seed`.
+/// Computes the canonical 64-bit xxHash (`XXH64`) of `data` with `seed`.
 pub fn xxh64(data: &[u8], seed: u64) -> u64 {
     let len = data.len();
-    let mut offset = 0usize;
+    let mut p = 0usize;
 
     let mut h64 = if len >= 32 {
         let mut v1 = seed.wrapping_add(PRIME64_1).wrapping_add(PRIME64_2);
@@ -48,12 +57,16 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
         let mut v3 = seed;
         let mut v4 = seed.wrapping_sub(PRIME64_1);
 
-        while offset + 32 <= len {
-            v1 = xxh64_round(v1, read_u64_le(data, offset));
-            v2 = xxh64_round(v2, read_u64_le(data, offset + 8));
-            v3 = xxh64_round(v3, read_u64_le(data, offset + 16));
-            v4 = xxh64_round(v4, read_u64_le(data, offset + 24));
-            offset += 32;
+        let limit = len - 32;
+        while p <= limit {
+            v1 = xxh64_round(v1, read_u64_le(data, p));
+            p += 8;
+            v2 = xxh64_round(v2, read_u64_le(data, p));
+            p += 8;
+            v3 = xxh64_round(v3, read_u64_le(data, p));
+            p += 8;
+            v4 = xxh64_round(v4, read_u64_le(data, p));
+            p += 8;
         }
 
         let mut h = v1
@@ -72,44 +85,40 @@ pub fn xxh64(data: &[u8], seed: u64) -> u64 {
 
     h64 = h64.wrapping_add(len as u64);
 
-    while offset + 8 <= len {
-        let k1 = xxh64_round(0, read_u64_le(data, offset));
+    while p + 8 <= len {
+        let k1 = xxh64_round(0, read_u64_le(data, p));
         h64 ^= k1;
         h64 = h64
             .rotate_left(27)
             .wrapping_mul(PRIME64_1)
             .wrapping_add(PRIME64_4);
-        offset += 8;
+        p += 8;
     }
 
-    if offset + 4 <= len {
-        h64 ^= (read_u32_le(data, offset) as u64).wrapping_mul(PRIME64_1);
+    if p + 4 <= len {
+        h64 ^= (read_u32_le(data, p) as u64).wrapping_mul(PRIME64_1);
         h64 = h64
             .rotate_left(23)
             .wrapping_mul(PRIME64_2)
             .wrapping_add(PRIME64_3);
-        offset += 4;
+        p += 4;
     }
 
-    while offset < len {
-        h64 ^= (data[offset] as u64).wrapping_mul(PRIME64_5);
+    while p < len {
+        h64 ^= (data[p] as u64).wrapping_mul(PRIME64_5);
         h64 = h64.rotate_left(11).wrapping_mul(PRIME64_1);
-        offset += 1;
+        p += 1;
     }
 
-    h64 ^= h64 >> 33;
-    h64 = h64.wrapping_mul(PRIME64_2);
-    h64 ^= h64 >> 29;
-    h64 = h64.wrapping_mul(PRIME64_3);
-    h64 ^= h64 >> 32;
-    h64
+    xxh64_avalanche(h64)
 }
 
 #[inline]
-fn lz4_hash4(val: u32) -> usize {
-    ((val.wrapping_mul(2_654_435_761)) >> 19) as usize
+fn lz4_hash4(v: u32) -> usize {
+    ((v.wrapping_mul(2654435761)) >> 20) as usize
 }
 
+#[inline]
 fn write_lz4_len(out: &mut Vec<u8>, mut rem: usize) {
     while rem >= 255 {
         out.push(255);
@@ -118,8 +127,7 @@ fn write_lz4_len(out: &mut Vec<u8>, mut rem: usize) {
     out.push(rem as u8);
 }
 
-/// Compresses `input` into a standard LZ4 raw block prefixed by a 4-byte little-endian
-/// uncompressed size (compatible with `lz4_flex::block::compress_prepend_size`).
+/// Compresses `input` into an LZ4 raw block prefixed by its 4-byte little-endian uncompressed size.
 pub fn lz4_compress_prepend_size(input: &[u8]) -> Vec<u8> {
     let len = input.len();
     let mut out = Vec::with_capacity(4 + len + (len / 255) + 16);
@@ -136,23 +144,21 @@ pub fn lz4_compress_prepend_size(input: &[u8]) -> Vec<u8> {
         return out;
     }
 
-    let mut dict = [0u32; 8192];
+    let mut dict = [0u32; 4096];
     let mut anchor = 0usize;
     let mut ip = 0usize;
     let match_limit = len - 5;
     let mflimit = len - 12;
 
-    ip += 1;
     while ip <= mflimit {
         let seq = read_u32_le(input, ip);
         let h = lz4_hash4(seq);
         let ref_pos = dict[h] as usize;
         dict[h] = ip as u32;
 
-        if ip.saturating_sub(ref_pos) <= 0xFFFF && read_u32_le(input, ref_pos) == seq {
+        let offset = ip.wrapping_sub(ref_pos);
+        if offset > 0 && offset <= 0xFFFF && read_u32_le(input, ref_pos) == seq {
             let lit_len = ip - anchor;
-            let offset = (ip - ref_pos) as u16;
-
             let mut match_len = 4usize;
             while ip + match_len < match_limit && input[ref_pos + match_len] == input[ip + match_len] {
                 match_len += 1;
@@ -167,6 +173,7 @@ pub fn lz4_compress_prepend_size(input: &[u8]) -> Vec<u8> {
             }
             out.extend_from_slice(&input[anchor..ip]);
 
+            let offset = offset as u16;
             out.extend_from_slice(&offset.to_le_bytes());
 
             if match_len - 4 >= 15 {
@@ -489,6 +496,47 @@ pub fn detect_scroll_copy(
         return None;
     }
 
+    // Pre-index informative row hash matches by shift `dy` in O(H) when `total_informative >= 2`
+    // so non-matching shifts are skipped in O(1) without scanning all `overlap` rows.
+    let mut info_hits = Vec::new();
+    let mut precomputed_info = false;
+    if total_informative >= 2 && h <= u16::MAX as usize {
+        let table_size = (2 * max_dy + 1) as usize;
+        info_hits.resize(table_size, 0usize);
+        let mut head = [u16::MAX; 1024];
+        let mut next_prev = vec![u16::MAX; h];
+        for (p_idx, &ph) in prev_hashes.iter().enumerate() {
+            let bucket = (ph as usize) & 1023;
+            next_prev[p_idx] = head[bucket];
+            head[bucket] = p_idx as u16;
+        }
+        let max_steps = h.saturating_mul(16).max(1024);
+        let mut steps = 0usize;
+        precomputed_info = true;
+        'info_scan: for c_idx in 1..h {
+            if !curr_informative[c_idx] {
+                continue;
+            }
+            let ch = curr_hashes[c_idx];
+            let mut p = head[(ch as usize) & 1023];
+            while p != u16::MAX {
+                steps += 1;
+                if steps > max_steps {
+                    precomputed_info = false;
+                    break 'info_scan;
+                }
+                let p_idx = p as usize;
+                if prev_hashes[p_idx] == ch {
+                    let dy = (c_idx as i32) - (p_idx as i32);
+                    if dy != 0 && dy.abs() <= max_dy {
+                        info_hits[(dy + max_dy) as usize] += 1;
+                    }
+                }
+                p = next_prev[p_idx];
+            }
+        }
+    }
+
     let mut best_dy = 0i32;
     let mut best_info_matches = 0usize;
     let mut best_matches = 0usize;
@@ -496,6 +544,12 @@ pub fn detect_scroll_copy(
     for abs_dy in 1..=max_dy {
         for sign in [-1i32, 1i32] {
             let dy = abs_dy * sign;
+            if precomputed_info {
+                let fast_info = info_hits[(dy + max_dy) as usize];
+                if fast_info == 0 || fast_info < best_info_matches {
+                    continue;
+                }
+            }
             let (curr_start, prev_start, overlap) = if dy < 0 {
                 let shift = (-dy) as usize;
                 (0usize, shift, h - shift)

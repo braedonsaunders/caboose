@@ -116,7 +116,7 @@ public enum SurfaceAtlasCodec {
         }
     }
 
-    /// Converts RGBA8888 pixel bytes to BGRA8888 pixel bytes.
+    /// Converts RGBA8888 pixel bytes to BGRA8888 pixel bytes (and vice versa).
     public static func rgbaToBgra(_ rgba: Data) -> Data {
         let count = rgba.count
         guard count > 0, count % 4 == 0 else { return rgba }
@@ -347,9 +347,10 @@ public final class TileAtlasCache: @unchecked Sendable {
         order.removeAll(keepingCapacity: false)
     }
 
-    public func insert(hash: UInt64, rgba: Data) {
-        guard rgba.count == Self.tileByteSize else { return }
+    @discardableResult
+    public func insert(hash: UInt64, rgba: Data) -> Data {
         let bgra = SurfaceAtlasCodec.rgbaToBgra(rgba)
+        guard rgba.count == Self.tileByteSize else { return bgra }
         lock.lock()
         defer { lock.unlock() }
         if entries[hash] != nil {
@@ -362,6 +363,7 @@ public final class TileAtlasCache: @unchecked Sendable {
         }
         entries[hash] = CachedTile(rgba: rgba, bgra: bgra)
         order.append(hash)
+        return bgra
     }
 
     public func get(hash: UInt64) -> Data? {
@@ -373,6 +375,17 @@ public final class TileAtlasCache: @unchecked Sendable {
             order.append(hash)
         }
         return entry.rgba
+    }
+
+    public func getBgra(hash: UInt64) -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[hash] else { return nil }
+        if order.last != hash, let idx = order.firstIndex(of: hash) {
+            order.remove(at: idx)
+            order.append(hash)
+        }
+        return entry.bgra
     }
 
     public func getPair(hash: UInt64) -> (rgba: Data, bgra: Data)? {
@@ -387,12 +400,11 @@ public final class TileAtlasCache: @unchecked Sendable {
     }
 }
 
-/// Per-window RGBA8888 / BGRA8888 backing buffer & compositor for `surface.batch` frames.
+/// Per-window BGRA8888 backing buffer & compositor for `surface.batch` frames.
 public final class SurfaceAtlasRenderer: @unchecked Sendable {
     private struct WindowBuffer {
         var width: Int
         var height: Int
-        var bytes: Data
         var bgraBytes: Data
     }
 
@@ -409,13 +421,17 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
 
     public func rgbaBytes(forWindow id: Int) -> Data? {
         lock.lock()
-        defer { lock.unlock() }
-        return windows[id]?.bytes
+        guard let bgra = windows[id]?.bgraBytes else {
+            lock.unlock()
+            return nil
+        }
+        lock.unlock()
+        return SurfaceAtlasCodec.rgbaToBgra(bgra)
     }
 
     /// Applies `batch` in exact protocol order (`copies` -> `fills` -> `refs` -> `tiles`),
-    /// executes `SurfaceCopy` blits on the GPU, and uploads only the newly exposed dirty
-    /// BGRA strip directly to `surface`.
+    /// executes `SurfaceCopy` blits on the GPU, and uploads only the coalesced dirty
+    /// BGRA row-bands directly to `surface`.
     public func applyAndUpload(_ batch: SurfaceBatch, cache: TileAtlasCache, to surface: WindowSurface) -> Bool {
         let w = Int(batch.size.width)
         let h = Int(batch.size.height)
@@ -445,7 +461,6 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
             buf = WindowBuffer(
                 width: w,
                 height: h,
-                bytes: Data(count: totalBytes),
                 bgraBytes: Data(count: totalBytes)
             )
             isNewBuf = true
@@ -453,7 +468,7 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
 
         let surfaceNeedsResize = surface.pixelSize != CGSize(width: w, height: h)
         let fullReplacement = isNewBuf || batch.keyframe || surfaceNeedsResize
-        guard let dirty = applyToBuffer(
+        guard let dirtyRects = applyToBuffer(
             batch,
             cache: cache,
             buf: &buf,
@@ -473,7 +488,7 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         let uploaded = buf.bgraBytes.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             surface.applyAtlasBatch(
                 copies: batch.copies,
-                dirtyRect: dirty.width > 0 && dirty.height > 0 ? dirty : nil,
+                dirtyRects: dirtyRects,
                 bgraBase: raw.baseAddress,
                 rowBytes: w * 4,
                 expectedSize: CGSize(width: w, height: h),
@@ -509,7 +524,6 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
             buf = WindowBuffer(
                 width: w,
                 height: h,
-                bytes: Data(count: totalBytes),
                 bgraBytes: Data(count: totalBytes)
             )
             isNewBuf = true
@@ -530,10 +544,11 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         }
 
         windows[batch.window] = buf
-        let snapshot = buf.bytes
+        let bgraSnapshot = buf.bgraBytes
         lock.unlock()
 
-        guard let provider = CGDataProvider(data: snapshot as CFData),
+        let rgbaSnapshot = SurfaceAtlasCodec.rgbaToBgra(bgraSnapshot)
+        guard let provider = CGDataProvider(data: rgbaSnapshot as CFData),
               let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         return CGImage(
             width: w,
@@ -556,18 +571,18 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         buf: inout WindowBuffer,
         fullSurfaceDirty: Bool,
         markCopiesDirty: Bool
-    ) -> (x: Int, y: Int, width: Int, height: Int)? {
+    ) -> [(x: Int, y: Int, width: Int, height: Int)]? {
         let w = buf.width
         let h = buf.height
 
-        var resolvedRefs: [(x: Int, y: Int, rgba: Data, bgra: Data)] = []
+        var resolvedRefs: [(x: Int, y: Int, bgra: Data)] = []
         resolvedRefs.reserveCapacity(batch.refs.count)
         for ref in batch.refs {
-            guard let pair = cache.getPair(hash: ref.hash) else { return nil }
-            resolvedRefs.append((x: ref.x, y: ref.y, rgba: pair.rgba, bgra: pair.bgra))
+            guard let bgra = cache.getBgra(hash: ref.hash) else { return nil }
+            resolvedRefs.append((x: ref.x, y: ref.y, bgra: bgra))
         }
 
-        var decodedTiles: [(x: Int, y: Int, w: Int, h: Int, rgba: Data, bgra: Data)] = []
+        var decodedTiles: [(x: Int, y: Int, w: Int, h: Int, bgra: Data)] = []
         decodedTiles.reserveCapacity(batch.tiles.count)
         for tile in batch.tiles {
             guard let rgba = SurfaceAtlasCodec.decodeTile(tile) else { return nil }
@@ -575,26 +590,38 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
             let th = Int(tile.rect.height)
             let bgra: Data
             if let hash = tile.hash, tw == 64, th == 64 {
-                cache.insert(hash: hash, rgba: rgba)
-                bgra = cache.getPair(hash: hash)?.bgra ?? SurfaceAtlasCodec.rgbaToBgra(rgba)
+                bgra = cache.insert(hash: hash, rgba: rgba)
             } else {
                 bgra = SurfaceAtlasCodec.rgbaToBgra(rgba)
             }
-            decodedTiles.append((x: Int(tile.rect.minX), y: Int(tile.rect.minY), w: tw, h: th, rgba: rgba, bgra: bgra))
+            decodedTiles.append((x: Int(tile.rect.minX), y: Int(tile.rect.minY), w: tw, h: th, bgra: bgra))
         }
 
-        var dirtyX0 = fullSurfaceDirty ? 0 : w
-        var dirtyY0 = fullSurfaceDirty ? 0 : h
-        var dirtyX1 = fullSurfaceDirty ? w : 0
-        var dirtyY1 = fullSurfaceDirty ? h : 0
+        let bandHeight = 64
+        let numBands = max(1, (h + bandHeight - 1) / bandHeight)
+        var bands = [(x0: Int, y0: Int, x1: Int, y1: Int)](
+            repeating: (x0: w, y0: h, x1: 0, y1: 0),
+            count: fullSurfaceDirty ? 0 : numBands
+        )
 
         @inline(__always)
         func markDirty(x0: Int, y0: Int, x1: Int, y1: Int) {
-            guard x0 < x1, y0 < y1 else { return }
-            if x0 < dirtyX0 { dirtyX0 = x0 }
-            if y0 < dirtyY0 { dirtyY0 = y0 }
-            if x1 > dirtyX1 { dirtyX1 = x1 }
-            if y1 > dirtyY1 { dirtyY1 = y1 }
+            guard !fullSurfaceDirty else { return }
+            let cx0 = max(0, x0)
+            let cy0 = max(0, y0)
+            let cx1 = min(w, x1)
+            let cy1 = min(h, y1)
+            guard cx0 < cx1, cy0 < cy1 else { return }
+            let bStart = cy0 / bandHeight
+            let bEnd = (cy1 - 1) / bandHeight
+            for b in bStart ... bEnd {
+                let by0 = max(cy0, b * bandHeight)
+                let by1 = min(cy1, (b + 1) * bandHeight)
+                if cx0 < bands[b].x0 { bands[b].x0 = cx0 }
+                if by0 < bands[b].y0 { bands[b].y0 = by0 }
+                if cx1 > bands[b].x1 { bands[b].x1 = cx1 }
+                if by1 > bands[b].y1 { bands[b].y1 = by1 }
+            }
         }
 
         // 1. Copies
@@ -612,28 +639,32 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
                     let dx0 = dstX0 + colStart
                     let sx0 = dx0 - copy.dx
                     let copyByteCount = (colEnd - colStart) * 4
-                    buf.bytes.withUnsafeMutableBytes { (rgbaRaw: UnsafeMutableRawBufferPointer) in
-                        buf.bgraBytes.withUnsafeMutableBytes { (bgraRaw: UnsafeMutableRawBufferPointer) in
-                            guard let rgbaBase = rgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                                  let bgraBase = bgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                            if copy.dy > 0 {
-                                for row in (rowStart ..< rowEnd).reversed() {
-                                    let dy = dstY0 + row
-                                    let sy = dy - copy.dy
-                                    let sOff = (sy * w + sx0) * 4
-                                    let dOff = (dy * w + dx0) * 4
-                                    memmove(rgbaBase.advanced(by: dOff), rgbaBase.advanced(by: sOff), copyByteCount)
-                                    memmove(bgraBase.advanced(by: dOff), bgraBase.advanced(by: sOff), copyByteCount)
-                                }
-                            } else {
-                                for row in rowStart ..< rowEnd {
-                                    let dy = dstY0 + row
-                                    let sy = dy - copy.dy
-                                    let sOff = (sy * w + sx0) * 4
-                                    let dOff = (dy * w + dx0) * 4
-                                    memmove(rgbaBase.advanced(by: dOff), rgbaBase.advanced(by: sOff), copyByteCount)
-                                    memmove(bgraBase.advanced(by: dOff), bgraBase.advanced(by: sOff), copyByteCount)
-                                }
+                    buf.bgraBytes.withUnsafeMutableBytes { (bgraRaw: UnsafeMutableRawBufferPointer) in
+                        guard let bgraBase = bgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                        if dx0 == 0 && sx0 == 0 && copyByteCount == w * 4 {
+                            let firstDstRow = dstY0 + rowStart
+                            let firstSrcRow = firstDstRow - copy.dy
+                            let totalCopyBytes = (rowEnd - rowStart) * copyByteCount
+                            memmove(
+                                bgraBase.advanced(by: firstDstRow * copyByteCount),
+                                bgraBase.advanced(by: firstSrcRow * copyByteCount),
+                                totalCopyBytes
+                            )
+                        } else if copy.dy > 0 {
+                            for row in (rowStart ..< rowEnd).reversed() {
+                                let dy = dstY0 + row
+                                let sy = dy - copy.dy
+                                let sOff = (sy * w + sx0) * 4
+                                let dOff = (dy * w + dx0) * 4
+                                memmove(bgraBase.advanced(by: dOff), bgraBase.advanced(by: sOff), copyByteCount)
+                            }
+                        } else {
+                            for row in rowStart ..< rowEnd {
+                                let dy = dstY0 + row
+                                let sy = dy - copy.dy
+                                let sOff = (sy * w + sx0) * 4
+                                let dOff = (dy * w + dx0) * 4
+                                memmove(bgraBase.advanced(by: dOff), bgraBase.advanced(by: sOff), copyByteCount)
                             }
                         }
                     }
@@ -642,41 +673,33 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
                     }
                 }
             } else {
-                let prevRgba = buf.bytes
                 let prevBgra = buf.bgraBytes
-                prevRgba.withUnsafeBytes { (srcRgbaRaw: UnsafeRawBufferPointer) in
-                    prevBgra.withUnsafeBytes { (srcBgraRaw: UnsafeRawBufferPointer) in
-                        buf.bytes.withUnsafeMutableBytes { (dstRgbaRaw: UnsafeMutableRawBufferPointer) in
-                            buf.bgraBytes.withUnsafeMutableBytes { (dstBgraRaw: UnsafeMutableRawBufferPointer) in
-                                guard let srcRgba = srcRgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                                      let srcBgra = srcBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                                      let dstRgba = dstRgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                                      let dstBgra = dstBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                                for copy in batch.copies {
-                                    let dstX0 = Int(copy.rect.minX)
-                                    let dstY0 = Int(copy.rect.minY)
-                                    let cw = Int(copy.rect.width)
-                                    let ch = Int(copy.rect.height)
-                                    let colStart = max(0, max(-dstX0, copy.dx - dstX0))
-                                    let colEnd = min(cw, min(w - dstX0, w + copy.dx - dstX0))
-                                    let rowStart = max(0, max(-dstY0, copy.dy - dstY0))
-                                    let rowEnd = min(ch, min(h - dstY0, h + copy.dy - dstY0))
-                                    guard colStart < colEnd, rowStart < rowEnd else { continue }
-                                    let dx0 = dstX0 + colStart
-                                    let sx0 = dx0 - copy.dx
-                                    let copyByteCount = (colEnd - colStart) * 4
-                                    for row in rowStart ..< rowEnd {
-                                        let dy = dstY0 + row
-                                        let sy = dy - copy.dy
-                                        let sOff = (sy * w + sx0) * 4
-                                        let dOff = (dy * w + dx0) * 4
-                                        dstRgba.advanced(by: dOff).update(from: srcRgba.advanced(by: sOff), count: copyByteCount)
-                                        dstBgra.advanced(by: dOff).update(from: srcBgra.advanced(by: sOff), count: copyByteCount)
-                                    }
-                                    if markCopiesDirty {
-                                        markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
-                                    }
-                                }
+                prevBgra.withUnsafeBytes { (srcBgraRaw: UnsafeRawBufferPointer) in
+                    buf.bgraBytes.withUnsafeMutableBytes { (dstBgraRaw: UnsafeMutableRawBufferPointer) in
+                        guard let srcBgra = srcBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                              let dstBgra = dstBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                        for copy in batch.copies {
+                            let dstX0 = Int(copy.rect.minX)
+                            let dstY0 = Int(copy.rect.minY)
+                            let cw = Int(copy.rect.width)
+                            let ch = Int(copy.rect.height)
+                            let colStart = max(0, max(-dstX0, copy.dx - dstX0))
+                            let colEnd = min(cw, min(w - dstX0, w + copy.dx - dstX0))
+                            let rowStart = max(0, max(-dstY0, copy.dy - dstY0))
+                            let rowEnd = min(ch, min(h - dstY0, h + copy.dy - dstY0))
+                            guard colStart < colEnd, rowStart < rowEnd else { continue }
+                            let dx0 = dstX0 + colStart
+                            let sx0 = dx0 - copy.dx
+                            let copyByteCount = (colEnd - colStart) * 4
+                            for row in rowStart ..< rowEnd {
+                                let dy = dstY0 + row
+                                let sy = dy - copy.dy
+                                let sOff = (sy * w + sx0) * 4
+                                let dOff = (dy * w + dx0) * 4
+                                dstBgra.advanced(by: dOff).update(from: srcBgra.advanced(by: sOff), count: copyByteCount)
+                            }
+                            if markCopiesDirty {
+                                markDirty(x0: dx0, y0: dstY0 + rowStart, x1: dstX0 + colEnd, y1: dstY0 + rowEnd)
                             }
                         }
                     }
@@ -686,30 +709,29 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
 
         // 2. Fills
         if !batch.fills.isEmpty {
-            buf.bytes.withUnsafeMutableBytes { (rgbaRaw: UnsafeMutableRawBufferPointer) in
-                buf.bgraBytes.withUnsafeMutableBytes { (bgraRaw: UnsafeMutableRawBufferPointer) in
-                    guard let rgbaBase = rgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                          let bgraBase = bgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                    for fill in batch.fills {
-                        let x0 = max(0, Int(fill.rect.minX))
-                        let y0 = max(0, Int(fill.rect.minY))
-                        let x1 = min(w, Int(fill.rect.minX) + Int(fill.rect.width))
-                        let y1 = min(h, Int(fill.rect.minY) + Int(fill.rect.height))
-                        guard x0 < x1, y0 < y1 else { continue }
-                        let r = UInt8((fill.rgba >> 24) & 0xFF)
-                        let g = UInt8((fill.rgba >> 16) & 0xFF)
-                        let b = UInt8((fill.rgba >> 8) & 0xFF)
-                        let a = UInt8(fill.rgba & 0xFF)
-                        var rgbaPattern = UInt32(littleEndian: UInt32(r) | (UInt32(g) << 8) | (UInt32(b) << 16) | (UInt32(a) << 24))
-                        var bgraPattern = UInt32(littleEndian: UInt32(b) | (UInt32(g) << 8) | (UInt32(r) << 16) | (UInt32(a) << 24))
-                        let rowByteCount = (x1 - x0) * 4
+            buf.bgraBytes.withUnsafeMutableBytes { (bgraRaw: UnsafeMutableRawBufferPointer) in
+                guard let bgraBase = bgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                for fill in batch.fills {
+                    let x0 = max(0, Int(fill.rect.minX))
+                    let y0 = max(0, Int(fill.rect.minY))
+                    let x1 = min(w, Int(fill.rect.minX) + Int(fill.rect.width))
+                    let y1 = min(h, Int(fill.rect.minY) + Int(fill.rect.height))
+                    guard x0 < x1, y0 < y1 else { continue }
+                    let r = UInt8((fill.rgba >> 24) & 0xFF)
+                    let g = UInt8((fill.rgba >> 16) & 0xFF)
+                    let b = UInt8((fill.rgba >> 8) & 0xFF)
+                    let a = UInt8(fill.rgba & 0xFF)
+                    var bgraPattern = UInt32(littleEndian: UInt32(b) | (UInt32(g) << 8) | (UInt32(r) << 16) | (UInt32(a) << 24))
+                    let rowByteCount = (x1 - x0) * 4
+                    if x0 == 0 && x1 == w {
+                        memset_pattern4(bgraBase.advanced(by: y0 * w * 4), &bgraPattern, (y1 - y0) * rowByteCount)
+                    } else {
                         for y in y0 ..< y1 {
                             let rowOff = (y * w + x0) * 4
-                            memset_pattern4(rgbaBase.advanced(by: rowOff), &rgbaPattern, rowByteCount)
                             memset_pattern4(bgraBase.advanced(by: rowOff), &bgraPattern, rowByteCount)
                         }
-                        markDirty(x0: x0, y0: y0, x1: x1, y1: y1)
                     }
+                    markDirty(x0: x0, y0: y0, x1: x1, y1: y1)
                 }
             }
         }
@@ -717,14 +739,12 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         // 3. Refs (64x64 cached tiles)
         if !resolvedRefs.isEmpty {
             for ref in resolvedRefs {
-                blitTilePair(
-                    rgbaTile: ref.rgba,
+                blitBgraTile(
                     bgraTile: ref.bgra,
                     tileX: ref.x,
                     tileY: ref.y,
                     tileW: 64,
                     tileH: 64,
-                    intoRgba: &buf.bytes,
                     intoBgra: &buf.bgraBytes,
                     surfaceW: w,
                     surfaceH: h
@@ -736,14 +756,12 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         // 4. New tiles
         if !decodedTiles.isEmpty {
             for tile in decodedTiles {
-                blitTilePair(
-                    rgbaTile: tile.rgba,
+                blitBgraTile(
                     bgraTile: tile.bgra,
                     tileX: tile.x,
                     tileY: tile.y,
                     tileW: tile.w,
                     tileH: tile.h,
-                    intoRgba: &buf.bytes,
                     intoBgra: &buf.bgraBytes,
                     surfaceW: w,
                     surfaceH: h
@@ -752,20 +770,33 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
             }
         }
 
-        if dirtyX0 < dirtyX1 && dirtyY0 < dirtyY1 {
-            return (x: dirtyX0, y: dirtyY0, width: dirtyX1 - dirtyX0, height: dirtyY1 - dirtyY0)
+        if fullSurfaceDirty {
+            return [(x: 0, y: 0, width: w, height: h)]
         }
-        return (x: 0, y: 0, width: 0, height: 0)
+
+        var dirtyRects: [(x: Int, y: Int, width: Int, height: Int)] = []
+        for b in bands {
+            guard b.x0 < b.x1, b.y0 < b.y1 else { continue }
+            let bw = b.x1 - b.x0
+            let bh = b.y1 - b.y0
+            if let last = dirtyRects.last,
+               last.x == b.x0,
+               last.width == bw,
+               last.y + last.height == b.y0 {
+                dirtyRects[dirtyRects.count - 1].height += bh
+            } else {
+                dirtyRects.append((x: b.x0, y: b.y0, width: bw, height: bh))
+            }
+        }
+        return dirtyRects
     }
 
-    private func blitTilePair(
-        rgbaTile: Data,
+    private func blitBgraTile(
         bgraTile: Data,
         tileX: Int,
         tileY: Int,
         tileW: Int,
         tileH: Int,
-        intoRgba surfaceRgba: inout Data,
         intoBgra surfaceBgra: inout Data,
         surfaceW: Int,
         surfaceH: Int
@@ -776,23 +807,16 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         let y1 = min(surfaceH, tileY + tileH)
         guard x0 < x1, y0 < y1 else { return }
         let count = (x1 - x0) * 4
-        rgbaTile.withUnsafeBytes { (srcRgbaRaw: UnsafeRawBufferPointer) in
-            bgraTile.withUnsafeBytes { (srcBgraRaw: UnsafeRawBufferPointer) in
-                surfaceRgba.withUnsafeMutableBytes { (dstRgbaRaw: UnsafeMutableRawBufferPointer) in
-                    surfaceBgra.withUnsafeMutableBytes { (dstBgraRaw: UnsafeMutableRawBufferPointer) in
-                        guard let srcRgba = srcRgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                              let srcBgra = srcBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                              let dstRgba = dstRgbaRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                              let dstBgra = dstBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-                        for y in y0 ..< y1 {
-                            let ty = y - tileY
-                            let tx = x0 - tileX
-                            let sOff = (ty * tileW + tx) * 4
-                            let dOff = (y * surfaceW + x0) * 4
-                            dstRgba.advanced(by: dOff).update(from: srcRgba.advanced(by: sOff), count: count)
-                            dstBgra.advanced(by: dOff).update(from: srcBgra.advanced(by: sOff), count: count)
-                        }
-                    }
+        bgraTile.withUnsafeBytes { (srcBgraRaw: UnsafeRawBufferPointer) in
+            surfaceBgra.withUnsafeMutableBytes { (dstBgraRaw: UnsafeMutableRawBufferPointer) in
+                guard let srcBgra = srcBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                      let dstBgra = dstBgraRaw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+                for y in y0 ..< y1 {
+                    let ty = y - tileY
+                    let tx = x0 - tileX
+                    let sOff = (ty * tileW + tx) * 4
+                    let dOff = (y * surfaceW + x0) * 4
+                    dstBgra.advanced(by: dOff).update(from: srcBgra.advanced(by: sOff), count: count)
                 }
             }
         }

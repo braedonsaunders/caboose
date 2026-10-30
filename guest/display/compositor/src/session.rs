@@ -272,7 +272,27 @@ impl State {
                 }
             }
             Message::VideoAck { id, seq } => {
-                if !self.windows.iter_mut().any(|w| w.stream.ack_motion(id, seq)) {
+                let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
+                let mut release_window = None;
+                let mut matched_motion = false;
+                for w in self.windows.iter_mut() {
+                    if w.stream.ack_motion(id, seq) {
+                        matched_motion = true;
+                        let display = w.display;
+                        let paced = self
+                            .session
+                            .as_ref()
+                            .and_then(|s| s.last_vsync.get(&display))
+                            .is_some_and(|t| t.elapsed() < VSYNC_STALE);
+                        if atlas && paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(true) {
+                            release_window = Some(w.id);
+                        }
+                        break;
+                    }
+                }
+                if let Some(win_id) = release_window {
+                    self.release_frame_callbacks(win_id);
+                } else if !matched_motion {
                     tracing::trace!("video {id}: frame {seq} queued for display");
                 }
             }
@@ -313,7 +333,12 @@ impl State {
             return;
         }
         let offered = self.encoders.codecs();
-        let chosen_codec = choose_codec(&offered, &hello.decoders);
+        let chosen_codec = choose_codec(&offered, &hello.decoders).or_else(|| {
+            hello
+                .video_decoders
+                .as_deref()
+                .and_then(|vd| choose_codec(&offered, vd))
+        });
         let backend = match chosen_codec {
             Some(codec) => self.encoders.backend_for(codec).unwrap().clone(),
             None if hello.atlas => {
@@ -737,16 +762,12 @@ impl State {
                         crop: Rect::new(0, 0, pic_w, pic_h),
                         backend: backend.clone(),
                         settings: self.encoders.settings.clone(),
-                        motion: (!atlas)
-                            .then(|| {
-                                w.stream.motion.as_ref().filter(|m| !m.ending).map(|m| MotionJob {
-                                    id: m.id,
-                                    rect: m.rect,
-                                    keyframe: m.need_keyframe,
-                                    scaled: m.scaled,
-                                })
-                            })
-                            .flatten(),
+                        motion: w.stream.motion.as_ref().filter(|m| !m.ending).map(|m| MotionJob {
+                            id: m.id,
+                            rect: m.rect,
+                            keyframe: m.need_keyframe,
+                            scaled: m.scaled,
+                        }),
                         ends_motion: ending.map(|(id, _)| id),
                     };
                     w.stream.submit(job, &self.done_tx);
@@ -810,18 +831,24 @@ impl State {
         w.stream.return_image(done.image);
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
+        let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
         let mut refined = false;
-        let mut frame_sent = false;
+        let mut frame_sent = atlas && done.surface_batch.is_none() && done.result.is_none();
         if let Some((batch, cpu_us, batch_epoch)) = done.surface_batch {
             let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
-            let encoded = proto::encode(&Message::SurfaceBatch(batch.clone()));
+            let num_tiles = batch.tiles.len() as u64;
+            let is_keyframe = batch.keyframe;
+            let msg = Message::SurfaceBatch(batch);
+            let encoded = proto::encode(&msg);
             let mut cache_ok = encoded.len() <= proto::MAX_PAYLOAD + proto::HEADER_LEN && self.net.can_send(conn);
             if cache_ok {
-                if let Some(s) = self.session.as_ref().filter(|s| s.ready) {
+                if let (Some(s), Message::SurfaceBatch(ref batch_ref)) =
+                    (self.session.as_ref().filter(|s| s.ready), &msg)
+                {
                     let mut guard = s.atlas_cache.lock().unwrap();
-                    if !batch.keyframe && (guard.epoch != batch_epoch || w.stream.need_keyframe) {
+                    if !is_keyframe && (guard.epoch != batch_epoch || w.stream.need_keyframe) {
                         cache_ok = false;
-                    } else if !guard.try_record_published_batch(&batch) {
+                    } else if !guard.try_record_published_batch(batch_ref) {
                         cache_ok = false;
                     }
                 }
@@ -829,13 +856,14 @@ impl State {
             if cache_ok && self.net.send_bytes(conn, encoded) {
                 w.stream.in_flight.push_back(done.pts_us);
                 self.stats.frames += 1;
-                self.stats.tiles += batch.tiles.len() as u64;
+                self.stats.tiles += num_tiles;
                 self.stats.bytes += tile_bytes as u64;
                 self.stats.encode_cpu_us += cpu_us;
                 frame_sent = true;
             } else {
                 w.stream.need_keyframe = true;
                 w.stream.dirty = true;
+                frame_sent = false;
             }
         }
         match done.result {
@@ -954,8 +982,7 @@ impl State {
     /// Whether this window's motion can be its own video stream for the client.
     fn motion_possible(&self, window: u64) -> bool {
         let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
-        !session.atlas
-            && self.config.motion
+        self.config.motion
             && self.windows.get(window).is_some_and(|w| w.kind != proto::WindowKind::Popup)
             && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
             && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))

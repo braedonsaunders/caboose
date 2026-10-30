@@ -117,8 +117,9 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
     public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
-        rendersSurfaceAtlas = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] == "1"
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders,
+                  videoDecoders: Self.hardwareDecoders)
+        rendersSurfaceAtlas = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] != "0"
         rendersSceneGraph = false
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
@@ -1064,7 +1065,7 @@ private final class Incoming: @unchecked Sendable {
     private let tileCache = TileAtlasCache()
     private let fontCache = SceneFontCache()
     // Socket-queue counters for an explicitly launched atlas acceptance run. No payloads.
-    private let atlasAudit = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] == "1"
+    private let atlasAudit = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] != "0"
     private var atlasBatches: UInt64 = 0
     private var windowVideoFrames: UInt64 = 0
     private var passthroughVideoFrames: UInt64 = 0

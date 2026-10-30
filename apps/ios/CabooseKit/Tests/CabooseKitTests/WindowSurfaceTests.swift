@@ -141,7 +141,8 @@ import Testing
         )
         #expect(renderer.applyAndUpload(batch1, cache: cache, to: surface))
 
-        // Batch 2: scroll content viewport (y: 32..<128) up by 16 px (dy = -16) and fill exposed bottom strip (y: 112..<128)
+        // Batch 2: scroll content viewport (y: 32..<128) up by 16 px (dy = -16), update a top-right scrollbar thumb
+        // at (x: 120..<128, y: 32..<48), and fill exposed bottom strip (y: 112..<128)
         let batch2 = SurfaceBatch(
             window: 9,
             seq: 2,
@@ -150,12 +151,17 @@ import Testing
             rect: CGRect(x: 0, y: 0, width: 128, height: 128),
             keyframe: false,
             copies: [SurfaceCopy(dx: 0, dy: -16, rect: CGRect(x: 0, y: 32, width: 128, height: 96))],
-            fills: [SurfaceFill(rect: CGRect(x: 0, y: 112, width: 128, height: 16), rgba: 0xFFFF_00FF)]
+            fills: [
+                SurfaceFill(rect: CGRect(x: 120, y: 32, width: 8, height: 16), rgba: 0x8080_80FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 112, width: 128, height: 16), rgba: 0xFFFF_00FF),
+            ]
         )
         #expect(renderer.applyAndUpload(batch2, cache: cache, to: surface))
         let img = try #require(surface.snapshot())
         // Top header chrome (y=10) stayed red (BGRA: [0, 0, 255, 255])
         #expect(pixel(img, 10, 10) == [0, 0, 255, 255])
+        // Top-right scrollbar thumb at (124, 40) is gray (BGRA: [128, 128, 128, 255])
+        #expect(pixel(img, 124, 40) == [128, 128, 128, 255])
         // Shifted blue band moved from y=96..<128 to y=80..<112 (BGRA: [255, 0, 0, 255] at y=88)
         #expect(pixel(img, 10, 88) == [255, 0, 0, 255])
         // Newly exposed bottom strip y=112..<128 is yellow (RGBA 0xFFFF00FF -> BGRA [0, 255, 255, 255])

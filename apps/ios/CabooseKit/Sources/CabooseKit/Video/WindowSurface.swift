@@ -100,7 +100,7 @@ public final class WindowSurface: @unchecked Sendable {
     /// partial batch; the caller requests a fresh keyframe rather than acknowledging it.
     func applyAtlasBatch(
         copies: [SurfaceCopy],
-        dirtyRect: (x: Int, y: Int, width: Int, height: Int)?,
+        dirtyRects: [(x: Int, y: Int, width: Int, height: Int)],
         bgraBase: UnsafeRawPointer?,
         rowBytes: Int,
         expectedSize: CGSize,
@@ -130,21 +130,42 @@ public final class WindowSurface: @unchecked Sendable {
         guard !useGpuCopies || scratchTexture != nil else { return false }
 
         var stagingBuffer: MTLBuffer?
-        var clampedDirty: MTLRegion?
-        if let dirty = dirtyRect {
-            guard dirty.width > 0, dirty.height > 0, let bgraBase,
-                  rowBytes >= texture.width * 4,
-                  let region = clamp(x: dirty.x, y: dirty.y, width: dirty.width, height: dirty.height, in: texture),
-                  allowsResource(.staging) else { return false }
-            let offset = region.origin.y * rowBytes + region.origin.x * 4
-            let length = (region.size.height - 1) * rowBytes + region.size.width * 4
-            stagingBuffer = renderer.device.makeBuffer(
-                bytes: bgraBase.advanced(by: offset),
-                length: length,
-                options: .storageModeShared
-            )
-            guard stagingBuffer != nil else { return false }
-            clampedDirty = region
+        var stagedSlices: [(region: MTLRegion, offset: Int, rowBytes: Int)] = []
+        if !dirtyRects.isEmpty {
+            guard let bgraBase, rowBytes >= w * 4, allowsResource(.staging) else { return false }
+            stagedSlices.reserveCapacity(dirtyRects.count)
+            var totalBytes = 0
+            for dirty in dirtyRects {
+                guard dirty.width > 0, dirty.height > 0,
+                      let region = clamp(x: dirty.x, y: dirty.y, width: dirty.width, height: dirty.height, in: texture)
+                else { return false }
+                let sliceRowBytes = region.size.width * 4
+                let sliceBytes = sliceRowBytes * region.size.height
+                stagedSlices.append((region: region, offset: totalBytes, rowBytes: sliceRowBytes))
+                totalBytes += sliceBytes
+            }
+            guard totalBytes > 0,
+                  let staging = renderer.device.makeBuffer(length: totalBytes, options: .storageModeShared)
+            else { return false }
+            let dstRoot = staging.contents()
+            for slice in stagedSlices {
+                let r = slice.region
+                let dstPtr = dstRoot.advanced(by: slice.offset)
+                if r.origin.x == 0 && slice.rowBytes == rowBytes {
+                    let srcPtr = bgraBase.advanced(by: r.origin.y * rowBytes)
+                    dstPtr.copyMemory(from: srcPtr, byteCount: slice.rowBytes * r.size.height)
+                } else {
+                    for row in 0 ..< r.size.height {
+                        let srcOff = (r.origin.y + row) * rowBytes + r.origin.x * 4
+                        let dstOff = row * slice.rowBytes
+                        dstPtr.advanced(by: dstOff).copyMemory(
+                            from: bgraBase.advanced(by: srcOff),
+                            byteCount: slice.rowBytes
+                        )
+                    }
+                }
+            }
+            stagingBuffer = staging
         }
 
         guard useGpuCopies || stagingBuffer != nil else { return true }
@@ -152,11 +173,8 @@ public final class WindowSurface: @unchecked Sendable {
               allowsResource(.blitEncoder), let blit = commands.makeBlitCommandEncoder() else { return false }
 
         if useGpuCopies, let scratch = scratchTexture {
-            blit.copy(
-                from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                sourceSize: MTLSize(width: w, height: h, depth: 1),
-                to: scratch, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin()
-            )
+            var validCopies: [(sx0: Int, sy0: Int, dx0: Int, dy0: Int, copyW: Int, copyH: Int)] = []
+            validCopies.reserveCapacity(copies.count)
             for copy in copies {
                 let dstX0 = Int(copy.rect.minX)
                 let dstY0 = Int(copy.rect.minY)
@@ -169,26 +187,40 @@ public final class WindowSurface: @unchecked Sendable {
                 guard colStart < colEnd, rowStart < rowEnd else { continue }
                 let dx0 = dstX0 + colStart
                 let dy0 = dstY0 + rowStart
-                let sx0 = dx0 - copy.dx
-                let sy0 = dy0 - copy.dy
-                let copyW = colEnd - colStart
-                let copyH = rowEnd - rowStart
+                validCopies.append((
+                    sx0: dx0 - copy.dx, sy0: dy0 - copy.dy,
+                    dx0: dx0, dy0: dy0,
+                    copyW: colEnd - colStart, copyH: rowEnd - rowStart
+                ))
+            }
+            for c in validCopies {
+                blit.copy(
+                    from: texture, sourceSlice: 0, sourceLevel: 0,
+                    sourceOrigin: MTLOrigin(x: c.sx0, y: c.sy0, z: 0),
+                    sourceSize: MTLSize(width: c.copyW, height: c.copyH, depth: 1),
+                    to: scratch, destinationSlice: 0, destinationLevel: 0,
+                    destinationOrigin: MTLOrigin(x: c.sx0, y: c.sy0, z: 0)
+                )
+            }
+            for c in validCopies {
                 blit.copy(
                     from: scratch, sourceSlice: 0, sourceLevel: 0,
-                    sourceOrigin: MTLOrigin(x: sx0, y: sy0, z: 0),
-                    sourceSize: MTLSize(width: copyW, height: copyH, depth: 1),
+                    sourceOrigin: MTLOrigin(x: c.sx0, y: c.sy0, z: 0),
+                    sourceSize: MTLSize(width: c.copyW, height: c.copyH, depth: 1),
                     to: texture, destinationSlice: 0, destinationLevel: 0,
-                    destinationOrigin: MTLOrigin(x: dx0, y: dy0, z: 0)
+                    destinationOrigin: MTLOrigin(x: c.dx0, y: c.dy0, z: 0)
                 )
             }
         }
 
-        if let staging = stagingBuffer, let region = clampedDirty {
-            blit.copy(
-                from: staging, sourceOffset: 0, sourceBytesPerRow: rowBytes,
-                sourceBytesPerImage: rowBytes * region.size.height, sourceSize: region.size,
-                to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin
-            )
+        if let staging = stagingBuffer {
+            for slice in stagedSlices {
+                blit.copy(
+                    from: staging, sourceOffset: slice.offset, sourceBytesPerRow: slice.rowBytes,
+                    sourceBytesPerImage: slice.rowBytes * slice.region.size.height, sourceSize: slice.region.size,
+                    to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: slice.region.origin
+                )
+            }
         }
 
         blit.endEncoding()

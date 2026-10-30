@@ -596,7 +596,12 @@ pub fn apply_surface_copy(buf: &mut [u8], width: u32, height: u32, copy: caboose
     let row_bytes = (dst.w as usize) * 4;
     let h = dst.h as usize;
 
-    if copy.dy > 0 {
+    if copy.dx == 0 && dst.x == 0 && dst.w == width as i32 && copy.dy != 0 {
+        let total_len = h * stride;
+        let s_off = (src_y as usize) * stride;
+        let d_off = (dst.y as usize) * stride;
+        buf.copy_within(s_off..s_off + total_len, d_off);
+    } else if copy.dy > 0 {
         for r in (0..h).rev() {
             let sy = (src_y as usize) + r;
             let dy = (dst.y as usize) + r;
