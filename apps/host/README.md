@@ -26,11 +26,12 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/gpu-relay.ts` | `/v1/gpu`: bounded binary live GPU transport, isolated from display/media flow control. |
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
+| `src/commands.ts`, `src/guest-command.py` | `/v1/commands`: owner scripts run detached in the computer, their supervisor, and their results in the host state. |
 | `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
 | `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
 | `src/shared-storage.ts`, `src/backup.ts`, `src/restore-journal.ts`, `src/storage.ts` | Shared storage across parked microVM disks, phone backups and journaled restores, through `disk/`. |
 | `disk/` | `caboose-disk`, the Rust helper that shares blocks between disks, describes backups and deallocates zeros ([its README](disk/README.md)). |
-| `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs. |
+| `src/guest-*.py` | Python run inside the guest: listing and launching apps, catalog operations, Craft jobs, commands. |
 | `scripts/` | Real-host checks, the Docker entrypoint and `setup-disks.sh`. |
 | `systemd/caboose-host.service` | A user-service unit for running from a checkout. |
 | `Dockerfile` | The self-hosting image (host, web console and Cloud Hypervisor). |
@@ -490,8 +491,8 @@ Set all four `CABOOSE_APNS_*` variables (the key is a private P-256 `.p8` file) 
 APNs. Devices are stored in `push-devices.json` and Live Activity registrations in
 `activities.json`, both under `CABOOSE_IMAGE_ROOT` with mode 0600. Agent task events update
 Live Activities; other producers can publish the generic job shape through
-`POST /v1/jobs/activity`. The sender uses the app topic with `.push-type.liveactivity`
-appended. The API and its limits are in `docs/architecture.md` § Notifications.
+`POST /v1/jobs/activity`; commands publish themselves once they have run for 10 s. The
+sender uses the app topic with `.push-type.liveactivity` appended. The API and its limits are in `docs/architecture.md` § Notifications.
 
 ## MCP Library
 
@@ -540,6 +541,16 @@ Craft jobs run a fixed list of installed catalog CLI operations, as `caboose`, o
 staged in `~/.caboose-jobs/<job>` through `/v1/fs`. The contract, formats, progress events
 and retention are in `docs/architecture.md` § Shortcuts and Spotlight.
 
+## Commands
+
+`POST /v1/commands` runs a Bash script as `caboose` in `~/.caboose-jobs/cmd-<id>/`, detached
+from the request: `src/guest-command.py` starts a supervisor in the guest that keeps bounded
+output, enforces the time limit and writes the result, and `src/commands.ts` polls for it,
+holds a lease while it runs and keeps results in the computer's `commands/` directory in the
+host state (mode 0600 files). The routes, bounds and retention are in `docs/architecture.md`
+§ Commands. The unit tests include `src/guest-command-check.py`, which runs the supervisor
+against real files, Bash and processes in a temporary directory (Python 3 and Bash).
+
 ## iOS handoff
 
 The host relays validated guest `phone.open`, `phone.share` and `phone.print` events only to
@@ -569,8 +580,8 @@ appearance. A request timeout on the phone does not cancel work already admitted
 These run against a deployed host with a built guest, are separate from the unit tests, and
 change the computer as described. Except for `check-push.mjs`, each reads
 `CABOOSE_OWNER_TOKEN` and `CABOOSE_URL` from the environment; keep the token in your private
-environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-craft.mjs` and
-`check-open-app.sh` require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
+environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-craft.mjs`,
+`check-commands.mjs` and `check-open-app.sh` require `CABOOSE_URL`; the others default to `http://127.0.0.1:7310`. Run them from the repository root with Node 22.
 
 | Command | What it checks |
 | --- | --- |
@@ -589,6 +600,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-parked-files.mjs` | On a dedicated disposable computer, checks parked list/stat/range and version failure, cancelled reads, change-feed fallback, and mutation after wake and thaw. Set `CABOOSE_DISPOSABLE_CHECK=yes`, `CABOOSE_URL`, and `CABOOSE_OWNER_TOKEN`. |
 | `node apps/host/scripts/check-agents.mjs [--agent <id>] [--install] [--open]` | Saves a file to `~/Downloads`, lists the registry, and runs a real task with the given agent (default: the computer's default agent) that asks before acting with an attachment, approves it through the API, and replies. The agent must be signed in; `--install` installs it first; `--open` also opens https://example.com on the owner's display. |
 | `node apps/host/scripts/check-craft.mjs <app> <files…>` | Runs a Craft job (`photocraft`, `pdfcraft`, `lightcraft`, `filmcraft`) on the given files, checks the output signature and moves the job directory to Trash. FilmCraft media must already be on the computer at the paths in the project. Failed jobs remain for inspection. |
+| `node apps/host/scripts/check-commands.mjs` | Runs commands through `/v1/commands` (waking the computer): one with a staged input file, standard input and an output file that checks it runs as `caboose` in a login shell in its job directory; a non-zero exit; 2 MB of output kept to 1 MiB; a time limit; a cancelled command while a park is refused; and a command that finishes after its request returned. Moves every job directory to Trash. |
 | `apps/host/scripts/check-open-app.sh` | With `CABOOSE_CHECK_FILE` (a local document) and `CABOOSE_CHECK_APP` (an installed desktop entry id): uploads the file and opens it with that app. Check the owner's display; the test copy stays in a uniquely named folder in the home. |
 
 For `check-parked-files.mjs`, use a dedicated disposable Linux microVM with a
