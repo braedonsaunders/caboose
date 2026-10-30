@@ -1225,3 +1225,62 @@ read the rate for this trace; there is no added per-packet polling or renderer-t
 The trace never feeds playback decisions or acknowledges a clock update. Category and
 activation changes elsewhere in the app are not recorded. Deterministic order, lifetime
 and size-bound tests run with `swift test --jobs 1 --filter AudioRateProvenanceTests`.
+
+### Standalone muted audio rate control
+
+`scripts/audio-rate-control.swift` is an opt-in macOS mechanism probe outside the
+CabooseKit test target. Normal tests neither compile nor run it. It uses generated
+nonzero 1 kHz, stereo Float32 PCM at 48 kHz, 960 frames per packet, with the renderer
+muted before enqueue. It uses no network, media files, microphone, phone or existing
+Caboose session. Compile and run only in an available compiler/test slot:
+
+```sh
+xcrun swiftc -swift-version 5 -O -framework AVFoundation -framework CoreMedia \
+  -framework Foundation apps/ios/scripts/audio-rate-control.swift \
+  -o /private/tmp/caboose-audio-rate-control
+python3 apps/ios/scripts/run-audio-rate-control.py \
+  --binary /private/tmp/caboose-audio-rate-control \
+  > /private/tmp/caboose-audio-rate-control.json
+```
+
+The runner explicitly opts in with `CABOOSE_AUDIO_RATE_CONTROL=1` and applies a
+90-second process deadline. Timeout or interruption terminates its own child process
+group, allows two seconds for exit, then forcibly stops and reaps it if necessary.
+It never compiles, restarts an app, or touches another process group. Exit 124 means
+incomplete timeout data; an interrupted run returns 130. The binary refuses to run
+without the opt-in. A renderer-removal timeout exits 3 without starting another arm.
+
+There are two sequential 26-second arms with one renderer/synchronizer at a time,
+`.spectral` pitch processing and `delaysRateChangeUntilHasSufficientMediaData=false`.
+Arm 0 remains at rate 1. Arm 1 starts at 1, then requests five positive rates from the
+recorded five-second diagnostic snapshots at their measured relative intervals, shifted
+one second after start. The stimulus is deliberately marked partial: it does not contain
+intervening production rate writes. All timestamps, PCM and absolute 20 ms enqueue
+deadlines match between arms. Both use the same fixed one-second prefill; the positive
+stimulus accumulates about 198 ms of media lead, so a 120 ms prefill would intentionally
+starve this experiment. This supply margin is confined to the probe.
+
+The JSON includes up to 105 clock observations per arm, the five rate writes' actual
+begin/end times and before/after readings, enqueue lateness/duration maxima, and minimum
+expected remaining supply margin. Expected media progress integrates the actual Float
+rates. Each signed rate change is independently bounded between its call's begin and
+return; clock-read host brackets widen the observation envelope. This is a requested
+mapping model, not proof of when AVFoundation applied a change. The residual progress
+bounds compare the first observation at 0.75 seconds with the final observation, avoiding
+the immediate asynchronous start; all raw samples remain visible so an unsettled baseline
+can invalidate the comparison. No readiness gate, retry, seek or playback recovery runs.
+
+Rate-change and automatic-flush observers retain cumulative per-arm counts and at most
+128 recent events across the entire experiment, with dropped-event count. Observed zero
+rates are callback-time readings, not guaranteed event payloads or a zero-duration
+measurement. Observation is invalidated and observers removed before intentional stop;
+the renderer is stopped, flushed and its removal completion awaited before the next arm.
+
+Compare residual progress with the control, not raw media/host slopes: the requested
+speeds differ. Negative supply margin, renderer failure, invalid clock samples, or an
+unsettled baseline prevent attributing the difference to rate transitions. Automatic
+flush counts identify another possible source of missing media; an expected supply
+margin cannot establish that flushed samples still exist. A positive controlled result
+supports a local mechanism, not phone causality. A negative result cannot exonerate the
+actual production sequence or exclude a phone-specific problem. No production buffering,
+pitch algorithm or rate correction changes follow automatically from this probe.
