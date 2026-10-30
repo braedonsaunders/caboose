@@ -1,0 +1,30 @@
+[
+  {
+    "name": "vkquake.tar.gz",
+    "url": "https://codeload.github.com/Novum/vkQuake/tar.gz/749b4fd43fe8b8554b34163dc9469c4a08a4def1",
+    "sha256": "ae937ca7e9b49483ab3a3586346a91db408effe48a6c5f49f9df16af7549576c",
+    "size": 24057224,
+    "extracted_limit": 150000000
+  },
+  {
+    "name": "lite.zip",
+    "url": "https://github.com/lavenderdotpet/LibreQuake/releases/download/v0.09-beta/lite.zip",
+    "sha256": "428e736b2f01d953e09a08c60bee975bdc4a0ac2219e97fa095c8af41754da83",
+    "size": 55987573,
+    "extracted_limit": 100000000
+  },
+  {
+    "name": "librequake-source.tar.gz",
+    "url": "https://codeload.github.com/lavenderdotpet/LibreQuake/tar.gz/d1515ca9bc01e590f2d54dc496f55c9a4ed72369",
+    "sha256": "30bffdccf54b30a56baeeb9f7ceb07464f713c18b35e32117a9c694b18dadbae",
+    "size": 242101441,
+    "extracted_limit": 450000000
+  },
+  {
+    "name": "vulkan-headers.tar.gz",
+    "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/b5c8f996196ba4aa6d8f97e52b5d3b6e70f7e4e2",
+    "sha256": "7937d8ec21785736436d9ff52564db7d55992070b5ac98324472cce6e425a7ba",
+    "size": 3059121,
+    "extracted_limit": 45000000
+  }
+]

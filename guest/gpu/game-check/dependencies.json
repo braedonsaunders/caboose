@@ -1,0 +1,494 @@
+[
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-0t64_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libglib2.0-0t64_2.84.4-3~deb13u5_amd64.deb",
+    "size": 1521120,
+    "sha256": "e2baf92c57d1db1753e5781a61450d9a01e7833c7bd2dfe87776a6811c11ecc2"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/gir1.2-glib-2.0_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "gir1.2-glib-2.0_2.84.4-3~deb13u5_amd64.deb",
+    "size": 200680,
+    "sha256": "90f674a980f28f0062cf7bf74a77a8dce728aa57d0915eb12c9cf6ea85ed774e"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/gir1.2-glib-2.0-dev_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "gir1.2-glib-2.0-dev_2.84.4-3~deb13u5_amd64.deb",
+    "size": 918204,
+    "sha256": "3b49adb163111011070d713324c595d854d7b8b367b310ea92d80a5ab71cd663"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/i/ibus/libibus-1.0-5_1.5.32-2_amd64.deb",
+    "name": "libibus-1.0-5_1.5.32-2_amd64.deb",
+    "size": 464272,
+    "sha256": "68bdb1d1f4ef76b865025754c4205dd8dd1e759606f1eda1859a3aa9c0271ad0"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/i/ibus/gir1.2-ibus-1.0_1.5.32-2_amd64.deb",
+    "name": "gir1.2-ibus-1.0_1.5.32-2_amd64.deb",
+    "size": 371732,
+    "sha256": "880e87fe5b399d8a7c770dd6ee79dfb97399dda2837fcbd0af237f6ac2967d40"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/a/architecture-properties/native-architecture_0.2.6_all.deb",
+    "name": "native-architecture_0.2.6_all.deb",
+    "size": 2264,
+    "sha256": "cb065efb2dd0ad8de45ace298bdb959e4d66478ca8599312bde4fa543d8b7532"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libgirepository-2.0-0_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libgirepository-2.0-0_2.84.4-3~deb13u5_amd64.deb",
+    "size": 144928,
+    "sha256": "c87a2d4dac81be719fb3dc2e3a1d78376151d8c5c34071e08c10304b8d1fd3c3"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/girepository-tools_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "girepository-tools_2.84.4-3~deb13u5_amd64.deb",
+    "size": 152356,
+    "sha256": "2498e412b01d5d77049829d525b7ff559fd4be269a59cc4a50479337a50d8619"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/spirv-tools/spirv-tools_2025.1%7erc1-1_amd64.deb",
+    "name": "spirv-tools_2025.1~rc1-1_amd64.deb",
+    "size": 4260164,
+    "sha256": "2cc272ef1340cf0b47de6c5fcccaf91574d7a8f4061abb718d6c639463e85aab"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glslang/glslang-tools_15.1.0%2b1.4.309.0-1_amd64.deb",
+    "name": "glslang-tools_15.1.0+1.4.309.0-1_amd64.deb",
+    "size": 2329504,
+    "sha256": "c3025c4af63244296bc9d466746763c809d3f3f126408fc2c7b07070886a7759"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2-data_1.2.14-1%2bdeb13u1_all.deb",
+    "name": "libasound2-data_1.2.14-1+deb13u1_all.deb",
+    "size": 21188,
+    "sha256": "04688afdff3769c0f685541daed7b2f6f0cb946799ddf1d5847ddf11fe245559"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2t64_1.2.14-1%2bdeb13u1_amd64.deb",
+    "name": "libasound2t64_1.2.14-1+deb13u1_amd64.deb",
+    "size": 380896,
+    "sha256": "5495496142d57e5ad6d581ac5456ec3c87f872c109a2bfb815d154b673eebc67"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2-dev_1.2.14-1%2bdeb13u1_amd64.deb",
+    "name": "libasound2-dev_1.2.14-1+deb13u1_amd64.deb",
+    "size": 120152,
+    "sha256": "dfa8e8a133ef8704093d03464d86a3e86d26232baf1e3827aa030cb68c437e1c"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/liba/libasyncns/libasyncns0_0.8-6%2bb5_amd64.deb",
+    "name": "libasyncns0_0.8-6+b5_amd64.deb",
+    "size": 12028,
+    "sha256": "e7958777b0e3586349c57ac759a95b68f80d28e5bd1c4225705198b39b436115"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/u/util-linux/uuid-dev_2.41.5-0%2bdeb13u1_amd64.deb",
+    "name": "uuid-dev_2.41.5-0+deb13u1_amd64.deb",
+    "size": 49068,
+    "sha256": "cb7d7db20e5d91193c2c6629a3f4aa917e3bc558c72b7f2db7203bcfa9a3ba1b"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/u/util-linux/libblkid-dev_2.41.5-0%2bdeb13u1_amd64.deb",
+    "name": "libblkid-dev_2.41.5-0+deb13u1_amd64.deb",
+    "size": 208756,
+    "sha256": "775bc91f7a265d21cdfc6b710813017b2366e5c5bb665cd2e6979af5dd8a03a8"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libc/libcap2/libcap-dev_2.75-10%2bdeb13u1%2bb3_amd64.deb",
+    "name": "libcap-dev_1%3a2.75-10+deb13u1+b3_amd64.deb",
+    "size": 545636,
+    "sha256": "795983cf2cbc2e12e9440383d701229966c35bc40712ccbfd03e5c93d9af619d"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/d/dbus/libdbus-1-3_1.16.2-2_amd64.deb",
+    "name": "libdbus-1-3_1.16.2-2_amd64.deb",
+    "size": 177904,
+    "sha256": "bbcb711daff7e104b5f80f9b05475b6142674bfe65518a36a56e96a91068a3f5"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/systemd/libsystemd-dev_257.13-1%7edeb13u1_amd64.deb",
+    "name": "libsystemd-dev_257.13-1~deb13u1_amd64.deb",
+    "size": 1358540,
+    "sha256": "4db2d02ce32dfd9f2994a565a51c640b8e7a96a2e2b277484f9a2de7c0cd63e4"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/sgml-base/sgml-base_1.31%2bnmu1_all.deb",
+    "name": "sgml-base_1.31+nmu1_all.deb",
+    "size": 10868,
+    "sha256": "a355b832d9f0f4dc9eca1a661080db5dc118e6c435f107a5c4dd201d7af59ba8"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/x/xml-core/xml-core_0.19_all.deb",
+    "name": "xml-core_0.19_all.deb",
+    "size": 20088,
+    "sha256": "079ec5e10b1c49aa23a6c53ae8e55e33aec121d1c87a131d2172bdabc3f4030e"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/d/dbus/libdbus-1-dev_1.16.2-2_amd64.deb",
+    "name": "libdbus-1-dev_1.16.2-2_amd64.deb",
+    "size": 214548,
+    "sha256": "83767cf52f88de6d6f370cee30e717828c6fd22cb55d1fb84b38a3e911742887"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libd/libdecor-0/libdecor-0-0_0.2.2-2_amd64.deb",
+    "name": "libdecor-0-0_0.2.2-2_amd64.deb",
+    "size": 15540,
+    "sha256": "e4f228a9d4a38af23fab00f8e20219790b567e2e1f7804b3a215a26294350f82"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libd/libdecor-0/libdecor-0-dev_0.2.2-2_amd64.deb",
+    "name": "libdecor-0-dev_0.2.2-2_amd64.deb",
+    "size": 7580,
+    "sha256": "f02b9409ff31d546beb5bf2f2eddbc432ed051696a632c82dc9e4ba76c9e60c4"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libo/libogg/libogg0_1.3.5-3%2bb2_amd64.deb",
+    "name": "libogg0_1.3.5-3+b2_amd64.deb",
+    "size": 23812,
+    "sha256": "911aec914f5bda0788164ff8068b682537378bf8d407b1d6c1b377522f96b83b"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/f/flac/libflac14_1.5.0%2bds-2_amd64.deb",
+    "name": "libflac14_1.5.0+ds-2_amd64.deb",
+    "size": 209588,
+    "sha256": "658b9f77d35638caf75dfaea4f6d5cde196104d5662f0776e23d7cc450bd4cb5"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsepol/libsepol-dev_3.8.1-1_amd64.deb",
+    "name": "libsepol-dev_3.8.1-1_amd64.deb",
+    "size": 372908,
+    "sha256": "c085881d0546f6d539909f5710d7a3243aeb24338f6dc455b0ef6199f45bd753"
+  },
+  {
+    "url": "http://deb.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-16-0_10.46-1%7edeb13u3_amd64.deb",
+    "name": "libpcre2-16-0_10.46-1~deb13u3_amd64.deb",
+    "size": 281748,
+    "sha256": "e25b12fcd1f62185962a81499388fb9c25a7614b9513b6017489275bc7011a51"
+  },
+  {
+    "url": "http://deb.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-32-0_10.46-1%7edeb13u3_amd64.deb",
+    "name": "libpcre2-32-0_10.46-1~deb13u3_amd64.deb",
+    "size": 268704,
+    "sha256": "d6095c7eebb3e783243ec9784b9b6774434aa5c16aca8f179483215fadb4313c"
+  },
+  {
+    "url": "http://deb.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-posix3_10.46-1%7edeb13u3_amd64.deb",
+    "name": "libpcre2-posix3_10.46-1~deb13u3_amd64.deb",
+    "size": 64104,
+    "sha256": "4a7f75f6f3b7e67a9a7f1dcdfca6377db6564057bac2a225cbd0583fe878f7df"
+  },
+  {
+    "url": "http://deb.debian.org/debian-security/pool/updates/main/p/pcre2/libpcre2-dev_10.46-1%7edeb13u3_amd64.deb",
+    "name": "libpcre2-dev_10.46-1~deb13u3_amd64.deb",
+    "size": 851360,
+    "sha256": "6740621a0062e4b4cdeaa12a51f03ed0a3de0a04b949c8fa6a92c5f4c3c6b127"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libselinux/libselinux1-dev_3.8.1-1_amd64.deb",
+    "name": "libselinux1-dev_3.8.1-1_amd64.deb",
+    "size": 169104,
+    "sha256": "0107595c65dd5cfe7ce3643d400e7b2be2c2528bcd110ad5af8605711a858921"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/u/util-linux/libmount-dev_2.41.5-0%2bdeb13u1_amd64.deb",
+    "name": "libmount-dev_2.41.5-0+deb13u1_amd64.deb",
+    "size": 30740,
+    "sha256": "2bef03b918e927648c6552143e17e82aa7ed2a4ce180fabd07a7d1cac7ff8686"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/sysprof/libsysprof-capture-4-dev_48.0-2_amd64.deb",
+    "name": "libsysprof-capture-4-dev_48.0-2_amd64.deb",
+    "size": 49864,
+    "sha256": "3cb76e124187700f5977a0acb914b3f82b2bd28105fce6f1cf2a34497b234af2"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libgio-2.0-dev_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libgio-2.0-dev_2.84.4-3~deb13u5_amd64.deb",
+    "size": 1691796,
+    "sha256": "a9bbd748ddd40a08b336e8d6b1755e698957ac640d081ddc4c330b716c6b89c3"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/p/python-packaging/python3-packaging_25.0-1_all.deb",
+    "name": "python3-packaging_25.0-1_all.deb",
+    "size": 56568,
+    "sha256": "d70c8469f6e9c6105e1ebcd3ebdc963f11dadbeddd89d2d1a2a3cb1c97d2ecbc"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libgio-2.0-dev-bin_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libgio-2.0-dev-bin_2.84.4-3~deb13u5_amd64.deb",
+    "size": 168564,
+    "sha256": "d43dddb9b306cb8427bd383e100b8510da8cfa03b5968624f3787bc66a5a95b8"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-data_2.84.4-3%7edeb13u5_all.deb",
+    "name": "libglib2.0-data_2.84.4-3~deb13u5_all.deb",
+    "size": 1286548,
+    "sha256": "11c671d0a21dd99215bc62fc0219a1fcbb1482f36329ab6b85732e09ddff9e1c"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-bin_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libglib2.0-bin_2.84.4-3~deb13u5_amd64.deb",
+    "size": 132488,
+    "sha256": "733e0bbb4aaa7846a23a02cc3f6af71b41cdfcc833538aae0c35eb2c1160c15a"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-dev-bin_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libglib2.0-dev-bin_2.84.4-3~deb13u5_amd64.deb",
+    "size": 56944,
+    "sha256": "d35ef75a4b04ea10081d484e025b0a4fecd0232ffc0e76403bcd249b3b47e643"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/g/glib2.0/libglib2.0-dev_2.84.4-3%7edeb13u5_amd64.deb",
+    "name": "libglib2.0-dev_2.84.4-3~deb13u5_amd64.deb",
+    "size": 57744,
+    "sha256": "ad98b1a769da55a8007ea9953306b0deb6092205d4fac8d915e2bd83d4ecc8a5"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/i/ibus/libibus-1.0-dev_1.5.32-2_amd64.deb",
+    "name": "libibus-1.0-dev_1.5.32-2_amd64.deb",
+    "size": 493444,
+    "sha256": "cdfc567aa0900775b50d24056331d5c2f330dd6a3e911d2c7ef127a220cb0adc"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/x/xorg/x11-common_7.7%2b24%2bdeb13u1_all.deb",
+    "name": "x11-common_1%3a7.7+24+deb13u1_all.deb",
+    "size": 216864,
+    "sha256": "57a981938506b26dc552f19cafeaa8c04e9b59dc7508509151f8507a9d4e5f24"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libi/libice/libice6_1.1.1-1_amd64.deb",
+    "name": "libice6_2%3a1.1.1-1_amd64.deb",
+    "size": 65376,
+    "sha256": "38185997162793b5dfb768644badc57852879784a2f9d83c6c4e47efa5e36698"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libi/libice/libice-dev_1.1.1-1_amd64.deb",
+    "name": "libice-dev_2%3a1.1.1-1_amd64.deb",
+    "size": 73772,
+    "sha256": "cd4dceeb1afbb75c00df04be44ff117da8861a4c8e6ab45126baf3a78ebf1a24"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/l/lame/libmp3lame0_3.100-6%2bb3_amd64.deb",
+    "name": "libmp3lame0_3.100-6+b3_amd64.deb",
+    "size": 362660,
+    "sha256": "3867319c9fbbc8cc25f2d1dc1d75d13548c84c37fa709c1ac9ca02ac051b63ab"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/m/mpg123/libmpg123-0t64_1.32.10-1%2bdeb13u1_amd64.deb",
+    "name": "libmpg123-0t64_1.32.10-1+deb13u1_amd64.deb",
+    "size": 149184,
+    "sha256": "31fa6ef638f1fdbe198faee0b6fe50d9dd468077f8247cc3dbf6b2250abb6101"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/m/mpg123/libout123-0t64_1.32.10-1%2bdeb13u1_amd64.deb",
+    "name": "libout123-0t64_1.32.10-1+deb13u1_amd64.deb",
+    "size": 30488,
+    "sha256": "a7b2f77760e15f1ee91f26e84f20c53108c0117fd7146f19a09f6da3336ac379"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/m/mpg123/libsyn123-0t64_1.32.10-1%2bdeb13u1_amd64.deb",
+    "name": "libsyn123-0t64_1.32.10-1+deb13u1_amd64.deb",
+    "size": 89364,
+    "sha256": "7242fa9f5118ff1fc80302f621aa86478ca59b2d7a10bab9d6089d2cf73bf21e"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/m/mpg123/libmpg123-dev_1.32.10-1%2bdeb13u1_amd64.deb",
+    "name": "libmpg123-dev_1.32.10-1+deb13u1_amd64.deb",
+    "size": 61972,
+    "sha256": "b7c94bd607189491c42f4fb1db498092cae2a9ce80bcec3af8f9a532917cc31c"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libo/libogg/libogg-dev_1.3.5-3%2bb2_amd64.deb",
+    "name": "libogg-dev_1.3.5-3+b2_amd64.deb",
+    "size": 200156,
+    "sha256": "0f5dee559f8e95a70b24159ebe8c68771157a83a812073a66f83d4e3fe59f5da"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/o/opus/libopus0_1.5.2-2_amd64.deb",
+    "name": "libopus0_1.5.2-2_amd64.deb",
+    "size": 2851932,
+    "sha256": "794056db33d71b2ac4bd8b5a4eb23b627bcb8a49d123c33b6e841a996253a067"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libv/libvorbis/libvorbis0a_1.3.7-3_amd64.deb",
+    "name": "libvorbis0a_1.3.7-3_amd64.deb",
+    "size": 89960,
+    "sha256": "0465f7f602f7b00965e58e7273b5876060ab7946f0452a9f95d979046932cc42"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libv/libvorbis/libvorbisenc2_1.3.7-3_amd64.deb",
+    "name": "libvorbisenc2_1.3.7-3_amd64.deb",
+    "size": 75432,
+    "sha256": "5fbbf06a5b196235aa2753cd12bbe7f843328571d368f15b1c337578e29f73a2"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsndfile/libsndfile1_1.2.2-2%2bdeb13u1_amd64.deb",
+    "name": "libsndfile1_1.2.2-2+deb13u1_amd64.deb",
+    "size": 199172,
+    "sha256": "d92263a045554e6f39c6b1c2ee4cca44a3248d9b9339301ff195969bf84b75eb"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/p/pulseaudio/libpulse0_17.0%2bdfsg1-2%2bb1_amd64.deb",
+    "name": "libpulse0_17.0+dfsg1-2+b1_amd64.deb",
+    "size": 275632,
+    "sha256": "786aca79119cb249562708fd24dcdf817604cfe75bbfcb8cda3464042e17f40e"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/p/pulseaudio/libpulse-mainloop-glib0_17.0%2bdfsg1-2%2bb1_amd64.deb",
+    "name": "libpulse-mainloop-glib0_17.0+dfsg1-2+b1_amd64.deb",
+    "size": 28396,
+    "sha256": "c7203de1ed95fbbecfeefafbd957db2db24be9b56984f0ecc4d6e382bd325c9f"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/p/pulseaudio/libpulse-dev_17.0%2bdfsg1-2%2bb1_amd64.deb",
+    "name": "libpulse-dev_17.0+dfsg1-2+b1_amd64.deb",
+    "size": 90596,
+    "sha256": "bcbd91aae55d1794f8fe8b1e766ec810173a6415b2165642bf756858e20ab7c4"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsamplerate/libsamplerate0_0.2.2-4%2bb2_amd64.deb",
+    "name": "libsamplerate0_0.2.2-4+b2_amd64.deb",
+    "size": 950084,
+    "sha256": "2665417fa996c1e249dbaa65c32305ac666e5ae865fad0f109b629935ec0bd18"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsamplerate/libsamplerate0-dev_0.2.2-4%2bb2_amd64.deb",
+    "name": "libsamplerate0-dev_0.2.2-4+b2_amd64.deb",
+    "size": 62936,
+    "sha256": "04ea390f4e862561ab0383759c71e00612d9110e601891aee7ec107d9bae482a"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxcursor/libxcursor1_1.2.3-1_amd64.deb",
+    "name": "libxcursor1_1%3a1.2.3-1_amd64.deb",
+    "size": 39732,
+    "sha256": "bb0dbf58b804faaa74ed9efdae61c4b14bb0b4855680798f63e5ca6a4954976b"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxss/libxss1_1.2.3-1%2bb3_amd64.deb",
+    "name": "libxss1_1%3a1.2.3-1+b3_amd64.deb",
+    "size": 16984,
+    "sha256": "302d4a97800429fa0d67ae2e0e8e3adc1228b12d25d3d3cca6c9d24eeff40a6c"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsdl2/libsdl2-2.0-0_2.32.4%2bdfsg-1_amd64.deb",
+    "name": "libsdl2-2.0-0_2.32.4+dfsg-1_amd64.deb",
+    "size": 669048,
+    "sha256": "c61af1033d79fa6a393c49fac987165876de8ff27ebbd6a36cf19f5fc84d7a7a"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/sndio/libsndio7.0_1.10.0-0.1_amd64.deb",
+    "name": "libsndio7.0_1.10.0-0.1_amd64.deb",
+    "size": 27612,
+    "sha256": "4ddb8b7c9cafbea65b65727dbba207e3a33c08457ef6c179b23296cb9d5b52dc"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/sndio/libsndio-dev_1.10.0-0.1_amd64.deb",
+    "name": "libsndio-dev_1.10.0-0.1_amd64.deb",
+    "size": 25104,
+    "sha256": "df8c30f4b63f53a7507740c89e7eada80df05a434d5090bc5bd9a9776ab08925"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/s/systemd/libudev-dev_257.13-1%7edeb13u1_amd64.deb",
+    "name": "libudev-dev_257.13-1~deb13u1_amd64.deb",
+    "size": 75256,
+    "sha256": "73c3ed98a435ec420b327ef267d89ece81bf23c2c19391265bb4f261cbf5d558"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxcursor/libxcursor-dev_1.2.3-1_amd64.deb",
+    "name": "libxcursor-dev_1%3a1.2.3-1_amd64.deb",
+    "size": 51164,
+    "sha256": "57f2fc575496edc9f3dd286423494499d231a8b1cdb417bb8401f6b66b584a26"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxinerama/libxinerama1_1.1.4-3%2bb4_amd64.deb",
+    "name": "libxinerama1_2%3a1.1.4-3+b4_amd64.deb",
+    "size": 15992,
+    "sha256": "49d4e1628960407b8be2880a42428e7629801715a8a5697d42c0b0ca0a479911"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxinerama/libxinerama-dev_1.1.4-3%2bb4_amd64.deb",
+    "name": "libxinerama-dev_2%3a1.1.4-3+b4_amd64.deb",
+    "size": 18364,
+    "sha256": "711206b2a759461fe27b86099c4b593cb80c1f558fa64dd92239706f8c2a43b3"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxss/libxss-dev_1.2.3-1%2bb3_amd64.deb",
+    "name": "libxss-dev_1%3a1.2.3-1+b3_amd64.deb",
+    "size": 22676,
+    "sha256": "81d21bf2c9afff27392faba0d52d4b0dec7246f6146eaa05e7c461be620b21cc"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsm/libsm6_1.2.6-1_amd64.deb",
+    "name": "libsm6_2%3a1.2.6-1_amd64.deb",
+    "size": 37264,
+    "sha256": "03038b3002e6f44322554e335d60d8ff87acfcf2e21c904b6866610a9913ee00"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxt/libxt6t64_1.2.1-1.2%2bb2_amd64.deb",
+    "name": "libxt6t64_1%3a1.2.1-1.2+b2_amd64.deb",
+    "size": 188232,
+    "sha256": "a1f4557c03113681ee24863495adc244cecec95fe3ab7256ce76e87320157300"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsm/libsm-dev_1.2.6-1_amd64.deb",
+    "name": "libsm-dev_2%3a1.2.6-1_amd64.deb",
+    "size": 39704,
+    "sha256": "22c83f0579dac10ff4583c31d0997097cfb4bc3ea8682eb75dafe35ae8251aea"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxt/libxt-dev_1.2.1-1.2%2bb2_amd64.deb",
+    "name": "libxt-dev_1%3a1.2.1-1.2+b2_amd64.deb",
+    "size": 407468,
+    "sha256": "fb67298b1a2b1ca2f5d77167deaf8f6e4c3d5a7a1476ae72d2e0a91c5c41a1a4"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxv/libxv1_1.0.11-1.1%2bb3_amd64.deb",
+    "name": "libxv1_2%3a1.0.11-1.1+b3_amd64.deb",
+    "size": 23356,
+    "sha256": "e19f6bdcd20c1c28fefea29f0a95c33232dd5f0d26e0079675ac8ba4af4eda07"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxv/libxv-dev_1.0.11-1.1%2bb3_amd64.deb",
+    "name": "libxv-dev_2%3a1.0.11-1.1+b3_amd64.deb",
+    "size": 47020,
+    "sha256": "b36a8025062b93eaec729337ebab4c5b7c0e37faa328d4bb699f50c4e9345781"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libx/libxxf86vm/libxxf86vm-dev_1.1.4-1%2bb4_amd64.deb",
+    "name": "libxxf86vm-dev_1%3a1.1.4-1+b4_amd64.deb",
+    "size": 24068,
+    "sha256": "cba80fa53162a7c3e3e4e8ec519c2fc3b19c2b4b4d4b22641b7236caeb5edba4"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libs/libsdl2/libsdl2-dev_2.32.4%2bdfsg-1_amd64.deb",
+    "name": "libsdl2-dev_2.32.4+dfsg-1_amd64.deb",
+    "size": 1099832,
+    "sha256": "277dc6373473df2079ed44ac8661575b97b39fa263bfa424b0324c1501d21413"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libv/libvorbis/libvorbisfile3_1.3.7-3_amd64.deb",
+    "name": "libvorbisfile3_1.3.7-3_amd64.deb",
+    "size": 20856,
+    "sha256": "02822ab3da107b6f65bb3f7ac5bc8d68f51f998dd6886dd38f509f4d04d0ccd6"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/libv/libvorbis/libvorbis-dev_1.3.7-3_amd64.deb",
+    "name": "libvorbis-dev_1.3.7-3_amd64.deb",
+    "size": 324720,
+    "sha256": "bbbd81f69b335ae2eb199881edabb314f751b653c00fccae4d6b483dd8c99984"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/m/make-dfsg/make_4.4.1-2_amd64.deb",
+    "name": "make_4.4.1-2_amd64.deb",
+    "size": 463104,
+    "sha256": "70a9709e665383b06068ccd423d62ea191b65355f318a25565dbf324b254cec6"
+  },
+  {
+    "url": "http://deb.debian.org/debian/pool/main/p/pkgconf/pkg-config_1.8.1-4_amd64.deb",
+    "name": "pkg-config_1.8.1-4_amd64.deb",
+    "size": 13968,
+    "sha256": "385209ba52e5c97808bbdc2fc4da22aea9020f96fbab6fbfb144921c4a31d400"
+  }
+]
