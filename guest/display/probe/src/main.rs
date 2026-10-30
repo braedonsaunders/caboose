@@ -337,7 +337,7 @@ impl AtlasSurface {
             let ry = fill.rect.y.max(0) as u32;
             let rw = (fill.rect.w.max(0) as u32).min(w.saturating_sub(rx));
             let rh = (fill.rect.h.max(0) as u32).min(h.saturating_sub(ry));
-            let rgba = fill.color.to_be_bytes();
+            let rgba = fill.rgba.to_be_bytes();
             for row in 0..rh as usize {
                 let row_start = (ry as usize + row) * stride + (rx as usize) * 4;
                 for col in 0..rw as usize {
