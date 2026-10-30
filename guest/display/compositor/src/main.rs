@@ -1,6 +1,7 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
 mod audio;
+mod devices;
 mod clipboard;
 mod config;
 mod control;
@@ -329,6 +330,14 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
+    let (devices_tx, devices_rx) = channel::<caboose_display_protocol::Message>();
+    handle
+        .insert_source(devices_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(message) = event {
+                state.on_device_message(message);
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let (clip_tx, clip_rx) = channel::<Vec<u8>>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
@@ -420,6 +429,8 @@ fn run(config: Config) -> Result<(), String> {
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
         audio_tx,
+        devices: None,
+        devices_tx,
         generation: 0,
         epoch: session::new_epoch(),
         stats: Default::default(),
@@ -430,6 +441,22 @@ fn run(config: Config) -> Result<(), String> {
     if state.config.audio {
         let runtime_dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
         state.audio = audio::Audio::start(&state.config.instance_dir(&runtime_dir));
+    }
+    if state.config.devices {
+        match std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from) {
+            Some(runtime_dir) => {
+                let config = devices::Config {
+                    pulse_server: state.audio.as_ref().map(|a| a.server_address()),
+                    state_dir: state.config.instance_dir(&runtime_dir),
+                    status_file: runtime_dir.join("caboose-devices.json"),
+                };
+                match devices::Hub::spawn(config, state.devices_tx.clone()) {
+                    Ok(hub) => state.devices = Some(hub),
+                    Err(e) => tracing::warn!("no phone devices: {e}"),
+                }
+            }
+            None => tracing::info!("no phone devices: XDG_RUNTIME_DIR is not set"),
+        }
     }
     match video::server::socket_path() {
         Some(path) => match video::server::Videos::listen(&path, &handle) {

@@ -85,5 +85,7 @@
   "apps/page.js",
   "apps/world.js",
   "apps/guide.md",
-  "apps/apps-mcp.mjs"
+  "apps/apps-mcp.mjs",
+  "devices/install.sh",
+  "devices/70-caboose-devices.rules"
 ]

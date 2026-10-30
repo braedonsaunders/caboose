@@ -1,0 +1,8 @@
+{
+  "name": "device-button",
+  "description": "Volume up pressed while a camera streams.",
+  "messages": [
+    {"direction": "client", "type": "device.button", "type_id": 182, "fields": {"key": "volume-up", "device": "buttons", "pressed": true}}
+  ],
+  "hex": "b627000000a3636b657969766f6c756d652d75706664657669636567627574746f6e736770726573736564f5"
+}

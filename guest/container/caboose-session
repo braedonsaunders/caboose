@@ -168,7 +168,7 @@ start_agent() {
   notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
   # Agents see and drive its apps through its control socket; it plays no sound.
   start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/caboose-video-agent.sock" \
-    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games
+    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices
 }
 
 start_printing() {

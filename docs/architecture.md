@@ -114,6 +114,16 @@ The image contains:
   host starts them (see [Displays](#displays)).
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
+- **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
+  V4L2 drivers, `v4l2loopback` built for it, `iio-sensor-proxy` and the udev rules from
+  `guest/devices`, so the phone's hardware becomes the computer's devices
+  ([devices.md](devices.md)). Container computers expose the microphone only; shared host input, camera and
+  UHID devices are not passed through to computers.
+  On iOS, microphone capture and dictation hold temporary audio-session category leases,
+  including route-sharing policy. AirPlay and media category changes retire older leases;
+  releasing a recorder cannot overwrite a later owner or deactivate shared playback.
+  Capture rebuilds after route or media-service changes, resumes interruptions only when
+  iOS permits, and reports failures. Physical-device echo suppression remains unverified.
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
   TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
@@ -389,6 +399,7 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Applications | Wayland first, X11 through Xwayland as a fallback | The same |
 | Sound | Its own PulseAudio, sent as Opus | None (`--no-audio`) |
 | Game handoff | `$XDG_RUNTIME_DIR/caboose-game.sock` | None (`--no-games`) |
+| Phone devices | The phone's hardware ([devices.md](devices.md)) | None (`--no-devices`) |
 | Session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus` |
 | Notification endpoint | `caboose-notification-daemon.service` | `caboose-agent-notification-daemon.service` |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |

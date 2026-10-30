@@ -79,7 +79,7 @@ final class AirPlayCenter {
     /// The computer's sound plays like a video app's, follows the system's route, and mixes
     /// with whatever else is playing.
     static func configureDefault() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        try? CabooseAudioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
     }
 
     /// Asks the system to play the computer's sound on AirPlay: it reconnects the device it
@@ -90,7 +90,7 @@ final class AirPlayCenter {
         let session = AVAudioSession.sharedInstance()
         connecting = true
         do {
-            try session.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo, options: [])
+            try CabooseAudioSession.setCategory(.playback, mode: .moviePlayback, policy: .longFormVideo, options: [])
             try session.setActive(true)
         } catch {
             connecting = false

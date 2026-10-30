@@ -117,6 +117,14 @@ property updates are reconciled on notifications, without a polling timer.
   says `wasm: true` gets `game.create` after the window's `window.create` and
   `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
   `--no-games` turns it off (the agent seat).
+- **Phone devices** ([docs/devices.md](../../docs/devices.md), `src/devices`). For a client
+  whose hello says `devices: true`, a hub thread makes the phone's hardware the computer's:
+  gamepads, the motion device and buttons through uinput, the motion sensors (IIO) and
+  battery as HID devices through UHID, cameras and depth as v4l2loopback devices, and the
+  microphone as a source in the display's PulseAudio. It tells the phone with
+  `device.open` and `device.close` when applications start and stop using a device, and
+  writes `$XDG_RUNTIME_DIR/caboose-devices.json`. `--no-devices` turns it off (the agent
+  seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. The window's encode
@@ -200,6 +208,28 @@ probe. Every check asserts on what arrived, not on a picture:
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
+`scripts/check-devices.py` checks the phone's devices ([docs/devices.md](../../docs/devices.md))
+against a real kernel, so it runs inside a computer rather than the dev container: as root,
+with the owner's display running and no phone connected, it plays a phone over the
+protocol and checks each device through the kernel's own interfaces.
+
+```sh
+sudo python3 /path/to/guest/display/scripts/check-devices.py
+sudo python3 check-devices.py --only microphone   # a container computer
+```
+
+| Check | What it proves |
+| --- | --- |
+| `gamepad` | a press and a stick reach the gamepad's event device, which the owner's applications can open; a rumble effect uploaded and played through evdev arrives as `device.rumble` with its magnitudes and length |
+| `buttons` | volume up and the camera button arrive as `KEY_VOLUMEUP` and `KEY_CAMERA` presses and releases |
+| `motion` | opening the motion event device sends `device.open` at 100 Hz, a face-up sample reads `ABS_Z` 8192 (1 g), closing it sends `device.close` |
+| `iio` | the HID sensor hub became `accel_3d`, `gyro_3d`, `magn_3d`, `dev_rotation` and `press`; enabling the accelerometer's buffer opens motion, and the sample reads 9.80665 m/s² through the IIO scale |
+| `battery` | the power supply reads 75%, Charging, scope Device |
+| `camera` | ffmpeg streaming from the camera's node opens it; the phone's H.264 test picture arrives as YUYV; stopping sends `device.close` |
+| `depth` | the depth node streams the phone's millimetres unchanged as 16-bit greyscale (`Y16`) |
+| `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
+| `disconnect` | closing the connection removes the gamepad and the battery |
+
 `scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
 the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
 (3840×2160 at 2×) and maximises the window, as the app does. It then types, scrolls an
@@ -252,6 +282,7 @@ summary.
 | `--no-xwayland` | | Do not start Xwayland |
 | `--no-audio` | | Do not run PulseAudio or send sound |
 | `--no-games` | | Do not listen for game launchers |
+| `--no-devices` | | Do not accept the phone's hardware as devices ([docs/devices.md](../../docs/devices.md)) |
 | `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
@@ -520,3 +551,9 @@ internals, builds compositor/probe from the checked source, then runs admission 
 those exact binaries. Its separate VAAPI job builds `guest/vaapi/Dockerfile`, which
 includes FFmpeg and Xvfb, and runs state tests plus four selected codec roundtrips.
 These hosted software checks do not establish native phone decode or overlay correctness.
+
+Device checks accept `--token-file` and `--display-env` for isolated test instances,
+and `--expect-no-devices` verifies the agent seat omits capability and ignores offers.
+They reject unknown check names, bound helper processes, and open input/video nodes as
+`caboose` to check the owner's actual access before exercising them as root. Containers
+support the private microphone only; kernel input, camera and UHID checks require a VM.

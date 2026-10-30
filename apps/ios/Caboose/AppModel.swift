@@ -39,6 +39,14 @@ final class AppModel {
     let phone = PhoneHandoff()
     /// Linux portals, appearance, media controls and opt-in location for this computer.
     let bridge = NativeBridge()
+    /// The phone's cameras, microphone, motion, controllers, buttons and battery as the
+    /// computer's devices (docs/devices.md), offered on the owner's display connection.
+    let devices: DeviceCenter = {
+        DeviceSettings.register()
+        let phone = PhoneDevices()
+        phone.buttonView = { SoftwareKeyboard.shared.window }
+        return DeviceCenter(backend: phone, permissions: .none)
+    }()
     /// Where the computer's sound plays, and the AirPlay device it last played on.
     let airPlay = AirPlayCenter()
     /// A window on the agent seat being watched or taken over full screen.
@@ -192,6 +200,11 @@ final class AppModel {
             guard let self, self.connectionRevision == revision else { return }
             self.bridge.nowPlayingSuspended = handedOff
         }
+    }
+
+    /// Applies the owner's hardware switches for the computer paired now.
+    func updateDevicePermissions() {
+        devices.permissions = DeviceSettings.permissions(for: credentials?.fileDomainIdentifier)
     }
 
     var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
@@ -568,6 +581,10 @@ final class AppModel {
         session.cachedFrame = { [weak self, weak session] wid in
             guard isCurrent(), let self, let epoch = self.frameCacheEpoch, epoch == (session as? CabooseDisplaySession)?.server?.epoch else { return nil }
             return self.frameCache[wid]
+        }
+        if let display = session as? CabooseDisplaySession {
+            updateDevicePermissions()
+            display.devices = devices
         }
         self.session = session
         yard.session = session

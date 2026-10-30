@@ -1,0 +1,7 @@
+# The phone's hardware as the computer's devices (docs/devices.md). The owner's display
+# makes them through these nodes, as caboose...
+KERNEL=="uinput", GROUP="caboose", MODE="0660", OPTIONS+="static_node=uinput"
+KERNEL=="uhid", GROUP="caboose", MODE="0660", OPTIONS+="static_node=uhid"
+KERNEL=="v4l2loopback", GROUP="caboose", MODE="0660"
+# ...and the owner's applications open the event devices it makes.
+SUBSYSTEM=="input", KERNEL=="event*|js*", ATTRS{phys}=="caboose/phone", GROUP="caboose", MODE="0660"

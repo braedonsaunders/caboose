@@ -1,0 +1,8 @@
+{
+  "name": "device-battery",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "device.battery", "type_id": 183, "fields": {"full": false, "level": {"$float": 0.75}, "device": "battery", "thermal": "fair", "charging": true, "low_power": false}}
+  ],
+  "hex": "b747000000a66466756c6cf4656c6576656cfb3fe800000000000066646576696365676261747465727967746865726d616c6466616972686368617267696e67f5696c6f775f706f776572f4"
+}

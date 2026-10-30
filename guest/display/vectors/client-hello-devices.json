@@ -1,0 +1,8 @@
+{
+  "name": "client-hello-devices",
+  "description": "client-hello-audio from a phone that offers its hardware as devices.",
+  "messages": [
+    {"direction": "client", "type": "hello", "type_id": 129, "fields": {"token": "f3a9c1d27e8b4a6f", "devices": true, "version": 0, "decoders": ["hevc", "h264"], "displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 1179, "height": 2556, "refresh_hz": {"$float": 120.0}}], "audio_decoders": ["opus"]}}
+  ],
+  "hex": "819d000000a665746f6b656e70663361396331643237653862346136666764657669636573f56776657273696f6e00686465636f64657273826468657663646832363468646973706c61797381a66269640163686472f5657363616c65fb400800000000000065776964746819049b666865696768741909fc6a726566726573685f687afb405e0000000000006e617564696f5f6465636f6465727381646f707573"
+}

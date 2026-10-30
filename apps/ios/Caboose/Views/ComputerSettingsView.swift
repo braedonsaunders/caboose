@@ -27,6 +27,7 @@ struct ComputerSettingsView: View {
                     Form {
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        DeviceSettingsSection()
                         connectionAddressSection
                         Section {
                             ContentUnavailableView {
@@ -42,6 +43,7 @@ struct ComputerSettingsView: View {
                     Form {
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        DeviceSettingsSection()
                         connectionAddressSection
                         Section { ProgressView() }
                     }
@@ -94,6 +96,7 @@ struct ComputerSettingsView: View {
         Form {
             FilesSettingsSection()
             NativeBridgeSettingsSection(bridge: model.bridge)
+            DeviceSettingsSection()
             connectionAddressSection
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                 Section {

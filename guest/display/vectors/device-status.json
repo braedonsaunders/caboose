@@ -1,0 +1,8 @@
+{
+  "name": "device-status",
+  "description": "The camera became /dev/video4; the computer's kernel has no UHID for the battery.",
+  "messages": [
+    {"direction": "server", "type": "device.status", "type_id": 96, "fields": {"devices": [{"id": "camera-back", "nodes": ["/dev/video4"]}, {"id": "battery", "error": "This computer's kernel has no UHID", "nodes": []}]}}
+  ],
+  "hex": "606a000000a1676465766963657382a26269646b63616d6572612d6261636b656e6f646573816b2f6465762f766964656f34a36269646762617474657279656572726f7278225468697320636f6d70757465722773206b65726e656c20686173206e6f2055484944656e6f64657380"
+}

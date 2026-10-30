@@ -14,9 +14,10 @@ checks; pure policy tests do not establish live app behavior.
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `Caboose/Devices/` | Computer settings' hardware section (`DeviceSettings`: which devices each computer may use) and the indicator shown while a computer app uses the camera, microphone or motion. |
 | `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
 | `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
@@ -110,7 +111,12 @@ or when a request does not arrive), check the agent-app network origin's rules a
 gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
 them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
 (`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
-decoder (M3 and later).
+decoder (M3 and later). `DeviceTests` cover the phone's hardware without it: what is offered
+for which switches, controller ids, the gamepad, acceleration, depth and Annex-B
+conversions, motion batching, 20 ms audio framing, an Opus round trip through the system
+encoder and decoder, and `DeviceCenter` against a fake backend (offering, open and close,
+refusals, withdrawn permission, rumble, the on-screen controller, the Action key, the
+battery and detaching).
 
 The native agent-app handoff has a focused simulator check using a local fake host:
 
@@ -614,6 +620,17 @@ its tools; remove a server; disconnect and see the servers go.
   conversions. Spotlight indexes the computer's apps and its 200 most recently modified files.
 - **Widgets and controls.** A Computer widget (state and running agents), a Favourite Linux
   App widget, and Control Center controls for power, opening an app and asking an agent.
+- **The phone's hardware.** While Caboose is open, Linux apps use the phone's cameras, depth
+  sensor, microphone, motion sensors, paired controllers, buttons and battery as their own
+  devices ([phone hardware](../../docs/devices.md)). Computer settings' **iPhone Hardware**
+  section has a switch per kind: Cameras and Microphone are off until turned on, for that
+  computer only; Motion Sensors, Controllers, Buttons and Battery are on. iOS asks for camera
+  and microphone access the first time a computer app opens one, and a capsule at the bottom
+  of the screen says what the computer is using while it does. A device the computer could not
+  create shows why in that section. While a camera streams, volume up arrives as `volume-up`
+  and the primary capture button (volume down, or Camera Control) as `camera`: iOS reports
+  both as one event. The **Press Computer Action Key** shortcut, assigned to the Action
+  button, presses the computer's Action key.
 - **Notifications and Live Activities.** With APNs configured on the host, the device can
   receive approval, finished-task and desktop alerts (approvals can be answered from the
   notification), and running agent tasks show on the Lock Screen and Dynamic Island.
@@ -746,6 +763,17 @@ by a simulator build. On a signed device paired to a deployed computer, check:
 - **Drops.** On an iPad, drop selected text into a Linux text editor, then an image from
   Photos and a document from Files, in both the full-screen and desktop layouts; a file over
   50 MiB shows an error.
+- **Phone hardware.** With a computer whose kernel has the drivers (docs/devices.md, Kernel
+  support), turn on Cameras and Microphone in iPhone Hardware. Open a video call in the
+  computer's browser: the iPhone Back and Front Cameras are listed, the picture is upright in
+  both orientations (letterboxed in portrait), the green indicator and the capsule show while
+  it streams, and closing the call stops the camera. Record with the iPhone Microphone and
+  hear it back. Run `monitor-sensor` and tilt the phone; connect a controller to the phone and
+  check `evtest` and a rumble (`fftest`); choose A Linux controller for the on-screen pad and
+  check it in `evtest`; press volume up and down while the camera streams; run the Press
+  Computer Action Key shortcut; check `upower -d` shows the phone's battery. Turn Cameras off
+  while a call runs: the camera stops at once. Deny camera access in iOS Settings and open the
+  camera on the computer: iPhone Hardware shows why.
 - **Open, share and print.** Run `caboose-open 'mailto:person@example.com'` in a terminal
   and confirm only after checking the URL; share a photo from Thunar; print to iPhone. Repeat
   with the phone backgrounded: nothing happens without a tap, and queued requests arrive when
@@ -960,8 +988,11 @@ A game running on this device ([game handoff](../../docs/game-handoff.md)) gets 
 standard controller through the page's Gamepad API; every other window, and a game when
 Customize says so, gets keys, each held for as long as its control is (by default the d-pad and
 left stick are the arrow keys, the right stick W A S D, A Space, B Escape, Start Return). A key
-belongs to a button's place on the controller, so it carries across types. The computer gets
-no controller device. Customize sets the type, markings, sticks, size, haptics and every key,
+belongs to a button's place on the controller, so it carries across types. With **Other
+windows get: A Linux controller** in Customize, the pad is instead a gamepad on the computer
+(`gamepad-screen` in [phone hardware](../../docs/devices.md)), which Steam and SDL games use,
+and a rumble the computer plays shakes the phone; without Controllers on in the computer's
+hardware settings it presses keys. Customize sets the type, markings, sticks, size, haptics and every key,
 and remembers them; leaving the mode, a change of window, game, connection or settings,
 opening Customize or leaving the app releases everything held, and a finger still on the pad
 then controls nothing until it lifts. `CabooseKit/Input/OnScreenGamepad*.swift` holds the

@@ -1,3 +1,4 @@
+import CabooseKit
 import AVKit
 import SafariServices
 import SwiftUI
@@ -88,7 +89,7 @@ struct NativePlayer: UIViewControllerRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(position: $position) }
 
     func makeUIViewController(context: Context) -> AVPlayerViewController {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? CabooseAudioSession.setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
         let player = AVPlayer(url: url)
         player.allowsExternalPlayback = true

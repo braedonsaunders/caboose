@@ -1,0 +1,8 @@
+{
+  "name": "device-keyframe",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "device.keyframe", "type_id": 100, "fields": {"device": "camera-back"}}
+  ],
+  "hex": "6414000000a1666465766963656b63616d6572612d6261636b"
+}

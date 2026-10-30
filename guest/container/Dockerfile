@@ -64,6 +64,7 @@ COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
+COPY devices /tmp/bundle/devices
 COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
 COPY game /tmp/bundle/game

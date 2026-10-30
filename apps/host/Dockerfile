@@ -66,6 +66,7 @@ COPY guest/keyring ./guest/keyring
 COPY guest/container/caboose-session ./guest/container/
 COPY guest/files ./guest/files
 COPY guest/phone ./guest/phone
+COPY guest/devices ./guest/devices
 COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
 COPY guest/bridge ./guest/bridge

@@ -39,6 +39,7 @@ COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 
 COPY phone /builder/phone
+COPY devices /builder/devices
 COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
 COPY game /builder/game

@@ -79,6 +79,11 @@ struct RootView: View {
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .overlay(alignment: .top) { if model.phase == .ready { ConnectionBanner() } }
         .animation(.snappy, value: model.link.status)
+        .overlay(alignment: .bottom) {
+            // Which of the phone's hardware a computer app is using now (docs/devices.md).
+            if model.phase == .ready { DeviceInUseIndicator(devices: model.devices).padding(.bottom, 6).allowsHitTesting(false) }
+        }
+        .animation(.snappy, value: model.devices.inUse)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }
