@@ -3015,8 +3015,8 @@ and restores its dock.
 
 ### Terminal
 
-The Terminal tab is a native terminal on a real shell in the computer, built on
-[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 1.99.1 (MIT): xterm-256color with
+The Terminal tab is a native terminal on a real shell in the computer, built directly on
+`libghostty` (`GhosttyKit`, MIT): xterm-256color with
 truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, bracketed
 paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
 and `TerminalConnection`, which tracks the output offset); the app holds the view.

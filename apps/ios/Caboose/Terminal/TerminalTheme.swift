@@ -1,4 +1,3 @@
-import SwiftTerm
 import UIKit
 
 /// Caboose Night: the brand's navy field with amber for the cursor and selection, and a
@@ -20,10 +19,6 @@ enum TerminalTheme {
         0x5D6B89, 0xFF8A80, 0xA5E3A0, 0xFFC861, 0x82B6FF, 0xDDB3FF, 0x8BE9E6, 0xF5F7FA,
     ]
 
-    static var ansi: [SwiftTerm.Color] {
-        palette.map { SwiftTerm.Color(red8: UInt16($0 >> 16 & 0xFF), green8: UInt16($0 >> 8 & 0xFF), blue8: UInt16($0 & 0xFF)) }
-    }
-
     /// Text sizes, in points, that pinch to zoom moves between.
     static let fontSizes: ClosedRange<CGFloat> = 8 ... 28
     static var defaultFontSize: CGFloat { UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12 }
@@ -37,6 +32,39 @@ enum TerminalTheme {
                 .map { UIFont(descriptor: $0, size: size) } ?? font
         }
         return (normal, bold, italic(normal), italic(bold))
+    }
+
+    /// Renders the Ghostty configuration file for Caboose Night at `fontSize`.
+    static func ghosttyConfig(fontSize: CGFloat) -> String {
+        let sizeString = Double(fontSize).formatted(
+            FloatingPointFormatStyle<Double>(locale: Locale(identifier: "en_US_POSIX"))
+                .precision(.fractionLength(0 ... 2))
+                .grouping(.never)
+        )
+        var lines: [String] = [
+            "font-family = SF Mono",
+            "font-size = \(sizeString)",
+            "window-padding-x = 0",
+            "window-padding-y = 0",
+            "background = #0E1626",
+            "background-opacity = 0",
+            "foreground = #E6EBF2",
+            "cursor-style = block",
+            "cursor-style-blink = true",
+            "cursor-color = #F5A623",
+            "cursor-text = #0E1626",
+            "selection-background = #F5A623",
+            "selection-foreground = #0E1626",
+            "scrollback-limit = 10000000",
+            "macos-option-as-alt = true",
+            "clipboard-read = deny",
+            "clipboard-write = allow",
+            "copy-on-select = false",
+        ]
+        for (index, rgb) in palette.enumerated() {
+            lines.append(String(format: "palette = %d=#%06X", index, rgb & 0xFFFFFF))
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 }
 

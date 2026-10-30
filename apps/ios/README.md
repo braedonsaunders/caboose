@@ -19,7 +19,7 @@ checks; pure policy tests do not establish live app behavior.
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
 | `Caboose/Devices/` | Computer settings' hardware section (`DeviceSettings`: which devices each computer may use) and the indicator shown while a computer app uses the camera, microphone or motion. |
 | `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
-| `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, SwiftTerm's view in the Caboose look and the key row above the keyboard. |
+| `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, libghostty's surface in the Caboose look and the key row above the keyboard. |
 | `Caboose/Switchyard/` | The Desktop tab's tiling on the device's own screen: tiles, gaps, grabber, dock, Overview, launcher and ⌘⌥ keys, over the `CabooseKit/Switchyard` layout. |
 | `Caboose/Brand/` | The logo drawn natively in SwiftUI. It shares geometry and timing with `apps/web/src/brand/brand.ts`; change both together. `scripts/render-app-icon.sh` renders the app icon from the same SVG (macOS). |
 | `Share/` | The share extension (target `CabooseShare`). |
@@ -42,9 +42,7 @@ xcodegen generate
 open Caboose.xcodeproj
 ```
 
-The Terminal tab uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), whose
-package runs a small build plug-in. Xcode asks once to **Trust & Enable** it; command-line
-builds pass `-skipPackagePluginValidation` to `xcodebuild`.
+The Terminal tab uses `libghostty` (`GhosttyKit`, MIT) pinned in `project.yml`.
 
 Set your own team in `project.yml` (`DEVELOPMENT_TEAM`) to run on a device. The extensions'
 bundle ids are the app's plus a suffix (`.share`, `.files`, `.widgets`). All of them sign
@@ -528,10 +526,10 @@ Control so ⌘C, ⌘V and ⌘T do what Mac users expect.
 ## Terminal
 
 The Terminal tab is a native terminal on a shell in the computer, not a streamed window. It
-uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), pinned in `project.yml`:
-the maintained Swift terminal emulator, with truecolor, selection, OSC 8 links and hardware
-keyboards on iOS. Caboose uses its Core Graphics renderer so default cells remain transparent
-over the terminal background; explicit ANSI backgrounds remain visible. Its look, key row, gestures, reattach and session menu
+uses `libghostty` (`GhosttyKit`, MIT), pinned in `project.yml`:
+Ghostty's C terminal engine and Metal renderer, with truecolor, selection, OSC 8 links and hardware
+keyboards on iOS. Default cells remain transparent over the terminal background while explicit ANSI
+backgrounds remain visible. Its look, key row, gestures, reattach and session menu
 are in `docs/architecture.md` § 6 Terminal.
 
 ## Agents
@@ -958,7 +956,7 @@ translucent material over the presenting screen.
 Hide Keyboard stays fixed at the right edge of the single keyboard header row on iPhone,
 Duo and iPad; the keys do not scroll. Remote inputs share `RemoteTextInputView` for
 composition, autocorrect and sticky modifiers. Terminal adapts the same accessory
-to SwiftTerm's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
+to libghostty's cursor modes and byte protocol. Verify folded/unfolded/rotated layouts,
 Hide and reopening, Ctrl/Alt, held arrows, Return and IME with `scripts/check-desktop.sh`.
 App-owned keys use shared light UIKit haptics: the accessory row, Laptop letters,
 modifiers, Return, symbols and each held-arrow/Delete repeat. Feedback follows key

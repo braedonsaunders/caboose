@@ -7,11 +7,11 @@ options:
 packages:
   CabooseKit:
     path: CabooseKit
-  # The terminal emulator behind the Terminal tab (MIT): truecolor, 256 colours, selection,
-  # hardware keyboards and a Metal renderer.
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    exactVersion: 1.99.1
+  # The terminal emulator behind the Terminal tab (MIT): libghostty (GhosttyKit C API) with
+  # truecolor, 256 colours, selection, hardware keyboards and a Metal renderer.
+  GhosttyKit:
+    url: https://github.com/Lakr233/libghostty-spm
+    exactVersion: 2.2.2026103001
 configFiles:
   Debug: Caboose/Config/Caboose.xcconfig
   Release: Caboose/Config/Caboose.xcconfig
@@ -44,7 +44,8 @@ targets:
           - $(DERIVED_FILE_DIR)/Caboose-Info.plist
     dependencies:
       - package: CabooseKit
-      - package: SwiftTerm
+      - package: GhosttyKit
+        product: GhosttyKit
       - target: CabooseShare
       - target: CabooseFiles
       - target: CabooseWidgets
