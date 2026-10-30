@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import { randomBytes } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
@@ -18,9 +18,13 @@ const url = process.env.CABOOSE_TEST_CLUSTER_DATABASE_URL
 const endpoint = process.env.CABOOSE_TEST_MINIO_ENDPOINT
 // Explicit disposable services only. No production env variables are consumed.
 describe.skipIf(!url || !endpoint)('real PostgreSQL + S3 cold activation with synthetic controller/fence', () => {
-  const pool = new pg.Pool({ connectionString: url, max: 4, query_timeout: 3000 })
-  const objects = createStorage({ endpoint: endpoint!, bucket: 'cluster-acceptance', accessKeyId:'disposable', secretAccessKey:'disposable-test-only', region:'us-east-1' })
-  afterAll(async () => { await pool.end(); objects.client.destroy() })
+  let pool: pg.Pool
+  let objects: ReturnType<typeof createStorage>
+  beforeAll(() => {
+    pool = new pg.Pool({ connectionString: url, max: 4, query_timeout: 3000 })
+    objects = createStorage({ endpoint: endpoint!, bucket: 'cluster-acceptance', accessKeyId:'disposable', secretAccessKey:'disposable-test-only', region:'us-east-1' })
+  })
+  afterAll(async () => { await pool?.end(); objects?.client.destroy() })
   it('captures under lifecycle exclusion, loses source, restores to fenced generation with phone identity intact', async () => {
     await objects.client.send(new CreateBucketCommand({ Bucket:'cluster-acceptance' }))
     const root = await mkdtemp(join(tmpdir(), 'cluster-acceptance-'))
