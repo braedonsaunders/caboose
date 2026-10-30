@@ -49,6 +49,10 @@ impl Grants {
         (self.phase == Phase::Ready).then_some(self.epoch)
     }
 
+    pub fn active_window(&self, window: u64) -> bool {
+        self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(_, phase)| *phase == GrantPhase::Active)
+    }
+
     pub fn ready(&mut self, executor: [u8; 16], generation: u64) -> io::Result<()> {
         if self.phase != Phase::Idle || !executor.iter().any(|b| *b != 0) || generation <= self.executor_generation {
             return Err(io::Error::other("invalid executor ready"));
@@ -190,9 +194,12 @@ mod tests {
     fn revoke_request_is_idempotent_only_for_the_live_matching_grant() {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
+        assert!(!grants.active_window(7));
         let grant = grants.bind(1, (1, 2, 3, 4), &[7]).unwrap();
+        assert!(grants.active_window(7));
         assert!(grants.request_revoke(grant.epoch, grant.token, grant.generation + 1).is_err());
         assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), Some(grant));
+        assert!(!grants.active_window(7));
         assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
         grants.revoke_sent(grant).unwrap();
         assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);

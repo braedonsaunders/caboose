@@ -257,7 +257,7 @@ impl State {
         Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
     }
 
-    fn gpu_control_failed(&mut self) {
+    pub(crate) fn gpu_control_failed(&mut self) {
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
@@ -270,7 +270,7 @@ impl State {
         }
     }
 
-    fn queue_gpu_revoke(&mut self, grant: crate::gpu_grant::Grant) -> std::io::Result<()> {
+    pub(crate) fn queue_gpu_revoke(&mut self, grant: crate::gpu_grant::Grant) -> std::io::Result<()> {
         let bytes = crate::gpu_control::revoke(grant)?;
         self.net.queue_gpu_control(bytes, Some(grant))
     }
@@ -296,8 +296,26 @@ impl State {
                         matches.push(window.id);
                     }
                 }
+                // A retained fallback display is not an authenticated owner layout.
+                // Ambiguous Wayland connections must remain ambiguous, even if
+                // only one happens to be on an eligible output.
+                if matches.len() == 1 && !self.windows.get(matches[0]).is_some_and(|window|
+                    self.session.as_ref().is_some_and(|session| session.ready && session.owner_displays.contains(&window.display)) &&
+                    self.displays.get(window.display).is_some_and(|display| {
+                        let size = display.logical_size(); size.w > 0 && size.h > 0
+                    })) { matches.clear(); }
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+                if let Some(grant) = grant {
+                    if let Some(window) = self.windows.get(grant.window) {
+                        if let Surface::Toplevel(toplevel) = &window.surface {
+                            let size = self.displays.get(window.display).unwrap().logical_size();
+                            toplevel.with_pending_state(|state| state.size = Some(size));
+                            toplevel.send_configure();
+                        }
+                    }
+                    self.sync_windows();
+                }
                 if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
                     self.gpu_control_failed();
                 }
@@ -495,7 +513,9 @@ impl State {
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application whose stream the client renders never presents here, so its
             // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
-            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id);
+            let virtual_window = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(id)) &&
+                self.session.as_ref().is_some_and(|session| session.owner_displays.contains(&w.display));
+            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id) || virtual_window;
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {
@@ -512,7 +532,15 @@ impl State {
                 }
                 continue;
             }
-            let Some(now) = self.windows.describe(id, &self.displays) else { continue };
+            let Some(mut now) = self.windows.describe(id, &self.displays) else { continue };
+            if virtual_window && w.surface.wl_surface().is_some_and(|s| !Self::is_mapped(&s)) {
+                let Surface::Toplevel(toplevel) = &w.surface else { continue };
+                let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };
+                let Some(display) = self.displays.get(w.display) else { continue };
+                let Some((width, height)) = virtual_target_pixels(size.w, size.h, display.info.scale) else { continue };
+                now.geometry.w = width;
+                now.geometry.h = height;
+            }
             match &w.announced {
                 None => {
                     self.net.send(conn, &proto::Message::WindowCreate(now.clone()));
@@ -563,17 +591,31 @@ impl BufferHandler for State {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
+fn virtual_target_pixels(width: i32, height: i32, scale: f64) -> Option<(i32, i32)> {
+    if width <= 0 || height <= 0 || !scale.is_finite() || scale <= 0.0 { return None; }
+    let (w, h) = ((width as f64 * scale).round(), (height as f64 * scale).round());
+    if w < 1.0 || h < 1.0 || w > i32::MAX as f64 || h > i32::MAX as f64 { return None; }
+    Some((w as i32, h as i32))
+}
+
 fn is_explicit_buffer_detach(buffer: Option<&BufferAssignment>) -> bool {
     matches!(buffer, Some(BufferAssignment::Removed))
 }
 
 #[cfg(test)]
 mod gpu_detach_tests {
-    use super::{is_explicit_buffer_detach, BufferAssignment};
+    use super::{is_explicit_buffer_detach, virtual_target_pixels, BufferAssignment};
     #[test]
     fn only_explicit_null_buffer_is_a_detach() {
         assert!(!is_explicit_buffer_detach(None));
         assert!(is_explicit_buffer_detach(Some(&BufferAssignment::Removed)));
+    }
+    #[test]
+    fn virtual_target_requires_a_real_positive_configure() {
+        assert_eq!(virtual_target_pixels(640, 360, 1.5), Some((960, 540)));
+        for (w, h, scale) in [(0, 360, 1.0), (640, 0, 1.0), (640, 360, 0.0), (640, 360, f64::NAN)] {
+            assert_eq!(virtual_target_pixels(w, h, scale), None);
+        }
     }
 }
 
