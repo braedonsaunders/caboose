@@ -37,10 +37,21 @@ class ProviderExportsTests(unittest.TestCase):
     def test_source_retains_real_addresses_not_dynamic_loader(self):
         source = package.provider_source(["vkCreateDevice", "vkGetInstanceProcAddr"])
         self.assertIn('reinterpret_cast<void*>(&vkCreateDevice)', source)
-        self.assertIn('caboose_gpu_runtime_start_virtual_wsi(&vkGetInstanceProcAddr, resolve)', source)
-        self.assertIn('int caboose_gpu_live_start_v3(void)', source)
+        self.assertIn('caboose_gpu_runtime_start_v4(&vkGetInstanceProcAddr, resolve)', source)
+        self.assertIn('int caboose_gpu_live_start_v4(void)', source)
         self.assertNotIn('caboose_gpu_runtime_start(', source)
         self.assertNotIn('dlsym', source)
+
+
+    def test_indexed_link_probe_references_every_acquire_lifetime_operation(self):
+        source = package.swift_link_probe()
+        for name in ("caboose_gpu_surface_query_indexed", "caboose_gpu_virtual_swapchain_create",
+                     "caboose_gpu_virtual_swapchain_map", "caboose_gpu_acquire_begin", "caboose_gpu_acquire_poll",
+                     "caboose_gpu_acquire_cancel", "caboose_gpu_acquire_observe", "caboose_gpu_acquire_request_release",
+                     "caboose_gpu_virtual_swapchain_present", "caboose_gpu_virtual_swapchain_retire"):
+            self.assertIn(name, package.REQUIRED_NATIVE)
+            self.assertIn(name + "(", source)
+        self.assertNotIn("caboose_gpu_live_start_v3", source)
 
 
 if __name__ == "__main__":

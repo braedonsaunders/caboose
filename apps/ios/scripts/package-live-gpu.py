@@ -38,9 +38,13 @@ ARCHIVES = (
     "upstream/common/utils/libgfxstream_common_utils.a",
     "upstream/host/tracing/libgfxstream_host_tracing.a",
 )
-PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h")
+PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h", "presentation_swapchain_api_draft.h")
 REQUIRED_NATIVE = {
-    "caboose_gpu_runtime_start_virtual_wsi", "caboose_gpu_surface_prepare",
+    "caboose_gpu_runtime_start_v4", "caboose_gpu_surface_query_indexed",
+    "caboose_gpu_virtual_swapchain_create", "caboose_gpu_virtual_swapchain_map",
+    "caboose_gpu_acquire_begin", "caboose_gpu_acquire_poll", "caboose_gpu_acquire_cancel",
+    "caboose_gpu_acquire_observe", "caboose_gpu_acquire_request_release",
+    "caboose_gpu_virtual_swapchain_present", "caboose_gpu_virtual_swapchain_retire", "caboose_gpu_surface_prepare",
     "caboose_gpu_surface_attach", "caboose_gpu_surface_query",
     "caboose_gpu_surface_capabilities_get", "caboose_gpu_surface_capabilities_release",
     "caboose_gpu_surface_present", "caboose_gpu_surface_retire", "caboose_gpu_surface_detach",
@@ -91,8 +95,8 @@ void* resolve(const char* name) {
     return nullptr;
 }
 }
-extern "C" int caboose_gpu_live_start_v3(void) {
-    return caboose_gpu_runtime_start_virtual_wsi(&vkGetInstanceProcAddr, resolve);
+extern "C" int caboose_gpu_live_start_v4(void) {
+    return caboose_gpu_runtime_start_v4(&vkGetInstanceProcAddr, resolve);
 }
 '''
 
@@ -104,7 +108,7 @@ def swift_link_probe():
 import CabooseGPULive
 @main struct LinkProbe {
     @MainActor static func main() {
-        _ = caboose_gpu_live_start_v3()
+        _ = caboose_gpu_live_start_v4()
         var surface: OpaquePointer?
         var bind = caboose_gpu_surface_bind_info()
         _ = caboose_gpu_surface_prepare(&bind, &surface)
@@ -116,6 +120,24 @@ import CabooseGPULive
         caboose_gpu_surface_capabilities_release(snapshot)
         var present = caboose_gpu_present_info()
         _ = caboose_gpu_surface_present(surface, &present, nil, nil)
+        _ = caboose_gpu_surface_query_indexed(surface, 0, &snapshot, &status)
+        caboose_gpu_surface_capabilities_release(snapshot)
+        var create = caboose_gpu_swapchain_create_info()
+        var swapchain: OpaquePointer?
+        var swapchainID: UInt64 = 0
+        var count: UInt32 = 0
+        _ = caboose_gpu_virtual_swapchain_create(surface, &create, &swapchain, &swapchainID, &count, &status)
+        _ = caboose_gpu_virtual_swapchain_map(swapchain, nil, 0)
+        var acquire = caboose_gpu_acquire_info()
+        var request: OpaquePointer?
+        _ = caboose_gpu_acquire_begin(swapchain, &acquire, &request, &status)
+        _ = caboose_gpu_acquire_poll(request)
+        _ = caboose_gpu_acquire_cancel(request)
+        _ = caboose_gpu_acquire_observe(request)
+        _ = caboose_gpu_acquire_request_release(&request)
+        var indexed = caboose_gpu_mapped_present_info()
+        _ = caboose_gpu_virtual_swapchain_present(swapchain, &indexed, nil, nil)
+        _ = caboose_gpu_virtual_swapchain_retire(&swapchain, &status)
         _ = caboose_gpu_surface_retire(surface)
         _ = caboose_gpu_surface_detach(&surface)
     }
@@ -151,7 +173,9 @@ def main():
     input_hashes = {str(path): digest(path) for path in archives}
     cache = (args.build_dir / "CMakeCache.txt").read_text()
     for key, expected in (("CMAKE_OSX_ARCHITECTURES", "arm64"),
-                          ("CABOOSE_GFXSTREAM_HOST_GLES", "0")):
+                          ("CABOOSE_GFXSTREAM_HOST_GLES", "0"),
+                          ("CABOOSE_GFXSTREAM_PRESENTATION_LEASE", "ON"),
+                          ("CABOOSE_GFXSTREAM_INDEXED_WSI", "ON")):
         if not re.search(rf"^{key}:[^=]+={expected}$", cache, re.MULTILINE):
             parser.error(f"build cache must set {key}={expected}")
     if not re.search(r"^CMAKE_OSX_SYSROOT:[^=]+=.*(?:iphoneos|iPhoneOS[^/]*/?[^\n]*)$", cache, re.MULTILINE):
@@ -163,7 +187,7 @@ def main():
     native_symbols = run(["xcrun", "nm", "-gjU", str(archives[0])], capture_output=True, text=True).stdout.splitlines()
     missing_native = sorted(REQUIRED_NATIVE - {name.removeprefix("_") for name in native_symbols})
     if missing_native:
-        parser.error("native runtime lacks required v3 surface API: " + ", ".join(missing_native))
+        parser.error("native runtime lacks required v4 indexed API: " + ", ".join(missing_native))
     registry = args.vulkan_headers / "registry/vk.xml"
     symbols = run(["xcrun", "nm", "-gjU", str(args.provider)], capture_output=True, text=True).stdout
     names = provider_commands(symbols, registry)
@@ -183,7 +207,7 @@ def main():
         sdk = run(["xcrun", "--sdk", "iphoneos", "--show-sdk-path"], capture_output=True, text=True).stdout.strip()
         obj = work / "provider.o"
         run(["xcrun", "--sdk", "iphoneos", "clang++", "-std=c++17", "-target", "arm64-apple-ios26.0",
-             "-isysroot", sdk, "-O2", "-DCABOOSE_GPU_PRESENTATION_LEASE=1", "-DVK_USE_PLATFORM_METAL_EXT", "-DVK_USE_PLATFORM_IOS_MVK",
+             "-isysroot", sdk, "-O2", "-DCABOOSE_GPU_PRESENTATION_LEASE=1", "-DCABOOSE_GPU_INDEXED_WSI=1", "-DVK_USE_PLATFORM_METAL_EXT", "-DVK_USE_PLATFORM_IOS_MVK",
              "-DVK_USE_PLATFORM_MACOS_MVK", "-I", str(args.vulkan_headers / "include"),
              "-I", str(adapter), "-I", str(headers), "-c", str(source), "-o", str(obj)])
         merged = work / "libCabooseGPULive.a"
@@ -207,7 +231,8 @@ def main():
         if input_hashes != {str(path): digest(path) for path in archives}:
             raise RuntimeError("Native build inputs changed during packaging")
         receipt = {"format": 1, "platform": "ios-arm64", "deploymentTarget": "26.0",
-                   "liveHelloVersion": 3, "liveHelloFeatureMask": 0x30, "virtualWSI": True,
+                   "liveHelloVersion": 4, "liveHelloFeatureMask": 0x70, "virtualWSI": True,
+                   "indexedAcquireAPILink": "passed (not executed)",
                    "inputs": input_hashes, "swiftImportAndLink": "passed",
                    "linkProbeSHA256": digest(work / "LinkProbe"),
                    "registrySHA256": digest(registry), "headerSHA256": digest(public_header),
