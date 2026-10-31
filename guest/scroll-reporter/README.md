@@ -33,10 +33,49 @@ other means than `scroll.target` (pointer scroll animated on Chromium's composit
 thread), a picture can show an offset its tag's report does not have yet. The phone
 therefore places pictures by reports only while it drives the page with `scroll.target`.
 
+## GTK 3 and GTK 4
+
+`gtk/caboose-scroll-gtk.c` builds into the preload libraries `libcaboose-scroll-gtk4.so` and
+`libcaboose-scroll-gtk3.so`. Both GTKs are linked `-Bsymbolic` with immediate binding, so no
+call inside GTK can be interposed. The reporter uses only public API, resolved with `dlsym`,
+so it links to neither GLib nor GTK and does nothing in other processes:
+
+- Every quarter second it hooks new toplevels. After GTK's own layout in each frame (the
+  frame clock's layout phase), the adjustments of every GtkScrolledWindow hold what the frame
+  draws. It reports the largest scrolled window first and every other one after it.
+- The tag is drawn in that frame. In GTK 4 it is a GtkDrawingArea the reporter parents to
+  the window and allocates itself, outside the application's layout. In GTK 3 the reporter
+  draws it after the window draws. It goes in the bottom overscan, so the tag is part of the
+  frame's render on every GSK renderer and on GPU presents.
+- `scroll.target` moves the adjustment, and the next layout reports its seq as `applied`.
+  A change of the primary adjustment's upper bound starts a new `epoch`.
+- A GTK 3 client-side decorated window's coordinates start at its titlebar and content, not
+  its shadow.
+
+Limitations: applications that load GTK at run time (Python through GObject introspection)
+are not reported, because the reporter looks for GTK as the process starts. Flatpak
+applications do not see the computer's preload libraries.
+
+## Qt Quick
+
+`qt/` builds `libcaboose-scroll-qt6.so`, a preload library that links to nothing. In a
+process with Qt Quick it loads `libcaboose-scroll-qt6-quick.so` from its own directory. That
+registers a Qt pre-routine, which runs once the application object exists, and then hooks
+every QQuickWindow. In `afterAnimating` (the GUI thread, before the scene graph
+synchronizes the frame) it reads every Flickable's `contentX`, `contentY`, origin, content
+size and scene rectangle through properties alone, without Qt's private headers. The tag is
+a QQuickItem of its own, drawn with scene graph rectangles over the window's content and
+updated in that same step. `scroll.target` moves `contentX`/`contentY`.
+
+`caboose-display` preloads every `libcaboose-scroll-*.so` in
+`/opt/caboose/scroll-reporter/lib` into the applications it launches, through its launch
+environment.
+
 ### Install
 
-`install.sh` (as root, in the image build, after Chromium and Node) installs the
-extension to `/opt/caboose/scroll-reporter`, registers the native host for Debian's
+`install.sh` (as root, in the image build, after Chromium and Node) installs the GTK and Qt
+preload libraries when built (`guest/container/Dockerfile` builds them in a stage of its own)
+and the extension to `/opt/caboose/scroll-reporter`, registers the native host for Debian's
 Chromium and links the extension into `/usr/share/chromium/extensions`, which Debian's
 launcher loads. `guest/container/Dockerfile` runs it.
 
@@ -44,6 +83,9 @@ launcher loads. `guest/container/Dockerfile` runs it.
 
 - `node --test guest/scroll-reporter/chromium/core.test.mjs`: the pure logic, including the
   tag against `guest/display/vectors/scroll-tag/scroll-tag.json`.
+- `check.py gtk4-scroll-reports`, `gtk3-scroll-reports` and `qt6-scroll-reports`: the same
+  check on the toolkits' ruler applications (`gtk/ruler-app.c`, `qt/ruler-app.cpp`, built by
+  `build.sh --check`; `CABOOSE_SCROLL_GTK`/`CABOOSE_SCROLL_QT` name the build directories).
 - `check.py chromium-scroll-reports` (in [guest/display/scripts](../display/scripts)):
   real Chromium on caboose-display with the extension and native host. The probe asks for
   overscan and drives the page with `scroll.target`. For every decoded picture it reads

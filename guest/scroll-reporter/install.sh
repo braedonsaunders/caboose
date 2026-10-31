@@ -1,6 +1,8 @@
 #!/bin/sh
 # Install the Caboose scroll reporters into the guest image, for every user. Run inside the
-# image build (as root), after Chromium and Node are installed. Safe to run again.
+# image build (as root), after Chromium and Node are installed. Safe to run again. The GTK and
+# Qt reporters are installed when built (gtk/build.sh, qt/build.sh, into their out/);
+# caboose-display preloads every libcaboose-scroll-*.so in /opt/caboose/scroll-reporter/lib.
 set -eu
 src=$(cd "$(dirname "$0")" && pwd)
 dest=/opt/caboose/scroll-reporter
@@ -28,3 +30,7 @@ grep -qs /usr/share/chromium/extensions /etc/chromium.d/extensions || {
     echo 'Debian Chromium (with /etc/chromium.d/extensions) must be installed first' >&2; exit 1; }
 install -d -m 0755 /usr/share/chromium/extensions
 ln -sfn "$dest/chromium" /usr/share/chromium/extensions/caboose-scroll-reporter
+install -d -m 0755 "$dest/lib"
+for lib in "$src"/gtk/out/libcaboose-scroll-*.so "$src"/qt/out/libcaboose-scroll-*.so; do
+    if [ -f "$lib" ]; then install -m 0644 "$lib" "$dest/lib/"; fi
+done

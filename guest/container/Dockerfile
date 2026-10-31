@@ -29,6 +29,15 @@ COPY gpu /gpu
 ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
 
+# The GTK and Qt scroll reporters' preload libraries (guest/scroll-reporter).
+FROM debian:trixie-slim AS scroll-reporters
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc g++ libc6-dev pkg-config libgtk-3-dev libgtk-4-dev qt6-declarative-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY scroll-reporter /scroll-reporter
+RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -78,6 +87,8 @@ RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
 COPY scroll-reporter /tmp/scroll-reporter
+COPY --from=scroll-reporters /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
+COPY --from=scroll-reporters /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
 RUN /tmp/scroll-reporter/install.sh && rm -rf /tmp/scroll-reporter
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \

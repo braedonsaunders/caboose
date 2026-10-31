@@ -48,6 +48,27 @@ const MAX_QUEUED: usize = 1 << 20;
 const MAX_SCROLLERS: usize = 8;
 const MAX_FIXED: usize = 32;
 
+/// Where guest/scroll-reporter/install.sh puts the toolkit reporters' preload libraries.
+pub const REPORTERS: &str = "/opt/caboose/scroll-reporter/lib";
+
+/// The preload libraries in `dir`: `libcaboose-scroll-*.so`, sorted. A reporter loads
+/// anything else it needs itself.
+pub fn preload_libraries(dir: &Path) -> Vec<String> {
+    let mut found: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            name.starts_with("libcaboose-scroll-") && name.ends_with(".so") && !name.ends_with("-quick.so")
+        })
+        .filter_map(|p| p.to_str().map(str::to_owned))
+        .collect();
+    found.sort();
+    found
+}
+
 /// One scroller as a reporter sent it, device pixels relative to its viewport.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawScroller {
@@ -587,6 +608,20 @@ mod tests {
         let tree = p.tree(7, 1, &r);
         assert_eq!(tree.scrollers[0].offset, [0.0, 2412.75 * 3.0]);
         assert_eq!(Bind::new(true, &p, (1179, 2376), (1179, 4932)).block, 4.0);
+    }
+
+    #[test]
+    fn preloads_the_reporters_but_not_what_they_load() {
+        let dir = std::env::temp_dir().join(format!("caboose-scroll-preload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["libcaboose-scroll-gtk4.so", "libcaboose-scroll-gtk3.so", "libcaboose-scroll-qt6.so", "libcaboose-scroll-qt6-quick.so", "README"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let found = preload_libraries(&dir);
+        let names: Vec<&str> = found.iter().map(|p| p.rsplit('/').next().unwrap()).collect();
+        assert_eq!(names, ["libcaboose-scroll-gtk3.so", "libcaboose-scroll-gtk4.so", "libcaboose-scroll-qt6.so"]);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(preload_libraries(Path::new("/nonexistent")).is_empty());
     }
 
     #[test]
