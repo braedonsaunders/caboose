@@ -47,6 +47,11 @@ if ! node --version >/dev/null 2>&1 || ! npm --version >/dev/null 2>&1; then
   echo 'Guest components require working node and npm commands after package installation' >&2
   exit 1
 fi
+cleanup_memory_link=0
+if [[ ! -d "$root/memory" && -d "$root/components/memory" ]]; then
+  ln -s "$root/components/memory" "$root/memory"
+  cleanup_memory_link=1
+fi
 install -Dm644 "$root/files/event_stream.py" /opt/caboose/files/event_stream.py
 install -Dm755 "$root/files/caboose-files.py" /opt/caboose/files/caboose-files.py
 install -Dm755 "$root/components/check-steam-bootstrap.sh" /usr/local/libexec/caboose-check-steam-bootstrap
@@ -74,6 +79,7 @@ sh "$root/game/install.sh"
 sh "$root/gpu/install.sh"
 sh "$root/agentd/install.sh"
 sh "$root/apps/install.sh"
+sh "$root/memory/install.sh"
 bash "$root/devices/install.sh" "$mode"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
@@ -88,11 +94,12 @@ else
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-bridge.service var-lib-caboose-depot.mount
+  systemctl enable caboose-memory.service caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-bridge.service var-lib-caboose-depot.mount
   systemctl disable cups.service cups.socket cups.path caboose-phone-printer.service
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
+  systemctl start caboose-memory.service 2>/dev/null || :
   systemctl restart caboose-vsock-services.service
   # The owner's display requires its notification endpoint, so restarting the endpoint would
   # restart the display. Ending it is no stop job: the display keeps running while the
@@ -112,5 +119,8 @@ elif [[ "$mode" = container ]]; then
   /usr/local/libexec/caboose-components-services restart
 fi
 version=$(python3 "$root/components/version.py" "$root")
+if ((cleanup_memory_link)); then
+  rm -f "$root/memory"
+fi
 printf '%s\n' "$version" > /usr/local/share/caboose/components.version.tmp
 mv -f /usr/local/share/caboose/components.version.tmp /usr/local/share/caboose/components.version

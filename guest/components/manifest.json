@@ -100,6 +100,9 @@
   "apps/world.js",
   "apps/guide.md",
   "apps/apps-mcp.mjs",
+  "memory/install.sh",
+  "memory/caboose-memory.py",
+  "memory/caboose-memory.service",
   "devices/install.sh",
   "devices/70-caboose-devices.rules"
 ]
