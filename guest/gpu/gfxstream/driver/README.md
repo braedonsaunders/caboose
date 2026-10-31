@@ -92,6 +92,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0030 process-connection | One connection manager per process on the socket transport, so the shared encoder outlives the thread that made it |
 | 0031 loss-at-entry | After the executor left, every encoder call reports device loss at entry without touching its outputs |
 | 0032 query-results | Query results without WAIT come from an earlier request instead of a round trip; with hello 0x1000 the guest assigns query pool handles |
+| 0033 robustness2 | `VK_EXT_robustness2`, which DXVK 2 requires, is offered when the phone's device has it |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

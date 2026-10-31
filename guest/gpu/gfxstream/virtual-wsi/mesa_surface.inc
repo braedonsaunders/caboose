@@ -13,6 +13,7 @@
 #include <map>
 #include <dlfcn.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <mutex>
@@ -55,8 +56,10 @@ struct Surface {
     VkAllocationCallbacks allocator{};
     bool customAllocator=false, attempted=false, bound=false, poisoned=false;
     uint64_t query=0, presentSerial=0;
-    // A refused bind (the window does not exist yet) is tried again from this time on.
-    std::chrono::steady_clock::time_point nextBind{};
+    // A refused bind (the window does not exist yet) is tried again from this time on;
+    // a bind the phone answered with a failure, not before `nextPhoneBind`.
+    std::chrono::steady_clock::time_point nextBind{}, nextPhoneBind{};
+    uint32_t bindAttempts=0, phoneFailures=0;
     // The provider's last capability reply, for the physical device it answered.
     Bytes caps;
     uint64_t capsPhysical=0;
@@ -100,16 +103,38 @@ static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
 // Queries retry a refused bind at most every kBindRetry; a present always tries, since on
 // Wayland nothing else maps the window (no buffer is ever attached to the wl_surface), so
 // a dropped first frame would leave the application waiting for a frame callback.
+// A bind the phone answered with a failure (it could not take the window's layer) is
+// retried after a delay that doubles up to this, even by presents: each costs the phone's
+// own wait for the layer.
+constexpr auto kPhoneBindRetryMax=std::chrono::seconds(4);
+static void logBind(const Surface& surface, const char* outcome, int error, int vk) {
+    // The first attempts, then every 32nd: enough to see why a window never binds.
+    if (surface.bindAttempts>4 && surface.bindAttempts%32) return;
+    std::fprintf(stderr,"CABOOSE_GPU_SURFACE_BIND object=0x%x space=%u attempt=%u %s errno=%d vk=%d\n",
+        surface.object,unsigned(surface.space),surface.bindAttempts,outcome,error,vk);
+}
 static bool tryBind(Surface& surface, bool throttled=true) {
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
-    if (throttled && now<surface.nextBind) return false;
-    surface.attempted=true;
+    if ((throttled && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
+    surface.attempted=true; ++surface.bindAttempts;
     try {
         surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
         auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
-        if (apiStatus(status(reply.body,48))==VK_SUCCESS) { surface.bound=true; return true; }
-    } catch (const std::system_error&) {}
+        const auto answer=status(reply.body,48);
+        if (apiStatus(answer)==VK_SUCCESS) {
+            surface.bound=true;
+            if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
+            return true;
+        }
+        const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
+            kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
+        ++surface.phoneFailures;
+        surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
+        logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
+    } catch (const std::system_error& error) {
+        logBind(surface,"refused",error.code().value(),0);
+    }
     surface.client.reset();
     surface.attempted=false;
     surface.nextBind=now+kBindRetry;

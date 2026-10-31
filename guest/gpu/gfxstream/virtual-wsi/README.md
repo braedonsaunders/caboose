@@ -74,7 +74,10 @@ mapped. The compositor grants a bind only for an existing window, and the broker
 the connection of a bind it refused; that close is not executor loss (only a bound
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
-tries. Until a bind succeeds, with guest-owned images, queries are answered locally:
+tries. A bind the phone answered with a failure (it could not take the window's layer)
+is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
+four attempts and every 32nd after them print `CABOOSE_GPU_SURFACE_BIND object=…
+space=… attempt=… refused|failed|bound errno=… vk=…` on stderr. Until a bind succeeds, with guest-owned images, queries are answered locally:
 the phone's formats (`B8G8R8A8_UNORM` and `_SRGB`, sRGB nonlinear), FIFO, 4 to 8 images,
 opaque or premultiplied alpha, and no fixed extent (X11 surfaces report their window's
 size). Presentation support needs no window and is answered for the first queue family.

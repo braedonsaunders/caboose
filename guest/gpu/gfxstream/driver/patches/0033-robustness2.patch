@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 32/32] Offer VK_EXT_robustness2 when the device has it
+
+DXVK 2 requires VK_EXT_robustness2 (robustBufferAccess2 and nullDescriptor) and
+fails to create a D3D11 device without it. The encoder already marshals its
+feature and property structures; the extension was only missing from the guest's
+device extension allowlist, which offers an extension only when the phone's
+device supports it.
+---
+ src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 3733ef6..7c4c31a 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2233,6 +2233,7 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
+         "VK_KHR_zero_initialize_workgroup_memory",
+         "VK_EXT_4444_formats",
+         "VK_EXT_extended_dynamic_state",
++        "VK_EXT_robustness2",
+         "VK_EXT_extended_dynamic_state2",
+         "VK_EXT_inline_uniform_block",
+         "VK_EXT_pipeline_creation_cache_control",
+-- 
+2.43.0
+
