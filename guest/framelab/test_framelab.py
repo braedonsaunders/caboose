@@ -97,7 +97,8 @@ class MathTests(unittest.TestCase):
     def test_cpu_between(self):
         cpu = [(0, 0.0), (1 * S, 0.5), (2 * S, 0.6)]
         self.assertAlmostEqual(fl.cpu_between(cpu, 0, 2 * S), 30.0)
-        self.assertIsNone(fl.cpu_between(cpu, 0, 3 * S))
+        self.assertAlmostEqual(fl.cpu_between(cpu, 0, 2 * S + 500 * MS), 30.0)  # the last sample, just inside
+        self.assertIsNone(fl.cpu_between(cpu, 0, 4 * S))
 
 
 class StallTests(unittest.TestCase):
@@ -162,7 +163,8 @@ class ScorecardTests(unittest.TestCase):
         self.assertEqual(card['stalls']['count'], 0)
 
     def test_video_path_from_compositor_frames(self):
-        sent = [[1 * S + i * 100 * MS, 1 * S + i * 100 * MS - 5 * MS, 1000] for i in range(10)]
+        sent = [[1 * S + i * 100 * MS, 1 * S + i * 100 * MS - 5 * MS, 1000, False] for i in range(10)]
+        sent.append([1 * S + 950 * MS, 1 * S + 950 * MS, 0, True])  # sharpening only
         run = {'start_ns': 0, 'measure_ns': 1 * S, 'end_ns': 2 * S, 'ok': True,
                'windows': {'7': {'commits': [], 'sent': sent}}, 'cpu': []}
         card = fl.scorecard({'id': 'terminal'}, run)

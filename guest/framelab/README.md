@@ -47,7 +47,7 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
 - **`pacing`**: frames per second and the gap between frames (p50, p95, max) over the
   measured span. On the GPU path these are the presents from the guest
   (`CABOOSE_GPU_PRESENT`), and also the rate and gaps of the phone's present results; on the
-  video path, the pictures sent. When the broker has only its two-second
+  video path, the pictures sent with new content (not those that only sharpen it). When the broker has only its two-second
   `CABOOSE_GPU_PRESENT_RATE` counters, the rate and the largest gap come from them.
 - **`input`**: for each injected input, the time to the first frame after it, to the
   phone's result for that frame (GPU path), and to the phone's glass when the phone reports
@@ -119,10 +119,11 @@ python3 guest/framelab/framelab-drive.py --computer c-9c400ccda8 \
 `--host-env` the host's environment file there (for its owner token) and `--gpu-socket`
 the broker's local socket in the computer (default the GPU acceptance seat's). `--stage`
 is a Python script run on that machine with `python3 -` after the computer wakes, to
-install a build before measuring. The driver bounds every step with a timeout, and on any exit stops the
-phone app, the guest side and every process the guest launched, switches the present
+install a build before measuring. The driver bounds every step with a timeout, and on any
+exit stops the phone app, the guest side and every process the guest launched, switches the present
 trace off and removes its files from the computer. `--no-phone` runs the guest side on a
-computer without launching the phone app.
+computer without launching the phone app, and `--no-wake` skips waking a computer that is
+known to be awake.
 
 Results: `<app>.json`, `summary.md`, `phone-console.log` and `guest-events.jsonl` (each
 line prefixed with its arrival time on the Mac), and `guest/` with the guest's own

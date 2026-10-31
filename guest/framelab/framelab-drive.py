@@ -186,6 +186,7 @@ def main():
     parser.add_argument('--phone-env', default='{}', help='extra phone environment, JSON')
     parser.add_argument('--developer-dir', default='/Applications/Xcode.app/Contents/Developer')
     parser.add_argument('--no-phone', action='store_true', help='run the guest side only (no phone records)')
+    parser.add_argument('--no-wake', action='store_true', help='the computer is awake; do not ask its host')
     parser.add_argument('--socket-timeout', default=90, type=int, help='seconds to wait for the GPU socket')
     args = parser.parse_args()
     if not args.no_phone and not args.device:
@@ -233,9 +234,13 @@ def main():
 
     phone = console = guest = None
     failed = True
+    # However the driver is stopped, the cleanup below runs.
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda number, _: sys.exit(128 + number))
     try:
-        log(f'waking {args.computer}')
-        host.wake(args.host_env, args.host_port)
+        if not args.no_wake:
+            log(f'waking {args.computer}')
+            host.wake(args.host_env, args.host_port)
         if args.stage:
             log(f'staging with {args.stage}')
             staged = host.run('python3 -', timeout=600, input=Path(args.stage).read_text())

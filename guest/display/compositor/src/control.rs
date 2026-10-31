@@ -25,7 +25,7 @@
 //! screenshot [ID]              a window, or the whole display: {"png":N,…} then N bytes
 //! frames [SINCE]               what happened after SINCE (CLOCK_MONOTONIC µs, default 0):
 //!                              now_us; per window its commits and the pictures sent to the
-//!                              client as [at, pts, bytes]; input from the client as
+//!                              client as [at, pts, bytes, refined]; input from the client as
 //!                              [at, kind] (pointer, scroll, touch, key, text). Each list
 //!                              keeps the newest 1024 entries.
 //! ```
@@ -502,7 +502,7 @@ impl State {
                     .sent
                     .after(since, |s| s.at_us)
                     .iter()
-                    .map(|s| format!("[{},{},{}]", s.at_us, s.pts_us, s.bytes))
+                    .map(|s| format!("[{},{},{},{}]", s.at_us, s.pts_us, s.bytes, s.refined))
                     .collect();
                 format!("{{\"id\":{id},\"commits\":[{}],\"sent\":[{}]}}", commits.join(","), sent.join(","))
             })

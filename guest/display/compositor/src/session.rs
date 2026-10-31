@@ -840,7 +840,8 @@ impl State {
             _ => {}
         }
         if sent_bytes > 0 {
-            w.stream.trace.sent.push(crate::frame_trace::Sent { at_us: now_us, pts_us: done.pts_us, bytes: sent_bytes });
+            let sent = crate::frame_trace::Sent { at_us: now_us, pts_us: done.pts_us, bytes: sent_bytes, refined };
+            w.stream.trace.sent.push(sent);
         }
         if let Some(id) = done.ends_motion {
             // After the window picture that repaints its region.

@@ -174,11 +174,12 @@ def attribute_stall(stall, read_profiles, decodes, cpu):
     return {'start_ns': start, 'ms': round(duration_ms, 1), 'cause': cause, **evidence}
 
 
-def cpu_between(cpu, start, end):
+def cpu_between(cpu, start, end, slack=1_000_000_000):
     """Percent of one core the app used between two times, from cumulative samples
-    (t, cpu_seconds) of its process tree; None without samples on both sides."""
-    before = [s for s in cpu if s[0] <= start]
-    after = [s for s in cpu if s[0] >= end]
+    (t, cpu_seconds) of its process tree: the samples just outside the interval, or just
+    inside it within `slack` of its ends; None without them."""
+    before = [s for s in cpu if s[0] <= start] or [s for s in cpu if s[0] <= start + slack][:1]
+    after = [s for s in cpu if s[0] >= end][:1] or [s for s in cpu if s[0] >= end - slack][-1:]
     if not before or not after:
         return None
     (t0, c0), (t1, c1) = before[-1], after[0]
@@ -229,7 +230,8 @@ def scorecard(app, run, phone_records=(), offset=None):
                     moved['presented_ns'] = record['presented_ns'] - offset
                 phone.append(moved)
     path = 'gpu' if presents or any(r['presented'] for r in rates) else 'video' if sent or commits else 'none'
-    frames = presents if path == 'gpu' else [s[0] for s in sent]
+    # A sharpened picture of content already sent is not a frame (its bytes still count).
+    frames = presents if path == 'gpu' else [s[0] for s in sent if not (len(s) > 3 and s[3])]
     card = {
         'app': app['id'],
         'name': app.get('name', app['id']),

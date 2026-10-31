@@ -205,6 +205,7 @@ class Run:
         self.lock = threading.Lock()
         self.proc = None
         self.log = None
+        self.no_timeline = False
 
     def keep(self, line, received):
         record = framelab.parse_line(line, received)
@@ -241,13 +242,21 @@ class Run:
             time.sleep(0.75)
 
     def poll_frames(self, since):
-        reply = self.control.ask(f'frames {since}')[0]
+        """New entries of the compositor's timeline; a compositor without `frames` gives
+        none, and the GPU broker's records stand alone."""
+        try:
+            reply = self.control.ask(f'frames {since}')[0]
+        except RuntimeError as e:
+            if 'unknown request' not in str(e):
+                raise
+            self.no_timeline = True
+            return since
         for w in reply['windows']:
             if w['id'] in self.window_ids:
                 entry = self.windows.setdefault(str(w['id']), {'commits': [], 'sent': []})
                 # Compositor microseconds to nanoseconds, the clock every record uses.
                 entry['commits'] += [t * 1000 for t in w['commits']]
-                entry['sent'] += [[a * 1000, p * 1000, b] for a, p, b in w['sent']]
+                entry['sent'] += [[a * 1000, p * 1000, b, r] for a, p, b, r in w['sent']]
         return reply['now_us']
 
     def inject(self, step, window):
@@ -369,7 +378,7 @@ class Run:
             self.window_ids.add(window['id'])
             record['window'] = {k: window[k] for k in ('id', 'title', 'app_id', 'pid', 'rect')}
             emit('window', app=app['id'], reference=self.reference, window=record['window'])
-            since = self.control.ask('frames')[0]['now_us']
+            since = self.poll_frames(0) if not self.no_timeline else 0
             end_warmup = time.monotonic() + app.get('warmup_s', 3)
             while time.monotonic() < end_warmup:
                 self.control.ask('settle')
@@ -421,7 +430,8 @@ class Run:
                 tail.stop()
             self.stop()
         with self.lock:
-            record.update(records=list(self.records), inputs=self.inputs, cpu=self.cpu, windows=self.windows)
+            record.update(records=list(self.records), inputs=self.inputs, cpu=self.cpu, windows=self.windows,
+                          compositor_timeline=not self.no_timeline)
         return record
 
 
