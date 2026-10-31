@@ -103,14 +103,18 @@ public struct LocalScroll {
         public var historyLimit = 6
         /// Most of the region, as a fraction, that may show content not yet captured. The
         /// shown position resists beyond it and catches up as pictures arrive.
-        public var revealLimit = 0.25
+        public var revealLimit = 0.4
         /// How long the app may stop answering motion before its content is taken to end.
         public var edgeGrace: TimeInterval = 0.12
-        /// How long an app that answers nothing at all, not even a probe, is waited for before
-        /// its content is taken to end where it stopped.
+        /// How long a probe is waited for. An app that answers nothing is stalled, not at its end.
         public var edgeSilence: TimeInterval = 1.0
-        /// Correction rounds before the phone eases onto the app's own position.
+        /// Correction rounds before the phone hands back to the app's picture wherever it is.
         public var corrections = 3
+        /// How near the app must come to the phone's position for the hand-back, in picture
+        /// pixels: an app scrolling in its own, finer or coarser, pixels lands within it.
+        public var settleTolerance = 1.5
+        /// The longest the phone keeps correcting at rest before handing back regardless.
+        public var settleLimit: TimeInterval = 1.5
         /// How long the app keeps its lead after a finger stops the content.
         public var haltHold: TimeInterval = 0.2
         /// After a scroll comes to rest, the phone briefly drives the app one region further
@@ -140,6 +144,10 @@ public struct LocalScroll {
     }
 
     public let configuration: Configuration
+    /// Receives one line for each decision worth diagnosing: edges, probes, corrections,
+    /// hand-backs.
+    public var note: ((String) -> Void)?
+    private var restSince: TimeInterval?
     public private(set) var phase: Phase = .idle
     public private(set) var axis: ScrollAxis = .vertical
     /// Picture pixels per view point along and across the axis.
@@ -238,6 +246,14 @@ public struct LocalScroll {
     public mutating func begin(at time: TimeInterval, axis requestedAxis: ScrollAxis, anchor point: CGPoint, scale: CGSize) {
         let fromRest = phase == .idle
         if fromRest { edgeMet = false }
+        // An end inferred from the app's behaviour is tried again by every new gesture; only
+        // a toolkit adapter's reported range stays.
+        if reportedBias == nil, edges != (nil, nil) {
+            note?("edges cleared at pan lower=\(edges.lower.map { String(Int($0)) } ?? "-") upper=\(edges.upper.map { String(Int($0)) } ?? "-")")
+            edges = (nil, nil)
+        }
+        probe = nil
+        restSince = nil
         if fromRest || phase == .prefetching { travelStart = prefetch?.origin ?? placedOffset ?? position }
         // Only a start from rest knows what the app had applied of everything sent.
         gainBaseline = fromRest && !frames.contains(where: { !$0.placed }) ? (sent, placedOffset ?? position) : nil
@@ -398,6 +414,11 @@ public struct LocalScroll {
         frames[i].region = region
         frames[i].holes = holes
         if let region { self.region = region }
+        if reportedBias == nil {
+            if let upper = edges.upper, offset > upper + 2 { note?("edge cleared: app at \(Int(offset)) past upper \(Int(upper))"); edges.upper = nil }
+            if let lower = edges.lower, offset < lower - 2 { note?("edge cleared: app at \(Int(offset)) past lower \(Int(lower))"); edges.lower = nil }
+        }
+        if case .unrelated = observation, phase != .idle { note?("picture \(id) unrelated, placed by forwarded scroll at \(Int(offset))") }
         noteCadence(frames[i].time)
         if !guessed { learn(from: frames[i], previous: before) } else { lastAppMotion = frame.time }
         if phase == .idle {
@@ -416,12 +437,12 @@ public struct LocalScroll {
         longestGap = max(longestGap * 0.98, gap)
     }
 
-    /// The app has shown nothing for over one and a half picture intervals while being driven:
+    /// The app has shown nothing for three picture intervals (and 80 ms) while being driven:
     /// it is stalled (or at its end). Its input is held so its next picture still overlaps
     /// the last one and can be measured.
     private func stalled(at time: TimeInterval) -> Bool {
         guard let last = lastPicture, phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
-        return time - last > max(0.05, 1.6 * frameInterval) && abs(commanded - (placedOffset ?? commanded)) > 0.25 * regionLength
+        return time - last > max(0.08, 3 * frameInterval) && abs(commanded - (placedOffset ?? commanded)) > 0.25 * regionLength
     }
 
     private mutating func learn(from frame: Frame, previous: Frame?) {
@@ -576,6 +597,7 @@ public struct LocalScroll {
             target = commanded + min(step, max(-step, target - commanded))
         }
         var send = CGPoint.zero
+        let commandedBefore = commanded
         let change = target - commanded
         if abs(change) >= 0.01 {
             commanded = target
@@ -592,12 +614,14 @@ public struct LocalScroll {
         }
 
         // 3. The app stopped answering: its content ends where it stopped.
-        let probeStep = detectEdge(at: time)
+        let probeStep = detectEdge(at: time, commandedBefore: commandedBefore)
         if probeStep != 0 {
+            // The probe goes alone: this refresh's drive forward would cancel it out.
+            let dropped = Double(axis.component(send))
             let wire = probeStep / gain
-            sent += wire
+            sent += wire - dropped
             lastSend = time
-            if axis == .vertical { send.y += CGFloat(wire) } else { send.x += CGFloat(wire) }
+            if axis == .vertical { send.y = CGFloat(wire) } else { send.x = CGFloat(wire) }
         }
 
         // 4. At rest, bring the app here, then hand the picture back to it.
@@ -610,7 +634,7 @@ public struct LocalScroll {
     }
 
     /// Returns scroll to send now for a probe, in picture pixels along the axis.
-    private mutating func detectEdge(at time: TimeInterval) -> Double {
+    private mutating func detectEdge(at time: TimeInterval, commandedBefore: Double) -> Double {
         // A picture still being measured may show the app moving.
         guard let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
         if let p = probe {
@@ -618,10 +642,14 @@ public struct LocalScroll {
                 // The app answered the probe by moving back: it was held at its end. Moving
                 // on instead, it was only stalled.
                 if (app - p.candidate) * p.direction < -8 { confirmEdge(at: p.candidate, direction: p.direction, app: app) }
-                else if (app - p.candidate) * p.direction > 1 { probe = nil; commanded = p.resume; unansweredSince = nil }
+                else if (app - p.candidate) * p.direction > 1 {
+                    note?("probe: app moved on to \(Int(app)); it was stalled")
+                    probe = nil; commanded = p.resume; unansweredSince = nil
+                }
             } else if time - p.sentAt > configuration.edgeSilence {
-                // Silent for good: take the end to be where it stopped.
-                confirmEdge(at: p.candidate, direction: p.direction, app: app)
+                // No answer at all: a stalled app, not an end. Driving resumes.
+                note?("probe: no answer in \(Int(configuration.edgeSilence * 1000)) ms; not an end")
+                probe = nil; commanded = p.resume; unansweredSince = time
             }
             return 0
         }
@@ -631,15 +659,12 @@ public struct LocalScroll {
         let grace = max(2 * latency + configuration.edgeGrace, 1.5 * longestGap + 0.05)
         guard time - max(since, lastAppMotion) > grace else { return 0 }
         let direction: Double = ahead > 0 ? 1 : -1
-        if (lastPicture ?? -.infinity) > since {
-            // It kept showing pictures that did not move: its content ends there.
-            confirmEdge(at: app, direction: direction, app: app)
-            return 0
-        }
-        // No picture at all: an app at its end draws nothing new, and neither does a stalled
-        // one. A small step back tells them apart, behind the phone's own picture.
+        // Still pictures or none: an app at its end and an app whose scrolling is busy (a
+        // page decoding images) look alike. A small step back tells them apart, behind the
+        // phone's own picture: only an app at its end can answer it.
         let step = 24 * direction
-        probe = Probe(candidate: app, direction: direction, sentAt: time, resume: commanded - step)
+        note?("probe: app still at \(Int(app)) for \(Int((time - max(since, lastAppMotion)) * 1000)) ms while driven \(Int(ahead)) px further")
+        probe = Probe(candidate: app, direction: direction, sentAt: time, resume: commandedBefore - step)
         commanded = app - step
         return -step
     }
@@ -647,6 +672,7 @@ public struct LocalScroll {
     private mutating func confirmEdge(at edge: Double, direction: Double, app: Double) {
         probe = nil
         if direction > 0 { edges.upper = edge } else { edges.lower = edge }
+        note?("edge confirmed \(direction > 0 ? "upper" : "lower") at \(Int(edge)) (the app answered the probe)")
         edgeMet = true
         commanded = app
         unansweredSince = nil
@@ -667,15 +693,13 @@ public struct LocalScroll {
             phase = .idle
             return
         }
+        if restSince == nil { restSince = time }
         let pending = frames.contains { !$0.placed }
-        if abs(app - position) < 0.5 && abs(commanded - position) < 0.5 && !pending {
-            let travelled = app - (travelStart ?? app)
-            learnGain(app: app)
-            position = app; requested = app; wanted = app; commanded = app
-            phase = .idle
-            if configuration.prefetch > 0, abs(travelled) >= 1 {
-                prefetchAt = (time + configuration.prefetchDelay, travelled > 0 ? 1 : -1)
-            }
+        let tolerance = configuration.settleTolerance
+        let residual = app - position
+        if abs(residual) <= tolerance && abs(commanded - wanted) < 0.5 && !pending {
+            if abs(residual) >= 0.5 { note?("hand-back \(String(format: "%.1f", residual)) px from the phone's position") }
+            handBack(at: app, time: time)
             return
         }
         // The app keeps its lead while a next flick may come, and the return to the phone's
@@ -685,13 +709,27 @@ public struct LocalScroll {
         guard time - lastSend > 2 * latency + 0.05, time - (frames.last?.time ?? -.infinity) > 0.05 || !pending else { return }
         learnGain(app: app)
         commanded = app
-        if correctionsLeft > 0, abs(app - position) >= 0.5 {
+        if correctionsLeft > 0 {
             correctionsLeft -= 1
+            note?("correction: app at \(Int(app)), phone at \(Int(position)); sending \(Int(position - app)) px at gain \(String(format: "%.2f", gain))")
             // The next refresh sends the difference at the newly learned gain.
             unansweredSince = nil
-        } else if abs(app - position) >= 0.5 {
-            // The app will not reach the phone's position: ease the phone onto the app's.
-            startSpring(from: position, to: app, velocity: 0, stiffness: 14)
+        } else if abs(residual) <= 4 * tolerance || time - (restSince ?? time) > configuration.settleLimit {
+            // The app will not come nearer: its own picture takes over where it is. The phone's
+            // content never moves after the finger has let it rest.
+            note?("hand-back after corrections, \(String(format: "%.1f", residual)) px off")
+            handBack(at: app, time: time)
+        }
+    }
+
+    private mutating func handBack(at app: Double, time: TimeInterval) {
+        let travelled = app - (travelStart ?? app)
+        learnGain(app: app)
+        position = app; requested = app; wanted = app; commanded = app
+        phase = .idle
+        restSince = nil
+        if configuration.prefetch > 0, abs(travelled) >= 1 {
+            prefetchAt = (time + configuration.prefetchDelay, travelled > 0 ? 1 : -1)
         }
     }
 

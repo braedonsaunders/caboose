@@ -495,26 +495,29 @@ uses it differently:
   finger one to one. A run in which three pictures in a row stood still while the forwarded
   scroll kept moving one way was clamped at an end, so its gain is not learned.
 - **Ends of content.** The app may stop moving while it is still being driven, for twice
-  its latency plus 120 ms (or 1.5 times its longest recent stall). If it kept showing
-  pictures, its content has ended there. If it showed nothing at all, the phone sends a
-  24-pixel step back behind its own picture. An app held at its end answers by moving
-  back. A stalled app does not, and it moves on once it recovers. An app silent for a
-  second is taken to end where it stopped. Past a known end, the phone resists as
-  UIScrollView does, and momentum that reaches it springs back. Ends stay known while the
-  captured pictures stay related.
+  its latency plus 120 ms (or 1.5 times its longest recent stall). Pictures that do not
+  move and no pictures at all look alike at an end and in an app whose scrolling is busy
+  (a page decoding images). So the phone sends a 24-pixel step back, alone and behind its
+  own picture. Only an app held at its end can answer by moving back; that confirms the
+  end. An app that moves on was stalled, and one that does not answer within a second is
+  driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
+  that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
+  picture placed beyond an end removes it. A toolkit adapter's reported range stays.
 - **Stalls.** Consecutive pictures must overlap to be measured. The app is therefore
   driven at most 0.6 of the region per picture interval. Its input is held while it has
-  shown nothing for one and a half picture intervals, so the picture after a stall still
+  shown nothing for three picture intervals and at least 80 ms, so the picture after a stall still
   overlaps the last one. A picture that cannot be related to earlier ones is placed where
   the forwarded scroll had taken the app, and the earlier pictures are dropped.
 - **Bounded reveal.** Content no captured picture covers shows in the colour of the
-  nearest captured edge. It may fill at most a quarter of the region. Past that, the shown
+  nearest captured edge. It may fill at most 40% of the region. Past that, the shown
   position resists and catches up as pictures arrive, never slower than the gesture.
 - **Hand back.** When the phone comes to rest, the app is brought to the same position,
-  with up to three correction rounds at the newly learned gain. After that, the phone eases
-  onto the app's position. Once the app's newest picture shows that position, the phone
-  draws the app's own picture again. A touch on moving content stops it without clicking,
-  as in any iOS scroll view.
+  with up to three correction rounds at the newly learned gain. Once the app's newest
+  picture is within 1.5 picture pixels of it, the phone draws the app's own picture
+  again. After the corrections, an app that stays within 6 pixels, or any app after 1.5
+  seconds at rest, takes over where it is. The phone's content never moves after the
+  finger lets it rest. A touch on moving content stops it without clicking, as in any iOS
+  scroll view.
 
 The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
 most six of them, chosen for the content they add near the current position. Video layers

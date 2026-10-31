@@ -152,6 +152,7 @@ struct ScrollReplay {
              measureFrom: TimeInterval = -1, trace: Bool = false) -> (Report, LocalScroll) {
         var report = Report(name: name)
         var model = initial ?? LocalScroll(configuration: configuration)
+        if trace { model.note = { print("  NOTE", $0) } }
         let estimator = ScrollMotionEstimator()
         let tick = 1.0 / 120
         let maxOffset = Double(app.pageLines - (lines - header - app.footer))
