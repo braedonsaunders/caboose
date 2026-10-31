@@ -377,7 +377,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x24` | `surface.reset` | `epoch: uint` |
 | `0x25` | `scene.font` | `font: uint` (`XXH64`), `index: uint`, `family?: text`, `data: bytes` (TTF/OTF) |
 | `0x26` | `scene.commit` | `id`, `seq`, `pts_us`, `root: uint`, `reset?: bool`, `nodes?: [{ id, kind: "group"\|"clip"\|"rclip"\|"scroll"\|"rect"\|"border"\|"shadow"\|"glyphs"\|"path"\|"surface", rect?, radius?: [u32 × 4], color?: uint, scroll?: rect, children?: [uint], font?: uint, size?: float, glyphs?: bytes, path?: bytes, surface?: uint }]`, `remove?: [uint]` |
-| `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]` ([Scroll reports](#scroll-reports)) |
+| `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]`, `zoom?: float`, `zoom_range?: [min, max]` ([Scroll reports](#scroll-reports)) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
@@ -413,6 +413,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x95` | `scroll.target` | `id`, `scroller: uint`, `seq: uint`, `delta: [dx, dy]` ([Scroll reports](#scroll-reports)) |
+| `0x99` | `scroll.zoom` | `id`, `seq: uint`, `scale: float`, `focus: [x, y]` ([Scroll reports](#scroll-reports)) |
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
@@ -833,6 +834,17 @@ over the picture move with the scrolled content.
 One GPU pass draws the region: per pixel, the newest captured picture that covers it
 outside its fixed overlays, else the fill colour.
 
+- **Zoom.** Two fingers pinching a window whose reporter names a scroller zoom it on the
+  phone, as UIScrollView zooms. The picture on screen scales with the fingers at display
+  rate, with the content first under them staying under them. Past the page's
+  `zoom_range` (1 to 5 when it reports none) the scale rubber-bands. On lift it settles in
+  0.3 s within the range about the fingers, with no edge of the content pulled inside the
+  viewport. The phone then sends `scroll.zoom` with the settled scale and the point a pure
+  scale to it keeps still, and keeps showing its composition until a picture whose report
+  has applied that seq at that scale arrives (1.5 s at most). Then it shows the app's
+  picture. A scroll in progress stops where it shows when a pinch begins. Windows that take
+  native touch get their pinches themselves.
+
 `CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
 `ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
 `LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
@@ -899,6 +911,16 @@ and need no shared origin. A client that wants the content at offset `X` sends
 reports only while it drives the window with `scroll.target`. Scrolling that Chromium
 animates on its compositor thread, as a wheel scroll can, may show an offset before its
 frame's report.
+
+**Zoom.** A report's `zoom` is the page's visual scale (1 when absent). While it is not 1,
+the primary scroller's `offset` and `range` are in pixels of the zoomed content; fixed
+rectangles stay in window pixels. `zoom_range` is the scales the page allows. A report at
+another zoom starts a new placement epoch on the phone, as `epoch` does.
+
+**`scroll.zoom`** (`0x99`): zoom window `id`'s page to the absolute `scale` about `focus`,
+a window-pixel point that stays still, which may lie outside the window. `seq` is the
+window's input sequence number. The reporter applies it so that the first frame whose
+report has `applied ≥ seq` shows the page at exactly `scale`.
 
 #### Input sequencing
 

@@ -55,6 +55,7 @@ public final class LocalScrollController {
         return (composition.axis, composition.region.along.upperBound, lastViewport)
     }
     private var lastViewport = 0
+    private var lastViewportSize: CGSize?
     private var lastComposition: ScrollComposition?
 
     /// The newest touch sample's timestamp, for the send log.
@@ -113,6 +114,7 @@ public final class LocalScrollController {
 
     /// The window, its mapping or the connection changed.
     public func cancel() {
+        finishZoom()
         model.cancel()
         send = nil
         armedUntil = 0
@@ -141,8 +143,9 @@ public final class LocalScrollController {
     public func refresh(at time: CFTimeInterval, surface: WindowSurface?, layer: CAMetalLayer) -> Bool {
         let now = CACurrentMediaTime()
         lastRefresh = time
+        if let surface { lastSurface = surface }
         // Pictures are captured from a gesture until a while after the scroll comes to rest.
-        if model.isActive { armedUntil = .infinity } else if armedUntil == .infinity { armedUntil = now + 3 }
+        if model.isActive || zoom != nil { armedUntil = .infinity } else if armedUntil == .infinity { armedUntil = now + 3 }
         if now < armedUntil {
             if let standby, measuringID == nil {
                 self.standby = nil
@@ -175,6 +178,7 @@ public final class LocalScrollController {
             lastStatus = now
             LocalScrollProfile.note("status captures=\(capturesIssued) landed=\(capturesLanded) placed=\(capturesPlaced) waiting=\(placing.count) measuring=\(measuringID.map(String.init) ?? "-") phase=\(model.phase) lost=\(model.lost)")
         }
+        if zoom != nil { return refreshZoom(at: time, surface: surface, layer: layer) }
         let wasActive = model.isActive
         let tick = model.tick(at: time)
         if wasActive, !model.isActive {
@@ -196,6 +200,14 @@ public final class LocalScrollController {
             profile.refresh(at: time, composed: false, blank: 0, region: 1)
             return false
         }
+        guard draw(composition, into: layer, at: time) else { return false }
+        let shift = composition.layers.last?.shift ?? 0
+        contentShift = composition.axis.point(along: CGFloat(shift))
+        profile.refresh(at: time, composed: true, blank: composition.blank, region: composition.region.along.count)
+        return true
+    }
+
+    private func draw(_ composition: ScrollComposition, into layer: CAMetalLayer, at time: CFTimeInterval) -> Bool {
         let fill = fillColor(composition)
         guard let base = textures[composition.base] else { isComposing = false; return false }
         let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
@@ -212,6 +224,7 @@ public final class LocalScrollController {
         let drawn = screen.width > size.width || screen.height > size.height ? screen : size
         if layer.drawableSize != drawn { layer.drawableSize = drawn }
         lastViewport = Int(composition.axis == .vertical ? size.height : size.width)
+        lastViewportSize = size
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, viewport: size,
                               commands: commands) else {
@@ -222,9 +235,6 @@ public final class LocalScrollController {
         commands.present(drawable)
         commands.commit()
         isComposing = true
-        let shift = composition.layers.last?.shift ?? 0
-        contentShift = composition.axis.point(along: CGFloat(shift))
-        profile.refresh(at: time, composed: true, blank: composition.blank, region: composition.region.along.count)
         return true
     }
 
@@ -360,7 +370,12 @@ public final class LocalScrollController {
             capturesPlaced += 1
             model.observe(next.id, reported ?? next.measured)
             profile.measured(reported ?? next.measured)
-            releaseTextures(keeping: Set(model.retainedFrames))
+            if let wait = zoomWait, let tree = zoomReport?(next.source, next.tagLuma), tree.applied >= wait.seq,
+               abs(tree.zoom - wait.scale) <= 0.005 * wait.scale {
+                LocalScrollProfile.note("zoom: picture \(next.id) is at \(String(format: "%.3f", tree.zoom)); handing back")
+                finishZoom()
+            }
+            releaseTextures(keeping: Set(model.retainedFrames).union(zoomFrames))
         }
     }
 
@@ -384,6 +399,110 @@ public final class LocalScrollController {
         guard let from = composition.fillFrom, let colors = fills[from.frame] else { return SIMD3(1, 1, 1) }
         let middle = (composition.region.along.lowerBound + composition.region.along.upperBound) / 2
         return from.lines.lowerBound >= middle ? colors.bottom : colors.top
+    }
+
+    // MARK: Zoom
+
+    private var zoom: LocalZoom?
+    /// What the pinch scales: the composition on screen when it began, or the app's picture.
+    private var zoomBase: ScrollComposition?
+    private var zoomFrames: Set<UInt64> = []
+    /// The app was asked to zoom with this seq to this absolute scale.
+    private var zoomWait: (seq: UInt64, scale: Double)?
+    private weak var lastSurface: WindowSurface?
+    /// The toolkit report for exactly a captured picture, for its zoom and applied seq.
+    public var zoomReport: ((PictureSource, [Float]?) -> ScrollTree?)?
+    /// How long the composition waits for the app's picture at the new scale.
+    static let zoomPatience: TimeInterval = 1.5
+
+    public var isZooming: Bool { zoom != nil }
+
+    /// Two fingers began to pinch at `centroid` (viewport pixels). `limits` are the relative
+    /// scales the page allows. A scroll in progress stops where it shows.
+    public func beginZoom(centroid: CGPoint, limits: ClosedRange<Double>) {
+        finishZoom()
+        model.interrupt()
+        let viewport = lastViewportSize ?? pictureSize ?? .zero
+        zoom = LocalZoom(centroid: centroid, viewport: viewport, limits: limits)
+        armedUntil = .infinity
+        if isComposing, let shown = lastComposition {
+            freezeZoomBase(shown)
+            return
+        }
+        // The app's own picture: a copy, so the app may draw on while the pinch shows it.
+        let source = standby?.texture ?? lastSurface?.presentation()?.texture
+        guard let source else { return }
+        renderer.copy(source) { [weak self] copy in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let copy else { return }
+                    guard let self, self.zoom != nil, self.zoomBase == nil else { LocalScrollRenderer.shared?.recycle([copy]); return }
+                    let id = self.nextID
+                    self.nextID += 1
+                    self.textures[id] = copy
+                    let extra = self.pictureOverscan(copy)
+                    let width = max(1, copy.width - Int(extra.width)), height = max(1, copy.height - Int(extra.height))
+                    let region = ScrollRegion(along: 0 ..< height, across: 0 ..< width)
+                    self.freezeZoomBase(ScrollComposition(axis: .vertical, base: id, region: region,
+                                                          layers: [.init(frame: id, shift: 0, lines: region.along)],
+                                                          blank: 0, fillFrom: nil),
+                                        viewport: CGSize(width: width, height: height))
+                }
+            }
+        }
+    }
+
+    private func freezeZoomBase(_ composition: ScrollComposition, viewport: CGSize? = nil) {
+        zoomBase = composition
+        if let viewport { zoom?.viewport = viewport }
+        zoomFrames = Set([composition.base] + composition.layers.map(\.frame))
+    }
+
+    public func pinch(scale: Double, centroid: CGPoint) { zoom?.pinch(scale: scale, centroid: centroid) }
+
+    /// The fingers lifted. `send` asks the app to zoom by `scale` (relative) about `focus`
+    /// (viewport pixels) and returns the seq and absolute scale it asked for, or nil when it
+    /// cannot, in which case the content settles back to the app's scale.
+    public func endZoom(at time: TimeInterval, send: (_ scale: Double, _ focus: CGPoint) -> (seq: UInt64, scale: Double)?) {
+        guard var zoom else { return }
+        let settled = zoom.end(at: time)
+        if let focus = LocalZoom.focus(zoom: settled.zoom, translation: settled.translation), let sent = send(settled.zoom, focus) {
+            zoomWait = sent
+            LocalScrollProfile.note(String(format: "zoom: settling at %.3f (absolute %.3f) about %.0f,%.0f, seq %llu",
+                                           settled.zoom, sent.scale, focus.x, focus.y, sent.seq))
+        } else {
+            zoom.cancel(at: time)
+            zoomWait = nil
+        }
+        self.zoom = zoom
+    }
+
+    private func refreshZoom(at time: CFTimeInterval, surface: WindowSurface?, layer: CAMetalLayer) -> Bool {
+        guard var zoom else { return false }
+        zoom.tick(at: time)
+        self.zoom = zoom
+        if zoom.phase == .waiting {
+            if zoomWait == nil { finishZoom(); return false }
+            if let since = zoom.waitingSince, time - since > Self.zoomPatience {
+                LocalScrollProfile.note("zoom: no picture at the new scale within \(Int(Self.zoomPatience * 1000)) ms; handing back")
+                finishZoom()
+                return false
+            }
+        }
+        guard var composition = zoomBase else { return false }
+        composition.zoom = zoom.zoom
+        composition.translation = zoom.translation
+        return draw(composition, into: layer, at: time)
+    }
+
+    private func finishZoom() {
+        guard zoom != nil || zoomBase != nil else { return }
+        zoom = nil
+        zoomBase = nil
+        zoomWait = nil
+        zoomFrames = []
+        isComposing = false
+        releaseTextures(keeping: Set(model.retainedFrames))
     }
 
     private func releaseTextures(keeping kept: Set<UInt64>) {

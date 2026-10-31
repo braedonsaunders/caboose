@@ -66,9 +66,10 @@ public struct ScrollComposition: Equatable, Sendable {
     /// in viewport lines, and everything the newest picture shows after the region (a
     /// footer, a status bar) is drawn this many lines further up, at the viewport's end.
     public var overscan = 0
-    /// A pinch's scale of the whole viewport about `focus` (viewport pixels); 1 when not zoomed.
+    /// A pinch's transform of the whole viewport: viewport point `p` shows at
+    /// `p * zoom + translation` (viewport pixels). Identity when not zoomed.
     public var zoom: Double = 1
-    public var focus: CGPoint = .zero
+    public var translation: CGPoint = .zero
 
     public static func == (a: ScrollComposition, b: ScrollComposition) -> Bool {
         a.axis == b.axis && a.base == b.base && a.region == b.region && a.layers == b.layers && a.blank == b.blank

@@ -222,17 +222,19 @@ public final class LocalScrollRenderer: @unchecked Sendable {
               let pipeline = pipelines(for: target.pixelFormat) else { return false }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
-        pass.colorAttachments[0].loadAction = .dontCare
+        // A pinched-out or panned viewport leaves target pixels no picture covers.
+        let transformed = composition.zoom != 1 || composition.translation != .zero
+        pass.colorAttachments[0].loadAction = transformed ? .clear : .dontCare
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(fill.x), green: Double(fill.y), blue: Double(fill.z), alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return false }
         let size = SIMD2<Float>(Float(target.width), Float(target.height))
         let shown = viewport.map { SIMD2<Float>(Float(max(1, $0.width)), Float(max(1, $0.height))) } ?? size
-        // Viewport to target: the target's density, times the pinch's zoom about its focus.
+        // Viewport to target: a pinch's transform, then the target's density.
         let zoom = Float(composition.zoom)
         let density = size / shown
-        let focus = SIMD2<Float>(Float(composition.focus.x), Float(composition.focus.y))
         let view = SIMD4<Float>(density.x * zoom, density.y * zoom,
-                                density.x * focus.x * (1 - zoom), density.y * focus.y * (1 - zoom))
+                                density.x * Float(composition.translation.x), density.y * Float(composition.translation.y))
         let vertical = composition.axis == .vertical
         let alongScale = vertical ? view.y : view.x
         func rect(along: Range<Int>, across: Range<Int>) -> SIMD4<Float> {
