@@ -466,8 +466,11 @@ public final class LocalScrollController {
 
     /// The window's drawable is changing size (an overscan, a new scale): the picture on
     /// screen holds, unscaled, until the app has drawn the new size and stopped drawing.
-    private var hold: (since: CFTimeInterval, size: CGSize?, sawNew: Bool, lastPicture: CFTimeInterval)?
+    private var hold: (since: CFTimeInterval, size: CGSize?, firstNew: CFTimeInterval?, lastPicture: CFTimeInterval)?
     static let holdQuiet: TimeInterval = 0.12
+    /// An app that keeps drawing (an animation) is shown this long after its first picture
+    /// of the new size.
+    static let holdAfterNew: TimeInterval = 0.6
     private var heldSurfaceGeneration: UInt64?
     static let holdPatience: TimeInterval = 4
 
@@ -477,8 +480,8 @@ public final class LocalScrollController {
     public func holdPicture(expecting size: CGSize?) {
         guard zoom == nil, !model.isActive else { return }
         let now = CACurrentMediaTime()
-        if hold != nil { hold?.size = size; hold?.sawNew = false; return }
-        hold = (now, size, false, now)
+        if hold != nil { hold?.size = size; hold?.firstNew = nil; return }
+        hold = (now, size, nil, now)
         LocalScrollProfile.note("hold: picture held while the drawable becomes \(size.map { "\(Int($0.width))x\(Int($0.height))" } ?? "another size")")
         freezeShown { _ in }
     }
@@ -487,13 +490,15 @@ public final class LocalScrollController {
     private func notePicture(_ size: CGSize) {
         guard hold != nil else { return }
         hold?.lastPicture = CACurrentMediaTime()
-        if hold?.size.map({ abs($0.width - size.width) < 1 && abs($0.height - size.height) < 1 }) ?? true { hold?.sawNew = true }
+        if hold?.firstNew == nil, hold?.size.map({ abs($0.width - size.width) < 1 && abs($0.height - size.height) < 1 }) ?? true {
+            hold?.firstNew = CACurrentMediaTime()
+        }
     }
 
     private func refreshHold(at time: CFTimeInterval, layer: CAMetalLayer) -> Bool? {
         guard let current = hold else { return nil }
         let now = CACurrentMediaTime()
-        let done = current.sawNew && now - current.lastPicture > Self.holdQuiet
+        let done = current.firstNew.map { now - current.lastPicture > Self.holdQuiet || now - $0 > Self.holdAfterNew } ?? false
         if done || now - current.since > Self.holdPatience || model.isActive {
             LocalScrollProfile.note("hold: released after \(Int((now - current.since) * 1000)) ms (\(done ? "the new size is drawn" : model.isActive ? "a gesture began" : "timed out"))")
             hold = nil

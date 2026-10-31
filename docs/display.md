@@ -814,7 +814,8 @@ uses it differently:
 - **Resizes hold the picture.** When a window's drawable is about to change size (an
   overscan enlarging or ending, a new scale) or a drawn window's frame changes, the phone
   keeps showing the picture on screen, unscaled, until the application has drawn the new
-  size and stopped drawing for 120 ms (4 s at most, or until a gesture begins). A picture
+  size and stopped drawing for 120 ms (0.6 s after its first picture of the new size at
+  most, 4 s in all, or until a gesture begins). A picture
   of the old size is never shown stretched to the new one, nor a half-drawn one.
 - **Overscan windows.** While a window has been scrolled locally within the last 30
   seconds and its scrolling region is measured, or while a reporter's `scroll.tree` names a
