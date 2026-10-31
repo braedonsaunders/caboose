@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "media_session.h"
+#include "media_stats.h"
 #include <cerrno>
 #include <deque>
 #include <map>
@@ -101,12 +102,16 @@ private:
 };
 
 void Stream::decoded(uint32_t surface, uint64_t serial, std::shared_ptr<Picture> picture) {
+    Stats::instance().count(Stats::instance().pictures);
     Registry::instance().publish(session.token(), surface, serial, std::move(picture));
 }
 void Stream::dropped(uint32_t surface, uint64_t serial) {
     Registry::instance().failed(session.token(), surface, serial);
 }
-void Stream::failed(uint32_t surface, uint64_t serial) { session.pictureFailed(*this, surface, serial); }
+void Stream::failed(uint32_t surface, uint64_t serial) {
+    Stats::instance().count(Stats::instance().pictureFailures);
+    session.pictureFailed(*this, surface, serial);
+}
 
 bool supported(const std::vector<Capability>& caps, const Open& o) {
     for (const auto& c : caps)
@@ -119,6 +124,7 @@ int Session::handle(uint32_t type, const uint8_t* p, size_t n) {
     if (!hello_) {
         if (type != kHello || !parseHello(p, n, &token_)) return EPROTO;
         hello_ = true;
+        Stats::instance().count(Stats::instance().connections);
         Registry::instance().open(token_);
         caps_ = factory_.capabilities();
         send(encodeCaps(caps_));
@@ -141,6 +147,8 @@ int Session::handle(uint32_t type, const uint8_t* p, size_t n) {
     case kUnit: {
         Unit unit;
         if (!parseUnit(p, n, &unit)) return EPROTO;
+        Stats::instance().count(Stats::instance().units);
+        Stats::instance().unitBytes.fetch_add(n, std::memory_order_relaxed);
         auto it = streams_.find(unit.stream);
         if (it == streams_.end()) return EPROTO;
         Stream& stream = *it->second;
@@ -188,7 +196,9 @@ int Session::run() {
 int runMediaSession(int fd, std::atomic_bool& stop, DecoderFactory& factory) {
     try {
         Session session(fd, stop, factory);
-        return session.run();
+        const int result = session.run();
+        Stats::instance().report(true);
+        return result;
     } catch (const std::bad_alloc&) {
         return ENOMEM;
     }

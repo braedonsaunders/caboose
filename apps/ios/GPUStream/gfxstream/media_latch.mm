@@ -2,6 +2,7 @@
 #include "media_latch.h"
 #include "media_apple.h"
 #include "media_copy.h"
+#include "media_stats.h"
 #include "vk_decoder_global_state.h"
 #include <atomic>
 #include <cstdio>
@@ -13,6 +14,7 @@ using gfxstream::host::vk::VkDecoderGlobalState;
 
 // Bounded diagnostics: a skipped entry is logged, at most 64 times per process.
 void skipped(const char* why, int detail) {
+    media::Stats::instance().count(media::Stats::instance().latchSkips);
     static std::atomic_uint lines{0};
     const unsigned n = lines.fetch_add(1);
     if (n < 64) std::fprintf(stderr, "CABOOSE_GPU_MEDIA_LATCH skipped=%s detail=%d\n", why, detail);
@@ -23,6 +25,7 @@ void skipped(const char* why, int detail) {
 int executeLatch(uint32_t contextId, const uint8_t* data, size_t size) {
     media::Latch latch;
     if (media::parseLatch(data, size, &latch) != 0) return EPROTO;
+    media::Stats::instance().count(media::Stats::instance().latchPackets);
     auto* state = VkDecoderGlobalState::get();
     if (!state) { skipped("decoder", 0); return 0; }
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kLatchWaitMilliseconds);
@@ -59,6 +62,8 @@ int executeLatch(uint32_t contextId, const uint8_t* data, size_t size) {
         // The leases keep the image, its memory and the device alive until the copy completes.
         std::shared_ptr<void> leases(objects.release(), [](void* p) { delete static_cast<CabooseMediaLatchObjects*>(p); });
         media::Reclaimer::instance().retire(std::move(pending), std::move(leases));
+        auto& stats = media::Stats::instance();
+        stats.count(entry.kind == media::kPicture ? stats.latchedPictures : stats.latchedPixels);
     }
     return 0;
 }
