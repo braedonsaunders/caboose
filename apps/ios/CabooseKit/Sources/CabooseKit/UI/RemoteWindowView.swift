@@ -975,13 +975,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let localScroll, let session, let window = remoteWindow, isInteractive, self.window != nil,
               !localScroll.isActive else { return }
         if localScroll.model.region != nil { regionKnownAt = now }
-        let scrolling = now - lastLocalScroll < 30 && now - regionKnownAt < 30 && !window.isFullscreen
+        // A reporter's scroller says the window scrolls before any gesture: its first gesture
+        // then already has the overscan, and so the tags that place its pictures.
+        let reported: ScrollAxis? = window.scrollReports.latest?.scrollers.first.flatMap {
+            $0.range.y > 0 ? .vertical : $0.range.x > 0 ? .horizontal : nil
+        }
+        let measured = now - lastLocalScroll < 30 && now - regionKnownAt < 30
         var wanted = CGSize.zero
-        if scrolling {
+        if !window.isFullscreen, let axis = measured ? localScroll.model.axis : reported {
             // About one viewport, in steps of 64 pixels so a viewport a pixel off does not
             // ask again, and the whole picture within 4096 pixels per axis.
             func step(_ extent: CGFloat) -> CGFloat { max(0, min((extent / 64).rounded() * 64, 4096 - extent)) }
-            if localScroll.model.axis == .vertical { wanted.height = step(window.frame.height) }
+            if axis == .vertical { wanted.height = step(window.frame.height) }
             else { wanted.width = step(window.frame.width) }
         }
         let key = ObjectIdentifier(window)
