@@ -18,6 +18,12 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn(b'Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=', response)
         self.assertIn(b'Sec-WebSocket-Protocol: caboose.gpu.live.v1', response)
 
+    def test_phone_features_are_known_names_only(self):
+        self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: Guest-Handles, other\r\n')),
+                         frozenset({'guest-handles'}))
+        self.assertEqual(admission.features(request()), frozenset())
+        self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: \xff\r\n')), frozenset())
+
     def test_unauthenticated_identity_not_interpreted(self):
         with mock.patch.object(admission.uuid, 'UUID', side_effect=AssertionError('identity consulted')):
             with self.assertRaisesRegex(admission.AdmissionError, 'authentication failed'):

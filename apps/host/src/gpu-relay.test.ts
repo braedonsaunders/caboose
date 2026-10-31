@@ -13,7 +13,8 @@ vi.mock('ws', async () => {
     closeCodes: number[] = []
     close(code: number) { this.closeCodes.push(code); this.readyState = 2 }
     peerClose(code: number) { this.readyState = 3; this.emit('close', code) }
-    constructor(..._args: unknown[]) { super(); state.created.push(this) }
+    args: unknown[]
+    constructor(...args: unknown[]) { super(); this.args = args; state.created.push(this) }
     pause() { this.paused = true }
     resume() { this.paused = false }
     send(_data: unknown, _options: unknown, complete: (error?: Error) => void) { this.pending.push(complete) }
@@ -23,7 +24,7 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuFeatures, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; peerClose(code: number): void }
 function pair() {
@@ -117,4 +118,17 @@ it('does not turn abnormal upstream closure into a normal receipt', async () => 
   await done
   expect(client.closeCodes).toEqual([])
   expect(client.readyState).toBe(WebSocket.CLOSED)
+})
+
+it('forwards only known phone GPU features, normalized', () => {
+  expect(gpuFeatures(' Guest-Handles , bogus,guest-handles')).toEqual(['guest-handles'])
+  expect(gpuFeatures(['x', 'guest-handles'])).toEqual(['guest-handles'])
+  expect(gpuFeatures(undefined)).toEqual([])
+  const client = new WebSocket('ws://test') as ControlledSocket
+  void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })
+  const withFeatures = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
+  expect(withFeatures.args[2].headers['x-caboose-gpu-features']).toBe('guest-handles')
+  void relayGPU(new WebSocket('ws://test'), { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e' })
+  const without = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
+  expect(without.args[2].headers).not.toHaveProperty('x-caboose-gpu-features')
 })

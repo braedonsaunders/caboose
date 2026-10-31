@@ -20,7 +20,7 @@ import sys
 import time
 
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
-from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit
+from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, features as admission_features
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
 import control_protocol
@@ -32,6 +32,9 @@ from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
+# A process that can assign its own Vulkan handles offers feature bit 0x80. It gets this
+# hello back only when the phone declared guest handles; otherwise the plain v4 hello.
+HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 
 class IndexedSurface:
@@ -235,7 +238,7 @@ class FrameTiming:
 
 
 class Session:
-    def __init__(self, broker, executor, generation, reader, writer, indexed=False):
+    def __init__(self, broker, executor, generation, reader, writer, indexed=False, guest_handles=False):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
         self.deflate_requested = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1"
@@ -246,6 +249,7 @@ class Session:
         self.session_received = False
         self.indexed_enabled = indexed
         self.hello = HELLO_V4 if indexed else HELLO
+        self.guest_handles = indexed and guest_handles
         self.decoder = EnvelopeDecoder(executor, generation)
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
@@ -646,7 +650,9 @@ class Session:
                 return
             peer = PeerIdentity.from_socket(sock, os.getuid())
             offered = await asyncio.wait_for(reader.readexactly(48), 5)
-            if offered != self.hello: raise ValueError('local hello mismatch')
+            offers_guest_handles = self.indexed_enabled and offered == HELLO_V4_GUEST_HANDLES
+            if offered != self.hello and not offers_guest_handles: raise ValueError('local hello mismatch')
+            reply = HELLO_V4_GUEST_HANDLES if offers_guest_handles and self.guest_handles else self.hello
             if self.draining:
                 return
             process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
@@ -663,7 +669,7 @@ class Session:
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
             await asyncio.wait_for(stream['ready'].wait(), 10)
-            writer.write(self.hello); await writer.drain()
+            writer.write(reply); await writer.drain()
             while True:
                 credit = None
                 readable = False
@@ -971,8 +977,10 @@ class Broker:
             if len(token) > MAX_TOKEN:
                 raise ValueError('token file too large')
             _computer, executor, response = admit(raw, token.strip())
+            phone_features = admission_features(raw)
             generation = self.lease.admit(executor.bytes)
-            session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed)
+            session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed,
+                              guest_handles='guest-handles' in phone_features)
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())

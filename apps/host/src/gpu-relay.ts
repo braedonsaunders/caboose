@@ -5,6 +5,15 @@ export const GPU_MAX_MESSAGE = 256 * 1024
 export const GPU_MAX_PENDING = 1024 * 1024
 export const GPU_MAX_PENDING_MESSAGES = 64
 export const GPU_CLOSE_TIMEOUT_MS = 1000
+/** GPU capabilities a phone may declare; the host forwards only these, never other text. */
+export const GPU_FEATURES = ['guest-handles'] as const
+
+/** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
+export function gpuFeatures(header: string | string[] | undefined): string[] {
+  const values = (Array.isArray(header) ? header.join(',') : header ?? '').split(',')
+  const known = new Set<string>(GPU_FEATURES)
+  return [...new Set(values.map(value => value.trim().toLowerCase()).filter(value => known.has(value)))].sort()
+}
 
 /** The owner's existing guest service; never a client-supplied destination. */
 export function gpuUpstreamURL(displayURL: string): string {
@@ -29,6 +38,7 @@ export function relayGPU(client: WebSocket, options: {
   displayToken: string
   computer: string
   executor: string
+  features?: readonly string[]
 }): Promise<void> {
   if (client.readyState !== WebSocket.OPEN) return Promise.resolve()
   const url = gpuUpstreamURL(options.displayURL)
@@ -41,6 +51,7 @@ export function relayGPU(client: WebSocket, options: {
       authorization: `Bearer ${options.displayToken}`,
       'x-caboose-gpu-computer': options.computer,
       'x-caboose-gpu-executor': options.executor,
+      ...(options.features?.length ? { 'x-caboose-gpu-features': options.features.join(',') } : {}),
     },
   })
   return new Promise(resolve => {

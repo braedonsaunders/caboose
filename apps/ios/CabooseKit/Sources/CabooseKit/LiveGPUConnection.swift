@@ -159,6 +159,9 @@ final class LiveGPUOutboundQueue {
 /// on a private network queue; consumers must admit and dispatch blocking work elsewhere.
 public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
     public static let subprotocolName = "caboose.gpu.live.v1"
+    /// Capabilities of this app's native decoder that a computer may use: it registers
+    /// objects under Vulkan handles the guest assigns (patch 0026).
+    static let features = "guest-handles"
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
@@ -190,6 +193,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
         var request = URLRequest(url: endpoint, timeoutInterval: 20)
         request.setValue("Bearer \(phoneToken)", forHTTPHeaderField: "Authorization")
         request.setValue(subprotocolName, forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        request.setValue(features, forHTTPHeaderField: "X-Caboose-GPU-Features")
         return request
     }
 

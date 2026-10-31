@@ -17,6 +17,8 @@ _GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 _TOKEN = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
+# Capabilities the host forwards from the phone, as `X-Caboose-GPU-Features`.
+FEATURES = frozenset({'guest-handles'})
 class AdmissionError(ValueError):
     pass
 
@@ -81,3 +83,13 @@ def admit(request, per_wake_token):
                 b'Connection: Upgrade\r\nSec-WebSocket-Accept: ' + accept +
                 b'\r\nSec-WebSocket-Protocol: ' + PROTOCOL.encode() + b'\r\n\r\n')
     return computer, executor, response
+
+
+def features(request):
+    """The known phone capabilities in an already admitted request; unknown names are ignored."""
+    try:
+        value = _headers(request).get(b'x-caboose-gpu-features', b'')
+        names = {name.strip().lower() for name in value.decode('ascii').split(',')}
+    except (AdmissionError, UnicodeError):
+        return frozenset()
+    return frozenset(names & FEATURES)

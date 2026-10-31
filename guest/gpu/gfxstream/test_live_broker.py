@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import array
 import os
 from importlib.machinery import SourceFileLoader
@@ -240,6 +241,45 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(writer.eof)
         self.assertFalse(session.processes)
         session.bindings.finish(session.binding_generation)
+
+    async def test_guest_handle_hello_is_echoed_only_when_the_phone_supports_it(self):
+        cases = ((True, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4_GUEST_HANDLES),
+                 (False, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
+                 (True, broker.HELLO_V4, broker.HELLO_V4))
+        for supported, offered, expected in cases:
+            with self.subTest(supported=supported, offered=offered[12]):
+                session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True, guest_handles=supported)
+                session.session_ready.set()
+                class Peer:
+                    uid, pid, start_ticks = 1000, 42, 123
+                    def alive(self): return True
+                    def close(self): pass
+                reader, writer = ReadyReader(), Writer()
+                reader.feed_data(offered)
+                decoder = Decoder(b'a' * 16, 1)
+                async def next_frame(kind):
+                    wire, _charge = await asyncio.wait_for(session.pending.get(), 1)
+                    offset = 4 if wire[1] == 126 else 10 if wire[1] == 127 else 2
+                    got = []; decoder.feed(wire[offset:], got.append)
+                    self.assertEqual(got[0].kind, kind)
+                    return got[0]
+                with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
+                    task = asyncio.create_task(session.local(reader, writer))
+                    opened = await next_frame(Kind.PROCESS_OPEN)
+                    await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
+                    stream = await next_frame(Kind.STREAM_OPEN)
+                    await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
+                    for _ in range(100):
+                        if len(writer.data) >= 48: break
+                        await asyncio.sleep(0.01)
+                    self.assertEqual(writer.data[:48], expected)
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError): await task
+                session.bindings.finish(session.binding_generation)
+
+    async def test_plain_session_refuses_the_guest_handle_hello(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), guest_handles=True)
+        self.assertFalse(session.guest_handles)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux peer pidfd')
     async def test_creator_exit_drains_fin_then_admits_fresh_process(self):

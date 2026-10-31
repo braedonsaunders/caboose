@@ -62,7 +62,7 @@ import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journa
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
 import { AgentProfiles, prepareProfileStart } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
-import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU } from './gpu-relay.js'
+import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU, gpuFeatures } from './gpu-relay.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -998,7 +998,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           // this boundary. The guest authenticates before trusting these headers.
           try {
             void relayGPU(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
-              computer: id, executor: randomUUID() }).then(finish, () => { client.terminate(); finish() })
+              computer: id, executor: randomUUID(),
+              features: gpuFeatures(request.headers['x-caboose-gpu-features']) }).then(finish, () => { client.terminate(); finish() })
           } catch { client.terminate(); finish() }
         })
       } catch { socket.destroy(); finish() }
