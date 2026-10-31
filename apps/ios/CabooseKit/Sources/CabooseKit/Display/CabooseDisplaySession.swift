@@ -807,7 +807,11 @@ public final class CabooseDisplaySession: DisplaySession {
     // Match only the compositor's exact physical/logical round trip on the same
     // assigned output and scale. This does not turn metadata into a configure ACK.
     func pendingPresentationSize(_ window: RemoteWindow) -> CGSize? {
-        guard let pending = pendingGeometry[window.id] else { return nil }
+        // A request is kept for up to a second against a server size that differs
+        // (updateWindow); after that the server's size stands. A client that constrained
+        // the size sends no further update to clear the request, and a GPU surface bind
+        // would wait for it forever (vkcube's X11 window).
+        guard let pending = pendingGeometry[window.id], CACurrentMediaTime() - pending.at < 1 else { return nil }
         guard let sentDisplay = pending.display else { return pending.geometry.size }
         guard assignedDisplay(window.id) == sentDisplay else { return .zero }
         return LiveGPUDrawableGeometry.quantizedRequest(pending.geometry.size, scale: sentDisplay.scale) ?? .zero
