@@ -69,6 +69,18 @@ class InstalledDriverTests(unittest.TestCase):
                 self.assertEqual((directory / name).stat().st_mode & 0o777, 0o644)
             self.assertEqual(sorted(p.name for p in directory.iterdir()), ["icd.json", "libvulkan_gfxstream.so"])
 
+    def test_executor_switch_layer_is_implicit_and_opt_in(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-layer-") as temporary:
+            base = Path(temporary)
+            layer = base / "libVkLayer_caboose_executor_switch.so"
+            layer.write_bytes(b"\x7fELF" + bytes(60))
+            installer.install_switch_layer(layer, base / "root")
+            installed = base / "root/usr/local/lib/caboose-gpu-live/libVkLayer_caboose_executor_switch.so"
+            self.assertEqual(installed.read_bytes(), layer.read_bytes())
+            manifest = json.loads((base / "root/usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json").read_text())
+            self.assertEqual(manifest["layer"]["library_path"], "/" + str(installed.relative_to(base / "root")))
+            self.assertEqual(manifest["layer"]["enable_environment"], {"CABOOSE_GPU_EXECUTOR_SWITCH": "1"})
+
     def test_refuses_what_is_not_a_library(self):
         with tempfile.TemporaryDirectory(prefix="caboose-gpu-driver-") as temporary:
             base = Path(temporary)

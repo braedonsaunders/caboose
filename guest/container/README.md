@@ -105,9 +105,9 @@ The displays and notification processes log to `/home/caboose/.cache/<name>.log`
 
 ### Chromium
 
-`/etc/chromium.d/caboose-gpu` renders Chromium on the phone's GPU when it starts while the
-phone's GPU is attached to the owner's display: as an X11 client with ANGLE on Vulkan and
-without its GPU sandbox ([docs/gpu-live.md](../../docs/gpu-live.md#applications)).
+`/etc/chromium.d/caboose-gpu` renders Chromium on the phone's GPU on an owner display that
+serves it: as an X11 client with ANGLE on Vulkan, without its GPU sandbox and with no
+limit on GPU process restarts ([docs/gpu-live.md](../../docs/gpu-live.md#applications)).
 Otherwise it runs Chromium as a native Wayland client on the owner's display. On WSL, Chromium on the owner's display uses software raster, because its Wayland
 GPU path needs a DRM render node that WSL does not have; on the agent seat (X11) it uses
 ANGLE over Mesa D3D12. Where the launch environment selects the Caboose VA-API driver

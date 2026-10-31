@@ -524,13 +524,16 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | OpenGL through Xwayland, so Zink. |
 | Electron on X11, such as Visual Studio Code | ANGLE on OpenGL, so Zink. |
-| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, when the broker's socket exists as it starts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 The broker listens on its local socket only while a phone's executor is ready. With no
 phone the driver fails its Vulkan instance and the loader continues with the computer's
-drivers; Zink finds no GPU and Mesa uses llvmpipe; GTK draws with lavapipe; Chromium
-started without a phone draws as on any other seat. Those applications draw on the
-computer and reach the phone as pictures, like every application that draws on the CPU.
+drivers; Zink finds no GPU and Mesa uses llvmpipe; GTK and Chromium draw with lavapipe.
+Those applications draw on the computer and reach the phone as pictures, like every
+application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
+lavapipe device lose itself once a phone's executor is ready, and an application that
+recreates lost devices, as Chromium does, moves to the phone.
 
 Some applications draw on the computer even with a phone attached: OpenGL clients on
 Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and Proton games, because the driver's

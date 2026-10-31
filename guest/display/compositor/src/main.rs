@@ -203,6 +203,9 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
+    // CPU while no phone was attached are lost once one is, so applications move to it.
+    env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
     env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
 }
 
@@ -709,6 +712,7 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
         assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
+        assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
         std::fs::remove_file(&icd).unwrap();
     }

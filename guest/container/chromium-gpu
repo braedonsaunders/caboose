@@ -1,10 +1,11 @@
-# While the phone's GPU is attached to this seat (its broker socket exists only then;
-# docs/gpu-live.md, "Applications"), Chromium renders on it: an X11 client through
-# Xwayland, whose windows the phone's driver presents, with ANGLE on Vulkan. The GPU
+# On a seat that renders on the phone's GPU (its display names the broker's socket;
+# docs/gpu-live.md, "Applications"), Chromium renders with ANGLE on Vulkan as an X11
+# client through Xwayland, whose windows the phone's driver presents. Without a phone
+# Vulkan is the computer's CPU renderer, and the GPU process restarts onto the phone
+# when one attaches (guest/gpu/executor-switch), as often as it comes and goes. The GPU
 # process runs outside Chromium's GPU sandbox, which does not let it reach the socket.
-# Chromium started without the phone draws on this computer as below.
-if [ -n "${CABOOSE_GFXSTREAM_SOCKET:-}" ] && [ -S "$CABOOSE_GFXSTREAM_SOCKET" ] && [ -n "${DISPLAY:-}" ]; then
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11 --ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --disable-gpu-sandbox"
+if [ -n "${CABOOSE_GFXSTREAM_SOCKET:-}" ] && [ -n "${DISPLAY:-}" ]; then
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11 --ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --disable-gpu-sandbox --disable-gpu-process-crash-limit"
 else
   # Under Caboose Display, Chromium is a native Wayland client (no X11 round trips).
   if [ -n "${WAYLAND_DISPLAY:-}" ]; then
