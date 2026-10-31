@@ -24,6 +24,8 @@ public:
     uint64_t waitAnyReleased(Deadline deadline);
     void consumeRelease(uint64_t serial);
     void waitPresentationIdle(Deadline deadline);
+    // Waits until fewer than `frames` presented frames are still unretired.
+    void waitPresentationRoom(size_t frames, Deadline deadline);
     Record retire(Deadline deadline);
     bool retired() const { return retired_; }
     bool revoked() const { return revoked_; }

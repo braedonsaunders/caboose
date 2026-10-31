@@ -104,7 +104,8 @@ static void exercise(int scenario) {
 // while it waits for something else, or are pumped; a refusal ends the swapchain and is
 // reported by presentFailed, a rejected frame's image counts as released, and an
 // uncertain frame never holds up presentation idle.
-// scenario 0: queued, 1: rejected, 2: uncertain, 3: result for a frame never presented.
+// scenario 0: queued, 1: rejected, 2: uncertain, 3: result for a frame never presented,
+// 4: two frames in flight; room for a third opens when the oldest retires.
 static void exerciseOrdered(int scenario) {
     char dir[]="/tmp/caboose-ordered-test-XXXXXX"; assert(mkdtemp(dir));
     std::string path=std::string(dir)+"/surface";
@@ -126,6 +127,19 @@ static void exerciseOrdered(int scenario) {
             put32(acquired,1); put32(acquired,index); put32(acquired,0); put32(acquired,0); transmit(fd,30,acquired);
         };
         receive(fd,29); sendAcquired(2,0);
+        if (scenario==4) {
+            receive(fd,39); receive(fd,29); sendAcquired(3,1); receive(fd,39);
+            for (uint64_t frame:{1,2}) {
+                auto result=identityBytes(); put64(result,frame); statusBytes(result); put32(result,1); put32(result,0);
+                transmit(fd,21,result);
+                auto released=identityBytes(); put64(released,frame); transmit(fd,22,released);
+            }
+            auto first=identityBytes(); put64(first,111); put64(first,1); transmit(fd,36,first);
+            pollfd quiet{fd,POLLIN,0}; assert(poll(&quiet,1,50)==0);  // the client has room now
+            auto second=identityBytes(); put64(second,111); put64(second,2); transmit(fd,36,second);
+            receive(fd,23); auto retired=identityBytes(); statusBytes(retired); transmit(fd,24,retired);
+            close(fd); _exit(0);
+        }
         auto present=receive(fd,39);
         assert(present.size()==80 && u64(present,16)==111 && u64(present,24)==1 && u64(present,32)==13);
         assert(u64(present,40)==77 && u32(present,48)==0 && u32(present,56)==1 && u32(present,60)==2);
@@ -166,7 +180,15 @@ static void exerciseOrdered(int scenario) {
     client.presentOrdered(111,1,13,77,0,0,{19,23},deadline);
     Status failure{};
     assert(!client.presentFailed(111,&failure));
-    if (scenario==3) {
+    if (scenario==4) {
+        client.waitPresentationRoom(2,deadline);  // one frame in flight: no wait
+        client.beginAcquire(111,3,17,0,12345,deadline);
+        assert(u32(client.finishAcquire(111,3,deadline).body,76)==1);
+        client.presentOrdered(111,2,13,78,1,0,{19,23},deadline);
+        client.waitPresentationRoom(2,deadline);  // returns once frame 1 retires
+        client.waitPresentationIdle(deadline);    // returns once frame 2 retires
+        client.retire(deadline); assert(client.retired());
+    } else if (scenario==3) {
         bool rejected=false;
         try { client.beginAcquire(111,3,17,0,12345,deadline); client.pump();
               client.finishAcquire(111,3,deadline); }
@@ -202,6 +224,6 @@ static void exerciseOrdered(int scenario) {
 }
 int main() {
     for (int scenario=0;scenario<5;++scenario) exercise(scenario);
-    for (int scenario=0;scenario<4;++scenario) exerciseOrdered(scenario);
-    std::cout<<"5 indexed and 4 ordered-present scenarios passed, including 130 frames with final retirement\n";
+    for (int scenario=0;scenario<5;++scenario) exerciseOrdered(scenario);
+    std::cout<<"5 indexed and 5 ordered-present scenarios passed, including 130 frames with final retirement\n";
 }

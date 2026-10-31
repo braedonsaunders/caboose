@@ -18,6 +18,8 @@ static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
 // (hello feature 0x400, SocketStream.cpp).
 extern "C" int caboose_gfxstream_ordered_present;
+// Frames the phone keeps in flight per surface for ordered presents.
+constexpr size_t kOrderedFramesInFlight = 2;
 // The result an application sees once an earlier ordered present was not queued: as on
 // any WSI, the next present or acquire reports it and the swapchain must be recreated.
 static VkResult presentFailureResult(Status s) {
@@ -315,9 +317,11 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             waits.push_back(get_host_u64_VkSemaphore(value->internal_object));
         }
         auto& surface=*swap->surface;
-        // Native capacity is one frame per surface; only its final retirement
-        // callback opens the next admission. No guest wait semaphore is touched.
-        surface.client.waitPresentationIdle(deadline());
+        // Native capacity is one frame per surface, two with ordered presents; only a
+        // frame's final retirement callback opens the next admission. No guest wait
+        // semaphore is touched.
+        if (caboose_gfxstream_ordered_present==1) surface.client.waitPresentationRoom(kOrderedFramesInFlight,deadline());
+        else surface.client.waitPresentationIdle(deadline());
         if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         if (surface.presentSerial==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;

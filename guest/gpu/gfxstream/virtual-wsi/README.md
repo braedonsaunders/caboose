@@ -76,8 +76,8 @@ maps the exact ordered array. ACQUIRE forwards the original boxed binary
 semaphore/fence and returns only the actual acquired index. Image reuse also
 requires the prior source-release proof. PRESENT intercepts the original wait
 set before Mesa common prewait; multiple swapchains are rejected before consuming
-waits. Native capacity is one frame per surface, so the next presentation waits
-for actual kind 36. The phone makes capacity available before its final callback is
+waits. Native capacity is one frame per surface (two with ordered presents), so the
+next presentation waits for actual kind 36 once the window is full. The phone makes capacity available before its final callback is
 observable. Source release alone does not
 open presentation admission or signal an acquire semaphore.
 
