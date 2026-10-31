@@ -184,26 +184,53 @@ public enum OnScreenGamepad {
 
     /// What a window that is not a game on this device receives.
     public enum WindowRoute: String, Codable, CaseIterable, Sendable {
-        /// The keys assigned below.
-        case keys
-        /// The on-screen controller as a gamepad on the computer (docs/devices.md).
+        /// The computer's gamepad for the on-screen controller while an application there
+        /// reads it (an SDL or Steam game), and the keys assigned below otherwise. The stored
+        /// name is the one plain keys had, so owners who never chose keep it.
+        case automatic = "keys"
+        /// Always the keys assigned below.
+        case keys = "keys-only"
+        /// Always the on-screen controller as a gamepad on the computer (docs/devices.md).
         case controller
     }
 
     /// The keys a stick or the d-pad presses past half its travel.
     public enum StickKeys: String, Codable, CaseIterable, Sendable {
-        case arrows, wasd, none
+        case arrows, wasd
+        /// Relative mouse motion while deflected, the speed growing with it: a game's mouse look.
+        case mouse
+        case none
         public var title: String {
-            switch self { case .arrows: "Arrow Keys"; case .wasd: "W A S D"; case .none: "None" }
+            switch self { case .arrows: "Arrow Keys"; case .wasd: "W A S D"; case .mouse: "Mouse (Look)"; case .none: "None" }
         }
         /// Up, down, left, right.
         var keys: [String]? {
             switch self {
             case .arrows: ["Up", "Down", "Left", "Right"]
             case .wasd: ["w", "s", "a", "d"]
-            case .none: nil
+            case .mouse, .none: nil
             }
         }
+    }
+
+    /// The fastest mouse look, in window pixels per second at full deflection.
+    public static let lookSpeed: Double = 1400
+
+    /// The mouse motion `state`'s sticks set to `.mouse` make over `seconds`: none in the
+    /// centre tenth, then growing with the square of the deflection beyond it, for fine aim.
+    public static func look(for state: GameGamepadState, settings: Settings, seconds: Double) -> CGPoint {
+        var motion = CGPoint.zero
+        for (x, y, set) in [(GameGamepadState.Axis.leftX, GameGamepadState.Axis.leftY, settings.leftStickKeys),
+                            (.rightX, .rightY, settings.rightStickKeys)] where set == .mouse {
+            let dx = state[x], dy = state[y]
+            let r = (dx * dx + dy * dy).squareRoot()
+            guard r > 0.1 else { continue }
+            let speed = lookSpeed * pow(min(1, (r - 0.1) / 0.9), 2) / r
+            // A stick's up is negative, as screen y is.
+            motion.x += dx * speed * seconds
+            motion.y += dy * speed * seconds
+        }
+        return motion
     }
 
     /// The owner's controller, feel and key assignments, kept between launches.
@@ -218,12 +245,15 @@ public enum OnScreenGamepad {
         public var scale = 1.0
         public var haptics = true
         public var games: GameRoute = .controller
-        public var windows: WindowRoute = .keys
+        public var windows: WindowRoute = .automatic
         /// Each button's key by `Button` name; a missing or empty one presses nothing.
         public var keys: [String: String] = OnScreenGamepad.defaultKeys
         public var dpadKeys: StickKeys = .arrows
-        public var leftStickKeys: StickKeys = .arrows
-        public var rightStickKeys: StickKeys = .wasd
+        /// The twin-stick layout games share: the left stick moves, the right stick looks.
+        public var leftStickKeys: StickKeys = .wasd
+        public var rightStickKeys: StickKeys = .mouse
+        /// The generation of the stick defaults the settings were saved under.
+        var stickDefaults = 2
 
         public static let scaleRange: ClosedRange<Double> = 0.8 ... 1.2
 
@@ -271,6 +301,11 @@ public enum OnScreenGamepad {
             dpadKeys = value(.dpadKeys, defaults.dpadKeys)
             leftStickKeys = value(.leftStickKeys, defaults.leftStickKeys)
             rightStickKeys = value(.rightStickKeys, defaults.rightStickKeys)
+            // Settings saved with the first defaults (left stick arrows, right stick W A S D)
+            // take the twin-stick ones; a choice the owner made stays.
+            if value(.stickDefaults, 1) < 2, leftStickKeys == .arrows, rightStickKeys == .wasd {
+                (leftStickKeys, rightStickKeys) = (defaults.leftStickKeys, defaults.rightStickKeys)
+            }
         }
     }
 

@@ -217,7 +217,9 @@ on a device that also has an input, so it declares a mute key, which is never pr
   `BTN_SELECT`, `BTN_START`, `BTN_MODE`, `BTN_THUMBL`, `BTN_THUMBR`; `ABS_X`, `ABS_Y`,
   `ABS_RX`, `ABS_RY` (−32768…32767, down positive), `ABS_Z`, `ABS_RZ` (0…255) and
   `ABS_HAT0X`, `ABS_HAT0Y` for the d-pad. A gamepad with `rumble` takes `FF_RUMBLE`
-  effects; playing one sends `device.rumble` for the effect's length.
+  effects; playing one sends `device.rumble` for the effect's length. While an application
+  holds a gamepad's node open (seen with inotify on it, as for motion) the compositor sends
+  `device.open` for it, and `device.close` once none does.
 - **Motion.** "iPhone Motion Sensors" has `INPUT_PROP_ACCELEROMETER`, `ABS_X`/`ABS_Y`/
   `ABS_Z` at 8192 per g and `ABS_RX`/`ABS_RY`/`ABS_RZ` at 1024 per degree per second, and
   `MSC_TIMESTAMP`, as Linux's own controller drivers report motion. While an application
@@ -245,8 +247,11 @@ on a device that also has an input, so it declares a mute key, which is never pr
   field, and acceleration as gravity plus user acceleration) at the asked rate, at most 100 Hz, and `CMAltimeter` pressure,
   batched every 20 ms.
 - **Controllers.** Every `GCController` with an extended gamepad profile is a gamepad, and
-  so is the on-screen controller when Customize gives other windows **A Linux controller**
-  rather than keys (keys are the default).
+  so is the on-screen controller while it shows, unless Customize gives other windows
+  **Keys** only. With **Automatic** (the default) the pad drives that gamepad while an
+  application has it open (`device.open`, an SDL or Steam game) and presses keys otherwise;
+  with **A Linux controller** it always drives it. A computer without uinput (a container
+  computer) has no gamepad, and the pad presses keys.
   `device.rumble` plays through `GCController.haptics`, or Core Haptics for the on-screen
   controller.
 - **Action button.** The **Press Computer Action Key** App Intent sends a press and release

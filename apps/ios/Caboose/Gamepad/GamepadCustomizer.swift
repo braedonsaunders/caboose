@@ -58,15 +58,16 @@ struct GamepadCustomizer: View {
                         Text("Keys").tag(OnScreenGamepad.GameRoute.keys)
                     }
                     Picker("Other windows get", selection: $settings.windows) {
+                        Text("Automatic").tag(OnScreenGamepad.WindowRoute.automatic)
                         Text("Keys").tag(OnScreenGamepad.WindowRoute.keys)
                         Text("A Linux controller").tag(OnScreenGamepad.WindowRoute.controller)
                     }
                 } footer: {
-                    Text("A game running on this device sees a standard controller through its Gamepad API. Every other window receives the keys below, held for as long as the control is, or, as a Linux controller, a gamepad on the computer that Steam and SDL games use. The Linux controller needs Controllers on in the computer's hardware settings; without it the keys are pressed.")
+                    Text("A game running on this device sees a standard controller through its Gamepad API. Every other window receives the keys below, held for as long as the control is, or, as a Linux controller, a gamepad on the computer that Steam and SDL games use, with both sticks and triggers. Automatic is the Linux controller while a game on the computer reads it and the keys otherwise. The Linux controller needs Controllers on in the computer's hardware settings; without it the keys are pressed.")
                 }
 
                 Section {
-                    stickPicker(style == .arcade ? "Lever" : "D-pad", selection: $settings.dpadKeys)
+                    stickPicker(style == .arcade ? "Lever" : "D-pad", selection: $settings.dpadKeys, analog: false)
                     if style.hasSticks {
                         stickPicker("Left stick", selection: $settings.leftStickKeys)
                         stickPicker("Right stick", selection: $settings.rightStickKeys)
@@ -110,9 +111,12 @@ struct GamepadCustomizer: View {
         }
     }
 
-    private func stickPicker(_ title: String, selection: Binding<OnScreenGamepad.StickKeys>) -> some View {
+    /// A stick's choices; mouse look needs an analog stick, not a d-pad or lever.
+    private func stickPicker(_ title: String, selection: Binding<OnScreenGamepad.StickKeys>, analog: Bool = true) -> some View {
         Picker(title, selection: selection) {
-            ForEach(OnScreenGamepad.StickKeys.allCases, id: \.self) { keys in Text(keys.title).tag(keys) }
+            ForEach(OnScreenGamepad.StickKeys.allCases.filter { analog || $0 != .mouse }, id: \.self) { keys in
+                Text(keys.title).tag(keys)
+            }
         }
     }
 

@@ -1113,7 +1113,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "pointer-left-drag",
             "",
-            Message::Pointer(Pointer { id: 7, x: 10.5, y: 20.0, buttons: buttons::LEFT, scroll: None }),
+            Message::Pointer(Pointer { id: 7, x: 10.5, y: 20.0, buttons: buttons::LEFT, scroll: None, relative: None }),
         ),
         one(
             "pointer-scroll-precise",
@@ -1124,6 +1124,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 y: 480.0,
                 buttons: 0,
                 scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: None }),
+                relative: None,
             }),
         ),
         one(
@@ -1135,7 +1136,13 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 y: 480.0,
                 buttons: 0,
                 scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: Some(42) }),
+                relative: None,
             }),
+        ),
+        one(
+            "pointer-relative",
+            "A stick looking right and a little up in a game: relative motion with the pointer left where it is.",
+            Message::Pointer(Pointer { id: 7, x: 640.0, y: 480.0, buttons: 0, scroll: None, relative: Some([12.5, -3.25]) }),
         ),
         one(
             "scroll-target",

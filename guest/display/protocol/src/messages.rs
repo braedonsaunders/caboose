@@ -795,6 +795,9 @@ pub struct Pointer {
     pub y: f64,
     pub buttons: u32,
     pub scroll: Option<Scroll>,
+    /// Relative motion `[dx, dy]` in display pixels, without moving the pointer: a stick
+    /// looking around in a game that reads relative motion (docs/display.md).
+    pub relative: Option<[f64; 2]>,
 }
 
 /// One scrolling area in a `scroll.tree`, window-local display pixels.
@@ -1651,6 +1654,7 @@ impl Message {
                         .as_ref()
                         .map(|s| MapBuilder::new().put("dx", s.dx).put("dy", s.dy).put("precise", s.precise).opt("seq", s.seq).build()),
                 )
+                .opt("relative", m.relative.map(|[dx, dy]| Value::Array(vec![dx.into(), dy.into()])))
                 .build(),
             Message::Key(m) => {
                 MapBuilder::new().put("keysym", m.keysym).put("pressed", m.pressed).put("mods", m.mods.clone()).build()
@@ -1997,6 +2001,7 @@ impl Message {
                         Some(Scroll { dx: s.f64("dx")?, dy: s.f64("dy")?, precise: s.bool("precise")?, seq: s.opt_u64("seq")? })
                     }
                 },
+                relative: f.opt("relative", fields::as_f64_pair)?,
             }),
             KEY => {
                 Message::Key(Key { keysym: f.u32("keysym")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })

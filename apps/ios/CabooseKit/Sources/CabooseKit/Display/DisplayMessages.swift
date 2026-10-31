@@ -942,8 +942,10 @@ public enum ClientMessage: Sendable {
     case pencil(window: Int, PencilSample)
     /// `scrollSeq`: the window's input sequence number for the scroll (docs/display.md,
     /// "Input sequencing").
+    /// `relative`: motion in display pixels that leaves the pointer where it is (a stick
+    /// looking around in a game).
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?,
-                 scrollSeq: UInt64? = nil)
+                 scrollSeq: UInt64? = nil, relative: CGPoint? = nil)
     /// Scroll a reported scroller by `delta` content pixels, exactly, as input `seq`.
     case scrollTarget(window: Int, scroller: Int, seq: UInt64, delta: CGPoint)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
@@ -1078,12 +1080,13 @@ public enum ClientMessage: Sendable {
                 ("pressure", CBOR(sample.pressure)), ("tilt", [CBOR(sample.tilt.x), CBOR(sample.tilt.y)]),
                 ("azimuth_deg", CBOR(sample.azimuth)),
             ]))
-        case .pointer(let window, let x, let y, let buttons, let scroll, let seq):
+        case .pointer(let window, let x, let y, let buttons, let scroll, let seq, let relative):
             return DisplayFrame(type: T.pointer.rawValue, body: map([
                 ("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y)), ("buttons", CBOR(buttons)),
                 ("scroll", scroll.map { s in
                     map([("dx", CBOR(s.dx)), ("dy", CBOR(s.dy)), ("precise", CBOR(s.precise)), ("seq", seq.map { CBOR($0) })])
                 }),
+                ("relative", relative.map { [CBOR(Double($0.x)), CBOR(Double($0.y))] }),
             ]))
         case .scrollTarget(let window, let scroller, let seq, let delta):
             return DisplayFrame(type: T.scrollTarget.rawValue, body: map([

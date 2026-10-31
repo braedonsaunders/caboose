@@ -94,6 +94,8 @@ public protocol DisplaySession: AnyObject {
     func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String])
     /// Deltas in pixels, positive down/right.
     func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String])
+    /// Relative motion in pixels that leaves the pointer where it is: mouse look in a game.
+    func pointerLook(in window: RemoteWindow, by delta: CGPoint)
     func resetScroll()
     func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String])
     func type(_ text: String, in window: RemoteWindow?)
@@ -138,6 +140,7 @@ public protocol DisplaySession: AnyObject {
 
 public extension DisplaySession {
     var textFieldLeft: (window: Int, at: TimeInterval)? { nil }
+    func pointerLook(in window: RemoteWindow, by delta: CGPoint) {}
     func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {}
     func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool { false }
     /// Leave application fullscreen (Escape also exits page/player fullscreen) and restore

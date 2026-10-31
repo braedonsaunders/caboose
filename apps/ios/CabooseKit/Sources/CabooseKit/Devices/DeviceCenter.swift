@@ -110,7 +110,13 @@ public final class DeviceCenter {
         case .deviceStatus(let states):
             status = Dictionary(states.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         case .deviceOpen(let id, let rate):
-            guard let device = offered.first(where: { $0.id == id }), [.camera, .depth, .microphone, .motion].contains(device.kind) else { return }
+            guard let device = offered.first(where: { $0.id == id }) else { return }
+            // A gamepad is open while a game reads it; nothing on the phone starts for it.
+            if device.kind == .gamepad {
+                inUse[id] = .gamepad
+                return
+            }
+            guard [.camera, .depth, .microphone, .motion].contains(device.kind) else { return }
             inUse[id] = device.kind
             failures[id] = nil
             let attempt = UUID()
@@ -123,7 +129,7 @@ public final class DeviceCenter {
             guard let device = offered.first(where: { $0.id == id }) else { return }
             opens[id] = nil
             inUse[id] = nil
-            backend?.close(device)
+            if device.kind != .gamepad { backend?.close(device) }
         case .deviceKeyframe(let id):
             if let device = offered.first(where: { $0.id == id }) { backend?.keyframe(device) }
         case .deviceRumble(let id, let strong, let weak, let ms):
@@ -136,7 +142,7 @@ public final class DeviceCenter {
 
     // MARK: On-screen controller
 
-    /// Offers the on-screen controller as a gamepad while it shows with the Linux Controller output.
+    /// Offers the on-screen controller as a gamepad while it shows, unless its owner wants keys only.
     public func setScreenGamepad(_ active: Bool) {
         guard active != screenGamepadActive else { return }
         if !active, let output, lastScreenReport != nil {
@@ -150,6 +156,9 @@ public final class DeviceCenter {
 
     /// Whether the on-screen controller reaches the computer as a gamepad now.
     public var screenGamepadOffered: Bool { offered.contains { $0.id == ConnectedController.screenID } }
+
+    /// Whether an application on the computer reads the on-screen controller's gamepad.
+    public var screenGamepadRead: Bool { inUse[ConnectedController.screenID] != nil }
 
     /// The on-screen controller's state, sent when it changes.
     public func screenGamepad(_ state: GameGamepadState) {

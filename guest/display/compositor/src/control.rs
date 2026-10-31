@@ -379,7 +379,7 @@ impl State {
         let display = self.displays.resolve(Some(w.display));
         let origin = self.windows.logical_origin(id, &self.displays).to_f64();
         let (x, y) = (display.to_pixels(at.x - origin.x), display.to_pixels(at.y - origin.y));
-        self.pointer(&proto::Pointer { id, x, y, buttons, scroll });
+        self.pointer(&proto::Pointer { id, x, y, buttons, scroll, relative: None });
     }
 
     /// The keyboard's window.

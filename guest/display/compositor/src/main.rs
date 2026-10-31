@@ -432,6 +432,8 @@ fn run(config: Config) -> Result<(), String> {
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
     smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
+    // Games lock the pointer and read relative motion for mouse look (input.rs).
+    smithay::wayland::pointer_constraints::PointerConstraintsState::new::<State>(&dh);
     let mut seat_state = smithay::input::SeatState::new();
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
