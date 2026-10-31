@@ -48,6 +48,8 @@ Caboose-owned sources to the paths the patches include them from:
 | `../SocketStream.{h,cpp}` | `src/gfxstream/guest/connection-manager/` |
 | `../virtual-wsi/{client.h,client.cpp,wire.h,mesa_surface.inc,mesa_swapchain.inc}` | `src/gfxstream/guest/vulkan/caboose-wsi/` |
 | `../bounded-memory/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/` |
+| `../dmabuf/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-dmabuf/` |
+| `../media/{gpu_media.h,media_import.h,media_import.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-media/` |
 
 Patches change upstream files only; a patch that touches an owned path is rejected. The
 owned sources are ordinary files with their own unit tests
@@ -93,6 +95,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0031 loss-at-entry | After the executor left, every encoder call reports device loss at entry without touching its outputs |
 | 0032 query-results | Query results without WAIT come from an earlier request instead of a round trip; with hello 0x1000 the guest assigns query pool handles |
 | 0033 robustness2 | `VK_EXT_robustness2`, which DXVK 2 requires, is offered when the phone's device has it; descriptor update templates accept its null buffers |
+| 0034 dma-buf-buffers | Phone-resident dma-bufs on the render node (`CABOOSE_FORMAT_MOD_REMOTE`, docs/gpu-buffers.md): import, export, registration with the broker for presentation, and sync-file export of fences and semaphores; LINEAR NV12/P010 dma-bufs of phone-decoded video are imported and filled by latch (docs/gpu-media.md) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
