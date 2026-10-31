@@ -355,6 +355,8 @@ public final class CabooseDisplaySession: DisplaySession {
                     latencyMs = Double(now - sent) / 1000
                     metrics.roundTrip(ms: Double(now - sent) / 1000)
                 }
+                LocalScrollProfile.note(String(format: "rtt sent=%.6f pong=%.6f rtt_ms=%.3f",
+                                               Double(sent) / 1_000_000, Double(now) / 1_000_000, Double(now) / 1000 - Double(sent) / 1000))
                 if let reconciling, reconciling.marker == sent { finishReconciling(reconciling.announced) }
             case .bye(let reason):
                 isReplaced = reason == "replaced"
