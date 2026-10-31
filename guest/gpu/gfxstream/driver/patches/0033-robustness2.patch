@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 32/32] Offer VK_EXT_robustness2 and accept its null descriptors
+Subject: [PATCH 33/33] Offer VK_EXT_robustness2 and accept its null
+ descriptors
 
 DXVK 2 requires VK_EXT_robustness2 (robustBufferAccess2 and nullDescriptor) and
 fails to create a D3D11 device without it. The encoder already marshals its
@@ -17,10 +18,10 @@ passes it on as a null handle instead of dereferencing it.
  1 file changed, 4 insertions(+), 1 deletion(-)
 
 diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
-index 3733ef6..b9c266e 100644
+index d015898..1240a0a 100644
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
-@@ -2233,6 +2233,7 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
+@@ -2242,6 +2242,7 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
          "VK_KHR_zero_initialize_workgroup_memory",
          "VK_EXT_4444_formats",
          "VK_EXT_extended_dynamic_state",
@@ -28,7 +29,7 @@ index 3733ef6..b9c266e 100644
          "VK_EXT_extended_dynamic_state2",
          "VK_EXT_inline_uniform_block",
          "VK_EXT_pipeline_creation_cache_control",
-@@ -7821,8 +7822,10 @@ void ResourceTracker::on_vkUpdateDescriptorSetWithTemplate(
+@@ -7837,8 +7838,10 @@ void ResourceTracker::on_vkUpdateDescriptorSetWithTemplate(
                  // Convert mesa to internal for objects in the user buffer
                  VkDescriptorBufferInfo* internalBufferInfo =
                      (VkDescriptorBufferInfo*)(((uint8_t*)bufferInfos) + currBufferInfoOffset);
@@ -41,5 +42,5 @@ index 3733ef6..b9c266e 100644
                  currBufferInfoOffset += sizeof(VkDescriptorBufferInfo);
              }
 -- 
-2.43.0
+2.52.0
 
