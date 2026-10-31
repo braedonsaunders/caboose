@@ -501,7 +501,12 @@ def phone_picture(records, window, at, offset):
     shots = [r for r in records if r['kind'] == 'phone_picture' and r['window'] == window]
     if not shots:
         return None
-    return min(shots, key=lambda r: abs(r['t'] - offset - at))['file']
+    # The guest takes its picture once the app is ready; an earlier phone picture can be
+    # of the app still loading, so the first one after it is preferred.
+    later = [r for r in shots if r['t'] - offset >= at]
+    if later:
+        return min(later, key=lambda r: r['t'])['file']
+    return max(shots, key=lambda r: r['t'])['file']
 
 
 def verdict(comparison, min_ssim=0.9, max_changed=0.05):
@@ -538,7 +543,8 @@ def summary_table(cards):
         elif cor.get('skipped'):
             picture = 'skipped'
         else:
-            picture = f"{'pass' if cor.get('pass') else 'FAIL'} {cor.get('ssim', 0):.2f}"
+            verdict_word = 'pass' if cor.get('pass') else 'size≠' if cor.get('sizes_differ') else 'FAIL'
+            picture = f"{verdict_word} {cor.get('ssim', 0):.2f}"
         rows.append([c['app'], c['path'], 'yes' if c.get('ok') else 'NO', _fmt(p.get('per_s')), _fmt(gap.get('p50')),
                      _fmt(gap.get('p95')), _fmt(gap.get('max')), str(c['stalls']['count']),
                      ' '.join(f'{k}:{v}' for k, v in sorted(c['stalls']['by_cause'].items())) or '-',
