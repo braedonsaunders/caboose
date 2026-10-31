@@ -11,7 +11,9 @@
 #include <string.h>
 
 __attribute__((constructor)) static void start(void) {
-    if (!getenv("CABOOSE_SCROLL_SOCKET")) return;
+    // A display to report to: the scroll socket, or a Wayland display (in a Flatpak sandbox
+    // the socket is found from it).
+    if (!getenv("CABOOSE_SCROLL_SOCKET") && !getenv("WAYLAND_DISPLAY")) return;
     if (!dlsym(RTLD_DEFAULT, "_ZN12QQuickWindow16staticMetaObjectE") && !dlsym(RTLD_DEFAULT, "_ZN10QQmlEngine16staticMetaObjectE")) return;
     Dl_info self;
     if (!dladdr((void *)start, &self) || !self.dli_fname) return;

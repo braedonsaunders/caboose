@@ -534,13 +534,22 @@ static gboolean on_socket(gint fd, GIOCondition condition, gpointer data) {
     return TRUE;
 }
 
-static void connect_socket(void) {
+/** The display instance's scroll socket: $CABOOSE_SCROLL_SOCKET, or where caboose-display
+ *  puts it for this Wayland display, the same path inside a Flatpak sandbox that shares
+ *  xdg-run/caboose-display. False when there is neither. */
+static int socket_path(char *out, size_t size) {
     const char *path = getenv("CABOOSE_SCROLL_SOCKET");
-    if (!path || !*path) return;
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (path && *path) return snprintf(out, size, "%s", path) < (int)size;
+    const char *runtime = getenv("XDG_RUNTIME_DIR"), *wayland = getenv("WAYLAND_DISPLAY");
+    if (!runtime || !*runtime || !wayland || !*wayland || strchr(wayland, '/')) return 0;
+    return snprintf(out, size, "%s/caboose-display/%s/scroll.sock", runtime, wayland) < (int)size;
+}
+
+static void connect_socket(void) {
     struct sockaddr_un addr = {.sun_family = AF_UNIX};
-    if (fd < 0 || strlen(path) >= sizeof addr.sun_path) return;
-    strcpy(addr.sun_path, path);
+    if (!socket_path(addr.sun_path, sizeof addr.sun_path)) return;
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return;
     if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
         close(fd);
         return;
@@ -572,7 +581,8 @@ static gboolean poll_windows(gpointer data) {
 }
 
 __attribute__((constructor)) static void start(void) {
-    if (!getenv("CABOOSE_SCROLL_SOCKET")) return;
+    char path[108];
+    if (!socket_path(path, sizeof path)) return;
 #if CABOOSE_GTK == 4
     if (!dlsym(RTLD_DEFAULT, "gtk_window_get_toplevels") || !dlsym(RTLD_DEFAULT, "gsk_renderer_render")) return;
 #else
