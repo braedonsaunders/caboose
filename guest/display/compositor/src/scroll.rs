@@ -499,6 +499,19 @@ impl State {
                 );
             }
             peer.window = window;
+            // What the reporter now draws: no tag unless active with overscan at least a block tall.
+            match &bind {
+                Some(b) => tracing::info!(
+                    "scroll reporter {}: bind active={} overscan={:?} tag_top={:.1} block={:.1}{}",
+                    peer.reporter,
+                    b.active,
+                    b.overscan,
+                    b.tag_top,
+                    b.block,
+                    if b.active && b.overscan[1] >= b.block { "" } else { " (no tag)" }
+                ),
+                None => tracing::info!("scroll reporter {}: unbound", peer.reporter),
+            }
             let message = match &bind {
                 Some(b) => b.json(peer.reporter),
                 None => json!({"type": "unbind"}),
