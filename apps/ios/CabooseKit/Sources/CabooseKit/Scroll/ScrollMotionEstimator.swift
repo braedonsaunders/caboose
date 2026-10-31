@@ -57,8 +57,8 @@ public struct ScrollMotionEstimator: Sendable {
     public var minimumEvidence = 12
     /// Least fraction of the sampled detail not explained by standing still that a motion
     /// within the expected shifts must explain, and one outside them.
-    public var minimumSupport = 0.15
-    public var unexpectedSupport = 0.35
+    public var minimumSupport = 0.5
+    public var unexpectedSupport = 0.6
 
     public init() {}
 
@@ -173,8 +173,20 @@ public struct ScrollMotionEstimator: Sendable {
                 scores = candidates.map { ($0, score($0, stride: 1, in: cells)) }
             }
         }
-        let best = scores.max { $0.moved < $1.moved }?.moved ?? 0
-        let support = Double(best) / Double(Swift.max(1, count - zeroScore))
+        let leader = scores.max { $0.moved < $1.moved }
+        let best = leader?.moved ?? 0
+        // Support is the share of the detail that could reappear at that shift (inside the
+        // picture, not explained by standing still) that does: a large shift overlapping
+        // little is judged on its overlap.
+        var eligible = 0
+        if let leader {
+            let offset = leader.shift * bands
+            for (i, cell) in samples.enumerated() where !atZero[i] {
+                let b = Int(cell) + offset
+                if b >= 0, b < total { eligible += 1 }
+            }
+        }
+        let support = Double(best) / Double(Swift.max(1, eligible))
         guard best >= minimumEvidence, Double(best) >= 0.04 * Double(count), support >= minimum else {
             return Double(zeroScore) >= 0.5 * Double(count) ? .still : .unexplained
         }

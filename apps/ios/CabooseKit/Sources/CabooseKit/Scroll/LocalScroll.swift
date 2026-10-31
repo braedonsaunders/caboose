@@ -210,6 +210,9 @@ public struct LocalScroll {
     /// The app's position when the last correction at rest was judged, to see it answer.
     private var lastJudged: Double?
     private var pendingProbe = 0.0
+    /// A picture of this run could not be measured: nothing is composed, and scroll goes to
+    /// the app as the finger and momentum move, without lead, until the scroll rests.
+    public private(set) var lost = false
     private var capSince: TimeInterval?
     private struct Prefetch {
         var pinned: UInt64
@@ -418,15 +421,25 @@ public struct LocalScroll {
         var guessed = false
         switch observation {
         case .unrelated:
-            guessed = true
-            if before == nil {
-                offset = phase == .idle ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)
-            } else {
-                offset = value(at: frame.time - latency, in: commandedHistory) ?? commanded
-                // Earlier frames cannot be related to this one.
-                frames.removeSubrange(..<index)
+            // The first picture of a gesture, taken before anything was sent, shows the app
+            // where the phone is.
+            let atRest = phase == .idle || (before == nil && frames.count == 1 && abs(commanded - position) < 0.5
+                                            && frame.time >= lastSend + 2 * latency)
+            guard atRest else {
+                // A picture that cannot be measured is never placed by a guess. The app's own
+                // picture shows for the rest of this run, scrolled by the finger as it goes.
+                note?("picture \(id) could not be measured: the app's picture shows until the scroll rests")
+                frames.removeAll()
                 edges = (nil, nil)
+                probe = nil
+                lost = true
+                return
             }
+            // At rest the app's picture is what shows: the phone is where it is.
+            guessed = true
+            offset = position
+            frames.removeSubrange(..<index)
+            edges = (nil, nil)
             region = self.region
         case .moved(let shift, let measured, let reference, let fixed):
             holes = fixed
@@ -586,7 +599,7 @@ public struct LocalScroll {
         }
         // Until the first composition the app's own picture is on screen: the phone takes over
         // from where that picture shows the content and catches up with the gesture.
-        let composable = region != nil && placedOffset != nil
+        let composable = region != nil && placedOffset != nil && !lost
         if composable, !composing, let shown = placedOffset { position = shown }
         composing = composable
 
@@ -635,6 +648,7 @@ public struct LocalScroll {
             target = time < holdUntil && phase == .settling ? commanded
                 : clampToEdges(phase == .bouncing ? springTarget : wanted)
         }
+        if lost { target = requested }
         if probe != nil { target = commanded }
         let isSilent = silent(at: time)
         if isSilent, let app = placedOffset, regionLength > 0 {
@@ -748,9 +762,11 @@ public struct LocalScroll {
     }
 
     private mutating func settle(at time: TimeInterval) {
-        guard let app = placedOffset else {
-            // Nothing to show the phone's position with: let the app's picture stand.
+        guard let app = placedOffset, !lost else {
+            // Nothing to show the phone's position with: the app's picture stands.
             phase = .idle
+            lost = false
+            commanded = requested
             return
         }
         let pending = frames.contains { !$0.placed }

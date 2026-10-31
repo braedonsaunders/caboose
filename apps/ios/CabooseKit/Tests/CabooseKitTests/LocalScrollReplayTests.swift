@@ -206,3 +206,15 @@ struct LocalScrollOverscanTests {
         }
     }
 }
+
+extension LocalScrollRobustnessTests {
+    /// The page is replaced in the middle of a flick: no picture is placed by a guess, so
+    /// the new page never shows at a made-up position or mixed with the old one.
+    @Test func replacedPageIsNeverComposedAtAGuess() {
+        var app = Self.app()
+        app.pageChangeAt = 1.62 // during the measured flick, which starts at 1.5
+        let report = T.run("page replaced mid-flick", app, T.fastFlick, duration: 9)
+        #expect(report.mixedPages == 0)
+        #expect(report.relativeMisplacement <= 1)
+    }
+}

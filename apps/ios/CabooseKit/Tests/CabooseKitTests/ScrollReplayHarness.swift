@@ -24,6 +24,9 @@ struct ScrollReplay {
         /// Lines the window is laid out taller than the phone's viewport (an overscan window):
         /// the app's pictures and scroll region grow by it, its footer moves to their end.
         var overscan = 0
+        /// From this time the page is replaced by another (a navigation, a reflow): pictures
+        /// after it relate to none before it.
+        var pageChangeAt: TimeInterval? = nil
         var latency: TimeInterval { inputDelay + outputDelay + 0.5 / fps }
     }
 
@@ -63,6 +66,8 @@ struct ScrollReplay {
         var learnedLatency: TimeInterval = 0
         var learnedGain = 0.0
         var edgeFound = false
+        var mixedPages = 0                // compositions drawing pictures of different pages
+        var relativeMisplacement = 0.0    // worst disagreement between layers shown together, px
         var bounced = false
 
         func percentile(_ values: [Double], _ p: Double) -> Double {
@@ -102,9 +107,9 @@ struct ScrollReplay {
 
     /// The page's (luma, detail) at content line `row` in `band`: paragraphs of text lines,
     /// paragraph gaps, and images.
-    private func page(_ row: Int, _ band: Int, bands: Int) -> (Float, Float) {
+    private func page(_ row: Int, _ band: Int, bands: Int, version: Int) -> (Float, Float) {
         guard row >= 0, row < app.pageLines else { return (255, 0) }
-        let block = row / 900, within = row % 900
+        let block = row / 900 + version * 7919, within = row % 900
         if Self.hash(block, 0, 7) % 4 == 0 && within < 600 {
             // An image: smooth rows with texture.
             let base = 60 + 120 * Self.unit(block, band, 1)
@@ -127,7 +132,7 @@ struct ScrollReplay {
 
     var pictureLines: Int { lines + app.overscan }
 
-    func signature(offset: Int, seed: Int) -> ScrollSignature {
+    func signature(offset: Int, seed: Int, version: Int = 0) -> ScrollSignature {
         let lines = pictureLines
         let bands = ScrollSignature.bandCount(span: span)
         var luma = [Float](repeating: 0, count: lines * bands), detail = luma
@@ -138,7 +143,7 @@ struct ScrollReplay {
                 if line < header { cell = fixedCell(line, band, kind: 0) }
                 else if line >= lines - app.footer { cell = fixedCell(line, band, kind: 1) }
                 else if band < sidebarBands { cell = fixedCell(line, band, kind: 2) }
-                else { cell = page(offset + line, band, bands: bands) }
+                else { cell = page(offset + line, band, bands: bands, version: version) }
                 let n1 = (Self.unit(seed, line, band) - 0.5) * 2 * app.noise
                 let n2 = (Self.unit(seed, band, line) - 0.5) * 2 * app.noise
                 luma[line * bands + band] = cell.0 + n1
@@ -166,6 +171,7 @@ struct ScrollReplay {
         var appOffset = app.startOffset
         var inbound: [(time: TimeInterval, wire: Double)] = []
         var outbound: [(time: TimeInterval, id: UInt64, offset: Int)] = []
+        var versions: [UInt64: Int] = [:]
         var nextRender = 0.0
         var nextID: UInt64 = 1
         var frameOffsets: [UInt64: Int] = [:]
@@ -193,6 +199,7 @@ struct ScrollReplay {
             let id = nextID; nextID += 1
             let offset = Int(appOffset.rounded())
             frameOffsets[id] = offset
+            versions[id] = app.pageChangeAt.map { time >= $0 ? 1 : 0 } ?? 0
             outbound.append((time + app.outputDelay, id, offset))
         }
         render(at: -0.5)
@@ -235,7 +242,7 @@ struct ScrollReplay {
             pendingMeasure.removeAll()
             while let first = outbound.first, first.time <= t {
                 outbound.removeFirst()
-                signatures[first.id] = signature(offset: first.offset, seed: Int(first.id))
+                signatures[first.id] = signature(offset: first.offset, seed: Int(first.id), version: versions[first.id] ?? 0)
                 newestArrived = first.id
                 let hint = model.captured(first.id, at: t)
                 pendingMeasure.append((first.id, hint))
@@ -278,6 +285,15 @@ struct ScrollReplay {
             let shown: Double
             let measuring = t >= measureFrom
             if let composition = result.composition {
+                let shownVersions = Set(composition.layers.map { versions[$0.frame] ?? 0 } + [versions[composition.base] ?? 0])
+                if shownVersions.count > 1 { report.mixedPages += 1 }
+                if let anchor = composition.layers.last {
+                    let content = Double(frameOffsets[anchor.frame]!) - Double(anchor.shift)
+                    for layer in composition.layers {
+                        report.relativeMisplacement = max(report.relativeMisplacement,
+                            abs(Double(frameOffsets[layer.frame]!) - Double(layer.shift) - content))
+                    }
+                }
                 if measuring { report.blank.append(Double(composition.blank) / Double(composition.region.along.count)) }
                 for layer in composition.layers where measuring {
                     report.misplacement = max(report.misplacement, abs(phone - (Double(frameOffsets[layer.frame]!) - Double(layer.shift))))
