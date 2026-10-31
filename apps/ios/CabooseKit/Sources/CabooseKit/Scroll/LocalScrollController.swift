@@ -43,6 +43,8 @@ public final class LocalScrollController {
     /// Where a toolkit reporter draws its frame tag in a picture of this size, in picture
     /// pixels, asked for each capture.
     public var tagRect: ((CGSize) -> CGRect?)?
+    /// Once per gesture, for the profile: a picture was reported, or a tag did not decode.
+    private var reportNoted = false, tagMissNoted = false
     /// How many of a captured picture's pixels lie past the viewport, right and below (an
     /// overscan window); none by default.
     public var pictureOverscan: (MTLTexture) -> CGSize = { _ in .zero }
@@ -86,6 +88,7 @@ public final class LocalScrollController {
         model.begin(at: time, axis: axis, anchor: anchor, scale: scale)
         lastTouch = time
         LocalScrollProfile.note(String(format: "engage t=%.4f", CACurrentMediaTime()))
+        reportNoted = false; tagMissNoted = false
         armedUntil = .infinity
         profile.begin(at: time)
     }
@@ -287,6 +290,18 @@ public final class LocalScrollController {
                         if let edges { self.fills[id] = edges }
                         // The reporter's word for exactly this picture replaces measurement.
                         let reported = copy == nil ? nil : self.report?(source, tagLuma)
+                        if LocalScrollProfile.enabled {
+                            if case .reported(let offset, _, _, _, let epoch) = reported, !self.reportNoted {
+                                self.reportNoted = true
+                                LocalScrollProfile.note("picture \(id) reported: offset \(Int(offset)) epoch \(epoch)")
+                            } else if reported == nil, let tagLuma, !self.tagMissNoted {
+                                self.tagMissNoted = true
+                                LocalScrollProfile.note("picture \(id) has a tag rect but no report; tag luma \(tagLuma.map { String(Int($0)) }.joined(separator: ","))")
+                            } else if reported == nil, tagLuma == nil, self.report != nil, !self.tagMissNoted {
+                                self.tagMissNoted = true
+                                LocalScrollProfile.note("picture \(id): no tag rect for its window (no scroll.tree with tag_rect yet)")
+                            }
+                        }
                         self.model.observe(id, copy == nil ? .unrelated : reported ?? result)
                         self.profile.measured(result)
                         self.releaseTextures(keeping: Set(self.model.retainedFrames))
