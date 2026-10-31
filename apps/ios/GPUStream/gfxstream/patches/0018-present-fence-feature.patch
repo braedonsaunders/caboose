@@ -1,0 +1,74 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -384,0 +385 @@
++        if (!dev->caboosePresentFenceEnabled) return VK_ERROR_FEATURE_NOT_PRESENT;
+@@ -426,0 +428 @@
++        if (!deviceInfo->caboosePresentFenceEnabled) return VK_ERROR_FEATURE_NOT_PRESENT;
+@@ -2790,0 +2793,39 @@
++        // Enable present fences only in the explicitly selected private WSI
++        // mode, with real extension dependencies and a queried host feature.
++        bool caboosePresentFenceEnabled = false;
++        VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR cabooseMaintenance = {
++            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR, nullptr, VK_TRUE};
++        if (m_vkEmulation->getFeatures().CabooseVirtualWsi.enabled()) {
++            bool khrInstance = false, extInstance = false;
++            {
++                std::lock_guard<std::mutex> lock(mMutex);
++                auto* phys = gfxstream::base::find(mPhysdevInfo, physicalDevice);
++                if (!phys) return VK_ERROR_INITIALIZATION_FAILED;
++                khrInstance = hasInstanceExtension(phys->instance, VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
++                extInstance = hasInstanceExtension(phys->instance, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
++            }
++            std::vector<VkExtensionProperties> hostDeviceExtensions;
++            if (enumerateDeviceExtensionProperties(vk, physicalDevice, nullptr, hostDeviceExtensions) != VK_SUCCESS ||
++                !hasDeviceExtension(hostDeviceExtensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME) ||
++                !supportsSwapchainMaintenance1(physicalDevice, vk)) return VK_ERROR_FEATURE_NOT_PRESENT;
++            const char* extension = nullptr;
++            if (khrInstance && hasDeviceExtension(hostDeviceExtensions, VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
++                extension = VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
++            else if (extInstance && hasDeviceExtension(hostDeviceExtensions, VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME))
++                extension = VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
++            if (!extension) return VK_ERROR_FEATURE_NOT_PRESENT;
++            if (std::none_of(updatedDeviceExtensions.begin(), updatedDeviceExtensions.end(),
++                    [](const char* name) { return name && strcmp(name, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0; }))
++                updatedDeviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
++            if (std::none_of(updatedDeviceExtensions.begin(), updatedDeviceExtensions.end(),
++                    [&](const char* name) { return name && strcmp(name, extension) == 0; }))
++                updatedDeviceExtensions.push_back(extension);
++            auto* requested = vk_find_struct<VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR>(&createInfoFiltered);
++            if (requested) requested->swapchainMaintenance1 = VK_TRUE;
++            else {
++                cabooseMaintenance.pNext = const_cast<void*>(createInfoFiltered.pNext);
++                createInfoFiltered.pNext = &cabooseMaintenance;
++            }
++            caboosePresentFenceEnabled = true;
++        }
++
+@@ -2927,0 +2969 @@
++        deviceInfo.caboosePresentFenceEnabled = caboosePresentFenceEnabled;
+@@ -11106,0 +11149,15 @@
++            // Present fences need a matching surface-maintenance instance
++            // extension and its capabilities2 dependency. Never advertise these
++            // host-only additions as guest capabilities.
++            if (m_vkEmulation->getFeatures().CabooseVirtualWsi.enabled() &&
++                hasDeviceExtension(hostExtensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
++                const char* candidates[] = {VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
++                    VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
++                    VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME};
++                for (auto* extension : candidates) {
++                    if (hasDeviceExtension(hostExtensions, extension) &&
++                        std::none_of(res.begin(), res.end(), [&](const char* name) {
++                            return name && strcmp(name, extension) == 0;
++                        })) res.push_back(extension);
++                }
++            }
+@@ -11444 +11501 @@
+-        if (hasGetPhysicalDeviceFeatures2) {
++        if (hasGetPhysicalDeviceFeatures2 && vk->vkGetPhysicalDeviceFeatures2) {
+@@ -11446 +11503 @@
+-        } else if (hasGetPhysicalDeviceFeatures2KHR) {
++        } else if (hasGetPhysicalDeviceFeatures2KHR && vk->vkGetPhysicalDeviceFeatures2KHR) {
+--- a/host/vulkan/vk_decoder_internal_structs.h
++++ b/host/vulkan/vk_decoder_internal_structs.h
+@@ -248,0 +249 @@
++    bool caboosePresentFenceEnabled = false;

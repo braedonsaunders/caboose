@@ -1,0 +1,63 @@
+--- a/guest/gpu/emulation-check/coherent/coherent.cpp
++++ b/guest/gpu/emulation-check/coherent/coherent.cpp
+@@ -15,7 +15,7 @@
+ }
+ #define VK(call) check((call), #call)
+ struct State {
+-    VkInstance instance{}; VkDevice device{}; VkBuffer buffer{}; VkDeviceMemory memory{};
++    VkInstance instance{}; VkDevice device{}; VkBuffer buffer{}, alias{}; VkDeviceMemory memory{};
+     VkCommandPool pool{}; VkFence fence{}; VkEvent event{}; void* mapped{};
+     ~State() {
+         if (device) {
+@@ -26,6 +26,7 @@
+             if (event) vkDestroyEvent(device, event, nullptr);
+             if (fence) vkDestroyFence(device, fence, nullptr);
+             if (pool) vkDestroyCommandPool(device, pool, nullptr);
++            if (alias) vkDestroyBuffer(device, alias, nullptr);
+             if (buffer) vkDestroyBuffer(device, buffer, nullptr);
+             if (memory) vkFreeMemory(device, memory, nullptr);
+             vkDestroyDevice(device, nullptr);
+@@ -66,6 +67,7 @@
+         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO}; bi.size=12288;
+         bi.usage=VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; bi.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+         VK(vkCreateBuffer(s.device, &bi, nullptr, &s.buffer));
++        VK(vkCreateBuffer(s.device, &bi, nullptr, &s.alias));
+         VkMemoryRequirements req{}; vkGetBufferMemoryRequirements(s.device, s.buffer, &req);
+         VkPhysicalDeviceMemoryProperties props{}; vkGetPhysicalDeviceMemoryProperties(physical, &props);
+         uint32_t type=0; while (type<props.memoryTypeCount) {
+@@ -74,10 +76,14 @@
+             ++type;
+         }
+         if (type==props.memoryTypeCount) { std::puts("{\"status\":\"UNSUPPORTED\",\"reason\":\"no host coherent type\"}"); return 77; }
+-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; ai.allocationSize=req.size; ai.memoryTypeIndex=type;
+-        VK(vkAllocateMemory(s.device, &ai, nullptr, &s.memory)); VK(vkBindBufferMemory(s.device, s.buffer, s.memory, 0));
++        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO}; const VkDeviceSize bindOffset = req.alignment;
++        ai.allocationSize=req.size + bindOffset; ai.memoryTypeIndex=type;
++        VK(vkAllocateMemory(s.device, &ai, nullptr, &s.memory)); VK(vkBindBufferMemory(s.device, s.buffer, s.memory, bindOffset));
++        VK(vkBindBufferMemory(s.device, s.alias, s.memory, bindOffset));
+         VK(vkMapMemory(s.device, s.memory, 0, VK_WHOLE_SIZE, 0, &s.mapped));
+-        auto bytes=static_cast<uint8_t*>(s.mapped); std::memset(bytes, 0xa5, 12288);
++        auto allocationBytes=static_cast<uint8_t*>(s.mapped);
++        std::memset(allocationBytes, 0x3c, static_cast<size_t>(bindOffset));
++        auto bytes=allocationBytes + bindOffset; std::memset(bytes, 0xa5, 12288);
+         std::memcpy(bytes, &seed, 4);
+         VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO}; pi.queueFamilyIndex=family;
+         VK(vkCreateCommandPool(s.device, &pi, nullptr, &s.pool));
+@@ -98,7 +104,7 @@
+         vkCmdWaitEvents(cmd,1,&s.event,VK_PIPELINE_STAGE_HOST_BIT,VK_PIPELINE_STAGE_TRANSFER_BIT,0,nullptr,0,nullptr,0,nullptr);
+         uint32_t gpuWord=seed ^ 0x6d2b79f5u;
+         // GPU writes B and a word at offset 4, sharing a page with CPU word A.
+-        vkCmdFillBuffer(cmd,s.buffer,4096,4,gpuWord); vkCmdFillBuffer(cmd,s.buffer,4,4,gpuWord);
++        vkCmdFillBuffer(cmd,s.buffer,4096,4,gpuWord); vkCmdFillBuffer(cmd,s.alias,4,4,gpuWord);
+         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&toHost,0,nullptr,0,nullptr);
+         VK(vkEndCommandBuffer(cmd)); VK(vkQueueSubmit(queue,1,&submit,s.fence));
+         VkResult poll=vkGetFenceStatus(s.device,s.fence);
+@@ -119,6 +125,8 @@
+         vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,1,&toHost,0,nullptr,0,nullptr);
+         VK(vkEndCommandBuffer(cmd)); VK(vkQueueSubmit(queue,1,&submit,s.fence));
+         VK(vkWaitForFences(s.device,1,&s.fence,VK_TRUE,5000000000ULL));
++        for (VkDeviceSize i=0;i<bindOffset;++i)
++            if(allocationBytes[i]!=0x3c) throw std::runtime_error("allocation prefix changed");
+         uint32_t finalRead=0; std::memcpy(&finalRead,bytes+8192,4);
+         if (finalRead!=cpuWord) throw std::runtime_error("subsequent GPU read of CPU update mismatch");
+         std::printf("{\"status\":\"PASS\",\"seed\":%u,\"memory_type\":%u,\"memory_flags\":%u,\"cpu_word\":%u,\"gpu_word\":%u,\"poll_not_ready\":true,\"timeout\":true}\n",seed,type,props.memoryTypes[type].propertyFlags,cpuRead,gpuRead);

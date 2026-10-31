@@ -1,0 +1,12 @@
+#!/bin/sh
+# Acceptance computer only; invoked by caboose-session's owner start_display branch.
+set -eu
+[ "$(id -u)" = 1000 ] || { echo 'GPU owner display requires caboose' >&2; exit 1; }
+[ "${CABOOSE_SEAT:-owner}" != agent ] || { echo 'GPU owner display refuses agent seat' >&2; exit 1; }
+[ "${XDG_RUNTIME_DIR:-}" = /run/user/1000 ] || { echo 'Unexpected owner runtime directory' >&2; exit 1; }
+install -d -m 0700 /run/user/1000/caboose-gpu-acceptance
+export CABOOSE_PRIVATE_GPU_PROGRESS=1
+exec /opt/caboose-private-gpu-v4/bin/caboose-display "$@" \
+  --private-gpu-stream-socket /run/user/1000/caboose-gpu-acceptance/gpu.sock \
+  --private-gpu-surface-socket /run/user/1000/caboose-gpu-acceptance/surface.sock \
+  --private-gpu-indexed

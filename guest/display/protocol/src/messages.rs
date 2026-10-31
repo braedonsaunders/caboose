@@ -156,6 +156,8 @@ pub struct ServerHello {
     /// Random for each server process. Window ids are unique within one epoch, so a client
     /// may keep a window's last picture across a reconnect only when the epoch matches.
     pub epoch: Option<String>,
+    /// Private live GPU surface namespace; absent when the service is unavailable.
+    pub gpu_live_epoch: Option<[u8; 16]>,
 }
 
 /// `window.create` (0x02).
@@ -923,6 +925,7 @@ impl Message {
                 .put("encoders", codecs_value(&m.encoders))
                 .put("features", m.features.clone())
                 .opt("epoch", m.epoch.clone())
+                .opt("gpu_live_epoch", m.gpu_live_epoch.filter(|v| v.iter().any(|b| *b != 0)).map(|v| v.to_vec()))
                 .build(),
             Message::WindowCreate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1212,6 +1215,9 @@ impl Message {
                 encoders: codecs_from(&f, "encoders")?,
                 features: f.strings("features")?,
                 epoch: f.opt_string("epoch")?,
+                gpu_live_epoch: f.opt_bytes("gpu_live_epoch").ok().flatten()
+                    .and_then(|v| <[u8; 16]>::try_from(v).ok())
+                    .filter(|v| v.iter().any(|b| *b != 0)),
             }),
             WINDOW_CREATE => Message::WindowCreate(WindowCreate {
                 id: f.u64("id")?,

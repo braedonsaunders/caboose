@@ -20,6 +20,7 @@ struct AppsScreen: View {
                         VStack(alignment: .leading, spacing: 28) {
                             installed
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                         .padding(.bottom, 32)
@@ -46,6 +47,7 @@ struct AppsScreen: View {
                     .padding(.vertical, 8)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background { ShellBackground() }
             .navigationTitle("Apps")
             .toolbar {

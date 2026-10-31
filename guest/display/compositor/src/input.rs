@@ -54,12 +54,20 @@ pub struct InputState {
 }
 
 impl InputState {
-    pub fn forget_window(&mut self, id: u64) {
+    /// wl_touch.cancel ends every touch of the client, so the slots go with it.
+    pub fn clear_touches(&mut self) {
+        self.touches.clear();
+    }
+
+    /// Forgets the window; true if a touch was still down on it.
+    pub fn forget_window(&mut self, id: u64) -> bool {
+        let touched = self.touches.len();
         self.touches.retain(|_, w| *w != id);
         self.pencil.forget_window(id);
         if self.popup_grab == Some(id) {
             self.popup_grab = None;
         }
+        self.touches.len() != touched
     }
 }
 
@@ -169,6 +177,12 @@ impl State {
             match p.phase {
                 TouchPhase::Down => {
                     let Some((location, under)) = self.locate(m.id, p.x, p.y) else { continue };
+                    // A client never reuses a slot that is down; if its release was lost,
+                    // release it here so the application does not reject the new touch.
+                    if self.input.touches.contains_key(&p.slot) {
+                        let serial = self.next_serial();
+                        touch.up(self, &UpEvent { slot, serial, time });
+                    }
                     self.press_focus(m.id);
                     self.input.touches.insert(p.slot, m.id);
                     let serial = self.next_serial();
@@ -416,5 +430,22 @@ impl State {
             }
             self.input.touches.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::InputState;
+
+    #[test]
+    fn forgetting_a_window_reports_touches_left_on_it() {
+        let mut input = InputState::default();
+        input.touches.insert(0, 7);
+        input.touches.insert(1, 9);
+        assert!(!input.forget_window(8));
+        assert!(input.forget_window(7));
+        assert_eq!(input.touches.len(), 1);
+        input.clear_touches();
+        assert!(!input.forget_window(9));
     }
 }

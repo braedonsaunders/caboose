@@ -1,0 +1,59 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -469,3 +469,3 @@
+-        if (m_emulationGl) {
+-            m_emulationGl->lockContextStructureRead();
+-        }
++#if GFXSTREAM_ENABLE_HOST_GLES
++        if (m_emulationGl) m_emulationGl->lockContextStructureRead();
++#endif
+@@ -474,3 +474,3 @@
+-        if (m_emulationGl) {
+-            m_emulationGl->unlockContextStructureRead();
+-        }
++#if GFXSTREAM_ENABLE_HOST_GLES
++        if (m_emulationGl) m_emulationGl->unlockContextStructureRead();
++#endif
+@@ -688 +688,14 @@
+-    bool hasEmulationGl() const { return m_emulationGl != nullptr; }
++    bool hasEmulationGl() const {
++#if GFXSTREAM_ENABLE_HOST_GLES
++        return m_emulationGl != nullptr;
++#else
++        return false;
++#endif
++    }
++    gl::EmulationGl* glForBuffer() const {
++#if GFXSTREAM_ENABLE_HOST_GLES
++        return m_emulationGl.get();
++#else
++        return nullptr;
++#endif
++    }
+@@ -1065,0 +1079 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -1066,0 +1081 @@
++#endif
+@@ -1439 +1454 @@
+-    if (!impl->m_emulationGl) {
++    if (!impl->hasEmulationGl()) {
+@@ -1533 +1548 @@
+-        /* hasGL */ impl->m_emulationGl != nullptr);
++        /* hasGL */ impl->hasEmulationGl());
+@@ -1637,0 +1653 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -1640,0 +1657 @@
++#endif
+@@ -2086,0 +2104 @@
++#if GFXSTREAM_ENABLE_HOST_GLES
+@@ -2089,0 +2108 @@
++#endif
+@@ -2164 +2183 @@
+-    ColorBufferPtr cb = ColorBuffer::create(m_emulationGl.get(), m_emulationVk.get(), p_width,
++    ColorBufferPtr cb = ColorBuffer::create(glForBuffer(), m_emulationVk.get(), p_width,
+@@ -2227 +2246 @@
+-    BufferPtr buffer(Buffer::create(m_emulationGl.get(), m_emulationVk.get(), p_size, handle));
++    BufferPtr buffer(Buffer::create(glForBuffer(), m_emulationVk.get(), p_size, handle));
+@@ -3588 +3607 @@
+-                    ColorBuffer::onLoad(m_emulationGl.get(), m_emulationVk.get(), stream);
++                    ColorBuffer::onLoad(glForBuffer(), m_emulationVk.get(), stream);

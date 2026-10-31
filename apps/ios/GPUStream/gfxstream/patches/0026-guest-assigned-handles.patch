@@ -1,0 +1,213 @@
+--- a/common/base/include/gfxstream/containers/HybridEntityManager.h
++++ b/common/base/include/gfxstream/containers/HybridEntityManager.h
+@@ -69,7 +69,21 @@
+         return EM::makeHandle(nextIndex, 1, type);
+     }
+ 
++    // Caboose guest-assigned handles carry 0xCA in their top byte and a per-process tag:
++    // they are keyed by their whole value, apart from the indices this store mints.
++    static bool isGuestAssigned(uint64_t handle) { return (handle >> 56) == 0xCA; }
++
+     uint64_t addFixed(IndexType index, const Data& data, size_t type) {
++        if (isGuestAssigned((uint64_t)index)) {
++            AutoLock lock(mMapLock);
++            auto emplaced = mMap.emplace((uint64_t)index, data);
++            if (!emplaced.second) {
++                fprintf(stderr, "%s: fatal: duplicated guest-assigned handle 0x%llx\n", __func__,
++                        (unsigned long long)index);
++                abort();
++            }
++            return index;
++        }
+         uint64_t index_u64 = (uint64_t)EM::getHandleIndex(index);
+         if (index_u64 < maxIndex) {
+             SeqLock::ScopedWrite sw(&mEntityManagerLock);
+@@ -101,6 +115,11 @@
+     }
+ 
+     void remove(IndexType index) {
++        if (isGuestAssigned((uint64_t)index)) {
++            AutoLock lock(mMapLock);
++            mMap.erase((uint64_t)index);
++            return;
++        }
+         uint64_t index_u64 = (uint64_t)EM::getHandleIndex(index);
+         if (index_u64 < maxIndex) {
+             SeqLock::ScopedWrite sw(&mEntityManagerLock);
+@@ -112,6 +131,10 @@
+     }
+ 
+     Data* get(IndexType index) {
++        if (isGuestAssigned((uint64_t)index)) {
++            AutoLock lock(mMapLock);
++            return gfxstream::base::find(mMap, (uint64_t)index);
++        }
+         uint64_t index_u64 = (uint64_t)EM::getHandleIndex(index);
+         if (index_u64 < maxIndex) {
+             SeqLock::ScopedWrite sw(&mEntityManagerLock);
+@@ -124,6 +147,10 @@
+     }
+ 
+     const Data* get_const(IndexType index) const {
++        if (isGuestAssigned((uint64_t)index)) {
++            AutoLock lock(mMapLock);
++            return gfxstream::base::find(mMap, (uint64_t)index);
++        }
+         uint64_t index_u64 = (uint64_t)EM::getHandleIndex(index);
+         if (index_u64 < maxIndex) {
+             const Data* res;
+@@ -193,6 +220,7 @@
+ 
+ private:
+     static Handle index2Handle(uint64_t index) {
++        if (isGuestAssigned(index)) return index;
+         return EM::makeHandle((uint32_t)index, 1, 1);
+     }
+ 
+--- a/host/vulkan/vulkan_boxed_handles.h
++++ b/host/vulkan/vulkan_boxed_handles.h
+@@ -133,6 +133,12 @@
+ 
+ extern BoxedHandleManager sBoxedHandleManager;
+ 
++// The next boxed handle of `tag` created on this thread takes the guest-assigned value
++// `handle` instead of a minted one. The decoder sets it from a create command's output
++// handle and clears it once the command returns.
++void setNextGuestAssignedHandle(BoxedHandle handle, BoxedHandleTypeTag tag);
++void clearNextGuestAssignedHandle();
++
+ #define DEFINE_BOXED_DISPATCHABLE_HANDLE_API_DECL(type)               \
+     type new_boxed_##type(type underlying, VulkanDispatch* dispatch); \
+     void delete_##type(type boxed);                                   \
+--- a/host/vulkan/vulkan_boxed_handles.cpp
++++ b/host/vulkan/vulkan_boxed_handles.cpp
+@@ -67,12 +67,30 @@
+ uint64_t BoxedHandleManager::getHandlesCount() const {
+     std::lock_guard<std::mutex> lock(mMutex);
+     return mReverseMap.size();
++}
++
++namespace {
++thread_local BoxedHandle tNextGuestHandle = 0;
++thread_local BoxedHandleTypeTag tNextGuestTag = Tag_Invalid;
++}  // namespace
++
++void setNextGuestAssignedHandle(BoxedHandle handle, BoxedHandleTypeTag tag) {
++    tNextGuestHandle = (handle >> 56) == 0xCA ? handle : 0;
++    tNextGuestTag = tag;
++}
++
++void clearNextGuestAssignedHandle() {
++    tNextGuestHandle = 0;
++    tNextGuestTag = Tag_Invalid;
+ }
+ 
+ BoxedHandle BoxedHandleManager::add(const BoxedHandleInfo& item, BoxedHandleTypeTag tag) {
+     BoxedHandle handle;
+ 
+-    if (mHandleReplay) {
++    if (tNextGuestHandle && tag == tNextGuestTag) {
++        handle = (BoxedHandle)mStore.addFixed(tNextGuestHandle, item, (size_t)tag);
++        clearNextGuestAssignedHandle();
++    } else if (mHandleReplay) {
+         handle = mHandleReplayQueue.front();
+         mHandleReplayQueue.pop_front();
+         mHandleReplay = !mHandleReplayQueue.empty();
+--- a/host/vulkan/vk_decoder.cpp
++++ b/host/vulkan/vk_decoder.cpp
+@@ -3185,6 +3185,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkBuffer);
+                 *(VkBuffer*)pBuffer = (VkBuffer)(VkBuffer)((VkBuffer)(*&cgen_var_2));
+                 if (pCreateInfo) {
+                     transform_tohost_VkBufferCreateInfo(m_state,
+@@ -3214,6 +3215,7 @@
+                 static_assert(8 == sizeof(VkBuffer),
+                               "handle map overwrite requires VkBuffer to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkBuffer((VkBuffer*)pBuffer, 1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkBuffer*)pBuffer, 8 * 1);
+                 // Begin manual non dispatchable handle create for pBuffer;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -3316,6 +3318,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkImage);
+                 *(VkImage*)pImage = (VkImage)(VkImage)((VkImage)(*&cgen_var_2));
+                 if (pCreateInfo) {
+                     m_state->transformImpl_VkImageCreateInfo_tohost(pCreateInfo, 1);
+@@ -3345,6 +3348,7 @@
+                 static_assert(8 == sizeof(VkImage),
+                               "handle map overwrite requires VkImage to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkImage((VkImage*)pImage, 1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkImage*)pImage, 8 * 1);
+                 // Begin manual non dispatchable handle create for pImage;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -3509,6 +3513,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkImageView);
+                 *(VkImageView*)pView = (VkImageView)(VkImageView)((VkImageView)(*&cgen_var_2));
+                 if (pCreateInfo) {
+                     transform_tohost_VkImageViewCreateInfo(m_state,
+@@ -3538,6 +3543,7 @@
+                 static_assert(8 == sizeof(VkImageView),
+                               "handle map overwrite requires VkImageView to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkImageView((VkImageView*)pView, 1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkImageView*)pView, 8 * 1);
+                 // Begin manual non dispatchable handle create for pView;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -7278,6 +7284,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkFramebuffer);
+                 *(VkFramebuffer*)pFramebuffer =
+                     (VkFramebuffer)(VkFramebuffer)((VkFramebuffer)(*&cgen_var_2));
+                 if (pCreateInfo) {
+@@ -7310,6 +7317,7 @@
+                               "handle map overwrite requires VkFramebuffer to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkFramebuffer((VkFramebuffer*)pFramebuffer,
+                                                                     1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkFramebuffer*)pFramebuffer, 8 * 1);
+                 // Begin manual non dispatchable handle create for pFramebuffer;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -22737,6 +22745,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkImage);
+                 *(VkImage*)pImage = (VkImage)(VkImage)((VkImage)(*&cgen_var_2));
+                 // Begin manual dispatchable handle unboxing for pMemoryRequirements;
+                 vkReadStream->unsetHandleMapping();
+@@ -22781,6 +22790,7 @@
+                 static_assert(8 == sizeof(VkImage),
+                               "handle map overwrite requires VkImage to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkImage((VkImage*)pImage, 1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkImage*)pImage, 8 * 1);
+                 // Begin manual non dispatchable handle create for pImage;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -22838,6 +22848,7 @@
+                 uint64_t cgen_var_2;
+                 memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
+                 *readStreamPtrPtr += 8;
++                setNextGuestAssignedHandle((BoxedHandle)cgen_var_2, Tag_VkBuffer);
+                 *(VkBuffer*)pBuffer = (VkBuffer)(VkBuffer)((VkBuffer)(*&cgen_var_2));
+                 // Begin manual dispatchable handle unboxing for pMemoryRequirements;
+                 vkReadStream->unsetHandleMapping();
+@@ -22882,6 +22893,7 @@
+                 static_assert(8 == sizeof(VkBuffer),
+                               "handle map overwrite requires VkBuffer to be 8 bytes long");
+                 vkStream->handleMapping()->mapHandles_VkBuffer((VkBuffer*)pBuffer, 1);
++                clearNextGuestAssignedHandle();
+                 vkStream->write((VkBuffer*)pBuffer, 8 * 1);
+                 // Begin manual non dispatchable handle create for pBuffer;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);

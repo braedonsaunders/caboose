@@ -1,0 +1,15 @@
+--- a/host/features/include/gfxstream/host/features.h
++++ b/host/features/include/gfxstream/host/features.h
+@@ -225,0 +226,5 @@
++    BoolFeatureInfo CabooseVirtualWsi = {
++        "CabooseVirtualWsi",
++        "Guest present layouts are virtualized to GENERAL for Caboose virtual WSI.",
++        &map,
++    };
+--- a/host/vulkan/vk_common_operations.cpp
++++ b/host/vulkan/vk_common_operations.cpp
+@@ -5231 +5231,3 @@
+-bool VkEmulation::needsImageLayoutAdjustment() const { return !mSwapchainEnabled; }
++bool VkEmulation::needsImageLayoutAdjustment() const {
++    return !mSwapchainEnabled || mFeatures.CabooseVirtualWsi.enabled();
++}

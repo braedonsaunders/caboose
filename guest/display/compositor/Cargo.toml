@@ -11,7 +11,7 @@ rust-version.workspace = true
 caboose-display-protocol = { path = "../protocol" }
 ffmpeg-next = { version = "7.1.0", default-features = false, features = ["codec", "format"] }
 libc = "0.2"
-x11rb = "0.13.2"
+x11rb = { version = "0.13.2", features = ["res"] }
 png = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

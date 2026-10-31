@@ -1,0 +1,40 @@
+--- a/host/frame_buffer.cpp
++++ b/host/frame_buffer.cpp
+@@ -5306,0 +5307,18 @@
++void FrameBuffer::swapTexturesAndUpdateColorBuffer(uint32_t colorBufferHandle, int x, int y,
++                                                   int width, int height, uint32_t format,
++                                                   uint32_t type, uint32_t texturesFormat,
++                                                   uint32_t* textures) {
++    mImpl->swapTexturesAndUpdateColorBuffer(colorBufferHandle, x, y, width, height, format, type,
++                                            texturesFormat, textures);
++}
++
++void FrameBuffer::asyncWaitForGpuWithCb(uint64_t eglsync, FenceCompletionCallback cb) {
++    mImpl->asyncWaitForGpuWithCb(eglsync, cb);
++}
++
++const void* FrameBuffer::getEglDispatch() { return mImpl->getEglDispatch(); }
++
++const void* FrameBuffer::getGles2Dispatch() { return mImpl->getGles2Dispatch(); }
++
++#endif
++
+@@ -5316,18 +5333,0 @@
+-void FrameBuffer::swapTexturesAndUpdateColorBuffer(uint32_t colorBufferHandle, int x, int y,
+-                                                   int width, int height, uint32_t format,
+-                                                   uint32_t type, uint32_t texturesFormat,
+-                                                   uint32_t* textures) {
+-    mImpl->swapTexturesAndUpdateColorBuffer(colorBufferHandle, x, y, width, height, format, type,
+-                                            texturesFormat, textures);
+-}
+-
+-void FrameBuffer::asyncWaitForGpuWithCb(uint64_t eglsync, FenceCompletionCallback cb) {
+-    mImpl->asyncWaitForGpuWithCb(eglsync, cb);
+-}
+-
+-const void* FrameBuffer::getEglDispatch() { return mImpl->getEglDispatch(); }
+-
+-const void* FrameBuffer::getGles2Dispatch() { return mImpl->getGles2Dispatch(); }
+-
+-#endif
+-

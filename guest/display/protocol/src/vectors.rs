@@ -222,6 +222,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                     .map(String::from)
                     .to_vec(),
                 epoch: None,
+                gpu_live_epoch: None,
             }),
         ),
         one(
@@ -233,6 +234,19 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 encoders: vec![Codec::Hevc],
                 features: ["vsync", "ack"].map(String::from).to_vec(),
                 epoch: Some("5f3a9c01d2e4b678".into()),
+                gpu_live_epoch: None,
+            }),
+        ),
+        one(
+            "server-hello-gpu-live",
+            "A server hello with a private live GPU surface namespace.",
+            Message::ServerHello(ServerHello {
+                version: 0,
+                displays: vec![1],
+                encoders: vec![Codec::Hevc],
+                features: ["vsync", "ack"].map(String::from).to_vec(),
+                epoch: Some("5f3a9c01d2e4b678".into()),
+                gpu_live_epoch: Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             }),
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),

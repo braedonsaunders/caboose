@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Quake (GPU Acceptance)
+Comment=LibreQuake through the private Caboose phone GPU session
+Exec=/opt/caboose-gpu-acceptance/launch.py
+TryExec=/opt/caboose-gpu-acceptance/launch.py
+Icon=applications-games
+Terminal=false
+Categories=Game;ActionGame;
+StartupNotify=false

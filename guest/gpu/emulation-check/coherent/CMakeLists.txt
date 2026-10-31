@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(caboose_coherent_litmus LANGUAGES CXX)
+find_package(Vulkan REQUIRED)
+add_executable(caboose_coherent coherent.cpp)
+target_compile_features(caboose_coherent PRIVATE cxx_std_17)
+target_link_libraries(caboose_coherent PRIVATE Vulkan::Vulkan)

@@ -51,6 +51,10 @@ public final class RemoteWindow: Identifiable {
     /// The GPU stream this device draws the window from instead of the computer's picture
     /// (docs/gpu-stream.md); nil for every other window.
     public internal(set) var gpuStream: RemoteGPUStream?
+    #if canImport(UIKit)
+    /// Set only by the explicit owner executor, never by ordinary/agent session creation.
+    @ObservationIgnored weak var liveGPUPresentation: LiveGPUPresentationOwners?
+    #endif
     public nonisolated let surface: WindowSurface
 
     init(id: Int, frame: CGRect, overrideRedirect: Bool, surface: WindowSurface) {

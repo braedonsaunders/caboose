@@ -1,0 +1,237 @@
+[
+  {
+    "path": "id1/accessibility.txt",
+    "size": 384,
+    "sha256": "35a3bf06f6e9070be2aae96fcc8fae954399423e144b3600bda14b49d12a361b"
+  },
+  {
+    "path": "id1/dev.cfg",
+    "size": 2475,
+    "sha256": "4c23eff5e1b55d98c5db0af875b00eef7447c131c3d343470e4ec50616598d5f"
+  },
+  {
+    "path": "id1/docs/COPYING",
+    "size": 1697,
+    "sha256": "c3426ae10fd52ab1a3c3d4de4f2fae60543403e3cfd09ae5dc2ec16ae4717d28"
+  },
+  {
+    "path": "id1/docs/CREDITS",
+    "size": 3254,
+    "sha256": "60b632851de3e5d02cb96ed158ff06700ced1c9fb6425f2d5d10509392021bd0"
+  },
+  {
+    "path": "id1/docs/README-IMPORTANT-LICENCE-INFO",
+    "size": 706,
+    "sha256": "121e4f2bbae888f442be76795c7e1b431bbfce9c7dd968407b4da969ccb50eae"
+  },
+  {
+    "path": "id1/docs/README.md",
+    "size": 4827,
+    "sha256": "22d0177caf00f6fdce491b521455618a1de24326c0d238e5363950c959a87f18"
+  },
+  {
+    "path": "id1/docs/branding/button.png",
+    "size": 3174,
+    "sha256": "39d22278b6fbbd668cfd8ec6bcde8515f9b37e6d1dee1452e651b5c55024fb51"
+  },
+  {
+    "path": "id1/docs/branding/header.png",
+    "size": 8403,
+    "sha256": "4a6c1a3f727df7fbf08b3ca3590a3f4c5be6e43c4b71de46732c5342206c4b01"
+  },
+  {
+    "path": "id1/docs/branding/icon.ico",
+    "size": 55435,
+    "sha256": "7db987a825284532a89a9b6ed64d63f60fdb6464ed03aa5509e41ee48903fd68"
+  },
+  {
+    "path": "id1/docs/branding/icon.pixel.ico",
+    "size": 16687,
+    "sha256": "fb4f5fd091c7b494d526f0bb7b94568e67be5a188681d2c4b027dbc8b99cf008"
+  },
+  {
+    "path": "id1/docs/branding/icon.svg",
+    "size": 171189,
+    "sha256": "1dc582a4de5071c8cd0a24fd07c236c1338893198e56e162c31b69faad875a6b"
+  },
+  {
+    "path": "id1/docs/branding/steam/capsule-tall.png",
+    "size": 903423,
+    "sha256": "260a101f98200e7ecad7df0f846cb30091dcbe0f92013f3db7459902fef68d45"
+  },
+  {
+    "path": "id1/docs/branding/steam/capsule-wide.png",
+    "size": 191964,
+    "sha256": "a533546b8b7482d4243790d76e2189f8fb44fba962241d8b2c0b7d83ef284b33"
+  },
+  {
+    "path": "id1/docs/branding/steam/hero.png",
+    "size": 2188416,
+    "sha256": "a01a838d05e9270542ab214ca9357e8c23552b9e8c8c47c5810a01934bcb7cc4"
+  },
+  {
+    "path": "id1/docs/branding/steam/icon.pixel.png",
+    "size": 2613,
+    "sha256": "9137d5371a17d9a46bd9a0a23c4c18fe9a25d788c8ba20ca3b67d84efca54cd2"
+  },
+  {
+    "path": "id1/docs/branding/steam/icon.png",
+    "size": 74053,
+    "sha256": "6fa8015f28f13058aac3d507ff08cdf66bc6bef78335995b7c0b92e021e358c9"
+  },
+  {
+    "path": "id1/docs/branding/steam/logo.png",
+    "size": 3460,
+    "sha256": "e9bbfa89715dc26aa680644a4275a7a42c8bf2b9a9e7262cd098961d2aaadffd"
+  },
+  {
+    "path": "id1/docs/deathmatch-setup-guide.txt",
+    "size": 8985,
+    "sha256": "5720580e118ebf1ae329e1b4c926c029ad9530a08f7dac7ce29d0cf2a6ddd402"
+  },
+  {
+    "path": "id1/docs/freedoom-docs/COPYING.adoc",
+    "size": 1611,
+    "sha256": "07b1d04bb498dfcce23bc186bf72ae0356f67c1f90361e9d2394e54b296facc8"
+  },
+  {
+    "path": "id1/docs/freedoom-docs/CREDITS",
+    "size": 14715,
+    "sha256": "dc39ff7086cffed47aabe8dbfff160916f8043c4aa9f6156310d5d9cf2dd69ee"
+  },
+  {
+    "path": "id1/docs/freedoom-docs/README.adoc",
+    "size": 11713,
+    "sha256": "67a9250b25fb2313cbf4c76295df6f9483a7370fbc59e2db222ab59edbf2a75e"
+  },
+  {
+    "path": "id1/docs/misc-docs/COPYING",
+    "size": 17992,
+    "sha256": "32b1062f7da84967e7019d01ab805935caa7ab7321a7ced0e30ebe75e5df1670"
+  },
+  {
+    "path": "id1/docs/misc-docs/LibreProgsDeluxe.md",
+    "size": 664,
+    "sha256": "9425d6c0c7fcfd0c5193efd6baefe285dc1e586b1dee89725821979cddb7b850"
+  },
+  {
+    "path": "id1/docs/misc-docs/pop.lmp.md",
+    "size": 853,
+    "sha256": "dc6f8bfc978c3f895950a4066dd0624174c0290f7492475017d7ab27cee74bb7"
+  },
+  {
+    "path": "id1/music/track02.ogg",
+    "size": 1427147,
+    "sha256": "03238c81263458bcac0dcd7f53e21e4a1c6adcf26a3ce4354f050d5512539833"
+  },
+  {
+    "path": "id1/music/track03.ogg",
+    "size": 3373618,
+    "sha256": "2d37cd7a9f83e5c96ca3a8d939fee937ba5750d21e9663fe651978e02eea8973"
+  },
+  {
+    "path": "id1/music/track04.ogg",
+    "size": 2140088,
+    "sha256": "fa5e75795d34cf6d3a6508111bf993b0398190956065918b5e016ff5af3e40c0"
+  },
+  {
+    "path": "id1/music/track05.ogg",
+    "size": 2971640,
+    "sha256": "5124396db8834a0d80f0125325f9acd8af221cbf06c7fdd7d52b700464a07cf4"
+  },
+  {
+    "path": "id1/music/track06.ogg",
+    "size": 3102466,
+    "sha256": "778ca122244a15e08200ce254c201f1068e06349efdfa2a632bb866fb96dfec4"
+  },
+  {
+    "path": "id1/music/track07.ogg",
+    "size": 4032257,
+    "sha256": "2e774d1050a13d6cbeafeaa102f17de5d10c1eb86315c37acc1b285623f1596a"
+  },
+  {
+    "path": "id1/music/track08.ogg",
+    "size": 2298328,
+    "sha256": "88fe97056244bd41b7811d32d1dafe5d12529ba456cca96ed0c0a2fac6a76b80"
+  },
+  {
+    "path": "id1/music/track09.ogg",
+    "size": 2906755,
+    "sha256": "a5c13aa218e15b1737a628eab61520e401faf5984076460bd637c047a28fde38"
+  },
+  {
+    "path": "id1/music/track10.ogg",
+    "size": 4355519,
+    "sha256": "f312ede1e3f9946ce801a59eed2da1dacaa6eb752579a61d881282f225e970d4"
+  },
+  {
+    "path": "id1/music/track11.ogg",
+    "size": 2602744,
+    "sha256": "c6db3a070dd631d147dc18a4a3c1784270f06d31aece498c3f56aa92921f7435"
+  },
+  {
+    "path": "id1/pak0.pak",
+    "size": 43948916,
+    "sha256": "0dd895a425e75d9908025dcfe340f75f5b8166ada68b2d7ee54d8d91d29378ff"
+  },
+  {
+    "path": "id1/pak1.pak",
+    "size": 5856792,
+    "sha256": "28423c01836341d9e3c6465b407a44ae94e4e29e954544a67739686850e39365"
+  },
+  {
+    "path": "id1/style_fte_modern.cfg",
+    "size": 679,
+    "sha256": "41bbd288e33f8ae770ef5af40d43d233d88f8e95e92b84aa821338f196f0e9d0"
+  },
+  {
+    "path": "id1/style_fte_retro.cfg",
+    "size": 678,
+    "sha256": "59ca4a46d7ca6eef39db8f4b75e13a3627cc68e49b69966cfbe012949adf2c83"
+  },
+  {
+    "path": "id1/style_ironwail_modern.cfg",
+    "size": 428,
+    "sha256": "758875917d689bd5b03a0b210e724277cbd2b0bcf07d842634956ef67daab801"
+  },
+  {
+    "path": "id1/style_ironwail_retro.cfg",
+    "size": 424,
+    "sha256": "d8828d29d01b726e62657d7cfb4f7c69aa5ea680d630c9081d7a2b7c5c7dfcc7"
+  },
+  {
+    "path": "id1/zoom120.cfg",
+    "size": 420,
+    "sha256": "8662b4d36d765d5852185824c87de4a47f29641156085528e096b0e04570c324"
+  },
+  {
+    "path": "id1/zoom90.cfg",
+    "size": 351,
+    "sha256": "b6798c02f1352405683dd4066fa2c28fe1637c5be920c46ba1e275835b961235"
+  },
+  {
+    "path": "inputs.json",
+    "size": 1152,
+    "sha256": "079250d959df0df72212882adfa6455b6946f4a95808bbb735528ea6485ea4a3"
+  },
+  {
+    "path": "launch.sh",
+    "size": 810,
+    "sha256": "90a644c02fd85874169d9ec215000f7de6ec186db68184d3fb53b63989a5f838"
+  },
+  {
+    "path": "licenses/mimalloc-MIT.txt",
+    "size": 1096,
+    "sha256": "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"
+  },
+  {
+    "path": "licenses/vkQuake-GPL-2.0.txt",
+    "size": 18092,
+    "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+  },
+  {
+    "path": "vkquake",
+    "size": 12495760,
+    "sha256": "8785da3046d4a03d69d014baf17e258de5180698bc303389784ef138a9066fe9"
+  }
+]

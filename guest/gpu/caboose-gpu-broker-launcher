@@ -1,0 +1,9 @@
+#!/usr/bin/python3 -I
+"""Launch only the installed private broker modules, without PYTHONPATH or cwd."""
+from pathlib import Path
+import runpy
+import sys
+
+private = Path(__file__).resolve().parent / "caboose-gpu"
+sys.path.insert(0, str(private))
+runpy.run_path(str(private / "broker.py"), run_name="__main__")

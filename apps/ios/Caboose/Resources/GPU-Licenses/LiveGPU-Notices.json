@@ -1,0 +1,66 @@
+{
+  "format": 1,
+  "description": "License texts copied from the retained source trees used by the live GPU build. Existing MoltenVK and GFXReconstruct notices remain alongside them.",
+  "notices": [
+    {
+      "component": "gfxstream",
+      "upstream": "https://github.com/google/gfxstream",
+      "file": "Gfxstream-LICENSE.txt",
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+    },
+    {
+      "component": "GLM",
+      "upstream": "https://github.com/g-truc/glm",
+      "file": "GLM-LICENSE.txt",
+      "sha256": "1a915bfb7a431ac6191a6f232e2ff9b990b4fe783d8c8daeb10b0eb107e4876f"
+    },
+    {
+      "component": "stb",
+      "upstream": "https://github.com/nothings/stb",
+      "file": "stb-LICENSE.txt",
+      "sha256": "a25c57988e8e529594e07814608dfdddb36b562556383c8a43aa1e26e1a94524"
+    },
+    {
+      "component": "SPIRV-Cross",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Cross",
+      "file": "SPIRV-Cross-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "SPIRV-Tools",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Tools",
+      "file": "SPIRV-Tools-LICENSE.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "SPIRV-Headers",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Headers",
+      "file": "SPIRV-Headers-LICENSE.txt",
+      "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613"
+    },
+    {
+      "component": "cereal",
+      "upstream": "https://github.com/USCiLab/cereal",
+      "file": "cereal-LICENSE.txt",
+      "sha256": "58604a126af6a671ea390ee3d5b3e42228aa59b2858fb7af1d5b20b31739ccbb"
+    },
+    {
+      "component": "Vulkan-Headers",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Headers",
+      "file": "Vulkan-Headers/LICENSE.md",
+      "sha256": "95ad366d23fadf701d355bc45fb8b82ae2d700239471d35d41286ac3b08ff903"
+    },
+    {
+      "component": "Vulkan-Headers Apache license",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Headers",
+      "file": "Vulkan-Headers/LICENSES/Apache-2.0.txt",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "Vulkan-Headers MIT license",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Headers",
+      "file": "Vulkan-Headers/LICENSES/MIT.txt",
+      "sha256": "1ca3502222d967f3be5751c55f6b7ee735b5383909c3b501495f54b216dbf227"
+    }
+  ]
+}

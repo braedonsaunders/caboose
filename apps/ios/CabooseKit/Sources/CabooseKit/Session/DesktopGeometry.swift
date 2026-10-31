@@ -119,13 +119,20 @@ public enum DesktopGeometry {
         return natural
     }
 
-    /// The entire remote picture stays visible, including while a new size is arriving.
+    /// The entire remote picture normally stays visible while a new size is arriving.
+    /// During a tiled keyboard resize, retain its width and top anchor; the viewport
+    /// clips the bottom until the guest redraws instead of briefly shrinking the page.
     /// Resize requests never change the aspect of retained pixels. Minimum-size
     /// windows fit at the top. Fullscreen pictures keep their aspect and center.
     public static func surfaceFrame(natural: CGSize, available: CGSize, resizing: Bool,
-                                    fullscreen: Bool = false) -> CGRect {
+                                    fullscreen: Bool = false, keyboardResize: Bool = false) -> CGRect {
         guard natural.width > 0, natural.height > 0, available.width > 0, available.height > 0 else {
             return CGRect(origin: .zero, size: available)
+        }
+        if keyboardResize && resizing && !fullscreen {
+            let scale = min(1, available.width / natural.width)
+            return CGRect(x: max(0, (available.width - natural.width * scale) / 2), y: 0,
+                          width: natural.width * scale, height: natural.height * scale)
         }
         let scale = min(1, available.width / natural.width, available.height / natural.height)
         let shown = CGSize(width: natural.width * scale, height: natural.height * scale)

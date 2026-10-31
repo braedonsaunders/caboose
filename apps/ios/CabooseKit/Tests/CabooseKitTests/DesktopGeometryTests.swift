@@ -111,6 +111,25 @@ struct DesktopGeometryTests {
         #expect(frame == CGRect(x: 0, y: 0, width: 300, height: 180))
     }
 
+    @Test func keyboardResizeKeepsAddressBarScaleAndInputUntilNewPixelsArrive() {
+        let slot = CGSize(width: 400, height: 300)
+        for height in [700.0, 500.0, 300.0] {
+            let remote = CGSize(width: 400, height: height)
+            let frame = DesktopGeometry.surfaceFrame(natural: remote, available: slot,
+                resizing: true, keyboardResize: true)
+            #expect(frame == CGRect(origin: .zero, size: remote))
+            let mapping = DesktopGeometry.SurfaceMapping(shown: frame, remote: remote)
+            #expect(mapping.point(CGPoint(x: 200, y: 30)) == CGPoint(x: 200, y: 30))
+        }
+        // A refused resize returns to whole-picture fitting; fullscreen is never cropped.
+        let tall = CGSize(width: 400, height: 700)
+        for (resizing, fullscreen) in [(false, false), (true, true)] {
+            let frame = DesktopGeometry.surfaceFrame(natural: tall, available: slot,
+                resizing: resizing, fullscreen: fullscreen, keyboardResize: true)
+            #expect(frame.maxY <= slot.height)
+        }
+    }
+
     @Test func minimumSizedWindowFitsWholeAtTop() {
         let frame = DesktopGeometry.surfaceFrame(natural: CGSize(width: 1000, height: 600),
                                                 available: CGSize(width: 300, height: 700), resizing: false)

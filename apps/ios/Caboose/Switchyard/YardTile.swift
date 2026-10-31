@@ -13,6 +13,7 @@ struct YardTile: View {
     let rect: CGRect
     let focused: Bool
     let keyboard: Bool
+    let keyboardResize: Bool
     let onAsk: (RemoteWindow) -> Void
 
     var body: some View {
@@ -23,11 +24,11 @@ struct YardTile: View {
             natural: CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint),
             available: available, locallyRendered: window.game != nil)
         let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id),
-                                                  fullscreen: window.isFullscreen)
+                                                  fullscreen: window.isFullscreen, keyboardResize: keyboardResize)
         VStack(spacing: 0) {
             YardTitleBar(window: window, yard: yard, focused: focused, onAsk: onAsk)
             ZStack {
-                YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard) {
+                YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: yard.stretches(window.id), keyboard: keyboard, keyboardResize: keyboardResize) {
                     if yard.layout.focused != window.id { yard.focus(window.id) }
                 }
                 .modifier(WindowDrop(window: window, pixelsPerPoint: yard.pixelsPerPoint, presentedFrame: shown))
@@ -194,6 +195,7 @@ struct YardSurface: UIViewRepresentable {
     let pixelsPerPoint: CGFloat
     let stretch: Bool
     let keyboard: Bool
+    var keyboardResize = false
     let onTouch: () -> Void
 
     func makeUIView(context: Context) -> YardSurfaceView {
@@ -213,6 +215,7 @@ struct YardSurface: UIViewRepresentable {
         view.content.pixelsPerPoint = pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
+        view.keyboardResize = keyboardResize
         view.stretch = stretch
         view.fullscreen = window.isFullscreen
         view.locallyRendered = window.game != nil
@@ -229,6 +232,7 @@ struct YardSurface: UIViewRepresentable {
 final class YardSurfaceView: UIView {
     let content: RemoteWindowView
     var onTouch: (() -> Void)?
+    var keyboardResize = false { didSet { if keyboardResize != oldValue { setNeedsLayout() } } }
     var stretch = false { didSet { if stretch != oldValue { setNeedsLayout() } } }
     var fullscreen = false { didSet { if fullscreen != oldValue { setNeedsLayout() } } }
     var locallyRendered = false { didSet { if locallyRendered != oldValue { setNeedsLayout() } } }
@@ -278,7 +282,7 @@ final class YardSurfaceView: UIView {
             content.bounds = CGRect(origin: .zero, size: size)
         }
         let shown = DesktopGeometry.surfaceFrame(natural: size, available: bounds.size, resizing: stretch,
-                                                  fullscreen: fullscreen)
+                                                  fullscreen: fullscreen, keyboardResize: keyboardResize)
         guard size.width > 0, size.height > 0 else { return }
         content.transform = CGAffineTransform(scaleX: shown.width / size.width, y: shown.height / size.height)
         content.center = CGPoint(x: shown.midX, y: shown.midY)

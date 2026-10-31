@@ -6,9 +6,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import secrets
 import subprocess
 import sys
 import time
+from verify import verify_pixels
 
 SOURCE = Path(__file__).resolve().parent
 
@@ -37,7 +39,8 @@ def main():
     ap.add_argument('--moltenvk-sha256', required=True, help='Expected SHA256 of that archive')
     ap.add_argument('--developer-dir', type=Path, default=Path('/Applications/Xcode.app/Contents/Developer'))
     ap.add_argument('--case', action='append', choices=['control', 'cull_mixed_sign', 'geometry_direct',
-                                                     'geometry_indirect', 'geometry_indexed_indirect'])
+                                                     'geometry_indirect', 'geometry_indexed_indirect',
+                                                     'compute_indirect', 'compute_cpu_feedback'])
     args = ap.parse_args()
     if sys.platform != 'darwin':
         ap.error('This build entry point targets stock MoltenVK on macOS; render.cpp is ordinary Vulkan C++.')
@@ -59,7 +62,8 @@ def main():
             raise RuntimeError(f'{argv[0]} exited {code}:\n{stdout}\n{stderr}')
         return stdout.strip()
     started = time.monotonic()
-    for name in ['control.vert', 'cull.vert', 'geometry.vert', 'geometry.geom', 'color.frag']:
+    shader_names = ['control.vert', 'cull.vert', 'geometry.vert', 'geometry.geom', 'color.frag', 'feedback.comp']
+    for name in shader_names:
         command(['glslangValidator', '-V', '--target-env', 'vulkan1.0', '-o', str(out / (name + '.spv')), str(SOURCE / name)])
         command(['spirv-val', '--target-env', 'vulkan1.0', str(out / (name + '.spv'))])
     sdk = command(['xcrun', '--sdk', 'macosx', '--show-sdk-path'])
@@ -79,6 +83,10 @@ def main():
         name = case['name']
         pixels_file = out / (name + '.rgba')
         argv = [str(binary), str(out), name, str(pixels_file)]
+        seed = None
+        if name.startswith('compute_'):
+            seed = (secrets.randbits(30) << 2) | 3
+            argv.append(str(seed))
         commands.append(argv)
         case_start = time.monotonic()
         try:
@@ -97,18 +105,8 @@ def main():
             pass
         elif code == 0 and result.get('status') == 'RENDERED':
             pixels = pixels_file.read_bytes()
-            if len(pixels) != 128 * 64 * 4:
-                result.update(status='FAIL', error='Wrong readback size')
-            else:
-                samples = []
-                for sample in case['samples']:
-                    x, y = sample['xy']
-                    offset = (y * 128 + x) * 4
-                    actual = list(pixels[offset:offset + 4])
-                    samples.append({'xy': [x, y], 'expected': sample['rgba'], 'actual': actual,
-                                    'pass': actual == sample['rgba']})
-                result.update(status='PASS' if all(s['pass'] for s in samples) else 'FAIL', samples=samples,
-                              rgba_sha256=hashlib.sha256(pixels).hexdigest())
+            result.update(verify_pixels(pixels, case, result, expected_seed=seed))
+            if len(pixels) == 128 * 64 * 4:
                 # PPM is the actual readback, with alpha omitted; no synthetic image path.
                 rgb = b''.join(pixels[i:i + 3] for i in range(0, len(pixels), 4))
                 (out / (name + '.ppm')).write_bytes(b'P6\n128 64\n255\n' + rgb)
@@ -118,6 +116,13 @@ def main():
         print(json.dumps(result), flush=True)
     report = {'moltenvk_archive_sha256': archive_hash,
               'render_source_sha256': hashlib.sha256((SOURCE / 'render.cpp').read_bytes()).hexdigest(),
+              'runner_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              'oracle_source_sha256': hashlib.sha256((SOURCE / 'verify.py').read_bytes()).hexdigest(),
+              'compute_fixture_sha256': hashlib.sha256((SOURCE / 'compute_fixture.h').read_bytes()).hexdigest(),
+              'shader_source_sha256': {name: hashlib.sha256((SOURCE / name).read_bytes()).hexdigest()
+                                       for name in shader_names},
+              'spirv_sha256': {name: hashlib.sha256((out / (name + '.spv')).read_bytes()).hexdigest()
+                              for name in shader_names},
               'expected_sha256': hashlib.sha256((SOURCE / 'expected.json').read_bytes()).hexdigest(),
               'elapsed_seconds': time.monotonic() - started, 'commands': commands, 'results': results,
               'scope': 'macOS offscreen render/readback; no phone, swapchain, game or fork validation'}

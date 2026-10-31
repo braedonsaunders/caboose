@@ -5,7 +5,7 @@
 //! message boundaries.
 
 use caboose_display_protocol::{self as proto, Decoded, StreamDecoder};
-use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
+use smithay::reexports::calloop::{channel::{channel, Event as ChannelEvent}, generic::Generic, Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -29,6 +29,13 @@ struct SubprotocolCallback;
 
 impl tungstenite::handshake::server::Callback for SubprotocolCallback {
     fn on_request(self, request: &Request, mut response: Response) -> Result<Response, ErrorResponse> {
+        // Live GPU does not use the display codec. Until the private broker is
+        // connected, reject its path rather than upgrading it as a display.
+        if request.uri().path() == "/gpu" {
+            let mut error = ErrorResponse::new(Some("GPU broker unavailable".into()));
+            *error.status_mut() = tungstenite::http::StatusCode::SERVICE_UNAVAILABLE;
+            return Err(error);
+        }
         // The host relay asks for "binary"; echo it so the handshake completes.
         let offered = request
             .headers()
@@ -68,6 +75,7 @@ pub struct Net {
     conns: HashMap<ConnId, Conn>,
     next_id: ConnId,
     pub local: SocketAddr,
+    gpu_router: Option<crate::gpu_supervisor::GpuRouter>,
 }
 
 fn config() -> WebSocketConfig {
@@ -85,6 +93,9 @@ pub trait HasNet: Sized + 'static {
     fn net(&mut self) -> &mut Net;
     fn loop_handle(&self) -> LoopHandle<'static, Self>;
     fn on_net_events(&mut self, events: Vec<NetEvent>);
+    fn on_gpu_record(&mut self, record: crate::gpu_control::Record);
+    fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>);
+    fn on_gpu_control_failure(&mut self);
 }
 
 impl Net {
@@ -108,7 +119,63 @@ impl Net {
                 Ok(PostAction::Continue)
             })
             .map_err(|e| io::Error::other(e.to_string()))?;
-        Ok(Self { conns: HashMap::new(), next_id: 1, local })
+        Ok(Self { conns: HashMap::new(), next_id: 1, local, gpu_router: None })
+    }
+
+    pub fn gpu_enabled(&self) -> bool { self.gpu_router.as_ref().is_some_and(|router| router.available()) }
+
+    /// Install only for the authenticated owner seat after the private broker
+    /// has been installed and its complete bridge has passed integration.
+    /// Until a caller explicitly invokes this, /gpu remains unavailable.
+    #[allow(dead_code)]
+    pub fn enable_private_gpu<S: HasNet>(
+        &mut self,
+        token_file: &std::path::Path,
+        local_socket: &std::path::Path,
+        surface_socket: &std::path::Path,
+        indexed: bool,
+        handle: &LoopHandle<'static, S>,
+    ) -> io::Result<()> {
+        if self.gpu_router.is_some() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "GPU router already active"));
+        }
+        let (tx, rx) = channel::<crate::gpu_supervisor::RouteEvent>();
+        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, surface_socket, indexed, move |event| {
+            let _ = tx.send(event);
+        })?;
+        let control = router.clone_control()?;
+        handle.insert_source(rx, |event, _, state: &mut S| {
+            if let ChannelEvent::Msg(event) = event {
+                match event {
+                    crate::gpu_supervisor::RouteEvent::Display(routed) => {
+                        let (stream, peer) = routed.into_parts();
+                        state_accept_display(state, stream, peer);
+                    }
+                    crate::gpu_supervisor::RouteEvent::ControlSent(grant) => state.on_gpu_control_sent(grant),
+                    crate::gpu_supervisor::RouteEvent::ControlFailed => state.on_gpu_control_failure(),
+                }
+            }
+        }).map_err(|e| io::Error::other(e.to_string()))?;
+        handle.insert_source(Generic::new(control, Interest::READ, Mode::Level), |_, socket, state: &mut S| {
+            loop {
+                match crate::gpu_control::receive(socket) {
+                    Ok(record) => state.on_gpu_record(record),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => { state.on_gpu_control_failure(); return Ok(PostAction::Remove); }
+                }
+            }
+            Ok(PostAction::Continue)
+        }).map_err(|e| io::Error::other(e.to_string()))?;
+        self.gpu_router = Some(router);
+        Ok(())
+    }
+
+    pub fn fail_gpu_control(&mut self) {
+        if let Some(router) = self.gpu_router.as_mut() { router.fail(); }
+    }
+
+    pub fn queue_gpu_control(&self, bytes: Vec<u8>, revoke: Option<crate::gpu_grant::Grant>) -> io::Result<()> {
+        self.gpu_router.as_ref().ok_or_else(|| io::Error::other("GPU router unavailable"))?.queue_control(bytes, revoke)
     }
 
     /// Queues one protocol message. Errors other than a full kernel buffer close the
@@ -266,6 +333,16 @@ impl Net {
 }
 
 fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
+    if let Some(router) = state.net().gpu_router.as_mut().filter(|router| router.available()) {
+        if let Err(e) = router.accept(stream, peer) {
+            tracing::warn!("{peer}: GPU router refused connection: {e}");
+        }
+        return;
+    }
+    state_accept_display(state, stream, peer);
+}
+
+fn state_accept_display<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
     if let Err(e) = stream.set_nonblocking(true).and_then(|_| stream.set_nodelay(true)) {
         tracing::warn!("{peer}: {e}");
         return;
@@ -321,5 +398,28 @@ fn state_accept<S: HasNet>(state: &mut S, stream: TcpStream, peer: SocketAddr) {
             tracing::warn!("{peer}: cannot watch the socket: {e}");
             state.net().conns.remove(&id);
         }
+    }
+}
+
+#[cfg(test)]
+mod gpu_route_tests {
+    use super::*;
+    use tungstenite::handshake::server::Callback;
+
+    #[test]
+    fn unavailable_gpu_route_never_upgrades_as_display() {
+        let request = Request::builder().uri("/gpu").body(()).unwrap();
+        let response = Response::builder().body(()).unwrap();
+        let error = SubprotocolCallback.on_request(&request, response).unwrap_err();
+        assert_eq!(error.status().as_u16(), 503);
+    }
+
+    #[test]
+    fn other_paths_keep_display_subprotocol() {
+        let request = Request::builder().uri("/display")
+            .header("sec-websocket-protocol", "binary").body(()).unwrap();
+        let response = Response::builder().body(()).unwrap();
+        let response = SubprotocolCallback.on_request(&request, response).unwrap();
+        assert_eq!(response.headers().get("sec-websocket-protocol").unwrap(), "binary");
     }
 }

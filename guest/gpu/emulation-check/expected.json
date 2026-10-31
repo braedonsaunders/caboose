@@ -303,6 +303,159 @@
           ]
         }
       ]
+    },
+    {
+      "name": "compute_indirect",
+      "requiredFeatures": [],
+      "topology": "TRIANGLE_LIST",
+      "stages": [
+        "feedback.comp",
+        "control.vert",
+        "color.frag"
+      ],
+      "draw": "vkCmdDispatch(1,1,1) -> vkCmdDrawIndirect",
+      "samples": [
+        {
+          "xy": [
+            22,
+            16
+          ],
+          "rgba": [
+            0,
+            255,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            32,
+            32
+          ],
+          "rgba": [
+            0,
+            255,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            96,
+            32
+          ],
+          "rgba": [
+            0,
+            255,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            64,
+            32
+          ],
+          "rgba": [
+            0,
+            0,
+            0,
+            255
+          ]
+        }
+      ],
+      "requiredQueue": [
+        "GRAPHICS",
+        "COMPUTE"
+      ],
+      "gpuGeneratedArguments": [
+        6,
+        1,
+        0,
+        0
+      ],
+      "inputSeed": 19,
+      "gpuCookie": 1831565798
+    },
+    {
+      "name": "compute_cpu_feedback",
+      "requiredFeatures": [],
+      "topology": "TRIANGLE_LIST",
+      "stages": [
+        "feedback.comp",
+        "control.vert",
+        "color.frag"
+      ],
+      "draw": "vkCmdDispatch(1,1,1) -> fence/invalidate/validate/CPU-write/flush -> vkCmdDrawIndirect",
+      "samples": [
+        {
+          "xy": [
+            22,
+            16
+          ],
+          "rgba": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            32,
+            32
+          ],
+          "rgba": [
+            0,
+            0,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            96,
+            32
+          ],
+          "rgba": [
+            0,
+            255,
+            0,
+            255
+          ]
+        },
+        {
+          "xy": [
+            64,
+            32
+          ],
+          "rgba": [
+            0,
+            0,
+            0,
+            255
+          ]
+        }
+      ],
+      "requiredQueue": [
+        "GRAPHICS",
+        "COMPUTE"
+      ],
+      "gpuGeneratedArguments": [
+        6,
+        1,
+        0,
+        0
+      ],
+      "inputSeed": 19,
+      "gpuCookie": 1831565798,
+      "requiresCPUFeedback": true,
+      "consumedArguments": [
+        3,
+        1,
+        3,
+        0
+      ]
     }
   ]
 }

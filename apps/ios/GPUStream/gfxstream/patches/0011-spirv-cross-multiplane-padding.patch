@@ -1,0 +1,24 @@
+--- a/spirv_msl.cpp
++++ b/spirv_msl.cpp
+@@ -20497,6 +20497,21 @@
+ 		if (bind_itr != end(resource_bindings))
+ 			return bind_itr->second.first;
+ 	}
++	// A constexpr YCbCr sampler reserves multiple texture indices even when
++	// its sampled image is absent from this shader stage. Resolve each plane
++	// from the binding and sampler metadata before emitting padding.
++	for (const auto &entry : resource_bindings)
++	{
++		const auto &resource = entry.second.first;
++		if (resource.stage != stage || resource.desc_set != desc_set ||
++		    resource.basetype != SPIRType::SampledImage || resource.count != 1 ||
++		    arg_idx <= resource.msl_texture)
++			continue;
++		auto sampler = constexpr_samplers_by_binding.find({ desc_set, resource.binding });
++		if (sampler != end(constexpr_samplers_by_binding) && sampler->second.ycbcr_conversion_enable &&
++		    arg_idx - resource.msl_texture < sampler->second.planes)
++			return resource;
++	}
+ 	SPIRV_CROSS_THROW("Argument buffer resource base type could not be determined. When padding argument buffer "
+ 	                  "elements, all descriptor set resources must be supplied with a base type by the app.");
+ }

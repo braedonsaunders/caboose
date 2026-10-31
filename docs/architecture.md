@@ -117,6 +117,11 @@ The image contains:
   GPU features or establish game compatibility.
 - **Caboose Display.** `caboose-display` and its units, installed but not enabled. The
   host starts them (see [Displays](#displays)).
+  Its optional private live-GPU supervisor starts only on an authenticated owner seat
+  with both private Unix socket paths configured; the paths share an owner-only
+  directory. The broker uses the per-wake display token and is stopped with its
+  compositor. The private transport does not enable a public GPU ICD.
+  Its indexed v4 handshake is selected only with `--private-gpu-indexed`.
 - **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
   `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
@@ -2518,9 +2523,13 @@ the app card, and a detached view releases its layers.
   compact viewports keep the ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app.
   Outside Laptop, the shell's keyboard-adjusted viewport is used directly, without
-  subtracting the keyboard a second time. The tiled dock's bottom padding is limited
-  to the shell window's system safe area; a descendant's keyboard inset never becomes
-  space reserved below the dock. The
+  subtracting the keyboard a second time. While the software keyboard covers the shell,
+  the tiled desktop hides its dock and gives windows the dock's height, gap and padding.
+  During the pending tiled resize, the old picture keeps its width and top anchor, clipped
+  below the keyboard until new pixels arrive. Fullscreen and settled minimum-size windows
+  retain whole-picture fitting. The dock returns when the keyboard closes; hardware-keyboard
+  shortcuts bars do not hide it.
+  When shown, its bottom padding is limited to the shell window's system safe area. The
   lower panel owns the existing `RemoteTextInputView`/`KeyBar`, with Keyboard, Trackpad,
   Keyboard & Trackpad and Gamepad choices behind one input button. Its trailing rail contains window switching, settings,
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening
@@ -2759,6 +2768,44 @@ An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamep
 
 ### GPU streams
 
+The live GPU client retains an optional binary display identity from `gpu_live_epoch`
+in the display hello. It accepts only 16 bytes with at least one nonzero byte. This
+identity is separate from the ordinary retained-picture epoch; parsing it alone does
+not activate native GPU rendering.
+The explicit owner executor matches this identity and the current window object to
+one visible interactive or desktop view. Its initial surface extent comes from
+that view's actual Metal layer; thumbnails do not acquire presentation ownership.
+Initial attachment waits for a pending size request's physical-to-logical-to-physical
+round trip on the same authenticated output and scale. It uses the actual returned
+server geometry; this equivalence is not a general configure acknowledgment.
+A zero-pair BIND requests that trusted extent before swapchain creation; a positive
+pair only asserts equality.
+Indexed Wayland swapchains choose render-buffer pixels separately from desktop
+placement. Variable-extent queries retain actual provider bounds. Before CREATE,
+the native surface verifies that no swapchain or work remains, configures the real
+Metal sublayer on main, and checks the provider's actual extent again. Layout keeps
+the chosen buffer size while fitting it to the authenticated window geometry;
+changes to that window geometry still revoke the owner lease. GPU retirement and main-thread layer detachment must
+finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
+Layout does not rewrite buffer dimensions during native extent configuration;
+an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
+The app's default session creation does not activate this private executor.
+Debug-only `CABOOSE_PRIVATE_GPU_INDEXED=1` connects the owner AppModel to the
+authenticated host GPU endpoint. Backgrounding, computer switch and display
+takeover drain it; ordinary display reconnects preserve it. A normal broker close
+after the native REVOKED receipt and successful cleanup is required before the
+app releases its owner reservation.
+
+
+The live executor closes through a session-scoped `EXECUTOR_DRAIN` request while
+keeping duplex transport active for native retirement and revocation receipts. A
+ten-second graceful deadline falls back to local abort and reports a drain timeout;
+local cleanup never proves that the guest released the previous executor lease.
+Raw phone-to-broker CGLV replies may share a WebSocket message as an ordered ready
+prefix, without a batching delay. The outbound budget includes the temporary
+concatenation buffer and keeps in-flight permits until send completion; the
+record and byte limits are specified in [gpu-live.md](gpu-live.md).
+
 A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
 device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
 `gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the
@@ -2779,6 +2826,51 @@ MoltenVK: physical devices, core features, relevant limits, extensions and BC fo
 support. The C API returns schema-versioned JSON and owns no device or surface. Callers
 run the synchronous query off the UI thread. It does not change the display handshake,
 the computer's static profile or the renderer's advertised capabilities.
+
+The isolated live-transport source in `guest/gpu/gfxstream`, `guest/gpu/broker`, and
+`apps/ios/GPUStream/gfxstream` is not connected to this display handshake or player.
+Its default guest socket selection rejects initialization. The separate private diagnostic
+executes the unchanged Vulkan compute/CPU/indirect-draw acceptance fixture on an
+Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
+explicit non-coherent memory transfers and is not a general driver or on-screen
+game presentation. The bounded live envelope codec is specified in
+[gpu-live.md](gpu-live.md); it is separate from the legacy capture protocol.
+The indexed broker can explicitly negotiate independent, bounded DEFLATE records
+for complete DATA envelopes. The phone reserves their expanded memory before
+queuing and validates exact decoding before passing the unchanged command bytes
+to the native runtime. Existing queue limits, Vulkan negotiation and host relay
+behavior remain unchanged; this is not coherent-memory emulation.
+The indexed app adapter links the native creation, mapping, acquisition and
+presentation APIs under exact version-4 negotiation. It separates actual
+acquisition from source release and preserves provider results separately from
+local cancellation. Independent acquire observers release signal leases without
+waiting behind surface work. The private Mesa swapchain path and physical
+presentation validation remain incomplete; default app sessions do not activate
+this driver.
+
+Private GPU bind failures retain their authenticated grant identity until matching
+retirement, including failures that created no native surface. The app rejects
+work on those grants and stale or foreign retirement messages. Native resources
+remain fenced until actual cleanup succeeds. A controller retains at most 256
+grants including failed admissions; exhausting that bound ends admission.
+
+The private indexed memory preparation splits explicit mapped-memory transfers
+into bounded RPCs. Flush packs up to eight atom-aligned fragments into one ordinary
+multi-range packet of at most 512 KiB on one locked encoder. It waits for that
+packet's actual provider result before the next packet; a provider error stops
+later packets, and transport loss invalidates the stream. The native frame limit
+and transport queue budgets are unchanged. Invalidate sends sequential RPCs of at
+most 64 KiB and publishes results only after the complete original call succeeds.
+Its [staging limits and checks](../guest/gpu/gfxstream/bounded-memory/README.md)
+are private-profile constraints; public coherent-memory support remains absent.
+
+An explicitly selected diagnostic package exposes a separate memory-audit module.
+Its debug launch opt-in records immutable decoder feature flags and bounded allocation
+mapping receipts before process cleanup; it never records memory contents or credentials.
+The same opt-in records at most 64 native-run/session-stop/surface-bind/owner-invalidation metadata events per app
+process, followed by one overflow marker. These include native errno and fixed failure
+categories and allowlisted protocol reason labels, without error descriptions, command payloads or object addresses.
+These receipts describe allocation decisions, not proof of transferred bytes or coherence.
 
 ### Shell
 
@@ -3540,3 +3632,11 @@ dedicated-home allocated file blocks and
 Docker logical layer sizes separately; shared/reflink bytes are never attributed as
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.
+
+The private GPU owner layer uses the authenticated display window’s server pixel
+size for its actual Metal drawable. UIKit fitting and phone screen scale do not
+change that Vulkan extent. A server pixel-size change revokes the generation and
+requires native retirement before rebinding; fitting unchanged pixels does not.
+
+Computer selection is available only on Home. Desktop, connection recovery and
+other tabs follow Home’s selected computer without separate switching controls.

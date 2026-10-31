@@ -7,7 +7,8 @@ import SwiftUI
 /// The windows keep every touch on them. The yard's own gestures live where the apps have
 /// nothing: the gaps between tiles resize them, the title bar at the top of a tile carries it,
 /// the screen's side edges and the dock's column cars move along the track, and ⌘⌥ with the
-/// arrows, R, F, W, O, A and Return does all of it from a keyboard. The dock is always there.
+/// arrows, R, F, W, O, A and Return does all of it from a keyboard. The software keyboard
+/// hides the dock and gives its space to the windows.
 struct SwitchyardView: View {
     static let space = "switchyard"
 
@@ -22,19 +23,22 @@ struct SwitchyardView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // The dock keeps the bottom, just clear of the home indicator; tiles have the rest.
+            // While typing, tiles use all of the already keyboard-adjusted viewport.
             let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
                                                           windowInset: shellBottomInset,
                                                           verticalBar: verticalBar,
                                                           keyboardVisible: keyboard.visible)
-            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
+            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height,
+                                                  bottomInset: bottom, keyboardVisible: keyboard.visible)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
-                    YardDock(yard: yard, width: proxy.size.width - 16)
-                        .padding(.top, 6)
-                        .padding(.bottom, bottom)
-                        .frame(maxWidth: .infinity)
+                    if !keyboard.visible {
+                        YardDock(yard: yard, width: proxy.size.width - 16)
+                            .padding(.top, 6)
+                            .padding(.bottom, bottom)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
                     cover(window, screen: area)
@@ -92,7 +96,7 @@ struct SwitchyardView: View {
                 if let window = windows[id], let rect = tiles[id] {
                     let carried = yard.carry?.window == id
                     YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
-                             keyboard: model.keyboardVisible && keyTarget == id, onAsk: { askingAbout = $0 })
+                             keyboard: model.keyboardVisible && keyTarget == id, keyboardResize: keyboard.visible, onAsk: { askingAbout = $0 })
                         .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
                         // Scaled about its top centre, so the centre follows the finger.
                         .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
@@ -124,7 +128,7 @@ struct SwitchyardView: View {
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .clipped()
-        // A fullscreen app covers only this workspace. The dock and shell remain usable;
+        // A fullscreen app covers only this workspace. The shell remains usable;
         // the tiles keep their layout behind the covering window.
         .onAppear { yard.resize(to: size) }
         .onChange(of: size) { _, size in yard.resize(to: size) }
@@ -284,7 +288,7 @@ struct SwitchyardView: View {
                                  height: window.presentationSize.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
                                                        resizing: yard.stretches(window.id) || (covering && (yard.coverProgress > 0 || yard.carry != nil)),
-                                                       fullscreen: window.isFullscreen)
+                                                       fullscreen: window.isFullscreen, keyboardResize: keyboard.visible && !covering)
             var shown = surface.offsetBy(dx: container.minX, dy: container.minY)
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)

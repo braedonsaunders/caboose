@@ -1,0 +1,42 @@
+{
+  "software_reference": true,
+  "phone_gpu_proven": false,
+  "encoded_frames": 30,
+  "windows": [
+    {
+      "id": 1,
+      "parent": null,
+      "kind": "toplevel",
+      "title": "vkQuake 1.37.0",
+      "app_id": "vkquake",
+      "pid": 18,
+      "x11": null,
+      "rect": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "surface": [
+        0,
+        0,
+        640,
+        480
+      ],
+      "display": 0,
+      "scale": 1,
+      "focused": true
+    }
+  ],
+  "icd": "/usr/share/vulkan/icd.d/lvp_icd.json",
+  "binary_sha256": "8785da3046d4a03d69d014baf17e258de5180698bc303389784ef138a9066fe9",
+  "first_png_sha256": "a788e10dc756de26165064e082f44a5f30a22572cdf1df065c31774bdfdf99de",
+  "last_png_sha256": "5522c7fff4465f5e6833a71551f46f04e705cab5ac976da856701a4183267c48",
+  "observed_last_frame": "LibreQuake start room with weapon and HUD",
+  "timestamp_limitation": "Original run ACKed actual frame pts_us but did not retain the timestamp array. Updated fixture persists it for future runs; no game rerun performed.",
+  "executed_fixture_sha256": "9010e23c23603acca3697b014051e1ffd91e1cb8f2f4504aae1e2980a3439758",
+  "device": "llvmpipe (LLVM 19.1.7, 256 bits), Mesa 25.0.7-2+deb13u1",
+  "container_absent": true,
+  "compositor_exit": 0,
+  "game_exit": 0
+}

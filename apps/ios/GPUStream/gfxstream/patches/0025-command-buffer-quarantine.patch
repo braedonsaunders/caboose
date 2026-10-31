@@ -1,0 +1,735 @@
+--- a/host/vulkan/vk_decoder_internal_structs.h
++++ b/host/vulkan/vk_decoder_internal_structs.h
+@@ -650,0 +651,6 @@ struct CommandBufferInfo {
++    VkResult cabooseBeginFailure = VK_SUCCESS;
++    VkResult cabooseSecondaryFailure = VK_SUCCESS;
++    bool cabooseRecordingActive = false;
++    bool cabooseRecordingInvalid = false;
++    std::unordered_set<VkCommandBuffer> cabooseParentPrimaries;
++
+@@ -662,0 +669,5 @@ struct CommandBufferInfo {
++        cabooseBeginFailure = VK_SUCCESS;
++        cabooseSecondaryFailure = VK_SUCCESS;
++        cabooseRecordingActive = false;
++        cabooseRecordingInvalid = false;
++        cabooseParentPrimaries.clear();
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -155,0 +156 @@ class VkDecoderGlobalState {
++    bool cabooseShouldSkipCmd(VkCommandBuffer commandBuffer);
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -440,0 +441,73 @@ class VkDecoderGlobalState::Impl {
++    bool cabooseShouldSkipCmd(VkCommandBuffer commandBuffer) {
++        std::lock_guard<std::mutex> lock(mMutex);
++        const auto* cbInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer);
++        if (!cbInfo) {
++            VkCommandBuffer unboxed = try_unbox_VkCommandBuffer(commandBuffer);
++            if (unboxed) {
++                cbInfo = gfxstream::base::find(mCommandBufferInfo, unboxed);
++            }
++        }
++        return cbInfo && cbInfo->cabooseBeginFailure != VK_SUCCESS;
++    }
++
++    static void resetCommandBufferWithInfos(
++        VkCommandBuffer commandBuffer,
++        std::unordered_map<VkCommandBuffer, CommandBufferInfo>& commandBufferInfos) {
++        auto* cbInfo = gfxstream::base::find(commandBufferInfos, commandBuffer);
++        if (!cbInfo) return;
++        for (VkCommandBuffer parentPrimary : cbInfo->cabooseParentPrimaries) {
++            if (parentPrimary == commandBuffer) continue;
++            if (auto* parentInfo = gfxstream::base::find(commandBufferInfos, parentPrimary)) {
++                parentInfo->cabooseRecordingInvalid = true;
++                parentInfo->subCmds.erase(
++                    std::remove(parentInfo->subCmds.begin(), parentInfo->subCmds.end(),
++                                commandBuffer),
++                    parentInfo->subCmds.end());
++            }
++        }
++        for (VkCommandBuffer sub : cbInfo->subCmds) {
++            if (sub == commandBuffer) continue;
++            if (auto* subInfo = gfxstream::base::find(commandBufferInfos, sub)) {
++                subInfo->cabooseParentPrimaries.erase(commandBuffer);
++            }
++        }
++        cbInfo->cabooseBeginFailure = VK_SUCCESS;
++        cbInfo->cabooseSecondaryFailure = VK_SUCCESS;
++        cbInfo->cabooseRecordingActive = false;
++        cbInfo->cabooseRecordingInvalid = false;
++        cbInfo->cabooseParentPrimaries.clear();
++        cbInfo->reset();
++    }
++
++    void resetCommandBufferLocked(VkCommandBuffer commandBuffer) REQUIRES(mMutex) {
++        resetCommandBufferWithInfos(commandBuffer, mCommandBufferInfo);
++    }
++
++    bool isExecutableCommandBufferTreeLocked(VkCommandBuffer rootCmdBuffer) REQUIRES(mMutex) {
++        std::vector<VkCommandBuffer> worklist = {rootCmdBuffer};
++        std::unordered_set<VkCommandBuffer> visited;
++        while (!worklist.empty()) {
++            VkCommandBuffer cmdBuffer = worklist.back();
++            worklist.pop_back();
++            if (!visited.insert(cmdBuffer).second) {
++                continue;
++            }
++            const auto* cbInfo = gfxstream::base::find(mCommandBufferInfo, cmdBuffer);
++            if (!cbInfo) {
++                VkCommandBuffer unboxed = try_unbox_VkCommandBuffer(cmdBuffer);
++                if (unboxed) {
++                    cbInfo = gfxstream::base::find(mCommandBufferInfo, unboxed);
++                }
++            }
++            if (!cbInfo || cbInfo->cabooseRecordingActive || cbInfo->cabooseRecordingInvalid ||
++                cbInfo->cabooseBeginFailure != VK_SUCCESS ||
++                cbInfo->cabooseSecondaryFailure != VK_SUCCESS) {
++                return false;
++            }
++            for (VkCommandBuffer sub : cbInfo->subCmds) {
++                worklist.push_back(sub);
++            }
++        }
++        return true;
++    }
++
+@@ -445,0 +519,15 @@ class VkDecoderGlobalState::Impl {
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            if (count > 0 && !submits) return VK_ERROR_DEVICE_LOST;
++            for (uint32_t i = 0; i < count; ++i) {
++                if (submits[i].commandBufferInfoCount > 0 && !submits[i].pCommandBufferInfos) {
++                    return VK_ERROR_DEVICE_LOST;
++                }
++                for (uint32_t j = 0; j < submits[i].commandBufferInfoCount; ++j) {
++                    if (!isExecutableCommandBufferTreeLocked(
++                            submits[i].pCommandBufferInfos[j].commandBuffer)) {
++                        return VK_ERROR_DEVICE_LOST;
++                    }
++                }
++            }
++        }
+@@ -8610,0 +8699 @@ class VkDecoderGlobalState::Impl {
++                resetCommandBufferWithInfos(commandBuffer, commandBufferInfos);
+@@ -8650,2 +8739,10 @@ class VkDecoderGlobalState::Impl {
+-        if (result != VK_SUCCESS) {
+-            return result;
++        std::lock_guard<std::mutex> lock(mMutex);
++        if (auto* commandPoolInfo = gfxstream::base::find(mCommandPoolInfo, commandPool)) {
++            for (VkCommandBuffer commandBuffer : commandPoolInfo->cmdBuffers) {
++                resetCommandBufferLocked(commandBuffer);
++                if (result != VK_SUCCESS) {
++                    if (auto* cbInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer)) {
++                        cbInfo->cabooseRecordingInvalid = true;
++                    }
++                }
++            }
+@@ -8662,5 +8759,38 @@ class VkDecoderGlobalState::Impl {
+-        vk->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers);
+-        std::lock_guard<std::mutex> lock(mMutex);
+-        CommandBufferInfo& cmdBuffer = mCommandBufferInfo[commandBuffer];
+-        cmdBuffer.subCmds.insert(cmdBuffer.subCmds.end(), pCommandBuffers,
+-                                 pCommandBuffers + commandBufferCount);
++        bool anySecondaryInvalid = false;
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            auto* primaryInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer);
++            if (!primaryInfo || !primaryInfo->cabooseRecordingActive ||
++                primaryInfo->cabooseBeginFailure != VK_SUCCESS) {
++                return;
++            }
++            for (uint32_t i = 0; i < commandBufferCount; ++i) {
++                VkCommandBuffer sec = pCommandBuffers ? pCommandBuffers[i] : VK_NULL_HANDLE;
++                auto* secInfo = gfxstream::base::find(mCommandBufferInfo, sec);
++                if (secInfo) {
++                    secInfo->cabooseParentPrimaries.insert(commandBuffer);
++                }
++                if (!secInfo || secInfo->cabooseRecordingActive ||
++                    secInfo->cabooseRecordingInvalid ||
++                    secInfo->cabooseBeginFailure != VK_SUCCESS ||
++                    secInfo->cabooseSecondaryFailure != VK_SUCCESS) {
++                    anySecondaryInvalid = true;
++                    primaryInfo->cabooseRecordingInvalid = true;
++                    if (primaryInfo->cabooseSecondaryFailure == VK_SUCCESS) {
++                        primaryInfo->cabooseSecondaryFailure =
++                            (secInfo && secInfo->cabooseBeginFailure != VK_SUCCESS)
++                                ? secInfo->cabooseBeginFailure
++                                : (secInfo && secInfo->cabooseSecondaryFailure != VK_SUCCESS
++                                       ? secInfo->cabooseSecondaryFailure
++                                       : VK_ERROR_DEVICE_LOST);
++                    }
++                }
++            }
++            if (pCommandBuffers && commandBufferCount > 0) {
++                primaryInfo->subCmds.insert(primaryInfo->subCmds.end(), pCommandBuffers,
++                                            pCommandBuffers + commandBufferCount);
++            }
++        }
++        if (!anySecondaryInvalid) {
++            vk->vkCmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers);
++        }
+@@ -8897,0 +9028,12 @@ class VkDecoderGlobalState::Impl {
++            if (submitCount > 0 && !pSubmits) {
++                return VK_ERROR_DEVICE_LOST;
++            }
++            for (uint32_t i = 0; i < submitCount; i++) {
++                const int cmdCount = getCommandBufferCount(pSubmits[i]);
++                for (int j = 0; j < cmdCount; j++) {
++                    if (!isExecutableCommandBufferTreeLocked(getCommandBuffer(pSubmits[i], j))) {
++                        return VK_ERROR_DEVICE_LOST;
++                    }
++                }
++            }
++
+@@ -9244 +9386 @@ class VkDecoderGlobalState::Impl {
+-        if (VK_SUCCESS == result) {
++        {
+@@ -9246,2 +9388,6 @@ class VkDecoderGlobalState::Impl {
+-            auto& bufferInfo = mCommandBufferInfo[commandBuffer];
+-            bufferInfo.reset();
++            resetCommandBufferLocked(commandBuffer);
++            if (VK_SUCCESS != result) {
++                if (auto* bufferInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer)) {
++                    bufferInfo->cabooseRecordingInvalid = true;
++                }
++            }
+@@ -9284,0 +9431,2 @@ class VkDecoderGlobalState::Impl {
++        resetCommandBufferLocked(commandBuffer);
++
+@@ -9599,2 +9747,2 @@ class VkDecoderGlobalState::Impl {
+-        if (result != VK_SUCCESS) {
+-            return result;
++        if (result == VK_SUCCESS) {
++            m_vkEmulation->getDeviceLostHelper().onBeginCommandBuffer(commandBuffer, vk);
+@@ -9603,2 +9750,0 @@ class VkDecoderGlobalState::Impl {
+-        m_vkEmulation->getDeviceLostHelper().onBeginCommandBuffer(commandBuffer, vk);
+-
+@@ -9608,2 +9754,16 @@ class VkDecoderGlobalState::Impl {
+-        if (!commandBufferInfo) return VK_ERROR_UNKNOWN;
+-        commandBufferInfo->reset();
++        if (!commandBufferInfo) {
++            return result != VK_SUCCESS ? result : VK_ERROR_UNKNOWN;
++        }
++        resetCommandBufferLocked(commandBuffer);
++
++        if (result != VK_SUCCESS) {
++            commandBufferInfo->cabooseBeginFailure = result;
++            commandBufferInfo->cabooseRecordingActive = false;
++            commandBufferInfo->cabooseRecordingInvalid = true;
++            return result;
++        }
++
++        commandBufferInfo->cabooseRecordingActive = true;
++        commandBufferInfo->cabooseRecordingInvalid = false;
++        commandBufferInfo->cabooseBeginFailure = VK_SUCCESS;
++        commandBufferInfo->cabooseSecondaryFailure = VK_SUCCESS;
+@@ -9634,3 +9794,18 @@ class VkDecoderGlobalState::Impl {
+-        m_vkEmulation->getDeviceLostHelper().onEndCommandBuffer(commandBuffer, vk);
+-
+-        std::lock_guard<std::mutex> lock(mMutex);
++        VkResult secondaryFailure = VK_SUCCESS;
++        bool wasRecordingActive = false;
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            auto* commandBufferInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer);
++            if (!commandBufferInfo) return VK_ERROR_UNKNOWN;
++            if (commandBufferInfo->cabooseBeginFailure != VK_SUCCESS) {
++                VkResult beginFailure = commandBufferInfo->cabooseBeginFailure;
++                commandBufferInfo->cabooseRecordingActive = false;
++                commandBufferInfo->cabooseRecordingInvalid = true;
++                return beginFailure;
++            }
++            secondaryFailure = commandBufferInfo->cabooseSecondaryFailure;
++            wasRecordingActive = commandBufferInfo->cabooseRecordingActive;
++            if (wasRecordingActive && context.processName) {
++                commandBufferInfo->debugUtilsHelper.cmdEndDebugLabel(commandBuffer);
++            }
++        }
+@@ -9638,2 +9813,3 @@ class VkDecoderGlobalState::Impl {
+-        auto* commandBufferInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer);
+-        if (!commandBufferInfo) return VK_ERROR_UNKNOWN;
++        if (wasRecordingActive) {
++            m_vkEmulation->getDeviceLostHelper().onEndCommandBuffer(commandBuffer, vk);
++        }
+@@ -9641,2 +9817,10 @@ class VkDecoderGlobalState::Impl {
+-        if (context.processName) {
+-            commandBufferInfo->debugUtilsHelper.cmdEndDebugLabel(commandBuffer);
++        if (secondaryFailure != VK_SUCCESS) {
++            if (wasRecordingActive) {
++                vk->vkEndCommandBuffer(commandBuffer);
++            }
++            std::lock_guard<std::mutex> lock(mMutex);
++            if (auto* commandBufferInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer)) {
++                commandBufferInfo->cabooseRecordingActive = false;
++                commandBufferInfo->cabooseRecordingInvalid = true;
++            }
++            return secondaryFailure;
+@@ -9645 +9829,11 @@ class VkDecoderGlobalState::Impl {
+-        return vk->vkEndCommandBuffer(commandBuffer);
++        VkResult res = vk->vkEndCommandBuffer(commandBuffer);
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            if (auto* commandBufferInfo = gfxstream::base::find(mCommandBufferInfo, commandBuffer)) {
++                commandBufferInfo->cabooseRecordingActive = false;
++                if (res != VK_SUCCESS) {
++                    commandBufferInfo->cabooseRecordingInvalid = true;
++                }
++            }
++        }
++        return res;
+@@ -10867 +11061 @@ class VkDecoderGlobalState::Impl {
+-        GFXSTREAM_FATAL("Encountered device lost.");
++        GFXSTREAM_ERROR("Encountered device lost.");
+@@ -12514,0 +12709,3 @@ VkResult VkDecoderGlobalState::onCabooseQueueSubmit2KHR(
++bool VkDecoderGlobalState::cabooseShouldSkipCmd(VkCommandBuffer commandBuffer) {
++    return mImpl->cabooseShouldSkipCmd(commandBuffer);
++}
+--- a/host/vulkan/vk_decoder.cpp
++++ b/host/vulkan/vk_decoder.cpp
+@@ -4106 +4106 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4170 +4170 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4235 +4235 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4300 +4300 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4353 +4353 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4402 +4402 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4503 +4503 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4555 +4555 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4595 +4595 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4639 +4639 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4687 +4687 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4749 +4749 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -4798 +4798 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6640 +6640 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6717 +6717 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6788 +6788 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6830 +6830 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6870 +6870 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6910 +6910 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -6950 +6950 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7062 +7062 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7125 +7125 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7612 +7612 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7663 +7663 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7699 +7699 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7741 +7741 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7777 +7777 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7816 +7816 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7856 +7856 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7895 +7895 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7934 +7934 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -7978 +7978 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8038 +8038 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8084 +8084 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8135 +8135 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8184 +8184 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8233 +8233 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8302 +8302 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8372 +8372 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8438 +8438 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8506 +8506 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8550 +8550 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8585 +8585 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8615 +8615 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -8844 +8844 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -10025 +10025 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -10824 +10824 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -10883 +10883 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11014 +11014 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11066 +11066 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11108 +11108 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11500 +11500 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11547 +11547 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11643 +11643 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11681 +11681 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11721 +11721 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -11763 +11763 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12041 +12041 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12082 +12082 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12142 +12142 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12185 +12185 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12225 +12225 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12265 +12265 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12296 +12296 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12329 +12329 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12363 +12363 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12398 +12398 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12445 +12445 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12491 +12491 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12586 +12586 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12622 +12622 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12657 +12657 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12692 +12692 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12727 +12727 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12762 +12762 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12813 +12813 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12849 +12849 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12885 +12885 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -12920 +12920 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13418 +13418 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13480 +13480 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13523 +13523 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13564 +13564 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13606 +13606 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13651 +13651 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13693 +13693 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13742 +13742 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13843 +13843 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -13887 +13887 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -14577 +14577 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -14608 +14608 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -15191 +15191 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -15245 +15245 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -15714 +15714 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -15776 +15776 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -16120 +16120 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -16173 +16173 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -16215 +16215 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -16999 +16999 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -17059 +17059 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -17254 +17254 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -17299 +17299 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -17960 +17960 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18001 +18001 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18061 +18061 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18103 +18103 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18149 +18149 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18250 +18250 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18288 +18288 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18329 +18329 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18371 +18371 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18412 +18412 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18453 +18453 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -18738 +18738 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19011 +19011 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19056 +19056 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19097 +19097 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19139 +19139 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19184 +19184 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19230 +19230 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19278 +19278 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19828 +19828 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19906 +19906 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -19985 +19985 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20039 +20039 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20085 +20085 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20142 +20142 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20386 +20386 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20417 +20417 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20457 +20457 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -20950 +20950 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21033 +21033 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21067 +21067 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21103 +21103 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21150 +21150 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21198 +21198 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21293 +21293 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21330 +21330 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21365 +21365 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21400 +21400 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21436 +21436 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21472 +21472 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -21523 +21523 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22125 +22125 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22161 +22161 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22197 +22197 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22231 +22231 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22266 +22266 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {
+@@ -22314 +22314 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+-                if (CC_LIKELY(vk)) {
++                if (CC_LIKELY(vk) && !this->m_state->cabooseShouldSkipCmd(commandBuffer)) {

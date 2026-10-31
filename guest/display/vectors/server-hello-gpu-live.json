@@ -1,0 +1,8 @@
+{
+  "name": "server-hello-gpu-live",
+  "description": "A server hello with a private live GPU surface namespace.",
+  "messages": [
+    {"direction": "server", "type": "hello", "type_id": 1, "fields": {"epoch": "5f3a9c01d2e4b678", "version": 0, "displays": [1], "encoders": ["hevc"], "features": ["vsync", "ack"], "gpu_live_epoch": {"$bytes": "0102030405060708090a0b0c0d0e0f10"}}}
+  ],
+  "hex": "016f000000a66565706f636870356633613963303164326534623637386776657273696f6e0068646973706c617973810168656e636f6465727381646865766368666561747572657382657673796e636361636b6e6770755f6c6976655f65706f6368500102030405060708090a0b0c0d0e0f10"
+}

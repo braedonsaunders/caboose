@@ -10,7 +10,7 @@ use caboose_display_protocol::{self as proto, ByeReason, Codec, Message, Rect};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 /// A connection must say hello within this long.
@@ -22,6 +22,8 @@ pub struct Session {
     pub conn: ConnId,
     /// The handshake is complete and windows are announced.
     pub ready: bool,
+    /// Outputs supplied by this authenticated owner, not retained fallback outputs.
+    pub owner_displays: HashSet<u32>,
     pub backend: Backend,
     pub last_vsync: HashMap<u32, Instant>,
     /// What the client plays as `video.*` streams.
@@ -156,7 +158,7 @@ impl State {
         }
     }
 
-    fn end_session(&mut self) {
+    pub(crate) fn end_session(&mut self) {
         if self.session.as_ref().is_some_and(|s| s.devices) {
             if let Some(hub) = &self.devices {
                 hub.disconnected();
@@ -361,6 +363,7 @@ impl State {
                     supported
                 },
                 epoch: Some(self.epoch.clone()),
+                gpu_live_epoch: self.gpu_grants.as_ref().and_then(|g| g.epoch_if_ready()),
             }),
         );
         tracing::info!("connection {conn}: session started, {} via {}", codec.as_str(), backend.describe());
@@ -370,6 +373,7 @@ impl State {
         self.session = Some(Session {
             conn,
             ready: true,
+            owner_displays: hello.displays.iter().filter(|d| d.width > 0 && d.height > 0 && d.scale.is_finite() && d.scale > 0.0).map(|d| d.id).collect(),
             backend,
             last_vsync: HashMap::new(),
             video_decoders,
@@ -422,16 +426,34 @@ impl State {
     }
 
     pub fn set_displays(&mut self, displays: &[proto::Display]) {
+        let owner_displays: HashSet<u32> = displays.iter().filter(|d| d.width > 0 && d.height > 0 && d.scale.is_finite() && d.scale > 0.0).map(|d| d.id).collect();
+        if let Some(session) = self.session.as_mut() {
+            session.owner_displays = owner_displays.clone();
+        }
         let change = self.displays.replace(&self.dh, displays);
+        let revoked: Vec<_> = self.windows.iter().filter_map(|window| {
+            let available = owner_displays.contains(&window.display);
+            (!available || change.removed.contains(&window.display)).then_some(window.id)
+        }).collect();
+        for id in revoked {
+            let grant = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+            if let Some(grant) = grant {
+                if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
+            }
+        }
         let fallback = self.displays.primary().info.id;
         let ids = self.windows.ids();
         let mut resized = Vec::new();
+        let mut gpu_resized = Vec::new();
         for id in &ids {
+            let active_gpu = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(*id));
             if let Some(w) = self.windows.get_mut(*id) {
                 if (w.fullscreen || w.maximized)
                     && (change.changed.contains(&w.display) || change.removed.contains(&w.display))
                 {
                     resized.push(*id);
+                } else if active_gpu && change.changed.contains(&w.display) {
+                    gpu_resized.push(*id);
                 }
                 if change.removed.contains(&w.display) {
                     w.display = fallback;
@@ -446,6 +468,8 @@ impl State {
             // A removed output was remapped above, so it needs the same treatment.
             if resized.contains(&id) {
                 self.configure_window(&proto::Configure { id, ..Default::default() });
+            } else if gpu_resized.contains(&id) {
+                self.configure_gpu_window_to_display(id);
             }
         }
         // sync_windows (next tick) sends the resulting window.update messages.

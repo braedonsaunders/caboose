@@ -1,0 +1,10 @@
+{
+  "binary_sha256": "8785da3046d4a03d69d014baf17e258de5180698bc303389784ef138a9066fe9",
+  "bundle_manifest_sha256": "9f1de612f9384f77dc6ead52e013986a20e10046b4dc8e1470e877a0b712bab6",
+  "clean_builds_identical": 2,
+  "upstream_files_unchanged": true,
+  "architecture": "linux-amd64",
+  "runtime_executed": true,
+  "phone_gpu_proven": false,
+  "runtime_kind": "separate native-Wayland lavapipe software reference"
+}

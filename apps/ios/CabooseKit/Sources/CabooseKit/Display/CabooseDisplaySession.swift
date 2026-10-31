@@ -117,7 +117,9 @@ public final class CabooseDisplaySession: DisplaySession {
     private var placement: [Int: (kind: WindowKind, parent: Int?, geometry: CGRect)] = [:]
     /// Geometry the phone asked for and the server has not confirmed yet, with when: updates
     /// still on their way from before it would otherwise snap a dragged window back.
-    private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval)] = [:]
+    private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval, display: DisplayInfo?)] = [:]
+    /// Authenticated window output assignment; never inferred from the view's screen.
+    private var windowDisplays: [Int: Int] = [:]
     private var lastVsync: [Int: UInt64] = [:]
     private var preedit: (text: String, cursor: (Int, Int))?
     private var lastClipboard: ClipboardContent?
@@ -276,6 +278,7 @@ public final class CabooseDisplaySession: DisplaySession {
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
+        if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
         preedit = nil
@@ -311,6 +314,8 @@ public final class CabooseDisplaySession: DisplaySession {
         endGPUStream(of: windows[id])
         windows[id] = nil
         placement[id] = nil
+        pendingGeometry[id] = nil
+        windowDisplays[id] = nil
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
         if surroundingText?.window == id { surroundingText = nil }
@@ -562,6 +567,8 @@ public final class CabooseDisplaySession: DisplaySession {
         pipelines.remove(id)?.close()
         windows[id] = nil
         placement[id] = nil
+        pendingGeometry[id] = nil
+        windowDisplays[id] = nil
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
         if surroundingText?.window == id { surroundingText = nil }
@@ -696,6 +703,7 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func apply(_ fields: WindowFields, to window: RemoteWindow) {
+        if let display = fields.display { windowDisplays[window.id] = display }
         if let title = fields.title { window.title = title }
         if let app = fields.appID { window.appClass = (app, app) }
         if let place = placement[fields.id] {
@@ -750,6 +758,21 @@ public final class CabooseDisplaySession: DisplaySession {
         }
     }
 
+    // A GPU owner must not bind the old extent while a known resize is in flight.
+    // Match only the compositor's exact physical/logical round trip on the same
+    // assigned output and scale. This does not turn metadata into a configure ACK.
+    func pendingPresentationSize(_ window: RemoteWindow) -> CGSize? {
+        guard let pending = pendingGeometry[window.id] else { return nil }
+        guard let sentDisplay = pending.display else { return pending.geometry.size }
+        guard assignedDisplay(window.id) == sentDisplay else { return .zero }
+        return LiveGPUDrawableGeometry.quantizedRequest(pending.geometry.size, scale: sentDisplay.scale) ?? .zero
+    }
+
+    private func assignedDisplay(_ windowID: Int) -> DisplayInfo? {
+        guard let id = windowDisplays[windowID] else { return nil }
+        return displays.first { $0.id == id }
+    }
+
     // MARK: Windows
 
     public func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool] = [:]) {
@@ -776,7 +799,7 @@ public final class CabooseDisplaySession: DisplaySession {
             entry.geometry.origin = geometry.origin
             placement[window.id] = entry
         }
-        pendingGeometry[window.id] = (geometry, CACurrentMediaTime())
+        pendingGeometry[window.id] = (geometry, CACurrentMediaTime(), assignedDisplay(window.id))
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)
