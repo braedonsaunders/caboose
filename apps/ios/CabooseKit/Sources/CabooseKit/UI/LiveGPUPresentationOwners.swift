@@ -134,7 +134,7 @@ public final class LiveGPUPresentationOwners {
         // Fitting the view slot scales the dedicated presentation layer without
         // invalidating the bound surface; the guest recreates its swapchain at
         // the new extent via configurePresentationExtent.
-        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds)
+        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: view.croppingOverscan ? window.frame.size : nil)
     }
     /// The one eligible view showing the lease's window, preferring its current view.
     private func host(for lease: LiveGPULayerLease) -> RemoteWindowView? {
@@ -286,9 +286,25 @@ private final class LiveGPULayerView: UIView {
         if code == 0 { applyDrawableExtent() }
         return code
     }
-    func fit(in target: CGRect) {
+    /// The window's viewport and overscan in server pixels: a picture of the enlarged
+    /// window (an overscan window) shows its viewport, top-left aligned, the rest clipped.
+    private var viewport: CGSize?
+    /// `viewport`, while the window has an overscan, is the shape the view shows: a longer
+    /// drawable shows its viewport top-left aligned, the rest clipped, never scaled.
+    func fit(in target: CGRect, viewport: CGSize? = nil) {
         frame = target
+        clipsToBounds = viewport != nil
+        self.viewport = viewport
         applyDrawableExtent()
+    }
+    /// The part of the drawable the view shows.
+    private var shownExtent: CGSize {
+        guard let viewport, viewport.width > 0, viewport.height > 0, pixelExtent.width > 0, pixelExtent.height > 0 else { return pixelExtent }
+        let tall = pixelExtent.width * viewport.height / viewport.width
+        if pixelExtent.height - tall > 2 { return CGSize(width: pixelExtent.width, height: tall) }
+        let wide = pixelExtent.height * viewport.width / viewport.height
+        if pixelExtent.width - wide > 2 { return CGSize(width: wide, height: pixelExtent.height) }
+        return pixelExtent
     }
     func applyDrawableExtent() {
         guard !configuringExtent, !extentQuarantined else { return }
@@ -299,9 +315,11 @@ private final class LiveGPULayerView: UIView {
         metal.bounds = CGRect(origin: .zero, size: pixelExtent)
         metal.contentsScale = 1
         metal.drawableSize = pixelExtent
-        metal.position = CGPoint(x: bounds.midX, y: bounds.midY)
-        metal.setAffineTransform(CGAffineTransform(scaleX: bounds.width / pixelExtent.width,
-                                                 y: bounds.height / pixelExtent.height))
+        let shown = shownExtent
+        let scale = CGAffineTransform(scaleX: bounds.width / shown.width, y: bounds.height / shown.height)
+        // Centred on the shown part, so a full drawable fills the bounds exactly as before.
+        metal.position = CGPoint(x: bounds.minX + pixelExtent.width * scale.a / 2, y: bounds.minY + pixelExtent.height * scale.d / 2)
+        metal.setAffineTransform(scale)
         CATransaction.commit()
     }
 }

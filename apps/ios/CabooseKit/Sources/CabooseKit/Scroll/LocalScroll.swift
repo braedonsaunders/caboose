@@ -29,7 +29,10 @@ public enum ScrollObservation: Equatable, Sendable {
     /// content offset, the region it occupies, its scroll range when known, and fixed
     /// rectangles inside the region (overlays, scroll bars) that do not move with it. It
     /// replaces measurement for the frame it describes.
-    case reported(offset: Double, region: ScrollRegion, bounds: ClosedRange<Double>? = nil, stationary: [ScrollRegion] = [])
+    /// `epoch` changes when the content moved in document coordinates (a layout shift,
+    /// scroll anchoring): pictures of an earlier epoch are not placed against later ones.
+    case reported(offset: Double, region: ScrollRegion, bounds: ClosedRange<Double>? = nil, stationary: [ScrollRegion] = [],
+                  epoch: UInt64 = 0)
 }
 
 /// One picture of what the phone shows while it owns a window's scrolling.
@@ -143,6 +146,10 @@ public struct LocalScroll {
         var region: ScrollRegion?
         /// Fixed overlays inside its region.
         var holes: [ScrollRegion] = []
+        /// Its lines past the viewport along the axis.
+        var overscan = 0
+        /// Captured before anything was sent: it shows the app where the phone is.
+        var atRest = false
         var placed: Bool { offset != nil }
     }
 
@@ -191,6 +198,7 @@ public struct LocalScroll {
     private var sent = 0.0
     private var correctionsLeft = 0
     private var reportedBias: Double?
+    private var reportedEpoch: UInt64?
     public private(set) var interrupted = false
     private var composing = false
     /// The current run of gestures reached an edge.
@@ -210,6 +218,9 @@ public struct LocalScroll {
     /// The app's position when the last correction at rest was judged, to see it answer.
     private var lastJudged: Double?
     private var pendingProbe = 0.0
+    /// A picture of this run could not be measured: nothing is composed, and scroll goes to
+    /// the app as the finger and momentum move, without lead, until the scroll rests.
+    public private(set) var lost = false
     private var capSince: TimeInterval?
     private struct Prefetch {
         var pinned: UInt64
@@ -380,6 +391,7 @@ public struct LocalScroll {
         travelStart = nil
         gainBaseline = nil
         reportedBias = nil
+        reportedEpoch = nil
         unansweredSince = nil
         lastAppMotion = -.infinity
         lastTick = nil
@@ -389,9 +401,11 @@ public struct LocalScroll {
 
     /// A new picture of the window was captured. Returns the shifts worth searching when
     /// measuring it against the previous capture, and the most likely one.
-    public mutating func captured(_ id: UInt64, at time: TimeInterval) -> (range: ClosedRange<Int>, center: Int) {
+    /// `overscan` is how many lines of this picture lie past the viewport along the axis.
+    public mutating func captured(_ id: UInt64, at time: TimeInterval, overscan pictureOverscan: Int = 0) -> (range: ClosedRange<Int>, center: Int) {
         let previous = frames.last?.offset ?? position
-        frames.append(Frame(id: id, time: time, offset: nil, region: nil))
+        frames.append(Frame(id: id, time: time, offset: nil, region: nil, overscan: max(0, pictureOverscan),
+                            atRest: phase == .idle || (abs(commanded - position) < 0.5 && time >= lastSend + 2 * latency)))
         // The app can be anywhere it was commanded to over the input still in flight.
         var lowest = commanded, highest = commanded
         let since = time - 2 * latency - 0.1
@@ -418,15 +432,24 @@ public struct LocalScroll {
         var guessed = false
         switch observation {
         case .unrelated:
-            guessed = true
-            if before == nil {
-                offset = phase == .idle ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)
-            } else {
-                offset = value(at: frame.time - latency, in: commandedHistory) ?? commanded
-                // Earlier frames cannot be related to this one.
-                frames.removeSubrange(..<index)
+            // The first picture of a gesture, taken before anything was sent, shows the app
+            // where the phone is.
+            let atRest = phase == .idle || (before == nil && frame.atRest)
+            guard atRest else {
+                // A picture that cannot be measured is never placed by a guess. The app's own
+                // picture shows for the rest of this run, scrolled by the finger as it goes.
+                note?("picture \(id) could not be measured: the app's picture shows until the scroll rests")
+                frames.removeAll()
                 edges = (nil, nil)
+                probe = nil
+                lost = true
+                return
             }
+            // At rest the app's picture is what shows: the phone is where it is.
+            guessed = true
+            offset = position
+            frames.removeSubrange(..<index)
+            edges = (nil, nil)
             region = self.region
         case .moved(let shift, let measured, let reference, let fixed):
             holes = fixed
@@ -442,7 +465,14 @@ public struct LocalScroll {
             offset = base
             region = ref.region ?? self.region
             holes = ref.holes
-        case .reported(let reported, let measured, let bounds, let fixed):
+        case .reported(let reported, let measured, let bounds, let fixed, let epoch):
+            if let last = reportedEpoch, last != epoch {
+                // Content moved in the document: earlier pictures no longer line up by offset.
+                frames.removeSubrange(..<index)
+            }
+            reportedEpoch = epoch
+            // A reporter applies scroll exactly, in content pixels.
+            gain = 1
             if reportedBias == nil {
                 reportedBias = (before == nil ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)) - reported
             }
@@ -453,6 +483,8 @@ public struct LocalScroll {
             if let bounds { edges = (bounds.lowerBound + bias, bounds.upperBound + bias) }
         }
         guard let i = frames.firstIndex(where: { $0.id == id }) else { return }
+        // The first picture laid out with another overscan changes the viewport mapping.
+        if frames[i].overscan != overscan { applyOverscan(frames[i].overscan) }
         frames[i].offset = offset
         frames[i].region = region
         frames[i].holes = holes
@@ -586,7 +618,7 @@ public struct LocalScroll {
         }
         // Until the first composition the app's own picture is on screen: the phone takes over
         // from where that picture shows the content and catches up with the gesture.
-        let composable = region != nil && placedOffset != nil
+        let composable = region != nil && placedOffset != nil && !lost
         if composable, !composing, let shown = placedOffset { position = shown }
         composing = composable
 
@@ -635,6 +667,7 @@ public struct LocalScroll {
             target = time < holdUntil && phase == .settling ? commanded
                 : clampToEdges(phase == .bouncing ? springTarget : wanted)
         }
+        if lost { target = requested }
         if probe != nil { target = commanded }
         let isSilent = silent(at: time)
         if isSilent, let app = placedOffset, regionLength > 0 {
@@ -748,9 +781,11 @@ public struct LocalScroll {
     }
 
     private mutating func settle(at time: TimeInterval) {
-        guard let app = placedOffset else {
-            // Nothing to show the phone's position with: let the app's picture stand.
+        guard let app = placedOffset, !lost else {
+            // Nothing to show the phone's position with: the app's picture stands.
             phase = .idle
+            lost = false
+            commanded = requested
             return
         }
         let pending = frames.contains { !$0.placed }
@@ -839,7 +874,7 @@ public struct LocalScroll {
     }
 
     private mutating func learnGain(app: Double) {
-        guard let start = gainBaseline else { return }
+        guard reportedBias == nil, let start = gainBaseline else { return }
         let wire = sent - start.sent, moved = app - start.offset
         // Motion clamped at an edge says nothing about the app's response.
         guard abs(wire) >= 96, abs(moved) >= 48, moved * wire > 0, !edgeMet else { return }

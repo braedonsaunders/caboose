@@ -36,8 +36,24 @@ public final class LocalScrollController {
         case present(serial: UInt64)
     }
     /// A toolkit adapter's report for exactly the captured picture, when it has one; the
-    /// report replaces measurement for that picture.
-    public var report: ((PictureSource) -> ScrollObservation?)?
+    /// report replaces measurement for that picture. It is asked on main once the picture
+    /// has been copied, with the luma at the centre of each block of the frame tag the
+    /// reporter drew (`tagRect`), when there is one.
+    public var report: ((PictureSource, [Float]?) -> ScrollObservation?)?
+    /// Where a toolkit reporter draws its frame tag in a picture of this size, in picture
+    /// pixels, asked for each capture.
+    public var tagRect: ((CGSize) -> CGRect?)?
+    /// How many of a captured picture's pixels lie past the viewport, right and below (an
+    /// overscan window); none by default.
+    public var pictureOverscan: (MTLTexture) -> CGSize = { _ in .zero }
+    /// Where the viewport's region ends along the axis, in picture pixels, while an overscan
+    /// applies: points after it show the picture's lines that many pixels further on.
+    public var anchoredFrom: (axis: ScrollAxis, start: Int, viewport: Int)? {
+        guard model.overscan > 0, let composition = lastComposition, lastViewport > 0 else { return nil }
+        return (composition.axis, composition.region.along.upperBound, lastViewport)
+    }
+    private var lastViewport = 0
+    private var lastComposition: ScrollComposition?
 
     /// The newest touch sample's timestamp, for the send log.
     private var lastTouch: TimeInterval?
@@ -159,6 +175,7 @@ public final class LocalScrollController {
             cancel()
             return false
         }
+        lastComposition = tick.composition
         guard let composition = tick.composition else {
             isComposing = false
             contentShift = .zero
@@ -170,10 +187,13 @@ public final class LocalScrollController {
         let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
         if layer.pixelFormat != format { layer.pixelFormat = format }
         // The viewport: the picture less its overscan along the axis.
-        let overscan = composition.overscan
-        let size = composition.axis == .vertical ? CGSize(width: base.width, height: max(1, base.height - overscan))
-                                                 : CGSize(width: max(1, base.width - overscan), height: base.height)
+        // The viewport: the picture less what lies past it, by the picture's own shape too,
+        // so a longer picture is never squashed into the view while the model catches up.
+        let extra = pictureOverscan(base)
+        let size = CGSize(width: max(1, base.width - max(Int(extra.width), composition.axis == .horizontal ? composition.overscan : 0)),
+                          height: max(1, base.height - max(Int(extra.height), composition.axis == .vertical ? composition.overscan : 0)))
         if layer.drawableSize != size { layer.drawableSize = size }
+        lastViewport = Int(composition.axis == .vertical ? size.height : size.width)
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {
             isComposing = false
@@ -218,23 +238,22 @@ public final class LocalScrollController {
 
     private func capture(_ texture: MTLTexture, at time: CFTimeInterval, source: PictureSource,
                          done: (@Sendable () -> Void)? = nil) {
+        let overscan = Int((model.axis == .vertical ? pictureOverscan(texture).height : pictureOverscan(texture).width).rounded())
         let id = nextID
         nextID += 1
         measuringID = id
-        let hint = model.captured(id, at: time)
-        let reported = report?(source)
+        let hint = model.captured(id, at: time, overscan: overscan)
+        let tagRect = self.tagRect?(CGSize(width: texture.width, height: texture.height))
         let axis = model.axis, generation = generation, chain = chain, estimator = estimator
         let anchor: Int? = nil
         let measuring = measuring
-        renderer.capture(texture, axis: axis) { [weak self] copy, signature in
+        renderer.capture(texture, axis: axis, tagRect: tagRect) { [weak self] copy, signature, tagLuma in
             done?()
             measuring.async {
                 var observation: ScrollObservation = .unrelated
                 var edges: (top: SIMD3<Float>, bottom: SIMD3<Float>)?
                 if let signature, chain.generation == generation {
-                    if let reported {
-                        observation = reported
-                    } else if let previous = chain.previous, previous.signature.lines != signature.lines || previous.signature.bands != signature.bands {
+                    if let previous = chain.previous, previous.signature.lines != signature.lines || previous.signature.bands != signature.bands {
                         LocalScrollProfile.note("picture \(id) is \(signature.span)x\(signature.lines), the previous \(previous.signature.span)x\(previous.signature.lines): unrelated")
                     } else if let previous = chain.previous {
                         switch estimator.measure(from: previous.signature, to: signature, expected: hint.range,
@@ -266,7 +285,9 @@ public final class LocalScrollController {
                         }
                         if let copy { self.textures[id] = copy }
                         if let edges { self.fills[id] = edges }
-                        self.model.observe(id, copy == nil ? .unrelated : result)
+                        // The reporter's word for exactly this picture replaces measurement.
+                        let reported = copy == nil ? nil : self.report?(source, tagLuma)
+                        self.model.observe(id, copy == nil ? .unrelated : reported ?? result)
                         self.profile.measured(result)
                         self.releaseTextures(keeping: Set(self.model.retainedFrames))
                     }
@@ -279,7 +300,7 @@ public final class LocalScrollController {
         var lines = 0..<signature.lines, bands = 0..<signature.bands
         var measured: ScrollRegion?
         switch observation {
-        case .moved(_, let region, _, _), .reported(_, let region, _, _): measured = region
+        case .moved(_, let region, _, _), .reported(_, let region, _, _, _): measured = region
         default: break
         }
         if let region = measured {
