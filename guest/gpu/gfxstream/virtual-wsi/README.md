@@ -62,8 +62,10 @@ allocated with Mesa's Vulkan allocator. It does not need a common window-system 
 or create a Linux presentation buffer. Binding sends the `wl_proxy_get_id` of a Wayland
 surface or the X11 window ID, uses an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
 and a ten-second deadline. Provider replies populate base capabilities, formats
-and modes, including the base `*2` forms; a reply less than 500 ms old answers the same
-physical device's next query (Zink asks every frame). Unknown extension chains fail
+and modes, including the base `*2` forms. Toolkits ask every frame (Zink's Kopper does),
+so the provider's last reply for the physical device answers at once; once it is 500 ms
+old a refresh is sent without waiting (`Client::beginQuery`) and its reply is used when
+it arrives. Unknown extension chains fail
 explicitly. Uncertain retirement retains the bounded wrapper and instance lease.
 
 Toolkits create a surface, query it and create a swapchain before its window exists: GTK

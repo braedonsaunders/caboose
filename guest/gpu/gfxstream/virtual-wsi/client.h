@@ -22,6 +22,11 @@ public:
     void reset();
     bool bound() const { return bound_; }
     Record query(uint64_t request, uint64_t physical, Deadline deadline);
+    // Sends a query without waiting; its reply is kept when it arrives (pump or any wait)
+    // and taken with takeQuery. One such query is outstanding at a time.
+    void beginQuery(uint64_t request, uint64_t physical, Deadline deadline);
+    bool queryPending() const { return pendingQuery_ != 0; }
+    bool takeQuery(Record* out);
     Record present(const Bytes& suffix, Deadline deadline);
     void waitReleased(uint64_t serial, Deadline deadline);
     uint64_t waitAnyReleased(Deadline deadline);
@@ -107,5 +112,8 @@ private:
     };
     std::map<uint64_t,Swapchain> swapchains_;
     std::map<uint64_t,Record> acquireReplies_;
+    uint64_t pendingQuery_ = 0;
+    bool queryArrived_ = false;
+    Record queryReply_{};
 };
 }

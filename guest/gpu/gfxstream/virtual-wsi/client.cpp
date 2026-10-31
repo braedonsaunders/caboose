@@ -177,6 +177,10 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
             swapchains_.at(it->second.swapchain).releasedSerial.at(it->second.index)=u64(r.body,40);
         return kind==22 && (!serial || u64(r.body,40)==serial);
     }
+    if (r.kind==19 && pendingQuery_ && u64(r.body,40)==pendingQuery_) {
+        if (queryArrived_) fail(EPROTO);
+        queryReply_=std::move(r); queryArrived_=true; return false;
+    }
     if (!kind || r.kind!=kind || (serial && u64(r.body,40)!=serial)) fail(EPROTO);
     return true;
 }
@@ -199,6 +203,17 @@ Record Client::query(uint64_t request, uint64_t physical, Deadline deadline) {
     lastRequest_=request;
     Bytes p; put64(p,request); put64(p,physical); send(18,p,deadline);
     return await(19,request,deadline);
+}
+void Client::beginQuery(uint64_t request, uint64_t physical, Deadline deadline) {
+    require(bound_ && !retiring_ && !revoked_ && request>lastRequest_ && physical && !pendingQuery_);
+    lastRequest_=request;
+    Bytes p; put64(p,request); put64(p,physical); send(18,p,deadline);
+    pendingQuery_=request; queryArrived_=false;
+}
+bool Client::takeQuery(Record* out) {
+    if (!pendingQuery_ || !queryArrived_) return false;
+    *out=std::move(queryReply_); pendingQuery_=0; queryArrived_=false;
+    return true;
 }
 Record Client::present(const Bytes& p, Deadline deadline) {
     require(bound_ && !retiring_ && !revoked_ && p.size()>=56);

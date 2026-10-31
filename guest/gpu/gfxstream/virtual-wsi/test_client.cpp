@@ -68,6 +68,11 @@ static void exerciseRefusedBind() {
         recvPacket(fd,16);
         Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
         sendPacket(fd,17,bound);
+        auto query=recvPacket(fd,18); assert(u64(query,16)==1 && u64(query,24)==11);
+        auto caps=id(); put64(caps,1); appendStatus(caps);
+        const uint32_t words[]={2,4,640,480,1,1,4096,4096,1,1,1,1,2,1,1,1,44,0,2,0,7,1,1};
+        for (auto value:words) put32(caps,value);
+        sendPacket(fd,19,caps);
         recvPacket(fd,23); close(fd); _exit(0);
     }
     close(listener);
@@ -80,6 +85,12 @@ static void exerciseRefusedBind() {
     client.reset();
     client.connect(path.c_str(),deadline);
     assert(status(client.bind(7,13,0,0,deadline).body,48).success() && client.bound());
+    // A query sent without waiting is kept when it arrives and taken once.
+    client.beginQuery(1,11,deadline);
+    Record reply;
+    assert(client.queryPending() && !client.takeQuery(&reply));
+    while (!client.takeQuery(&reply)) { client.pump(); usleep(1000); }
+    assert(!client.queryPending() && providerCaps(reply.body).values[2]==640);
     bool reset=false;
     try { client.reset(); } catch (const ProtocolError&) { reset=true; }
     assert(reset); // a bound connection is retired, never reset

@@ -90,8 +90,9 @@ template<class F> static VkResult guarded(F f) {
 // the broker closes the connection of a bind it refused, so a refused bind is tried again
 // later on a new connection. Until a bind succeeds, queries are answered locally.
 constexpr auto kBindRetry=std::chrono::milliseconds(100);
-// Toolkits ask for capabilities every frame (Zink's Kopper does); a provider reply this
-// recent answers them without a round trip to the phone.
+// Toolkits ask for capabilities every frame (Zink's Kopper does), so the provider's last
+// reply answers at once; once it is this old, a refresh is sent and its reply used when
+// it arrives.
 constexpr auto kCapsReuse=std::chrono::milliseconds(500);
 static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
 // Binds the surface if its window exists now. A transport error before the bind's reply
@@ -150,7 +151,16 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
         }
         const uint64_t boxed=get_host_u64_VkPhysicalDevice(device->internal_object);
         const auto now=std::chrono::steady_clock::now();
-        if (!fresh && !surface.caps.empty() && surface.capsPhysical==boxed && now-surface.capsTime<kCapsReuse) {
+        // A refresh sent earlier replaces the reply once it arrived.
+        surface.client.pump();
+        Record refreshed;
+        if (surface.client.takeQuery(&refreshed) && apiStatus(status(refreshed.body,48))==VK_SUCCESS) {
+            surface.caps=std::move(refreshed.body); surface.capsTime=now;
+        }
+        if (!fresh && !surface.caps.empty() && surface.capsPhysical==boxed) {
+            // An older reply still answers at once; its refresh goes out without a wait.
+            if (now-surface.capsTime>=kCapsReuse && !surface.client.queryPending() && surface.query<UINT64_MAX)
+                surface.client.beginQuery(++surface.query,boxed,deadline());
             caps=surface.caps;
             return VK_SUCCESS;
         }
