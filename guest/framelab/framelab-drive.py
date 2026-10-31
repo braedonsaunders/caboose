@@ -212,13 +212,17 @@ def main():
     phone_records, clock_samples = [], []
     lock = threading.Lock()
 
+    phone_clock = []  # (arrival, phone uptime) pairs
+
     def phone_line(line, received):
+        uptime = framelab.phone_uptime(line)
+        if uptime is not None:
+            phone_clock.append((received, uptime))
         record = framelab.parse_line(line, received)
         if record:
-            if record['kind'] == 'phone_present' and {'presented_ns', 'now_ns'} <= record.keys():
-                # The phone's presentation time, moved onto the reader's clock: it was
-                # printed now_ns - presented_ns after it was shown.
-                record['presented_ns'] = received - (record['now_ns'] - record['presented_ns'])
+            if record['kind'] == 'phone_present' and 'presented_ns' in record:
+                # On the phone's clock; moved onto the reader's once the offset is known.
+                record['phone_presented_ns'] = record.pop('presented_ns')
             with lock:
                 phone_records.append(record)
 
@@ -319,11 +323,21 @@ def main():
         except subprocess.TimeoutExpired:
             log('copying the phone pictures timed out')
     offset = framelab.clock_offset(clock_samples)
+    # The console arrives late and in bursts (seconds behind on a busy phone), so phone
+    # times come from the phone's own clock where a line has one.
+    phone_offset = framelab.clock_offset(phone_clock)
+    lags = sorted(a - u - phone_offset for a, u in phone_clock) if phone_offset is not None else []
+    for record in phone_records:
+        if 'phone_presented_ns' in record and phone_offset is not None:
+            record['presented_ns'] = record['phone_presented_ns'] + phone_offset
     cards = rescore(out, apps, phone_records, offset, pictures)
     table = framelab.summary_table([c for c in cards if 'pacing' in c])
     notes = [f"{c['app']}: {c.get('skipped') or c.get('error')}" for c in cards if not c.get('ok')]
     table += ('\n' + '\n'.join(notes) + '\n') if notes else ''
     table += f"\nphone records: {len(phone_records)}; clock offset {offset} ns from {len(clock_samples)} guest events\n"
+    if lags:
+        table += (f"phone console delay: median {lags[len(lags) // 2] / 1e9:.1f} s, max {lags[-1] / 1e9:.1f} s "
+                  "(phone lines without their own clock are placed by arrival)\n")
     (out / 'summary.md').write_text(table)
     print(table)
     log(f'results in {out}')

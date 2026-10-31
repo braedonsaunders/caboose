@@ -71,6 +71,13 @@ def parse_line(line, received_ns=None):
     return None
 
 
+def phone_uptime(line):
+    """The phone's own clock in a console line, in nanoseconds, where it has one: the
+    memory audit's uptimeSeconds or a scroll rtt line's send time."""
+    found = re.search(r'"uptimeSeconds":([0-9.]+)', line) or re.search(r'caboose-scroll: rtt sent=([0-9.]+)', line)
+    return int(float(found.group(1)) * 1e9) if found else None
+
+
 def percentile(values, p):
     """Nearest-rank percentile (p in 0..1) of a sequence; None when empty."""
     if not values:
@@ -236,7 +243,11 @@ def scorecard(app, run, phone_records=(), offset=None):
                 if 'presented_ns' in record:
                     moved['presented_ns'] = record['presented_ns'] - offset
                 phone.append(moved)
-    path = 'gpu' if presents or any(r['presented'] for r in rates) else 'video' if sent or commits else 'none'
+    # The two-second counters cover the whole broker, not this app: they decide the path
+    # only when the per-present trace is off.
+    traced = any(r['kind'] in ('gpu_present', 'gpu_stream') for r in records)
+    rated = not traced and any(r['presented'] for r in rates)
+    path = 'gpu' if presents or rated else 'video' if sent or commits else 'none'
     # A sharpened picture of content already sent is not a frame (its bytes still count).
     frames = presents if path == 'gpu' else [s[0] for s in sent if not (len(s) > 3 and s[3])]
     card = {
