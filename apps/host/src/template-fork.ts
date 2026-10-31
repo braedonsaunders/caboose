@@ -28,10 +28,28 @@ export interface TemplateForkOptions extends TemplateBuildOptions {
 /** Reject changed boot images or device endpoints without discarding saved memory. */
 export function assertSavedTemplateConfig(value: unknown, plan: DeskLaunchPlan, kernel: string, initramfs: string, attachments: readonly DeskReadOnlyAttachment[]): void {
   if (plan.hypervisor !== 'cloud-hypervisor' || !value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid parked template configuration')
-  const saved = value as { payload?: { kernel?: string; initramfs?: string }; disks?: { path?: string; readonly?: boolean }[]; net?: { tap?: string; mac?: string }[]; vsock?: { cid?: number; socket?: string } }
-  if (saved.payload?.kernel !== kernel || saved.payload.initramfs !== initramfs || saved.disks?.length !== attachments.length + 1
+  const saved = value as {
+    payload?: { kernel?: string; initramfs?: string }
+    disks?: { path?: string; readonly?: boolean }[]
+    pmem?: ({ file?: string; path?: string; discard_writes?: boolean; readonly?: boolean } | null)[] | null
+    net?: { tap?: string; mac?: string }[]
+    vsock?: { cid?: number; socket?: string }
+  }
+  const blockAttachments = attachments.filter(item => item.kind === 'block')
+  const pmemAttachments = attachments.filter(item => item.kind === 'pmem')
+  const savedPmem = saved.pmem ?? []
+  if (attachments.length !== blockAttachments.length + pmemAttachments.length
+    || saved.payload?.kernel !== kernel || saved.payload.initramfs !== initramfs
+    || saved.disks?.length !== blockAttachments.length + 1
     || saved.disks[0]?.path !== plan.overlay.path || saved.disks[0].readonly === true
-    || attachments.some((item, index) => saved.disks?.[index + 1]?.path !== item.path || saved.disks?.[index + 1]?.readonly !== true)
+    || blockAttachments.some((item, index) => saved.disks?.[index + 1]?.path !== item.path || saved.disks?.[index + 1]?.readonly !== true)
+    || !Array.isArray(savedPmem) || savedPmem.length !== pmemAttachments.length
+    || pmemAttachments.some((item, index) => {
+      const entry = savedPmem[index]
+      const entryPath = entry?.file ?? entry?.path
+      const readOnly = entry?.discard_writes === true || (entry?.discard_writes === undefined && entry?.readonly === true)
+      return entryPath !== item.path || !readOnly
+    })
     || saved.net?.length !== 1 || saved.net[0]?.tap !== plan.tap.device || saved.net[0].mac?.toLowerCase() !== plan.tap.mac.toLowerCase()
     || saved.vsock?.cid !== plan.vsock.cid || saved.vsock.socket !== plan.vsock.socketPath) throw new Error('Parked template image or device identity does not match')
 }

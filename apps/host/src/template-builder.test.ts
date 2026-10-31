@@ -1,5 +1,8 @@
+import { mkdtemp, open, rm, truncate } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
-import { buildTemplateSource, supportedTemplateVmm, verifyTemplateGuestComponents } from './template-builder.js'
+import { buildTemplateSource, measureSnapshotSparsity, supportedTemplateVmm, verifyTemplateGuestComponents } from './template-builder.js'
 import type { DeskHandle } from '@braedonsaunders/appkit-desk'
 
 it('rejects an old or incomplete guest bundle before template capture', async () => {
@@ -25,4 +28,20 @@ it('accepts only the validated v54 VMM builds', () => {
   expect(supportedTemplateVmm('cloud-hypervisor v54.0')).toBe(true)
   expect(supportedTemplateVmm('cloud-hypervisor v54.0.0-appkit-incremental.1')).toBe(true)
   expect(supportedTemplateVmm('cloud-hypervisor v54.0.0-appkit-incremental.2')).toBe(false)
+})
+
+it('measures sparse hole savings on a snapshot memory-ranges file', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'template-sparse-'))
+  try {
+    const file = join(dir, 'memory-ranges')
+    const handle = await open(file, 'w')
+    await handle.close()
+    await truncate(file, 64 * 1024 * 1024)
+    const sparsity = await measureSnapshotSparsity(dir)
+    expect(sparsity.logicalBytes).toBe(64 * 1024 * 1024)
+    expect(sparsity.allocatedBytes).toBeLessThan(sparsity.logicalBytes)
+    expect(sparsity.savedBytes).toBe(sparsity.logicalBytes - sparsity.allocatedBytes)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
