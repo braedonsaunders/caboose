@@ -1523,8 +1523,8 @@ end-to-end file results.
 
 ### Private indexed GPU acceptance
 
-The live driver integration is disabled by default. A Debug build launched with
-`CABOOSE_PRIVATE_GPU_INDEXED=1` creates one executor for the paired owner computer
+Release builds never run the live driver integration. A Debug build, unless launched
+with `CABOOSE_PRIVATE_GPU_INDEXED=0`, creates one executor for the paired owner computer
 using its existing phone token and host `/v1/gpu` endpoint. The matching guest
 requires the authenticated private sockets and explicit indexed broker selection
 described in [the live GPU contract](../../docs/gpu-live.md). This path never

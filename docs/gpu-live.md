@@ -235,8 +235,8 @@ application reconfigures its swapchain at the new extent, without revoking the
 surface grant or dropping the executor. Losing the owner view, removing its
 display, or invalid/zero geometry requests revocation of only the affected
 surface (`SURFACE_REVOKE_REQUEST`). Background or computer
-replacement drains the entire executor. This path is not enabled
-by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
+replacement drains the entire executor. Release builds never enable
+this path. Debug builds enable it unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`; the owner
 AppModel then opens the existing authenticated host endpoint and updates the
 registry from its ordinary display. Agent and thumbnail sessions never create an
 executor. Native presentation runtime remains unvalidated.

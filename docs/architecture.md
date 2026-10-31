@@ -2823,8 +2823,8 @@ changes to that window geometry still revoke the owner lease. GPU retirement and
 finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
 Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
-The app's default session creation does not activate this private executor.
-Debug-only `CABOOSE_PRIVATE_GPU_INDEXED=1` connects the owner AppModel to the
+Release builds never activate this private executor.
+Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, connect the owner AppModel to the
 authenticated host GPU endpoint. Backgrounding, computer switch and display
 takeover drain it; ordinary display reconnects preserve it. A normal broker close
 after the native REVOKED receipt and successful cleanup is required before the

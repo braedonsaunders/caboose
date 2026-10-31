@@ -64,7 +64,7 @@ final class AppModel {
     // window path. Release builds never activate this experimental executor.
     private static var privateIndexedGPU: Bool {
         #if DEBUG
-        ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_INDEXED"] == "1"
+        ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_INDEXED"] != "0"
         #else
         false
         #endif
@@ -72,6 +72,7 @@ final class AppModel {
     private var liveGPUOwner: LiveGPUOwnerSession?
     private var liveGPUIdentity: String?
     private var liveGPUGeneration = UUID()
+    private var liveGPUEpochResumedGeneration: UUID?
     private var liveGPUFailedIdentity: String?
     private var liveGPUBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
@@ -603,6 +604,7 @@ final class AppModel {
         lastDisplay = display
         sessionIdentity = identity
         handledClosure = nil
+        liveGPUEpochResumedGeneration = nil
         placedConnection = 0
         let caps = displayCapabilities()
         placedWindowIDs.removeAll()
@@ -768,6 +770,7 @@ final class AppModel {
                 let closure = (ObjectIdentifier(session), (session as? CabooseDisplaySession)?.connections ?? 0)
                 guard handledClosure.map({ $0 != closure }) ?? true else { break }
                 handledClosure = closure
+                if resumeSilentlyForLiveGPUEpoch(session) { break }
                 link.lost(cause, reason: reason ?? "The display connection closed.")
                 if case .lost(let last) = link.status { phase = .failed(last) }
             } else if sceneActive, session.closeCause != .local {
@@ -1098,6 +1101,22 @@ final class AppModel {
             throw error
         }
         try? await refreshComputer()
+    }
+
+    /// When the live GPU executor completes its SESSION_READY handshake after the
+    /// initial display hello, the compositor closes the display socket so the next
+    /// ServerHello carries `gpu_live_epoch`. Resume immediately in place without
+    /// flashing the reconnect banner or waiting on backoff.
+    private func resumeSilentlyForLiveGPUEpoch(_ session: any DisplaySession) -> Bool {
+        guard let display = session as? CabooseDisplaySession,
+              display.server?.gpuLiveEpoch == nil,
+              let owner = liveGPUOwner,
+              owner.state == .connecting || owner.state == .connected,
+              liveGPUEpochResumedGeneration != liveGPUGeneration,
+              let host, let lastDisplay, let sessionIdentity else { return false }
+        liveGPUEpochResumedGeneration = liveGPUGeneration
+        openDisplay(host: host, display: lastDisplay, identity: sessionIdentity)
+        return true
     }
 
     /// READY-induced display reconnects retain this independent executor. A new
