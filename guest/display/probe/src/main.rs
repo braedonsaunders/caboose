@@ -64,7 +64,8 @@ OPTIONS:
                            drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
                            the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
+                           scroll:X,Y,DY (precise, DY pixels), look:X,Y,DX,DY (relative
+                           motion, the pointer left at X,Y), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
                            cannot run it does),
                            finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
@@ -713,7 +714,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "press" | "move" | "release" => {
             let (x, y) = point(arg)?;
             let buttons = if verb == "release" { 0 } else { proto::buttons::LEFT };
-            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None })]
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None, relative: None })]
         }
         // drop-enter:TYPES@X,Y starts a drop from the phone offering TYPES (`|`-separated;
         // `text` stands for text/plain;charset=utf-8, whose `;` would end the action).
@@ -752,7 +753,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
-                .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None }))
+                .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None, relative: None }))
                 .to_vec()
         }
         "close" => vec![Message::Close { id }],
@@ -794,7 +795,16 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 y,
                 buttons: 0,
                 scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true, seq: None }),
+                relative: None,
             })]
+        }
+        // look:X,Y,DX,DY moves the pointer DX, DY relative to where it is, leaving it at X,Y
+        // (a stick's mouse look).
+        "look" => {
+            let mut parts = arg.splitn(4, ',');
+            let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad look {arg}"));
+            let (x, y, dx, dy) = (next()?, next()?, next()?, next()?);
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons: 0, scroll: None, relative: Some([dx, dy]) })]
         }
         _ => return Err(format!("unknown action {verb}")),
     })
@@ -1099,7 +1109,7 @@ fn run(args: Args) -> Result<bool, String> {
                             for buttons in [proto::buttons::LEFT, 0] {
                                 send(
                                     &mut ws,
-                                    &Message::Pointer(proto::Pointer { id: b.id, x, y, buttons, scroll: None }),
+                                    &Message::Pointer(proto::Pointer { id: b.id, x, y, buttons, scroll: None, relative: None }),
                                 )?;
                             }
                         }
@@ -1230,7 +1240,7 @@ fn run(args: Args) -> Result<bool, String> {
                             for buttons in [proto::buttons::LEFT, 0] {
                                 send(
                                     &mut ws,
-                                    &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None }),
+                                    &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None, relative: None }),
                                 )?;
                             }
                         }

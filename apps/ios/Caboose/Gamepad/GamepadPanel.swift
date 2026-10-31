@@ -93,7 +93,7 @@ struct GamepadPanel: View {
         .onChange(of: stored) { letGo() }
         .onChange(of: customizing) { _, open in if open { letGo() } }
         // The computer has a gamepad for the pad while it shows with the Linux controller output.
-        .onChange(of: settings.windows, initial: true) { _, route in model.devices.setScreenGamepad(route == .controller) }
+        .onChange(of: settings.windows, initial: true) { _, route in model.devices.setScreenGamepad(route != .keys) }
         .onDisappear {
             driver.release()
             model.devices.setScreenGamepad(false)
@@ -124,7 +124,7 @@ struct GamepadPanel: View {
                 quickKeyStrip(window)
             } else {
                 Text(driver.destination(of: window, settings: settings, name: window.map { model.appName(for: $0) },
-                                        linux: model.devices.screenGamepadOffered))
+                                        linux: driver.drivesController(settings: settings, devices: model.devices)))
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -248,6 +248,8 @@ final class GamepadDriver {
     @ObservationIgnored private weak var game: RemoteGame?
     /// Where the pad reaches the computer as a gamepad, while it does.
     @ObservationIgnored private weak var devices: DeviceCenter?
+    /// The pad last drove the computer's gamepad rather than keys.
+    @ObservationIgnored private var drovesController = false
     /// What the keys held in `window` were pressed for.
     @ObservationIgnored private var keyState = GameGamepadState()
     @ObservationIgnored private var keySettings = OnScreenGamepad.Settings()
@@ -264,6 +266,7 @@ final class GamepadDriver {
 
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }
+        lookLink?.invalidate()
     }
 
     /// What the strip says the pad drives; `linux` when the computer has the pad's gamepad.
@@ -271,7 +274,7 @@ final class GamepadDriver {
         guard let window else { return "Choose a window to play" }
         let title = window.title.isEmpty ? (name ?? "this window") : window.title
         if window.game.map({ $0.webview == nil }) == true && settings.games == .controller { return "Controller for \(title)" }
-        return settings.windows == .controller && linux ? "Linux controller for \(title)" : "Keys to \(title)"
+        return linux ? "Linux controller for \(title)" : "Keys to \(title)"
     }
 
     func apply(_ new: GameGamepadState, to target: RemoteWindow?, session: (any DisplaySession)?, settings: OnScreenGamepad.Settings,
@@ -297,7 +300,17 @@ final class GamepadDriver {
             game.gamepad = new
             return
         }
-        if settings.windows == .controller, devices.screenGamepadOffered {
+        let controller = drivesController(settings: settings, devices: devices)
+        if controller != drovesController {
+            // A game opened or closed the pad's gamepad: what one output holds is let go.
+            release()
+            window = target
+            self.session = session
+            keySettings = settings
+            drovesController = controller
+            state = new
+        }
+        if controller {
             self.devices = devices
             devices.screenGamepad(new)
             return
@@ -306,6 +319,54 @@ final class GamepadDriver {
             Self.send(change, in: target, session: session)
         }
         keyState = new
+        followLook()
+    }
+
+    // MARK: Mouse look
+
+    @ObservationIgnored private var lookLink: CADisplayLink?
+    @ObservationIgnored private var lookAt: CFTimeInterval = 0
+
+    /// A stick set to Mouse looks around for as long as it is deflected, at the display's rate.
+    private func followLook() {
+        let looking = OnScreenGamepad.look(for: keyState, settings: keySettings, seconds: 1) != .zero
+        if looking, lookLink == nil {
+            let link = CADisplayLink(target: LookTarget(self), selector: #selector(LookTarget.tick(_:)))
+            link.add(to: .main, forMode: .common)
+            lookLink = link
+            lookAt = CACurrentMediaTime()
+        } else if !looking {
+            stopLook()
+        }
+    }
+
+    private func stopLook() {
+        lookLink?.invalidate()
+        lookLink = nil
+    }
+
+    fileprivate func look(at time: CFTimeInterval) {
+        let seconds = min(0.05, max(0, time - lookAt))
+        lookAt = time
+        guard let window, let session, session.state == .ready, session.windows[window.id] === window else {
+            stopLook()
+            return
+        }
+        let motion = OnScreenGamepad.look(for: keyState, settings: keySettings, seconds: seconds)
+        guard motion != .zero else { return stopLook() }
+        session.pointerLook(in: window, by: motion)
+    }
+
+    /// Whether the pad drives the computer's gamepad: always when its owner says so, and
+    /// while a game reads it when the choice is automatic; keys otherwise, and without
+    /// Controllers on in the computer's hardware settings.
+    func drivesController(settings: OnScreenGamepad.Settings, devices: DeviceCenter) -> Bool {
+        guard devices.screenGamepadOffered else { return false }
+        switch settings.windows {
+        case .controller: return true
+        case .automatic: return devices.screenGamepadRead
+        case .keys: return false
+        }
     }
 
     /// A key, or keys pressed together: down in order, up in reverse.
@@ -329,6 +390,17 @@ final class GamepadDriver {
         }
         keyState = GameGamepadState()
         state = GameGamepadState()
+        stopLook()
+    }
+}
+
+/// The display link's target, which holds the driver weakly so the link never keeps it.
+private final class LookTarget: NSObject {
+    weak var driver: GamepadDriver?
+    init(_ driver: GamepadDriver) { self.driver = driver }
+    @MainActor @objc func tick(_ link: CADisplayLink) {
+        guard let driver else { return link.invalidate() }
+        driver.look(at: link.targetTimestamp)
     }
 }
 

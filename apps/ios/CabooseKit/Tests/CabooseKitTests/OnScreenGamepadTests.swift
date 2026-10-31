@@ -315,7 +315,8 @@ struct OnScreenGamepadTests {
         jump[.south] = 1
         jump[.up] = 1
         jump[.leftX] = -0.9
-        #expect(Pad.keys(for: jump, settings: settings) == ["space+Return", "Up", "Left"])
+        // The d-pad is the arrow keys and the left stick W A S D by default.
+        #expect(Pad.keys(for: jump, settings: settings) == ["space+Return", "Up", "a"])
         let pressed = Pad.keyChanges(from: GameGamepadState(), to: jump, settings: settings)
         #expect(pressed.allSatisfy { $0.pressed } && pressed.count == 3)
         var next = jump
@@ -323,16 +324,21 @@ struct OnScreenGamepadTests {
         let changes = Pad.keyChanges(from: jump, to: next, settings: settings)
         #expect(changes.map { $0.name } == ["space+Return"] && changes.map { $0.pressed } == [false])
         let released = Pad.keyChanges(from: next, to: GameGamepadState(), settings: settings)
-        #expect(Set(released.map { $0.name }) == ["Up", "Left"] && released.allSatisfy { !$0.pressed })
-        // The right stick is W A S D by default; None presses nothing.
+        #expect(Set(released.map { $0.name }) == ["Up", "a"] && released.allSatisfy { !$0.pressed })
+        // The right stick looks with the mouse by default, pressing no keys; with keys
+        // chosen it presses them, and None presses nothing.
         var look = GameGamepadState()
         look[.rightY] = -1
-        #expect(Pad.keys(for: look, settings: settings) == ["w"])
+        #expect(Pad.keys(for: look, settings: settings).isEmpty)
+        var keyed = settings
+        keyed.rightStickKeys = .wasd
+        #expect(Pad.keys(for: look, settings: keyed) == ["w"])
         var quiet = settings
         quiet.rightStickKeys = .none
+        quiet.leftStickKeys = .none
         quiet.keys["south"] = ""
         #expect(Pad.keys(for: look, settings: quiet).isEmpty)
-        #expect(Pad.keys(for: jump, settings: quiet) == ["Up", "Left"])
+        #expect(Pad.keys(for: jump, settings: quiet) == ["Up"])
         // Guide and the stick clicks take keys too; an eased-off trigger lets its key go.
         settings.keys["home"] = "Escape"
         settings.keys["leftStick"] = "Shift_L"
@@ -358,6 +364,38 @@ struct OnScreenGamepadTests {
 
     // MARK: Settings
 
+    @Test func theRightStickLooksAroundWithTheMouse() {
+        let settings = Pad.Settings()
+        var state = GameGamepadState()
+        #expect(Pad.look(for: state, settings: settings, seconds: 1) == .zero)
+        state[.rightX] = 0.05 // inside the dead zone
+        #expect(Pad.look(for: state, settings: settings, seconds: 1) == .zero)
+        state[.rightX] = 1
+        state[.rightY] = 0
+        let full = Pad.look(for: state, settings: settings, seconds: 0.5)
+        #expect(abs(full.x - Pad.lookSpeed / 2) < 0.001 && full.y == 0)
+        // Half way is a quarter of the speed past the dead zone: fine aim near the centre.
+        state[.rightX] = 0
+        state[.rightY] = -0.55
+        let up = Pad.look(for: state, settings: settings, seconds: 1)
+        #expect(up.x == 0 && abs(up.y + Pad.lookSpeed * 0.25) < 0.001)
+        // The left stick moves with keys, so it makes no motion.
+        var walk = GameGamepadState()
+        walk[.leftX] = 1
+        #expect(Pad.look(for: walk, settings: settings, seconds: 1) == .zero)
+    }
+
+    @Test func settingsSavedWithTheFirstStickDefaultsTakeTheTwinStickOnes() {
+        let old = Pad.Settings.decode(Data(#"{"leftStickKeys":"arrows","rightStickKeys":"wasd"}"#.utf8))
+        #expect(old.leftStickKeys == .wasd && old.rightStickKeys == .mouse)
+        let chosen = Pad.Settings.decode(Data(#"{"leftStickKeys":"arrows","rightStickKeys":"none"}"#.utf8))
+        #expect(chosen.leftStickKeys == .arrows && chosen.rightStickKeys == .none)
+        var kept = Pad.Settings()
+        kept.leftStickKeys = .arrows
+        kept.rightStickKeys = .wasd
+        #expect(Pad.Settings.decode(kept.encoded) == kept)
+    }
+
     @Test func storedSettingsSurviveAndBadOnesFallBack() {
         var settings = Pad.Settings()
         settings.choose(.retro, for: "fceux")
@@ -367,13 +405,15 @@ struct OnScreenGamepadTests {
         settings.windows = .controller
         settings.keys["start"] = "p"
         #expect(Pad.Settings.decode(settings.encoded) == settings)
-        // Settings saved before the Linux controller existed keep pressing keys.
-        #expect(Pad.Settings().windows == .keys)
+        // Automatic is stored under the name plain keys had, so settings saved before it
+        // become automatic; always-keys has a name of its own.
+        #expect(Pad.Settings().windows == .automatic)
+        #expect(Pad.WindowRoute(rawValue: "keys") == .automatic && Pad.WindowRoute.keys.rawValue == "keys-only")
         #expect(Pad.Settings.decode(nil) == Pad.Settings())
         #expect(Pad.Settings.decode(Data("nope".utf8)) == Pad.Settings())
         let partial = Pad.Settings.decode(Data(#"{"left":"stick","showsRightStick":true,"scale":9,"keys":{"south":"x"},"appStyles":{"a":"retro","b":"hologram"}}"#.utf8))
         #expect(partial.scale == 1.2 && partial.keys == ["south": "x"] && partial.style == .modern)
-        #expect(partial.appStyles == ["a": .retro] && partial.windows == .keys)
+        #expect(partial.appStyles == ["a": .retro] && partial.windows == .automatic)
     }
 
     @Test func eachAppRemembersItsController() {

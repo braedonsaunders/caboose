@@ -1431,6 +1431,26 @@ smithay::delegate_xdg_decoration!(State);
 smithay::delegate_kde_decoration!(State);
 smithay::delegate_seat!(State);
 smithay::delegate_relative_pointer!(State);
+smithay::delegate_pointer_constraints!(State);
+
+impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for State {
+    /// A constraint on the surface the pointer is over takes effect at once; one on
+    /// another surface when the pointer enters it (input.rs).
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &smithay::input::pointer::PointerHandle<Self>) {
+        if pointer.current_focus().as_ref() == Some(surface) {
+            crate::input::activate_constraint(surface, pointer);
+        }
+    }
+
+    /// The client's cursor position while locked: the phone draws no cursor for it.
+    fn cursor_position_hint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+    }
+}
 smithay::delegate_data_device!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_output!(State);

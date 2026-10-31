@@ -451,6 +451,7 @@ import Testing
         "pointer-left-drag": .pointer(window: 7, x: 10.5, y: 20, buttons: 1, scroll: nil),
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
+        "pointer-relative": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: nil, relative: CGPoint(x: 12.5, y: -3.25)),
         "scroll-target": .scrollTarget(window: 7, scroller: 0, seq: 18, delta: CGPoint(x: 0, y: 37.25)),
         "scroll-zoom": .scrollZoom(window: 7, seq: 20, scale: 2.5, focus: CGPoint(x: 590, y: 1300)),
         "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [

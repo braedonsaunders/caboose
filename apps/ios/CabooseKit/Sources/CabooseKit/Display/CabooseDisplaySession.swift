@@ -1002,7 +1002,19 @@ public final class CabooseDisplaySession: DisplaySession {
 
     public func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String] = []) {
         if let game = window.game { return game.pointerMove(to: point, in: window.frame.size, modifiers: modifiers) }
+        lastPointer = (window.id, point)
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
+    }
+
+    /// Where the pointer was last put in each window, so relative motion leaves it there.
+    private var lastPointer: (window: Int, point: CGPoint)?
+
+    public func pointerLook(in window: RemoteWindow, by delta: CGPoint) {
+        guard window.game == nil, delta != .zero else { return }
+        let point = lastPointer.flatMap { $0.window == window.id ? $0.point : nil }
+            ?? CGPoint(x: window.frame.width / 2, y: window.frame.height / 2)
+        lastPointer = (window.id, point)
+        send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil, relative: delta))
     }
 
     public func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String] = []) {
@@ -1014,6 +1026,7 @@ public final class CabooseDisplaySession: DisplaySession {
         guard bit != 0 else { return }
         if pressed { inputLeftGames(for: window) }
         if pressed { buttons |= bit } else { buttons &= ~bit }
+        lastPointer = (window.id, point)
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 

@@ -1100,18 +1100,20 @@ their own haptic, and the pad defers the screen-edge system gestures.
 
 A game running on this device ([game handoff](../../docs/game-handoff.md)) gets it as a
 standard controller through the page's Gamepad API; every other window, and a game when
-Customize says so, gets keys, each held for as long as its control is (by default the d-pad and
-left stick are the arrow keys, the right stick W A S D, A Space and Return together, so it
+Customize says so, gets keys, each held for as long as its control is (by default the d-pad is
+the arrow keys and the left stick W A S D; the right stick is the mouse, looking around as a
+game's mouse look does, faster the further it is pushed; A Space and Return together, so it
 jumps in play and confirms in menus, B Escape, Start Return). A key belongs to a button's
 place on the controller, so it carries across types; a button can also press Return and Y, or
 Escape and N, together for a game's yes/no questions. The keyboard button in the pad's strip
 swaps its title for quick keys (Escape, Return, Y, N, Tab and the console's `` ` ``), each
 pressed and released at a tap, and a Type key that raises the system keyboard, whose
 characters, Return and Delete reach the window as key presses. With **Other
-windows get: A Linux controller** in Customize, the pad is instead a gamepad on the computer
-(`gamepad-screen` in [phone hardware](../../docs/devices.md)), which Steam and SDL games use,
-and a rumble the computer plays shakes the phone; without Controllers on in the computer's
-hardware settings it presses keys. Customize sets the type, markings, sticks, size, haptics and every key,
+windows get: Automatic** (the default) the pad is a gamepad on the computer
+(`gamepad-screen` in [phone hardware](../../docs/devices.md)) while a Steam or SDL game reads
+it, and keys otherwise; **A Linux controller** makes it the gamepad always and **Keys** never.
+A rumble the computer plays shakes the phone. Without Controllers on in the computer's
+hardware settings, or on a container computer, which has no gamepads, it presses keys. Customize sets the type, markings, sticks, size, haptics and every key,
 and remembers them; leaving the mode, a change of window, game, connection or settings,
 opening Customize or leaving the app releases everything held, and a finger still on the pad
 then controls nothing until it lifts. `CabooseKit/Input/OnScreenGamepad*.swift` holds the

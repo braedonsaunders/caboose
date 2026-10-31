@@ -411,7 +411,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x89` | `video.keyframe` | `id`: the decoder failed; frames are dropped until a keyframe |
 | `0x90` | `touch` | `id`, `points: [{ slot, phase: "down"\|"motion"\|"up"\|"cancel", x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
 | `0x91` | `pencil` | `id`, `phase: "down"\|"motion"\|"up"\|"cancel"\|"hover"\|"leave"`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
-| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool, seq?: uint }` (pixels when precise, otherwise wheel clicks; `seq`: [Input sequencing](#input-sequencing)) |
+| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool, seq?: uint }` (pixels when precise, otherwise wheel clicks; `seq`: [Input sequencing](#input-sequencing)), `relative?: [dx, dy]` (motion in display pixels that leaves the pointer at `x`, `y`) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x95` | `scroll.target` | `id`, `scroller: uint`, `seq: uint`, `delta: [dx, dy]` ([Scroll reports](#scroll-reports)) |
@@ -443,7 +443,12 @@ Each pointer message positions the virtual pointer, pairs that absolute motion w
 `relative-pointer-v1` motion for clients that bind it, then delivers buttons and scroll
 axes in the same frame. The relative vector is the change in logical pointer position;
 the guest applies no acceleration. The two motion timestamps share one monotonic sample
-(milliseconds for `wl_pointer`, microseconds for relative motion). This does not change
+(milliseconds for `wl_pointer`, microseconds for relative motion). A message with
+`relative` sends that vector as the relative motion instead, which is how a stick looks
+around in a game. caboose-display implements pointer-constraints-v1: while a client holds a
+locked pointer on the surface under the pointer (a game's mouse look on Wayland), the
+pointer does not move and only relative motion reaches it; a constraint takes effect when
+the pointer is on its surface. X11 games read the same motion as XInput 2 raw motion. This does not change
 the pointer message's pixel coordinates or its precise-pixel versus wheel-click units.
 
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is

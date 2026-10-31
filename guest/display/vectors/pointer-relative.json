@@ -1,0 +1,8 @@
+{
+  "name": "pointer-relative",
+  "description": "A stick looking right and a little up in a game: relative motion with the pointer left where it is.",
+  "messages": [
+    {"direction": "client", "type": "pointer", "type_id": 146, "fields": {"x": {"$float": 640.0}, "y": {"$float": 480.0}, "id": 7, "buttons": 0, "relative": [{"$float": 12.5}, {"$float": -3.25}]}}
+  ],
+  "hex": "9240000000a56178fb40840000000000006179fb407e0000000000006269640767627574746f6e73006872656c617469766582fb4029000000000000fbc00a000000000000"
+}

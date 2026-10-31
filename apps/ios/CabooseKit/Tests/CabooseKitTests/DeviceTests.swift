@@ -273,6 +273,12 @@ import Testing
         center.screenGamepad(state)
         center.screenGamepad(state) // unchanged: not sent again
         #expect(sent.types == [0xB5])
+        // A game reading the gamepad is told apart from one that does not.
+        #expect(!center.screenGamepadRead)
+        center.handle(.deviceOpen(device: "gamepad-screen", rateHz: nil))
+        #expect(center.screenGamepadRead)
+        center.handle(.deviceClose(device: "gamepad-screen"))
+        #expect(!center.screenGamepadRead)
         sent.clear()
         center.setScreenGamepad(false)
         // Released first, then the device goes; the battery follows every new set.
