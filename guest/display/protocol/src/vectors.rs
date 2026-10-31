@@ -258,6 +258,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 encoders: vec![],
                 features: ["vsync", "ack", "atlas", "scene"].map(String::from).to_vec(),
                 epoch: Some("5f3a9c01d2e4b678".into()),
+                gpu_live_epoch: None,
             }),
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),
