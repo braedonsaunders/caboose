@@ -170,7 +170,8 @@ void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
     f.source.reset();
     f.resourcesDestroyed = true;
 }
-constexpr uint32_t kCaptureSlots = 2;
+// Two frames in flight may each be writing one while the compositor holds the last.
+constexpr uint32_t kCaptureSlots = 3;
 // Caller holds s.operations, after the previous frame's copy has completed. Returns the
 // image this present's copy also writes, or null to present without a capture.
 VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects& source, uint64_t serial) {
@@ -1163,7 +1164,10 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
     }
     if (int result = drainFrames(*surface, swapchain)) return fail(result);
     // Another swapchain's frames may still use the device.
-    if (surface->frames.empty()) surface->device.reset();
+    if (surface->frames.empty()) {
+        destroyCapture(*surface);
+        surface->device.reset();
+    }
     std::unique_lock<std::mutex> lock(swapchain->mutex);
     if (swapchain->requests || swapchain->quarantined) return fail(EBUSY);
     std::vector<uint32_t> acquired;
