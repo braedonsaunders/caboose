@@ -506,7 +506,11 @@ instance. With no executor the Caboose ICD fails `vkCreateInstance` and the load
 offers lavapipe. When the phone returns, the executor switch layer
 (`guest/gpu/executor-switch`) makes those lavapipe devices report device loss, and
 the applications move back onto the phone. Returning to the foreground starts a new
-executor. Computer switches and display takeover
+executor. An application launched with `CABOOSE_GPU_ON_LOSS=pause` instead
+waits: every call that would report the loss blocks until the broker has a new
+executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its device
+on the returned phone. Its devices cannot be resumed as they were, because their
+objects lived on the executor that left. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
 app releases its process-wide owner reservation only after native cleanup, its
 REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss
