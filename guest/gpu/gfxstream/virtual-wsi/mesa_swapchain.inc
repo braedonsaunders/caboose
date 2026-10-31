@@ -376,6 +376,8 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
                 const uint64_t chunk=std::min(remaining,kDay);
                 if (surface.client.awaitAcquireReply(swap->native,
                         std::chrono::steady_clock::now()+std::chrono::nanoseconds(chunk))) break;
+                // A revoked surface answers nothing more: recreate, as with any WSI.
+                if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
                 if (timeout!=UINT64_MAX) remaining-=chunk;
                 if (!remaining) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
             }
@@ -390,6 +392,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             auto& image=swap->images.at(acquired);
             if (image.serial) {
                 surface.client.waitReleased(image.serial,deadline());
+                if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
                 surface.client.consumeRelease(image.serial); image.serial=0;
             }
             // Hand the private semaphore's signal to the application's semaphore and fence.
@@ -429,6 +432,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             auto& image=swap->images.at(acquired);
             if (image.serial) {
                 surface.client.waitReleased(image.serial,deadline());
+                if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
                 surface.client.consumeRelease(image.serial); image.serial=0;
             }
             *index=acquired;

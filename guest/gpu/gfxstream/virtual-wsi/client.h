@@ -58,6 +58,9 @@ private:
     // Reads one record the socket already holds; false when none was there after all.
     bool receiveReady(Record* out);
     Record await(uint16_t kind, uint64_t serial, Deadline deadline);
+    // Like await, but false once the surface is revoked: the phone then owes no
+    // further receipts for it.
+    bool awaitLive(uint16_t kind, uint64_t serial, Deadline deadline);
     // Applies one received record; true when it is the awaited `kind`/`serial` (kind 0
     // awaits nothing: every record must be unsolicited).
     bool absorb(Record& r, uint16_t kind, uint64_t serial);

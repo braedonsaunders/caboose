@@ -91,6 +91,13 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
         if (absorb(r,kind,serial)) return r;
     }
 }
+bool Client::awaitLive(uint16_t kind, uint64_t serial, Deadline deadline) {
+    while (!revoked_) {
+        auto r=receive(deadline);
+        if (absorb(r,kind,serial)) return true;
+    }
+    return false;
+}
 void Client::pump() {
     require(fd_>=0);
     for (;;) {
@@ -215,7 +222,7 @@ bool Client::released(uint64_t serial) const {
 void Client::waitReleased(uint64_t serial, Deadline deadline) {
     require(bound_ && (sources_.count(serial) || released(serial)));
     releaseWait_=true;
-    try { if (!released(serial)) await(22,serial,deadline); }
+    try { if (!released(serial)) awaitLive(22,serial,deadline); }
     catch (...) { releaseWait_=false; throw; }
     releaseWait_=false;
 }
@@ -252,7 +259,8 @@ void Client::waitPresentationRoom(size_t frames, Deadline deadline) {
             return entry.second.swapchain!=0 && !entry.second.failed;
         }));
     };
-    while (unretired()>=frames) await(36,0,deadline);
+    // After a revocation no further retirements are owed: the caller sees revoked().
+    while (unretired()>=frames && awaitLive(36,0,deadline)) {}
 }
 Record Client::retire(Deadline deadline) {
     if (retired_) return retirement_;
@@ -328,6 +336,7 @@ bool Client::awaitAcquireReply(uint64_t id, Deadline deadline) {
     for (;;) {
         pump();
         if (acquireReplies_.count(id)) return true;
+        if (revoked_) return false;
         auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
         if (left<=0) return false;
         pollfd p{fd_,POLLIN,0};

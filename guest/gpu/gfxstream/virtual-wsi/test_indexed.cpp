@@ -108,7 +108,9 @@ static void exercise(int scenario) {
 // 4: two frames in flight; room for a third opens when the oldest retires,
 // 5: an acquire made ahead of time: its reply is awaited without being consumed, and a
 //    deadline before it arrives leaves the connection and the acquire intact,
-// 6: records already waiting when pump runs are applied without blocking or failing.
+// 6: records already waiting when pump runs are applied without blocking or failing,
+// 7: a revocation while two frames are in flight and an acquire is outstanding ends
+//    every wait for a phone receipt at once instead of at the transport deadline.
 static void exerciseOrdered(int scenario) {
     char dir[]="/tmp/caboose-ordered-test-XXXXXX"; assert(mkdtemp(dir));
     std::string path=std::string(dir)+"/surface";
@@ -130,6 +132,14 @@ static void exerciseOrdered(int scenario) {
             put32(acquired,1); put32(acquired,index); put32(acquired,0); put32(acquired,0); transmit(fd,30,acquired);
         };
         receive(fd,29); sendAcquired(2,0);
+        if (scenario==7) {
+            receive(fd,39); receive(fd,29); sendAcquired(3,1); receive(fd,39);
+            receive(fd,29);  // acquired ahead of time; the revocation answers nothing more
+            transmit(fd,35,identityBytes());
+            usleep(300000);  // the compositor's retirement follows later
+            auto retired=identityBytes(); statusBytes(retired); transmit(fd,24,retired);
+            close(fd); _exit(0);
+        }
         if (scenario==6) {
             receive(fd,39);
             auto result=identityBytes(); put64(result,1); statusBytes(result); put32(result,2); put32(result,0);
@@ -198,7 +208,20 @@ static void exerciseOrdered(int scenario) {
     client.presentOrdered(111,1,13,77,0,0,{19,23},deadline);
     Status failure{};
     assert(!client.presentFailed(111,&failure));
-    if (scenario==6) {
+    if (scenario==7) {
+        client.beginAcquire(111,3,17,0,12345,deadline);
+        assert(u32(client.finishAcquire(111,3,deadline).body,76)==1);
+        client.presentOrdered(111,2,13,78,1,0,{19,23},deadline);
+        client.beginAcquire(111,4,17,0,UINT64_MAX,deadline);
+        const auto start=std::chrono::steady_clock::now();
+        client.waitPresentationRoom(2,deadline);
+        assert(client.revoked());
+        assert(!client.awaitAcquireReply(111,deadline));
+        client.waitReleased(1,deadline);
+        assert(!client.released(1));
+        assert(std::chrono::steady_clock::now()-start<std::chrono::seconds(2));
+        client.retire(deadline); assert(client.retired());
+    } else if (scenario==6) {
         usleep(100000);  // the uncertain result is already waiting
         client.pump();
         assert(client.presentFailed(111,&failure) && failure.nativeError==EIO);
@@ -256,6 +279,6 @@ static void exerciseOrdered(int scenario) {
 }
 int main() {
     for (int scenario=0;scenario<5;++scenario) exercise(scenario);
-    for (int scenario=0;scenario<7;++scenario) exerciseOrdered(scenario);
-    std::cout<<"5 indexed and 7 ordered-present scenarios passed, including 130 frames with final retirement\n";
+    for (int scenario=0;scenario<8;++scenario) exerciseOrdered(scenario);
+    std::cout<<"5 indexed and 8 ordered-present scenarios passed, including 130 frames with final retirement\n";
 }
