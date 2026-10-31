@@ -99,6 +99,9 @@ pub struct Report {
     pub applied: u64,
     pub epoch: u64,
     pub tag: Option<[f64; 4]>,
+    /// The page's visual scale and the scales it can take, for a reporter that zooms.
+    pub zoom: Option<f64>,
+    pub zoom_range: Option<[f64; 2]>,
     pub scrollers: Vec<RawScroller>,
 }
 
@@ -151,6 +154,8 @@ impl Report {
             applied: v.get("applied")?.as_u64()?,
             epoch: v.get("epoch")?.as_u64()?,
             tag: v.get("tag").and_then(quad),
+            zoom: v.get("zoom").and_then(Value::as_f64).filter(|z| z.is_finite() && *z > 0.0),
+            zoom_range: v.get("zoom_range").and_then(pair).filter(|r| r[0] > 0.0 && r[0] <= r[1]),
             scrollers,
         })
     }
@@ -196,6 +201,8 @@ impl Placement {
             tag_rect,
             applied: report.applied,
             epoch: report.epoch,
+            zoom: report.zoom,
+            zoom_range: report.zoom_range,
             scrollers: report
                 .scrollers
                 .iter()
@@ -569,25 +576,48 @@ impl State {
     }
 
     /// The client's `scroll.target`, passed to the window's reporter in its device pixels.
-    pub fn scroll_target(&mut self, m: &proto::ScrollTarget) {
-        let target = self.scroll.peers.iter_mut().find(|(_, p)| p.window == Some(m.id));
-        let Some((&conn, peer)) = target else { return };
-        let Some(sizes) = self.windows.get(m.id).and_then(|w| w.announced.as_ref()).map(|a| {
+    /// The window's bound reporter and its placement, for a client message to pass on.
+    fn scroll_peer(&mut self, window: u64) -> Option<(u64, Placement)> {
+        let sizes = self.windows.get(window).and_then(|w| w.announced.as_ref()).map(|a| {
             let over = a.overscan.unwrap_or_default();
             (a.geometry.w + over.w, a.geometry.h + over.h)
-        }) else {
+        })?;
+        let (&conn, peer) = self.scroll.peers.iter().find(|(_, p)| p.window == Some(window))?;
+        Some((conn, peer.report.as_ref().and_then(|r| Placement::new(r, sizes))?))
+    }
+
+    fn scroll_send(&mut self, conn: u64, message: &Value) {
+        if self.scroll.peers.get_mut(&conn).is_some_and(|peer| !peer.send(message)) {
+            self.scroll.peers.remove(&conn);
+        }
+    }
+
+    /// The client's `scroll.zoom`, passed to the window's reporter with the focus in its
+    /// viewport's device pixels.
+    pub fn scroll_zoom(&mut self, m: &proto::ScrollZoom) {
+        let Some((conn, p)) = self.scroll_peer(m.id) else { return };
+        if !(m.scale.is_finite() && m.scale > 0.0) {
             return;
-        };
-        let Some(k) = peer.report.as_ref().and_then(|r| Placement::new(r, sizes)).map(|p| p.k) else { return };
+        }
+        let message = json!({
+            "type": "zoom",
+            "seq": m.seq,
+            "scale": m.scale,
+            "focus": [(m.focus[0] - p.x0) / p.k, (m.focus[1] - p.y0) / p.k],
+        });
+        self.scroll_send(conn, &message);
+    }
+
+    pub fn scroll_target(&mut self, m: &proto::ScrollTarget) {
+        let Some((conn, p)) = self.scroll_peer(m.id) else { return };
+        let k = p.k;
         let message = json!({
             "type": "target",
             "scroller": m.scroller,
             "seq": m.seq,
             "delta": [m.delta[0] / k, m.delta[1] / k],
         });
-        if !peer.send(&message) {
-            self.scroll.peers.remove(&conn);
-        }
+        self.scroll_send(conn, &message);
     }
 }
 

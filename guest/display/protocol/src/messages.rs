@@ -828,6 +828,20 @@ pub struct ScrollTree {
     pub epoch: u64,
     /// The primary scroller first.
     pub scrollers: Vec<Scroller>,
+    /// The page's visual scale in this frame, when the reporter zooms; absent is 1. Offsets
+    /// and ranges are in pixels of the zoomed content.
+    pub zoom: Option<f64>,
+    /// The scales the page can be zoomed to, `[min, max]`.
+    pub zoom_range: Option<[f64; 2]>,
+}
+
+/// `scroll.zoom` (0x99): zoom the window's page to `scale` with the window point `focus` fixed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollZoom {
+    pub id: u64,
+    pub seq: u64,
+    pub scale: f64,
+    pub focus: [f64; 2],
 }
 
 /// `scroll.target` (0x95): scroll a reported scroller by `delta` content pixels, exactly.
@@ -990,6 +1004,7 @@ pub enum Message {
     Key(Key),
     Text(Text),
     ScrollTarget(ScrollTarget),
+    ScrollZoom(ScrollZoom),
     SceneScroll(SceneScroll),
     ClientClipboard(Clipboard),
     /// The complete set of devices the phone offers now.
@@ -1110,6 +1125,7 @@ pub mod type_id {
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
     pub const SCROLL_TARGET: u8 = 0x95;
+    pub const SCROLL_ZOOM: u8 = 0x99;
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
@@ -1251,6 +1267,7 @@ impl Message {
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
             Message::ScrollTarget(_) => SCROLL_TARGET,
+            Message::ScrollZoom(_) => SCROLL_ZOOM,
             Message::SceneScroll(_) => SCENE_SCROLL,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::DropEnter(_) => DROP_ENTER,
@@ -1418,6 +1435,14 @@ impl Message {
                 .put("applied", m.applied)
                 .put("epoch", m.epoch)
                 .put("scrollers", Value::Array(m.scrollers.iter().map(scroller_value).collect()))
+                .opt("zoom", m.zoom)
+                .opt("zoom_range", m.zoom_range.map(|r| Value::Array(vec![r[0].into(), r[1].into()])))
+                .build(),
+            Message::ScrollZoom(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("scale", m.scale)
+                .put("focus", Value::Array(vec![m.focus[0].into(), m.focus[1].into()]))
                 .build(),
             Message::ScrollTarget(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1705,6 +1730,8 @@ impl Message {
                 applied: f.u64("applied")?,
                 epoch: f.u64("epoch")?,
                 scrollers: f.array("scrollers")?.iter().map(scroller_from).collect::<Result<_, _>>()?,
+                zoom: f.opt_f64("zoom")?,
+                zoom_range: f.opt("zoom_range", fields::as_f64_pair)?,
             }),
             TILE => Message::Tile(Tile {
                 id: f.u64("id")?,
@@ -1965,6 +1992,12 @@ impl Message {
             KEY => {
                 Message::Key(Key { keysym: f.u32("keysym")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })
             }
+            SCROLL_ZOOM => Message::ScrollZoom(ScrollZoom {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                scale: f.f64("scale")?,
+                focus: f.req("focus", fields::as_f64_pair)?,
+            }),
             SCROLL_TARGET => Message::ScrollTarget(ScrollTarget {
                 id: f.u64("id")?,
                 scroller: f.u32("scroller")?,
@@ -2076,6 +2109,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         KEY => "key",
         TEXT => "text",
         SCROLL_TARGET => "scroll.target",
+        SCROLL_ZOOM => "scroll.zoom",
         PING => "ping",
         DEVICE_STATUS => "device.status",
         DEVICE_OPEN => "device.open",

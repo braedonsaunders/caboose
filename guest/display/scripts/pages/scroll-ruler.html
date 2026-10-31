@@ -9,7 +9,8 @@
 <style>
   html, body { margin: 0; background: #808080; }
   header { position: sticky; top: 0; height: 48px; background: #3050c0; z-index: 1; }
-  canvas { display: block; }
+  /* Crisp when pinch-zoomed: the probe reads its blocks back. */
+  canvas { display: block; image-rendering: pixelated; }
 </style>
 </head>
 <body>

@@ -300,6 +300,7 @@ impl State {
             Message::Touch(_) | Message::Pointer(_) | Message::Key(_) => self.apply_input(message),
             Message::Text(t) => self.text(&t),
             Message::ScrollTarget(t) => self.scroll_target(&t),
+            Message::ScrollZoom(z) => self.scroll_zoom(&z),
             Message::SceneScroll(scroll) => self.on_scene_scroll(scroll),
             Message::VideoKeyframe { id } => {
                 let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));

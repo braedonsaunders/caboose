@@ -97,14 +97,21 @@ pub fn read_ruler(luma: &Luma, map: Mapping, clip: proto::Rect, fixed: &[proto::
     // Below whatever is fixed over the top of the scroller (a sticky header).
     let covered = fixed.iter().filter(|f| f.y <= clip.y + 1).map(|f| f.y + f.h).max().unwrap_or(clip.y);
     let top = covered.max(clip.y) + 2;
-    let first = band_at(luma, map, clip.x, top, scale)?;
     let band = BAND as f64 * scale;
+    // The first row that reads cleanly (the top one may blend with what is above it).
+    let (top, first) = (top..top + band.ceil() as i32 + 1).find_map(|y| band_at(luma, map, clip.x, y, scale).map(|n| (y, n)))?;
+    let mut last = top;
     for y in top + 1..(clip.y + clip.h).min(top + (3.0 * band) as i32) {
         match band_at(luma, map, clip.x, y, scale) {
-            // A scaled picture blends the edge row: whole-pixel precision becomes the scale.
-            Some(n) if n == first + 1 => return Some((first + 1) as f64 * band - (y - clip.y) as f64),
-            Some(n) if n == first => {}
-            _ => return None,
+            // A scaled picture blends the rows around the edge: it lies midway between the
+            // last row of one band and the first of the next.
+            Some(n) if n == first + 1 => {
+                let edge = (last + 1 + y) as f64 / 2.0;
+                return Some((first + 1) as f64 * band - (edge - clip.y as f64));
+            }
+            Some(n) if n == first => last = y,
+            Some(_) => return None,
+            None => {}
         }
     }
     None
@@ -129,6 +136,17 @@ pub struct ScrollCheck {
     pub epochs: u64,
     pub sent_seq: u64,
     pub applied: u64,
+    /// The seq of the scroll.zoom sent, and the pictures since checked at a zoom other than 1.
+    pub zoom_seq: Option<u64>,
+    pub zoomed_checked: u64,
+    pub max_zoom: f64,
+    /// The zoom asked for: scale, focus line (window pixels), and the offset and zoom of the
+    /// last report before it was applied, to predict where its content must land.
+    zoom_ask: Option<(f64, f64)>,
+    before_zoom: Option<(f64, f64, i32)>,
+    /// The first report that applied the zoom: how far its zoom and offset were from exact.
+    pub zoom_scale_error: Option<f64>,
+    pub zoom_focus_error: Option<f64>,
 }
 
 impl ScrollCheck {
@@ -138,6 +156,20 @@ impl ScrollCheck {
             self.epochs += 1;
         }
         self.applied = self.applied.max(t.applied);
+        if let (Some(seq), Some((scale, focus)), Some(primary)) = (self.zoom_seq, self.zoom_ask, t.scrollers.first()) {
+            let zoom = t.zoom.unwrap_or(1.0);
+            if t.applied < seq {
+                self.before_zoom = Some((primary.offset[1], zoom, primary.rect.y));
+            } else if self.zoom_scale_error.is_none() {
+                self.zoom_scale_error = Some((zoom - scale).abs() / scale);
+                if let Some((offset, old, top)) = self.before_zoom {
+                    // The content at the focus line stays on it: offset + (focus - top) scales.
+                    let line = focus - top as f64;
+                    let expected = (offset + line) * zoom / old - line;
+                    self.zoom_focus_error = Some((primary.offset[1] - expected).abs());
+                }
+            }
+        }
         self.latest.insert(t.id, t.clone());
         self.reports.push_back(t);
         while self.reports.len() > KEPT {
@@ -161,12 +193,24 @@ impl ScrollCheck {
             return;
         };
         self.matched += 1;
-        let Some(scale) = ruler else { return };
+        let Some(base) = ruler else { return };
+        // A zoomed page shows its ruler magnified by the picture's own reported zoom.
+        let zoom = report.zoom.unwrap_or(1.0);
+        let scale = base * zoom;
+        self.max_zoom = self.max_zoom.max(zoom);
         let Some(primary) = report.scrollers.first() else { return };
         match read_ruler(luma, map, primary.rect, &primary.fixed, scale) {
-            None => self.ruler_unreadable += 1,
+            None => {
+                self.ruler_unreadable += 1;
+                if self.ruler_unreadable <= 3 {
+                    eprintln!("scroll: ruler unreadable at zoom {zoom}: clip {:?}, fixed {:?}", primary.rect, primary.fixed);
+                }
+            }
             Some(shown) => {
                 self.ruler_checked += 1;
+                if (zoom - 1.0).abs() > 1e-3 {
+                    self.zoomed_checked += 1;
+                }
                 // Reading a scaled ruler's edge row blends it across about one scale step.
                 let tolerance = 1.5 + scale;
                 if newest.is_some_and(|n| (shown - n).abs() > tolerance) {
@@ -185,6 +229,18 @@ impl ScrollCheck {
         }
     }
 
+    /// A zoom of the window's page to `scale` about the top left of its primary scroller.
+    /// `along` places the focus that far down the scroller, as a fraction of its height: past
+    /// 1 it is below the window, as a pinch that also panned can put it.
+    pub fn zoom(&mut self, id: u64, scale: f64, along: f64) -> Option<proto::Message> {
+        let rect = self.latest.get(&id)?.scrollers.first()?.rect;
+        self.sent_seq += 1;
+        self.zoom_seq = Some(self.sent_seq);
+        let focus = [rect.x as f64, rect.y as f64 + rect.h as f64 * along];
+        self.zoom_ask = Some((scale, focus[1]));
+        Some(proto::Message::ScrollZoom(proto::ScrollZoom { id, seq: self.sent_seq, scale, focus }))
+    }
+
     /// The next drive: `dy` content pixels down the window's primary scroller.
     pub fn target(&mut self, id: u64, dy: f64) -> Option<proto::Message> {
         let scroller = self.latest.get(&id)?.scrollers.first()?.id;
@@ -194,9 +250,11 @@ impl ScrollCheck {
 
     pub fn json(&self) -> String {
         format!(
-            "{{\"trees\":{},\"epochs\":{},\"tagged\":{},\"matched\":{},\"unmatched\":{},\"untagged\":{},\"ruler_checked\":{},\"ruler_unreadable\":{},\"ruler_bad\":{},\"ruler_max_error\":{:.2},\"newest_bad\":{},\"sent_seq\":{},\"applied\":{}}}",
+            "{{\"trees\":{},\"epochs\":{},\"tagged\":{},\"matched\":{},\"unmatched\":{},\"untagged\":{},\"ruler_checked\":{},\"ruler_unreadable\":{},\"ruler_bad\":{},\"ruler_max_error\":{:.2},\"newest_bad\":{},\"sent_seq\":{},\"applied\":{},\"zoom_seq\":{},\"zoomed_checked\":{},\"max_zoom\":{:.3},\"zoom_scale_error\":{:.5},\"zoom_focus_error\":{:.2}}}",
             self.trees, self.epochs, self.tagged, self.matched, self.unmatched, self.untagged, self.ruler_checked,
-            self.ruler_unreadable, self.ruler_bad, self.ruler_max_error, self.newest_bad, self.sent_seq, self.applied
+            self.ruler_unreadable, self.ruler_bad, self.ruler_max_error, self.newest_bad, self.sent_seq, self.applied,
+            self.zoom_seq.unwrap_or(0), self.zoomed_checked, self.max_zoom,
+            self.zoom_scale_error.unwrap_or(-1.0), self.zoom_focus_error.unwrap_or(-1.0)
         )
     }
 }

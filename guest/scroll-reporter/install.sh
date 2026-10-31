@@ -30,6 +30,12 @@ grep -qs /usr/share/chromium/extensions /etc/chromium.d/extensions || {
     echo 'Debian Chromium (with /etc/chromium.d/extensions) must be installed first' >&2; exit 1; }
 install -d -m 0755 /usr/share/chromium/extensions
 ln -sfn "$dest/chromium" /usr/share/chromium/extensions/caboose-scroll-reporter
+# The reporter zooms pages through chrome.debugger; without this Chromium shows a banner
+# saying the extension is debugging the browser.
+cat > /etc/chromium.d/caboose-scroll <<'SH'
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --silent-debugger-extension-api"
+SH
+chmod 0644 /etc/chromium.d/caboose-scroll
 install -d -m 0755 "$dest/lib" "$dest/electron"
 install -m 0644 "$src/electron/main.js" "$dest/electron/main.js"
 for lib in "$src"/gtk/out/libcaboose-scroll-*.so "$src"/qt/out/libcaboose-scroll-*.so; do
