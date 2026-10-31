@@ -691,10 +691,17 @@ lavapipe device lose itself once a phone's executor is ready, and an application
 recreates lost devices, as Chromium does, moves to the phone.
 
 Some applications draw on the computer even with a phone attached: OpenGL clients on
-Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and Proton games, because the driver's
-surfaces are Wayland and XCB, not Xlib; and Flatpak applications, whose sandbox has
-neither the driver nor the broker's sockets. An application rendering on the phone's
-GPU loses its Vulkan device when the phone detaches.
+Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and
+Proton games, because the driver's surfaces are Wayland and XCB, not Xlib. An
+application rendering on the phone's GPU loses its Vulkan device when the phone
+detaches.
+
+Flatpak applications take the same paths inside their sandbox. `install-live.py
+--driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
+extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
+runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
+override. The launch environment's variables pass into the sandbox unchanged.
 
 `guest/gpu/check-apps.sh` checks each path in a disposable container
 ([guest/gpu](../guest/gpu/README.md#application-routing-check)).
