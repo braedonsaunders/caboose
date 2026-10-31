@@ -41,7 +41,9 @@ enum LiveGPUMemoryAudit {
                 fields["reason"] = LiveGPUProtocolDiagnostic.reason(reason)
             case .outputRejected: fields["category"] = "outputRejected"
             }
-        case is LiveGPUError: fields["category"] = "transportOrSession"
+        case let value as LiveGPUError:
+            fields["category"] = "transportOrSession"
+            fields["reason"] = String(describing: value)
         default:
             let value = error! as NSError
             switch value.domain {

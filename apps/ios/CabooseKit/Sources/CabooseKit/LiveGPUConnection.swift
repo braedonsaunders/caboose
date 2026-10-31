@@ -21,8 +21,11 @@ public enum LiveGPUTransportEvent: Sendable {
 /// physical RSS proof. Revocation never releases a running permit.
 final class LiveGPUBudget: @unchecked Sendable {
     static let messageLimit = 256 * 1024
-    static let byteLimit = 1024 * 1024
-    static let countLimit = 64
+    /// Outbound work the phone may queue while the network or host is slower than the
+    /// decoder's replies: replies leave the native bridge in 16 KiB pieces, so a busy
+    /// stream (video, a pipeline compile backlog) queues many small messages.
+    static let byteLimit = 8 * 1024 * 1024
+    static let countLimit = 2048
     private let lock = NSLock()
     private var bytes = 0
     private var count = 0
