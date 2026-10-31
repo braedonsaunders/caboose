@@ -47,6 +47,7 @@ struct Surface {
     VkInstance instance;
     uint64_t boxedInstance;
     uint32_t object;
+    Client::Space space=Client::WaylandSurface;
     VkAllocationCallbacks allocator{};
     bool customAllocator=false, attempted=false, bound=false, poisoned=false;
     uint64_t query=0, presentSerial=0;
@@ -84,7 +85,7 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
             if (surface.attempted) return VK_ERROR_SURFACE_LOST_KHR;
             surface.attempted=true; // no retry after an uncertain sent bind
             surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
-            auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline());
+            auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
             auto result=apiStatus(status(reply.body,48));
             if (result!=VK_SUCCESS) { surface.poisoned=true; return result; }
             surface.bound=true;
@@ -128,6 +129,35 @@ static VkResult VKAPI_CALL create(VkInstance instance, const VkWaylandSurfaceCre
         return VK_SUCCESS;
     });
 }
+#ifdef VK_USE_PLATFORM_XCB_KHR
+static VkResult VKAPI_CALL createXcb(VkInstance instance, const VkXcbSurfaceCreateInfoKHR* info,
+    const VkAllocationCallbacks* allocator, VkSurfaceKHR* out) {
+    return guarded([&]() -> VkResult {
+        if (!info || !out || !info->connection || !info->window || info->flags || info->pNext ||
+            info->sType!=VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR)
+            return VK_ERROR_INITIALIZATION_FAILED;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (surfaces.size()>=64) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        auto surface=std::make_shared<Surface>();
+        surface->instance=instance;
+        VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
+        surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->object=info->window;
+        surface->space=Client::X11Window;
+        if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
+        auto* wrapper=static_cast<VkIcdSurfaceXcb*>(vk_zalloc2(&owner->vk.alloc,allocator,
+            sizeof(VkIcdSurfaceXcb),8,VK_SYSTEM_ALLOCATION_SCOPE_OBJECT));
+        if (!wrapper) return VK_ERROR_OUT_OF_HOST_MEMORY;
+        wrapper->base.platform=VK_ICD_WSI_PLATFORM_XCB;
+        wrapper->connection=info->connection; wrapper->window=info->window;
+        auto handle=reinterpret_cast<VkSurfaceKHR>(wrapper);
+        try { surfaces.emplace(handle,std::move(surface)); }
+        catch (...) { vk_free2(&owner->vk.alloc,allocator,wrapper); throw; }
+        *out=handle;
+        return VK_SUCCESS;
+    });
+}
+#endif
 static bool retire(Surface& surface) {
     if (!surface.attempted) return true;
     if (!surface.bound) return false; // uncertain bind still retains the instance
@@ -218,7 +248,14 @@ static VkResult VKAPI_CALL support(VkPhysicalDevice physical, uint32_t family, V
         *out=indexed() && family==chosen ? VK_TRUE : VK_FALSE; return VK_SUCCESS;
     });
 }
-static VkBool32 VKAPI_CALL waylandSupport(VkPhysicalDevice, uint32_t, wl_display*) { return VK_FALSE; }
+static VkBool32 VKAPI_CALL waylandSupport(VkPhysicalDevice, uint32_t family, wl_display*) {
+    return indexed() && family == 0 ? VK_TRUE : VK_FALSE;
+}
+#ifdef VK_USE_PLATFORM_XCB_KHR
+static VkBool32 VKAPI_CALL xcbSupport(VkPhysicalDevice, uint32_t family, xcb_connection_t*, xcb_visualid_t) {
+    return indexed() && family == 0 ? VK_TRUE : VK_FALSE;
+}
+#endif
 static VkResult VKAPI_CALL presentRectangles(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkRect2D*) {
     return VK_ERROR_FEATURE_NOT_PRESENT;
 }
@@ -228,6 +265,11 @@ static void maskHostImageCopy(void* chain) {
             reinterpret_cast<VkPhysicalDeviceHostImageCopyFeaturesEXT*>(item)->hostImageCopy=VK_FALSE;
         if (item->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES)
             reinterpret_cast<VkPhysicalDeviceVulkan14Features*>(item)->hostImageCopy=VK_FALSE;
+        if (item->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT) {
+            auto* pv=reinterpret_cast<VkPhysicalDeviceProvokingVertexFeaturesEXT*>(item);
+            pv->provokingVertexLast=VK_TRUE;
+            pv->transformFeedbackPreservesProvokingVertex=VK_TRUE;
+        }
     }
 }
 static void VKAPI_CALL features2(VkPhysicalDevice physical, VkPhysicalDeviceFeatures2* features) {
@@ -283,12 +325,19 @@ static VkResult VKAPI_CALL formats2(VkPhysicalDevice physical,
 }
 static void install(vk_instance_dispatch_table& table) {
     if (!active()) return;
-    table.CreateWaylandSurfaceKHR=create; table.DestroySurfaceKHR=destroy;
+    table.CreateWaylandSurfaceKHR=create;
+#ifdef VK_USE_PLATFORM_XCB_KHR
+    table.CreateXcbSurfaceKHR=createXcb;
+#endif
+    table.DestroySurfaceKHR=destroy;
 }
 static void install(vk_physical_device_dispatch_table& table) {
     if (!active()) return;
     table.GetPhysicalDeviceSurfaceSupportKHR=support;
     table.GetPhysicalDeviceWaylandPresentationSupportKHR=waylandSupport;
+#ifdef VK_USE_PLATFORM_XCB_KHR
+    table.GetPhysicalDeviceXcbPresentationSupportKHR=xcbSupport;
+#endif
     table.GetPhysicalDeviceSurfaceCapabilitiesKHR=capabilities;
     table.GetPhysicalDeviceSurfaceFormatsKHR=formats;
     table.GetPhysicalDeviceSurfacePresentModesKHR=modes;
@@ -318,6 +367,7 @@ static void gate(vk_instance_extension_table& extensions) {
         const char* name=vk_instance_extensions[i].extensionName;
         if ((strstr(name,"surface") || strstr(name,"display")) &&
             strcmp(name,"VK_KHR_surface") && strcmp(name,"VK_KHR_wayland_surface") &&
+            strcmp(name,"VK_KHR_xcb_surface") && strcmp(name,"VK_EXT_headless_surface") &&
             strcmp(name,"VK_KHR_get_surface_capabilities2")) extensions.extensions[i]=false;
     }
 }

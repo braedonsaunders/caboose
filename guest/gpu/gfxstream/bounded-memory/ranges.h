@@ -13,7 +13,7 @@ constexpr uint64_t rpcBytes = 64 * 1024;
 // One unsequenced VkMappedMemoryRange command: 52-byte header + 8-byte tail
 // length. Invalidate replies use a 4-byte result + 8-byte tail length.
 constexpr uint64_t payloadBytes = rpcBytes - 60;
-constexpr size_t stagingBytes = 64 * 1024 * 1024;
+constexpr size_t stagingBytes = 96 * 1024 * 1024;
 constexpr int success = 0, outOfHostMemory = -1;
 
 class Budget {

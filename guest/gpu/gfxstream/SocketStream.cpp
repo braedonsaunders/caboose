@@ -2,6 +2,7 @@
 #include "SocketStream.h"
 #include <cerrno>
 #include <cstdlib>
+#include <array>
 #include <cstring>
 #include <exception>
 #include <sys/socket.h>
@@ -30,6 +31,21 @@ static constexpr unsigned char kHello[48] = {
     0x4c,0x7e,0x68,0xf9,0x04,0x09,0x69,0xc0,
 };
 
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+// The same hello with feature bit 0x80: this process assigns its own Vulkan handles.
+// The broker echoes it only when the connected phone registers guest-assigned handles,
+// and echoes the plain hello otherwise; a broker that predates the bit closes instead.
+static const auto kHelloGuestHandles = [] {
+    std::array<unsigned char, sizeof(kHello)> hello{};
+    std::memcpy(hello.data(), kHello, sizeof(kHello));
+    hello[12] |= 0x80;
+    return hello;
+}();
+#endif
+// 1 when this process's device stream registers guest-assigned handles.
+extern "C" int caboose_gfxstream_guest_handles;
+int caboose_gfxstream_guest_handles = 0;
+
 CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
 CabooseSocketStream::~CabooseSocketStream() {
     // Do not flush during teardown: an interrupted session must not send stale work.
@@ -40,6 +56,16 @@ void CabooseSocketStream::invalidate() {
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
 }
 int CabooseSocketStream::connect(const char* path) {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    const char* optOut = std::getenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
+    if (!(optOut && std::strcmp(optOut, "0") == 0)) {
+        int result = connectWith(path, kHelloGuestHandles.data(), true);
+        if (result == 0 || errno != EPROTO) return result;
+    }
+#endif
+    return connectWith(path, kHello, false);
+}
+int CabooseSocketStream::connectWith(const char* path, const unsigned char* offer, bool guestHandles) {
     const uint32_t nativeOne = 1;
     if (*reinterpret_cast<const unsigned char*>(&nativeOne) != 1) { errno = ENOTSUP; return -1; }
     if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
@@ -58,14 +84,16 @@ int CabooseSocketStream::connect(const char* path) {
     }
     fd_ = fd;
     unsigned char reply[sizeof(kHello)];
-    if (writeFully(kHello, sizeof(kHello)) != 0 ||
-        !readFully(reply, sizeof(reply)) || std::memcmp(reply, kHello, sizeof(kHello))) {
+    const bool exchanged = writeFully(offer, sizeof(kHello)) == 0 && readFully(reply, sizeof(reply));
+    const bool assigned = exchanged && guestHandles && !std::memcmp(reply, offer, sizeof(kHello));
+    if (!exchanged || (!assigned && std::memcmp(reply, kHello, sizeof(kHello)))) {
         invalidate();
         close(fd_);
         fd_ = -1;
         errno = EPROTO;
         return -1;
     }
+    caboose_gfxstream_guest_handles = assigned ? 1 : 0;
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     indexedReady_.store(true, std::memory_order_release);
 #endif

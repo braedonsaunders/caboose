@@ -1,0 +1,209 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 02/15] Present Wayland surfaces through the virtual WSI
+
+gfxstream_vk_device.cpp includes caboose-wsi/mesa_surface.inc, which installs
+surface, presentation-support and swapchain entry points that talk to the
+display broker (caboose-wsi/client.cpp) when the socket transport is active.
+The instance and device entry points and the WSI client are built as their own
+static library, the only translation units compiled with the Wayland platform
+types; the driver links wayland-client.
+
+The three Caboose configuration macros are defined for every gfxstream guest
+target: the socket ICD, live presentation and the indexed swapchain.
+---
+ src/gfxstream/guest/meson.build               |  8 +++++
+ .../guest/vulkan/gfxstream_vk_device.cpp      | 12 +++++++
+ src/gfxstream/guest/vulkan/meson.build        | 32 +++++++++++++++++--
+ .../guest/vulkan_enc/ResourceTracker.h        |  8 +++++
+ 4 files changed, 58 insertions(+), 2 deletions(-)
+
+diff --git a/src/gfxstream/guest/meson.build b/src/gfxstream/guest/meson.build
+index 96bf849..5cc83af 100644
+--- a/src/gfxstream/guest/meson.build
++++ b/src/gfxstream/guest/meson.build
+@@ -25,6 +25,14 @@ endif
+ # Include the gfxstream private VkStructureType definitions
+ gfxstream_guest_args += '-DVK_GFXSTREAM_STRUCTURE_TYPE_EXT'
+ 
++# Caboose: the socket transport to the client device, its live presentation and the
++# indexed swapchain (guest/gpu/gfxstream/driver).
++gfxstream_guest_args += [
++    '-DCABOOSE_GFXSTREAM_PRIVATE_ICD',
++    '-DCABOOSE_GFXSTREAM_PRIVATE_LIVE',
++    '-DCABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI',
++]
++
+ gfxstream_guest_args += '-DVK_BASE_VERSION_1_0'
+ gfxstream_guest_args += '-DVK_GRAPHICS_VERSION_1_0'
+ gfxstream_guest_args += '-DVK_COMPUTE_VERSION_1_0'
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index 7853c88..01a8fc4 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -19,6 +19,8 @@
+ #include "vk_common_entrypoints.h"
+ #include "vk_sync_dummy.h"
+ #include "vk_util.h"
++static GfxStreamConnectionManager* getConnectionManager(void);
++#include "caboose-wsi/mesa_surface.inc"
+ 
+ uint32_t gSeqno = 0;
+ uint32_t gNoRenderControlEnc = 0;
+@@ -96,6 +98,7 @@ static VkResult SetupInstanceForProcess(void) {
+         struct GfxStreamVkFeatureInfo features = {};
+         features.hasVulkanNullOptionalStrings = true;
+         gfxstream::vk::ResourceTracker::get()->setupFeatures(&features);
++        if (!caboose_surface::profileReady()) return VK_ERROR_INCOMPATIBLE_DRIVER;
+         gNoRenderControlEnc = 1;
+     } else
+ #endif
+@@ -213,6 +216,7 @@ static VkResult gfxstream_vk_physical_device_init(
+     VkPhysicalDevice internal_object) {
+     struct vk_device_extension_table supported_extensions = {};
+     get_device_extensions(internal_object, &supported_extensions);
++    caboose_surface::gate(supported_extensions);
+ 
+     // VK_EXT_image_drm_format_modifier support is either emulated, or passthrough using
+     // host functionality
+@@ -232,6 +236,7 @@ static VkResult gfxstream_vk_physical_device_init(
+                                                        &wsi_physical_device_entrypoints, false);
+ #endif
+ 
++    caboose_surface::install(dispatch_table);
+     // Initialize the mesa object
+     VkResult result = vk_physical_device_init(&physical_device->vk, &instance->vk,
+                                               &supported_extensions, NULL, NULL, &dispatch_table);
+@@ -345,6 +350,7 @@ static struct vk_instance_extension_table* get_instance_extensions() {
+             }
+         }
+     }
++    caboose_surface::gate(*retTablePtr);
+     return retTablePtr;
+ }
+ 
+@@ -389,6 +395,7 @@ VkResult gfxstream_vk_CreateInstance(const VkInstanceCreateInfo* pCreateInfo,
+     vk_instance_dispatch_table_from_entrypoints(&dispatch_table, &wsi_instance_entrypoints, false);
+ #endif
+ 
++    caboose_surface::install(dispatch_table);
+     result = vk_instance_init(&instance->vk, extensions, &dispatch_table, pCreateInfo, pAllocator);
+ 
+     if (result != VK_SUCCESS) {
+@@ -430,6 +437,7 @@ out:
+ 
+ void gfxstream_vk_DestroyInstance(VkInstance _instance, const VkAllocationCallbacks* pAllocator) {
+     MESA_TRACE_SCOPE("vkDestroyInstance");
++    if (_instance && !caboose_surface::beforeDestroyInstance(_instance)) return;
+     if (_instance == VK_NULL_HANDLE) return;
+ 
+     VK_FROM_HANDLE(gfxstream_vk_instance, instance, _instance);
+@@ -586,6 +594,8 @@ VkResult gfxstream_vk_CreateDevice(VkPhysicalDevice physicalDevice,
+                                    const VkDeviceCreateInfo* pCreateInfo,
+                                    const VkAllocationCallbacks* pAllocator, VkDevice* pDevice) {
+     MESA_TRACE_SCOPE("vkCreateDevice");
++    VkResult privateFeatures = caboose_surface::validateDeviceCreate(pCreateInfo);
++    if (privateFeatures != VK_SUCCESS) return privateFeatures;
+     VK_FROM_HANDLE(gfxstream_vk_physical_device, gfxstream_physicalDevice, physicalDevice);
+     VkResult result = (VkResult)0;
+ 
+@@ -667,6 +677,7 @@ VkResult gfxstream_vk_CreateDevice(VkPhysicalDevice physicalDevice,
+     vk_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_device_entrypoints, false);
+ #endif
+ 
++    caboose_surface::install(dispatch_table);
+     result = vk_device_init(&gfxstream_device->vk, &gfxstream_physicalDevice->vk,
+                             &dispatch_table, pCreateInfo, pMesaAllocator);
+     if (result != VK_SUCCESS) {
+@@ -701,6 +712,7 @@ VkResult gfxstream_vk_CreateDevice(VkPhysicalDevice physicalDevice,
+ 
+ void gfxstream_vk_DestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+     MESA_TRACE_SCOPE("vkDestroyDevice");
++    if (device && !caboose_surface::beforeDestroyDevice(device)) return;
+     VK_FROM_HANDLE(gfxstream_vk_device, gfxstream_device, device);
+     if (device == VK_NULL_HANDLE) return;
+ 
+diff --git a/src/gfxstream/guest/vulkan/meson.build b/src/gfxstream/guest/vulkan/meson.build
+index c79c8fb..0c030e1 100644
+--- a/src/gfxstream/guest/vulkan/meson.build
++++ b/src/gfxstream/guest/vulkan/meson.build
+@@ -11,7 +11,6 @@ gfxstream_deps += dep_gfxstream_stubs
+ 
+ files_lib_vulkan_gfxstream = files(
+     'gfxstream_vk_cmd.cpp',
+-    'gfxstream_vk_device.cpp',
+     'gfxstream_vk_wsi.cpp',
+ )
+ 
+@@ -31,6 +30,34 @@ if with_platform_android or with_gfxstream_emulated_android
+     files_vulkan_gfxstream += files_lib_vulkan_enc_android
+ endif
+ 
++# Caboose: the instance and device entry points present Wayland and X11 surfaces on the
++# client device (caboose-wsi). Only these translation units see the window-system types,
++# so the Vulkan dispatch tables of the rest of the driver are unchanged.
++dep_caboose_wayland_client = dependency('wayland-client', version: '>=1.18')
++# Headers and generated sources only: the driver links the dependencies once, below.
++caboose_vk_device_deps = [dep_caboose_wayland_client.partial_dependency(compile_args: true, includes: true)]
++foreach dep : gfxstream_deps
++    caboose_vk_device_deps += dep.partial_dependency(compile_args: true, includes: true, sources: true)
++endforeach
++lib_caboose_vk_device = static_library(
++    'caboose_vk_device',
++    ['gfxstream_vk_device.cpp', 'caboose-wsi/client.cpp', gfxstream_vk_entrypoints[0]],
++    cpp_args: gfxstream_guest_args + ['-DGFXSTREAM_VK_WAYLAND', '-DVK_USE_PLATFORM_WAYLAND_KHR'],
++    include_directories: [
++        inc_vulkan_headers,
++        inc_guest_iostream,
++        inc_vulkan_enc,
++        inc_goldfish_address_space,
++        inc_include,
++        inc_src,
++        inc_aemu,
++        inc_platform_virtgpu,
++        inc_connection_manager,
++    ],
++    dependencies: caboose_vk_device_deps,
++    pic: true,
++)
++
+ lib_vulkan_gfxstream = shared_library(
+     'vulkan_gfxstream',
+     files_vulkan_gfxstream,
+@@ -46,6 +73,7 @@ lib_vulkan_gfxstream = shared_library(
+         inc_platform_virtgpu,
+         inc_connection_manager,
+     ],
++    link_whole: [lib_caboose_vk_device],
+     link_with: [
+         libvulkan_wsi,
+         libplatform_virtgpu,
+@@ -54,7 +82,7 @@ lib_vulkan_gfxstream = shared_library(
+     ],
+     link_args: [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections],
+     link_depends: vulkan_icd_link_depends,
+-    dependencies: gfxstream_deps,
++    dependencies: gfxstream_deps + [dep_caboose_wayland_client],
+     install: true,
+ )
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+index 45d1cf5..77f9675 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -527,6 +527,14 @@ class ResourceTracker {
+     bool hostSupportsVulkan() const;
+     bool usingDirectMapping() const;
+     uint32_t getStreamFeatures() const;
++    // Read-only proof that setupFeatures actually selected the private sync profile.
++    bool cabooseSynchronousProfile() const {
++        return mFeatureInfo.setupComplete && mFeatureInfo.hasVulkanNullOptionalStrings &&
++            !mFeatureInfo.hasVulkanAsyncQueueSubmit && !mFeatureInfo.hasDeferredVulkanCommands &&
++            !mFeatureInfo.hasVulkanAsyncQsri && !mFeatureInfo.hasVulkanQueueSubmitWithCommands &&
++            !mFeatureInfo.hasDirectMem && !mFeatureInfo.hasVirtioGpuNext &&
++            !mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate;
++    }
+     uint32_t getApiVersionFromInstance(VkInstance instance);
+     uint32_t getApiVersionFromDevice(VkDevice device);
+     VkDevice getDevice(VkCommandBuffer commandBuffer) const;

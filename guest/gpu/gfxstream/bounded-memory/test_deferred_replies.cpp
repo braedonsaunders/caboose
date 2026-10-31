@@ -17,6 +17,24 @@ struct Stream {
     }
     void invalidate() { invalidated = true; }
 };
+
+// A reply stream of raw bytes, for replies that are not a single 4-byte result.
+struct ByteStream {
+    std::vector<uint8_t> bytes;
+    size_t next = 0;
+    bool invalidated = false;
+    template <class T> void put(T value) {
+        const auto* raw = reinterpret_cast<const uint8_t*>(&value);
+        bytes.insert(bytes.end(), raw, raw + sizeof(value));
+    }
+    bool tryRead(void* out, size_t size) {
+        if (bytes.size() - next < size) return false;
+        std::memcpy(out, bytes.data() + next, size);
+        next += size;
+        return true;
+    }
+    void invalidate() { invalidated = true; }
+};
 } // namespace
 
 int main() {
@@ -74,5 +92,62 @@ int main() {
     fences.addFenceWait(&a, f1, 4);
     assert(fences.drain(&a, &waits) && waits.next == 5);
     assert(!fences.signaled(&f3, 1, true) && fences.signaled(&f1, 1, false));
+
+    // A fence created signaled is known signaled until it is reset.
+    fences.markSignaled(f3);
+    assert(fences.signaled(&f3, 1, true));
+    fences.forgetFence(f3);
+    assert(!fences.signaled(&f3, 1, true));
+
+    // A guest-assigned create's reply is the handle and its result, drained in order
+    // with ordinary results.
+    const uint64_t handle = 0xCA00010000000001ull;
+    {
+        DeferredReplies creates;
+        ByteStream replies;
+        replies.put<int32_t>(0); replies.put<uint64_t>(handle); replies.put<int32_t>(0);
+        creates.add(&a, 1, 4);
+        creates.addHandleCreate(&a, handle, 40);
+        assert(creates.drain(&a, &replies) && replies.next == replies.bytes.size());
+        assert(!replies.invalidated && creates.pending() == 0);
+    }
+    // A device that renamed or refused the handle has diverged: the stream is lost.
+    for (const auto& reply : {std::pair<uint64_t, int32_t>{handle + 1, 0},
+                              std::pair<uint64_t, int32_t>{handle, -2}}) {
+        DeferredReplies creates;
+        ByteStream replies;
+        replies.put<uint64_t>(reply.first); replies.put<int32_t>(reply.second);
+        creates.addHandleCreate(&a, handle, 40);
+        assert(!creates.drain(&a, &replies) && replies.invalidated);
+    }
+    // A truncated create reply is a transport failure.
+    {
+        DeferredReplies creates;
+        ByteStream replies;
+        replies.put<uint64_t>(handle);
+        creates.addHandleCreate(&a, handle, 40);
+        assert(!creates.drain(&a, &replies) && replies.invalidated && creates.pending() == 0);
+    }
+
+    // An unchecked deferred failure is reported and tolerated; a checked one
+    // (a result the application can no longer observe) loses the stream.
+    {
+        DeferredReplies results;
+        Stream replies{{-4, 0, -4}};
+        results.add(&a, 1, 4);
+        results.addCheckedResult(&a, 4);
+        assert(results.drain(&a, &replies) && !replies.invalidated && replies.next == 2);
+        results.addCheckedResult(&a, 4);
+        assert(!results.drain(&a, &replies) && replies.invalidated);
+    }
+
+    // The first encoder to ask owns deferral; once a second asks, neither may defer.
+    {
+        DeferredReplies owner;
+        int first = 0, second = 0;
+        assert(owner.singleEncoder(&first) && owner.singleEncoder(&first));
+        assert(!owner.singleEncoder(&second));
+        assert(!owner.singleEncoder(&first) && !owner.singleEncoder(&second));
+    }
     return 0;
 }

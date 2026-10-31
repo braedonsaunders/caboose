@@ -13,15 +13,16 @@ namespace caboose::memory {
 
 inline constexpr uint64_t shadowPageBytes = 4096;
 inline constexpr uint64_t shadowBlockBytes = 256;
-inline constexpr uint64_t shadowMaxAllocationBytes = 16 * 1024 * 1024;
+inline constexpr uint64_t shadowMaxAllocationBytes = 32 * 1024 * 1024;
 // Shadows share processBudget with command-buffer staging; keep them to a slice of it.
-inline constexpr size_t shadowMaxTotalBytes = 24 * 1024 * 1024;
+inline constexpr size_t shadowMaxTotalBytes = 48 * 1024 * 1024;
 
 // Last bytes the host received for each flushed allocation. The host's copy is
 // known per page; within a known page a flush sends only the blocks that differ,
-// and a page never sent in full is sent whole. Invalidate, unmap and free drop knowledge of the host's copy, so the
-// next flush of those pages is sent in full. Allocations the budget cannot
-// shadow are always sent in full.
+// and a page never sent in full is sent whole. Unmap and free drop knowledge of
+// the host's copy, while a successful invalidate updates the known host baseline
+// with the refreshed bytes. Allocations the budget cannot shadow are always sent
+// in full.
 class FlushShadow {
 public:
     explicit FlushShadow(Budget& budget = processBudget) : budget_(budget) {}
@@ -69,6 +70,26 @@ public:
             if (result != success) { forgetLocked(key); return result; }
         }
         return success;
+    }
+
+    // Records that [offset, offset + size) of `base` now matches the host's copy
+    // (e.g. after a successful vkInvalidateMappedMemoryRanges into `base`).
+    void noteRefreshed(uint64_t key, const uint8_t* base, uint64_t allocation,
+                       uint64_t offset, uint64_t size) {
+        if (!base || !size || offset >= allocation) return;
+        const uint64_t end = size > allocation - offset ? allocation : offset + size;
+        std::lock_guard<std::mutex> lock(mutex_);
+        Entry* entry = entryLocked(key, allocation);
+        if (!entry) return;
+        std::memcpy(entry->bytes.get() + offset, base + offset, size_t(end - offset));
+        for (uint64_t page = offset - offset % shadowPageBytes; page < end; page += shadowPageBytes) {
+            const uint64_t begin = page < offset ? offset : page;
+            const uint64_t stop = page + shadowPageBytes < end ? page + shadowPageBytes : end;
+            const size_t index = size_t(page / shadowPageBytes);
+            const uint64_t pageEnd = page + shadowPageBytes < allocation ? page + shadowPageBytes : allocation;
+            const bool whole = begin == page && stop == pageEnd;
+            entry->valid[index] = whole || entry->valid[index];
+        }
     }
 
     void forget(uint64_t key) {
@@ -129,5 +150,6 @@ private:
 };
 
 inline FlushShadow flushShadow;
+inline thread_local uint64_t lastFlushCallSentBytes = 0;
 
 } // namespace caboose::memory
