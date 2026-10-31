@@ -155,3 +155,20 @@ struct LocalScrollRobustnessTests {
         #expect(report.handoffJump <= 2)
     }
 }
+
+/// Cost of one measurement at phone resolution (`CABOOSE_SCROLL_BENCH=1`, run with
+/// `swift test -c release -Xswiftc -enable-testing --filter LocalScrollEstimatorBenchmark`).
+struct LocalScrollEstimatorBenchmark {
+    @Test func measurementCost() {
+        guard ProcessInfo.processInfo.environment["CABOOSE_SCROLL_BENCH"] == "1" else { return }
+        let replay = ScrollReplay(app: ScrollReplay.App(), gestures: [])
+        let a = replay.signature(offset: 4000, seed: 1), b = replay.signature(offset: 4300, seed: 2)
+        let estimator = ScrollMotionEstimator()
+        for (name, range) in [("typical ±300", -64...700), ("wide ±1300", -1300...1300), ("full", -2540...2540)] {
+            let start = Date()
+            var result: ScrollMeasurement = .still
+            for _ in 0..<20 { result = estimator.measure(from: a, to: b, expected: range, center: 300) }
+            print(String(format: "bench %@: %.2f ms per measurement", name, Date().timeIntervalSince(start) / 20 * 1000), result == .unexplained ? "unexplained" : "ok")
+        }
+    }
+}

@@ -134,20 +134,33 @@ public struct ScrollMotionEstimator: Sendable {
             atZero[i] = true
             zeroScore += 1
         }
+        // A quarter of the samples ranks every shift; the leading candidates are then
+        // scored with all of them, which is what decides.
+        func score(_ shift: Int, stride step: Int, in cells: UnsafeBufferPointer<Int32>) -> Int {
+            let offset = shift * bands
+            var moved = 0
+            var i = 0
+            while i < count {
+                let a = Int(cells[i]), b = a + offset
+                if b >= 0, b < total, !atZero[i], matches(nl, nd, a, ol, od, b) { moved += 1 }
+                i += step
+            }
+            return moved
+        }
         var scores: [(shift: Int, moved: Int)] = []
         if low <= high {
-            scores.reserveCapacity(high - low + 1)
             samples.withUnsafeBufferPointer { cells in
-                for shift in low...high where shift != 0 {
-                    let offset = shift * bands
-                    var moved = 0
-                    for i in 0..<count {
-                        let a = Int(cells[i]), b = a + offset
-                        guard b >= 0, b < total, !atZero[i] else { continue }
-                        if matches(nl, nd, a, ol, od, b) { moved += 1 }
-                    }
-                    scores.append((shift, moved))
-                }
+                let step = count >= 1024 ? 4 : 1
+                var ranked: [(shift: Int, moved: Int)] = []
+                ranked.reserveCapacity(high - low + 1)
+                for shift in low...high where shift != 0 { ranked.append((shift, score(shift, stride: step, in: cells))) }
+                if step == 1 { scores = ranked; return }
+                ranked.sort { $0.moved > $1.moved }
+                let leading = ranked.prefix(12).map(\.shift)
+                // Neighbours of the leaders too, for periodic content's nearest match.
+                var candidates = Set<Int>()
+                for shift in leading { for d in -2...2 where shift + d != 0 && (low...high).contains(shift + d) { candidates.insert(shift + d) } }
+                scores = candidates.map { ($0, score($0, stride: 1, in: cells)) }
             }
         }
         let best = scores.max { $0.moved < $1.moved }?.moved ?? 0
