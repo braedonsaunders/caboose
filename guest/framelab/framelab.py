@@ -67,6 +67,12 @@ def parse_line(line, received_ns=None):
         if f.get('errno', 0) not in (0, '0'):
             return {'kind': 'surface_failed', 't': received_ns,
                     'reason': 'bind ' + line.split('CABOOSE_GPU_SURFACE_BIND', 1)[1].strip()}
+    elif 'CABOOSE_GPU_BROKER executor session ended:' in line:
+        return {'kind': 'session_event', 't': received_ns,
+                'event': 'executor session ended: ' + line.split('executor session ended:', 1)[1].strip()}
+    elif 'private GPU control failed at' in line:
+        return {'kind': 'session_event', 't': received_ns,
+                'event': 'private GPU control failed at ' + line.split('private GPU control failed at', 1)[1].strip()}
     elif 'CABOOSE_GPU_SURFACE_FAILED' in line:
         return {'kind': 'surface_failed', 't': received_ns,
                 'reason': line.split('CABOOSE_GPU_SURFACE_FAILED', 1)[1].strip()}
@@ -331,6 +337,9 @@ def scorecard(app, run, phone_records=(), offset=None):
                          'stream_bytes_per_s': None if to_phone is None else int(to_phone),
                          'stream': {'gpu': 'GPU stream to the phone', 'video': 'window pictures to the client'}.get(path)}
     card['correctness'] = run.get('correctness')
+    # The GPU session's own account of ending, from the broker and the compositor.
+    card['session_events'] = [{'at_s': round((r['t'] - span[0]) / 1e9, 1), 'event': r['event']}
+                              for r in records if r['kind'] == 'session_event'][:20]
     return card
 
 
