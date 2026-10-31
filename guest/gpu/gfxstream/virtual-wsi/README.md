@@ -88,6 +88,14 @@ was not queued ends its swapchain: the next present or acquire returns
 `VK_ERROR_OUT_OF_DATE_KHR` (or `VK_ERROR_DEVICE_LOST`), a rejected frame's image counts
 as released, and an uncertain frame never retires and is not waited for.
 
+With ordered presents and the completion feed, the next image is acquired right after
+each present, on the phone, against one of three private semaphores. The application's
+acquire then waits only if that image is not ready yet (honouring its timeout), and one
+submission on a presentation-family queue waits for the private semaphore and signals
+the application's semaphore and fence. A private semaphore is acquired again only once
+its slot's fence shows that hand-off ran. Swapchain retirement first cancels an acquire
+made ahead of time; an image it acquired is released by native retirement.
+
 Unknown creation or retirement completion quarantines allocations and prevents
 device destruction. Source images are freed only after real swapchain or surface
 retirement. App-issued idle calls remain unchanged; the native decoder owns the

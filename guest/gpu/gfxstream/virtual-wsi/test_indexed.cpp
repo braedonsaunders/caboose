@@ -105,7 +105,10 @@ static void exercise(int scenario) {
 // reported by presentFailed, a rejected frame's image counts as released, and an
 // uncertain frame never holds up presentation idle.
 // scenario 0: queued, 1: rejected, 2: uncertain, 3: result for a frame never presented,
-// 4: two frames in flight; room for a third opens when the oldest retires.
+// 4: two frames in flight; room for a third opens when the oldest retires,
+// 5: an acquire made ahead of time: its reply is awaited without being consumed, and a
+//    deadline before it arrives leaves the connection and the acquire intact,
+// 6: records already waiting when pump runs are applied without blocking or failing.
 static void exerciseOrdered(int scenario) {
     char dir[]="/tmp/caboose-ordered-test-XXXXXX"; assert(mkdtemp(dir));
     std::string path=std::string(dir)+"/surface";
@@ -127,6 +130,21 @@ static void exerciseOrdered(int scenario) {
             put32(acquired,1); put32(acquired,index); put32(acquired,0); put32(acquired,0); transmit(fd,30,acquired);
         };
         receive(fd,29); sendAcquired(2,0);
+        if (scenario==6) {
+            receive(fd,39);
+            auto result=identityBytes(); put64(result,1); statusBytes(result); put32(result,2); put32(result,0);
+            transmit(fd,21,result);
+            receive(fd,23); auto retired=identityBytes(); statusBytes(retired); transmit(fd,24,retired);
+            close(fd); _exit(0);
+        }
+        if (scenario==5) {
+            receive(fd,39);
+            receive(fd,29);
+            pollfd quiet{fd,POLLIN,0}; assert(poll(&quiet,1,100)==0);  // the client keeps waiting quietly
+            sendAcquired(3,1);
+            receive(fd,23); auto retired=identityBytes(); statusBytes(retired); transmit(fd,24,retired);
+            close(fd); _exit(0);
+        }
         if (scenario==4) {
             receive(fd,39); receive(fd,29); sendAcquired(3,1); receive(fd,39);
             for (uint64_t frame:{1,2}) {
@@ -180,7 +198,21 @@ static void exerciseOrdered(int scenario) {
     client.presentOrdered(111,1,13,77,0,0,{19,23},deadline);
     Status failure{};
     assert(!client.presentFailed(111,&failure));
-    if (scenario==4) {
+    if (scenario==6) {
+        usleep(100000);  // the uncertain result is already waiting
+        client.pump();
+        assert(client.presentFailed(111,&failure) && failure.nativeError==EIO);
+        client.pump();   // nothing waiting: returns at once
+        client.retire(deadline); assert(client.retired());
+    } else if (scenario==5) {
+        client.beginAcquire(111,3,17,0,UINT64_MAX,deadline);
+        assert(!client.awaitAcquireReply(111,std::chrono::steady_clock::now()+std::chrono::milliseconds(30)));
+        assert(client.awaitAcquireReply(111,deadline));
+        assert(client.awaitAcquireReply(111,deadline));  // not consumed
+        auto reply=client.finishAcquire(111,3,deadline);
+        assert(u64(reply.body,48)==3 && u32(reply.body,76)==1);
+        client.retire(deadline); assert(client.retired());
+    } else if (scenario==4) {
         client.waitPresentationRoom(2,deadline);  // one frame in flight: no wait
         client.beginAcquire(111,3,17,0,12345,deadline);
         assert(u32(client.finishAcquire(111,3,deadline).body,76)==1);
@@ -224,6 +256,6 @@ static void exerciseOrdered(int scenario) {
 }
 int main() {
     for (int scenario=0;scenario<5;++scenario) exercise(scenario);
-    for (int scenario=0;scenario<5;++scenario) exerciseOrdered(scenario);
-    std::cout<<"5 indexed and 5 ordered-present scenarios passed, including 130 frames with final retirement\n";
+    for (int scenario=0;scenario<7;++scenario) exerciseOrdered(scenario);
+    std::cout<<"5 indexed and 7 ordered-present scenarios passed, including 130 frames with final retirement\n";
 }

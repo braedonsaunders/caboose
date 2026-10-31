@@ -38,6 +38,9 @@ public:
                       uint64_t fence, uint64_t timeout, Deadline deadline);
     void cancelAcquire(uint64_t swapchain, uint64_t request, Deadline deadline);
     Record finishAcquire(uint64_t swapchain, uint64_t request, Deadline deadline);
+    // Waits until the outstanding acquire's reply has arrived, without consuming it;
+    // false at the deadline, leaving the connection and the acquire intact.
+    bool awaitAcquireReply(uint64_t swapchain, Deadline deadline);
     Record presentIndexed(uint64_t swapchain, uint64_t serial, uint64_t queue,
                           uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline);
     // Sends a present ordered behind device-stream ORDER mark `order` (kind 39) and returns
@@ -52,6 +55,8 @@ public:
 private:
     void send(uint16_t kind, const Bytes& body, Deadline deadline);
     Record receive(Deadline deadline);
+    // Reads one record the socket already holds; false when none was there after all.
+    bool receiveReady(Record* out);
     Record await(uint16_t kind, uint64_t serial, Deadline deadline);
     // Applies one received record; true when it is the awaited `kind`/`serial` (kind 0
     // awaits nothing: every record must be unsolicited).

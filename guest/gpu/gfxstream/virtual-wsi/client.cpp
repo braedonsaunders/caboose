@@ -60,20 +60,26 @@ void Client::send(uint16_t kind, const Bytes& body, Deadline deadline) {
 }
 Record Client::receive(Deadline deadline) {
     require(fd_>=0);
-    Bytes bytes(maxPacket);
     for (;;) {
         ready(POLLIN,deadline);
+        Record r;
+        if (receiveReady(&r)) return r;
+    }
+}
+bool Client::receiveReady(Record* out) {
+    Bytes bytes(maxPacket);
+    {
         iovec io{bytes.data(),bytes.size()};
         // No ancillary buffer: unexpected descriptors are discarded by the kernel
         // and MSG_CTRUNC causes rejection, without leaking received descriptors.
         msghdr msg{}; msg.msg_iov=&io; msg.msg_iovlen=1;
         ssize_t n=recvmsg(fd_,&msg,0);
-        if (n<0 && (errno==EINTR || errno==EAGAIN)) continue;
+        if (n<0 && (errno==EINTR || errno==EAGAIN)) return false;
         if (n<0) fail(errno);
         if (!n) fail(ECONNRESET);
         if (msg.msg_flags & (MSG_TRUNC|MSG_CTRUNC)) fail(EPROTO);
         bytes.resize(n);
-        try { return decode(bytes); } catch (const ProtocolError&) { fail(EPROTO); }
+        try { *out=decode(bytes); return true; } catch (const ProtocolError&) { fail(EPROTO); }
     }
 }
 Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
@@ -94,8 +100,8 @@ void Client::pump() {
         if (result<0) fail(errno);
         if (!result) return;
         if (!(p.revents & POLLIN)) fail(ECONNRESET);
-        auto r=receive(std::chrono::steady_clock::now());
-        absorb(r,0,0);
+        Record r;
+        if (receiveReady(&r)) absorb(r,0,0);
     }
 }
 bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
@@ -316,6 +322,18 @@ Record Client::finishAcquire(uint64_t id, uint64_t request, Deadline deadline) {
         swap.acquired[index]=true;
     }
     swap.acquire=0; swap.completedAcquire=request; return r;
+}
+bool Client::awaitAcquireReply(uint64_t id, Deadline deadline) {
+    require(bound_ && swapchains_.count(id) && swapchains_.at(id).acquire);
+    for (;;) {
+        pump();
+        if (acquireReplies_.count(id)) return true;
+        auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
+        if (left<=0) return false;
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,int(std::min<int64_t>(left,INT_MAX)));
+        if (result<0 && errno!=EINTR) fail(errno);
+    }
 }
 Record Client::presentIndexed(uint64_t id, uint64_t serial, uint64_t queue,
     uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline) {

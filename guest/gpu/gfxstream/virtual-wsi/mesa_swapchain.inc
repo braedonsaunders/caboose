@@ -5,6 +5,17 @@ struct Image {
     VkDeviceMemory memory=VK_NULL_HANDLE;
     uint64_t serial=0;
 };
+// Pipelined acquisition, with ordered presents and the completion feed: after each
+// present the next image is acquired on the phone against one of these private
+// semaphores, so the application's acquire usually returns at once. A submission then
+// hands the private semaphore's signal to the application's semaphore and fence; the
+// slot's fence tells when that hand-off ran and the semaphore may be signaled again.
+struct AcquireSlot {
+    VkSemaphore semaphore=VK_NULL_HANDLE;
+    VkFence fence=VK_NULL_HANDLE;
+    bool fenceSubmitted=false;
+};
+constexpr size_t kAcquireSlots=3;
 struct DeviceSwapchain {
     std::shared_ptr<Surface> surface;
     VkDevice device=VK_NULL_HANDLE;
@@ -13,6 +24,11 @@ struct DeviceSwapchain {
     bool retired=false, nativeRetired=false, poisoned=false;
     uint32_t family=UINT32_MAX;
     std::vector<Image> images;
+    std::vector<AcquireSlot> slots;
+    size_t nextSlot=0;
+    uint64_t preRequest=0;          // an acquire made ahead of the application, or 0
+    size_t preSlot=0;
+    VkQueue handoffQueue=VK_NULL_HANDLE;
 };
 static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
@@ -47,6 +63,17 @@ static void freeImages(DeviceSwapchain& swap) {
     VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
     auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
     auto* tracker=gfxstream::vk::ResourceTracker::get();
+    for (auto& slot:swap.slots) {
+        // A hand-off still running keeps its fence and semaphore.
+        if (slot.fenceSubmitted) {
+            uint64_t key=uint64_t(uintptr_t(slot.fence));
+            if (caboose::completion::tracker().waitFences(&key,1,true,deadline())!=
+                caboose::completion::Tracker::Answer::Satisfied) continue;
+        }
+        if (slot.semaphore) tracker->on_vkDestroySemaphore(encoder,device->internal_object,slot.semaphore,nullptr);
+        if (slot.fence) tracker->on_vkDestroyFence(encoder,device->internal_object,slot.fence,nullptr);
+        slot={};
+    }
     for (auto& image:swap.images) {
         if (image.image) {
             tracker->on_vkDestroyImage(encoder,device->internal_object,image.image,nullptr);
@@ -58,6 +85,65 @@ static void freeImages(DeviceSwapchain& swap) {
         }
     }
 }
+static bool pipelinedAcquire(const DeviceSwapchain& swap) {
+    return caboose_gfxstream_ordered_present==1 && swap.handoffQueue && swap.slots.size()==kAcquireSlots &&
+           caboose::completion::feedActive.load(std::memory_order_acquire);
+}
+// Creates the private acquire semaphores and fences, before the phone maps the swapchain,
+// and picks a queue of the presentation family for the hand-off submissions. Without
+// them acquisition stays synchronous.
+static void createAcquireSlots(DeviceSwapchain& swap) {
+    if (caboose_gfxstream_ordered_present!=1) return;
+    VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+    for (uint32_t i=0;i<device->queue_count;++i)
+        if (device->queues[i].vk.queue_family_index==swap.family) { swap.handoffQueue=device->queues[i].internal_object; break; }
+    if (!swap.handoffQueue) return;
+    auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+    auto* tracker=gfxstream::vk::ResourceTracker::get();
+    VkSemaphoreCreateInfo semaphoreInfo{}; semaphoreInfo.sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VkFenceCreateInfo fenceInfo{}; fenceInfo.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    for (size_t i=0;i<kAcquireSlots;++i) {
+        AcquireSlot slot;
+        if (tracker->on_vkCreateSemaphore(encoder,VK_SUCCESS,device->internal_object,&semaphoreInfo,nullptr,&slot.semaphore)!=VK_SUCCESS ||
+            tracker->on_vkCreateFence(encoder,VK_SUCCESS,device->internal_object,&fenceInfo,nullptr,&slot.fence)!=VK_SUCCESS) {
+            swap.slots.push_back(slot);  // destroyed with the images
+            swap.handoffQueue=VK_NULL_HANDLE;
+            return;
+        }
+        swap.slots.push_back(slot);
+    }
+}
+// Acquires the next image ahead of the application, when a slot is free.
+static void startPreAcquire(DeviceSwapchain& swap) {
+    auto& surface=*swap.surface;
+    if (!pipelinedAcquire(swap) || swap.preRequest || swap.retired || swap.poisoned ||
+        surface.client.revoked() || surface.client.failed() || surface.query==UINT64_MAX) return;
+    const size_t index=swap.nextSlot%kAcquireSlots;
+    auto& slot=swap.slots[index];
+    if (slot.fenceSubmitted) {
+        // The slot's semaphore is free again only once its previous hand-off ran.
+        uint64_t key=uint64_t(uintptr_t(slot.fence));
+        if (caboose::completion::tracker().fencesSignaled(&key,1,true)!=caboose::completion::Tracker::Answer::Satisfied)
+            return;
+        VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+        auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+        if (gfxstream::vk::ResourceTracker::get()->on_vkResetFences(encoder,VK_SUCCESS,device->internal_object,1,&slot.fence)!=VK_SUCCESS)
+            return;
+        slot.fenceSubmitted=false;
+    }
+    const uint64_t request=++surface.query;
+    surface.client.beginAcquire(swap.native,request,get_host_u64_VkSemaphore(slot.semaphore),0,UINT64_MAX,deadline());
+    swap.preRequest=request; swap.preSlot=index; ++swap.nextSlot;
+}
+// Ends an acquire made ahead of the application before the swapchain retires. An image it
+// acquired stays acquired and unused, which native retirement releases.
+static void cancelPreAcquire(DeviceSwapchain& swap) {
+    if (!swap.preRequest) return;
+    auto& client=swap.surface->client;
+    client.cancelAcquire(swap.native,swap.preRequest,deadline());
+    client.finishAcquire(swap.native,swap.preRequest,deadline());
+    swap.preRequest=0;
+}
 static bool retireSwapchain(DeviceSwapchain& swap) {
     if (swap.retired) return true;
     try {
@@ -65,6 +151,7 @@ static bool retireSwapchain(DeviceSwapchain& swap) {
         if (!swap.nativeRetired && !client.retired()) {
             // An uncertain CREATE may have allocated remotely without returning its ID.
             if (!swap.native) return false;
+            cancelPreAcquire(swap);
             auto result=client.retireSwapchain(swap.native,deadline());
             if (apiStatus(status(result.body,48))!=VK_SUCCESS) return false;
         }
@@ -92,6 +179,7 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 return VK_ERROR_INITIALIZATION_FAILED;
             if (!previous->nativeRetired && !surface->client.retired()) {
                 if (!previous->native) return VK_ERROR_INITIALIZATION_FAILED;
+                cancelPreAcquire(*previous);
                 surface->client.waitPresentationIdle(deadline());
                 auto retired=surface->client.retireSwapchain(previous->native,deadline());
                 auto retiredResult=apiStatus(status(retired.body,48));
@@ -196,7 +284,9 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 if (result!=VK_SUCCESS) return cleanup(result);
                 images.push_back(get_host_u64_VkImage(image.image));
             }
-            // The phone maps images this device stream created, allocated and bound.
+            createAcquireSlots(*swap);
+            // The phone maps images, and later signals acquire semaphores, this device
+            // stream created, allocated and bound.
             if (!encoder->cabooseDrainDeferredObjects(true)) return cleanup(VK_ERROR_DEVICE_LOST);
             auto mapped=surface->client.mapSwapchain(swap->native,images,deadline());
             result=apiStatus(status(mapped.body,48)); if (result!=VK_SUCCESS) return cleanup(result);
@@ -248,20 +338,64 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
         if (swap->retired || swap->poisoned || surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         uint64_t boxedSemaphore=0, boxedFence=0;
+        VkSemaphore internalSemaphore=VK_NULL_HANDLE;
+        VkFence internalFence=VK_NULL_HANDLE;
         if (semaphore) {
             VK_FROM_HANDLE(gfxstream_vk_semaphore, value, semaphore);
             if (value->vk.base.device!=&gfxstream_vk_device_from_handle(device)->vk ||
                 value->vk.type!=VK_SEMAPHORE_TYPE_BINARY || value->vk.temporary) return VK_ERROR_INITIALIZATION_FAILED;
+            internalSemaphore=value->internal_object;
             boxedSemaphore=get_host_u64_VkSemaphore(value->internal_object);
         }
         if (fence) {
             VK_FROM_HANDLE(gfxstream_vk_fence, value, fence);
             if (value->vk.base.device!=&gfxstream_vk_device_from_handle(device)->vk || value->vk.temporary)
                 return VK_ERROR_INITIALIZATION_FAILED;
+            internalFence=value->internal_object;
             boxedFence=get_host_u64_VkFence(value->internal_object);
-            // The presentation engine signals this fence: the guest asks the device about it.
-            caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(value->internal_object)));
         }
+        if (swap->preRequest) {
+            // The image was acquired ahead of time against a private semaphore.
+            // Wait as long as the application allows, within the transport deadline.
+            const int64_t transport=std::max<int64_t>(0,
+                std::chrono::duration_cast<std::chrono::nanoseconds>(deadline()-std::chrono::steady_clock::now()).count());
+            const auto patience=std::min<uint64_t>(timeout,uint64_t(transport));
+            if (!surface.client.awaitAcquireReply(swap->native,
+                    std::chrono::steady_clock::now()+std::chrono::nanoseconds(patience)))
+                return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+            auto reply=surface.client.finishAcquire(swap->native,swap->preRequest,deadline());
+            const size_t slotIndex=swap->preSlot;
+            swap->preRequest=0;
+            auto returned=status(reply.body,56);
+            if (returned.nativeError) return VK_ERROR_SURFACE_LOST_KHR;
+            auto result=VkResult(returned.vk);
+            if (result!=VK_SUCCESS && result!=VK_SUBOPTIMAL_KHR) return result;
+            uint32_t acquired=u32(reply.body,76);
+            auto& image=swap->images.at(acquired);
+            if (image.serial) {
+                surface.client.waitReleased(image.serial,deadline());
+                surface.client.consumeRelease(image.serial); image.serial=0;
+            }
+            // Hand the private semaphore's signal to the application's semaphore and fence.
+            auto& slot=swap->slots[slotIndex];
+            auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+            auto* tracker=gfxstream::vk::ResourceTracker::get();
+            const VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            VkSubmitInfo handoff{}; handoff.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            handoff.waitSemaphoreCount=1; handoff.pWaitSemaphores=&slot.semaphore; handoff.pWaitDstStageMask=&stage;
+            handoff.signalSemaphoreCount=internalSemaphore ? 1 : 0; handoff.pSignalSemaphores=&internalSemaphore;
+            if (tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,1,&handoff,slot.fence)!=VK_SUCCESS)
+                return VK_ERROR_DEVICE_LOST;
+            slot.fenceSubmitted=true;
+            // An empty batch's fence signals once the hand-off before it completed.
+            if (internalFence &&
+                tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,0,nullptr,internalFence)!=VK_SUCCESS)
+                return VK_ERROR_DEVICE_LOST;
+            *index=acquired;
+            return result;
+        }
+        // The presentation engine signals this fence: the guest asks the device about it.
+        if (internalFence) caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(internalFence)));
         if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t request=++surface.query;
         // The phone signals a semaphore and fence the device stream created.
@@ -335,6 +469,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
                 surface.client.presentOrdered(swap->native,serial,get_host_u64_VkQueue(queue->internal_object),
                     order,index,swap->family,waits,deadline());
                 swap->images[index].serial=serial;
+                startPreAcquire(*swap);
                 if (info->pResults) info->pResults[0]=VK_SUCCESS;
                 return VK_SUCCESS;
             }
