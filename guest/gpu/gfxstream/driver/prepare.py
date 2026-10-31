@@ -2,8 +2,8 @@
 """Turn a pinned Mesa checkout into the Caboose gfxstream driver source tree.
 
 Applies the patch series in patches/ to upstream files and installs the
-Caboose-owned sources (the socket transport, the virtual WSI client and the
-bounded-memory headers) at the paths the patches include them from.
+Caboose-owned sources (the socket transport, the virtual WSI client, the
+bounded-memory headers, the dma-buf headers and the video import) at the paths the patches include them from.
 
 usage: prepare.py MESA_CHECKOUT
 """
@@ -32,6 +32,10 @@ OWNED = {
                     'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
                     'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h',
                     'query_results.h')},
+    **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
+       for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
+    **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'
+       for name in ('gpu_media.h', 'media_import.h', 'media_import.inc')},
 }
 
 
