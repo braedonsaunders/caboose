@@ -265,6 +265,77 @@ def run_app(name, config, port, reports, scratch, clicks, repeat, targets_log=No
         app.stop()
 
 
+# Real applications the computer image has: how many targets each yields and how fast.
+SURVEY = {
+    "xfce4-terminal": ["xfce4-terminal"],
+    "mousepad": ["mousepad"],
+    "thunar": ["thunar", "/usr/share"],
+    "firefox": ["firefox-esr", "--new-instance", "--profile", "{scratch}/firefox", "about:preferences"],
+    "code": ["code", "--no-sandbox", "--user-data-dir", "{scratch}/code", "--disable-workspace-trust"],
+    "libreoffice": ["libreoffice", "--writer", "--norestore"],
+    "chromium-x11": ["chromium", "--ozone-platform=x11", "--force-renderer-accessibility", "--no-first-run",
+                     "--user-data-dir={scratch}/chromium-x11", "about:blank"],
+}
+
+
+def survey(names, scratch, repeat):
+    """Each real application: launch it, wait for its window, read its targets."""
+    from seat import Seat
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("caboose_targets", os.path.join(os.path.dirname(HERE), "..", "desktop-mcp", "caboose-targets.py"))
+    targets = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(targets)
+    seat = Seat()
+    for name in names:
+        if name not in SURVEY:
+            print(json.dumps({"app": name, "error": "not in the survey"}), flush=True)
+            continue
+        command = [part.replace("{scratch}", scratch) for part in SURVEY[name]]
+        os.makedirs(os.path.join(scratch, name), exist_ok=True)
+        before = {w["id"] for w in seat.windows().get("windows", [])}
+        try:
+            process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as error:
+            print(json.dumps({"app": name, "error": str(error)}), flush=True)
+            continue
+        window = None
+        deadline = time.monotonic() + 40
+        while window is None and time.monotonic() < deadline:
+            fresh = [w for w in seat.windows().get("windows", []) if w["id"] not in before and w["kind"] != "popup"]
+            window = fresh[-1] if fresh else None
+            time.sleep(0.3)
+        result = {"app": name}
+        if window is None:
+            result["error"] = "no window"
+        else:
+            # Splash screens give way to the real window.
+            time.sleep(4)
+            fresh = [w for w in seat.windows().get("windows", []) if w["id"] not in before and w["kind"] != "popup"]
+            window = fresh[-1] if fresh else window
+            try:
+                seat.focus(window["id"])
+            except Exception:
+                pass
+            time.sleep(0.5)
+            reader = targets.Reader(os.environ.get("DISPLAY", ""))
+            for method in ("walk", "collection"):
+                runs = [reader.snapshot(method) for _ in range(repeat)]
+                result[method] = {"ms": [r.get("ms") for r in runs], "targets": len(runs[-1].get("targets") or []),
+                                  "nodes": runs[-1].get("nodes")}
+            result["x11"] = bool(window.get("x11"))
+            kinds = {}
+            for t in runs[-1].get("targets") or []:
+                kinds[t[4]] = kinds.get(t[4], 0) + 1
+            result["kinds"] = kinds
+        print(json.dumps(result), flush=True)
+        try:
+            os.killpg(process.pid, 15)
+            process.wait(5)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            pass
+        time.sleep(1)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", required=True)
@@ -273,6 +344,7 @@ def main():
     parser.add_argument("--clicks")
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--targets-log", help="the probe's --targets file, to time the compositor's updates")
+    parser.add_argument("--survey", help="real applications to read, comma-separated (" + ",".join(SURVEY) + ")")
     parser.add_argument("--debug-menu", action="store_true", help="record the seat and a reading with the first menu open")
     args = parser.parse_args()
     global DEBUG_MENU
@@ -281,9 +353,12 @@ def main():
     sys.path.insert(0, "/opt/caboose")
     os.makedirs(args.out, exist_ok=True)
     clicks = json.load(open(args.clicks, encoding="utf-8")) if args.clicks else None
+    scratch = tempfile.mkdtemp(prefix="caboose-targets-")
+    if args.survey:
+        survey(args.survey.split(","), scratch, args.repeat)
+        return
     reports = Reports()
     port = serve(reports)
-    scratch = tempfile.mkdtemp(prefix="caboose-targets-")
     for name in args.apps.split(","):
         config = APPS[name]
         reports.take()
