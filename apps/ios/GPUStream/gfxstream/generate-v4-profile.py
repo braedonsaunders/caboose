@@ -24,7 +24,7 @@ AUDIT_INPUTS = {
 }
 # vk_decoder_global_state.cpp after 0029 (resource cache) and 0040 (guest-device Metal objects).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '4d1b05e3cc5f0ae948a78a844254fe2743627cee7f8daf9ad09f9cede6cce7cc',
+    'host/vulkan/vk_decoder_global_state.cpp': '3d7db1424fadd0ce6df313cdfc88202a2461677f6c1f51d5dcea0b558854d723',
     'host/vulkan/caboose_pipeline_cache.h': '55c33c7a126fdd693a3c0cb4b11eca7bfb062200eb93286288a89ce068ea3fe2',
 }
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
