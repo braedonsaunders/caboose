@@ -434,7 +434,14 @@ impl State {
         let focused = self.focus_history.last() == Some(&id);
         self.focus_history.retain(|f| *f != id);
         let Some(w) = self.windows.remove(id) else { return };
-        self.input.forget_window(id);
+        // A touch on a closing surface (a menu, say) never gets its release; without a
+        // cancel the application keeps that touch down and rejects every later one.
+        if self.input.forget_window(id) {
+            if let Some(touch) = self.seat.get_touch() {
+                touch.cancel(self);
+            }
+            self.input.clear_touches();
+        }
         // Closing the focused window (a dialog, a transient surface) gives focus back to
         // the window focused before it, as a desktop does.
         if focused {
