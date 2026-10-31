@@ -166,6 +166,15 @@ public final class LocalScrollController {
             releaseTextures(keeping: [])
         }
         if !placing.isEmpty { place() }
+        // A capture whose copy never lands must not stop the pictures for good.
+        if let since = measuringSince, measuringID != nil, now - since > 0.5 {
+            LocalScrollProfile.note("capture \(measuringID ?? 0) did not land in 500 ms; capturing again")
+            measuringID = nil
+        }
+        if LocalScrollProfile.enabled, now - lastStatus > 1, model.isActive {
+            lastStatus = now
+            LocalScrollProfile.note("status captures=\(capturesIssued) landed=\(capturesLanded) placed=\(capturesPlaced) waiting=\(placing.count) measuring=\(measuringID.map(String.init) ?? "-") phase=\(model.phase) lost=\(model.lost)")
+        }
         let wasActive = model.isActive
         let tick = model.tick(at: time)
         if wasActive, !model.isActive {
@@ -247,6 +256,8 @@ public final class LocalScrollController {
         let id = nextID
         nextID += 1
         measuringID = id
+        measuringSince = CACurrentMediaTime()
+        capturesIssued += 1
         let hint = model.captured(id, at: time, overscan: overscan)
         let tagRect = self.tagRect?(CGSize(width: texture.width, height: texture.height))
         let axis = model.axis, generation = generation, chain = chain, estimator = estimator
@@ -284,6 +295,7 @@ public final class LocalScrollController {
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
                         if self?.measuringID == id { self?.measuringID = nil }
+                        self?.capturesLanded += 1
                         guard let self, self.generation == generation else {
                             if let copy { LocalScrollRenderer.shared?.recycle([copy]) }
                             return
@@ -309,6 +321,9 @@ public final class LocalScrollController {
         let deadline: CFTimeInterval
     }
     private var placing: [Placing] = []
+    private var measuringSince: CFTimeInterval?
+    private var capturesIssued = 0, capturesLanded = 0, capturesPlaced = 0
+    private var lastStatus: CFTimeInterval = 0
     /// Whether tag luma decodes as a valid frame tag (its report may still be on its way).
     public var tagIsValid: (([Float]) -> Bool)?
 
@@ -334,6 +349,7 @@ public final class LocalScrollController {
                     LocalScrollProfile.note("picture \(next.id): no tag rect for its window (no scroll.tree with tag_rect yet)")
                 }
             }
+            capturesPlaced += 1
             model.observe(next.id, reported ?? next.measured)
             profile.measured(reported ?? next.measured)
             releaseTextures(keeping: Set(model.retainedFrames))
