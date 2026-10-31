@@ -546,7 +546,9 @@ Flatpak applications take the same paths inside their sandbox. `install-live.py
 extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
 runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
-override. The launch environment's variables pass into the sandbox unchanged.
+override. The launch environment's variables pass into the sandbox unchanged;
+`PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
+which shares no other part of the runtime directory with games.
 
 `guest/gpu/check-apps.sh` checks each path in a disposable container
 ([guest/gpu](../guest/gpu/README.md#application-routing-check)).

@@ -207,6 +207,10 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    // Steam's container runtime (pressure-vessel) shares only the paths it is told to.
+    if let Some(dir) = stream.parent() {
+        env.push(("PRESSURE_VESSEL_FILESYSTEMS_RW".into(), dir.display().to_string()));
+    }
     // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
     // CPU while no phone was attached are lost once one is, so applications move to it.
     env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
@@ -730,6 +734,7 @@ mod tests {
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
+        assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
         std::fs::remove_file(&icd).unwrap();
     }
