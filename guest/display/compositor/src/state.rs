@@ -374,13 +374,24 @@ impl State {
         let Some(buffer) = with_renderer_surface_state(surface, |state| state.buffer().cloned()).flatten() else { return };
         let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer) else { return };
         if !crate::remote_buffers::is_remote(dmabuf) { return }
-        let skipped = |reason: &str| tracing::debug!("remote buffer not presented: {reason}");
+        let size = smithay::backend::allocator::Buffer::size(dmabuf);
+        let skipped = |reason: &str| {
+            // The first 32, then every 256th: enough to diagnose without flooding the log.
+            static SKIPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SKIPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n < 32 || n % 256 == 0 {
+                tracing::info!("remote buffer not presented: {reason} (buffer {}x{}, skip {})", size.w, size.h, n + 1);
+            }
+        };
+        if self.gpu_grants.is_none() { return skipped("no private GPU") }
         if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return skipped("no GPU epoch") }
         let Some(id) = self.window_of_surface(surface) else { return skipped("no window") };
         let Some(window) = self.windows.get(id) else { return skipped("no window") };
         if !matches!(window.surface, Surface::Toplevel(_)) { return skipped("not a toplevel") }
         if window.surface.wl_surface().as_ref() != Some(surface) && !covers_geometry(surface, window.local_geometry()) {
-            return skipped("subsurface does not cover the window");
+            let geometry = window.local_geometry();
+            return skipped(&format!("subsurface does not cover the window geometry {}x{} at {},{}",
+                geometry.size.w, geometry.size.h, geometry.loc.x, geometry.loc.y));
         }
         let (Some(identity), size) = (crate::remote_buffers::identity(dmabuf), smithay::backend::allocator::Buffer::size(dmabuf)) else { return };
         let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else { return };
@@ -413,6 +424,11 @@ impl State {
     }
 
     fn send_remote_present(&mut self, request: u64, window: u64, identity: (u64, u64), width: u32, height: u32) {
+        static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n < 8 || n % 1024 == 0 {
+            tracing::info!("remote buffer present {}: window {window}, {width}x{height}", n + 1);
+        }
         let sent = crate::gpu_control::buffer_present(request, window, identity, width, height)
             .and_then(|bytes| self.net.queue_gpu_control(bytes, None));
         if sent.is_err() {
