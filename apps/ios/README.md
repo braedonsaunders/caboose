@@ -460,9 +460,16 @@ stationary half-second hold cancels that native touch sequence and sends a right
 Apple Pencil is a
 tablet with pressure, tilt and azimuth on every coalesced sample, and hover on iPads that
 have it. Mouse-only windows, including X11 apps through Xwayland, take pointer gestures:
-one finger scrolls with momentum. Hold for half a second, feel the haptic, then move to
-select text or drag a control with the primary button; lifting releases it. Two fingers
-also scroll. A tap clicks, two quick taps double-click, and a two-finger tap right-clicks.
+one finger scrolls with momentum. A finger held still for 0.3 s aims (`Input/PointerAim.swift`):
+the system loupe magnifies the spot, the pointer hovers there (menus and tooltips that need
+hover open) and then follows the finger at half its speed, an amber outline shows the control
+it would press, with a tick each time that changes, and lifting clicks it. Held still again
+for half a second while aiming, the button goes down, with a firmer haptic, and the finger
+drags from that exact point (selecting text, a scroll bar thumb, a splitter) until it lifts.
+Two fingers also scroll. A tap clicks, two quick taps double-click, and a two-finger tap
+right-clicks. A finger's tap or touch-down is aimed at the control it most likely meant
+among the window's [touch targets](../../docs/display.md#touch-targets)
+(`Input/TouchTargeting.swift`).
 Pencil strokes and hardware pointers drag directly. A held drag releases its button on
 cancellation, target change or backgrounding. The free desktop uses the same content
 pan/hold gestures; window title bars and resize handles still drag immediately. These rules are shared by

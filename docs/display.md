@@ -474,7 +474,7 @@ the pointer message's pixel coordinates or its precise-pixel versus wheel-click 
   caret and the selection's other end as byte offsets into it, on character boundaries.
   They are absent when the application reports none, and for password and PIN fields and
   fields hinted sensitive or hidden, whose text never leaves the computer.
-- Clients keep pointer gestures (tap, long-press right-click, swipe to scroll) for
+- Clients keep pointer gestures (tap, a hold that aims the pointer, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection. Emulated pans retain one gesture owner;
   a finger-count change cancels that pan. Card and free-desktop scroll delivery,
