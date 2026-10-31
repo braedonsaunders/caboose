@@ -14,6 +14,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `deferred_replies.h` | Replies the caller does not wait for, drained in order; prefetched fence waits; guest-assigned handle checks |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query |
+| `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `completion_feed.h` | The completion feed's wire format and the tracker of every fence and timeline semaphore the process follows |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 

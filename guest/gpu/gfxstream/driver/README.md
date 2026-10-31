@@ -83,6 +83,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0021 completion-feed | With `0x200`, fence and timeline status and waits resolve from the completion feed |
 | 0022 ordered-present | With `0x400`, presents are ordered behind a device-stream mark and their results are not waited for |
 | 0023 pipelined-acquire | Submits without command buffers do not wait for their result; with ordered presents and the feed, the next image is acquired ahead of the application |
+| 0024 static-query-cache | Format and image-format properties are asked once per physical device and parameters |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

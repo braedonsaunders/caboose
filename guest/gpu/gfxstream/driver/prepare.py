@@ -30,7 +30,7 @@ OWNED = {
     **{f'bounded-memory/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/{name}'
        for name in ('async_allocation.h', 'cb_staging.h', 'completion_feed.h', 'deferred_replies.h',
                     'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
-                    'requirements_cache.h', 'rpc_timing.h')},
+                    'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h')},
 }
 
 

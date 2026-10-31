@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 23/23] Hand images acquired ahead of time to the application
+Subject: [PATCH 23/24] Hand images acquired ahead of time to the application
 
 Submits without staged command buffers (the hand-off of a pipelined acquire,
 or an application's semaphore-only submit) no longer wait for their result
