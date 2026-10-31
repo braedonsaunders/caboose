@@ -16,13 +16,37 @@ while read -r _device target filesystem _options _rest; do
 done < /proc/mounts
 modprobe erofs || panic 'Caboose system: erofs module unavailable'
 modprobe overlay || panic 'Caboose system: overlay module unavailable'
-# The immutable system image is the first extra virtio block device.
-device=${CABOOSE_SYSTEM_DEVICE:-/dev/vdb}
+modprobe virtio_pmem 2>/dev/null || true
+modprobe nd_pmem 2>/dev/null || true
+modprobe dax_pmem 2>/dev/null || true
+# Prefer virtio-pmem (/dev/pmem0) for DAX page sharing, falling back to virtio-blk (/dev/vdb).
+resolve_system_device() {
+  if [ -n "${CABOOSE_SYSTEM_DEVICE:-}" ]; then
+    [ -b "$CABOOSE_SYSTEM_DEVICE" ] && device=$CABOOSE_SYSTEM_DEVICE && return 0
+    return 1
+  fi
+  if [ -b /dev/pmem0 ]; then
+    device=/dev/pmem0
+    return 0
+  fi
+  if [ -b /dev/vdb ]; then
+    device=/dev/vdb
+    return 0
+  fi
+  return 1
+}
+device=${CABOOSE_SYSTEM_DEVICE:-}
 tries=0
-while [ ! -b "$device" ] && [ "$tries" -lt 30 ]; do sleep 1; tries=$((tries + 1)); done
-[ -b "$device" ] || panic "Caboose system image $device is missing"
+while ! resolve_system_device && [ "$tries" -lt 30 ]; do sleep 1; tries=$((tries + 1)); done
+[ -n "$device" ] && [ -b "$device" ] || panic "Caboose system image ${device:-/dev/pmem0} is missing"
 mkdir -p "$rootmnt/.caboose-system" "$rootmnt/var/lib/caboose/system-overlay"
-mount -t erofs -o ro "$device" "$rootmnt/.caboose-system" || panic 'Cannot mount Caboose system image'
+if [ "${CABOOSE_SYSTEM_DAX:-}" = 1 ] || { [ "${CABOOSE_SYSTEM_DAX:-}" != 0 ] && [ "${device#/dev/pmem}" != "$device" ]; }; then
+  mount -t erofs -o ro,dax "$device" "$rootmnt/.caboose-system" 2>/dev/null ||
+    mount -t erofs -o ro "$device" "$rootmnt/.caboose-system" ||
+    panic 'Cannot mount Caboose system image'
+else
+  mount -t erofs -o ro "$device" "$rootmnt/.caboose-system" || panic 'Cannot mount Caboose system image'
+fi
 for name in usr opt; do
   mkdir -p "$rootmnt/$name" "$rootmnt/var/lib/caboose/system-overlay/$name/upper" "$rootmnt/var/lib/caboose/system-overlay/$name/work"
   mount -t overlay -o "lowerdir=$rootmnt/.caboose-system/$name,upperdir=$rootmnt/var/lib/caboose/system-overlay/$name/upper,workdir=$rootmnt/var/lib/caboose/system-overlay/$name/work" overlay "$rootmnt/$name" || panic "Cannot mount Caboose $name overlay"

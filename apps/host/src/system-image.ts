@@ -7,11 +7,35 @@ import { writePrivateJson } from './settings.js'
 const files = ['base.raw', 'vmlinux', 'initrd', 'system.erofs'] as const
 type ImageFile = typeof files[number]
 export interface SystemImageBinding { version: 1; directory: string; hashes: Record<ImageFile, string> }
+export type SystemImageAttachmentKind = 'pmem' | 'block'
+export interface SystemImageAttachment { path: string; sha256: string; kind: SystemImageAttachmentKind }
 
 /** Cloud Hypervisor restores shared-memory virtio-fs guests eagerly. */
 export function validateDepotRestoreOptions(depotPath: string | undefined, copyOnWrite: string | undefined): void {
   if (depotPath && copyOnWrite === 'on') {
     throw new Error('CABOOSE_VM_DEPOT cannot be combined with CABOOSE_VM_COW=on: virtio-fs requires shared memory and Cloud Hypervisor restores it eagerly')
+  }
+}
+
+/**
+ * Resolve how `system.erofs` attaches to the microVM:
+ * - Standard microVMs default to `pmem` (`virtio-pmem` with `--pmem file=...,discard_writes=on`) for DAX / host page-cache sharing.
+ * - Template VMs default to `block` because AppKit templates currently require `kind === 'block'`.
+ * - An explicit `envValue` of `'pmem'` or `'block'` overrides the default.
+ */
+export function resolveSystemImageAttachmentKind(envValue?: string, isTemplate?: boolean): SystemImageAttachmentKind {
+  const normalized = envValue?.trim().toLowerCase()
+  if (normalized === 'pmem' || normalized === 'block') return normalized
+  if (normalized) throw new Error('System image attachment kind must be pmem or block')
+  return isTemplate ? 'block' : 'pmem'
+}
+
+/** Build the read-only attachment descriptor for `system.erofs` from a validated binding. */
+export function systemImageAttachment(binding: SystemImageBinding, mode: SystemImageAttachmentKind = 'pmem'): SystemImageAttachment {
+  return {
+    path: join(binding.directory, 'system.erofs'),
+    sha256: binding.hashes['system.erofs'],
+    kind: mode,
   }
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Linux/root: erofs-utils, btrfs-progs, e2fsprogs, util-linux; two sequential
-# 512 MiB sparse scratch disks. Checks both new Btrfs and existing ext4 uppers.
+# 512 MiB sparse scratch disks. Checks both new Btrfs and existing ext4 uppers,
+# plus both DAX (uncompressed, 2 MiB-aligned) and LZ4HC EROFS system images.
 # Run: sudo timeout --kill-after=10s 180s guest/image/check-system-overlay.sh
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -23,8 +24,20 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 mkdir -p "$work/root/usr/bin" "$work/root/opt" "$work/lower" "$work/writable" "$work/merged"
 printf 'original\n' > "$work/root/usr/bin/example"
+# Default DAX build (uncompressed, 4K blocks, noinline_data, 2 MiB aligned)
 "$here/make-system-image.sh" "$work/root" "$work/system.erofs"
-mount -t erofs -o loop,ro "$work/system.erofs" "$work/lower"
+dax_size=$(stat -c %s "$work/system.erofs")
+test "$dax_size" -gt 0 && test $((dax_size % 2097152)) -eq 0
+# Compressed LZ4HC build (also 2 MiB aligned for virtio-pmem compatibility)
+CABOOSE_SYSTEM_IMAGE_FORMAT=lz4hc "$here/make-system-image.sh" "$work/root" "$work/system-lz4hc.erofs"
+lz4_size=$(stat -c %s "$work/system-lz4hc.erofs")
+test "$lz4_size" -gt 0 && test $((lz4_size % 2097152)) -eq 0
+mount -t erofs -o loop,ro "$work/system-lz4hc.erofs" "$work/lower"
+test "$(cat "$work/lower/usr/bin/example")" = original
+umount "$work/lower"
+# Verify ro,dax fallback to ro on a loop device where DAX is unsupported
+mount -t erofs -o loop,ro,dax "$work/system.erofs" "$work/lower" 2>/dev/null ||
+  mount -t erofs -o loop,ro "$work/system.erofs" "$work/lower"
 for filesystem in btrfs ext4; do
   truncate -s 512M "$work/$filesystem.raw"
   loop=$(losetup --find --show "$work/$filesystem.raw")
