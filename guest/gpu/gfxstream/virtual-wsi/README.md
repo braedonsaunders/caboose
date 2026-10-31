@@ -56,13 +56,32 @@ is set, it installs the instance, physical-device and device entry points for su
 presentation support and swapchains; otherwise Mesa's entry points are unchanged.
 
 The surface wrapper is a standard `VkIcdSurfaceWayland` containing the actual display
-and surface pointers, or a `VkIcdSurfaceXcb` containing the connection and window,
+and surface pointers, a `VkIcdSurfaceXcb` containing the connection and window, or a
+`VkIcdSurfaceXlib` containing the Xlib display and window,
 allocated with Mesa's Vulkan allocator. It does not need a common window-system backend
 or create a Linux presentation buffer. Binding sends the `wl_proxy_get_id` of a Wayland
 surface or the X11 window ID, uses an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
 and a ten-second deadline. Provider replies populate base capabilities, formats
-and modes, including the base `*2` forms. Unknown extension chains fail explicitly.
-Uncertain binding or retirement retains the bounded wrapper and instance lease.
+and modes, including the base `*2` forms; a reply less than 500 ms old answers the same
+physical device's next query (Zink asks every frame). Unknown extension chains fail
+explicitly. Uncertain retirement retains the bounded wrapper and instance lease.
+
+Toolkits create a surface, query it and create a swapchain before its window exists: GTK
+for a `wl_surface` without an `xdg_toplevel` yet, X11 toolkits for windows not yet
+mapped. The compositor grants a bind only for an existing window, and the broker closes
+the connection of a bind it refused; that close is not executor loss (only a bound
+connection's end is reported to `peerGone`). The surface binds lazily: a query tries
+again at most every 100 ms on a new connection (`Client::reset`), and a present always
+tries. Until a bind succeeds, with guest-owned images, queries are answered locally:
+the phone's formats (`B8G8R8A8_UNORM` and `_SRGB`, sRGB nonlinear), FIFO, 4 to 8 images,
+opaque or premultiplied alpha, and no fixed extent (X11 surfaces report their window's
+size). Presentation support needs no window and is answered for the first queue family.
+`vkGetPhysicalDevice{Xcb,Xlib,Wayland}PresentationSupportKHR` are returned from
+`vkGetInstanceProcAddr` directly (patch 0029).
+
+Each present commits a Wayland application's `wl_surface`, without a buffer, as a window
+system's own present does with its buffer: toolkits request their frame callback, regions
+and geometry before presenting and pace drawing on that callback.
 
 `mesa_swapchain.inc` supplies the indexed swapchain. It requires the socket's version-4
 handshake (mask `0x70`, with or without guest-assigned handles) and a read-only check of
@@ -100,7 +119,8 @@ Unknown creation or retirement completion quarantines allocations and prevents
 device destruction. Source images are freed only after real swapchain or surface
 retirement. App-issued idle calls remain unchanged; the native decoder owns the
 observed completion proof for acquired-but-unused images. Source images use
-a compatible memory type that is neither host-visible nor host-coherent, and do not
+a compatible memory type that is neither host-visible nor host-coherent where the device
+has one (lavapipe has none, and its first compatible type is used), and do not
 alter application memory-property queries. Guest-visible flags are decoder-projected
 properties, not raw Apple provider flags.
 
@@ -143,3 +163,16 @@ application an image whose last copy the phone has released, at once, and signal
 semaphore and fence with a submission that has no waits. Each present names a guest
 image; the phone acquires a native image inside the present, and drops the frame (it
 still reports queued and releases its image) when none is free in mailbox, or after 1 s.
+
+A guest-owned swapchain is created on the guest first, and the phone's swapchain once the
+surface binds, at creation or at a later present. Until then each present is dropped:
+its wait semaphores are consumed by a submission on its queue and its image is free at
+once. The phone copies every presented image into its own, so only the fields its
+presentation layer takes reach CREATE: no flags, one layer, exclusive sharing, FIFO,
+identity transform, the application's alpha if the phone offers it (else opaque), and
+the usage the phone supports of the images' usage, which always adds transfer source and
+destination. The images keep the application's usage but are created without flags
+(`VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR` is accepted and not passed on, since the
+phone maps only images without flags) and exclusive. A swapchain whose extent, format or
+queue family does not fit the bound window reports `VK_ERROR_OUT_OF_DATE_KHR` at its
+next present, as on any window system after a resize.

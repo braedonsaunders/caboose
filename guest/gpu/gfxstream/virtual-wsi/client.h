@@ -18,6 +18,9 @@ public:
     enum Space : uint32_t { WaylandSurface = 0, X11Window = 1 };
     Record bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                 Space space = WaylandSurface);
+    // Closes a connection whose bind did not succeed, so that a later bind can be tried.
+    void reset();
+    bool bound() const { return bound_; }
     Record query(uint64_t request, uint64_t physical, Deadline deadline);
     Record present(const Bytes& suffix, Deadline deadline);
     void waitReleased(uint64_t serial, Deadline deadline);

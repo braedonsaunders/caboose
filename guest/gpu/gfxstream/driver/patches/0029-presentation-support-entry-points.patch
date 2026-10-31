@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 29/29] Return the platform presentation queries by name
+
+vkGetPhysicalDeviceXcbPresentationSupportKHR, its Xlib and its Wayland forms
+are physical-device entry points the loader asks the driver for by name. Mesa's
+trampolines for them exist only for the platforms its common code was built
+with, so the loader found none for X11 and Qt reported no presentation queue.
+caboose-wsi/mesa_surface.inc now returns them from vkGetInstanceProcAddr.
+---
+ src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index 9189b93..aa53cd0 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -779,6 +779,8 @@ vk_icdGetInstanceProcAddr(VkInstance instance, const char* pName) {
+ 
+ PFN_vkVoidFunction gfxstream_vk_GetInstanceProcAddr(VkInstance _instance, const char* pName) {
+     VK_FROM_HANDLE(gfxstream_vk_instance, instance, _instance);
++    if (instance)
++        if (auto entry = caboose_surface::procAddr(pName)) return entry;
+     return vk_instance_get_proc_addr(&instance->vk, &gfxstream_vk_instance_entrypoints, pName);
+ }
+ 
+-- 
+2.43.0
+

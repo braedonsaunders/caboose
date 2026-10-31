@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "client.h"
 #include <cassert>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -45,6 +46,47 @@ static void exerciseX11Bind() {
     catch (const ProtocolError&) { unknownRejected=true; }
     assert(unknownRejected);
     assert(status(client.bind(7,0x400003,0,0,deadline,Client::X11Window).body,48).success());
+    int code=0; assert(waitpid(child,&code,0)==child && WIFEXITED(code) && WEXITSTATUS(code)==0);
+    unlink(path.c_str()); rmdir(dir);
+}
+
+// A bind the broker refuses ends its connection: that is not executor loss, and after
+// reset() the same client binds on a new connection once the window exists.
+static int peerGoneCalls=0;
+static void exerciseRefusedBind() {
+    char dir[]="/tmp/caboose-wsi-test-XXXXXX"; assert(mkdtemp(dir));
+    std::string path=std::string(dir)+"/surface";
+    int listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0); assert(listener>=0);
+    sockaddr_un address{}; address.sun_family=AF_UNIX; strcpy(address.sun_path,path.c_str());
+    assert(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0);
+    assert(listen(listener,2)==0);
+    pid_t child=fork(); assert(child>=0);
+    if (!child) {
+        int refused=accept(listener,nullptr,nullptr); assert(refused>=0);
+        recvPacket(refused,16); close(refused);
+        int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
+        recvPacket(fd,16);
+        Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
+        sendPacket(fd,17,bound);
+        recvPacket(fd,23); close(fd); _exit(0);
+    }
+    close(listener);
+    Client::peerGone=[] { ++peerGoneCalls; };
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    Client client; client.connect(path.c_str(),deadline);
+    bool refused=false;
+    try { client.bind(7,13,0,0,deadline); } catch (const std::system_error& e) { refused=e.code().value()==ECONNRESET; }
+    assert(refused && !client.bound() && peerGoneCalls==0);
+    client.reset();
+    client.connect(path.c_str(),deadline);
+    assert(status(client.bind(7,13,0,0,deadline).body,48).success() && client.bound());
+    bool reset=false;
+    try { client.reset(); } catch (const ProtocolError&) { reset=true; }
+    assert(reset); // a bound connection is retired, never reset
+    bool lost=false;
+    try { client.retire(deadline); } catch (const std::system_error&) { lost=true; }
+    assert(lost && peerGoneCalls==1); // a bound connection's end is reported
+    Client::peerGone=nullptr;
     int code=0; assert(waitpid(child,&code,0)==child && WIFEXITED(code) && WEXITSTATUS(code)==0);
     unlink(path.c_str()); rmdir(dir);
 }
@@ -144,4 +186,6 @@ int main(int argc, char**) {
     std::cout<<"6 seqpacket lifecycle scenarios passed\n";
     exerciseX11Bind();
     std::cout<<"X11 window bind passed\n";
+    exerciseRefusedBind();
+    std::cout<<"refused bind and rebind passed\n";
 }

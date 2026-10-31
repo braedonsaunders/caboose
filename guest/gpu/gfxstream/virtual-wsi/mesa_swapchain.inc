@@ -35,6 +35,11 @@ struct DeviceSwapchain {
     bool guestImages=false;
     bool mailbox=false;
     size_t nextImage=0;
+    // Guest-owned swapchains are created on the guest first; the phone's swapchain is
+    // created once the surface binds (`nativeAttempted`), at creation or a later present.
+    bool nativeAttempted=false;
+    VkSwapchainCreateInfoKHR params{};
+    VkImageUsageFlags imageUsage=0;
 };
 static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
@@ -53,7 +58,7 @@ static VkResult presentFailureResult(Status s) {
     return s.hasVk && VkResult(s.vk)==VK_ERROR_DEVICE_LOST ? VK_ERROR_DEVICE_LOST : VK_ERROR_OUT_OF_DATE_KHR;
 }
 static bool orderedPresentFailed(DeviceSwapchain& swap, VkResult* result) {
-    if (caboose_gfxstream_ordered_present!=1) return false;
+    if (caboose_gfxstream_ordered_present!=1 || !swap.native) return false;
     swap.surface->client.pump();
     Status failure{};
     if (!swap.surface->client.presentFailed(swap.native,&failure)) return false;
@@ -128,7 +133,7 @@ static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphor
     const auto start=std::chrono::steady_clock::now();
     constexpr uint64_t kDay=86400ull*1000000000ull;
     for (;;) {
-        client.pump();
+        if (swap.native) client.pump();
         if (client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         const size_t count=swap.images.size();
         for (size_t k=0;k<count;++k) {
@@ -143,12 +148,12 @@ static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphor
             signal.signalSemaphoreCount=semaphore ? 1 : 0; signal.pSignalSemaphores=&semaphore;
             if (tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap.handoffQueue,semaphore ? 1 : 0,&signal,fence)!=VK_SUCCESS)
                 return VK_ERROR_DEVICE_LOST;
-            client.acquireLocally(swap.native,uint32_t(i));
+            if (swap.native) client.acquireLocally(swap.native,uint32_t(i));
             image.held=true; swap.nextImage=i+1; *index=uint32_t(i);
             return VK_SUCCESS;
         }
         // Every image is with the application or still being copied on the phone.
-        if (!client.sourcesInFlight() || timeout==0) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+        if (!swap.native || !client.sourcesInFlight() || timeout==0) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
         const uint64_t spent=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now()-start).count());
         if (timeout!=UINT64_MAX && spent>=timeout) return VK_TIMEOUT;
@@ -214,6 +219,7 @@ static bool retireSwapchain(DeviceSwapchain& swap) {
     if (swap.retired) return true;
     try {
         auto& client=swap.surface->client;
+        if (swap.guestImages && !swap.nativeAttempted) swap.nativeRetired=true;
         if (!swap.nativeRetired && !client.retired()) {
             // An uncertain CREATE may have allocated remotely without returning its ID.
             if (!swap.native) return false;
@@ -225,6 +231,132 @@ static bool retireSwapchain(DeviceSwapchain& swap) {
         swap.nativeRetired=true; freeImages(swap); swap.retired=true; return true;
     } catch (...) { swap.poisoned=true; return false; }
 }
+// Creates and binds the swapchain's own images. They are what the application renders
+// to; the phone copies each presented one into its own swapchain.
+static VkResult allocateImages(DeviceSwapchain& swap, const VkImageCreateInfo& imageInfo) {
+    VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+    auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+    VkPhysicalDeviceMemoryProperties memory{};
+    encoder->vkGetPhysicalDeviceMemoryProperties(device->physical_device->internal_object,&memory,true);
+    if (!memory.memoryTypeCount || memory.memoryTypeCount>VK_MAX_MEMORY_TYPES) return VK_ERROR_INITIALIZATION_FAILED;
+    VkImageFormatProperties formatProperties{};
+    VkResult result=encoder->vkGetPhysicalDeviceImageFormatProperties(device->physical_device->internal_object,
+        imageInfo.format,imageInfo.imageType,imageInfo.tiling,imageInfo.usage,imageInfo.flags,&formatProperties,true);
+    if (result!=VK_SUCCESS) return result;
+    if (imageInfo.extent.width>formatProperties.maxExtent.width ||
+        imageInfo.extent.height>formatProperties.maxExtent.height ||
+        imageInfo.arrayLayers>formatProperties.maxArrayLayers ||
+        !(formatProperties.sampleCounts&VK_SAMPLE_COUNT_1_BIT)) return VK_ERROR_FORMAT_NOT_SUPPORTED;
+    for (auto& image:swap.images) {
+        result=gfxstream::vk::ResourceTracker::get()->on_vkCreateImage(encoder,VK_SUCCESS,
+            device->internal_object,&imageInfo,nullptr,&image.image);
+        if (result!=VK_SUCCESS) return result;
+        VkMemoryDedicatedRequirements dedicated{}; dedicated.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
+        VkMemoryRequirements2 returned{}; returned.sType=VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2; returned.pNext=&dedicated;
+        VkImageMemoryRequirementsInfo2 queryInfo{}; queryInfo.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
+        queryInfo.image=image.image;
+        encoder->vkGetImageMemoryRequirements2(device->internal_object,&queryInfo,&returned,true);
+        auto requirements=returned.memoryRequirements;
+        // A type the guest never maps, when the device has one (lavapipe has none).
+        uint32_t type=memory.memoryTypeCount;
+        for (uint32_t i=memory.memoryTypeCount;i-- > 0;) {
+            if (!(requirements.memoryTypeBits&(1u<<i))) continue;
+            const bool mapped=memory.memoryTypes[i].propertyFlags&
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            if (type==memory.memoryTypeCount || !mapped) type=i;
+        }
+        if (type==memory.memoryTypeCount) return VK_ERROR_FEATURE_NOT_PRESENT;
+        VkMemoryAllocateInfo allocate{}; allocate.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize=requirements.size; allocate.memoryTypeIndex=type;
+        VkMemoryDedicatedAllocateInfo allocationImage{}; allocationImage.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        allocationImage.image=image.image;
+        if (dedicated.requiresDedicatedAllocation || dedicated.prefersDedicatedAllocation) allocate.pNext=&allocationImage;
+        result=gfxstream::vk::ResourceTracker::get()->on_vkAllocateMemory(encoder,VK_SUCCESS,
+            device->internal_object,&allocate,nullptr,&image.memory);
+        if (result!=VK_SUCCESS) return result;
+        result=encoder->vkBindImageMemory(device->internal_object,image.image,image.memory,0,true);
+        if (result!=VK_SUCCESS) return result;
+    }
+    return VK_SUCCESS;
+}
+// The phone's swapchain for a guest-owned one: CREATE with the fields the phone's
+// presentation layer takes, then MAP of the guest's images. The phone copies every
+// presented image into its own, so creation flags, sharing, present mode and usage the
+// phone's layer lacks stay on the guest's side. VK_ERROR_OUT_OF_DATE_KHR means the
+// application's swapchain does not fit the window the surface bound to.
+static VkResult createNative(DeviceSwapchain& swap) {
+    auto& surface=*swap.surface;
+    VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+    auto physical=gfxstream_vk_physical_device_to_handle(device->physical_device);
+    Bytes raw; auto result=query(physical,swap.surfaceHandle,raw,true); if (result!=VK_SUCCESS) return result;
+    if (!surface.bound) return VK_NOT_READY;
+    auto caps=providerCaps(raw);
+    const auto& info=swap.params;
+    if ((caps.values[2]!=UINT32_MAX && (caps.values[2]!=info.imageExtent.width || caps.values[3]!=info.imageExtent.height)) ||
+        presentFamily(caps)!=swap.family) return VK_ERROR_OUT_OF_DATE_KHR;
+    bool format=false;
+    for (const auto& f:caps.formats)
+        if (f[0]==uint32_t(info.imageFormat) && f[1]==uint32_t(info.imageColorSpace)) format=true;
+    if (!format) return VK_ERROR_OUT_OF_DATE_KHR;
+    const uint32_t low=std::max(1u,caps.values[0]), high=caps.values[1] ? caps.values[1] : std::max(low,3u);
+    const uint32_t nativeMin=std::clamp(std::min(info.minImageCount,3u),low,high);
+    uint32_t alpha=info.compositeAlpha;
+    if (!(caps.values[11]&alpha))
+        alpha=(caps.values[11]&VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : caps.values[11]&(~caps.values[11]+1);
+    const uint32_t usage=swap.imageUsage&caps.values[12];
+    if (!alpha || !usage) return VK_ERROR_OUT_OF_DATE_KHR;
+    if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
+    Bytes request; put64(request,++surface.query);
+    put64(request,get_host_u64_VkDevice(device->internal_object)); put64(request,0);
+    for (uint32_t word:{0u,nativeMin,uint32_t(info.imageFormat),uint32_t(info.imageColorSpace),
+         info.imageExtent.width,info.imageExtent.height,1u,usage,uint32_t(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR),
+         alpha,uint32_t(VK_PRESENT_MODE_FIFO_KHR),info.clipped ? 1u : 0u,uint32_t(VK_SHARING_MODE_EXCLUSIVE),0u})
+        put32(request,word);
+    // From here a lost reply may leave a phone swapchain: it retires before the images go.
+    swap.nativeAttempted=true;
+    auto created=surface.client.createSwapchain(request,deadline());
+    result=apiStatus(status(created.body,56));
+    if (result!=VK_SUCCESS) { swap.nativeAttempted=false; return result; }
+    swap.native=u64(created.body,48);
+    std::vector<uint64_t> images;
+    for (const auto& image:swap.images) images.push_back(get_host_u64_VkImage(image.image));
+    // The phone maps images this device stream created, allocated and bound.
+    if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
+        return VK_ERROR_DEVICE_LOST;
+    auto mapped=surface.client.mapSwapchain(swap.native,images,deadline(),swap.mailbox ? 3u : 1u);
+    result=apiStatus(status(mapped.body,48));
+    if (result!=VK_SUCCESS) {
+        swap.poisoned=true;
+        auto retired=surface.client.retireSwapchain(swap.native,deadline());
+        if (apiStatus(status(retired.body,48))==VK_SUCCESS) { swap.native=0; swap.nativeAttempted=false; }
+        return result;
+    }
+    // Images the application already holds stay its own.
+    for (size_t i=0;i<swap.images.size();++i)
+        if (swap.images[i].held) surface.client.acquireLocally(swap.native,uint32_t(i));
+    return VK_SUCCESS;
+}
+// Validates and retires `oldSwapchain` on the phone before its replacement is created.
+static VkResult retireOld(VkDevice handle, const VkSwapchainCreateInfoKHR* info, const std::shared_ptr<Surface>& surface) {
+    if (!info->oldSwapchain) return VK_SUCCESS;
+    auto previous=lookupSwapchain(info->oldSwapchain);
+    if (!previous || previous->surface!=surface || previous->device!=handle || previous->retired)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    if (previous->guestImages && !previous->nativeAttempted) { previous->nativeRetired=true; return VK_SUCCESS; }
+    if (!previous->nativeRetired && !surface->client.retired()) {
+        if (!previous->native) return VK_ERROR_INITIALIZATION_FAILED;
+        cancelPreAcquire(*previous);
+        surface->client.waitPresentationIdle(deadline());
+        auto retired=surface->client.retireSwapchain(previous->native,deadline());
+        auto retiredResult=apiStatus(status(retired.body,48));
+        if (retiredResult!=VK_SUCCESS) return retiredResult;
+        previous->nativeRetired=true;
+    }
+    return VK_SUCCESS;
+}
+// Swapchain creation flags with a guest-side meaning only. Mutable formats are not passed
+// on to the images: the phone takes only images created without flags.
+constexpr VkSwapchainCreateFlagsKHR kGuestSwapchainFlags=VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
 static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCreateInfoKHR* info,
     const VkAllocationCallbacks*, VkSwapchainKHR* out) {
     return guarded([&]() -> VkResult {
@@ -235,27 +367,15 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
             if (ext->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO)
                 return VK_ERROR_EXTENSION_NOT_PRESENT;
         }
+        if ((info->flags&~kGuestSwapchainFlags) || info->imageArrayLayers!=1) return VK_ERROR_INITIALIZATION_FAILED;
         auto surface=lookup(info->surface); if (!surface) return VK_ERROR_SURFACE_LOST_KHR;
         std::lock_guard<std::recursive_mutex> operation(surface->operationMutex);
         if (surface->client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface->client.failed()) return apiStatus(surface->client.failure());
-        if (info->oldSwapchain) {
-            auto previous=lookupSwapchain(info->oldSwapchain);
-            if (!previous || previous->surface!=surface || previous->device!=handle || previous->retired)
-                return VK_ERROR_INITIALIZATION_FAILED;
-            if (!previous->nativeRetired && !surface->client.retired()) {
-                if (!previous->native) return VK_ERROR_INITIALIZATION_FAILED;
-                cancelPreAcquire(*previous);
-                surface->client.waitPresentationIdle(deadline());
-                auto retired=surface->client.retireSwapchain(previous->native,deadline());
-                auto retiredResult=apiStatus(status(retired.body,48));
-                if (retiredResult!=VK_SUCCESS) return retiredResult;
-                previous->nativeRetired=true;
-            }
-        }
+        auto result=retireOld(handle,info,surface); if (result!=VK_SUCCESS) return result;
         VK_FROM_HANDLE(gfxstream_vk_device, device, handle);
         auto physical=gfxstream_vk_physical_device_to_handle(device->physical_device);
-        Bytes raw; auto result=query(physical,info->surface,raw); if (result!=VK_SUCCESS) return result;
+        Bytes raw; result=query(physical,info->surface,raw); if (result!=VK_SUCCESS) return result;
         auto caps=providerCaps(raw);
         auto swap=std::make_shared<DeviceSwapchain>();
         swap->device=handle; swap->surface=surface; swap->surfaceHandle=info->surface;
@@ -264,33 +384,56 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
         for (uint32_t i=0;i<device->queue_family_count;++i)
             if (device->queue_families[i]==swap->family) queueExists=true;
         if (!queueExists) return VK_ERROR_INITIALIZATION_FAILED;
+        swap->guestImages=caboose_gfxstream_guest_images==1;
+        swap->mailbox=info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR || info->presentMode==VK_PRESENT_MODE_IMMEDIATE_KHR;
+        swap->params=*info; swap->params.pNext=nullptr; swap->params.pQueueFamilyIndices=nullptr;
+        // The phone copies from the images and into its own: both transfers are always needed.
+        swap->imageUsage=info->imageUsage|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        VkImageCreateInfo imageInfo{}; imageInfo.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType=VK_IMAGE_TYPE_2D; imageInfo.format=info->imageFormat;
+        imageInfo.extent={info->imageExtent.width,info->imageExtent.height,1};
+        imageInfo.mipLevels=1; imageInfo.arrayLayers=1; imageInfo.samples=VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling=VK_IMAGE_TILING_OPTIMAL; imageInfo.usage=swap->imageUsage;
+        // Every queue family of the phone's device presents and copies on one queue; the
+        // images are exclusive to it, which the phone requires of mapped images.
+        imageInfo.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+        auto guestHandle=reinterpret_cast<VkSwapchainKHR>(swap.get());
+        if (swap->guestImages) {
+            // Register before any phone request: a lost reply still prevents device destruction.
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                if (swapchains.size()>=64) return VK_ERROR_OUT_OF_HOST_MEMORY;
+                swapchains.emplace(guestHandle,swap);
+            }
+            auto cleanup=[&](VkResult failure) {
+                if (retireSwapchain(*swap)) { std::lock_guard<std::mutex> lock(mutex); swapchains.erase(guestHandle); }
+                return failure;
+            };
+            try {
+                swap->images.resize(std::clamp(info->minImageCount,kGuestMinImages,kGuestMaxImages));
+                result=allocateImages(*swap,imageInfo); if (result!=VK_SUCCESS) return cleanup(result);
+                pickHandoffQueue(*swap);
+                // The phone's swapchain waits for a window: until the surface binds, frames
+                // are rendered and dropped. A swapchain that does not fit the window it binds
+                // to reports VK_ERROR_OUT_OF_DATE_KHR at its first present.
+                if (tryBind(*surface)) {
+                    result=createNative(*swap);
+                    if (result==VK_ERROR_DEVICE_LOST) return cleanup(result);
+                }
+                *out=guestHandle; return VK_SUCCESS;
+            } catch (...) { cleanup(VK_ERROR_INITIALIZATION_FAILED); throw; }
+        }
+        if (!surface->bound) return VK_ERROR_SURFACE_LOST_KHR;
         uint64_t old=0;
         // Native receives every base creation field and rejects unsupported values.
         if (surface->query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes request; put64(request,++surface->query);
         put64(request,get_host_u64_VkDevice(device->internal_object)); put64(request,old);
-        swap->guestImages=caboose_gfxstream_guest_images==1;
-        swap->mailbox=info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR || info->presentMode==VK_PRESENT_MODE_IMMEDIATE_KHR;
-        // With guest-owned images the phone's own swapchain is a FIFO of its natural size:
-        // the application's image count and mailbox behaviour live on the guest's side.
-        uint32_t nativeMin=info->minImageCount;
-        auto presentMode=uint32_t(info->presentMode);
-        if (swap->guestImages) {
-            const uint32_t low=std::max(1u,caps.values[0]), high=caps.values[1] ? caps.values[1] : std::max(low,3u);
-            nativeMin=std::clamp(std::min(info->minImageCount,3u),low,high);
-            presentMode=VK_PRESENT_MODE_FIFO_KHR;
-        }
-        for (uint32_t word:{info->flags,nativeMin,uint32_t(info->imageFormat),uint32_t(info->imageColorSpace),
+        for (uint32_t word:{0u,info->minImageCount,uint32_t(info->imageFormat),uint32_t(info->imageColorSpace),
              info->imageExtent.width,info->imageExtent.height,info->imageArrayLayers,info->imageUsage,
-             uint32_t(info->preTransform),uint32_t(info->compositeAlpha),presentMode,info->clipped,
-             uint32_t(info->imageSharingMode),info->imageSharingMode==VK_SHARING_MODE_EXCLUSIVE?0:info->queueFamilyIndexCount})
+             uint32_t(info->preTransform),uint32_t(info->compositeAlpha),uint32_t(info->presentMode),info->clipped,
+             uint32_t(VK_SHARING_MODE_EXCLUSIVE),0u})
             put32(request,word);
-        if (info->imageSharingMode==VK_SHARING_MODE_CONCURRENT) {
-            if (info->queueFamilyIndexCount>64 || !info->pQueueFamilyIndices) return VK_ERROR_INITIALIZATION_FAILED;
-            for (uint32_t i=0;i<info->queueFamilyIndexCount;++i) put32(request,info->pQueueFamilyIndices[i]);
-        }
-        // Register before CREATE itself: a lost reply still prevents device destruction.
-        auto guestHandle=reinterpret_cast<VkSwapchainKHR>(swap.get());
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (swapchains.size()>=64) return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -309,66 +452,17 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
             return failure;
         };
         try {
-            swap->images.resize(swap->guestImages ? std::clamp(info->minImageCount,kGuestMinImages,kGuestMaxImages)
-                                                  : u32(created.body,72));
-            auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
-            VkPhysicalDeviceMemoryProperties memory{};
-            encoder->vkGetPhysicalDeviceMemoryProperties(device->physical_device->internal_object,&memory,true);
-            if (!memory.memoryTypeCount || memory.memoryTypeCount>VK_MAX_MEMORY_TYPES)
-                return cleanup(VK_ERROR_INITIALIZATION_FAILED);
-            VkImageCreateInfo imageInfo{}; imageInfo.sType=VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            imageInfo.imageType=VK_IMAGE_TYPE_2D; imageInfo.format=info->imageFormat;
-            imageInfo.extent={info->imageExtent.width,info->imageExtent.height,1};
-            imageInfo.mipLevels=1; imageInfo.arrayLayers=info->imageArrayLayers; imageInfo.samples=VK_SAMPLE_COUNT_1_BIT;
-            imageInfo.tiling=VK_IMAGE_TILING_OPTIMAL; imageInfo.usage=info->imageUsage|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-            imageInfo.sharingMode=info->imageSharingMode;
-            if (info->imageSharingMode==VK_SHARING_MODE_CONCURRENT) {
-                imageInfo.queueFamilyIndexCount=info->queueFamilyIndexCount;
-                imageInfo.pQueueFamilyIndices=info->pQueueFamilyIndices;
-            }
-            VkImageFormatProperties formatProperties{};
-            result=encoder->vkGetPhysicalDeviceImageFormatProperties(device->physical_device->internal_object,
-                imageInfo.format,imageInfo.imageType,imageInfo.tiling,imageInfo.usage,0,&formatProperties,true);
-            if (result!=VK_SUCCESS) return cleanup(result);
-            if (imageInfo.extent.width>formatProperties.maxExtent.width ||
-                imageInfo.extent.height>formatProperties.maxExtent.height ||
-                imageInfo.arrayLayers>formatProperties.maxArrayLayers ||
-                !(formatProperties.sampleCounts&VK_SAMPLE_COUNT_1_BIT)) return cleanup(VK_ERROR_FORMAT_NOT_SUPPORTED);
+            swap->images.resize(u32(created.body,72));
+            imageInfo.usage=info->imageUsage|VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            result=allocateImages(*swap,imageInfo); if (result!=VK_SUCCESS) return cleanup(result);
             std::vector<uint64_t> images;
-            for (auto& image:swap->images) {
-                result=gfxstream::vk::ResourceTracker::get()->on_vkCreateImage(encoder,VK_SUCCESS,
-                    device->internal_object,&imageInfo,nullptr,&image.image);
-                if (result!=VK_SUCCESS) return cleanup(result);
-                VkMemoryDedicatedRequirements dedicated{}; dedicated.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
-                VkMemoryRequirements2 returned{}; returned.sType=VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2; returned.pNext=&dedicated;
-                VkImageMemoryRequirementsInfo2 queryInfo{}; queryInfo.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-                queryInfo.image=image.image;
-                encoder->vkGetImageMemoryRequirements2(device->internal_object,&queryInfo,&returned,true);
-                auto requirements=returned.memoryRequirements;
-                uint32_t type=0;
-                while (type<memory.memoryTypeCount &&
-                    (!(requirements.memoryTypeBits&(1u<<type)) ||
-                     (memory.memoryTypes[type].propertyFlags&(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)))) ++type;
-                if (type==memory.memoryTypeCount) return cleanup(VK_ERROR_FEATURE_NOT_PRESENT);
-                VkMemoryAllocateInfo allocate{}; allocate.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-                allocate.allocationSize=requirements.size; allocate.memoryTypeIndex=type;
-                VkMemoryDedicatedAllocateInfo allocationImage{}; allocationImage.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
-                allocationImage.image=image.image;
-                if (dedicated.requiresDedicatedAllocation || dedicated.prefersDedicatedAllocation) allocate.pNext=&allocationImage;
-                result=gfxstream::vk::ResourceTracker::get()->on_vkAllocateMemory(encoder,VK_SUCCESS,
-                    device->internal_object,&allocate,nullptr,&image.memory);
-                if (result!=VK_SUCCESS) return cleanup(result);
-                result=encoder->vkBindImageMemory(device->internal_object,image.image,image.memory,0,true);
-                if (result!=VK_SUCCESS) return cleanup(result);
-                images.push_back(get_host_u64_VkImage(image.image));
-            }
-            if (swap->guestImages) pickHandoffQueue(*swap);
-            else createAcquireSlots(*swap);
+            for (const auto& image:swap->images) images.push_back(get_host_u64_VkImage(image.image));
+            createAcquireSlots(*swap);
             // The phone maps images, and later signals acquire semaphores, this device
             // stream created, allocated and bound.
+            auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
             if (!encoder->cabooseDrainDeferredObjects(true)) return cleanup(VK_ERROR_DEVICE_LOST);
-            auto mapped=surface->client.mapSwapchain(swap->native,images,deadline(),
-                swap->guestImages ? (swap->mailbox ? 3u : 1u) : 0u);
+            auto mapped=surface->client.mapSwapchain(swap->native,images,deadline(),0);
             result=apiStatus(status(mapped.body,48)); if (result!=VK_SUCCESS) return cleanup(result);
             *out=guestHandle; return VK_SUCCESS;
         } catch (...) { cleanup(VK_ERROR_INITIALIZATION_FAILED); throw; }
@@ -552,13 +646,36 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         if (index>=swap->images.size() || (info->waitSemaphoreCount && !info->pWaitSemaphores))
             return VK_ERROR_INITIALIZATION_FAILED;
         std::vector<uint64_t> waits;
+        std::vector<VkSemaphore> internalWaits;
         for (uint32_t i=0;i<info->waitSemaphoreCount;++i) {
             VK_FROM_HANDLE(gfxstream_vk_semaphore, value, info->pWaitSemaphores[i]);
             if (!value || value->vk.base.device!=&queue->device->vk || value->vk.type!=VK_SEMAPHORE_TYPE_BINARY ||
                 value->vk.temporary) return VK_ERROR_INITIALIZATION_FAILED;
             waits.push_back(get_host_u64_VkSemaphore(value->internal_object));
+            internalWaits.push_back(value->internal_object);
         }
         auto& surface=*swap->surface;
+        if (swap->guestImages && !swap->native) {
+            VkResult made=VK_NOT_READY;
+            if (!swap->nativeAttempted && tryBind(surface,false)) made=createNative(*swap);
+            if (made!=VK_SUCCESS) {
+                // No window to show it in yet: the frame is dropped once its waits are
+                // consumed on the queue, and its image is free again at once.
+                std::vector<VkPipelineStageFlags> stages(internalWaits.size(),VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                VkSubmitInfo consume{}; consume.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                consume.waitSemaphoreCount=uint32_t(internalWaits.size());
+                consume.pWaitSemaphores=internalWaits.data(); consume.pWaitDstStageMask=stages.data();
+                swap->images[index].held=false;
+                if (!internalWaits.empty() && gfxstream::vk::ResourceTracker::get()->on_vkQueueSubmit(
+                        gfxstream::vk::ResourceTracker::getThreadLocalEncoder(),VK_SUCCESS,queue->internal_object,
+                        1,&consume,VK_NULL_HANDLE)!=VK_SUCCESS) return VK_ERROR_DEVICE_LOST;
+                if (made==VK_NOT_READY) { if (info->pResults) info->pResults[0]=VK_SUCCESS; return VK_SUCCESS; }
+                if (made==VK_ERROR_DEVICE_LOST) return made;
+                // The window it bound to needs another swapchain (size, format).
+                swap->poisoned=true;
+                return VK_ERROR_OUT_OF_DATE_KHR;
+            }
+        }
         // Native capacity is one frame per surface, two with ordered presents; only a
         // frame's final retirement callback opens the next admission. No guest wait
         // semaphore is touched.
@@ -600,6 +717,8 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         return result;
     });
     overall=executorResult(overall);
+    if (overall!=VK_ERROR_INITIALIZATION_FAILED && overall!=VK_ERROR_DEVICE_LOST)
+        if (auto swap=lookupSwapchain(info->pSwapchains[0])) commitWayland(swap->surfaceHandle);
     if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=overall;
     return overall;
 }

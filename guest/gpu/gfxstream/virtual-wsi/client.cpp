@@ -14,8 +14,9 @@ Client::~Client() { if (fd_>=0) close(fd_); }
 void (*Client::peerGone)()=nullptr;
 [[noreturn]] void Client::fail(int error) {
     if (fd_>=0) { close(fd_); fd_=-1; }
-    // A surface connection the broker closed may mean its executor left (checked by the hook).
-    if ((error==ECONNRESET || error==EPIPE) && peerGone) peerGone();
+    // A bound surface connection the broker closed may mean its executor left (checked by
+    // the hook); the broker also closes the connection of a bind it refused (no window yet).
+    if ((error==ECONNRESET || error==EPIPE) && bound_ && peerGone) peerGone();
     throw std::system_error(error, std::generic_category(), "Caboose surface transport");
 }
 void Client::ready(short events, Deadline deadline) {
@@ -178,6 +179,11 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
     }
     if (!kind || r.kind!=kind || (serial && u64(r.body,40)!=serial)) fail(EPROTO);
     return true;
+}
+void Client::reset() {
+    require(!bound_);
+    if (fd_>=0) { close(fd_); fd_=-1; }
+    lastRequest_=0;
 }
 Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                     Space space) {

@@ -9,6 +9,7 @@
 #endif
 #include "caboose-wsi/client.h"
 #include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
 #include <map>
 #include <dlfcn.h>
 #include <algorithm>
@@ -54,6 +55,12 @@ struct Surface {
     VkAllocationCallbacks allocator{};
     bool customAllocator=false, attempted=false, bound=false, poisoned=false;
     uint64_t query=0, presentSerial=0;
+    // A refused bind (the window does not exist yet) is tried again from this time on.
+    std::chrono::steady_clock::time_point nextBind{};
+    // The provider's last capability reply, for the physical device it answered.
+    Bytes caps;
+    uint64_t capsPhysical=0;
+    std::chrono::steady_clock::time_point capsTime{};
     Client client;
 };
 static std::mutex mutex;
@@ -77,7 +84,57 @@ template<class F> static VkResult guarded(F f) {
     catch (const std::bad_alloc&) { return VK_ERROR_OUT_OF_HOST_MEMORY; }
     catch (const std::exception&) { return VK_ERROR_SURFACE_LOST_KHR; }
 }
-static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& caps) {
+// Toolkits create a surface, query it and even create a swapchain before its window
+// exists: GTK does so for a wl_surface that has no xdg_toplevel yet, and X11 toolkits for
+// windows not yet mapped. The compositor grants a bind only for an existing window, and
+// the broker closes the connection of a bind it refused, so a refused bind is tried again
+// later on a new connection. Until a bind succeeds, queries are answered locally.
+constexpr auto kBindRetry=std::chrono::milliseconds(100);
+// Toolkits ask for capabilities every frame (Zink's Kopper does); a provider reply this
+// recent answers them without a round trip to the phone.
+constexpr auto kCapsReuse=std::chrono::milliseconds(500);
+static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
+// Binds the surface if its window exists now. A transport error before the bind's reply
+// leaves nothing bound: the broker closed the connection, which it does for a refused bind.
+// Queries retry a refused bind at most every kBindRetry; a present always tries, since on
+// Wayland nothing else maps the window (no buffer is ever attached to the wl_surface), so
+// a dropped first frame would leave the application waiting for a frame callback.
+static bool tryBind(Surface& surface, bool throttled=true) {
+    if (surface.bound) return true;
+    const auto now=std::chrono::steady_clock::now();
+    if (throttled && now<surface.nextBind) return false;
+    surface.attempted=true;
+    try {
+        surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
+        auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
+        if (apiStatus(status(reply.body,48))==VK_SUCCESS) { surface.bound=true; return true; }
+    } catch (const std::system_error&) {}
+    surface.client.reset();
+    surface.attempted=false;
+    surface.nextBind=now+kBindRetry;
+    return false;
+}
+// Capabilities of a surface not bound yet, in the provider's reply format: the formats
+// and image counts the phone's presentation layer offers, and no fixed extent, as for a
+// Wayland surface whose size the application chooses.
+static Bytes localCaps() {
+    Bytes b(40,1);
+    put64(b,1); for (uint32_t v:{0u,1u,0u,0u}) put32(b,v);
+    const uint32_t values[13]={2,0,UINT32_MAX,UINT32_MAX,1,1,16384,16384,1,
+        VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
+        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR|VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT|
+        VK_IMAGE_USAGE_STORAGE_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+    for (uint32_t v:values) put32(b,v);
+    put32(b,2); put32(b,1); put32(b,1);
+    put32(b,VK_FORMAT_B8G8R8A8_UNORM); put32(b,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+    put32(b,VK_FORMAT_B8G8R8A8_SRGB); put32(b,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+    put32(b,VK_PRESENT_MODE_FIFO_KHR);
+    put32(b,0); put32(b,VK_QUEUE_GRAPHICS_BIT|VK_QUEUE_COMPUTE_BIT|VK_QUEUE_TRANSFER_BIT); put32(b,1); put32(b,1);
+    return b;
+}
+// `fresh` asks the provider even when a recent reply exists.
+static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& caps, bool fresh=false) {
     auto retained=lookup(handle);
     if (!retained) return VK_ERROR_SURFACE_LOST_KHR;
     auto& surface=*retained;
@@ -86,20 +143,24 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
-        if (!surface.bound) {
-            if (surface.attempted) return VK_ERROR_SURFACE_LOST_KHR;
-            surface.attempted=true; // no retry after an uncertain sent bind
-            surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
-            auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
-            auto result=apiStatus(status(reply.body,48));
-            if (result!=VK_SUCCESS) { surface.poisoned=true; return result; }
-            surface.bound=true;
+        if (!tryBind(surface)) {
+            if (!lazyBind()) return VK_ERROR_SURFACE_LOST_KHR;
+            caps=localCaps();
+            return VK_SUCCESS;
+        }
+        const uint64_t boxed=get_host_u64_VkPhysicalDevice(device->internal_object);
+        const auto now=std::chrono::steady_clock::now();
+        if (!fresh && !surface.caps.empty() && surface.capsPhysical==boxed && now-surface.capsTime<kCapsReuse) {
+            caps=surface.caps;
+            return VK_SUCCESS;
         }
         if (surface.query==UINT64_MAX) throw ProtocolError("query ID exhausted");
-        auto reply=surface.client.query(++surface.query,
-            get_host_u64_VkPhysicalDevice(device->internal_object),deadline());
+        auto reply=surface.client.query(++surface.query,boxed,deadline());
         auto result=apiStatus(status(reply.body,48));
-        if (result==VK_SUCCESS) caps=std::move(reply.body);
+        if (result==VK_SUCCESS) {
+            caps=std::move(reply.body);
+            surface.caps=caps; surface.capsPhysical=boxed; surface.capsTime=now;
+        }
         return result;
     } catch (...) { surface.poisoned=true; throw; }
 }
@@ -266,6 +327,16 @@ static bool x11WindowExtent(VkSurfaceKHR handle, VkExtent2D& out) {
 #else
 static bool x11WindowExtent(VkSurfaceKHR, VkExtent2D&) { return false; }
 #endif
+// A window system's present commits the application's surface with the new buffer, which
+// applies the state the application set for the frame: Wayland toolkits (GTK, Qt, SDL)
+// request their frame callback, regions and geometry before presenting and pace drawing on
+// that callback. The phone shows the frame, so the surface is committed without a buffer.
+static void commitWayland(VkSurfaceKHR handle) {
+    if (reinterpret_cast<VkIcdSurfaceBase*>(handle)->platform!=VK_ICD_WSI_PLATFORM_WAYLAND) return;
+    auto* wayland=reinterpret_cast<VkIcdSurfaceWayland*>(handle);
+    wl_surface_commit(wayland->surface);
+    wl_display_flush(wayland->display);
+}
 static VkResult VKAPI_CALL capabilities(VkPhysicalDevice physical, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* out) {
     return guarded([&]() -> VkResult {
         if (!out) return VK_ERROR_INITIALIZATION_FAILED;
@@ -318,17 +389,14 @@ static VkResult VKAPI_CALL modes(VkPhysicalDevice physical, VkSurfaceKHR surface
         *count=copied; return copied<total ? VK_INCOMPLETE : VK_SUCCESS;
     });
 }
-static VkResult VKAPI_CALL support(VkPhysicalDevice physical, uint32_t family, VkSurfaceKHR surface, VkBool32* out) {
+// Presentation support needs no window: as for the platform queries below, the phone
+// presents from its first queue family, so this is answered without binding the surface.
+static VkResult VKAPI_CALL support(VkPhysicalDevice, uint32_t family, VkSurfaceKHR surface, VkBool32* out) {
     return guarded([&]() -> VkResult {
         if (!out) return VK_ERROR_INITIALIZATION_FAILED;
-        Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
-        bool found=false;
-        for (const auto& queue:providerCaps(b).queues) if (queue[0]==family) found=true;
-        if (!found) return VK_ERROR_INITIALIZATION_FAILED;
-        uint32_t chosen=UINT32_MAX;
-        for (const auto& queue:providerCaps(b).queues)
-            if (queue[3] && (queue[1]&VK_QUEUE_GRAPHICS_BIT)) chosen=std::min(chosen,queue[0]);
-        *out=indexed() && family==chosen ? VK_TRUE : VK_FALSE; return VK_SUCCESS;
+        auto retained=lookup(surface);
+        if (!retained || retained->poisoned) return VK_ERROR_SURFACE_LOST_KHR;
+        *out=indexed() && family==0 ? VK_TRUE : VK_FALSE; return VK_SUCCESS;
     });
 }
 static VkBool32 VKAPI_CALL waylandSupport(VkPhysicalDevice, uint32_t family, wl_display*) {
@@ -409,6 +477,18 @@ static VkResult VKAPI_CALL formats2(VkPhysicalDevice physical,
         return result;
     });
 }
+// The platform presentation queries are physical-device entry points the loader asks for
+// by name; Mesa's trampolines for them exist only for platforms its common code was built
+// with, so they are returned here directly.
+static PFN_vkVoidFunction procAddr(const char* name) {
+    if (!active() || !name) return nullptr;
+#ifdef VK_USE_PLATFORM_XCB_KHR
+    if (!strcmp(name,"vkGetPhysicalDeviceXcbPresentationSupportKHR")) return reinterpret_cast<PFN_vkVoidFunction>(xcbSupport);
+#endif
+    if (!strcmp(name,"vkGetPhysicalDeviceXlibPresentationSupportKHR")) return reinterpret_cast<PFN_vkVoidFunction>(xlibSupport);
+    if (!strcmp(name,"vkGetPhysicalDeviceWaylandPresentationSupportKHR")) return reinterpret_cast<PFN_vkVoidFunction>(waylandSupport);
+    return nullptr;
+}
 static void install(vk_instance_dispatch_table& table) {
     if (!active()) return;
     table.CreateWaylandSurfaceKHR=create;
@@ -467,6 +547,7 @@ static void gate(vk_instance_extension_table& extensions) {
 namespace caboose_surface {
 template<class T> static void install(T&) {}
 template<class T> static void gate(T&) {}
+static PFN_vkVoidFunction procAddr(const char*) { return nullptr; }
 static bool beforeDestroyInstance(VkInstance) { return true; }
 static bool beforeDestroyDevice(VkDevice) { return true; }
 static bool profileReady() { return true; }
