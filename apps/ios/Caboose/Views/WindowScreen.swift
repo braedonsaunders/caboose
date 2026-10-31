@@ -21,6 +21,7 @@ struct WindowScreen: View {
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
+    private var keyboard = SoftwareKeyboard.shared
 
     var body: some View {
         NavigationStack {
@@ -37,7 +38,20 @@ struct WindowScreen: View {
                                 model.show(windowID: id)
                             }
                         }) { _ in
-                            GeometryReader { proxy in surface(for: window, size: proxy.size) }
+                            GeometryReader { proxy in
+                                let stage = proxy.frame(in: .global)
+                                let caret = RemoteTextInputView.lastCaret.flatMap { Date().timeIntervalSince($0.at) < 60 ? $0.point.y : nil }
+                                let pan = keyboard.visible
+                                    ? DesktopGeometry.keyboardPan(caretY: caret, stageMinY: stage.minY, stageMaxY: stage.maxY,
+                                                                  keyboardTopY: (keyboard.window?.bounds.height ?? stage.maxY) - keyboard.height)
+                                    : 0
+                                surface(for: window, size: proxy.size)
+                                    .offset(y: -pan)
+                                    .animation(.smooth(duration: 0.3), value: pan)
+                                    .onChange(of: pan, initial: true) { _, value in RemoteTextInputView.currentKeyboardPan = value }
+                                    .onDisappear { RemoteTextInputView.currentKeyboardPan = 0 }
+                            }
+                            .ignoresSafeArea(.keyboard)
                         }
                     }
                     if !chromeVisible && !laptopActive { exitFullScreenHandle }

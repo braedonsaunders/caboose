@@ -34,6 +34,7 @@ struct DesktopScreen: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: portraitDesktop && !laptopActive ? [.top, .bottom] : [])
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .background { ShellBackground() }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
@@ -257,6 +258,8 @@ private struct DesktopStage: View {
             .offset(y: -pan)
             .animation(.smooth(duration: 0.3), value: pan)
             .clipped()
+            .onChange(of: pan, initial: true) { _, value in RemoteTextInputView.currentKeyboardPan = value }
+            .onDisappear { RemoteTextInputView.currentKeyboardPan = 0 }
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
             .onChange(of: barEdge) { _, _ in model.desktopStageResized(to: proxy.size) }

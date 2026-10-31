@@ -12,10 +12,20 @@ open class RemoteTextInputView: UIView, UITextInput {
     public weak var inputDelegate: UITextInputDelegate?
     public lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
     public var markedTextStyle: [NSAttributedString.Key: Any]?
+    /// How far the enclosing desktop or window stage is currently panned upward for the
+    /// software keyboard, so new taps record their un-panned UIWindow Y coordinate.
+    public static var currentKeyboardPan: CGFloat = 0
+
     /// Where the remote caret probably is, in this view's points: the candidate bar and
     /// the dictation and IME popovers on iPad anchor to it.
     public var caretAnchor = CGPoint.zero {
-        didSet { if window != nil { Self.lastCaret = (convert(caretAnchor, to: nil), Date()) } }
+        didSet {
+            if window != nil {
+                var pt = convert(caretAnchor, to: nil)
+                pt.y += Self.currentKeyboardPan
+                Self.lastCaret = (pt, Date())
+            }
+        }
     }
     /// Where text entry last began in any remote window, in that view's UIWindow coordinates:
     /// the shell keeps it above the software keyboard.
