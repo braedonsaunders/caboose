@@ -3,6 +3,9 @@ import Darwin
 
 protocol LiveGPUIndexedSurfaceResource: LiveGPUSurfaceResource {
     func create(_ info: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?)
+    /// Blocks until the process's device stream has decoded ORDER mark `serial`; 0 or an
+    /// errno (ECANCELED once the process stops). CPU ordering only, never GPU work.
+    func waitOrder(_ serial: UInt64) -> Int32
 }
 protocol LiveGPUIndexedSwapchain: AnyObject, Sendable {
     var id: UInt64 { get }
@@ -28,6 +31,9 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
         var pending: [LiveGPUIndexedPresent] = []
         var frames: [UInt64: Frame] = [:]
         var retiring = false
+        /// The latest ORDER mark the device stream is known to have decoded.
+        var orderReached: UInt64 = 0
+        var orderWaiting = false
         init(_ native: any LiveGPUIndexedSwapchain) { self.native = native }
     }
     private struct Frame {
@@ -40,6 +46,8 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
     private let acquireBudget: LiveGPUBudget
     private let budget: LiveGPUBudget
     private let queue = DispatchQueue(label: "caboose.gpu.indexed-surface")
+    /// Order waits block here, never on the surface worker that handles callbacks.
+    private let orderQueue = DispatchQueue(label: "caboose.gpu.indexed-present-order")
     private let emit: Emit
     private let failed: @Sendable (Error) -> Void
     private var swaps: [UInt64: Swapchain] = [:]
@@ -188,7 +196,14 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 }
                 continue
             }
-            guard swap.frames.isEmpty, let info = swap.pending.first, swap.ready.contains(info.index) else { continue }
+            guard let info = swap.pending.first else { continue }
+            // An ordered present runs only after the device stream has decoded the work
+            // and signals before its ORDER mark; the wait overlaps acquisition.
+            if info.order > swap.orderReached {
+                if !swap.orderWaiting { awaitOrder(info.order, swap: swap) }
+                continue
+            }
+            guard swap.frames.isEmpty, swap.ready.contains(info.index) else { continue }
             swap.pending.removeFirst()
             swap.frames[info.serial] = Frame(index: info.index)
             let result = swap.native.present(info) { [self] body in
@@ -210,6 +225,25 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
             } catch { poison(error); return }
         }
         if revoking && swaps.isEmpty { retirement?() }
+    }
+    private func awaitOrder(_ order: UInt64, swap: Swapchain) {
+        swap.orderWaiting = true
+        orderQueue.async { [self, swap] in
+            let code = resource.waitOrder(order)
+            queue.async { [self, swap] in
+                swap.orderWaiting = false
+                if code == 0 {
+                    swap.orderReached = max(swap.orderReached, order)
+                } else if let head = swap.pending.first, head.order == order {
+                    // The process stopped or cannot be ordered: the present never runs.
+                    swap.pending.removeFirst()
+                    do { try output(.presentResult(serial: head.serial, status: .init(nativeErrno: code, vkResult: nil),
+                                                   disposition: .rejected, event: .submission)) }
+                    catch { poison(error); return }
+                }
+                advance()
+            }
+        }
     }
     private func receive(_ body: LiveGPUSurfaceMessage.Body, swapchain: UInt64, serial: UInt64) {
         guard let swap = swaps[swapchain], var frame = swap.frames[serial], frame.result else {

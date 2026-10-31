@@ -32,9 +32,31 @@ from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
-# A process that can assign its own Vulkan handles offers feature bit 0x80. It gets this
-# hello back only when the phone declared guest handles; otherwise the plain v4 hello.
+# Optional private features a local process may offer above the v4 mask, by the phone
+# capability that enables each: 0x80 guest-assigned handles for single-object creates and
+# pipelines, 0x100 also for descriptor sets and command buffers (requires 0x80), 0x200 the
+# completion feed, 0x400 ordered presents (SWAPCHAIN_PRESENT_ORDERED with device-stream ORDER
+# marks). The reply grants the offered features the phone declared.
+HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
+                  'ordered-present': 0x400}
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
+
+
+def negotiate_hello(offered, phone_features):
+    """The v4 reply to a local hello, or None when the offer is malformed."""
+    if len(offered) != 48 or offered[:12] != HELLO_V4[:12] or offered[16:] != HELLO_V4[16:]:
+        return None
+    mask = struct.unpack_from('<I', offered, 12)[0]
+    known = 0
+    for value in HELLO_FEATURES.values(): known |= value
+    if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & 0x100 and not mask & 0x80):
+        return None
+    granted = 0
+    for name in phone_features:
+        granted |= HELLO_FEATURES.get(name, 0)
+    granted &= mask
+    if not granted & 0x80: granted &= ~0x100
+    return HELLO_V4[:12] + struct.pack('<I', 0x70 | granted) + HELLO_V4[16:]
 
 
 class IndexedSurface:
@@ -78,8 +100,8 @@ class IndexedSurface:
         elif kind == 32:
             if state['retiring']: raise ValueError('duplicate swapchain retirement')
             state['retiring'] = True
-        elif kind == 34:
-            index = struct.unpack_from('<I', body, 24)[0]
+        elif kind in (34, 39):
+            index = struct.unpack_from('<I', body, 24 if kind == 34 else 32)[0]
             if not state['mapped'] or state['retiring'] or index not in state['acquired']:
                 raise ValueError('present source not acquired')
             state['acquired'].remove(index)
@@ -238,7 +260,7 @@ class FrameTiming:
 
 
 class Session:
-    def __init__(self, broker, executor, generation, reader, writer, indexed=False, guest_handles=False):
+    def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
         self.deflate_requested = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1"
@@ -249,7 +271,8 @@ class Session:
         self.session_received = False
         self.indexed_enabled = indexed
         self.hello = HELLO_V4 if indexed else HELLO
-        self.guest_handles = indexed and guest_handles
+        # Phone capabilities that local processes may use; none outside indexed v4.
+        self.features = frozenset(features) if indexed else frozenset()
         self.decoder = EnvelopeDecoder(executor, generation)
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
@@ -715,9 +738,9 @@ class Session:
             try:
                 peer = PeerIdentity.from_socket(sock, os.getuid())
                 offered = await asyncio.wait_for(reader.readexactly(48), 5)
-                offers_guest_handles = self.indexed_enabled and offered == HELLO_V4_GUEST_HANDLES
-                if offered != self.hello and not offers_guest_handles: raise ValueError('local hello mismatch')
-                reply = HELLO_V4_GUEST_HANDLES if offers_guest_handles and self.guest_handles else self.hello
+                reply = negotiate_hello(offered, self.features) if self.indexed_enabled else (
+                    self.hello if offered == self.hello else None)
+                if reply is None: raise ValueError('local hello mismatch')
                 if self.draining:
                     return
                 process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
@@ -1007,18 +1030,20 @@ class Broker:
                     surface['last_present'] = serial
                     surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False}
                     session.send(Kind.PRESENT, process_id, payload=identity + body)
-                elif kind in (25, 27, 29, 31, 32, 34):
+                elif kind in (25, 27, 29, 31, 32, 34, 39):
                     if not session.indexed_enabled or not surface['bound']:
                         raise ValueError('indexed executor not enabled')
-                    if kind == 34:
+                    if kind == 39 and 'ordered-present' not in session.features:
+                        raise ValueError('ordered presents not enabled')
+                    if kind in (34, 39):
                         swap, serial = struct.unpack_from('<QQ', body)
-                        index = struct.unpack_from('<I', body, 24)[0]
+                        index = struct.unpack_from('<I', body, 24 if kind == 34 else 32)[0]
                         if serial <= surface['last_present'] or len(surface['presents']) >= 64:
                             raise ValueError('invalid indexed present serial')
                         surface['last_present'] = serial
                         surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap, 'index': index}
                     surface['indexed'].send(kind, body)
-                    if kind == 34:
+                    if kind in (34, 39):
                         session.frame_timing.begin(surface, surface['presents'][serial])
                     session.send(Kind(kind), process_id, payload=identity + body)
                 elif kind == 23:
@@ -1116,7 +1141,7 @@ class Broker:
             phone_features = admission_features(raw)
             generation = self.lease.admit(executor.bytes)
             session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed,
-                              guest_handles='guest-handles' in phone_features)
+                              features=phone_features)
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
