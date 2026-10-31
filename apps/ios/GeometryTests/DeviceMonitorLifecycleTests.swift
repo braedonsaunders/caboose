@@ -131,7 +131,6 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         let suite = "DeviceMonitorLifecycleTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set(LaptopLayout.Mode.laptop.rawValue, forKey: "caboose.laptop.mode")
         func app(_ name: String, dpi: Int, scale: Double) throws -> AppModel {
             let computers = collection(name)
             let identity = try XCTUnwrap(computers.active?.fileDomainIdentifier)
@@ -148,6 +147,7 @@ final class DeviceMonitorLifecycleTests: XCTestCase {
         func root(_ model: AppModel) -> some View {
             LaptopContainer { _ in Color.clear }
                 .environment(model)
+                .environment(\.laptopLayoutMode, .laptop)
                 .defaultAppStorage(defaults)
                 .ignoresSafeArea()
         }

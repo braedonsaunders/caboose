@@ -18,7 +18,7 @@ public enum LaptopLayout {
         public var symbol: String {
             switch self {
             case .keyboard: "keyboard"
-            case .trackpad: "hand.draw"
+            case .trackpad: "rectangle.and.hand.point.up.left"
             case .combo: "rectangle.split.2x1"
             case .gamepad: "gamecontroller"
             }

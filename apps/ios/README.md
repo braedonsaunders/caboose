@@ -1043,12 +1043,11 @@ screens. Dismiss it without parking or restarting when checking placement only.
 
 ## Laptop mode
 
-Desktop and full-screen app cards offer Screen Layout → Automatic, Tablet or Laptop.
-Automatic uses a partially folded horizontal hinge on iOS 27.1 and later. Laptop also
-works as a manual split on a sufficiently tall flat screen. The upper area shows the
-app/desktop without the system toolbar. The lower-right control rail offers Keyboard,
-Trackpad, Keyboard & Trackpad or Gamepad from one input button, whose icon is the same in every mode,
-then window switching, settings, power and navigation. Opening a window from the Laptop
+Laptop follows the fold: a partially folded horizontal hinge on iOS 27.1 and later selects
+it, and there is no manual layout choice. The upper area shows the app/desktop without the
+system toolbar. The lower-right control rail offers Keyboard, Trackpad, Keyboard & Trackpad
+or Gamepad from one input button showing the current input, then Windows (every app window,
+the front one checked), Computer settings, Go to (the app's tabs in tab-bar order) and power. Opening a window from the Laptop
 desktop focuses it in that workspace, and every app window fills the upper screen (one whose
 minimum size is larger keeps its own); there is no separate Full Screen route or Exit App Full
 Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
@@ -1066,7 +1065,7 @@ the shared trackpad gestures. Four fingers up opens the window chooser; down clo
 Pinch uses the focused app’s Control–Plus/Minus shortcuts. Both control surfaces offer a
 Trackpad Gestures guide with the mappings and platform limitations. With a connected
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
-workspace intact. Book posture and compact screens keep the ordinary layout in Automatic.
+workspace intact. Book posture and compact screens keep the ordinary layout.
 
 ### On-screen controller
 

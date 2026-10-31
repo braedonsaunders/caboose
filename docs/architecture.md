@@ -2563,8 +2563,8 @@ the app card, and a detached view releases its layers.
 - **Laptop layout.** Desktop and app cards use the same `LaptopContainer`. On iOS 27.1,
   a view-scoped `UIHingeInteraction` and horizontal division reserved region select the
   upper content and lower controls for a partially folded inner display. A vertical book
-  fold does not activate it. Screen Layout offers Automatic, Tablet and Laptop overrides;
-  compact viewports keep the ordinary layout. The system keyboard's measured intersection
+  fold does not activate it. The layout is always automatic; compact viewports keep the
+  ordinary layout. The system keyboard's measured intersection
   with that view takes precedence over the fold, so it cannot cover the upper app.
   Outside Laptop, the shell's keyboard-adjusted viewport is used directly, without
   subtracting the keyboard a second time. While the software keyboard covers the shell,

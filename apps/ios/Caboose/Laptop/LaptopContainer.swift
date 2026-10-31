@@ -4,21 +4,8 @@ import UIKit
 
 extension EnvironmentValues {
     @Entry var laptopInputOwned = false
-}
-
-struct LaptopModeMenu: View {
-    @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
-    var body: some View {
-        Menu {
-            Picker("Screen layout", selection: $mode) {
-                Text("Automatic").tag(LaptopLayout.Mode.automatic.rawValue)
-                Text("Tablet").tag(LaptopLayout.Mode.tablet.rawValue)
-                Text("Laptop").tag(LaptopLayout.Mode.laptop.rawValue)
-            }
-        } label: {
-            Label("Screen layout", systemImage: "laptopcomputer")
-        }
-    }
+    /// Laptop follows the fold. Only a test or simulator host without a hinge forces a layout.
+    @Entry var laptopLayoutMode = LaptopLayout.Mode.automatic
 }
 
 /// Keeps a single upper surface mounted as the fold, keyboard and controls change.
@@ -29,7 +16,7 @@ struct LaptopContainer<Content: View>: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.shellTabPlacement) private var tabPlacement
     @State private var layoutActive = false
-    @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
+    @Environment(\.laptopLayoutMode) private var mode
     @State private var geometry = LaptopGeometry()
     /// The system keyboard, which only the custom keyboard's globe key opens, for emoji,
     /// dictation and other languages. It covers the controls while it shows.
@@ -45,7 +32,7 @@ struct LaptopContainer<Content: View>: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let active = LaptopLayout.isActive(mode: LaptopLayout.Mode(rawValue: mode) ?? .automatic,
+            let active = LaptopLayout.isActive(mode: mode,
                                                size: geometry.hostSize ?? proxy.size, division: geometry.physicalDivision,
                                                partiallyOpen: geometry.partiallyOpen)
             let frames = LaptopLayout.frames(size: proxy.size, division: geometry.division, keyboard: geometry.keyboard)

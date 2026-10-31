@@ -102,7 +102,8 @@ struct ShellTabButtons: View {
     var showsTitles = false
     var iconsOnly = false
 
-    private var tabs: [(tab: ShellTab, title: String, symbol: String)] {
+    /// The tabs in their order, wherever they are offered.
+    static var tabs: [(tab: ShellTab, title: String, symbol: String)] {
         var tabs: [(tab: ShellTab, title: String, symbol: String)] = [
             (.home, "Home", "house"),
             (.desktop, "Desktop", "macwindow.on.rectangle"),
@@ -116,7 +117,7 @@ struct ShellTabButtons: View {
     var body: some View {
         let layout = axis == .horizontal ? AnyLayout(HStackLayout(spacing: 2)) : AnyLayout(VStackLayout(spacing: 4))
         layout {
-            ForEach(tabs, id: \.tab) { item in
+            ForEach(Self.tabs, id: \.tab) { item in
                 button(item.tab, item.title, item.symbol)
             }
         }

@@ -111,7 +111,7 @@ private struct TerminalSessionsButton: View {
 private struct TerminalWorkspace: View {
     let terminal: TerminalModel
     var activeChanged: (Bool) -> Void
-    @AppStorage("caboose.laptop.mode") private var mode = LaptopLayout.Mode.automatic.rawValue
+    @Environment(\.laptopLayoutMode) private var mode
     @State private var geometry = LaptopGeometry()
     @State private var keyboardHidden = false
     @State private var layoutActive = false
@@ -119,7 +119,7 @@ private struct TerminalWorkspace: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let active = LaptopLayout.isActive(mode: LaptopLayout.Mode(rawValue: mode) ?? .automatic,
+            let active = LaptopLayout.isActive(mode: mode,
                                                size: proxy.size, division: geometry.division,
                                                partiallyOpen: geometry.partiallyOpen)
             let frames = LaptopLayout.frames(size: proxy.size, division: geometry.division, keyboard: geometry.keyboard)
@@ -135,7 +135,6 @@ private struct TerminalWorkspace: View {
                             Spacer(minLength: 8)
                             Text(terminal.title).font(.caption).lineLimit(1)
                             Spacer(minLength: 8)
-                            LaptopModeMenu().labelStyle(.iconOnly)
                             Menu {
                                 Button("Home", systemImage: "house") { model.selectedTab = .home }
                                 Button("Desktop", systemImage: "macwindow") { model.selectedTab = .desktop }

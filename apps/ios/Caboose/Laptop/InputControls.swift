@@ -130,24 +130,31 @@ struct InputControls: View {
                 Menu {
                     InputChoices(input: $input, gestureHelp: $gestureHelp)
                     Divider()
-                    windowSwitcher
+                    Menu("Windows", systemImage: "macwindow.on.rectangle") { windowChoices }
                     computerActions
+                    Divider()
                     navigationActions
-                } label: { Image(systemName: InputChoices.symbol).frame(width: 48, height: 44) }
+                } label: { Image(systemName: input.symbol).frame(width: 48, height: 44) }
                 .accessibilityLabel("Laptop controls")
                 .accessibilityValue(input.title)
             } else {
                 Menu { InputChoices(input: $input, gestureHelp: $gestureHelp) } label: {
-                    Image(systemName: InputChoices.symbol).frame(width: 48, height: 44)
+                    Image(systemName: input.symbol).frame(width: 48, height: 44)
                 }
                 .accessibilityLabel("Input")
                 .accessibilityValue(input.title)
-                windowSwitcher
+                Menu { windowChoices } label: {
+                    Image(systemName: "macwindow.on.rectangle").frame(width: 48, height: 44)
+                }
+                .accessibilityLabel("Windows")
                 Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                     .frame(width: 48, height: 44)
+                Menu { navigationActions } label: {
+                    Image(systemName: "rectangle.bottomthird.inset.filled").frame(width: 48, height: 44)
+                }
+                .accessibilityLabel("Go to")
+                .accessibilityHint("Home, Agents, Apps and the other tabs")
                 LifecycleMenu().frame(width: 48, height: 44)
-                Menu { navigationActions } label: { Image(systemName: "ellipsis").frame(width: 48, height: 44) }
-                    .accessibilityLabel("Laptop controls and navigation")
             }
             Spacer(minLength: 0)
         }
@@ -163,27 +170,40 @@ struct InputControls: View {
         }
     }
 
+    /// The app's tabs, in the tab bar's order. The desktop is where the rail already is,
+    /// except under a window card.
     @ViewBuilder private var navigationActions: some View {
-        LaptopModeMenu()
-        Button("Wallpaper", systemImage: "photo") { model.wallpaperPickerPresented = true }
-        Divider()
-        if isCard { Button("Desktop", systemImage: "macwindow") { leave(.desktop) } }
-        Button("Home", systemImage: "house") { leave(.home) }
-        Button("Agents", systemImage: "sparkles") { leave(.agents) }
-        Button("Apps", systemImage: "square.grid.2x2") { leave(.apps) }
-        if TerminalSlot.isFilled { Button("Terminal", systemImage: "apple.terminal") { leave(.terminal) } }
+        ForEach(ShellTabButtons.tabs.filter { isCard || $0.tab != .desktop }, id: \.tab) { item in
+            Button(item.title, systemImage: item.symbol) { leave(item.tab) }
+        }
     }
 
-    private var windowSwitcher: some View {
-        Menu {
-            ForEach(model.workspaceWindows) { window in
-                Button(window.title.isEmpty ? model.appName(for: window) : window.title) {
-                    if isCard { model.presentedWindowID = window.id }
-                    else { model.desktop.activate(window.id, session: model.session) }
+    /// Every app window, the one in front checked; choosing one brings it forward.
+    @ViewBuilder private var windowChoices: some View {
+        let windows = model.workspaceWindows
+        if windows.isEmpty {
+            Text("No Open Windows")
+        } else {
+            let front = isCard ? model.presentedWindowID : model.session.flatMap { model.desktop.frontWindow(in: $0.windows)?.id }
+            Picker("Windows", selection: Binding(get: { front }, set: { id in id.map(select) })) {
+                ForEach(windows) { window in
+                    let app = model.appName(for: window)
+                    Label {
+                        Text(app)
+                        if !window.title.isEmpty && window.title != app { Text(window.title) }
+                    } icon: {
+                        if let icon = model.icon(for: window) { Image(uiImage: icon) } else { Image(systemName: "macwindow") }
+                    }
+                    .tag(Optional(window.id))
                 }
             }
-        } label: { Image(systemName: "macwindow.on.rectangle").frame(width: 48, height: 44) }
-        .accessibilityLabel("Switch window")
+            .pickerStyle(.inline)
+        }
+    }
+
+    private func select(_ id: Int) {
+        if isCard { model.presentedWindowID = id }
+        else { model.desktop.activate(id, session: model.session) }
     }
 
     /// A new input: whatever the last one held ends, and the keyboards follow it.
@@ -216,8 +236,6 @@ struct InputControls: View {
 
 /// The input choices, the same in Laptop's rail and on a display's trackpad screen.
 struct InputChoices: View {
-    /// The input menu's one icon, the same in every mode; the menu marks the current mode.
-    static let symbol = "switch.2"
     @Binding var input: LaptopLayout.Input
     @Binding var gestureHelp: Bool
 
