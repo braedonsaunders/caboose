@@ -76,7 +76,10 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   compared picture came from: the phone, or the compositor's own screenshot when the phone
   has none. A window the phone draws has no pixels in the compositor, so without a phone
   picture its comparison is skipped. The reference runs first, so a page loaded from the
-  network is cached when the measured run loads it.
+  network is cached when the measured run loads it. An app with `ready_title` in the matrix
+  has its picture taken only once its window title matches (a page stalled while loading is
+  drawn and unchanging). Before comparing, a uniform border the color of each picture's
+  corner is trimmed, so a swapchain's shadow margin does not count as a difference.
 
 ## Where the numbers come from
 

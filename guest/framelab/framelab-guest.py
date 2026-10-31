@@ -238,8 +238,18 @@ class Run:
     def stable_picture(self, window, seconds=30):
         """The window's picture once it is drawn and stops changing (three in a row, a
         second apart, the same), or the last one after `seconds`: a page still loading
-        is not the scene."""
+        is not the scene. With the app's `ready_title`, its title must match first (a page
+        stalled while loading is drawn and still)."""
         previous, same, deadline = None, 0, time.monotonic() + seconds
+        title = self.app.get('ready_title')
+        if title:
+            title_deadline = time.monotonic() + self.app.get('ready_title_s', 60)
+            while time.monotonic() < title_deadline:
+                shown = next((w for w in self.control.ask('windows')[0]['windows'] if w['id'] == window), None)
+                if shown and re.search(title, shown['title'] or ''):
+                    break
+                time.sleep(0.5)
+            deadline = time.monotonic() + seconds
         while True:
             self.control.ask('settle')
             time.sleep(0.25)
