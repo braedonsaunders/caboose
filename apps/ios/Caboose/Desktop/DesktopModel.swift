@@ -476,8 +476,8 @@ final class DesktopModel {
             return
         }
         if launchpadOpen, hit != .launchpadButton {
-            launchpadOpen = false
-            if case .launcher(let id) = hit { open(id) }
+            // Opening an app closes Launchpad once the app is in front (`AppModel.openOnDesktop`).
+            if case .launcher(let id) = hit { open(id) } else { launchpadOpen = false }
             return
         }
         switch hit {

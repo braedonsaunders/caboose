@@ -172,7 +172,7 @@ struct DesktopWindow: View {
                         WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
                         Spacer(minLength: 8 * ui)
                         if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
-                        Text(window.title.isEmpty ? "Window" : window.title)
+                        Text(model.windowTitle(window))
                             .font(.system(size: 13 * ui, weight: .semibold))
                             .lineLimit(1)
                         Spacer(minLength: 8 * ui)
@@ -390,6 +390,7 @@ struct Launchpad: View {
                             }
                         }
                         .frame(width: layout.icon, height: layout.icon)
+                        .overlay { if model.launching?.id == app.id { LaunchWheel() } }
                         .scaleEffect(hot ? 1.12 : 1)
                         .animation(.spring(duration: 0.2), value: hot)
                         Text(app.name)
@@ -400,7 +401,7 @@ struct Launchpad: View {
                     }
                     .frame(width: layout.column)
                     .contentShape(Rectangle())
-                    .onTapGesture { model.openOnDesktop(app); desktop.launchpadOpen = false }
+                    .onTapGesture { model.openOnDesktop(app) }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherFrames[app.id] = $0 }
                 }
             }
@@ -438,6 +439,9 @@ struct Launchpad: View {
                 }
             })
         .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28), value: desktop.launcherPage)
+        .onChange(of: model.launching?.id) { opening, now in
+            if opening != nil, now == nil { desktop.launchpadOpen = false }
+        }
         .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }

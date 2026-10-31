@@ -102,7 +102,7 @@ private struct OverviewCard: View {
                 .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
             HStack(spacing: 5) {
                 if let icon = model.icon(for: window) { Image(uiImage: icon).resizable().frame(width: 14, height: 14) }
-                Text(window.title.isEmpty ? "Window" : window.title)
+                Text(model.windowTitle(window))
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
             }

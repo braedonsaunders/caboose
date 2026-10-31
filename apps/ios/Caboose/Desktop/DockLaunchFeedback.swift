@@ -13,13 +13,25 @@ struct DockLaunchFeedback: ViewModifier {
             let elapsed = pending.map { max(0, tick.date.timeIntervalSince($0.started)) } ?? 0
             let lift = pending == nil || reduceMotion ? 0 : CGFloat(abs(sin(elapsed * .pi / 0.65))) * Self.maximumLift
             content.offset(y: -lift)
-                .overlay(alignment: .bottomTrailing) {
-                    if pending != nil {
-                        ProgressView().controlSize(.mini).tint(.white)
-                            .padding(2).background(.black.opacity(0.6), in: Circle())
-                    }
+                .overlay {
+                    if pending != nil { LaunchWheel() }
                 }
         }
         .accessibilityValue(pending == nil ? "" : "Opening")
+    }
+}
+
+/// An app opening, on its icon wherever it was opened from: the Caboose wheel turning over
+/// the dimmed icon, as on the Apps page, sized to the icon it covers.
+struct LaunchWheel: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height)
+            CabooseWheel(motion: .rolling)
+                .frame(width: side * 0.4, height: side * 0.4)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .background(.black.opacity(0.45), in: ConcentricRectangle(cornerRadius: side * 0.26))
+        }
+        .allowsHitTesting(false)
     }
 }
