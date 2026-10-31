@@ -403,7 +403,7 @@ impl State {
         out
     }
 
-    fn window_pid(&self, surface: &Surface) -> Option<u32> {
+    pub(crate) fn window_pid(&self, surface: &Surface) -> Option<u32> {
         use smithay::reexports::wayland_server::Resource;
         match surface {
             Surface::X11(x) => x.pid(),

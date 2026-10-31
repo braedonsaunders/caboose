@@ -115,6 +115,11 @@ start_display() {
   local name=$1 port=$2 bus=$3 envfile=$4 video_socket=$5; shift 5
   if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
+  # The broker refuses sockets a stopped display left; no display serves them now.
+  if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
+    install -d -o caboose -g caboose -m 0700 "$PHONE_GPU_DIR"
+    rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
+  fi
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
   local wrapper=()
   if [ "$port" = 14601 ]; then wrapper=(python3 /opt/caboose/agent-profile.py exec); fi
@@ -149,6 +154,16 @@ bridge_daemon() {
     /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/bridge/caboose-bridge daemon' "$pidfile" >>"$log" 2>&1 < /dev/null &
 }
 
+# The phone's GPU (docs/gpu-live.md): with the broker and the phone's driver installed, the
+# owner's display serves the broker's sockets and routes its applications to that GPU.
+# Prints the display's options for it.
+PHONE_GPU_DIR=$XDG_RUNTIME_DIR/caboose-gpu
+phone_gpu_args() {
+  [ -x /usr/local/libexec/caboose-gpu-broker ] && [ -f /usr/local/lib/caboose-gpu-live/icd.json ] || return 0
+  echo --private-gpu-stream-socket "$PHONE_GPU_DIR/gpu.sock" \
+    --private-gpu-surface-socket "$PHONE_GPU_DIR/surface.sock" --private-gpu-indexed
+}
+
 start_owner() {
   local bus="$XDG_RUNTIME_DIR/bus"
   session_bus "$bus"
@@ -168,7 +183,8 @@ start_owner() {
     [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
     chgrp caboose "$node" && chmod 0660 "$node"
   done
-  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
+  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock" \
+    $(phone_gpu_args)
   bridge_daemon "$bus"
 }
 

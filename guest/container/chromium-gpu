@@ -1,31 +1,40 @@
-# Under Caboose Display, Chromium is a native Wayland client (no X11 round trips).
-if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland"
-fi
-# The computer's render node is vgem (docs/gpu-buffers.md), which Chromium passes over
-# when it looks for one: name it, so its Wayland GPU path allocates shared buffers there.
-for node in /dev/dri/renderD*; do
-  [ -e "$node" ] || continue
-  [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$node"
-  break
-done
-# Mesa D3D12 is available to WSL containers through /dev/dxg.
-if [ "${CABOOSE_GPU:-none}" = wsl ]; then
-  export GALLIUM_DRIVER=d3d12
+# While the phone's GPU is attached to this seat (its broker socket exists only then;
+# docs/gpu-live.md, "Applications"), Chromium renders on it: an X11 client through
+# Xwayland, whose windows the phone's driver presents, with ANGLE on Vulkan. The GPU
+# process runs outside Chromium's GPU sandbox, which does not let it reach the socket.
+# Chromium started without the phone draws on this computer as below.
+if [ -n "${CABOOSE_GFXSTREAM_SOCKET:-}" ] && [ -S "$CABOOSE_GFXSTREAM_SOCKET" ] && [ -n "${DISPLAY:-}" ]; then
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11 --ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --disable-gpu-sandbox"
+else
+  # Under Caboose Display, Chromium is a native Wayland client (no X11 round trips).
   if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    # Chromium's Wayland GPU path needs a DRM render node, which WSL does not have: its
-    # GPU process fails over and presents fewer frames than software raster (measured
-    # on an RTX 4080: 41 against 52 fps for 1080p video). Video still reaches the phone
-    # through the VA-API passthrough driver.
-    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"
-  else
-    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland"
   fi
-fi
-# With the Caboose VA-API driver (set only in Caboose Display sessions, on hosts with a
-# render node), Chromium decodes video through it, so video reaches the phone as its own
-# stream (guest/vaapi).
-if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${LIBVA_DRIVER_NAME:-}" = caboose ]; then
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiIgnoreDriverChecks"
+  # The computer's render node is vgem (docs/gpu-buffers.md), which Chromium passes over
+  # when it looks for one: name it, so its Wayland GPU path allocates shared buffers there.
+  for node in /dev/dri/renderD*; do
+    [ -e "$node" ] || continue
+    [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$node"
+    break
+  done
+  # Mesa D3D12 is available to WSL containers through /dev/dxg.
+  if [ "${CABOOSE_GPU:-none}" = wsl ]; then
+    export GALLIUM_DRIVER=d3d12
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+      # Chromium's Wayland GPU path needs a DRM render node, which WSL does not have: its
+      # GPU process fails over and presents fewer frames than software raster (measured
+      # on an RTX 4080: 41 against 52 fps for 1080p video). Video still reaches the phone
+      # through the VA-API passthrough driver.
+      CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"
+    else
+      CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
+    fi
+  fi
+  # With the Caboose VA-API driver (set only in Caboose Display sessions, on hosts with a
+  # render node), Chromium decodes video through it, so video reaches the phone as its own
+  # stream (guest/vaapi).
+  if [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${LIBVA_DRIVER_NAME:-}" = caboose ]; then
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --enable-features=VaapiVideoDecoder,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL,VaapiIgnoreDriverChecks"
+  fi
 fi

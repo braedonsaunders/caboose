@@ -379,16 +379,14 @@ impl State {
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).
         if let Some(surface) = self.keyboard_focus_surface() {
-            if let (Some(purpose), Some(id)) =
-                (self.text_inputs.enabled_purpose(&surface), self.window_of_surface(&surface))
-            {
+            let ibus = self.ibus_shown.as_ref().filter(|(s, _)| *s == surface).map(|(_, f)| f.clone());
+            let enabled = match self.text_inputs.enabled_purpose(&surface) {
+                Some(purpose) => Some((purpose.map(str::to_owned), self.text_inputs.surrounding(&surface))),
+                None => ibus.map(|f| (Some(f.purpose.to_owned()), f.surrounding.as_ref().map(|s| s.wire()))),
+            };
+            if let (Some((purpose, surrounding)), Some(id)) = (enabled, self.window_of_surface(&surface)) {
                 if self.windows.get(id).is_some_and(|w| w.announced.is_some()) {
-                    let state = proto::TextInputState {
-                        id,
-                        enabled: true,
-                        purpose: purpose.map(str::to_owned),
-                        surrounding: self.text_inputs.surrounding(&surface),
-                    };
+                    let state = proto::TextInputState { id, enabled: true, purpose, surrounding };
                     self.net.send(conn, &Message::TextInput(state));
                 }
             }

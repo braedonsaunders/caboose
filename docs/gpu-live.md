@@ -4,7 +4,8 @@ The live GPU source is separate from the GFXReconstruct capture protocol in
 [gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
-It does not activate a general Vulkan driver or provide window presentation.
+Applications reach it through their launch environment, as [Applications](#applications)
+describes.
 
 ## Connection and authority
 
@@ -652,3 +653,36 @@ it. Replies retain the full native payload. The CGLS parser does not activate
 these operations or imply that a native implementation exists.
 
 The opt-in memory-audit package records at most 64 decoder calls taking 50 ms or longer per runtime process. Each record contains a local stream ordinal, opcode and elapsed time; the pinned command-buffer host-sync call also includes its two numeric ordering fields. It also records up to 64 stream totals and 128 two-second samples per runtime process, counting decode time (including mapped-memory flushes), socket read wait and bytes, and reply flush time. Counters saturate instead of wrapping. Stream wait includes time when the guest has no work and does not identify a transport fault by itself. Handles, addresses and command contents are excluded. Execution and timeout behavior are unchanged.
+
+## Applications
+
+The owner's display started with the private GPU sockets
+(`--private-gpu-stream-socket`, `--private-gpu-surface-socket`) routes its applications to
+the phone's GPU through their launch environment, when the driver is installed: `python3
+guest/gpu/install-live.py --driver libvulkan_gfxstream.so` puts it and its loader manifest
+in `/usr/local/lib/caboose-gpu-live`, a directory no Vulkan loader searches by itself. No
+application is configured individually; each toolkit's own GPU path reaches the driver.
+
+| Applications | Path to the phone's GPU |
+| --- | --- |
+| Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the loader orders GPUs before CPU renderers such as lavapipe. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
+| OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
+| GTK 4 | `GSK_RENDERER=vulkan`. |
+| Qt 6 Quick | OpenGL through Xwayland, so Zink. |
+| Electron on X11, such as Visual Studio Code | ANGLE on OpenGL, so Zink. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, when the broker's socket exists as it starts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+
+The broker listens on its local socket only while a phone's executor is ready. With no
+phone the driver fails its Vulkan instance and the loader continues with the computer's
+drivers; Zink finds no GPU and Mesa uses llvmpipe; GTK draws with lavapipe; Chromium
+started without a phone draws as on any other seat. Those applications draw on the
+computer and reach the phone as pictures, like every application that draws on the CPU.
+
+Some applications draw on the computer even with a phone attached: OpenGL clients on
+Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and Proton games, because the driver's
+surfaces are Wayland and XCB, not Xlib; and Flatpak applications, whose sandbox has
+neither the driver nor the broker's sockets. An application rendering on the phone's
+GPU loses its Vulkan device when the phone detaches.
+
+`guest/gpu/check-apps.sh` checks each path in a disposable container
+([guest/gpu](../guest/gpu/README.md#application-routing-check)).

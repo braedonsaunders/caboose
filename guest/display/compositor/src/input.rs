@@ -134,6 +134,11 @@ impl State {
         // Both vectors are identical: this virtual device adds no acceleration.
         pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel: delta, utime });
         let changed = self.input.pointer_buttons ^ m.buttons;
+        if changed != 0 {
+            // Xwayland applies a frame's motion when the frame ends but a button at once:
+            // the motion's own frame puts a press or release where it happened.
+            pointer.frame(self);
+        }
         if changed & m.buttons != 0 {
             self.press_focus(m.id);
         }
@@ -310,9 +315,12 @@ impl State {
         if m.commit.is_none() && preedit.is_none() {
             return;
         }
-        if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit) {
-            // No text-input-v3 here (X11 through Xwayland, a terminal emulator without it):
-            // the commit is typed. Pre-edit text has no key equivalent and is not shown.
+        if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit)
+            && !self.ibus_send(m.commit.as_deref(), preedit.map(|(text, begin, _)| (text, begin)))
+        {
+            // Neither text-input-v3 nor an IBus field (an X11 client without input-method
+            // support, a terminal emulator): the commit is typed. Pre-edit text has no key
+            // equivalent and is not shown.
             if let Some(commit) = &m.commit {
                 self.type_text(commit);
             }
