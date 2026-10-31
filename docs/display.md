@@ -735,8 +735,12 @@ units, and no presented pictures are captured.
 A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
 the phone itself. That covers a window whose picture the phone draws (a card or tile) and
 a live GPU window whose presented pictures the phone captures
-([presented-picture capture](gpu-live.md#presented-picture-capture)). Games and GPU
-streams are not covered. Over a live GPU layer, the phone draws its compositions in an
+([presented-picture capture](gpu-live.md#presented-picture-capture)). A window that takes native touch is covered too while
+its toolkit reporter names a scroller with a range: as UIScrollView delays content
+touches, a finger's first 150 ms are held back from the app. If it moves past the pan
+slop, the phone scrolls; if it stays still, lifts, or a second finger lands, the finger goes
+to the app as it went down, and the app gets its taps, presses, drags and pinches
+natively. Games and GPU streams are not covered. Over a live GPU layer, the phone draws its compositions in an
 overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
 uses it differently:
 
