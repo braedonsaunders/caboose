@@ -117,6 +117,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var scrollOverlay: CAMetalLayer?
     private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
+    private weak var scrollTouchGesture: UIPanGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
     private var holdUsesPointerDrag = false
     private weak var holdWindow: RemoteWindow?
@@ -613,6 +614,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         scroll.minimumNumberOfTouches = 1
         scroll.maximumNumberOfTouches = 2
         scroll.delegate = self
+        scrollTouchGesture = scroll
         addGestureRecognizer(scroll)
         // Movement fails the stationary hold and immediately releases the pan. Once
         // the hold wins it owns the contact through lift, so it cannot also scroll.
@@ -645,7 +647,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             holdWindow = remoteWindow
             holdSession = session
         }
+        if gesture === scrollTouchGesture, defersToPan(touch) { return true }
         return gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
+    }
+
+    public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        // A finger handed to the app keeps its drags: the scroll gesture does not take it back.
+        if gesture === scrollTouchGesture, let handed = handedToApp, nativeTouches.contains(handed) { return false }
+        return super.gestureRecognizerShouldBegin(gesture)
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -851,6 +860,33 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private func isNative(_ touch: UITouch) -> Bool { nativeTouches.contains(ObjectIdentifier(touch)) }
 
+    /// A touch window whose toolkit reporter names a scroller: a finger's first moments are
+    /// held back from the app, as UIScrollView delays content touches. Moving it pans the
+    /// phone-owned scroll; staying still, lifting, or a second finger hands it to the app,
+    /// which then gets its taps, presses, drags and pinches natively.
+    private var heldTouch: UITouch?
+    /// The held finger once handed to the app.
+    private var handedToApp: ObjectIdentifier?
+    private static let touchHold: TimeInterval = 0.15
+
+    private func defersToPan(_ touch: UITouch) -> Bool {
+        guard touch.type == .direct, heldTouch == nil, activeTouches.isEmpty, nativeTouches.isEmpty,
+              routesNatively(touch), localScroll != nil, let window = remoteWindow, canScrollLocally(window),
+              let scroller = window.scrollReports.latest?.scrollers.first else { return false }
+        return scroller.range.x > 0 || scroller.range.y > 0
+    }
+
+    /// Delivers the held finger to the app as if it had gone down natively.
+    private func handHeldTouchToApp(_ event: UIEvent?) {
+        guard let touch = heldTouch else { return }
+        heldTouch = nil
+        handedToApp = ObjectIdentifier(touch)
+        nativeTouches.insert(ObjectIdentifier(touch))
+        stopMomentum()
+        tapCandidate = (ObjectIdentifier(touch), touch.timestamp, touch.location(in: self))
+        deliver([touch], .down, event)
+    }
+
     private func routesNatively(_ touch: UITouch) -> Bool {
         guard isInteractive, session != nil, let window = remoteWindow, window.game == nil else { return false }
         switch touch.type {
@@ -866,6 +902,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if !scrollOwnership.isActive {
             touchStoppedScroll = localScroll?.isMoving ?? false
             stopMomentum()
+        }
+        if heldTouch != nil { handHeldTouchToApp(event) }
+        if touches.count == 1, let touch = touches.first, defersToPan(touch) {
+            heldTouch = touch
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.touchHold) { [weak self, weak touch] in
+                guard let self, let touch, self.heldTouch === touch, !self.scrollOwnership.isActive else { return }
+                self.handHeldTouchToApp(nil)
+            }
+            return
         }
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
@@ -894,6 +939,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let held = heldTouch, touches.contains(held) {
+            // A tap on moving content only stops it; any other quick tap is the app's.
+            if touchStoppedScroll { heldTouch = nil; touchStoppedScroll = false } else { handHeldTouchToApp(event) }
+        }
+        if let handed = handedToApp, touches.contains(where: { ObjectIdentifier($0) == handed }) { handedToApp = nil }
         let native = touches.filter(isNative)
         nativeTouches.subtract(native.map(ObjectIdentifier.init))
         deliver(native, .up, event)
@@ -911,6 +961,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        // The held finger became a pan: the app never saw it.
+        if let held = heldTouch, touches.contains(held) { heldTouch = nil }
+        if let handed = handedToApp, touches.contains(where: { ObjectIdentifier($0) == handed }) { handedToApp = nil }
         let native = touches.filter(isNative)
         nativeTouches.subtract(native.map(ObjectIdentifier.init))
         tapCandidate = nil

@@ -735,8 +735,12 @@ units, and no presented pictures are captured.
 A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
 the phone itself. That covers a window whose picture the phone draws (a card or tile) and
 a live GPU window whose presented pictures the phone captures
-([presented-picture capture](gpu-live.md#presented-picture-capture)). Games and GPU
-streams are not covered. Over a live GPU layer, the phone draws its compositions in an
+([presented-picture capture](gpu-live.md#presented-picture-capture)). A window that takes native touch is covered too while
+its toolkit reporter names a scroller with a range: as UIScrollView delays content
+touches, a finger's first 150 ms are held back from the app. If it moves past the pan
+slop, the phone scrolls; if it stays still, lifts, or a second finger lands, the finger goes
+to the app as it went down, and the app gets its taps, presses, drags and pinches
+natively. Games and GPU streams are not covered. Over a live GPU layer, the phone draws its compositions in an
 overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
 uses it differently:
 
@@ -783,7 +787,8 @@ uses it differently:
   picture placed beyond an end removes it. A toolkit adapter's reported range stays.
 - **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
   driven at most 0.6 of the region per picture interval. While it has shown nothing for
-  two picture intervals (and 100 ms), its drive is capped half a region past its
+  two picture intervals (and 100 ms) of being driven, counted from its last picture or,
+  for an app at rest, from the first scroll sent since, its drive is capped half a region past its
   last picture. It is never held, since an app that draws only when it scrolls would
   otherwise stay silent.
 - **Nothing is guessed.** A measurement must explain at least half of the detail that

@@ -281,6 +281,8 @@ public struct LocalScroll {
             edges = (nil, nil)
         }
         probe = nil
+        // Scroll the app could not show (at an end, or settling) does not make it silent now.
+        if fromRest { drivenSince = nil }
         if fromRest || phase == .prefetching { travelStart = prefetch?.origin ?? placedOffset ?? position }
         // Only a start from rest knows what the app had applied of everything sent.
         gainBaseline = fromRest && !frames.contains(where: { !$0.placed }) ? (sent, placedOffset ?? position) : nil
@@ -514,7 +516,7 @@ public struct LocalScroll {
     }
 
     private mutating func noteCadence(_ time: TimeInterval) {
-        defer { lastPicture = time }
+        defer { lastPicture = time; drivenSince = nil }
         guard let last = lastPicture, phase != .idle else { return }
         let gap = time - last
         guard gap > 0, gap < 2 else { return }
@@ -522,13 +524,18 @@ public struct LocalScroll {
         longestGap = max(longestGap * 0.98, gap)
     }
 
-    /// The app has shown nothing for one and a half picture intervals while being driven.
+    /// When the app was first sent scroll after its last picture: an app at rest draws
+    /// nothing, so its silence counts from then.
+    private var drivenSince: TimeInterval?
+
+    /// The app has shown nothing for two picture intervals (at least 100 ms) while being driven.
     /// Its drive is then capped half a region past its last picture rather than held: an
     /// app that draws only when it scrolls keeps receiving input (holding it would silence
     /// the app for good), while its next picture still overlaps the last and measures.
     private func silent(at time: TimeInterval) -> Bool {
-        guard let last = lastPicture, phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
-        return time - last > max(0.1, 2 * frameInterval)
+        guard let last = lastPicture, let driven = drivenSince,
+              phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
+        return time - max(last, driven) > max(0.1, 2 * frameInterval)
     }
 
     private mutating func learn(from frame: Frame, previous: Frame?) {
@@ -683,7 +690,7 @@ public struct LocalScroll {
             target = min(app + allowance, max(app - allowance, target))
         }
         if isSilent != (capSince != nil) {
-            if isSilent { capSince = time; note?("drive capped: no picture for \(Int((time - (lastPicture ?? time)) * 1000)) ms") }
+            if isSilent { capSince = time; note?("drive capped: no picture for \(Int((time - max(lastPicture ?? time, drivenSince ?? time)) * 1000)) ms of driving") }
             else if let since = capSince { note?("drive cap released after \(Int((time - since) * 1000)) ms"); capSince = nil }
         }
         // Consecutive pictures must overlap to be measured: the app may be driven at most
@@ -700,6 +707,7 @@ public struct LocalScroll {
             let wire = change / gain
             sent += wire
             lastSend = time
+            if drivenSince == nil { drivenSince = time }
             if unansweredSince == nil { unansweredSince = time }
             send = axis.point(along: CGFloat(wire))
         }
