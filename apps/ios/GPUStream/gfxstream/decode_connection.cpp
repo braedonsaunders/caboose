@@ -39,6 +39,8 @@ void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
         "%s ordinal=%u stream=%llu elapsed_us=%llu stage=%u result=%d "
         "decode_count=%llu decode_sum_us=%llu decode_max_us=%llu "
         "flush20025_count=%llu flush20025_sum_us=%llu flush20025_max_us=%llu "
+        "gfxpipe20065_count=%llu gfxpipe20065_sum_us=%llu gfxpipe20065_max_us=%llu "
+        "cmppipe20021_count=%llu cmppipe20021_sum_us=%llu cmppipe20021_max_us=%llu "
         "read_count=%llu read_sum_us=%llu read_max_us=%llu read_bytes=%llu "
         "flush_count=%llu flush_sum_us=%llu flush_max_us=%llu\n",
         prefix, ordinal, static_cast<unsigned long long>(stream),
@@ -50,6 +52,12 @@ void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
         static_cast<unsigned long long>(snap.decode_20025.count),
         static_cast<unsigned long long>(snap.decode_20025.sum_us),
         static_cast<unsigned long long>(snap.decode_20025.max_us),
+        static_cast<unsigned long long>(snap.decode_20065.count),
+        static_cast<unsigned long long>(snap.decode_20065.sum_us),
+        static_cast<unsigned long long>(snap.decode_20065.max_us),
+        static_cast<unsigned long long>(snap.decode_20021.count),
+        static_cast<unsigned long long>(snap.decode_20021.sum_us),
+        static_cast<unsigned long long>(snap.decode_20021.max_us),
         static_cast<unsigned long long>(snap.read_wait.count),
         static_cast<unsigned long long>(snap.read_wait.sum_us),
         static_cast<unsigned long long>(snap.read_wait.max_us),
