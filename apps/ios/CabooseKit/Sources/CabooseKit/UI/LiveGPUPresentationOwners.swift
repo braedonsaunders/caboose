@@ -49,6 +49,11 @@ public final class LiveGPUPresentationOwners {
         }
     }
 
+    /// Whether a live GPU layer presents in `view`, over the picture the view draws itself.
+    func presents(in view: RemoteWindowView) -> Bool {
+        leases.values.contains { $0.isValid && $0.view === view }
+    }
+
     func observe(_ view: RemoteWindowView) {
         views = views.filter { $0.value.view != nil }
         views[ObjectIdentifier(view)] = ViewRef(view)

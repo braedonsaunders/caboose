@@ -3053,7 +3053,11 @@ and restores its dock.
   guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
   scrolling and dedicated phone trackpads retain their existing gain. This calibrates
   the Xwayland/Chromium reference response; other applications retain their own scroll
-  interpretation (see [scroll units](display.md#direct-content-scroll-units)). A new touch, context action, target change, detach or app backgrounding
+  interpretation (see [scroll units](display.md#direct-content-scroll-units)). Finger
+  pans over a window picture the phone draws are phone-owned: the phone moves captured
+  pictures at display rate with iOS momentum, drives the app ahead of itself, and hands
+  back to the app's picture at rest (see [phone-owned scrolling](display.md#phone-owned-scrolling)).
+  A new touch, context action, target change, detach or app backgrounding
   stops client inertia. Card and free-desktop scroll delivery is fenced to the original
   connection and geometry. Changing the finger count during an emulated pan cancels
   that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without

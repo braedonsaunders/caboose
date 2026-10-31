@@ -478,6 +478,23 @@ trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
 client inertia; native Wayland touch keeps the application's own fling behavior. A display
 stall drops old movement and momentum while continuing to accept the finger's new movement.
+Finger pans over a window picture the phone draws are phone-owned
+(`CabooseKit/Scroll`, [phone-owned scrolling](../../docs/display.md#phone-owned-scrolling)):
+the picture moves on the phone at display rate while the app follows. `swift test --filter
+LocalScrollReplayTests` replays real-speed flicks (slow drag, medium and fast flicks,
+repeated flicks) against simulated apps at 40, 80 and 150 ms latency. It prints blank-area
+percentiles, deviation from the native iOS trajectory, misplaced content, content jumps,
+time to hand back and the learned latency and gain, and it asserts the bar.
+`LocalScrollRendererTests` checks the GPU signature kernel against its CPU definition and
+that a measured composition redraws a scrolled picture pixel for pixel.
+`LocalScrollControllerTests` runs a flick end to end on the GPU against a window whose app
+scrolls as forwarded scroll arrives. On a device, `CABOOSE_SCROLL_PROFILE=1` logs each
+gesture (touch-to-glass latency, frame intervals, late frames, blank area, picture
+placement, the app's latency and gain) to the `org.caboose` `scroll` log and to
+`Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_REPLAY=1` plays the standard flick script
+through the same path three seconds after an interactive window appears. See
+`scripts/check-scroll.sh`.
+
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. `swift test --filter ScrollGestureOwnershipTests` checks

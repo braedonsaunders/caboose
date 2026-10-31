@@ -1,0 +1,220 @@
+import Foundation
+import Metal
+import QuartzCore
+
+/// The GPU side of phone-owned scrolling: copies captured pictures into history textures,
+/// computes their line signatures, and draws a `ScrollComposition`.
+///
+/// Everything runs on `SurfaceRenderer.shared.queue`, the queue every window picture is
+/// written on, so a capture copies exactly the picture as it stood when it was taken.
+public final class LocalScrollRenderer: @unchecked Sendable {
+    public static let shared: LocalScrollRenderer? = LocalScrollRenderer()
+
+    let device: MTLDevice
+    let queue: MTLCommandQueue
+    private let signature: MTLComputePipelineState
+    private let textured: MTLRenderPipelineState
+    private let solid: MTLRenderPipelineState
+    private let lock = NSLock()
+    private var pool: [MTLTexture] = []
+
+    private init?() {
+        let renderer = SurfaceRenderer.shared
+        device = renderer.device
+        queue = renderer.queue
+        do {
+            let library = try device.makeLibrary(source: Self.source, options: nil)
+            guard let kernel = library.makeFunction(name: "scroll_signature"),
+                  let vertex = library.makeFunction(name: "scroll_quad_vertex"),
+                  let sample = library.makeFunction(name: "scroll_quad_texture"),
+                  let fill = library.makeFunction(name: "scroll_quad_fill") else { return nil }
+            signature = try device.makeComputePipelineState(function: kernel)
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = vertex
+            descriptor.fragmentFunction = sample
+            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            textured = try device.makeRenderPipelineState(descriptor: descriptor)
+            descriptor.fragmentFunction = fill
+            solid = try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: Capture
+
+    /// Copies `source` into a history texture and measures its line signature along `axis`.
+    /// `completion` runs on a Metal completion thread once both have landed, with nil when the
+    /// copy could not be made.
+    public func capture(_ source: MTLTexture, axis: ScrollAxis,
+                        completion: @escaping @Sendable (MTLTexture?, ScrollSignature?) -> Void) {
+        let width = source.width, height = source.height
+        let lines = axis == .vertical ? height : width, span = axis == .vertical ? width : height
+        let bands = ScrollSignature.bandCount(span: span)
+        guard let copy = texture(width: width, height: height),
+              let output = device.makeBuffer(length: lines * bands * 4 * MemoryLayout<Float>.stride, options: .storageModeShared),
+              let commands = queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else {
+            completion(nil, nil)
+            return
+        }
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+                  sourceSize: MTLSize(width: width, height: height, depth: 1),
+                  to: copy, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blit.endEncoding()
+        guard let compute = commands.makeComputeCommandEncoder() else { completion(nil, nil); return }
+        var parameters = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(bands), axis == .vertical ? 0 : 1)
+        compute.setComputePipelineState(signature)
+        compute.setTexture(copy, index: 0)
+        compute.setBuffer(output, offset: 0, index: 0)
+        compute.setBytes(&parameters, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 1)
+        let group = MTLSize(width: min(bands, 8), height: max(1, signature.maxTotalThreadsPerThreadgroup / 8 / 4), depth: 1)
+        compute.dispatchThreads(MTLSize(width: bands, height: lines, depth: 1), threadsPerThreadgroup: group)
+        compute.endEncoding()
+        commands.addCompletedHandler { buffer in
+            guard buffer.status == .completed else { completion(nil, nil); return }
+            let pointer = output.contents().bindMemory(to: Float.self, capacity: lines * bands * 4)
+            let result = ScrollSignature(axis: axis, lines: lines, bands: bands, span: span,
+                                         packed: UnsafeBufferPointer(start: pointer, count: lines * bands * 4))
+            completion(copy, result)
+        }
+        commands.commit()
+    }
+
+    private func texture(width: Int, height: Int) -> MTLTexture? {
+        lock.lock()
+        if let index = pool.firstIndex(where: { $0.width == width && $0.height == height }) {
+            let reused = pool.remove(at: index)
+            lock.unlock()
+            return reused
+        }
+        lock.unlock()
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .private
+        return device.makeTexture(descriptor: descriptor)
+    }
+
+    /// Returns history textures for reuse once the GPU work already queued with them is done.
+    public func recycle(_ textures: [MTLTexture]) {
+        guard !textures.isEmpty, let commands = queue.makeCommandBuffer() else { return }
+        commands.addCompletedHandler { [weak self] _ in
+            guard let self else { return }
+            self.lock.lock()
+            // Two pictures' worth stay pooled; the rest are freed.
+            self.pool = Array((self.pool + textures).suffix(2))
+            self.lock.unlock()
+        }
+        commands.commit()
+    }
+
+    /// Frees every pooled texture, for memory pressure.
+    public func drain() {
+        lock.lock(); pool.removeAll(); lock.unlock()
+    }
+
+    // MARK: Drawing
+
+    private struct Quad {
+        var rect: SIMD4<Float>     // x, y, width, height in target pixels
+        var offset: SIMD2<Float>   // target pixel - offset = source pixel
+        var target: SIMD2<Float>
+        var color: SIMD4<Float>
+    }
+
+    /// Draws `composition` into `target`, a picture-sized texture. `textures` holds the frames
+    /// it names; `fill` is the colour of content not yet captured. Returns false, drawing
+    /// nothing, when a frame it names has no texture.
+    public func encode(_ composition: ScrollComposition, textures: [UInt64: MTLTexture], fill: SIMD3<Float>,
+                       into target: MTLTexture, commands: MTLCommandBuffer) -> Bool {
+        guard let base = textures[composition.base],
+              composition.layers.allSatisfy({ textures[$0.frame] != nil }) else { return false }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return false }
+        let size = SIMD2<Float>(Float(target.width), Float(target.height))
+        let vertical = composition.axis == .vertical
+        func rect(along: Range<Int>, across: Range<Int>) -> SIMD4<Float> {
+            vertical ? SIMD4(Float(across.lowerBound), Float(along.lowerBound), Float(across.count), Float(along.count))
+                     : SIMD4(Float(along.lowerBound), Float(across.lowerBound), Float(along.count), Float(across.count))
+        }
+        func draw(_ quad: Quad, texture: MTLTexture?) {
+            var q = quad
+            encoder.setRenderPipelineState(texture == nil ? solid : textured)
+            encoder.setVertexBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
+            encoder.setFragmentBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
+            if let texture { encoder.setFragmentTexture(texture, index: 0) }
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        let none = SIMD4<Float>(0, 0, 0, 0)
+        draw(Quad(rect: SIMD4(0, 0, size.x, size.y), offset: .zero, target: size, color: none), texture: base)
+        let region = composition.region
+        if composition.blank > 0 {
+            draw(Quad(rect: rect(along: region.along, across: region.across), offset: .zero, target: size,
+                      color: SIMD4(fill.x, fill.y, fill.z, 1)), texture: nil)
+        }
+        for layer in composition.layers {
+            let shift = Float(layer.shift)
+            draw(Quad(rect: rect(along: layer.lines, across: region.across),
+                      offset: vertical ? SIMD2(0, shift) : SIMD2(shift, 0), target: size, color: none),
+                 texture: textures[layer.frame])
+        }
+        for fixed in composition.stationary {
+            draw(Quad(rect: rect(along: fixed.along, across: fixed.across), offset: .zero, target: size, color: none), texture: base)
+        }
+        encoder.endEncoding()
+        return true
+    }
+
+    private static let source = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    // One thread per (band, line): the mean colour and the mean absolute luma step along
+    // the line within the band, as ScrollSignature(axis:bands:width:height:rowBytes:bgra:).
+    kernel void scroll_signature(texture2d<float, access::read> picture [[texture(0)]],
+                                 device float4 *out [[buffer(0)]],
+                                 constant uint4 &p [[buffer(1)]],
+                                 uint2 gid [[thread_position_in_grid]]) {
+        uint width = p.x, height = p.y, bands = p.z, axis = p.w;
+        uint lines = axis == 0 ? height : width, span = axis == 0 ? width : height;
+        if (gid.x >= bands || gid.y >= lines) return;
+        uint start = gid.x * span / bands, end = (gid.x + 1) * span / bands;
+        float3 sum = 0;
+        float steps = 0, previous = 0;
+        for (uint i = start; i < end; i++) {
+            uint2 coord = axis == 0 ? uint2(i, gid.y) : uint2(gid.y, i);
+            float3 c = round(picture.read(coord).rgb * 255.0);
+            sum += c;
+            float l = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+            if (i > start) steps += abs(l - previous);
+            previous = l;
+        }
+        float n = float(end - start);
+        out[gid.y * bands + gid.x] = float4(sum / n, steps / max(1.0, n - 1.0));
+    }
+
+    struct Quad { float4 rect; float2 offset; float2 target; float4 color; };
+    struct Fragment { float4 position [[position]]; };
+
+    vertex Fragment scroll_quad_vertex(uint vid [[vertex_id]], constant Quad &q [[buffer(0)]]) {
+        float2 corner = float2(vid & 1, vid >> 1);
+        float2 p = q.rect.xy + corner * q.rect.zw;
+        Fragment f;
+        f.position = float4(p.x / q.target.x * 2.0 - 1.0, 1.0 - p.y / q.target.y * 2.0, 0.0, 1.0);
+        return f;
+    }
+
+    fragment half4 scroll_quad_texture(Fragment in [[stage_in]], constant Quad &q [[buffer(0)]],
+                                       texture2d<half, access::read> picture [[texture(0)]]) {
+        int2 source = int2(floor(in.position.xy - q.offset));
+        int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
+        return picture.read(uint2(clamp(source, int2(0), limit)));
+    }
+
+    fragment half4 scroll_quad_fill(Fragment in [[stage_in]], constant Quad &q [[buffer(0)]]) {
+        return half4(q.color);
+    }
+    """
+}
