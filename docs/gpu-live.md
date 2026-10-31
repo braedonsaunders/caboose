@@ -542,8 +542,7 @@ recover from device loss (GTK 4, Vulkan applications and games).
 
 Some applications draw on the computer even with a phone attached: OpenGL
 applications, Qt Quick and Electron among them, because Zink (OpenGL on Vulkan) on the
-phone's GPU offers only OpenGL ES 2.0, the phone having no logic operations; Wine and
-Proton games, because the driver's surfaces are Wayland and XCB, not Xlib.
+phone's GPU offers only OpenGL ES 2.0, the phone having no logic operations.
 
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
