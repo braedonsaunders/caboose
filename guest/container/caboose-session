@@ -158,6 +158,12 @@ start_owner() {
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
+  # On WSL the host passes vgem's nodes instead: the driver exports from its primary node.
+  for node in /dev/dri/card* /dev/dri/renderD*; do
+    [ -e "$node" ] || continue
+    driver=$(readlink -f "/sys/class/drm/${node##*/}/device/driver" 2>/dev/null)
+    if [ "${driver##*/}" = vgem ]; then chgrp caboose "$node" && chmod 0660 "$node"; fi
+  done
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
   bridge_daemon "$bus"
 }

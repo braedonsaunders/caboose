@@ -155,6 +155,8 @@ describe('GPU selection', () => {
     expect(gpuArgs('dri', path => path === '/dev/udmabuf')).toEqual(['--device', '/dev/dri', '--device', '/dev/udmabuf', '-e', 'CABOOSE_GPU=dri'])
     expect(gpuArgs('nvidia', path => path === '/dev/udmabuf')).toEqual(expect.arrayContaining(['--device', '/dev/udmabuf']))
     expect(gpuArgs('wsl', () => true)).not.toContain('/dev/udmabuf')
+    expect(gpuArgs('wsl', path => path === '/sys/module/vgem' || path === '/dev/dri')).toEqual(expect.arrayContaining(['--device', '/dev/dri']))
+    expect(gpuArgs('wsl', path => path === '/dev/dri')).not.toContain('/dev/dri')
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
   })
 
