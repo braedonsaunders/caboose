@@ -80,6 +80,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var cursorSerial = 0
     /// The focused app's text-input-v3 state, where the server reports it.
     public private(set) var textInput: (window: Int, enabled: Bool, purpose: String?)?
+    public private(set) var textFieldLeft: (window: Int, at: TimeInterval)?
     /// The focused field's text around the caret, as its app last reported it, bumped on each report.
     public private(set) var surroundingText: (window: Int, serial: Int, text: SurroundingText)?
 
@@ -394,6 +395,13 @@ public final class CabooseDisplaySession: DisplaySession {
                 windows[window]?.touchTargets = targets
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
+                // Focus leaving a field (Return in a search box, a tap elsewhere) turns its
+                // text input off; moving to the next field turns it on again at once.
+                if enabled {
+                    textFieldLeft = nil
+                } else if textInput?.enabled == true {
+                    textFieldLeft = (window, ProcessInfo.processInfo.systemUptime)
+                }
                 if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {
                     textInput = (window, enabled, purpose)
                     cursorSerial &+= 1

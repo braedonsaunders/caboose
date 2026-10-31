@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import GameController
 import Metal
 import QuartzCore
 import UIKit
@@ -717,6 +718,24 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if isText { followField(purpose: session.textPurpose, isCode: Self.isCodeApp(remoteWindow)) }
         onKeyboardWanted(isText)
         focusCheck = nil
+    }
+
+    /// When this view last hid the keyboard for a field its window left.
+    private var fieldLeftHandled: TimeInterval = 0
+    /// How long a left field may stay left before the keyboard goes: focus moving to the next
+    /// field turns text input off and on again within it.
+    private static let fieldExitGrace: TimeInterval = 0.3
+
+    /// The keyboard goes when the window's field loses focus for good, as iOS's does: after
+    /// Return in a search box or an address bar, or a click that leaves the field. A
+    /// hardware keyboard keeps the view first responder: it shows no keyboard to hide.
+    fileprivate func followFieldExit() {
+        guard isFirstResponder, GCKeyboard.coalesced == nil, let window = remoteWindow, let left = session?.textFieldLeft,
+              left.window == window.id, left.at != fieldLeftHandled,
+              ProcessInfo.processInfo.systemUptime - left.at >= Self.fieldExitGrace else { return }
+        fieldLeftHandled = left.at
+        focusCheck = nil
+        if let onKeyboardWanted { onKeyboardWanted(false) } else { _ = resignFirstResponder() }
     }
 
     /// Focus moving between fields with the keyboard up (Tab from a username to its
@@ -1440,6 +1459,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.followFieldExit()
         view.followFieldPurpose()
         view.adoptSurroundingText()
         view.layoutGame()

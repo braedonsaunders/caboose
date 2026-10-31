@@ -19,13 +19,15 @@ struct TapTextFocusTests {
         #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil) == nil)
         #expect(request.keyboardWanted(at: 11.3, serial: 5, isText: nil) == false)
         #expect(request.keyboardWanted(at: 20, serial: 4, isText: nil) == false)
-        #expect(request.keyboardWanted(at: 20, serial: 5, isText: nil, keyboardVisible: true) == true)
     }
 
-    @Test func tappingAFieldCannotDismissAnAlreadyVisibleKeyboard() {
-        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: false, keyboardVisible: true) == true)
-        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil, keyboardVisible: true) == true)
-        // Once explicitly dismissed, an ordinary pointer does not reopen it.
+    @Test func tappingWhatTakesNoTextHidesTheKeyboard() {
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: false, keyboardVisible: true) == false)
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: true, keyboardVisible: true) == true)
+        // Without evidence either way, a keyboard that is up stays up.
+        #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: nil, keyboardVisible: true) == nil)
+        #expect(request.keyboardWanted(at: 11.3, serial: 5, isText: nil, keyboardVisible: true) == true)
+        // Once dismissed, an ordinary pointer does not reopen it.
         #expect(request.keyboardWanted(at: 10.4, serial: 5, isText: false, keyboardVisible: false) == false)
     }
 }
