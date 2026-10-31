@@ -289,6 +289,11 @@ public struct LocalScroll {
         axis = requestedAxis
         self.scale = scale
         prefetchAt = nil
+        if lost {
+            // A new gesture starts afresh from the app's picture on screen.
+            lost = false
+            frames.removeAll()
+        }
         if let p = prefetch { position = p.origin; requested = p.origin; wanted = p.origin; prefetch = nil }
         halt(at: time)
         anchor = (Double(axis.component(point)), Double(axis == .vertical ? point.x : point.y))
@@ -434,11 +439,14 @@ public struct LocalScroll {
         case .unrelated:
             // The first picture of a gesture, taken before anything was sent, shows the app
             // where the phone is.
-            let atRest = phase == .idle || (before == nil && frame.atRest)
+            // At rest, the app's picture is where the phone is. With nothing placed and nothing
+            // composed (a new gesture after a lost run), the app's own picture is what shows:
+            // the first picture placed defines where the phone is, so nothing moves.
+            let atRest = phase == .idle || (before == nil && frame.atRest) || (!lost && !frames.contains(where: \.placed))
             guard atRest else {
                 // A picture that cannot be measured is never placed by a guess. The app's own
                 // picture shows for the rest of this run, scrolled by the finger as it goes.
-                note?("picture \(id) could not be measured: the app's picture shows until the scroll rests")
+                if !lost { note?("picture \(id) could not be measured: the app's picture shows until the scroll rests") }
                 frames.removeAll()
                 edges = (nil, nil)
                 probe = nil
@@ -520,7 +528,7 @@ public struct LocalScroll {
     /// the app for good), while its next picture still overlaps the last and measures.
     private func silent(at time: TimeInterval) -> Bool {
         guard let last = lastPicture, phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
-        return time - last > max(0.05, 1.5 * frameInterval)
+        return time - last > max(0.1, 2 * frameInterval)
     }
 
     private mutating func learn(from frame: Frame, previous: Frame?) {
@@ -724,8 +732,9 @@ public struct LocalScroll {
 
     /// Returns scroll to send now for a probe, in picture pixels along the axis.
     private mutating func detectEdge(at time: TimeInterval, commandedBefore: Double) -> Double {
-        // A picture still being measured may show the app moving.
-        guard let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
+        // A picture still being measured may show the app moving. A reporter states the
+        // app's range; its ends are not inferred.
+        guard reportedBias == nil, let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
         if let p = probe {
             if chainBroken > p.sentAt {
                 // A picture since the probe could not be measured: its answer is unknowable.

@@ -2,13 +2,14 @@
 # Phone-owned scrolling on a signed iOS device and a real computer.
 set -eu
 cat <<'CHECK'
-Launch Caboose with CABOOSE_SCROLL_PROFILE=1 (and CABOOSE_SCROLL_REPLAY=1 for the scripted
+Launch Caboose with CABOOSE_SCROLL_PROFILE=1 (and CABOOSE_SCROLL_AUTOPAN=1 for the scripted
 flicks), for example:
   xcrun devicectl device process launch --device <device> \
-    --environment-variables '{"CABOOSE_SCROLL_PROFILE":"1","CABOOSE_SCROLL_REPLAY":"1"}' \
+    --environment-variables '{"CABOOSE_SCROLL_PROFILE":"1","CABOOSE_SCROLL_AUTOPAN":"1"}' \
     com.braedonsaunders.caboose
 Open a long page in Chromium (an X11 window drawn as video) as the only card and keep it
-on screen. With the replay, the script plays after three seconds and runs for about 26 s;
+on screen. With autopan, the script plays 20 s (CABOOSE_SCROLL_AUTOPAN_DELAY) after the window first
+scrolls locally and runs for about 2 minutes;
 without it, do the same by hand: a slow drag, a medium flick, a hard flick, a hard flick
 back, and three quick flicks in a row.
 1. The content moves with the first finger movement and stays under the finger; flicks
