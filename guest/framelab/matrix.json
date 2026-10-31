@@ -1,0 +1,107 @@
+{
+  "comment": "Frame lab's fixed matrix (README.md). Each app is launched the generic way: its desktop entry or its command, with the seat's launch environment and nothing per app beyond its arguments. {tmp} is a fresh private directory per run, {page} the long local article, {video} a generated clip, {listing} a long text file, {qml} a scrolling Qt Quick list.",
+  "apps": [
+    {
+      "id": "chromium-wikipedia",
+      "name": "Chromium, Wikipedia long article",
+      "command": ["chromium", "--user-data-dir={tmp}/profile", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--window-size=1200,900"],
+      "url": "https://en.wikipedia.org/wiki/History_of_the_United_States",
+      "offline_url": "file://{page}",
+      "window": "^(?!.*--type=).*chromium",
+      "ready_s": 40, "warmup_s": 6, "measure_s": 20,
+      "input": [{"scroll": [0, 3], "every_ms": 80, "count": 120}, {"scroll": [0, -3], "every_ms": 80, "count": 60}],
+      "correctness": true
+    },
+    {
+      "id": "chromium-youtube",
+      "name": "Chromium, YouTube page",
+      "command": ["chromium", "--user-data-dir={tmp}/profile", "--no-first-run", "--no-default-browser-check", "--disable-sync", "--autoplay-policy=no-user-gesture-required", "--window-size=1200,900"],
+      "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ",
+      "window": "^(?!.*--type=).*chromium",
+      "ready_s": 40, "warmup_s": 10, "measure_s": 20,
+      "animated": true,
+      "needs_network": true
+    },
+    {
+      "id": "firefox",
+      "name": "Firefox, long article",
+      "command": ["firefox", "--no-remote", "--profile", "{tmp}/profile", "--width", "1200", "--height", "900"],
+      "url": "https://en.wikipedia.org/wiki/History_of_the_United_States",
+      "offline_url": "file://{page}",
+      "files": {"profile/user.js": "user_pref(\"browser.aboutwelcome.enabled\", false);\nuser_pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\nuser_pref(\"datareporting.policy.dataSubmissionPolicyBypassNotification\", true);\nuser_pref(\"browser.shell.checkDefaultBrowser\", false);\nuser_pref(\"trailhead.firstrun.didSeeAboutWelcome\", true);\n"},
+      "window": "firefox",
+      "ready_s": 40, "warmup_s": 6, "measure_s": 20,
+      "input": [{"scroll": [0, 3], "every_ms": 80, "count": 120}, {"scroll": [0, -3], "every_ms": 80, "count": 60}],
+      "correctness": true
+    },
+    {
+      "id": "gtk4",
+      "name": "GTK 4, gtk4-widget-factory",
+      "command": ["gtk4-widget-factory"],
+      "window": "gtk4-widget-factory",
+      "ready_s": 40, "warmup_s": 3, "measure_s": 12,
+      "input": [{"key": "ctrl+Next", "every_ms": 600, "count": 6}, {"key": "ctrl+Prior", "every_ms": 600, "count": 6}],
+      "correctness": true
+    },
+    {
+      "id": "qt-quick",
+      "name": "Qt 6, Qt Quick list",
+      "command": ["qml6", "{qml}"],
+      "window": "qml6",
+      "ready_s": 30, "warmup_s": 3, "measure_s": 12,
+      "input": [{"scroll": [0, 3], "every_ms": 80, "count": 60}, {"scroll": [0, -3], "every_ms": 80, "count": 60}],
+      "correctness": true
+    },
+    {
+      "id": "vscode",
+      "name": "VS Code (Electron)",
+      "command": ["/usr/share/code/code", "--user-data-dir={tmp}/data", "--extensions-dir={tmp}/extensions", "--disable-workspace-trust", "--skip-welcome", "--skip-release-notes", "--new-window", "{listing}"],
+      "window": "^/usr/share/code/code (?!.*--type=)",
+      "ready_s": 45, "warmup_s": 6, "measure_s": 15,
+      "input": [{"scroll": [0, 3], "every_ms": 80, "count": 100}, {"scroll": [0, -3], "every_ms": 80, "count": 60}],
+      "correctness": true
+    },
+    {
+      "id": "vkcube",
+      "name": "vkcube (Vulkan)",
+      "command": ["vkcube"],
+      "window": "vkcube",
+      "ready_s": 20, "warmup_s": 3, "measure_s": 15,
+      "animated": true
+    },
+    {
+      "id": "glxgears",
+      "name": "glxgears (OpenGL)",
+      "command": ["glxgears"],
+      "window": "glxgears",
+      "ready_s": 20, "warmup_s": 3, "measure_s": 15,
+      "animated": true
+    },
+    {
+      "id": "vkquake",
+      "name": "vkQuake (game)",
+      "desktop": "com.caboose.QuakeGPUAcceptance.desktop",
+      "window": "(?i)quake",
+      "ready_s": 60, "warmup_s": 8, "measure_s": 25,
+      "animated": true
+    },
+    {
+      "id": "terminal",
+      "name": "Terminal (CPU-drawn)",
+      "desktop": "xfce4-terminal.desktop",
+      "args": ["--disable-server", "--geometry=100x40", "-x", "cat"],
+      "window": "xfce4-terminal",
+      "ready_s": 30, "warmup_s": 2, "measure_s": 12,
+      "input": [{"type": "x", "every_ms": 250, "count": 30}, {"key": "Return", "every_ms": 250, "count": 4}],
+      "correctness": true
+    },
+    {
+      "id": "video",
+      "name": "Video playback (mpv)",
+      "command": ["mpv", "--loop-file=inf", "--no-audio", "--geometry=1280x720", "{video}"],
+      "window": "mpv",
+      "ready_s": 30, "warmup_s": 3, "measure_s": 15,
+      "animated": true
+    }
+  ]
+}
