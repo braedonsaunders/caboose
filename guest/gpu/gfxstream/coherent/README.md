@@ -2,7 +2,7 @@
 
 `publication.cpp` implements the guest publication half of an exact-store journal.
 It is a standalone C++17 library, not connected to Mesa or a network protocol.
-The socket driver still rejects coherent allocations and public initialization.
+The guest driver does not use it ([`../driver`](../driver/README.md) provides host-coherent memory by flushing mapped coherent allocations before each submit).
 
 One `Publisher` belongs to one logical device. Allocation IDs increase monotonically
 for that device and cannot be reused after detach. Buffer/image aliases resolve to

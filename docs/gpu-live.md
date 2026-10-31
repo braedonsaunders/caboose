@@ -156,6 +156,17 @@ an exact match, not a subset of bits. `caboose_gpu_live_start_v4` strongly links
 actual indexed runtime; a version-3 artifact cannot authorize version 4. These
 wire fixtures do not initialize a provider or activate the driver.
 
+The guest driver ([`guest/gpu/gfxstream/driver`](../guest/gpu/gfxstream/driver/README.md))
+offers the version-4 hello with mask `0xF0`: bit 7 asks the device to register created
+objects under handles the guest assigns. The phone declares that it registers them with
+the WebSocket request header `X-Caboose-GPU-Features: guest-handles`; the host forwards
+only known feature names to the broker. The broker answers with the same `0xF0` hello
+only when the connected phone declared `guest-handles`, and with the `0x70` hello
+otherwise; the driver then assigns no handles. A broker that does not know bit 7 closes
+the connection, and the driver reconnects offering `0x70`. The phone sees only the `0x70`
+SESSION records above; the decoder recognizes a guest-assigned handle by its `0xCA` top
+byte and per-process tag.
+
 ## Readiness and retirement
 
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires

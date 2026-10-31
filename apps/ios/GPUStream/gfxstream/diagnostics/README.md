@@ -46,10 +46,10 @@ no certified recovery and must report device loss rather than fake completion.
    bad version, mismatched fingerprint/features, duplicate fds and stop races.
 2. Forward the guest worker's private AMD64 encoder socket through the authenticated
    broker to this receiver, preserving byte order, per-thread streams and EOF. The
-   guest probe from `guest/gpu/gfxstream/draw_probe.cpp` is invoked only in the
-   diagnostic environment with its socket, fresh random seed (`seed % 4 == 3`),
-   `feedback.comp.spv`, shader directory and output image path. Neither the
-   public ICD nor ordinary guests are enabled by this fixture.
+   guest's feedback renderer (`guest/gpu/emulation-check`, run by
+   `guest/gpu/gfxstream/phone_guest_oracle.py`) is invoked only in the diagnostic
+   environment with its socket, a fresh random seed, its shaders and an output image
+   path. Ordinary guests are not enabled by this fixture.
 3. Capture the guest's actual JSON `feedback_seed` and `gpu_feedback_words`, CPU
    derived indirect arguments, final RGBA and the decoder's executor identity.
    Verify with the guest's unchanged `verify.py` and `expected.json` using

@@ -67,7 +67,7 @@ class NullStringWire(unittest.TestCase):
                 decode_layer(data)
 
     def test_private_setup_and_handshake_are_exact(self):
-        patch = (HERE / 'prepare_private_icd.py').read_text()
+        patch = (HERE / 'driver/patches/0001-socket-transport.patch').read_text()
         self.assertIn('features.hasVulkanNullOptionalStrings = true;', patch)
         socket = (HERE / 'SocketStream.cpp').read_text()
         self.assertIn('std::memcmp(reply, kHello, sizeof(kHello))', socket)
