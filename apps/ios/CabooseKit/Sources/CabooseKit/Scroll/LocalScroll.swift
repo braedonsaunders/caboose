@@ -56,10 +56,15 @@ public struct ScrollComposition: Equatable, Sendable {
     public var fillFrom: (frame: UInt64, lines: Range<Int>)?
     /// Fixed overlays inside the region, drawn from `base` unmoved over the layers.
     public var stationary: [ScrollRegion] = []
+    /// Lines of picture past the viewport along the axis (an overscan window): `region` is
+    /// in viewport lines, and everything the newest picture shows after the region (a
+    /// footer, a status bar) is drawn this many lines further up, at the viewport's end.
+    public var overscan = 0
 
     public static func == (a: ScrollComposition, b: ScrollComposition) -> Bool {
         a.axis == b.axis && a.base == b.base && a.region == b.region && a.layers == b.layers && a.blank == b.blank
             && a.fillFrom?.frame == b.fillFrom?.frame && a.fillFrom?.lines == b.fillFrom?.lines && a.stationary == b.stationary
+            && a.overscan == b.overscan
     }
 }
 
@@ -236,7 +241,14 @@ public struct LocalScroll {
     private var scaleAlong: Double { Double(scale.map { axis == .vertical ? $0.height : $0.width } ?? 1) }
     private var scaleAcross: Double { Double(scale.map { axis == .vertical ? $0.width : $0.height } ?? 1) }
     private var axisVelocity: Double { Double(axis.component(physics.velocity)) * scaleAlong }
-    private var regionLength: Double { Double(region.map { $0.along.count } ?? 0) }
+    /// Lines of each picture past the viewport along the axis, while an overscan applies.
+    public private(set) var overscan = 0
+    /// The region as the viewport shows it: the picture's region less the overscan, which
+    /// lies at its end; the rows after the region are anchored to the viewport's end.
+    private var viewRegion: ScrollRegion? {
+        region.map { ScrollRegion(along: $0.along.lowerBound..<max($0.along.lowerBound + 1, $0.along.upperBound - overscan), across: $0.across) }
+    }
+    private var regionLength: Double { Double(viewRegion.map { $0.along.count } ?? 0) }
     /// The extra lead for fast motion, signed in its direction.
     private var motionLead: Double {
         let v = axisVelocity, speed = abs(v)
@@ -309,6 +321,33 @@ public struct LocalScroll {
     public mutating func interrupt() {
         prefetchAt = nil
         if var p = prefetch { p.returning = true; prefetch = p }
+    }
+
+    /// The window's pictures now extend `lines` past the viewport along the axis. The app lays
+    /// itself out taller: its scroll region grows by the change and whatever follows the
+    /// region moves down with it.
+    public mutating func applyOverscan(_ lines: Int) {
+        let lines = max(0, lines)
+        guard lines != overscan else { return }
+        if let r = region {
+            region = ScrollRegion(along: r.along.lowerBound..<max(r.along.lowerBound + 1, r.along.upperBound + lines - overscan), across: r.across)
+        }
+        note?("overscan \(overscan) -> \(lines) lines")
+        overscan = lines
+    }
+
+    /// The picture to show at rest: with an overscan the newest picture is shown through
+    /// the viewport (its footer anchored at the viewport's end); without one, nil, as the
+    /// app's own picture is shown as it is.
+    private func restComposition() -> ScrollComposition? {
+        guard overscan > 0, let view = viewRegion, let base = frames.last(where: \.placed),
+              let offset = base.offset else { return nil }
+        let shift = Int((offset - position).rounded())
+        let own = (base.region ?? region ?? view).along
+        let lines = max(view.along.lowerBound, own.lowerBound + shift)..<min(view.along.upperBound, own.upperBound + shift)
+        return ScrollComposition(axis: axis, base: base.id, region: view,
+                                 layers: lines.isEmpty ? [] : [.init(frame: base.id, shift: shift, lines: lines, holes: base.holes)],
+                                 blank: 0, fillFrom: nil, stationary: base.holes, overscan: overscan)
     }
 
     /// Drops the captured frames and everything placed in their coordinates, keeping what
@@ -536,14 +575,14 @@ public struct LocalScroll {
         if phase == .idle {
             composing = false
             guard let scheduled = prefetchAt, time >= scheduled.time else {
-                return ScrollTick(send: .zero, composition: nil, isActive: prefetchAt != nil)
+                return ScrollTick(send: .zero, composition: restComposition(), isActive: prefetchAt != nil)
             }
             // A picture still being measured is waited for.
             if !frames.contains(where: { !$0.placed }) {
                 prefetchAt = nil
                 startPrefetch(direction: scheduled.direction, at: time)
             }
-            guard phase == .prefetching else { return ScrollTick(send: .zero, composition: nil, isActive: false) }
+            guard phase == .prefetching else { return ScrollTick(send: .zero, composition: restComposition(), isActive: false) }
         }
         // Until the first composition the app's own picture is on screen: the phone takes over
         // from where that picture shows the content and catches up with the gesture.
@@ -645,7 +684,7 @@ public struct LocalScroll {
         if phase == .settling { settle(at: time) }
         if phase == .prefetching { advancePrefetch(at: time) }
 
-        let composition = phase == .idle ? nil : compose()
+        let composition = phase == .idle ? restComposition() : compose()
         return ScrollTick(send: send, target: reportedBias.map { commanded - $0 },
                           composition: composition, isActive: phase != .idle)
     }
@@ -763,12 +802,13 @@ public struct LocalScroll {
     private mutating func startPrefetch(direction: Double, at time: TimeInterval) {
         guard let region, let base = frames.last(where: \.placed), let offset = base.offset,
               abs(offset - position) < 0.5 else { return }
-        var distance = configuration.prefetch * Double(region.along.count) * direction
+        guard let view = viewRegion else { return }
+        var distance = configuration.prefetch * Double(view.along.count) * direction
         if let upper = edges.upper, direction > 0 { distance = min(distance, upper - position) }
         if let lower = edges.lower, direction < 0 { distance = max(distance, lower - position) }
         // Content already captured there needs no visit.
         if let span = coverage() {
-            let reach = position + Double(direction > 0 ? region.along.upperBound : region.along.lowerBound) + distance
+            let reach = position + Double(direction > 0 ? view.along.upperBound : view.along.lowerBound) + distance
             if span.contains(reach) { return }
         }
         guard abs(distance) >= 32 else { return }
@@ -840,7 +880,7 @@ public struct LocalScroll {
     /// slower than the gesture itself moves.
     private func revealLimited(_ wanted: Double, previousWanted: Double, elapsed: TimeInterval) -> Double {
         var limited = wanted
-        if phase != .bouncing, let region, let span = coverage() {
+        if phase != .bouncing, let region = viewRegion, let span = coverage() {
             let length = Double(region.along.count), allowance = configuration.revealLimit * length
             let upperWall = span.upperBound - Double(region.along.upperBound) + allowance
             let lowerWall = span.lowerBound - Double(region.along.lowerBound) - allowance
@@ -868,22 +908,24 @@ public struct LocalScroll {
     }
 
     private func compose() -> ScrollComposition? {
-        if let p = prefetch, let region, let pinned = frames.first(where: { $0.id == p.pinned }), let offset = pinned.offset {
+        if let p = prefetch, let region = viewRegion, let pinned = frames.first(where: { $0.id == p.pinned }), let offset = pinned.offset {
             // The picture the user saw, unchanged, while the app visits what lies ahead.
-            let own = pinned.region ?? region
+            let own = pinned.region ?? self.region ?? region
             let shift = Int((offset - position).rounded())
+            let lines = max(region.along.lowerBound, own.along.lowerBound + shift)..<min(region.along.upperBound, own.along.upperBound + shift)
             return ScrollComposition(axis: axis, base: pinned.id, region: region,
-                                     layers: [.init(frame: pinned.id, shift: shift, lines: own.along)], blank: 0, fillFrom: nil)
+                                     layers: lines.isEmpty ? [] : [.init(frame: pinned.id, shift: shift, lines: lines)], blank: 0,
+                                     fillFrom: nil, overscan: overscan)
         }
-        guard let region, let base = frames.last(where: \.placed), let baseOffset = base.offset else { return nil }
+        guard let region = viewRegion, let base = frames.last(where: \.placed), let baseOffset = base.offset else { return nil }
         // At the app's own position the app's picture is what would be composed.
-        if abs(baseOffset - position) < 0.5, (base.region ?? region) == region, frames.last?.placed == true,
+        if overscan == 0, abs(baseOffset - position) < 0.5, (base.region ?? self.region) == self.region, frames.last?.placed == true,
            phase == .settling || phase == .idle { return nil }
         var layers: [ScrollComposition.Layer] = []
         var covered: [Range<Int>] = []
         for frame in frames {
             guard let offset = frame.offset else { continue }
-            let own = frame.region ?? region
+            let own = frame.region ?? self.region ?? region
             let shift = Int((offset - position).rounded())
             let lower = max(region.along.lowerBound, own.along.lowerBound + shift)
             let upper = min(region.along.upperBound, own.along.upperBound + shift)
@@ -908,12 +950,12 @@ public struct LocalScroll {
         if blank > 0, let nearest = visible.first {
             // Fill from the edge of the layer that lies toward the unseen content.
             let forward = (layers.map(\.lines.upperBound).max() ?? region.along.upperBound) < region.along.upperBound
-            let own = (frames.first { $0.id == nearest.frame }?.region ?? region).along
+            let own = (frames.first { $0.id == nearest.frame }?.region ?? self.region ?? region).along
             fill = (nearest.frame, forward ? max(own.lowerBound, own.upperBound - 16)..<own.upperBound
                                            : own.lowerBound..<min(own.upperBound, own.lowerBound + 16))
         }
         return ScrollComposition(axis: axis, base: base.id, region: region, layers: visible.reversed(),
-                                 blank: blank, fillFrom: fill, stationary: base.holes)
+                                 blank: blank, fillFrom: fill, stationary: base.holes, overscan: overscan)
     }
 
     // MARK: Timeline

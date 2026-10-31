@@ -118,7 +118,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     /// Presented pictures go to the owning view for phone-owned scrolling (docs/display.md,
     /// "Phone-owned scrolling"). A device that cannot share them presents without captures.
     func startCapture() {
-        guard let pointer else { return }
+        guard LocalScrollController.enabled, let pointer else { return }
         let code: Int32 = captureLock.withLock {
             let code = caboose_gpu_surface_set_capture(pointer, { context, serial, token, texture in
                 guard let context, let texture else { return }
