@@ -191,7 +191,7 @@ struct WakeView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            CabooseWordmark(motion: .rolling)
+            CabooseWordmark(motion: .waking)
                 .frame(height: 58)
                 .foregroundStyle(.white.opacity(0.9))
             Text(connecting ? "Connecting" : "Waking")

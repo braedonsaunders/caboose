@@ -7,7 +7,9 @@ import SwiftUI
 //
 //   CabooseWordmark(motion: .intro)     draws in, rolls three wheel-turns, again every 24 s
 //   CabooseWordmark(motion: .idle)      the still logo, rolling three wheel-turns every 24 s
-//   CabooseWordmark(motion: .rolling)   wheels turning (waking)
+//   CabooseWordmark(motion: .waking)    draws in and rolls in like the intro, then keeps
+//                                       rolling until the computer is up
+//   CabooseWordmark(motion: .rolling)   wheels turning
 //   CabooseWordmark(lit: false)         hubs unlit: the computer is parked
 //   CabooseWheel()                      one wheel, a power button
 //   CabooseWheel(motion: .rolling)      one wheel turning: something is at work
@@ -17,7 +19,10 @@ import SwiftUI
 // Motion stops under Reduce Motion.
 
 enum BrandMotion: Equatable {
-    case intro, idle, rolling, still
+    case intro, idle, rolling, waking, still
+
+    /// The logo draws itself in: its strokes, flanges, spokes and hubs.
+    var drawsIn: Bool { self == .intro || self == .waking }
 }
 
 struct CabooseWordmark: View {
@@ -42,7 +47,7 @@ struct CabooseWheel: View {
     var lit = true
 
     var body: some View {
-        BrandCanvas(box: Brand.wheelBox, motion: motion == .intro ? .still : motion) { context, frame in
+        BrandCanvas(box: Brand.wheelBox, motion: motion == .intro ? .still : motion == .waking ? .rolling : motion) { context, frame in
             Brand.drawWheel(in: &context, x: 0, start: 0, frame: frame, lit: lit)
         }
         .accessibilityElement()
@@ -97,18 +102,18 @@ struct BrandFrame {
 
     /// Stroke drawn so far, 0...1, for a stroke that starts at `delay`.
     func drawn(_ delay: Double, duration: Double = Brand.Timing.draw) -> Double {
-        guard motion == .intro else { return 1 }
+        guard motion.drawsIn else { return 1 }
         return Brand.Easing.standard(progress(delay, duration))
     }
 
     func faded(_ delay: Double, duration: Double = 0.35) -> Double {
-        guard motion == .intro else { return 1 }
+        guard motion.drawsIn else { return 1 }
         return progress(delay, duration)
     }
 
     /// Scale and opacity of a part that pops in at `delay` (overshooting spring).
     func popped(_ delay: Double) -> (scale: Double, opacity: Double) {
-        guard motion == .intro else { return (1, 1) }
+        guard motion.drawsIn else { return (1, 1) }
         let p = progress(delay, Brand.Timing.pop)
         return (0.2 + 0.8 * Brand.Easing.overshoot(p), p)
     }
@@ -122,8 +127,15 @@ struct BrandFrame {
         case .still:
             return 0
         case .rolling:
-            let period = 1.8
+            let period = Self.busyPeriod
             return 1 - time.truncatingRemainder(dividingBy: period) / period
+        case .waking:
+            // The intro's roll in, then a turn every 1.8 s. A whole turn looks the same as
+            // none, so the loop picks up where the roll in stops.
+            let delay = Brand.Timing.rollDelay
+            if time < delay { return turns }
+            if time < delay + duration { return turns * (1 - Brand.Easing.roll((time - delay) / duration)) }
+            return 1 - (time - delay - duration).truncatingRemainder(dividingBy: Self.busyPeriod) / Self.busyPeriod
         case .intro:
             let delay = Brand.Timing.rollDelay
             if time < delay { return turns }
@@ -142,6 +154,8 @@ struct BrandFrame {
         switch motion {
         case .still: return 0
         case .rolling: return 1
+        case .waking:
+            return min(max((time - Brand.Timing.rollDelay) / Brand.Timing.tiesIn, 0), 1)
         case .intro, .idle:
             guard let phase = Self.phase(time, since: Self.firstRoll(motion)) else { return 0 }
             let (fadeIn, fadeOut, duration) = (Brand.Timing.tiesIn, Brand.Timing.tiesOut, Brand.Timing.rollDuration)
@@ -157,8 +171,15 @@ struct BrandFrame {
         case .still:
             return (0, 0)
         case .rolling:
-            let period = 1.8
+            let period = Self.busyPeriod
             return (time.truncatingRemainder(dividingBy: period) / period, 1)
+        case .waking:
+            let (delay, duration, period) = (Brand.Timing.rollDelay, Brand.Timing.rollDuration, Self.busyPeriod)
+            if time < delay { return (0, 0) }
+            if time < delay + duration {
+                return (Brand.Easing.beam((time - delay) / duration), min((time - delay) / Brand.Timing.tiesIn, 1))
+            }
+            return ((time - delay - duration).truncatingRemainder(dividingBy: period) / period, 1)
         case .intro, .idle:
             guard let phase = Self.phase(time, since: Self.firstRoll(motion)) else { return (0, 0) }
             let duration = Brand.Timing.rollDuration
@@ -173,7 +194,7 @@ struct BrandFrame {
 
     /// When the train next starts to move after `time`, or nil while it is moving now.
     static func nextMove(motion: BrandMotion, after time: TimeInterval) -> TimeInterval? {
-        if motion == .rolling { return nil }
+        if motion == .rolling || motion == .waking { return nil }
         let first = firstRoll(motion)
         // The intro draws in before its first roll; an idle logo waits still for its first.
         if time < first { return motion == .intro ? nil : first }
@@ -181,6 +202,9 @@ struct BrandFrame {
         if phase < Brand.Timing.rollDuration + Brand.Timing.tiesOut { return nil }
         return time - phase + Brand.Timing.cycle
     }
+
+    /// Seconds per wheel turn while something is at work.
+    private static let busyPeriod = 1.8
 
     private static func firstRoll(_ motion: BrandMotion) -> TimeInterval {
         motion == .idle ? Brand.Timing.idleDelay : Brand.Timing.rollDelay
