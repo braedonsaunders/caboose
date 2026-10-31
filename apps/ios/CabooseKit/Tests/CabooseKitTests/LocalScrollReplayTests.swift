@@ -50,6 +50,23 @@ struct LocalScrollReplayTests {
     }
 }
 
+extension LocalScrollReplayTests {
+    /// The first gesture in a window the phone has not yet seen scroll: until the first
+    /// picture that moved is measured the app's own picture shows, then the phone takes
+    /// over without a jump and catches up with the finger.
+    @Test(arguments: [0.04, 0.08, 0.15])
+    func firstGestureInAWindow(_ latency: Double) {
+        var app = ScrollReplay.App()
+        app.inputDelay = latency * 0.4
+        app.outputDelay = latency * 0.6 - 0.5 / app.fps
+        for (name, gestures) in [("fast flick", Self.fastFlick), ("medium flick", Self.mediumFlick)] {
+            let report = Self.run("L=\(Int(latency * 1000))ms \(name)", app, gestures, warm: false)
+            #expect(report.misplacement <= 1)
+            #expect(report.finalError <= 1)
+        }
+    }
+}
+
 struct LocalScrollReplayTrace {
     @Test func trace() {
         guard ProcessInfo.processInfo.environment["CABOOSE_SCROLL_TRACE"] == "1" else { return }
