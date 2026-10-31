@@ -38,6 +38,36 @@ bool CompletionFeed::parseWatch(const unsigned char* packet, size_t size, uint64
     return *queue != 0 && *serial != 0;
 }
 
+bool CompletionFeed::parseOrder(const unsigned char* packet, size_t size, uint64_t* serial) {
+    if (size != kOrderPacketSize || u32(packet) != kOrderOpcode || u32(packet + 4) != kOrderPacketSize)
+        return false;
+    *serial = u64(packet + 8);
+    return *serial != 0;
+}
+
+void CompletionFeed::ordered(uint64_t serial) {
+    {
+        std::lock_guard<std::mutex> lock(orderMutex_);
+        if (serial <= ordered_) return;
+        ordered_ = serial;
+    }
+    orderChanged_.notify_all();
+}
+
+int CompletionFeed::waitOrdered(uint64_t serial) {
+    std::unique_lock<std::mutex> lock(orderMutex_);
+    orderChanged_.wait(lock, [&] { return ordersCancelled_ || ordered_ >= serial; });
+    return ordered_ >= serial ? 0 : ECANCELED;
+}
+
+void CompletionFeed::cancelOrders() {
+    {
+        std::lock_guard<std::mutex> lock(orderMutex_);
+        ordersCancelled_ = true;
+    }
+    orderChanged_.notify_all();
+}
+
 bool CompletionFeed::parseFeed(const unsigned char* packet, size_t size) {
     return size == kFeedPacketSize && u32(packet) == kFeedOpcode && u32(packet + 4) == kFeedPacketSize &&
            u32(packet + 8) == kFeedVersion && u32(packet + 12) == 0;
@@ -58,6 +88,7 @@ CompletionFeed::~CompletionFeed() {
 }
 
 void CompletionFeed::close() {
+    cancelOrders();
     {
         std::lock_guard<std::mutex> lock(mutex_);
         closing_ = true;

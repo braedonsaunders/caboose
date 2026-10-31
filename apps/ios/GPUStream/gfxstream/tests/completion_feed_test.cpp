@@ -114,6 +114,36 @@ int main() {
         assert(completions.run(pair[1], stop) == EPROTO);
         ::close(pair[0]); ::close(pair[1]);
     }
+    // ORDER marks: a wait returns once the mark (or a later one) is decoded, and stop
+    // cancels waits that can no longer be satisfied.
+    {
+        CompletionFeed completions(gpu.submit());
+        unsigned char order[16];
+        const uint32_t oop = CompletionFeed::kOrderOpcode, osize = 16;
+        const uint64_t mark = 5;
+        std::memcpy(order, &oop, 4); std::memcpy(order + 4, &osize, 4); std::memcpy(order + 8, &mark, 8);
+        uint64_t parsed = 0;
+        assert(CompletionFeed::parseOrder(order, 16, &parsed) && parsed == 5);
+        assert(!CompletionFeed::parseOrder(order, 15, &parsed));
+        assert(CompletionFeed::isFeedOpcode(oop) && CompletionFeed::packetSize(oop) == 16);
+        completions.ordered(3);
+        assert(completions.waitOrdered(2) == 0 && completions.waitOrdered(3) == 0);
+        std::atomic_bool done{false};
+        std::thread waiter([&] { assert(completions.waitOrdered(5) == 0); done = true; });
+        completions.ordered(4);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        assert(!done);
+        completions.ordered(6);  // a later mark satisfies an earlier wait
+        waiter.join();
+        assert(done);
+        completions.ordered(1);  // marks never go backwards
+        assert(completions.waitOrdered(6) == 0);
+        std::thread stopped([&] { assert(completions.waitOrdered(9) == ECANCELED); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        completions.cancelOrders();
+        stopped.join();
+        assert(completions.waitOrdered(10) == ECANCELED && completions.waitOrdered(6) == 0);
+    }
     // Process stop: the socket is shut down and run returns 0.
     {
         CompletionFeed completions(gpu.submit());

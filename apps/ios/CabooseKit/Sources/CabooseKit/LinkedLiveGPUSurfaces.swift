@@ -151,6 +151,9 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         if code != 0 && actual.querySucceeded { return (.init(nativeErrno: EIO, vkResult: nil), value) }
         return (actual, value)
     }
+    func waitOrder(_ serial: UInt64) -> Int32 {
+        caboose_gpu_runtime_wait_order(bind.identity.process_token, serial)
+    }
     func query(physicalDevice: UInt64) -> (LiveGPUSurfaceStatus, LiveGPUSurfaceCapabilities?) {
         guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
         var snapshot: OpaquePointer?

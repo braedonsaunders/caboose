@@ -23,9 +23,11 @@ class CompletionFeed {
 public:
     static constexpr uint32_t kFeedOpcode = 0x4342FE01;
     static constexpr uint32_t kWatchOpcode = 0x4342FE02;
+    static constexpr uint32_t kOrderOpcode = 0x4342FE03;
     static constexpr uint32_t kFeedVersion = 1;
     static constexpr uint32_t kFeedPacketSize = 16;
     static constexpr uint32_t kWatchPacketSize = 24;
+    static constexpr uint32_t kOrderPacketSize = 16;
     static constexpr size_t kRecordSize = 16;
     static constexpr int32_t kCompleted = 0;
     static constexpr int32_t kDeviceLost = -4;
@@ -33,7 +35,12 @@ public:
     // Outstanding watches a process may have; beyond it a watch is reported unwatched.
     static constexpr size_t kMaxOutstanding = 4096;
 
-    static bool isFeedOpcode(uint32_t opcode) { return opcode == kFeedOpcode || opcode == kWatchOpcode; }
+    static bool isFeedOpcode(uint32_t opcode) {
+        return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode;
+    }
+    static size_t packetSize(uint32_t opcode) {
+        return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize : kOrderPacketSize;
+    }
 
     // The marker backend: submits a marker behind `boxedQueue`'s work and returns a waiter
     // that blocks until it completes (returning the VkResult) and then releases it, or an
@@ -48,6 +55,13 @@ public:
 
     // From a device stream. Never waits for the GPU.
     void watch(uint64_t boxedQueue, uint64_t serial);
+    // From a device stream: every command before this ORDER mark has been decoded.
+    void ordered(uint64_t serial);
+    // Blocks until the ORDER mark `serial` (or a later one) has been decoded: 0, or
+    // ECANCELED once the process stops. CPU ordering only; it never waits for the GPU.
+    int waitOrdered(uint64_t serial);
+    // Wakes every order wait with ECANCELED and refuses later ones (process stop).
+    void cancelOrders();
     // Runs the feed on `fd` until the guest closes it (0), `stop` is set or the socket is
     // shut down (0), or an error (errno). Only one feed stream may attach, once.
     int run(int fd, const std::atomic_bool& stop);
@@ -57,6 +71,8 @@ public:
 
     // Parses a complete WATCH packet; false if malformed.
     static bool parseWatch(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial);
+    // Parses a complete ORDER packet; false if malformed.
+    static bool parseOrder(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete FEED packet; false if malformed or an unknown version.
     static bool parseFeed(const unsigned char* packet, size_t size);
 
@@ -76,6 +92,10 @@ private:
     bool detached_ = false;
     bool closing_ = false;
     std::thread watcher_;
+    std::mutex orderMutex_;
+    std::condition_variable orderChanged_;
+    uint64_t ordered_ = 0;
+    bool ordersCancelled_ = false;
 };
 
 }  // namespace caboose::gpuv2

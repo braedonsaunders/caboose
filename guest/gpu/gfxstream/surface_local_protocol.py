@@ -25,7 +25,7 @@ def decode_request(data):
     elif kind == 18:
         if len(body) != 16 or not all(struct.unpack('<QQ', body)):
             raise ValueError('invalid query')
-    elif kind in (20, 25, 27, 29, 31, 32, 34):
+    elif kind in (20, 25, 27, 29, 31, 32, 34, 39):
         validate_surface(kind, _IDENTITY + body)
     elif kind == 23:
         if body:

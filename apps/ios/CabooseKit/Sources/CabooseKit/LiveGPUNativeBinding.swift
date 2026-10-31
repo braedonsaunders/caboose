@@ -332,7 +332,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             else {
                 guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
             }
-        case .surfaceBind, .surfaceQuery, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent:
+        case .surfaceBind, .surfaceQuery, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent, .swapchainPresentOrdered:
             guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
             let process = try process(frame.process)
             let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)

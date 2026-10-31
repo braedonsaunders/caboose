@@ -230,9 +230,23 @@ extern "C" int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t
     if (it == registry->processes.end()) return ENOENT;
     auto& process = *it->second;
     if (process.stopped.exchange(true)) return 0;
+    if (process.completions) process.completions->cancelOrders();
     FrameBuffer::getFB()->signalGuestProcessDead(process.context);
     for (int fd : process.sockets) shutdown(fd, SHUT_RDWR);
     return 0;
+}
+extern "C" int caboose_gfx_process_wait_order(caboose_gfx_registry* registry, uint64_t puid,
+                                              uint64_t serial) {
+    if (!registry || !serial) return EINVAL;
+    std::shared_ptr<caboose::gpuv2::CompletionFeed> completions;
+    {
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        auto it = registry->processes.find(puid);
+        if (it == registry->processes.end()) return ENOENT;
+        if (it->second->stopped) return ECANCELED;
+        completions = it->second->completions;
+    }
+    return completions ? completions->waitOrdered(serial) : ENOTSUP;
 }
 extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64_t puid) {
     if (!registry) return EINVAL;

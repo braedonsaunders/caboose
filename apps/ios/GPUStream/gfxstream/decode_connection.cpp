@@ -176,8 +176,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 std::memcpy(&declared, pending.data() + 4, sizeof(declared));
                 if (CompletionFeed::isFeedOpcode(opcode)) {
                     if (!completions || sequenced) return finish(DecodeStage::profile, ENOTSUP);
-                    const size_t size = opcode == CompletionFeed::kFeedOpcode ? CompletionFeed::kFeedPacketSize
-                                                                              : CompletionFeed::kWatchPacketSize;
+                    const size_t size = CompletionFeed::packetSize(opcode);
                     if (declared != size) return finish(DecodeStage::framing, EPROTO);
                     if (pending.size() < size) {
                         if (!readMore(size - pending.size())) {
@@ -185,6 +184,15 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                             if (stream.error()) return finish(DecodeStage::input, stream.error());
                             return finish(DecodeStage::eof, EPROTO);
                         }
+                        continue;
+                    }
+                    if (opcode == CompletionFeed::kOrderOpcode) {
+                        uint64_t serial = 0;
+                        if (!CompletionFeed::parseOrder(pending.data(), size, &serial))
+                            return finish(DecodeStage::framing, EPROTO);
+                        completions->ordered(serial);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
                         continue;
                     }
                     if (opcode == CompletionFeed::kWatchOpcode) {
