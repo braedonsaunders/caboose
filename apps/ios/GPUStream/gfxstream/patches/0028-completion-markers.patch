@@ -1,0 +1,97 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -422,6 +422,49 @@ class VkDecoderGlobalState::Impl {
+         return caboose::gpuv2::GuestGpuWork(std::move(tracker), (uint64_t)(uintptr_t)boxedQueue, true);
+     }
+ 
++    VkResult submitCabooseCompletionMarker(uint32_t contextId, VkQueue boxedQueue,
++        std::unique_ptr<CabooseCompletionMarker>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedQueue) return VK_ERROR_INITIALIZATION_FAILED;
++        auto marker = std::make_unique<CabooseCompletionMarker>();
++        VkQueue queue = VK_NULL_HANDLE;
++        std::shared_ptr<std::mutex> queueMutex;
++        {
++            std::lock_guard<std::mutex> lock(mMutex);
++            queue = try_unbox_VkQueue(boxedQueue);
++            auto* q = gfxstream::base::find(mQueueInfo, queue);
++            if (!q || q->boxed != boxedQueue || q->usingSharedPhysicalQueue || !q->queueMutex)
++                return VK_ERROR_FEATURE_NOT_PRESENT;
++            auto* dev = gfxstream::base::find(mDeviceInfo, q->device);
++            auto* physical = dev ? gfxstream::base::find(mPhysdevInfo, dev->physicalDevice) : nullptr;
++            auto* inst = physical ? gfxstream::base::find(mInstanceInfo, physical->instance) : nullptr;
++            if (!inst || inst->contextId != contextId) return VK_ERROR_INITIALIZATION_FAILED;
++            if (!marker->lease.acquire(inst->cabooseLifetime) ||
++                !marker->lease.acquire(dev->cabooseLifetime))
++                return VK_ERROR_INITIALIZATION_FAILED;
++            marker->vk = dispatch_VkDevice(dev->boxed);
++            if (!marker->vk) return VK_ERROR_INITIALIZATION_FAILED;
++            marker->device = q->device;
++            queueMutex = q->queueMutex;
++        }
++        VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
++        VkResult result = marker->vk->vkCreateFence(marker->device, &fenceInfo, nullptr, &marker->fence);
++        if (result != VK_SUCCESS) return result;
++        {
++            auto guestWork = beginCabooseGuestQueueWork(boxedQueue);
++            std::lock_guard<std::mutex> queueLock(*queueMutex);
++            // An empty batch with a fence signals once all work submitted before it completes.
++            result = marker->vk->vkQueueSubmit(queue, 0, nullptr, marker->fence);
++        }
++        if (result != VK_SUCCESS) {
++            marker->vk->vkDestroyFence(marker->device, marker->fence, nullptr);
++            return result;
++        }
++        *out = std::move(marker);
++        return VK_SUCCESS;
++    }
++
+     VkResult onCabooseDeviceWaitIdle(VkDevice boxedDevice) {
+         VkDevice device = unbox_VkDevice(boxedDevice);
+         VulkanDispatch* vk = dispatch_VkDevice(boxedDevice);
+@@ -12866,6 +12909,12 @@ VkResult VkDecoderGlobalState::acquireCabooseSwapchainDevice(
+     catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+ }
+ 
++VkResult VkDecoderGlobalState::submitCabooseCompletionMarker(uint32_t contextId, VkQueue boxedQueue,
++    std::unique_ptr<CabooseCompletionMarker>* out) {
++    try { return mImpl->submitCabooseCompletionMarker(contextId, boxedQueue, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++
+ VkResult VkDecoderGlobalState::acquireCaboosePresentationDevice(
+     uint32_t contextId, VkInstance boxedInstance, VkDevice boxedDevice, VkQueue boxedQueue,
+     uint32_t queueFamily, std::unique_ptr<CaboosePresentationDevice>* out) {
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -124,6 +124,17 @@ struct CaboosePresentationObjects {
+     VulkanDispatch* vk = nullptr;
+ };
+ 
++// A completion marker: an empty batch submitted to a queue after the guest's work, whose
++// fence signals once everything submitted to that queue before it has completed. The
++// lease keeps the instance and device alive until the fence has been waited for and
++// destroyed; destroy the fence with vk before releasing the marker.
++struct CabooseCompletionMarker {
++    caboose::gpuv2::PresentationLease lease;
++    VkDevice device = VK_NULL_HANDLE;
++    VkFence fence = VK_NULL_HANDLE;
++    VulkanDispatch* vk = nullptr;
++};
++
+ // Class for tracking host-side state. Currently we only care about
+ // tracking VkDeviceMemory to make it easier to pass the right data
+ // from mapped pointers to the guest, but this could get more stuff
+@@ -168,6 +179,11 @@ class VkDecoderGlobalState {
+     VkResult acquireCabooseAcquireSync(uint32_t contextId, VkInstance boxedInstance,
+         VkDevice boxedDevice, VkSemaphore boxedSemaphore, VkFence boxedFence,
+         std::unique_ptr<CabooseAcquireSync>* out);
++    // Submits a completion marker behind all work submitted so far to the guest context's
++    // queue. Fails for another context's queue and for virtually shared queues, whose
++    // submissions may be deferred.
++    VkResult submitCabooseCompletionMarker(uint32_t contextId, VkQueue boxedQueue,
++        std::unique_ptr<CabooseCompletionMarker>* out);
+     VkResult acquireCaboosePresentationPhysicalDevice(uint32_t contextId, VkInstance boxedInstance,
+         VkPhysicalDevice boxedPhysicalDevice, std::unique_ptr<CaboosePresentationPhysicalDevice>* out);
+     // Authenticated context and boxed handles only. This validates ownership,
