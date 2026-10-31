@@ -361,15 +361,36 @@ static bool beforeDestroyInstance(VkInstance instance) {
 // An X11 surface's current extent is its window's size (Vulkan's X11 surface semantics;
 // Zink sizes its swapchain from it, where the phone's layer may not have an extent yet).
 // The application holds libxcb, so its functions are looked up rather than linked.
+// X11 client libraries' functions, from the copy the application already uses: clients
+// such as SDL load libX11 privately (RTLD_LOCAL), so they are not in the global scope.
+static void* x11Function(const char* library, const char* name) {
+    if (void* found=dlsym(RTLD_DEFAULT,name)) return found;
+    void* handle=dlopen(library,RTLD_NOW|RTLD_LOCAL);
+    return handle ? dlsym(handle,name) : nullptr;
+}
+// An Xlib surface's Display carries its XCB connection.
+static xcb_connection_t* xlibConnection(void* display) {
+    using Get=xcb_connection_t*(*)(void*);
+    static const auto get=reinterpret_cast<Get>(x11Function("libX11-xcb.so.1","XGetXCBConnection"));
+    return get && display ? get(display) : nullptr;
+}
 static bool x11WindowExtent(VkSurfaceKHR handle, VkExtent2D& out) {
-    if (reinterpret_cast<VkIcdSurfaceBase*>(handle)->platform!=VK_ICD_WSI_PLATFORM_XCB) return false;
-    auto* xcb=reinterpret_cast<VkIcdSurfaceXcb*>(handle);
+    const auto platform=reinterpret_cast<VkIcdSurfaceBase*>(handle)->platform;
+    xcb_connection_t* connection=nullptr;
+    xcb_window_t window=0;
+    if (platform==VK_ICD_WSI_PLATFORM_XCB) {
+        auto* xcb=reinterpret_cast<VkIcdSurfaceXcb*>(handle);
+        connection=xcb->connection; window=xcb->window;
+    } else if (platform==VK_ICD_WSI_PLATFORM_XLIB) {
+        auto* xlib=reinterpret_cast<IcdSurfaceXlib*>(handle);
+        connection=xlibConnection(xlib->dpy); window=xcb_window_t(xlib->window);
+    } else return false;
     using Get=xcb_get_geometry_cookie_t(*)(xcb_connection_t*,xcb_drawable_t);
     using Reply=xcb_get_geometry_reply_t*(*)(xcb_connection_t*,xcb_get_geometry_cookie_t,xcb_generic_error_t**);
-    static const auto get=reinterpret_cast<Get>(dlsym(RTLD_DEFAULT,"xcb_get_geometry"));
-    static const auto reply=reinterpret_cast<Reply>(dlsym(RTLD_DEFAULT,"xcb_get_geometry_reply"));
-    if (!get || !reply || !xcb->connection) return false;
-    auto* geometry=reply(xcb->connection,get(xcb->connection,xcb->window),nullptr);
+    static const auto get=reinterpret_cast<Get>(x11Function("libxcb.so.1","xcb_get_geometry"));
+    static const auto reply=reinterpret_cast<Reply>(x11Function("libxcb.so.1","xcb_get_geometry_reply"));
+    if (!get || !reply || !connection) return false;
+    auto* geometry=reply(connection,get(connection,window),nullptr);
     if (!geometry) return false;
     out={geometry->width,geometry->height};
     std::free(geometry);

@@ -39,6 +39,7 @@ struct DeviceSwapchain {
     // created once the surface binds (`nativeAttempted`), at creation or a later present.
     bool nativeAttempted=false;
     VkSwapchainCreateInfoKHR params{};
+    std::chrono::steady_clock::time_point extentChecked{};
     VkImageUsageFlags imageUsage=0;
 };
 static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
@@ -68,6 +69,18 @@ static bool orderedPresentFailed(DeviceSwapchain& swap, VkResult* result) {
 static std::shared_ptr<DeviceSwapchain> lookupSwapchain(VkSwapchainKHR handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto it=swapchains.find(handle); return it==swapchains.end()?nullptr:it->second;
+}
+// Whether an X11 swapchain's window no longer has its size: as on any X11 window system,
+// present and acquire then report VK_ERROR_OUT_OF_DATE_KHR (the bound window is configured
+// to the phone's display after the swapchain was made, and the phone waits for a frame of
+// the window's size). Asked of the X server at most every 50 ms per swapchain.
+static bool windowResized(DeviceSwapchain& swap) {
+    const auto now=std::chrono::steady_clock::now();
+    if (now-swap.extentChecked<std::chrono::milliseconds(50)) return false;
+    swap.extentChecked=now;
+    VkExtent2D window;
+    return x11WindowExtent(swap.surfaceHandle,window) &&
+           (window.width!=swap.params.imageExtent.width || window.height!=swap.params.imageExtent.height);
 }
 static uint32_t presentFamily(const ProviderCaps& caps) {
     uint32_t family=UINT32_MAX;
@@ -544,6 +557,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             internalFence=value->internal_object;
             boxedFence=get_host_u64_VkFence(value->internal_object);
         }
+        if (swap->guestImages && windowResized(*swap)) { swap->poisoned=true; return VK_ERROR_OUT_OF_DATE_KHR; }
         if (swap->guestImages) return guestAcquire(*swap,timeout,internalSemaphore,internalFence,index);
         if (swap->preRequest) {
             // The image was acquired ahead of time against a private semaphore: wait as
@@ -660,9 +674,11 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             internalWaits.push_back(value->internal_object);
         }
         auto& surface=*swap->surface;
-        if (swap->guestImages && !swap->native) {
-            VkResult made=VK_NOT_READY;
-            if (!swap->nativeAttempted && tryBind(surface,true)) made=createNative(*swap);
+        // A frame for a resized X11 window is not shown either: the application recreates.
+        const bool resized=swap->guestImages && windowResized(*swap);
+        if (resized || (swap->guestImages && !swap->native)) {
+            VkResult made=resized ? VK_ERROR_OUT_OF_DATE_KHR : VK_NOT_READY;
+            if (!resized && !swap->nativeAttempted && tryBind(surface,true)) made=createNative(*swap);
             if (made!=VK_SUCCESS) {
                 // No window to show it in yet: the frame is dropped once its waits are
                 // consumed on the queue, and its image is free again at once.
