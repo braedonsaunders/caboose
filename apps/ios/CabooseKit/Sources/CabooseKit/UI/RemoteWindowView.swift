@@ -108,6 +108,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         isMultipleTouchEnabled = true
         NotificationCenter.default.addObserver(self, selector: #selector(resignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(releaseScrollMemory),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         installGestures()
         attach(window)
     }
@@ -838,6 +840,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     @objc private func resignActive() {
         cancelTouches()
         localScroll?.cancel()
+    }
+
+    /// Captured pictures are the scroll's largest memory: under pressure they go, and the
+    /// next gesture starts from a fresh picture.
+    @objc private func releaseScrollMemory() {
+        guard !(localScroll?.isActive ?? false) else { return }
+        localScroll?.cancel()
+        LocalScrollRenderer.shared?.drain()
     }
 
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
