@@ -4,6 +4,10 @@ use std::mem::{size_of, zeroed};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
+/// A bind's object: a Wayland client's wl_surface protocol ID, or an X11 window ID.
+pub const WAYLAND_SURFACE: u32 = 0;
+pub const X11_WINDOW: u32 = 1;
+
 #[derive(Debug)]
 pub struct Bind {
     pub request: u64,
@@ -12,6 +16,7 @@ pub struct Bind {
     pub pid: u32,
     pub start_ticks: u64,
     pub object: u32,
+    pub space: u32,
     pub pidfd: OwnedFd,
 }
 
@@ -67,11 +72,11 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
     if data.len() < 16 || &data[..4] != b"CGB1" || u16_at(data, 4) != 1 ||
         u32_at(data, 8) as usize != data.len() || u32_at(data, 12) != 0 { return Err(invalid()); }
     match u16_at(data, 6) {
-        1 if data.len() == 56 && fds.len() == 1 && u32_at(data, 52) == 0 => {
-            let (request, process, uid, pid, start_ticks, object) =
-                (u64_at(data, 16), u64_at(data, 24), u32_at(data, 32), u32_at(data, 36), u64_at(data, 40), u32_at(data, 48));
+        1 if data.len() == 56 && fds.len() == 1 && matches!(u32_at(data, 52), WAYLAND_SURFACE | X11_WINDOW) => {
+            let (request, process, uid, pid, start_ticks, object, space) = (u64_at(data, 16), u64_at(data, 24),
+                u32_at(data, 32), u32_at(data, 36), u64_at(data, 40), u32_at(data, 48), u32_at(data, 52));
             if request == 0 || process == 0 || pid == 0 || start_ticks == 0 || object == 0 { return Err(invalid()); }
-            Ok(Record::Bind(Bind { request, process, uid, pid, start_ticks, object, pidfd: fds.pop().unwrap() }))
+            Ok(Record::Bind(Bind { request, process, uid, pid, start_ticks, object, space, pidfd: fds.pop().unwrap() }))
         }
         kind @ (7 | 8) if data.len() == 64 && fds.is_empty() && u64_at(data, 56) == 0 => {
             let epoch: [u8; 16] = data[16..32].try_into().unwrap();
@@ -148,23 +153,27 @@ mod tests {
         assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 
-    #[test]
-    fn receives_real_pidfd_for_wayland_peer_match() {
-        use std::os::fd::AsRawFd;
-        let (wayland, _other) = UnixStream::pair().unwrap();
-        let peer = crate::gpu_peer::GpuPeer::capture(&wayland).unwrap();
+    fn own_pidfd() -> OwnedFd {
         // SAFETY: pidfd_open receives this process's live PID and zero flags.
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
         assert!(raw >= 0);
         // SAFETY: pidfd_open returned a new owned descriptor.
-        let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
-        let (sender, receiver) = pair();
+        unsafe { OwnedFd::from_raw_fd(raw) }
+    }
+
+    fn bind_packet(peer: &crate::gpu_peer::GpuPeer, object: u32, space: u32) -> [u8; 56] {
         let mut packet = [0u8; 56];
         packet[..4].copy_from_slice(b"CGB1"); packet[4..6].copy_from_slice(&1u16.to_le_bytes());
         packet[6..8].copy_from_slice(&1u16.to_le_bytes()); packet[8..12].copy_from_slice(&56u32.to_le_bytes());
         packet[16..24].copy_from_slice(&1u64.to_le_bytes()); packet[24..32].copy_from_slice(&3u64.to_le_bytes());
         packet[32..36].copy_from_slice(&peer.uid.to_le_bytes()); packet[36..40].copy_from_slice(&peer.pid.to_le_bytes());
-        packet[40..48].copy_from_slice(&peer.start_ticks.to_le_bytes()); packet[48..52].copy_from_slice(&17u32.to_le_bytes());
+        packet[40..48].copy_from_slice(&peer.start_ticks.to_le_bytes()); packet[48..52].copy_from_slice(&object.to_le_bytes());
+        packet[52..56].copy_from_slice(&space.to_le_bytes());
+        packet
+    }
+
+    fn send_with_fd(sender: &UnixStream, mut packet: [u8; 56], pidfd: &OwnedFd) {
+        use std::os::fd::AsRawFd;
         let mut iov = libc::iovec { iov_base: packet.as_mut_ptr().cast(), iov_len: packet.len() };
         let mut control = [0usize; 8];
         let mut msg: libc::msghdr = unsafe { zeroed() };
@@ -179,9 +188,34 @@ mod tests {
             std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<libc::c_int>(), pidfd.as_raw_fd());
             assert_eq!(libc::sendmsg(sender.as_raw_fd(), &msg, 0), 56);
         }
+    }
+
+    #[test]
+    fn receives_real_pidfd_for_wayland_peer_match() {
+        use std::os::fd::AsRawFd;
+        let (wayland, _other) = UnixStream::pair().unwrap();
+        let peer = crate::gpu_peer::GpuPeer::capture(&wayland).unwrap();
+        let pidfd = own_pidfd();
+        let (sender, receiver) = pair();
+        send_with_fd(&sender, bind_packet(&peer, 17, WAYLAND_SURFACE), &pidfd);
         let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
-        assert_eq!((bind.request, bind.process, bind.object), (1, 3, 17));
+        assert_eq!((bind.request, bind.process, bind.object, bind.space), (1, 3, 17, WAYLAND_SURFACE));
         assert!(peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()));
+    }
+
+    #[test]
+    fn bind_names_an_x11_window_and_no_other_namespace() {
+        use std::os::fd::AsRawFd;
+        let (socket, _other) = UnixStream::pair().unwrap();
+        let peer = crate::gpu_peer::GpuPeer::capture(&socket).unwrap();
+        let pidfd = own_pidfd();
+        let (sender, receiver) = pair();
+        send_with_fd(&sender, bind_packet(&peer, 0x400003, X11_WINDOW), &pidfd);
+        let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
+        assert_eq!((bind.object, bind.space), (0x400003, X11_WINDOW));
+        assert!(crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()));
+        send_with_fd(&sender, bind_packet(&peer, 0x400003, 2), &pidfd);
+        assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

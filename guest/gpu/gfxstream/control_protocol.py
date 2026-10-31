@@ -13,6 +13,12 @@ class ControlError(ValueError):
     pass
 
 
+# The namespace of a bind's object: a Wayland client's wl_surface protocol ID, or an
+# X11 window ID on the display's Xwayland.
+WAYLAND_SURFACE = 0
+X11_WINDOW = 1
+
+
 @dataclass(frozen=True)
 class Bind:
     request: int
@@ -21,6 +27,7 @@ class Bind:
     pid: int
     start_ticks: int
     object_id: int
+    space: int = WAYLAND_SURFACE
 
 
 @dataclass(frozen=True)
@@ -68,9 +75,11 @@ def _nonzero(data):
 def encode_bind(value):
     if not all((value.request, value.process, value.pid, value.start_ticks, value.object_id)):
         raise ControlError('invalid bind identity')
+    if value.space not in (WAYLAND_SURFACE, X11_WINDOW):
+        raise ControlError('invalid bind namespace')
     try:
         return _BIND.pack(b'CGB1', 1, 1, _BIND.size, 0, value.request, value.process,
-                          value.uid, value.pid, value.start_ticks, value.object_id, 0)
+                          value.uid, value.pid, value.start_ticks, value.object_id, value.space)
     except (struct.error, OverflowError) as error:
         raise ControlError('bind field out of range') from error
 
@@ -134,9 +143,8 @@ def decode(data, fd_count):
         raise ControlError('invalid control header')
     if kind == 1:
         if length != _BIND.size or fd_count != 1: raise ControlError('invalid bind record')
-        _, _, _, _, _, request, process, uid, pid, start, obj, tail = _BIND.unpack(data)
-        if tail: raise ControlError('nonzero reserved field')
-        value = Bind(request, process, uid, pid, start, obj)
+        _, _, _, _, _, request, process, uid, pid, start, obj, space = _BIND.unpack(data)
+        value = Bind(request, process, uid, pid, start, obj, space)
         encode_bind(value)
         return value
     if kind == 2:

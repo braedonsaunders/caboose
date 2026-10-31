@@ -75,15 +75,31 @@ impl GpuPeer {
     }
 
     pub fn alive(&self) -> bool {
-        let mut fd = libc::pollfd { fd: self.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        // SAFETY: pollfd is valid and polling with zero timeout never blocks.
-        unsafe { libc::poll(&mut fd, 1, 0) == 0 }
+        pidfd_alive(self.pidfd.as_raw_fd())
     }
+}
+
+fn pidfd_alive(fd: i32) -> bool {
+    let mut fd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // SAFETY: pollfd is valid and polling with zero timeout never blocks.
+    unsafe { libc::poll(&mut fd, 1, 0) == 0 }
+}
+
+/// Whether a broker-supplied pidfd identifies the live process `pid` of `uid`, started at
+/// `start`. For a peer the compositor did not accept itself (an X11 client), this is the
+/// whole kernel proof; the process is then matched against the X server's record.
+pub fn pidfd_identifies(uid: u32, pid: u32, start: u64, received_fd: i32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if !pidfd_alive(received_fd) || pid_from_fdinfo(received_fd).ok() != Some(pid) { return false; }
+    let owner = std::fs::metadata(format!("/proc/{pid}")).map(|m| m.uid()).ok();
+    let started = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|stat| start_ticks(&stat));
+    // Read after the checks above, so a recycled PID cannot pass on the old process's pidfd.
+    owner == Some(uid) && started == Some(start) && pidfd_alive(received_fd)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{start_ticks, GpuPeer};
+    use super::{pidfd_identifies, start_ticks, GpuPeer};
     use std::os::fd::AsRawFd;
     #[test]
     fn captures_the_actual_socket_peer() {
@@ -101,6 +117,19 @@ mod tests {
         assert!(!peer.matches_pidfd(peer.uid, peer.pid, peer.start_ticks, not_pidfd.as_raw_fd()));
         // SAFETY: dup created this descriptor and the test owns it.
         unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn a_pidfd_identifies_only_its_own_live_process() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let me = GpuPeer::capture(&a).unwrap();
+        let fd = me.pidfd.as_raw_fd();
+        assert!(pidfd_identifies(me.uid, me.pid, me.start_ticks, fd));
+        assert!(!pidfd_identifies(me.uid + 1, me.pid, me.start_ticks, fd));
+        assert!(!pidfd_identifies(me.uid, me.pid, me.start_ticks + 1, fd));
+        assert!(!pidfd_identifies(me.uid, me.pid + 1, me.start_ticks, fd));
+        let not_pidfd = std::fs::File::open("/dev/null").unwrap();
+        assert!(!pidfd_identifies(me.uid, me.pid, me.start_ticks, not_pidfd.as_raw_fd()));
     }
 
     #[test]

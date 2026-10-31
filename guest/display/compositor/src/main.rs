@@ -15,6 +15,7 @@ mod gpu_grant;
 #[allow(dead_code)] // Control handling is unavailable until the private bridge is connected.
 mod gpu_control;
 mod gpu_peer;
+mod gpu_x11;
 mod input;
 mod keymap;
 mod motion;
@@ -423,6 +424,7 @@ fn run(config: Config) -> Result<(), String> {
         seat,
         xwm: None,
         x11_foreground: None,
+        gpu_x11: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -560,6 +562,12 @@ fn run(config: Config) -> Result<(), String> {
                                 state.xwm = Some(wm);
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
+                                }
+                                if state.gpu_grants.is_some() {
+                                    match gpu_x11::X11Windows::connect(display_number, &cookie) {
+                                        Ok(windows) => state.gpu_x11 = Some(windows),
+                                        Err(error) => tracing::error!("GPU X11 window lookup unavailable: {error}"),
+                                    }
                                 }
                                 ready(state, Some(display_number), Some(&authority));
                             }

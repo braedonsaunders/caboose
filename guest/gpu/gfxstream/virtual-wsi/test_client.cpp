@@ -20,6 +20,35 @@ static Bytes recvPacket(int fd, int kind) {
 static void sendPacket(int fd, uint16_t kind, const Bytes& body) {
     auto b=packet(kind,body); assert(send(fd,b.data(),b.size(),MSG_NOSIGNAL)==ssize_t(b.size()));
 }
+// An X11 window bind names its namespace; no other namespace leaves the client.
+static void exerciseX11Bind() {
+    char dir[]="/tmp/caboose-wsi-test-XXXXXX"; assert(mkdtemp(dir));
+    std::string path=std::string(dir)+"/surface";
+    int listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0); assert(listener>=0);
+    sockaddr_un address{}; address.sun_family=AF_UNIX; strcpy(address.sun_path,path.c_str());
+    assert(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0);
+    assert(listen(listener,1)==0);
+    pid_t child=fork(); assert(child>=0);
+    if (!child) {
+        int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
+        auto bind=recvPacket(fd,16);
+        assert(bind.size()==40 && u32(bind,24)==0x400003 && u32(bind,36)==Client::X11Window);
+        Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
+        sendPacket(fd,17,bound);
+        close(fd); _exit(0);
+    }
+    close(listener);
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    Client client; client.connect(path.c_str(),deadline);
+    bool unknownRejected=false;
+    try { client.bind(7,0x400003,0,0,deadline,static_cast<Client::Space>(2)); }
+    catch (const ProtocolError&) { unknownRejected=true; }
+    assert(unknownRejected);
+    assert(status(client.bind(7,0x400003,0,0,deadline,Client::X11Window).body,48).success());
+    int code=0; assert(waitpid(child,&code,0)==child && WIFEXITED(code) && WEXITSTATUS(code)==0);
+    unlink(path.c_str()); rmdir(dir);
+}
+
 static void exercise(int scenario) {
     char dir[]="/tmp/caboose-wsi-test-XXXXXX"; assert(mkdtemp(dir));
     std::string path=std::string(dir)+"/surface";
@@ -31,7 +60,7 @@ static void exercise(int scenario) {
     if (!child) {
         int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
         auto bind=recvPacket(fd,16); assert(bind.size()==40 && u64(bind,16)==7 && u32(bind,24)==13);
-        assert(u32(bind,28)==0 && u32(bind,32)==0);
+        assert(u32(bind,28)==0 && u32(bind,32)==0 && u32(bind,36)==Client::WaylandSurface);
         Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
         sendPacket(fd,17,bound);
         recvPacket(fd,18);
@@ -113,4 +142,6 @@ int main(int argc, char**) {
     }
     for (int scenario=0;scenario<6;++scenario) exercise(scenario);
     std::cout<<"6 seqpacket lifecycle scenarios passed\n";
+    exerciseX11Bind();
+    std::cout<<"X11 window bind passed\n";
 }

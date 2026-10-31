@@ -35,6 +35,14 @@ class LocalSurfaceProtocolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 protocol.decode_request(request(16, struct.pack('<QIIII', 7, 9, width, height, 0)))
 
+    def test_bind_names_a_wayland_surface_or_an_x11_window(self):
+        for space in (0, 1):
+            body = struct.pack('<QIIII', 7, 0x400003, 0, 0, space)
+            self.assertEqual(protocol.decode_request(request(16, body)), (16, body))
+        for space in (2, 0xFFFFFFFF):
+            with self.assertRaises(ValueError):
+                protocol.decode_request(request(16, struct.pack('<QIIII', 7, 9, 0, 0, space)))
+
     def test_bad_headers_and_truncated_requests_fail(self):
         valid = request(18, struct.pack('<QQ', 1, 2))
         for cut in range(len(valid)):

@@ -124,9 +124,11 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
         return r;
     }
 }
-Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline) {
-    require(!bound_ && instance && object && bool(width)==bool(height));
-    Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,0);
+Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
+                    Space space) {
+    require(!bound_ && instance && object && bool(width)==bool(height) &&
+            (space==WaylandSurface || space==X11Window));
+    Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,space);
     send(16,p,deadline); auto r=await(17,0,deadline);
     if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
     return r;

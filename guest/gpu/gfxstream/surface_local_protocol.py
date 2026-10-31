@@ -19,8 +19,8 @@ def decode_request(data):
     if kind == 16:
         if len(body) != 24:
             raise ValueError('invalid bind size')
-        instance, obj, width, height, tail = struct.unpack('<QIIII', body)
-        if not instance or not obj or tail or bool(width) != bool(height):
+        instance, obj, width, height, space = struct.unpack('<QIIII', body)
+        if not instance or not obj or space not in (0, 1) or bool(width) != bool(height):
             raise ValueError('invalid bind fields')
     elif kind == 18:
         if len(body) != 16 or not all(struct.unpack('<QQ', body)):

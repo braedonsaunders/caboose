@@ -186,9 +186,25 @@ CBOR bytes. It identifies the compositor's private-service instance and is absen
 when that service is unavailable. A broker loss revokes its grants and invalidates
 the display association. A new epoch does not erase outstanding native work.
 
-The first presentation implementation is restricted to native Wayland surfaces.
-Only the compositor can bind an actual client/surface to a current owner window;
-an application-provided window number or X11 `_NET_WM_PID` is not authority.
+A surface bind names a native Wayland surface or an X11 window on the display's
+Xwayland: the trailing 32-bit field of the CGLS bind request and of the CGB1 bind
+record is the object's namespace, 0 for a `wl_surface` protocol ID and 1 for an X11
+window ID; any other value is malformed. Only the compositor can bind an actual
+client/surface to a current owner window; an application-provided window number or
+X11 `_NET_WM_PID` is not authority.
+
+- A Wayland bind matches a toplevel whose own `wl_surface` has that ID and whose
+  accepted Wayland peer is the bound process (its held pidfd and the broker's).
+- An X11 bind matches a managed, non-override-redirect X11 toplevel that is the
+  window or that the window covers exactly (a descendant at the toplevel's origin
+  with its size, as Chromium's GPU process draws into). The X server's own record of
+  the client that created the window (X-Resource `LocalClientPID`) must be the bound
+  process, the broker's pidfd must identify that live process (PID, start time and
+  owner), and the owner must be the compositor's user. The grant is the toplevel's
+  window, which is configured to the display's extent like a Wayland toplevel.
+  X11 has no client isolation: any client of the seat's Xwayland can create a child
+  window inside another's toplevel, so an X11 grant proves only that the bound
+  process made the window it presents to on the owner's own display.
 The app's visible interactive owner view supplies the native layer; thumbnails
 cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
 and linked surface backend; ordinary display and agent sessions do not. The

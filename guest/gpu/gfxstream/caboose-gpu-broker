@@ -735,8 +735,9 @@ class Broker:
         self.pending_binds = {}
         self.bind_send_lock = asyncio.Lock()
 
-    async def request_bind(self, session, process_id, object_id, expected_epoch=None):
-        """Ask the compositor to bind a live process and native Wayland object."""
+    async def request_bind(self, session, process_id, object_id, expected_epoch=None,
+                           space=control_protocol.WAYLAND_SURFACE):
+        """Ask the compositor to bind a live process and its native Wayland surface or X11 window."""
         if (self.session is not session or session.draining or process_id not in session.processes or
             not session.processes[process_id]['ready'].is_set()):
             raise RuntimeError('process is not ready for surface binding')
@@ -750,7 +751,7 @@ class Broker:
         future = asyncio.get_running_loop().create_future()
         self.pending_binds[request] = future
         try:
-            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id))
+            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id, space))
             await self.send_control(data, pidfd)
             result = await asyncio.wait_for(future, 5)
             if result.status:
@@ -847,8 +848,8 @@ class Broker:
             kind, body = await asyncio.wait_for(receive(), 5)
             verify_peer()
             if kind != 16: raise ValueError('surface bind required')
-            instance, obj, width, height, _ = struct.unpack('<QIIII', body)
-            result = await self.request_bind(session, process_id, obj)
+            instance, obj, width, height, space = struct.unpack('<QIIII', body)
+            result = await self.request_bind(session, process_id, obj, space=space)
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
             surface['replies'] = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)

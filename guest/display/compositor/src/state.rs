@@ -185,6 +185,8 @@ pub struct State {
     pub seat: Seat<State>,
     pub xwm: Option<X11Wm>,
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
+    /// The X server's window tree and client records, for GPU surface binds on X11 windows.
+    pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
     pub text_inputs: TextInputs,
 
     pub windows: Windows,
@@ -257,6 +259,52 @@ impl State {
         Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
     }
 
+    /// Toplevels whose own wl_surface is the bind's object, made by the bound process.
+    fn wayland_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
+        use smithay::reexports::wayland_server::Resource;
+        use std::os::fd::AsRawFd;
+        let mut matches = Vec::new();
+        for window in self.windows.iter() {
+            let Surface::Toplevel(toplevel) = &window.surface else { continue };
+            let object = toplevel.wl_surface().id();
+            if object.protocol_id() != bind.object { continue; }
+            let Ok(client) = self.dh.get_client(object) else { continue };
+            let Some(peer) = client.get_data::<ClientState>().and_then(|state| state.gpu_peer.as_ref()) else { continue };
+            if peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
+                matches.push(window.id);
+            }
+        }
+        matches
+    }
+
+    /// The managed X11 toplevel the bind's window is or covers, when the X server records
+    /// the bound process as the client that created that window (docs/gpu-live.md).
+    fn x11_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
+        use std::os::fd::AsRawFd;
+        let Some(lookup) = &self.gpu_x11 else { return Vec::new() };
+        // SAFETY: geteuid has no arguments or memory-safety preconditions.
+        if bind.uid != unsafe { libc::geteuid() } ||
+            !crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
+            return Vec::new();
+        }
+        let toplevels: Vec<(u32, u64)> = self.windows.iter().filter_map(|window| match &window.surface {
+            Surface::X11(x11) if window.parent.is_none() && !x11.is_override_redirect() && x11.alive() =>
+                Some((x11.window_id(), window.id)),
+            _ => None,
+        }).collect();
+        let ids: Vec<u32> = toplevels.iter().map(|(xid, _)| *xid).collect();
+        match lookup.resolve(bind.object, &ids) {
+            Ok(Some((toplevel, pid))) if pid == bind.pid &&
+                crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) =>
+                toplevels.iter().filter(|(xid, _)| *xid == toplevel).map(|(_, id)| *id).collect(),
+            Ok(_) => Vec::new(),
+            Err(error) => {
+                tracing::warn!("GPU X11 window lookup: {error}");
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) fn gpu_control_failed(&mut self) {
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
@@ -277,25 +325,16 @@ impl State {
 
     fn handle_gpu_record(&mut self, record: crate::gpu_control::Record) {
         use crate::gpu_control::{self, Record};
-        use std::os::fd::AsRawFd;
-        use smithay::reexports::wayland_server::Resource;
         match record {
             Record::Bind(bind) => {
                 if bind.request <= self.gpu_last_bind_request {
                     self.gpu_control_failed(); return;
                 }
                 self.gpu_last_bind_request = bind.request;
-                let mut matches = Vec::new();
-                for window in self.windows.iter() {
-                    let Surface::Toplevel(toplevel) = &window.surface else { continue };
-                    let object = toplevel.wl_surface().id();
-                    if object.protocol_id() != bind.object { continue; }
-                    let Ok(client) = self.dh.get_client(object) else { continue };
-                    let Some(peer) = client.get_data::<ClientState>().and_then(|state| state.gpu_peer.as_ref()) else { continue };
-                    if peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
-                        matches.push(window.id);
-                    }
-                }
+                let mut matches = match bind.space {
+                    gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
+                    _ => self.wayland_gpu_bind_matches(&bind),
+                };
                 // A retained fallback display is not an authenticated owner layout.
                 // Ambiguous Wayland connections must remain ambiguous, even if
                 // only one happens to be on an eligible output.
@@ -308,10 +347,19 @@ impl State {
                     grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {
                     if let Some(window) = self.windows.get(grant.window) {
-                        if let Surface::Toplevel(toplevel) = &window.surface {
-                            let size = self.displays.get(window.display).unwrap().logical_size();
-                            toplevel.with_pending_state(|state| state.size = Some(size));
-                            toplevel.send_configure();
+                        let size = self.displays.get(window.display).unwrap().logical_size();
+                        match &window.surface {
+                            Surface::Toplevel(toplevel) => {
+                                toplevel.with_pending_state(|state| state.size = Some(size));
+                                toplevel.send_configure();
+                            }
+                            Surface::X11(x11) => {
+                                let at = x11.geometry().loc;
+                                if let Err(error) = x11.configure(smithay::utils::Rectangle::new(at, size)) {
+                                    tracing::warn!("GPU window configure: {error}");
+                                }
+                            }
+                            Surface::Popup(_) => {}
                         }
                     }
                     self.sync_windows();

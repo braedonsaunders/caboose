@@ -27,6 +27,16 @@ class ControlProtocolTests(unittest.TestCase):
         with self.assertRaises(p.ControlError): p.encode_result(p.BindResult(1,1,b'a'*16,bytes(16),0,0))
         with self.assertRaises(p.ControlError): p.encode_result(p.BindResult(1,0,bytes(16),b'b'*16,2,3))
 
+    def test_bind_carries_its_object_namespace(self):
+        value = p.Bind(1,2,1000,42,1234,0x400003,p.X11_WINDOW)
+        raw = p.encode_bind(value)
+        self.assertEqual(len(raw), 56)
+        self.assertEqual(p.decode(raw, 1), value)
+        self.assertEqual(p.decode(p.encode_bind(p.Bind(1,2,1000,42,1234,17)), 1).space, p.WAYLAND_SURFACE)
+        with self.assertRaises(p.ControlError): p.encode_bind(p.Bind(1,2,1000,42,1234,17,2))
+        bad = bytearray(raw); bad[52] = 2
+        with self.assertRaises(p.ControlError): p.decode(bytes(bad), 1)
+
     def test_reserved_and_unknown_are_terminal(self):
         raw=bytearray(p.encode_bind(p.Bind(1,2,1000,42,1234,17)))
         raw[12]=1

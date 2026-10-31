@@ -3,9 +3,10 @@
 `client.cpp` implements the private CGLS version-1 Unix sequenced-packet client.
 It is separate from Mesa's raw Vulkan command streams. The caller supplies an
 explicit socket path and serializes access to each client. There is one connection
-per native Wayland surface. Binding sends only the boxed instance, Wayland object
-ID and dimensions; the broker authenticates the connecting process and obtains
-the window and grant from the compositor. The client sends no PID or grant.
+per native surface. Binding sends only the boxed instance, the object, its namespace
+(0, a Wayland `wl_surface` protocol ID; 1, an X11 window ID) and dimensions; the
+broker authenticates the connecting process and obtains the window and grant from
+the compositor. The client sends no PID or grant.
 A zero width/height pair requests the trusted visible owner layer extent. A
 positive pair asserts equality with that extent. Mixed zero pairs are rejected.
 
