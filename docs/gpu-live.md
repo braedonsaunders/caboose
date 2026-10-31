@@ -253,6 +253,13 @@ returns `VK_ERROR_OUT_OF_DATE_KHR`, or `VK_ERROR_DEVICE_LOST` for actual device 
 rejected frame's image counts as released. A frame whose outcome is uncertain never
 retires and is not waited for by later presents.
 
+With the completion feed as well, the process acquires its next image ahead of the
+application: right after each present it sends an ordinary SWAPCHAIN_ACQUIRE naming one
+of its private binary semaphores. When the application acquires, the process returns
+that image once its ACQUIRED reply is in, and one queue submission waits for the private
+semaphore and signals the application's semaphore and fence. Neither the phone nor the
+wire changes for this.
+
 ## Readiness and retirement
 
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
