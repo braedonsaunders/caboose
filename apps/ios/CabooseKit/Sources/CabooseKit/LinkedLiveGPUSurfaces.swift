@@ -120,16 +120,16 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     func startCapture() {
         guard let pointer else { return }
         captureLock.withLock {
-            capturing = caboose_gpu_surface_set_capture(pointer, { context, _, token, texture in
+            capturing = caboose_gpu_surface_set_capture(pointer, { context, serial, token, texture in
                 guard let context, let texture else { return }
                 Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
-                    .captured(token: token, texture: texture)
+                    .captured(serial: serial, token: token, texture: texture)
             }, Unmanaged.passUnretained(self).toOpaque()) == 0
         }
     }
 
     /// Frame worker: the picture is lent until `releaseCapture(token)`.
-    private func captured(token: UInt32, texture: UnsafeMutableRawPointer) {
+    private func captured(serial: UInt64, token: UInt32, texture: UnsafeMutableRawPointer) {
         guard let metal = Unmanaged<AnyObject>.fromOpaque(texture).takeUnretainedValue() as? MTLTexture else {
             releaseCapture(token)
             return
@@ -139,7 +139,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
                 guard let self else { return }
                 let release: @Sendable () -> Void = { [weak self] in self?.releaseCapture(token) }
                 guard self.lease.isValid, let view = self.lease.view else { release(); return }
-                view.liveGPUPictureCaptured(metal, release: release)
+                view.liveGPUPictureCaptured(metal, serial: serial, release: release)
             }
         }
     }

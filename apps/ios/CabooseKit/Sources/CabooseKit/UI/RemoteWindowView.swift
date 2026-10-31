@@ -346,13 +346,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// A live GPU layer in this view presented `texture` (its own copy, read only until
     /// `release`), for local scrolling to start from and measure.
-    func liveGPUPictureCaptured(_ texture: MTLTexture, release: @escaping @Sendable () -> Void) {
+    func liveGPUPictureCaptured(_ texture: MTLTexture, serial: UInt64, release: @escaping @Sendable () -> Void) {
         guard isInteractive, window != nil, let localScroll, liveGPUOwners?.presents(in: self) ?? false else {
             release()
             return
         }
         liveGPUCaptures = true
-        localScroll.offer(texture, done: release)
+        localScroll.offer(texture, serial: serial, done: release)
     }
 
     /// Video layers over the picture move with the content the phone is scrolling.
