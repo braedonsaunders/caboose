@@ -205,6 +205,8 @@ pub struct WindowCreate {
     /// The picture extends this far right of and below `geometry` (display pixels), while
     /// the app has the enlarged size a `configure.overscan` asked for.
     pub overscan: Option<Size>,
+    /// The desktop entry whose launch started the window's process (`<id>.desktop`).
+    pub desktop_id: Option<String>,
 }
 
 /// `window.update` (0x03): the id plus whichever fields changed.
@@ -225,6 +227,7 @@ pub struct WindowUpdate {
     pub alpha: Option<bool>,
     /// `[0, 0]` when the overscan ended.
     pub overscan: Option<Size>,
+    pub desktop_id: Option<String>,
 }
 
 impl WindowUpdate {
@@ -1313,6 +1316,7 @@ impl Message {
                 .put("xwayland", m.xwayland)
                 .put("alpha", m.alpha)
                 .opt("overscan", m.overscan)
+                .opt("desktop_id", m.desktop_id.clone())
                 .build(),
             Message::WindowUpdate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1329,6 +1333,7 @@ impl Message {
                 .opt("xwayland", m.xwayland)
                 .opt("alpha", m.alpha)
                 .opt("overscan", m.overscan)
+                .opt("desktop_id", m.desktop_id.clone())
                 .build(),
             Message::WindowDestroy { id }
             | Message::Close { id }
@@ -1692,6 +1697,7 @@ impl Message {
                 xwayland: f.opt_bool("xwayland")?.unwrap_or(false),
                 alpha: f.opt_bool("alpha")?.unwrap_or(false),
                 overscan: f.opt_size("overscan")?,
+                desktop_id: f.opt_string("desktop_id")?,
             }),
             WINDOW_UPDATE => Message::WindowUpdate(WindowUpdate {
                 id: f.u64("id")?,
@@ -1711,6 +1717,7 @@ impl Message {
                 xwayland: f.opt_bool("xwayland")?,
                 alpha: f.opt_bool("alpha")?,
                 overscan: f.opt_size("overscan")?,
+                desktop_id: f.opt_string("desktop_id")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
             FRAME => Message::Frame(Frame {

@@ -144,6 +144,10 @@ if sys.argv[1] in ('launch', 'action'):
     info = Gio.DesktopAppInfo.new_from_filename(str(entry))
     if info is None:
         raise SystemExit('Application could not be started')
+    # Everything the launch starts inherits the entry's id, through wrapper scripts and game
+    # launchers, so caboose-display can name the entry a window came from (its desktop_id).
+    context = Gio.AppLaunchContext()
+    context.setenv('CABOOSE_DESKTOP_ID', sys.argv[2])
     # The app inherits this process's stdio. Left as the exec pipes, they stay open for the
     # app's lifetime and the host waits out its timeout before the launch returns.
     devnull = os.open(os.devnull, os.O_RDWR)
@@ -153,7 +157,7 @@ if sys.argv[1] in ('launch', 'action'):
     try:
         if action is not None:
             # GLib runs the action's Exec, or activates it over D-Bus; it reports no result.
-            info.launch_action(action, None)
+            info.launch_action(action, context)
             launched = True
         else:
             files = []
@@ -162,7 +166,7 @@ if sys.argv[1] in ('launch', 'action'):
                 if not relative or relative.startswith('/') or any(part in ('', '.', '..') for part in relative.split('/')) or '\0' in relative:
                     raise ValueError('Invalid file path')
                 files = [Gio.File.new_for_path(str(pathlib.Path.home() / relative))]
-            launched = info.launch(files, None)
+            launched = info.launch(files, context)
     finally:
         os.dup2(saved, 2)
     if not launched:

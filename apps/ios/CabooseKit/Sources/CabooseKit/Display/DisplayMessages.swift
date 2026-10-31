@@ -144,6 +144,8 @@ public struct WindowFields: Equatable, Sendable {
     /// How far the window's pictures extend right of and below `geometry`, while an
     /// overscan the client asked for applies; `[0, 0]` when it ends.
     public var overscan: CGSize?
+    /// The desktop entry whose launch started the window's process (`<id>.desktop`).
+    public var desktopID: String?
 
     public init(id: Int) { self.id = id }
 
@@ -163,6 +165,7 @@ public struct WindowFields: Equatable, Sendable {
         xwayland = body["xwayland"]?.bool
         alpha = body["alpha"]?.bool
         overscan = body["overscan"].flatMap(Self.size)
+        desktopID = body["desktop_id"]?.string
     }
 
     static func rect(_ value: CBOR) -> CGRect? {

@@ -750,6 +750,7 @@ public final class CabooseDisplaySession: DisplaySession {
         if let display = fields.display { windowDisplays[window.id] = display }
         if let title = fields.title { window.title = title }
         if let app = fields.appID { window.appClass = (app, app) }
+        if let desktop = fields.desktopID { window.desktopID = desktop }
         if let place = placement[fields.id] {
             window.transientFor = place.parent
             window.isOverrideRedirect = place.kind == .popup

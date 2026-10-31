@@ -193,6 +193,9 @@ import Testing
         #expect(popup.geometry == CGRect(x: 24, y: -310, width: 480, height: 300))
         #expect(popup.xwayland == false && popup.alpha == false && popup.display == 1)
 
+        guard case .windowCreate(let launched) = try server("window-create-launched").first else { Issue.record("launched"); return }
+        #expect(launched.desktopID == "org.example.Game.desktop" && launched.appID == "game-engine")
+
         guard case .windowCreate(let xterm) = try server("window-create-xwayland").first else { Issue.record("xterm"); return }
         #expect(xterm.xwayland == true && xterm.fullscreen == true && xterm.title == "xterm")
         #expect(xterm.minimumSize == CGSize(width: 10, height: 17) && xterm.maximumSize == CGSize(width: 32767, height: 32767))
