@@ -93,7 +93,7 @@ public:
     void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({0, 0, first, false, count, bytes});
+        entry.replies.push_back({0, 0, first, false, count, bytes, nullptr});
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -115,7 +115,7 @@ public:
         if (!results) return;
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true});
+        entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});
         entry.replies.back().bytes = bytes;
         entry.bytes += bytes;
         total_.fetch_add(results, std::memory_order_relaxed);
@@ -123,7 +123,7 @@ public:
     void addFenceWait(const void* encoder, uint64_t fence, uint64_t bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes});
+        entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes, nullptr});
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
