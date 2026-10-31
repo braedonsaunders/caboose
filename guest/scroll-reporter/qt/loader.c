@@ -1,5 +1,6 @@
 // libcaboose-scroll-qt6.so, the Qt scroll reporter's preload library. Preloaded into every
-// application, it links to nothing: only in a process that already has Qt Quick (and a
+// application, it links to nothing: only in a process that already has Qt Quick or Qt QML,
+// which loads Qt Quick for its scenes (and a
 // scroll socket to report to) does it load the reporter itself, libcaboose-scroll-qt6-quick.so
 // from its own directory, whose constructor registers with Qt before the application starts.
 #define _GNU_SOURCE
@@ -10,7 +11,8 @@
 #include <string.h>
 
 __attribute__((constructor)) static void start(void) {
-    if (!getenv("CABOOSE_SCROLL_SOCKET") || !dlsym(RTLD_DEFAULT, "_ZN12QQuickWindow16staticMetaObjectE")) return;
+    if (!getenv("CABOOSE_SCROLL_SOCKET")) return;
+    if (!dlsym(RTLD_DEFAULT, "_ZN12QQuickWindow16staticMetaObjectE") && !dlsym(RTLD_DEFAULT, "_ZN10QQmlEngine16staticMetaObjectE")) return;
     Dl_info self;
     if (!dladdr((void *)start, &self) || !self.dli_fname) return;
     char path[PATH_MAX];
