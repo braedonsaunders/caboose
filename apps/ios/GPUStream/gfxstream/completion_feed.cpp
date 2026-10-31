@@ -100,7 +100,7 @@ void CompletionFeed::close() {
 void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (closing_) return;
+        if (closing_ || detached_) return;
         if (markers_.size() >= kMaxOutstanding) {
             records_.push_back({serial, kUnwatched});
             char one = 1;
@@ -115,7 +115,13 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (closing_) {
+            // The watcher may be gone: the marker is waited for here, releasing its device.
+            lock.unlock();
+            wait();
+            return;
+        }
         markers_.push_back({serial, std::move(wait)});
     }
     markersChanged_.notify_one();
@@ -158,9 +164,10 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
         CompletionFeed* feed;
         ~Detach() {
             std::lock_guard<std::mutex> lock(feed->mutex_);
+            // The guest is gone: records have no reader. The watcher keeps waiting for
+            // markers until close(), since each holds its device alive.
             feed->records_.clear();
             feed->detached_ = true;
-            feed->closing_ = true;  // the guest is gone: later watches have no reader
         }
     } detach{this};
     std::vector<unsigned char> out;

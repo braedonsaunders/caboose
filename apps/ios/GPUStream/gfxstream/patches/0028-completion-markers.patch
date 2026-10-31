@@ -1,6 +1,6 @@
 --- a/host/vulkan/vk_decoder_global_state.cpp
 +++ b/host/vulkan/vk_decoder_global_state.cpp
-@@ -422,6 +422,49 @@ class VkDecoderGlobalState::Impl {
+@@ -422,6 +422,50 @@ class VkDecoderGlobalState::Impl {
          return caboose::gpuv2::GuestGpuWork(std::move(tracker), (uint64_t)(uintptr_t)boxedQueue, true);
      }
  
@@ -41,6 +41,7 @@
 +        }
 +        if (result != VK_SUCCESS) {
 +            marker->vk->vkDestroyFence(marker->device, marker->fence, nullptr);
++            marker->fence = VK_NULL_HANDLE;
 +            return result;
 +        }
 +        *out = std::move(marker);
@@ -50,7 +51,7 @@
      VkResult onCabooseDeviceWaitIdle(VkDevice boxedDevice) {
          VkDevice device = unbox_VkDevice(boxedDevice);
          VulkanDispatch* vk = dispatch_VkDevice(boxedDevice);
-@@ -12866,6 +12909,12 @@ VkResult VkDecoderGlobalState::acquireCabooseSwapchainDevice(
+@@ -12866,6 +12910,12 @@ VkResult VkDecoderGlobalState::acquireCabooseSwapchainDevice(
      catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
  }
  
@@ -65,7 +66,7 @@
      uint32_t queueFamily, std::unique_ptr<CaboosePresentationDevice>* out) {
 --- a/host/vulkan/vk_decoder_global_state.h
 +++ b/host/vulkan/vk_decoder_global_state.h
-@@ -124,6 +124,17 @@ struct CaboosePresentationObjects {
+@@ -124,6 +124,27 @@ struct CaboosePresentationObjects {
      VulkanDispatch* vk = nullptr;
  };
  
@@ -78,12 +79,22 @@
 +    VkDevice device = VK_NULL_HANDLE;
 +    VkFence fence = VK_NULL_HANDLE;
 +    VulkanDispatch* vk = nullptr;
++    CabooseCompletionMarker() = default;
++    CabooseCompletionMarker(const CabooseCompletionMarker&) = delete;
++    CabooseCompletionMarker& operator=(const CabooseCompletionMarker&) = delete;
++    // A marker never waited for still completes before its lease releases the device.
++    ~CabooseCompletionMarker() {
++        if (fence && vk) {
++            vk->vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
++            vk->vkDestroyFence(device, fence, nullptr);
++        }
++    }
 +};
 +
  // Class for tracking host-side state. Currently we only care about
  // tracking VkDeviceMemory to make it easier to pass the right data
  // from mapped pointers to the guest, but this could get more stuff
-@@ -168,6 +179,11 @@ class VkDecoderGlobalState {
+@@ -168,6 +189,11 @@ class VkDecoderGlobalState {
      VkResult acquireCabooseAcquireSync(uint32_t contextId, VkInstance boxedInstance,
          VkDevice boxedDevice, VkSemaphore boxedSemaphore, VkFence boxedFence,
          std::unique_ptr<CabooseAcquireSync>* out);

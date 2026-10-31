@@ -163,18 +163,19 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f);
 #ifdef CABOOSE_GPU_INDEXED_WSI
 int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame);
 #endif
-// Joins and destroys finished frames from the front. Caller holds s.operations and is
-// not a frame worker.
+// Joins and destroys every finished frame. Caller holds s.operations and is not a frame
+// worker.
 void reapFinishedFrames(caboose_gpu_surface& s) {
-    while (!s.frames.empty()) {
+    for (auto it = s.frames.begin(); it != s.frames.end();) {
+        bool done;
         {
             std::lock_guard<std::mutex> lock(s.mutex);
-            if (!s.frames.front().frame->done) return;
+            done = it->frame->done;
         }
-        auto& front = s.frames.front();
-        if (front.worker.joinable()) front.worker.join();
-        destroyFrameResources(s, *front.frame);
-        s.frames.pop_front();
+        if (!done) { ++it; continue; }  // an unfinished frame keeps its slot
+        if (it->worker.joinable()) it->worker.join();
+        destroyFrameResources(s, *it->frame);
+        it = s.frames.erase(it);
     }
 }
 size_t unfinishedFrames(caboose_gpu_surface& s) {

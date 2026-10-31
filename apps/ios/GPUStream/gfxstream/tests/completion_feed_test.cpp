@@ -99,7 +99,12 @@ int main() {
         completions.watch(0x3, 4);
         shutdown(sockets[0], SHUT_WR);
         reader.join();
+        // After the guest is gone, a late watch from the device stream submits nothing,
+        // and the outstanding marker is still waited for by the watcher.
+        completions.watch(0x4, 5);
         gpu.release(0x3);
+        for (int i = 0; i < 200 && gpu.outstanding; ++i) usleep(5000);
+        assert(gpu.outstanding == 0);
     }  // destruction joins the watcher after every marker completed
     assert(gpu.outstanding == 0 && gpu.submitted == 3);
     ::close(sockets[0]); ::close(sockets[1]);
