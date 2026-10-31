@@ -102,6 +102,36 @@ final class FakeDecoder: PictureDecoder {
          "crop": [0, 0, 8, 8], "data": .bytes(Data([0, 0, 1]))]
     }
 
+    // MARK: Background
+
+    @Test func suspendedPicturesAreAcknowledgedUnseenAndResumeAtAKeyframe() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000))])
+        try await until("first picture") { decoder.decoded == 1 }
+        _ = stream.take()
+
+        session.suspendPictures()
+        stream.server([(.frame, frame(7, pts: 2000, keyframe: false)), (.frame, frame(7, pts: 3000, keyframe: false))])
+        var acks: [DisplayFrame] = []
+        try await until("unseen acks") {
+            acks += stream.take().filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }
+            return acks.count == 2
+        }
+        #expect(decoder.decoded == 1)
+        #expect(acks.map { $0.body["pts_us"]?.int } == [2000, 3000])
+
+        // Back in the foreground: a keyframe is asked for, and only it is decoded next.
+        session.resumePictures()
+        var sent: [DisplayFrame] = []
+        try await until("keyframe request") {
+            sent += stream.take()
+            return sent.contains { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue }
+        }
+        stream.server([(.frame, frame(7, pts: 4000, keyframe: false)), (.frame, frame(7, pts: 5000))])
+        try await until("keyframe decoded") { decoder.decoded == 2 }
+    }
+
     // MARK: Handshake
 
     @Test func helloCarriesTheTokenDecodersAndDisplays() async throws {

@@ -484,6 +484,13 @@ final class AppModel {
         Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
         guard phase != .displayElsewhere else { return }
+        // A connection kept through the background for its sound shows pictures again, and
+        // GPU rendering moves back onto this phone.
+        if let display = session as? CabooseDisplaySession, display.state == .ready {
+            display.resumePictures()
+            syncLiveGPU()
+            return
+        }
         switch link.status {
         case .reconnecting, .waitingForNetwork: return // already on it
         case .idle, .live, .lost: break
@@ -498,12 +505,18 @@ final class AppModel {
     }
 
     /// Leaving the app closes the display; the computer keeps every app running and parks on idle.
+    /// While the computer is playing sound the connection stays open for it, without pictures;
+    /// GPU rendering leaves the phone either way (iOS runs no GPU work in the background).
     func sceneEnteredBackground() {
         sceneActive = false
         closeLiveGPU(allowBackgroundTime: true)
         phone.setActive(false)
         bridge.setActive(false)
         wakes.invalidate()
+        if let display = session as? CabooseDisplaySession, display.playsSoundNow {
+            display.suspendPictures()
+            return
+        }
         link.stop()
         if let session { cacheFrames(of: session) }
         // An app page playing media on this device keeps playing in the background.

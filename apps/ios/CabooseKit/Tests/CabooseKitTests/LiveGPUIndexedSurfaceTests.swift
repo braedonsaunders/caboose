@@ -37,6 +37,9 @@ private final class IndexedSwapProbe: LiveGPUIndexedSwapchain, @unchecked Sendab
     var badFinal = false
     var retireErrno: Int32 = 0
     var operation: IndexedAcquireProbe?
+    /// The acquisition that last returned each image index: a frame presents the image its
+    /// own acquire signalled, while a later acquire may already be pending.
+    private var acquiredFor: [UInt32: IndexedAcquireProbe] = [:]
     var presents = 0
     var retirements = 0
     /// Acquired indices alternate when set, so consecutive frames use different images.
@@ -60,11 +63,12 @@ private final class IndexedSwapProbe: LiveGPUIndexedSwapchain, @unchecked Sendab
         let value = IndexedAcquireProbe(pending: pendingAcquire, waitForQuery: waitForQuery,
                                         index: alternate ? acquisitions % 2 : 0)
         acquisitions += 1; operation = value
+        acquiredFor[alternate ? (acquisitions - 1) % 2 : 0] = value
         return (.init(nativeErrno: 0, vkResult: nil), value)
     }
     func present(_ info: LiveGPUIndexedPresent,
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
-        XCTAssertTrue(operation?.signalled == true, "present preceded actual signal observation")
+        XCTAssertTrue((acquiredFor[info.index] ?? operation)?.signalled == true, "present preceded actual signal observation")
         presents += 1
         heldLock.withLock { presented += 1 }
         if holdFinal {

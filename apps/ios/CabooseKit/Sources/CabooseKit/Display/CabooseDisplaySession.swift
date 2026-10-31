@@ -71,6 +71,8 @@ public final class CabooseDisplaySession: DisplaySession {
     private let videoDecoders: [DisplayCodec]
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private var stream: ByteStream?
+    private var incoming: Incoming?
+    private var picturesSuspended = false
     /// This connection's windows' decode pipelines; a new connection gets new ones, so nothing
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
@@ -137,6 +139,26 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func has(_ feature: String) -> Bool { server?.features.contains(feature) ?? false }
 
+    // MARK: Background
+
+    /// The computer is playing sound: the app keeps this connection in the background for it.
+    public var playsSoundNow: Bool { state == .ready && sound?.isPlaying == true }
+
+    /// In the background: pictures are acknowledged without being decoded; sound plays on.
+    public func suspendPictures() {
+        picturesSuspended = true
+        incoming?.setPicturesSuspended(true)
+    }
+
+    /// Back in the foreground: every window and video starts again at a keyframe.
+    public func resumePictures() {
+        guard picturesSuspended else { return }
+        picturesSuspended = false
+        incoming?.setPicturesSuspended(false)
+        for pipeline in pipelines.all { pipeline.resumeAfterGap() }
+        for video in videos.all { video.resumeAfterGap() }
+    }
+
     // MARK: Connection
 
     public func connect() {
@@ -158,6 +180,7 @@ public final class CabooseDisplaySession: DisplaySession {
         startLivenessTimer()
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
+        picturesSuspended = false
         let incoming = Incoming(pipelines: pipelines, videos: videos, gpuFeeds: gpuFeeds, clock: clock, sound: sound, echo: echo, metrics: metrics,
                                 carried: Carried(retained, epoch: server?.epoch),
                                 makeDecoder: makeDecoder, retire: { [weak self] id, generation in
@@ -165,6 +188,7 @@ public final class CabooseDisplaySession: DisplaySession {
         }) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
+        self.incoming = incoming
         let meter = metrics
         stream.open { [weak self] event in
             switch event {
@@ -1072,6 +1096,11 @@ private final class Incoming: @unchecked Sendable {
     private let retire: @Sendable (Int, UInt64) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
+    private let suspendedLock = NSLock()
+    private var suspended = false
+
+    /// While suspended, pictures are acknowledged unseen and sound plays on.
+    func setPicturesSuspended(_ value: Bool) { suspendedLock.withLock { suspended = value } }
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
@@ -1099,8 +1128,24 @@ private final class Incoming: @unchecked Sendable {
             sound?.timing.update { $0.finishIncoming(start: incomingAt, end: finishedAt) }
         }
         var others: [ServerMessage] = []
+        let picturesSuspended = suspendedLock.withLock { suspended }
         for frame in try parser.append(data) {
             let message = ServerMessage(frame)
+            if picturesSuspended {
+                // The app is in the background, where it cannot decode or show pictures:
+                // each is acknowledged unseen, so window flow control keeps the windows
+                // running (at the minimised rate, without vsync) and video sources unblocked.
+                switch message {
+                case .frame(let picture):
+                    send(.ack(window: picture.window, ptsMicros: picture.ptsMicros, decodedMicros: 0)); continue
+                case .videoFrame(let frame):
+                    send(.videoAck(video: frame.video, seq: frame.seq)); continue
+                case .tile, .videoPresent:
+                    continue
+                default:
+                    break
+                }
+            }
             switch message {
             case .frame(let picture):
                 guard let pipeline = pipelines[picture.window] else { continue }
