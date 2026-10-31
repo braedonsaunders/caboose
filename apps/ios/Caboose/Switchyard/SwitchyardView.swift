@@ -65,6 +65,7 @@ struct SwitchyardView: View {
             .onAppear { yard.finishCarryGesture(); yard.screenSize = area }
             .onChange(of: area) { _, size in yard.screenSize = size }
         }
+        .ignoresSafeArea(.keyboard)
         .onDisappear { yard.cancelCarry() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { yard.cancelCarry() } }
         .onChange(of: carryingCover) { _, active in
