@@ -125,6 +125,12 @@ class StallTests(unittest.TestCase):
         self.assertEqual(s['cause'], 'phone_decode')
         self.assertEqual((s['phone_decode_ms'], s['guest_blocked_ms']), (250.0, 280))
 
+    def test_surface_failure_wins(self):
+        s = fl.attribute_stall((1 * S, 3 * S), [], [{'t': 2 * S, 'elapsed_us': 90000, 'opcode': 1}], [],
+                               [{'t': 2 * S, 'reason': 'ConnectionError: surface socket closed'}])
+        self.assertEqual((s['cause'], s['surface_failures']), ('surface_failed', 1))
+        self.assertEqual(fl.parse_line('CABOOSE_GPU_SURFACE_FAILED ConnectionError: x', 4)['reason'], 'ConnectionError: x')
+
     def test_guest_read(self):
         reads = [{'t': 2 * S, 'blocked_ms': 200, 'entries': [{'what': 'drain', 'opcode': 20325, 'ms': 190, 'count': 2}]}]
         s = fl.attribute_stall((1 * S, 1 * S + 300 * MS), reads, [], [])

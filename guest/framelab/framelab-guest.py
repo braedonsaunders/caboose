@@ -450,6 +450,27 @@ class Run:
         return record
 
 
+def wait_for_gpu(env, seconds):
+    """Waits until vulkaninfo, launched like an app, sees the phone's GPU (the driver's
+    device names GFXStream): the phone's executor is ready, so the first app does not
+    measure its arrival."""
+    if not shutil.which('vulkaninfo', path=env.get('PATH', os.environ.get('PATH'))):
+        emit('gpu_wait', ready=None, reason='no vulkaninfo')
+        return
+    start, deadline = time.monotonic(), time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            out = subprocess.run(['vulkaninfo', '--summary'], env={**os.environ, **env}, capture_output=True,
+                                 text=True, timeout=30).stdout
+        except subprocess.TimeoutExpired:
+            out = ''
+        if 'GFXStream' in out:
+            emit('gpu_wait', ready=True, seconds=round(time.monotonic() - start, 1))
+            return
+        time.sleep(2)
+    emit('gpu_wait', ready=False, seconds=seconds)
+
+
 def materials(root):
     """The local inputs the matrix refers to, made once per run."""
     root = Path(root)
@@ -492,6 +513,8 @@ def main():
     parser.add_argument('--no-reference', action='store_true', help='skip the CPU reference pictures')
     parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
                         help="add to every app's launch environment (repeatable)")
+    parser.add_argument('--wait-gpu', type=int, default=0, metavar='SECONDS',
+                        help="first wait until the seat's Vulkan driver reaches the phone's GPU")
     args = parser.parse_args()
     # The driver stops a run with SIGTERM (or the session ends): unwind, so every app
     # launched is stopped and the present trace switched off.
@@ -520,6 +543,8 @@ def main():
     try:
         made = materials(work)
         flag.touch()
+        if args.wait_gpu:
+            wait_for_gpu(env, args.wait_gpu)
         for app in apps:
             if app.get('needs_network') and args.offline:
                 card = {'app': app['id'], 'name': app.get('name'), 'path': 'none', 'ok': False,
@@ -528,16 +553,25 @@ def main():
                 (out / f"{app['id']}.json").write_text(json.dumps(card, indent=2))
                 emit('skipped', app=app['id'], reason=card['skipped'])
                 continue
+            # The CPU reference runs first: it also warms what the app loads (a page from
+            # the network, its caches), so the measured run starts from the same state.
+            ref = None
+            if app.get('correctness') and not args.no_reference:
+                ref_tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-ref-", dir=work))
+                ref = Run(app, control, env, out, None, reference=True).measure(
+                    ref_tmp, made, args.offline, f"{app['id']}.reference.png")
             tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-", dir=work))
             run = Run(app, control, env, out, log_path).measure(tmp, made, args.offline, f"{app['id']}.png")
             correctness = None
             if app.get('correctness') and run.get('picture'):
                 if args.no_reference:
                     correctness = {'skipped': 'no reference run'}
+                elif not framelab.drawn((out / run['picture']).read_bytes()):
+                    # A window the phone draws has no pixels in the compositor; only the
+                    # phone's own picture can be compared.
+                    correctness = {'skipped': 'no compositor picture (drawn on the phone)',
+                                   'reference': ref.get('picture')}
                 else:
-                    ref_tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-ref-", dir=work))
-                    ref = Run(app, control, env, out, None, reference=True).measure(
-                        ref_tmp, made, args.offline, f"{app['id']}.reference.png")
                     if ref.get('picture'):
                         comparison = framelab.compare((out / ref['picture']).read_bytes(),
                                                       (out / run['picture']).read_bytes())

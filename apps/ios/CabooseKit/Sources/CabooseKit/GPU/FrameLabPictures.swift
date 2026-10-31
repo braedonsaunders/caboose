@@ -10,10 +10,11 @@ import UniformTypeIdentifiers
 /// At most once a second per window, a presented picture is copied off the GPU. When two
 /// copies in a row are the same, the window has settled, and that picture is written once to
 /// `Documents/framelab/<window>-<serial>.png` (until it changes again), with a
-/// `caboose-framelab: picture window=W serial=S file=F now_ns=N` line on standard output,
-/// N being the phone's uptime clock. Frame lab's driver copies the directory out and
-/// compares each app's settled picture with the same scene drawn on the computer's CPU.
-/// Animations never settle, so they are never written.
+/// `caboose-framelab: picture window=W serial=S file=F settled=1 now_ns=N` line on standard
+/// output, N being the phone's uptime clock. A window that never settles (an animation, a
+/// spinner) has its latest copy written every ten seconds instead, with `settled=0`. Frame
+/// lab's driver copies the directory out and compares the picture nearest its own with the
+/// same scene drawn on the computer's CPU.
 final class FrameLabPictures: @unchecked Sendable {
     static let enabled = ProcessInfo.processInfo.environment["CABOOSE_FRAMELAB"] == "1"
     static let shared = FrameLabPictures()
@@ -22,6 +23,7 @@ final class FrameLabPictures: @unchecked Sendable {
         var time: CFTimeInterval
         var hash: Int
         var written: Bool
+        var lastWrite: CFTimeInterval = 0
     }
 
     private let lock = NSLock()
@@ -65,23 +67,27 @@ final class FrameLabPictures: @unchecked Sendable {
             hasher.combine(width)
             hasher.combine(data)
             let hash = hasher.finalize()
-            let write = lock.withLock { () -> Bool in
-                guard var entry = seen[window] else { return false }
+            // nil: nothing to write; true: settled; false: the latest of a changing window.
+            let write = lock.withLock { () -> Bool? in
+                guard var entry = seen[window] else { return nil }
                 defer { seen[window] = entry }
                 if entry.hash != hash {
                     entry.hash = hash
                     entry.written = false
+                    guard now - entry.lastWrite >= 10 else { return nil }
+                    entry.lastWrite = now
                     return false
                 }
-                if entry.written { return false }
+                if entry.written { return nil }
                 entry.written = true
+                entry.lastWrite = now
                 return true
             }
-            guard write, let directory else { return }
+            guard let settled = write, let directory else { return }
             let name = "\(window)-\(serial).png"
             guard Self.writePNG(data, width: width, height: height, rowBytes: rowBytes, bgra: bgra,
                                 to: directory.appendingPathComponent(name)) else { return }
-            print("caboose-framelab: picture window=\(window) serial=\(serial) file=\(name) now_ns=\(DispatchTime.now().uptimeNanoseconds)")
+            print("caboose-framelab: picture window=\(window) serial=\(serial) file=\(name) settled=\(settled ? 1 : 0) now_ns=\(DispatchTime.now().uptimeNanoseconds)")
             fflush(stdout)
         }
     }

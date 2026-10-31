@@ -237,7 +237,7 @@ def main():
             sys.stdout.write(f'  guest: {line}')
             return
         clock_samples.append((received, event['t']))
-        if event['event'] in ('launch', 'window', 'scorecard', 'skipped', 'done'):
+        if event['event'] in ('launch', 'window', 'scorecard', 'skipped', 'done', 'gpu_wait'):
             detail = {k: v for k, v in event.items() if k not in ('t', 'event', 'command')}
             log(f"guest {event['event']}: {json.dumps(detail)[:200]}")
 
@@ -270,6 +270,7 @@ def main():
         options += ['--apps', ','.join(a['id'] for a in apps)]
         options += ['--offline'] if args.offline else []
         options += ['--no-reference'] if args.no_reference else []
+        options += [] if args.no_phone else ['--wait-gpu', '120']
         for item in args.set:
             options += ['--set', item]
         command = ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', args.host,

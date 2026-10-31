@@ -61,6 +61,9 @@ def parse_line(line, received_ns=None):
         f = fields(line.split('CABOOSE_GPU_DECODE_TIMING ', 1)[1])
         if 'elapsed_us' in f:
             return {'kind': 'decode', 't': received_ns, 'opcode': f.get('opcode'), 'elapsed_us': f['elapsed_us']}
+    elif 'CABOOSE_GPU_SURFACE_FAILED' in line:
+        return {'kind': 'surface_failed', 't': received_ns,
+                'reason': line.split('CABOOSE_GPU_SURFACE_FAILED', 1)[1].strip()}
     elif 'caboose-framelab: present ' in line:
         f = fields(line.split('caboose-framelab: present ', 1)[1])
         return {'kind': 'phone_present', 't': received_ns, **f}
@@ -145,8 +148,11 @@ def _r(value, digits=1):
     return None if value is None else round(value, digits)
 
 
-def attribute_stall(stall, read_profiles, decodes, cpu):
+def attribute_stall(stall, read_profiles, decodes, cpu, failures=()):
     """Why a stall happened, with the evidence for it.
+
+    - surface_failed: the broker ended a surface connection inside the stall
+      (CABOOSE_GPU_SURFACE_FAILED): the app's presentation itself broke.
 
     - phone_decode: the phone spent 50 ms or more decoding one command inside the stall
       (CABOOSE_GPU_DECODE_TIMING); the guest waiting on its replies follows from that.
@@ -174,7 +180,13 @@ def attribute_stall(stall, read_profiles, decodes, cpu):
     usage = cpu_between(cpu, start, end)
     if usage is not None:
         evidence['app_cpu_pct'] = round(usage, 1)
-    if phone and evidence['phone_decode_ms'] >= 50:
+    failed = [f for f in failures if start <= f['t'] <= end]
+    if failed:
+        evidence['surface_failures'] = len(failed)
+        evidence['surface_failure'] = failed[0]['reason']
+    if failed:
+        cause = 'surface_failed'
+    elif phone and evidence['phone_decode_ms'] >= 50:
         cause = 'phone_decode'
     elif reads and evidence['guest_blocked_ms'] >= min(duration_ms, 2000) / 2:
         cause = 'guest_read'
@@ -279,7 +291,8 @@ def scorecard(app, run, phone_records=(), offset=None):
     reads = [r for r in records if r['kind'] == 'read_profile']
     decodes = [r for r in phone if r['kind'] == 'decode']
     cpu = run.get('cpu', [])
-    stalls = [attribute_stall(w, reads, decodes, cpu) for w in waits]
+    failures = [r for r in records if r['kind'] == 'surface_failed']
+    stalls = [attribute_stall(w, reads, decodes, cpu, failures) for w in waits]
     causes = {}
     for s in stalls:
         causes[s['cause']] = causes.get(s['cause'], 0) + 1
