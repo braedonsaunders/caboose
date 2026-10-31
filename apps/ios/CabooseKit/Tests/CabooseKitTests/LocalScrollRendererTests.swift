@@ -162,3 +162,31 @@ extension LocalScrollRendererTests {
         #expect(Array(drawn[probe..<(probe + 4)]) == Array(olderBytes[probe..<(probe + 4)]))
     }
 }
+
+extension LocalScrollRendererTests {
+    /// An overscan picture through a shorter viewport: the header and the region's first
+    /// lines as they are, the footer from the picture's end at the viewport's end.
+    @Test func overscanAnchorsTheFooterAtTheViewportEnd() async throws {
+        let renderer = try #require(LocalScrollRenderer.shared)
+        let width = 120, picture = 500, overscan = 200, header = 30, footer = 40
+        let bytes = Self.picture(width: width, height: picture, seed: 13)
+        let source = Self.texture(bytes, width: width, height: picture, device: renderer.device)
+        let view = picture - overscan
+        let region = ScrollRegion(along: header..<(view - footer), across: 0..<width)
+        let composition = ScrollComposition(axis: .vertical, base: 1, region: region,
+            layers: [.init(frame: 1, shift: 0, lines: region.along)], blank: 0, fillFrom: nil, overscan: overscan)
+        let target = Self.texture([UInt8](repeating: 0, count: width * view * 4), width: width, height: view, device: renderer.device)
+        let commands = try #require(renderer.queue.makeCommandBuffer())
+        #expect(renderer.encode(composition, textures: [1: source], fill: SIMD3(1, 1, 1), into: target, commands: commands))
+        await withCheckedContinuation { continuation in
+            commands.addCompletedHandler { _ in continuation.resume() }
+            commands.commit()
+        }
+        let drawn = Self.read(target), row = width * 4
+        for y in 0..<view {
+            let from = y < view - footer ? y : y + overscan
+            #expect(Array(drawn[(y * row)..<((y + 1) * row)]) == Array(bytes[(from * row)..<((from + 1) * row)]), "row \(y)")
+            if Array(drawn[(y * row)..<((y + 1) * row)]) != Array(bytes[(from * row)..<((from + 1) * row)]) { break }
+        }
+    }
+}

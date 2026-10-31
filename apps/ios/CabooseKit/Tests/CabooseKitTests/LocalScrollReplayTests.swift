@@ -187,3 +187,22 @@ extension LocalScrollRobustnessTests {
         #expect(report.settleTime < 4)
     }
 }
+
+/// Overscan windows (docs/display.md, "Overscan"): the app lays itself out a viewport
+/// taller than the phone shows, so a flick's first frames find content already drawn.
+struct LocalScrollOverscanTests {
+    typealias T = LocalScrollReplayTests
+
+    @Test(arguments: [0.08, 0.15])
+    func flicksIntoContentAlreadyDrawn(_ latency: Double) {
+        var app = LocalScrollRobustnessTests.app(latency: latency)
+        app.overscan = 2226
+        app.footer = 160
+        for (name, gestures) in [("fast flick", T.fastFlick), ("repeated flicks", T.repeated)] {
+            let report = T.run("overscan L=\(Int(latency * 1000))ms \(name)", app, gestures)
+            #expect(report.misplacement <= 1)
+            #expect(report.finalError <= 1.5)
+            #expect(report.handoffJump <= 2)
+        }
+    }
+}

@@ -165,7 +165,10 @@ public final class LocalScrollController {
         guard let base = textures[composition.base] else { isComposing = false; return false }
         let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
         if layer.pixelFormat != format { layer.pixelFormat = format }
-        let size = CGSize(width: base.width, height: base.height)
+        // The viewport: the picture less its overscan along the axis.
+        let overscan = composition.overscan
+        let size = composition.axis == .vertical ? CGSize(width: base.width, height: max(1, base.height - overscan))
+                                                 : CGSize(width: max(1, base.width - overscan), height: base.height)
         if layer.drawableSize != size { layer.drawableSize = size }
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {
