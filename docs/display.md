@@ -455,6 +455,10 @@ model. The client does not infer or compensate for per-application response diff
 
 ### Phone-owned scrolling
 
+Phone-owned scrolling runs only when the iOS app is launched with `CABOOSE_LOCAL_SCROLL=1`.
+Without it, every pan scrolls the app remotely, as described under direct content scroll
+units, and no presented pictures are captured.
+
 A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
 the phone itself. That covers a window whose picture the phone draws (a card or tile) and
 a live GPU window whose presented pictures the phone captures
