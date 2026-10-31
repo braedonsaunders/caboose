@@ -130,6 +130,8 @@ class StallTests(unittest.TestCase):
                                [{'t': 2 * S, 'reason': 'ConnectionError: surface socket closed'}])
         self.assertEqual((s['cause'], s['surface_failures']), ('surface_failed', 1))
         self.assertEqual(fl.parse_line('CABOOSE_GPU_SURFACE_FAILED ConnectionError: x', 4)['reason'], 'ConnectionError: x')
+        self.assertEqual(fl.parse_line('CABOOSE_GPU_SURFACE_BIND window=3 errno=16', 4)['kind'], 'surface_failed')
+        self.assertIsNone(fl.parse_line('CABOOSE_GPU_SURFACE_BIND window=3 errno=0', 4))
 
     def test_guest_read(self):
         reads = [{'t': 2 * S, 'blocked_ms': 200, 'entries': [{'what': 'drain', 'opcode': 20325, 'ms': 190, 'count': 2}]}]
