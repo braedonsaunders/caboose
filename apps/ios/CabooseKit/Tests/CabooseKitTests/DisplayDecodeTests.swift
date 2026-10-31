@@ -54,6 +54,7 @@ import VideoToolbox
     }
 
     /// A 62x60 picture in a 64x64 coded frame, shown at twice its size: crop, then scale.
+    /// A picture anchored at the window's origin sizes the surface to its rect.
     @Test func hevcKeyframeIsCroppedAndScaled() throws {
         let frame = try frame("frame-hevc-keyframe-scaled")
         let sent = Sent()
@@ -62,10 +63,8 @@ import VideoToolbox
         pipeline.flush()
         #expect(sent.acks == [sent.acks.first ?? -1] && (sent.acks.first ?? -1) >= 0)
         let image = try #require(pipeline.surface.snapshot())
+        #expect(image.width == 124 && image.height == 120)
         #expect(painted(image, width: 124, height: 120) > 0.5)
-        // Nothing lands outside `rect`.
-        #expect(pixel(image, 127, 60) == [0, 0, 0, 0])
-        #expect(pixel(image, 60, 123) == [0, 0, 0, 0])
     }
 
     @Test func av1SequenceHeaderAndConfigurationRecord() throws {
