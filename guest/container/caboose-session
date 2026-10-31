@@ -161,6 +161,13 @@ start_owner() {
   # The phone-GPU driver tracks stores to mapped memory through /dev/userfaultfd (passed
   # in when the host has it); this container's node is the session user's to use.
   if [ -e /dev/userfaultfd ]; then chgrp caboose /dev/userfaultfd && chmod 0660 /dev/userfaultfd; fi
+  # The vgem nodes are the computer's render node (docs/gpu-buffers.md), passed in when
+  # the host has them: the session user's to allocate shared buffers on.
+  for node in /dev/dri/card* /dev/dri/renderD*; do
+    [ -e "$node" ] || continue
+    [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device/driver")")" = vgem ] || continue
+    chgrp caboose "$node" && chmod 0660 "$node"
+  done
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
   bridge_daemon "$bus"
 }
