@@ -170,10 +170,45 @@ fn launch_env(
     env
 }
 
+/// The Vulkan loader manifest of the phone's GPU driver (guest/gpu/gfxstream), as the
+/// image installs it.
+const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
+
+/// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
+/// "Applications"). `LIBGL_KOPPER_DRI2` lets Mesa's GLX and X11 EGL try Zink (OpenGL on
+/// Vulkan) on Xwayland, which has no DRI3: Zink then presents through the Vulkan driver's
+/// own X11 surfaces. Mesa tries Zink before its CPU renderer only while no
+/// `GALLIUM_DRIVER` is selected, and falls back to the CPU renderer when Zink finds no
+/// GPU. GTK 4 draws with Vulkan, not with OpenGL, which on Wayland has no Zink without a
+/// DRM render node.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("LIBGL_KOPPER_DRI2", "1"), ("GSK_RENDERER", "vulkan")];
+
+/// On the seat that renders on the phone's GPU: every application's Vulkan loader also
+/// loads the phone's driver, which reaches the phone through the broker's sockets; they
+/// exist only while a phone's GPU is attached. Without one the driver fails its instance and the
+/// loader keeps the computer's own drivers, so applications draw on the computer and
+/// reach the phone as pictures.
+fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::path::Path) {
+    let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
+        return;
+    };
+    if !icd.is_file() {
+        tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
+        return;
+    }
+    // A selected Gallium driver stops Mesa trying Zink.
+    env.retain(|(k, _)| k != "GALLIUM_DRIVER");
+    env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+}
+
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
     let mut env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
+    apply_gpu_live(&mut env, &state.config, std::path::Path::new(GPU_LIVE_ICD));
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
@@ -628,5 +663,53 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-agent"));
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
+    }
+
+    const GPU_ARGS: &[&str] = &[
+        "--token-file",
+        "/run/caboose/display-token",
+        "--private-gpu-stream-socket",
+        "/run/user/1000/caboose-gpu/gpu.sock",
+        "--private-gpu-surface-socket",
+        "/run/user/1000/caboose-gpu/surface.sock",
+        "--private-gpu-indexed",
+    ];
+
+    #[test]
+    fn the_gpu_seat_routes_vulkan_and_opengl_to_the_phone() {
+        let icd = tempfile_icd();
+        let mut env = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
+        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
+        assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    #[test]
+    fn other_seats_and_missing_drivers_keep_the_computers_gpu() {
+        let icd = tempfile_icd();
+        let before = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        let mut env = before.clone();
+        apply_gpu_live(&mut env, &config(&[]), &icd);
+        assert_eq!(env, before);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
+        assert_eq!(env, before);
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    fn tempfile_icd() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "caboose-icd-{}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, "{}").unwrap();
+        path
     }
 }

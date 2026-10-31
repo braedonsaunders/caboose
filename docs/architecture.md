@@ -422,7 +422,9 @@ Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
 `CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_GAME_SOCKET` on the owner's
 display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
-passthrough driver is installed. Each keeps its X authority, Xwayland shim, PulseAudio
+passthrough driver is installed, and on the owner's display started with the private GPU
+sockets the variables that route applications to the phone's GPU
+([gpu-live.md](gpu-live.md#applications)). Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The agent launch environment also publishes `HOME`, its four XDG state directories,
 `CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
