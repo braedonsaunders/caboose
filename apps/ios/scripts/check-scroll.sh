@@ -19,6 +19,10 @@ back, and three quick flicks in a row.
 3. Flick to the end of the page: the content bounces back from the end as on iOS, and a
    drag past the end resists.
 4. A tap on coasting content stops it without clicking.
+With --console, the launch shows caboose-scroll: lines: "pan window=N local=yes path=gpu"
+for a live GPU window (path=video for a picture the phone draws), "gpu captures arriving"
+once the presenter shares its pictures, and "gesture {...}" as each gesture ends. A pan
+that stays on the app's path prints local=no with the flags that decided it.
 Copy Documents/scroll-profile.jsonl from the app container:
   xcrun devicectl device copy from --device <device> --domain-type appDataContainer \
     --domain-identifier com.braedonsaunders.caboose \
