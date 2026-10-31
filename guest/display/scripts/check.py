@@ -202,32 +202,49 @@ def check_chromium_scroll_reports():
         json.dump({"name": "com.caboose.scroll", "description": "Caboose scroll reporter", "type": "stdio",
                    "path": os.path.join(extension, "caboose-scroll-host.mjs"),
                    "allowed_origins": ["chrome-extension://cnfgmfjajbhilcebcekcfckpfoapbkfn/"]}, f)
-    def run(proc, token):
-        time.sleep(4)
-        r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", "900x800@60x1",
-                   "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler"], json_out=False)
-        line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)
-        if line is None:
-            raise Failed(f"probe gave no scroll report: {r.stdout} {r.stderr}")
-        s = json.loads(line[len("scroll: "):])
-        if s["matched"] < 100 or s["unmatched"] or s["ruler_bad"] or s["ruler_checked"] < 100:
-            raise Failed(f"scroll reports: {s}; {r.stderr.strip()[-2000:]}")
-        if s["sent_seq"] - s["applied"] > 30:
-            raise Failed(f"scroll.target not applied: {s}")
-        return (f'{s["matched"]} tagged pictures matched their reports, ruler agrees within '
-                f'{s["ruler_max_error"]:.2f} px over {s["ruler_checked"]} (the newest report on arrival was wrong for '
-                f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')
     # Extensions do not run on file:// pages unless the user allows it: serve the page.
     pages = subprocess.Popen([sys.executable, "-m", "http.server", "--bind", "127.0.0.1", "18765"],
                              cwd=os.path.join(HERE, "pages"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     command = ["chromium", "--ozone-platform=wayland", "--no-sandbox", "--disable-gpu", "--no-first-run",
                "--password-store=basic", "--disable-features=Translate", f"--user-data-dir={profile}", f"--load-extension={extension}",
                "--window-size=900,800", "--app=http://127.0.0.1:18765/scroll-ruler.html"]
+    return with_scroll_server(command, pages)
+
+
+def scroll_report_check(proc, token):
+    """The probe drives a reporting window with scroll.target and checks every tagged
+    picture's report against the ruler the window draws (probe/src/scroll.rs)."""
+    time.sleep(4)
+    r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", "900x800@60x1",
+               "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler"], json_out=False)
+    line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)
+    if line is None:
+        raise Failed(f"probe gave no scroll report: {r.stdout} {r.stderr}")
+    s = json.loads(line[len("scroll: "):])
+    if s["matched"] < 100 or s["unmatched"] or s["ruler_bad"] or s["ruler_checked"] < 100:
+        raise Failed(f"scroll reports: {s}; {r.stderr.strip()[-2000:]}")
+    if s["sent_seq"] - s["applied"] > 30:
+        raise Failed(f"scroll.target not applied: {s}")
+    return (f'{s["matched"]} tagged pictures matched their reports, ruler agrees within '
+            f'{s["ruler_max_error"]:.2f} px over {s["ruler_checked"]} (the newest report on arrival was wrong for '
+            f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')
+
+
+def with_scroll_server(command, helper=None):
     try:
-        return with_server(command, run)
+        return with_server(command, scroll_report_check)
     finally:
-        pages.kill()
-        pages.wait()
+        if helper:
+            helper.kill()
+            helper.wait()
+
+
+def check_gtk_scroll_reports(version):
+    """The GTK reporter (guest/scroll-reporter/gtk) in its check application, preloaded.
+    CABOOSE_SCROLL_GTK names the directory guest/scroll-reporter/gtk/build.sh --check built."""
+    built = os.environ.get("CABOOSE_SCROLL_GTK") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "gtk", "out")
+    command = ["env", f"LD_PRELOAD={built}/libcaboose-scroll-gtk{version}.so", f"{built}/scroll-ruler-gtk{version}"]
+    return with_scroll_server(command)
 
 
 def check_chromium_touch_fling():
@@ -801,6 +818,8 @@ CHECKS = [
     ("chromium-text-input", check_chromium_text_input),
     ("chromium-touch-fling", check_chromium_touch_fling),
     ("chromium-scroll-reports", check_chromium_scroll_reports),
+    ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
+    ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("encoder-eviction", check_encoder_eviction),
