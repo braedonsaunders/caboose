@@ -64,6 +64,10 @@ def parse_line(line, received_ns=None):
     elif 'caboose-framelab: present ' in line:
         f = fields(line.split('caboose-framelab: present ', 1)[1])
         return {'kind': 'phone_present', 't': received_ns, **f}
+    elif 'caboose-framelab: picture ' in line:
+        f = fields(line.split('caboose-framelab: picture ', 1)[1])
+        if 'window' in f and 'file' in f:
+            return {'kind': 'phone_picture', 't': received_ns, 'window': f['window'], 'file': f['file']}
     return None
 
 
@@ -408,6 +412,17 @@ def compare(reference, candidate, size=64, block=8):
             scores.append(((2 * mx * my + c1) * (2 * cov + c2)) / ((mx * mx + my * my + c1) * (vx + vy + c2)))
     changed = sum(1 for p, q in zip(a, b) if abs(p - q) > 0.1) / len(a)
     return {'ssim': round(sum(scores) / len(scores), 4), 'changed': round(changed, 4)}
+
+
+def phone_picture(records, window, at, offset):
+    """The phone's settled picture of a window nearest a time on the computer's clock:
+    the file named by its `caboose-framelab: picture` line, or None."""
+    if offset is None or window is None or at is None:
+        return None
+    shots = [r for r in records if r['kind'] == 'phone_picture' and r['window'] == window]
+    if not shots:
+        return None
+    return min(shots, key=lambda r: abs(r['t'] - offset - at))['file']
 
 
 def verdict(comparison, min_ssim=0.9, max_changed=0.05):

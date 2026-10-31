@@ -140,6 +140,8 @@ def matrix_seconds(apps):
 
 
 def rescore(out, apps, phone_records, offset, pictures):
+    """Every app's scorecard again, with the phone's records and, where the phone wrote a
+    settled picture of the app's window near the guest's, that picture compared."""
     cards = []
     for app in apps:
         run_path = out / 'guest' / f"{app['id']}.run.json"
@@ -148,12 +150,13 @@ def rescore(out, apps, phone_records, offset, pictures):
             run = json.loads(run_path.read_text())
             correctness = run.get('correctness')
             window = (run.get('window') or {}).get('id')
-            shots = sorted(pictures.glob(f'{window}-*.png')) if pictures and window is not None else []
+            name = framelab.phone_picture(phone_records, window, run.get('picture_ns'), offset)
+            shot = pictures / name if pictures and name else None
             reference = correctness and correctness.get('reference')
-            if shots and reference:
-                comparison = framelab.compare((out / 'guest' / reference).read_bytes(), shots[0].read_bytes())
+            if shot and shot.exists() and reference:
+                comparison = framelab.compare((out / 'guest' / reference).read_bytes(), shot.read_bytes())
                 run['correctness'] = {**comparison, 'pass': framelab.verdict(comparison), 'reference': reference,
-                                      'candidate': str(shots[0].relative_to(out)), 'candidate_source': 'phone'}
+                                      'candidate': str(shot.relative_to(out)), 'candidate_source': 'phone'}
             card = framelab.scorecard(app, run, phone_records, offset)
         elif card_path.exists():
             card = json.loads(card_path.read_text())

@@ -390,6 +390,7 @@ class Run:
             record['window']['rect'] = window['rect']
             if app.get('correctness'):
                 png, stable = self.stable_picture(window['id'])
+                record['picture_ns'] = now()
                 (self.out / shot_name).write_bytes(png)
                 record['picture'] = shot_name
                 record['picture_stable'] = stable

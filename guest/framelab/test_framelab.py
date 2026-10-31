@@ -57,7 +57,17 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(fl.parse_line('CABOOSE_GPU_DECODE_TIMING limit=64', 5))
         r = fl.parse_line('caboose-framelab: present window=4 seq=17 presented_ns=123', 9)
         self.assertEqual((r['window'], r['seq'], r['presented_ns']), (4, 17, 123))
+        r = fl.parse_line('caboose-framelab: picture window=4 serial=99 file=4-99.png now_ns=5', 9)
+        self.assertEqual(r, {'kind': 'phone_picture', 't': 9, 'window': 4, 'file': '4-99.png'})
         self.assertIsNone(fl.parse_line('unrelated'))
+
+    def test_phone_picture_nearest_the_guest_picture(self):
+        records = [{'kind': 'phone_picture', 't': 100 + t, 'window': w, 'file': f'{w}-{t}.png'}
+                   for w, t in ((1, 5), (1, 20), (2, 11))]
+        self.assertEqual(fl.phone_picture(records, 1, 12, offset=100), '1-5.png')
+        self.assertEqual(fl.phone_picture(records, 1, 14, offset=100), '1-20.png')
+        self.assertIsNone(fl.phone_picture(records, 3, 14, offset=100))
+        self.assertIsNone(fl.phone_picture(records, 1, 14, offset=None))
 
 
 class MathTests(unittest.TestCase):

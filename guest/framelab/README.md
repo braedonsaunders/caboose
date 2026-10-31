@@ -92,9 +92,12 @@ All guest times are the computer's CLOCK_MONOTONIC.
 - The phone's console, kept by the driver: `CABOOSE_GPU_DECODE_TIMING` lines (with
   `CABOOSE_PRIVATE_GPU_MEMORY_AUDIT=1`), and `caboose-framelab: present window=W seq=S
   presented_ns=P now_ns=N` lines with `CABOOSE_FRAMELAB=1`, where P is when the present
-  was shown and N when the line was written, both on the phone's clock. Pictures the phone
-  writes to `Documents/framelab/<window>-<serial>.png` are fetched and compared in place of
-  the compositor's.
+  was shown and N when the line was written, both on the phone's clock. With
+  `CABOOSE_FRAMELAB=1` the phone also writes each live GPU window's settled picture (the
+  same twice, a second apart) to `Documents/framelab/<window>-<serial>.png` and prints
+  `caboose-framelab: picture window=W serial=S file=F now_ns=N`
+  (`CabooseKit/GPU/FrameLabPictures.swift`); the driver copies the directory out and
+  compares the one nearest the guest's own picture in place of the compositor's.
 
 Phone lines have no clock in common with the computer. The driver stamps each one when it
 arrives, and stamps every guest event the same way; the smallest difference between a
