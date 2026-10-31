@@ -99,11 +99,14 @@ public:
         auto it = fences_.find(fence);
         return it == fences_.end() ? Fence::Untracked : it->second.state;
     }
-    // A submission's signal operations, before it is sent. Returns the serial to watch.
-    uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals) {
+    // A submission's signal operations on `queue`, before it is sent. Returns the serial
+    // to watch.
+    uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
+                       uint64_t queue = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
+        watch.queue = queue;
         if (fence) {
             auto& state = fences_[fence];
             state.state = Fence::Pending;
@@ -121,6 +124,23 @@ public:
     }
     // A submission whose watch could not be sent: its objects are untracked.
     void unwatched(uint64_t serial) { complete(serial, kUnwatched); }
+    // The latest serial handed out; an idle wait sent after it covers it.
+    uint64_t lastSerial() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return lastSerial_;
+    }
+    // The device reported `queue` idle (vkQueueWaitIdle), or every queue (0, vkDeviceWaitIdle),
+    // for a wait sent after serial `through`: every watched submission there up to it has
+    // completed, even if its record is still in flight.
+    void idle(uint64_t queue, uint64_t through) {
+        std::vector<uint64_t> serials;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (const auto& [serial, watch] : watches_)
+                if (serial <= through && (!queue || watch.queue == queue)) serials.push_back(serial);
+        }
+        for (uint64_t serial : serials) complete(serial, kCompleted);
+    }
 
     // --- Timeline semaphores ------------------------------------------------------------
     void timelineCreated(uint64_t semaphore, uint64_t initialValue) {
@@ -232,7 +252,7 @@ public:
 private:
     struct FenceState { Fence state = Fence::Unsignaled; uint64_t serial = 0; };
     struct SemaphoreState { bool tracked = false; uint64_t value = 0; uint64_t pending = 0; };
-    struct Watch { uint64_t fence = 0; std::vector<std::pair<uint64_t, uint64_t>> signals; };
+    struct Watch { uint64_t fence = 0; uint64_t queue = 0; std::vector<std::pair<uint64_t, uint64_t>> signals; };
 
     Answer fencesLocked(const uint64_t* fences, uint32_t count, bool all) {
         if (lost_) return Answer::DeviceLost;

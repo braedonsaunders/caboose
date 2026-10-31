@@ -80,6 +80,21 @@ int main() {
         assert(t.waitFences(&f, 1, true, Tracker::Clock::now() + std::chrono::seconds(5)) == Answer::AskDevice);
         closer.join();
     }
+    {
+        // An idle wait completes earlier watched submissions on its queue (or all queues),
+        // but not ones made after the wait was sent.
+        Tracker t;
+        const uint64_t f1 = 1, f2 = 2, f3 = 3;
+        for (uint64_t f : {f1, f2, f3}) t.fenceCreated(f, false);
+        t.submitted(f1, {}, 0x51);
+        t.submitted(f2, {}, 0x52);
+        const uint64_t through = t.lastSerial();
+        t.submitted(f3, {}, 0x51);
+        t.idle(0x51, through);
+        assert(t.fence(f1) == Fence::Signaled && t.fence(f2) == Fence::Pending && t.fence(f3) == Fence::Pending);
+        t.idle(0, t.lastSerial());
+        assert(t.fence(f2) == Fence::Signaled && t.fence(f3) == Fence::Signaled && !t.pendingWatches());
+    }
     uint8_t watch[kWatchPacketSize], feed[kFeedPacketSize];
     encodeWatch(watch, 0x1122334455667788ull, 7);
     encodeFeed(feed);
