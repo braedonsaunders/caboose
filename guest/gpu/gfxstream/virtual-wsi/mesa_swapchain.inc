@@ -263,6 +263,8 @@ static VkResult allocateImages(DeviceSwapchain& swap, const VkImageCreateInfo& i
         uint32_t type=memory.memoryTypeCount, mapped=memory.memoryTypeCount;
         for (uint32_t i=0;i<memory.memoryTypeCount && type==memory.memoryTypeCount;++i) {
             if (!(requirements.memoryTypeBits&(1u<<i))) continue;
+            // Lazily allocated (memoryless) memory has no contents a copy could read.
+            if (memory.memoryTypes[i].propertyFlags&VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) continue;
             if (memory.memoryTypes[i].propertyFlags&(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
                 if (mapped==memory.memoryTypeCount) mapped=i;
             } else type=i;
