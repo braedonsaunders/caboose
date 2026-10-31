@@ -48,7 +48,6 @@ struct DesktopScreen: View {
                 }
             }
             .shellRailActions {
-                LaptopModeMenu()
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
                 Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
                 if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
@@ -79,7 +78,6 @@ struct DesktopScreen: View {
     /// the dock, so they are not repeated here. Full Screen gives way first when room runs out.
     @ToolbarContentBuilder private var actions: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
-            LaptopModeMenu()
             if !model.keyboardVisible {
                 Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible = true }
             }
@@ -139,7 +137,6 @@ struct DesktopRailControls: View {
         layout {
             if model.phase == .ready {
                 Menu {
-                    LaptopModeMenu()
                     Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
                     if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
                         @Bindable var model = model

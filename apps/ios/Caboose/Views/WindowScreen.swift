@@ -286,7 +286,6 @@ struct WindowScreen: View {
     /// Native icon items join the system's side bar on Duo and fit a horizontal toolbar
     /// elsewhere. The window title stays in the switcher instead of taking a content row.
     @ToolbarContentBuilder private func controls(for window: RemoteWindow) -> some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) { LaptopModeMenu() }
         ToolbarItem(placement: .topBarLeading) {
             Button("Back to \(model.selectedTab.rawValue.capitalized)", systemImage: "chevron.backward") {
                 model.presentedWindowID = nil
