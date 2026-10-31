@@ -217,11 +217,13 @@ impl Bind {
     /// For a window showing `shown` of its `whole` size (display pixels).
     pub fn new(active: bool, placement: &Placement, shown: (i32, i32), whole: (i32, i32)) -> Self {
         let k = placement.k;
+        // On the coding grid, in window pixels (docs/display.md, "Frame tag").
+        let line = scroll_tag::first_line(shown.1);
         Bind {
             active,
             overscan: [(whole.0 - shown.0).max(0) as f64 / k, (whole.1 - shown.1).max(0) as f64 / k],
-            tag_top: (shown.1 as f64 - placement.y0) / k,
-            block: scroll_tag::MIN_BLOCK as f64 / k,
+            tag_top: (line as f64 - placement.y0) / k,
+            block: scroll_tag::block_for_width(shown.0) as f64 / k,
         }
     }
 
@@ -620,9 +622,9 @@ mod tests {
         assert_eq!(tree.scrollers[0].fixed, vec![Rect::new(0, 180, 1179, 120), Rect::new(0, 2556, 384, 12)]);
         let bind = Bind::new(true, &p, (1179, 2376), (1179, 4932));
         assert_eq!(bind.overscan, [0.0, 2556.0]);
-        // The first overscan line, in viewport pixels: 2376 - 180.
-        assert_eq!(bind.tag_top, 2196.0);
-        assert_eq!(bind.block, 12.0);
+        // The first 16-px line of the overscan, in viewport pixels: 2384 - 180.
+        assert_eq!(bind.tag_top, 2204.0);
+        assert_eq!(bind.block, 32.0);
     }
 
     #[test]
@@ -635,7 +637,7 @@ mod tests {
         assert_eq!(p.y0, 180.0);
         let tree = p.tree(7, 1, &r);
         assert_eq!(tree.scrollers[0].offset, [0.0, 2412.75 * 3.0]);
-        assert_eq!(Bind::new(true, &p, (1179, 2376), (1179, 4932)).block, 4.0);
+        assert_eq!(Bind::new(true, &p, (1179, 2376), (1179, 4932)).block, 32.0 / 3.0);
     }
 
     #[test]

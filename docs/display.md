@@ -858,9 +858,9 @@ frame tag is drawn.
 
 **Frame tag.** The application's pictures reach the phone on their own path (a video
 `frame`, a GPU present), later than and independently of their `scroll.tree`. Only the
-picture can say which report it shows. While the window has bottom overscan of at least
-one block, the reporter draws a tag at the first overscan line, below everything the
-client shows. It draws the tag in the same frame as the state it reports. The tag is 32
+picture can say which report it shows. While the window has bottom overscan with room for
+it, the reporter draws a tag on the first line of the 16-pixel grid (window-local) at or
+below the first overscan line, below everything the client shows. It draws the tag in the same frame as the state it reports. The tag is 32
 square blocks in a row, each black (0) or white (1):
 
 - the sync pattern `1010`;
@@ -868,8 +868,9 @@ square blocks in a row, each black (0) or white (1):
   by the compositor) in the top 8 bits and the frame number in the low 16;
 - the XOR of the value's six 4-bit nibbles.
 
-Blocks are at least 12 display pixels square, so the tag survives video coding and a GPU
-picture smaller than the window. `tag_rect` is where the 32 blocks are. A client samples
+Blocks are as large as fit 32 to the window's width in multiples of 8 display pixels,
+from 16 to 32, and start on the coding grid. A block's centre is then far from any edge a
+fractional scale or the video coder blends, even in a GPU picture smaller than the window. `tag_rect` is where the 32 blocks are. A client samples
 each block's centre luma, thresholds at 128, and accepts the value only with the sync
 pattern and the check. It then places the picture by the `scroll.tree` with that `tag`
 and treats the tag as fixed content. A picture without a decodable tag, or whose tag names

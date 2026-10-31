@@ -27,13 +27,14 @@
 
   /**
    * Where the tag goes, viewport device pixels [x, y, w, h], or null when the bind leaves
-   * no room for it: the first overscan line, one block tall, within the overscan.
+   * no room for it: at the line the bind names, one block tall, in the overscan and inside
+   * a viewport `height` CSS pixels tall.
    */
-  function tagRect(bind, dpr) {
-    if (!bind || !bind.active) return null
+  function tagRect(bind, dpr, height) {
+    if (!bind || !bind.active || !(bind.overscan[1] > 0)) return null
     const side = blockCss(bind.block, dpr)
     const top = Math.round(bind.tag_top / dpr)
-    if (!(bind.overscan[1] >= side * dpr) || !(top >= 0)) return null
+    if (!(top >= 0) || !(top + side <= height)) return null
     return { css: [0, top, BLOCKS * side, side], device: [0, top * dpr, BLOCKS * side * dpr, side * dpr] }
   }
 

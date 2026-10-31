@@ -58,22 +58,31 @@ impl Mapping {
     }
 }
 
-/// The tag in a picture, read where the report says it is.
-pub fn read_tag(luma: &Luma, map: Mapping, rect: proto::Rect) -> Option<u32> {
+/// The 32 block-centre samples, read where the report says the tag is.
+fn sample(luma: &Luma, map: Mapping, rect: proto::Rect) -> Vec<i32> {
     let side = rect.w as f64 / scroll_tag::BLOCKS as f64;
     let y = ((rect.y as f64 + rect.h as f64 / 2.0) * map.sy) as i32;
-    let samples: Option<Vec<f32>> = (0..scroll_tag::BLOCKS)
-        .map(|i| luma.mean(((rect.x as f64 + (i as f64 + 0.5) * side) * map.sx) as i32, y))
-        .collect();
-    scroll_tag::decode(&samples?)
+    (0..scroll_tag::BLOCKS)
+        .map(|i| luma.mean(((rect.x as f64 + (i as f64 + 0.5) * side) * map.sx) as i32, y).map_or(-1, |l| l as i32))
+        .collect()
 }
 
-/// The ruler band index at a window row, if it reads cleanly.
-fn band_at(luma: &Luma, map: Mapping, x0: i32, y: i32) -> Option<u32> {
+/// The tag in a picture, read where the report says it is.
+pub fn read_tag(luma: &Luma, map: Mapping, rect: proto::Rect) -> Option<u32> {
+    let samples = sample(luma, map, rect);
+    if samples.contains(&-1) {
+        return None;
+    }
+    scroll_tag::decode(&samples.iter().map(|&l| l as f32).collect::<Vec<_>>())
+}
+
+/// The ruler band index at a window row, if it reads cleanly. `scale` is window pixels per
+/// page pixel.
+fn band_at(luma: &Luma, map: Mapping, x0: i32, y: i32, scale: f64) -> Option<u32> {
     let mut n = 0u32;
     for i in 0..RULER_BITS {
-        let x = x0 + RULER_X + i * RULER_BLOCK + RULER_BLOCK / 2;
-        let l = luma.row_mean((x as f64 * map.sx) as i32, (y as f64 * map.sy) as i32)?;
+        let x = x0 as f64 + (RULER_X + i * RULER_BLOCK) as f64 * scale + RULER_BLOCK as f64 * scale / 2.0;
+        let l = luma.row_mean((x * map.sx) as i32, (y as f64 * map.sy) as i32)?;
         if (40.0..215.0).contains(&l) {
             return None;
         }
@@ -84,14 +93,16 @@ fn band_at(luma: &Luma, map: Mapping, x0: i32, y: i32) -> Option<u32> {
 
 /// The scroller's content offset as the picture shows it: the first band edge below the
 /// top of `clip` (window pixels), at whole-pixel precision.
-pub fn read_ruler(luma: &Luma, map: Mapping, clip: proto::Rect, fixed: &[proto::Rect]) -> Option<f64> {
+pub fn read_ruler(luma: &Luma, map: Mapping, clip: proto::Rect, fixed: &[proto::Rect], scale: f64) -> Option<f64> {
     // Below whatever is fixed over the top of the scroller (a sticky header).
     let covered = fixed.iter().filter(|f| f.y <= clip.y + 1).map(|f| f.y + f.h).max().unwrap_or(clip.y);
     let top = covered.max(clip.y) + 2;
-    let first = band_at(luma, map, clip.x, top)?;
-    for y in top + 1..(clip.y + clip.h).min(top + 3 * BAND) {
-        match band_at(luma, map, clip.x, y) {
-            Some(n) if n == first + 1 => return Some(((first + 1) as i32 * BAND - (y - clip.y)) as f64),
+    let first = band_at(luma, map, clip.x, top, scale)?;
+    let band = BAND as f64 * scale;
+    for y in top + 1..(clip.y + clip.h).min(top + (3.0 * band) as i32) {
+        match band_at(luma, map, clip.x, y, scale) {
+            // A scaled picture blends the edge row: whole-pixel precision becomes the scale.
+            Some(n) if n == first + 1 => return Some((first + 1) as f64 * band - (y - clip.y) as f64),
             Some(n) if n == first => {}
             _ => return None,
         }
@@ -135,7 +146,7 @@ impl ScrollCheck {
     }
 
     /// One decoded picture of window `id`.
-    pub fn picture(&mut self, id: u64, luma: &Luma, map: Mapping, ruler: bool) {
+    pub fn picture(&mut self, id: u64, luma: &Luma, map: Mapping, ruler: Option<f64>) {
         let newest = self.latest.get(&id).and_then(|t| t.scrollers.first().map(|s| s.offset[1]));
         let Some(rect) = self.latest.get(&id).and_then(|t| t.tag_rect) else { return };
         let Some(tag) = read_tag(luma, map, rect) else {
@@ -145,23 +156,25 @@ impl ScrollCheck {
         self.tagged += 1;
         let Some(report) = self.reports.iter().rev().find(|t| t.id == id && t.tag == Some(tag)).cloned() else {
             self.unmatched += 1;
+            let newest = self.latest.get(&id).and_then(|t| t.tag).unwrap_or(0);
+            eprintln!("scroll: picture tag {tag:#08x} names no report (newest {newest:#08x}); luma {:?}", sample(luma, map, rect));
             return;
         };
         self.matched += 1;
-        if !ruler {
-            return;
-        }
+        let Some(scale) = ruler else { return };
         let Some(primary) = report.scrollers.first() else { return };
-        match read_ruler(luma, map, primary.rect, &primary.fixed) {
+        match read_ruler(luma, map, primary.rect, &primary.fixed, scale) {
             None => self.ruler_unreadable += 1,
             Some(shown) => {
                 self.ruler_checked += 1;
-                if newest.is_some_and(|n| (shown - n).abs() > 1.5) {
+                // Reading a scaled ruler's edge row blends it across about one scale step.
+                let tolerance = 1.5 + scale;
+                if newest.is_some_and(|n| (shown - n).abs() > tolerance) {
                     self.newest_bad += 1;
                 }
                 let error = (shown - primary.offset[1]).abs();
                 self.ruler_max_error = self.ruler_max_error.max(error);
-                if error > 1.5 {
+                if error > tolerance {
                     self.ruler_bad += 1;
                     eprintln!(
                         "scroll: picture tagged {tag:#08x} shows offset {shown}, its report says {}",
@@ -225,7 +238,7 @@ mod tests {
         let luma = Luma { data: &data, stride: w as usize, width: w, height: h };
         let map = Mapping { sx: 1.0, sy: 1.0 };
         assert_eq!(read_tag(&luma, map, tag_rect), Some(0x01_0203));
-        assert_eq!(read_ruler(&luma, map, proto::Rect::new(0, 0, w, 270), &[]), Some(1234.0));
-        assert_eq!(read_ruler(&luma, map, proto::Rect::new(0, 0, w, 270), &[proto::Rect::new(0, 0, w, 48)]), Some(1234.0));
+        assert_eq!(read_ruler(&luma, map, proto::Rect::new(0, 0, w, 270), &[], 1.0), Some(1234.0));
+        assert_eq!(read_ruler(&luma, map, proto::Rect::new(0, 0, w, 270), &[proto::Rect::new(0, 0, w, 48)], 1.0), Some(1234.0));
     }
 }

@@ -75,6 +75,7 @@ OPTIONS:
                            pixels per vsync with scroll.target
     --ruler                check each tagged picture's offset against the ruler drawn by
                            scripts/pages/scroll-ruler.html
+    --ruler-scale S        window pixels per page pixel of that ruler [default: 1]
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -110,6 +111,7 @@ struct Args {
     scroll_overscan: Option<i32>,
     scroll_drive: Option<f64>,
     ruler: bool,
+    ruler_scale: f64,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -169,6 +171,7 @@ fn parse_args() -> Result<Args, String> {
         scroll_overscan: None,
         scroll_drive: None,
         ruler: false,
+        ruler_scale: 1.0,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -229,6 +232,7 @@ fn parse_args() -> Result<Args, String> {
             "--scroll-overscan" => a.scroll_overscan = Some(value()?.parse().map_err(|_| "bad --scroll-overscan")?),
             "--scroll-drive" => a.scroll_drive = Some(value()?.parse().map_err(|_| "bad --scroll-drive")?),
             "--ruler" => a.ruler = true,
+            "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -1190,7 +1194,7 @@ fn run(args: Args) -> Result<bool, String> {
                                 width: frame.width() as i32,
                                 height: frame.height() as i32,
                             };
-                            scroll_check.picture(f.id, &luma, scroll::Mapping::new(f.rect, f.crop), args.ruler);
+                            scroll_check.picture(f.id, &luma, scroll::Mapping::new(f.rect, f.crop), args.ruler.then_some(args.ruler_scale));
                         }
                     }
                     if let (Some(h), false, Some(id)) = (args.scroll_overscan, overscan_asked, target) {

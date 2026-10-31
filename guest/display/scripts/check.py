@@ -207,7 +207,7 @@ def check_chromium_text_input():
 
 
 
-def check_chromium_scroll_reports():
+def check_chromium_scroll_reports(x11=False, display="900x800@60x1"):
     """The Chromium scroll reporter end to end: every picture's frame tag names a report
     whose offset is the one the picture shows (read from the page's ruler), while
     scroll.target drives the page and its seq is acknowledged."""
@@ -223,18 +223,21 @@ def check_chromium_scroll_reports():
     # Extensions do not run on file:// pages unless the user allows it: serve the page.
     pages = subprocess.Popen([sys.executable, "-m", "http.server", "--bind", "127.0.0.1", "18765"],
                              cwd=os.path.join(HERE, "pages"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    command = ["chromium", "--ozone-platform=wayland", "--no-sandbox", "--disable-gpu", "--no-first-run",
+    command = ["chromium", "--ozone-platform=x11" if x11 else "--ozone-platform=wayland", "--no-sandbox", "--disable-gpu", "--no-first-run",
                "--password-store=basic", "--disable-features=Translate", f"--user-data-dir={profile}", f"--load-extension={extension}",
                "--window-size=900,800", "--app=http://127.0.0.1:18765/scroll-ruler.html"]
-    return with_scroll_server(command, pages)
+    # An X11 browser draws at scale 1 and the compositor scales it to the display's scale.
+    scale = float(display.rsplit("x", 1)[1]) if x11 else 1.0
+    return with_scroll_server(command, pages, display, scale)
 
 
-def scroll_report_check(proc, token):
+def scroll_report_check(proc, token, display="900x800@60x1", ruler_scale=1.0):
     """The probe drives a reporting window with scroll.target and checks every tagged
     picture's report against the ruler the window draws (probe/src/scroll.rs)."""
     time.sleep(8)  # a browser starts slowly on a loaded computer; its page reports once loaded
-    r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", "900x800@60x1",
-               "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler"], json_out=False)
+    r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", display,
+               "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler",
+               "--ruler-scale", str(ruler_scale)], json_out=False)
     line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)
     if line is None:
         raise Failed(f"probe gave no scroll report: {r.stdout} {r.stderr}")
@@ -251,9 +254,9 @@ def scroll_report_check(proc, token):
             f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')
 
 
-def with_scroll_server(command, helper=None):
+def with_scroll_server(command, helper=None, display="900x800@60x1", ruler_scale=1.0):
     try:
-        return with_server(command, scroll_report_check)
+        return with_server(command, lambda proc, token: scroll_report_check(proc, token, display, ruler_scale))
     finally:
         if helper:
             helper.kill()
@@ -1164,6 +1167,8 @@ CHECKS = [
     ("chromium-text-input", check_chromium_text_input),
     ("chromium-touch-fling", check_chromium_touch_fling),
     ("chromium-scroll-reports", check_chromium_scroll_reports),
+    # X11 at a fractional scale: the tag must survive scaling and video coding.
+    ("chromium-x11-scroll-reports", lambda: check_chromium_scroll_reports(x11=True, display="1179x1716@60x1.4375")),
     ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
     ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
     ("qt6-scroll-reports", check_qt_scroll_reports),
