@@ -858,6 +858,7 @@ class Broker:
             sender = asyncio.create_task(send_replies(surface['replies']))
             def sender_done(task):
                 if not task.cancelled() and task.exception() is not None:
+                    print(f'CABOOSE_GPU_SURFACE_FAILED reply sender: {task.exception()!r}', file=sys.stderr, flush=True)
                     session.failed = True
                     session.writer.close()
             sender.add_done_callback(sender_done)
@@ -907,9 +908,10 @@ class Broker:
                     await asyncio.wait_for(surface['replies'].join(), 5)
                     return
                 else: raise ValueError('unexpected surface request')
-        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, PermissionError):
+        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, PermissionError) as error:
             # A lost client cannot imply native resource retirement.
             if key is not None and key in session.surfaces:
+                print(f'CABOOSE_GPU_SURFACE_FAILED {type(error).__name__}: {error}', file=sys.stderr, flush=True)
                 session.failed = True
                 session.writer.close()
         finally:
