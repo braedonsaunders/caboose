@@ -342,7 +342,9 @@ Each instance listens on `control.sock` in its private directory
 processes of its own user. It is how the computer's own tools see and drive a seat, Wayland
 and X11 windows alike: `windows` (each window's id, kind, title, app id, process, X window
 for Xwayland, geometry, root surface and focus, bottom to top), `focus`, `click`, `press`,
-`release`, `move`, `scroll`, `key`, `type`, `settle` and `screenshot`. Requests are single
+`release`, `move`, `scroll`, `key`, `type`, `settle`, `screenshot` and `frames` (the
+seat's timeline: each window's commits and sent pictures, and input, in CLOCK_MONOTONIC
+microseconds, for [frame lab](../framelab/README.md)). Requests are single
 lines and answers single JSON lines (a screenshot's is followed by the PNG); the full list is
 in [docs/architecture.md § Displays](../../docs/architecture.md#displays) and the code in
 `compositor/src/control.rs`. Its path is in the launch environment as
