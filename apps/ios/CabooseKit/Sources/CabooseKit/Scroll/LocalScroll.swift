@@ -29,7 +29,10 @@ public enum ScrollObservation: Equatable, Sendable {
     /// content offset, the region it occupies, its scroll range when known, and fixed
     /// rectangles inside the region (overlays, scroll bars) that do not move with it. It
     /// replaces measurement for the frame it describes.
-    case reported(offset: Double, region: ScrollRegion, bounds: ClosedRange<Double>? = nil, stationary: [ScrollRegion] = [])
+    /// `epoch` changes when the content moved in document coordinates (a layout shift,
+    /// scroll anchoring): pictures of an earlier epoch are not placed against later ones.
+    case reported(offset: Double, region: ScrollRegion, bounds: ClosedRange<Double>? = nil, stationary: [ScrollRegion] = [],
+                  epoch: UInt64 = 0)
 }
 
 /// One picture of what the phone shows while it owns a window's scrolling.
@@ -193,6 +196,7 @@ public struct LocalScroll {
     private var sent = 0.0
     private var correctionsLeft = 0
     private var reportedBias: Double?
+    private var reportedEpoch: UInt64?
     public private(set) var interrupted = false
     private var composing = false
     /// The current run of gestures reached an edge.
@@ -385,6 +389,7 @@ public struct LocalScroll {
         travelStart = nil
         gainBaseline = nil
         reportedBias = nil
+        reportedEpoch = nil
         unansweredSince = nil
         lastAppMotion = -.infinity
         lastTick = nil
@@ -458,7 +463,14 @@ public struct LocalScroll {
             offset = base
             region = ref.region ?? self.region
             holes = ref.holes
-        case .reported(let reported, let measured, let bounds, let fixed):
+        case .reported(let reported, let measured, let bounds, let fixed, let epoch):
+            if let last = reportedEpoch, last != epoch {
+                // Content moved in the document: earlier pictures no longer line up by offset.
+                frames.removeSubrange(..<index)
+            }
+            reportedEpoch = epoch
+            // A reporter applies scroll exactly, in content pixels.
+            gain = 1
             if reportedBias == nil {
                 reportedBias = (before == nil ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)) - reported
             }
@@ -860,7 +872,7 @@ public struct LocalScroll {
     }
 
     private mutating func learnGain(app: Double) {
-        guard let start = gainBaseline else { return }
+        guard reportedBias == nil, let start = gainBaseline else { return }
         let wire = sent - start.sent, moved = app - start.offset
         // Motion clamped at an edge says nothing about the app's response.
         guard abs(wire) >= 96, abs(moved) >= 48, moved * wire > 0, !edgeMet else { return }

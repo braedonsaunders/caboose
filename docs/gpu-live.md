@@ -573,7 +573,7 @@ structural parsing alone does not prove them.
 | --- | --- | --- |
 | 25 | SWAPCHAIN_CREATE | request ID, boxed device, old swapchain ID (3 u64); 14 u32 creation fields; queue-family array |
 | 26 | SWAPCHAIN_CREATED | request ID, actual swapchain ID (2 u64); status; actual image count, reserved zero (2 u32) |
-| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, reserved zero (2 u32); ordered boxed source images (u64 each) |
+| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, flags (2 u32); ordered boxed source images (u64 each) |
 | 28 | SWAPCHAIN_MAPPED | swapchain ID (u64); status |
 | 29 | SWAPCHAIN_ACQUIRE | swapchain ID, request ID, boxed binary semaphore, boxed fence, timeout nanoseconds (5 u64); device mask, reserved zero (2 u32) |
 | 30 | SWAPCHAIN_ACQUIRED | swapchain ID, request ID (2 u64); status; has-index, index, local reason, reserved zero (4 u32) |
@@ -592,6 +592,15 @@ The guest rejects unsupported `pNext` rather than dropping it. The native path
 honors every accepted parameter or returns an explicit error. Creation has no
 queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
+
+MAP flags are 0, or with the `guest-images` capability (hello feature `0x800`) 1 for
+guest-owned images or 3 for guest-owned images with mailbox. With guest-owned images the
+guest maps its own pool of 1 to 8 images instead of the provider's count. There is no
+SWAPCHAIN_ACQUIRE: the guest hands an image to the application once its previous copy
+was released, and signals the application's semaphore and fence itself. Each present
+names a guest image, and native acquires a provider image inside the present, waiting up
+to 1 s, or not at all with mailbox. A present that finds no provider image is dropped: it
+reports QUEUED, then releases its source and retires. Up to 8 frames may be in flight.
 
 Creation success carries actual `VK_SUCCESS`, the native ID and the provider's
 complete image count (1–256). Failure carries no ID or image count. MAP supplies
@@ -682,10 +691,17 @@ lavapipe device lose itself once a phone's executor is ready, and an application
 recreates lost devices, as Chromium does, moves to the phone.
 
 Some applications draw on the computer even with a phone attached: OpenGL clients on
-Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and Proton games, because the driver's
-surfaces are Wayland and XCB, not Xlib; and Flatpak applications, whose sandbox has
-neither the driver nor the broker's sockets. An application rendering on the phone's
-GPU loses its Vulkan device when the phone detaches.
+Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and
+Proton games, because the driver's surfaces are Wayland and XCB, not Xlib. An
+application rendering on the phone's GPU loses its Vulkan device when the phone
+detaches.
+
+Flatpak applications take the same paths inside their sandbox. `install-live.py
+--driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
+extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
+runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
+override. The launch environment's variables pass into the sandbox unchanged.
 
 `guest/gpu/check-apps.sh` checks each path in a disposable container
 ([guest/gpu](../guest/gpu/README.md#application-routing-check)).

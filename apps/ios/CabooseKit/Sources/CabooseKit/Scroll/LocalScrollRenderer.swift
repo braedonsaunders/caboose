@@ -13,6 +13,9 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     let device: MTLDevice
     let queue: MTLCommandQueue
     private let signature: MTLComputePipelineState
+    private let tag: MTLComputePipelineState
+    /// Blocks in a frame tag row (docs/display.md, "Scroll reports").
+    public static let tagBlocks = 32
     private let vertex: MTLFunction, sample: MTLFunction, resolve: MTLFunction
     private let lock = NSLock()
     private var pool: [MTLTexture] = []
@@ -32,6 +35,8 @@ public final class LocalScrollRenderer: @unchecked Sendable {
                   let sample = library.makeFunction(name: "scroll_quad_texture"),
                   let resolve = library.makeFunction(name: "scroll_resolve") else { return nil }
             signature = try device.makeComputePipelineState(function: kernel)
+            guard let tagKernel = library.makeFunction(name: "scroll_tag") else { return nil }
+            tag = try device.makeComputePipelineState(function: tagKernel)
             self.vertex = vertex; self.sample = sample; self.resolve = resolve
             guard pipelines(for: .bgra8Unorm) != nil else { return nil }
         } catch {
@@ -70,22 +75,25 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     /// Copies `source` into a history texture and measures its line signature along `axis`.
     /// `completion` runs on a Metal completion thread once both have landed, with nil when the
     /// copy could not be made.
-    public func capture(_ source: MTLTexture, axis: ScrollAxis,
-                        completion: @escaping @Sendable (MTLTexture?, ScrollSignature?) -> Void) {
+    /// `tagRect`, in picture pixels, is where a toolkit reporter drew its frame tag: the mean
+    /// luma (0–255) at the centre of each of its `tagBlocks` blocks is read in the same pass
+    /// and handed to `completion`.
+    public func capture(_ source: MTLTexture, axis: ScrollAxis, tagRect: CGRect? = nil,
+                        completion: @escaping @Sendable (MTLTexture?, ScrollSignature?, [Float]?) -> Void) {
         let width = source.width, height = source.height
         let lines = axis == .vertical ? height : width, span = axis == .vertical ? width : height
         let bands = ScrollSignature.bandCount(span: span)
         guard let copy = texture(width: width, height: height, format: source.pixelFormat),
               let output = device.makeBuffer(length: lines * bands * 4 * MemoryLayout<Float>.stride, options: .storageModeShared),
               let commands = queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else {
-            completion(nil, nil)
+            completion(nil, nil, nil)
             return
         }
         blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
                   sourceSize: MTLSize(width: width, height: height, depth: 1),
                   to: copy, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
         blit.endEncoding()
-        guard let compute = commands.makeComputeCommandEncoder() else { completion(nil, nil); return }
+        guard let compute = commands.makeComputeCommandEncoder() else { completion(nil, nil, nil); return }
         var parameters = SIMD4<UInt32>(UInt32(width), UInt32(height), UInt32(bands), axis == .vertical ? 0 : 1)
         compute.setComputePipelineState(signature)
         compute.setTexture(copy, index: 0)
@@ -93,13 +101,27 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         compute.setBytes(&parameters, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 1)
         let group = MTLSize(width: min(bands, 8), height: max(1, signature.maxTotalThreadsPerThreadgroup / 8 / 4), depth: 1)
         compute.dispatchThreads(MTLSize(width: bands, height: lines, depth: 1), threadsPerThreadgroup: group)
+        let blocks = Self.tagBlocks
+        var tagOutput: MTLBuffer?
+        if let tagRect, tagRect.width >= CGFloat(blocks), tagRect.height >= 1,
+           CGRect(x: 0, y: 0, width: width, height: height).contains(tagRect.integral),
+           let buffer = device.makeBuffer(length: blocks * MemoryLayout<Float>.stride, options: .storageModeShared) {
+            var rect = SIMD4<Float>(Float(tagRect.minX), Float(tagRect.minY), Float(tagRect.width), Float(tagRect.height))
+            compute.setComputePipelineState(tag)
+            compute.setTexture(copy, index: 0)
+            compute.setBuffer(buffer, offset: 0, index: 0)
+            compute.setBytes(&rect, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+            compute.dispatchThreads(MTLSize(width: blocks, height: 1, depth: 1), threadsPerThreadgroup: MTLSize(width: blocks, height: 1, depth: 1))
+            tagOutput = buffer
+        }
         compute.endEncoding()
         commands.addCompletedHandler { buffer in
-            guard buffer.status == .completed else { completion(nil, nil); return }
+            guard buffer.status == .completed else { completion(nil, nil, nil); return }
             let pointer = output.contents().bindMemory(to: Float.self, capacity: lines * bands * 4)
             let result = ScrollSignature(axis: axis, lines: lines, bands: bands, span: span,
                                          packed: UnsafeBufferPointer(start: pointer, count: lines * bands * 4))
-            completion(copy, result)
+            let tagLuma = tagOutput.map { Array(UnsafeBufferPointer(start: $0.contents().bindMemory(to: Float.self, capacity: blocks), count: blocks)) }
+            completion(copy, result, tagLuma)
         }
         commands.commit()
     }
@@ -280,6 +302,22 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         }
         float n = float(end - start);
         out[gid.y * bands + gid.x] = float4(sum / n, steps / max(1.0, n - 1.0));
+    }
+
+    // One thread per tag block: the mean luma of the 3x3 pixels at the block's centre.
+    kernel void scroll_tag(texture2d<float, access::read> picture [[texture(0)]],
+                           device float *out [[buffer(0)]],
+                           constant float4 &rect [[buffer(1)]],
+                           uint block [[thread_position_in_grid]]) {
+        float2 centre = float2(rect.x + (float(block) + 0.5) * rect.z / 32.0, rect.y + rect.w * 0.5);
+        int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
+        float sum = 0;
+        for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+            int2 p = clamp(int2(centre) + int2(dx, dy), int2(0), limit);
+            float3 c = picture.read(uint2(p)).rgb * 255.0;
+            sum += 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+        }
+        out[block] = sum / 9.0;
     }
 
     struct Quad { float4 rect; float2 offset; float2 target; float4 color; };

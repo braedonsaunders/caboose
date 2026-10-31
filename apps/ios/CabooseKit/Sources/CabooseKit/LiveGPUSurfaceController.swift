@@ -209,7 +209,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
                     entries[identity.grant] = entry
                     try emit(.swapchain(.created(request: info.request, swapchain: 0,
                         status: .init(nativeErrno: ESTALE, vkResult: nil), count: 0))); return
-                case .map(let id, _):
+                case .map(let id, _, _):
                     try emit(.swapchain(.mapped(swapchain: id, status: .init(nativeErrno: ESTALE, vkResult: nil)))); return
                 default: throw violation("wrong-direction indexed message")
                 }

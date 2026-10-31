@@ -59,7 +59,7 @@ class InstalledDriverTests(unittest.TestCase):
             base = Path(temporary)
             library = base / "libvulkan_gfxstream.so"
             library.write_bytes(b"\x7fELF" + bytes(60))
-            installer.install_driver(library, base / "root")
+            installer.install_driver(library, base / "root", machine="x86_64")
             directory = base / "root/usr/local/lib/caboose-gpu-live"
             self.assertEqual((directory / "libvulkan_gfxstream.so").read_bytes(), library.read_bytes())
             manifest = json.loads((directory / "icd.json").read_text())
@@ -69,12 +69,39 @@ class InstalledDriverTests(unittest.TestCase):
                 self.assertEqual((directory / name).stat().st_mode & 0o777, 0o644)
             self.assertEqual(sorted(p.name for p in directory.iterdir()), ["icd.json", "libvulkan_gfxstream.so"])
 
+    def test_flatpak_applications_get_the_driver_and_the_sockets(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-flatpak-") as temporary:
+            base = Path(temporary)
+            library = base / "libvulkan_gfxstream.so"
+            library.write_bytes(b"\x7fELF" + bytes(60))
+            override = base / "root/var/lib/flatpak/overrides/global"
+            override.parent.mkdir(parents=True)
+            override.write_text("[Context]\nsockets=wayland;\nfilesystems=home;\n\n[Environment]\nA=1\n")
+            installer.install_driver(library, base / "root", machine="x86_64")
+            extension = base / "root/var/lib/flatpak/extension/org.freedesktop.Platform.GL.host/x86_64/1.4"
+            self.assertEqual((extension / "lib/libvulkan_gfxstream.so").read_bytes(), library.read_bytes())
+            manifest = json.loads((extension / "vulkan/icd.d/caboose_gfxstream.json").read_text())
+            self.assertEqual(manifest["ICD"]["library_path"], "/usr/lib/x86_64-linux-gnu/GL/host/lib/libvulkan_gfxstream.so")
+            self.assertEqual(override.read_text(),
+                             "[Context]\nsockets=wayland;\nfilesystems=home;xdg-run/caboose-gpu;\n\n[Environment]\nA=1\n")
+            installer.install_driver(library, base / "root", machine="x86_64")
+            self.assertEqual(override.read_text().count("caboose-gpu"), 1, "installing again changes nothing")
+
+    def test_override_keyfiles_gain_the_socket_directory(self):
+        self.assertEqual(installer.with_filesystem("", "x"), "[Context]\nfilesystems=x;\n")
+        self.assertEqual(installer.with_filesystem("[Environment]\nA=1\n", "x"), "[Environment]\nA=1\n\n[Context]\nfilesystems=x;\n")
+        self.assertEqual(installer.with_filesystem("[Context]\nshared=ipc;\n", "x"), "[Context]\nfilesystems=x;\nshared=ipc;\n")
+
     def test_executor_switch_layer_is_implicit_and_opt_in(self):
         with tempfile.TemporaryDirectory(prefix="caboose-gpu-layer-") as temporary:
             base = Path(temporary)
             layer = base / "libVkLayer_caboose_executor_switch.so"
             layer.write_bytes(b"\x7fELF" + bytes(60))
-            installer.install_switch_layer(layer, base / "root")
+            installer.install_switch_layer(layer, base / "root", machine="aarch64")
+            sandboxed = json.loads((base / "root/var/lib/flatpak/extension/org.freedesktop.Platform.GL.host/aarch64/1.4"
+                                    "/vulkan/implicit_layer.d/caboose_executor_switch.json").read_text())
+            self.assertEqual(sandboxed["layer"]["library_path"],
+                             "/usr/lib/aarch64-linux-gnu/GL/host/lib/libVkLayer_caboose_executor_switch.so")
             installed = base / "root/usr/local/lib/caboose-gpu-live/libVkLayer_caboose_executor_switch.so"
             self.assertEqual(installed.read_bytes(), layer.read_bytes())
             manifest = json.loads((base / "root/usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json").read_text())
