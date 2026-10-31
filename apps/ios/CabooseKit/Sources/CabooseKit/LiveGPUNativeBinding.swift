@@ -91,6 +91,9 @@ private final class LiveGPUDuplex: @unchecked Sendable {
     let native: Int32
     let workers = DispatchGroup()
     var inboundFinished = false // guarded by owning LiveGPUProcess.lock
+    /// Native run returned with an error: this stream alone ends, and further input for it
+    /// is discarded. Guarded by the owning LiveGPUProcess.lock.
+    var nativeEnded = false
     init() throws {
         var descriptors: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
@@ -321,14 +324,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             try openStream(frame)
         case .data, .fin:
             let process = try process(frame.process)
-            guard let stream = process.lock.withLock({ () -> LiveGPUDuplex? in
+            guard let (stream, ended) = process.lock.withLock({ () -> (LiveGPUDuplex, Bool)? in
                 guard let stream = process.streams[frame.stream], !stream.inboundFinished else { return nil }
                 if frame.kind == .fin { stream.inboundFinished = true }
-                return stream
+                return (stream, stream.nativeEnded)
             }) else {
                 throw LiveGPUBindingError.protocolViolation("unknown or half-closed stream")
             }
-            if frame.kind == .data { try stream.write(frame.payload) }
+            if frame.kind == .data { if !ended { try stream.write(frame.payload) } }
             else {
                 guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
             }
@@ -394,7 +397,10 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
                 (result == EPROTO && (process.stopped || stream.inboundFinished))
             }
             if result != 0 && !expectedStreamEnd {
-                fail(LiveGPUBindingError.native(operation: "run", code: result))
+                // One stream's failure (a refused feed, a malformed command) ends that stream:
+                // its write half closed above sends FIN, and the session and every other
+                // stream go on.
+                process.lock.withLock { stream.nativeEnded = true }
             }
         }
         Thread.detachNewThread { [self] in

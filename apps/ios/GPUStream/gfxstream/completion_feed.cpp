@@ -155,26 +155,33 @@ void CompletionFeed::push(uint64_t serial, int32_t status) {
 }
 
 int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
+    uint64_t mine;
     {
+        // A later feed stream of the process (its connection was made again) takes over;
+        // the earlier one returns at its next wake.
         std::lock_guard<std::mutex> lock(mutex_);
-        if (attached_) return EBUSY;
-        attached_ = true;
+        mine = ++generation_;
+        detached_ = false;
     }
+    for (int i = 0; i < 2; ++i) { char one = 1; (void)!write(wake_[1], &one, 1); }
     struct Detach {
         CompletionFeed* feed;
+        uint64_t generation;
         ~Detach() {
             std::lock_guard<std::mutex> lock(feed->mutex_);
+            if (feed->generation_ != generation) return;  // superseded: the new feed owns records
             // The guest is gone: records have no reader. The watcher keeps waiting for
             // markers until close(), since each holds its device alive.
             feed->records_.clear();
             feed->detached_ = true;
         }
-    } detach{this};
+    } detach{this, mine};
     std::vector<unsigned char> out;
     for (;;) {
         std::deque<Record> ready;
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if (generation_ != mine) return 0;
             ready.swap(records_);
         }
         if (!ready.empty()) {
@@ -187,7 +194,8 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
         }
         if (stop.load()) return 0;
         pollfd fds[2] = {{fd, POLLIN, 0}, {wake_[0], POLLIN, 0}};
-        if (poll(fds, 2, -1) < 0) {
+        // A bounded wait, so a feed a later one took over notices and returns.
+        if (poll(fds, 2, 100) < 0) {
             if (errno == EINTR) continue;
             return errno;
         }

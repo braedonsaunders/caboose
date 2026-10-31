@@ -63,7 +63,7 @@ public:
     // Wakes every order wait with ECANCELED and refuses later ones (process stop).
     void cancelOrders();
     // Runs the feed on `fd` until the guest closes it (0), `stop` is set or the socket is
-    // shut down (0), or an error (errno). Only one feed stream may attach, once.
+    // shut down (0), or an error (errno). A later feed stream takes over from an earlier one.
     int run(int fd, const std::atomic_bool& stop);
     // Ends the watcher once outstanding markers complete; called before destruction and
     // on process stop. Records after this are dropped.
@@ -88,7 +88,7 @@ private:
     std::deque<Pending> markers_;
     std::deque<Record> records_;
     int wake_[2] = {-1, -1};
-    bool attached_ = false;
+    uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return
     bool detached_ = false;
     bool closing_ = false;
     std::thread watcher_;
