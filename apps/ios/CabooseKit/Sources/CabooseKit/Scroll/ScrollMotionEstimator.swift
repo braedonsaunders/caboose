@@ -104,9 +104,28 @@ public struct ScrollMotionEstimator: Sendable {
         return above + below >= 4
     }
 
+    /// Whether newer cell `a` shows what older cell `b` showed. With `between`, the band's
+    /// next line in the older picture: content that moved a fraction of a line (an app
+    /// scrolling in finer pixels than the picture's) lies between the two lines' values.
     @inline(__always) private func matches(_ nl: UnsafeBufferPointer<Float>, _ nd: UnsafeBufferPointer<Float>, _ a: Int,
-                                           _ ol: UnsafeBufferPointer<Float>, _ od: UnsafeBufferPointer<Float>, _ b: Int) -> Bool {
-        abs(nl[a] - ol[b]) <= tolerance && abs(nd[a] - od[b]) <= tolerance + 0.1 * nd[a]
+                                           _ ol: UnsafeBufferPointer<Float>, _ od: UnsafeBufferPointer<Float>, _ b: Int,
+                                           between next: Int = 0) -> Bool {
+        matchWeight(nl, nd, a, ol, od, b, between: next) > 0
+    }
+
+    /// 2 for an exact match, 1 for a value between `b`'s line and the next (with `between`),
+    /// 0 otherwise. Exact matches outweigh the fractional ones, so an integer shift is not
+    /// confused with its neighbours, while a fractional one still wins over both.
+    @inline(__always) private func matchWeight(_ nl: UnsafeBufferPointer<Float>, _ nd: UnsafeBufferPointer<Float>, _ a: Int,
+                                          _ ol: UnsafeBufferPointer<Float>, _ od: UnsafeBufferPointer<Float>, _ b: Int,
+                                          between next: Int = 0) -> Int {
+        let detailTolerance = tolerance + 0.1 * nd[a]
+        if abs(nl[a] - ol[b]) <= tolerance && abs(nd[a] - od[b]) <= detailTolerance { return 2 }
+        let c = b + next
+        guard next > 0, c < ol.count else { return 0 }
+        return nl[a] >= min(ol[b], ol[c]) - tolerance && nl[a] <= max(ol[b], ol[c]) + tolerance
+            // Resampled between lines, horizontal detail softens: it may fall to half.
+            && nd[a] >= 0.5 * min(od[b], od[c]) - detailTolerance && nd[a] <= max(od[b], od[c]) + detailTolerance ? 1 : 0
     }
 
     private func measure(nl: UnsafeBufferPointer<Float>, nd: UnsafeBufferPointer<Float>,
@@ -152,7 +171,7 @@ public struct ScrollMotionEstimator: Sendable {
             var i = 0
             while i < count {
                 let a = Int(cells[i]), b = a + offset
-                if b >= 0, b < total, !atZero[i], matches(nl, nd, a, ol, od, b) { moved += 1 }
+                if b >= 0, b < total, !atZero[i] { moved += matchWeight(nl, nd, a, ol, od, b, between: bands) }
                 i += step
             }
             return moved
@@ -186,8 +205,9 @@ public struct ScrollMotionEstimator: Sendable {
                 if b >= 0, b < total { eligible += 1 }
             }
         }
-        let support = Double(best) / Double(Swift.max(1, eligible))
-        guard best >= minimumEvidence, Double(best) >= 0.04 * Double(count), support >= minimum else {
+        // Scores count exact matches twice.
+        let support = Double(best) / Double(Swift.max(1, 2 * eligible))
+        guard best >= 2 * minimumEvidence, Double(best) >= 0.08 * Double(count), support >= minimum else {
             return Double(zeroScore) >= 0.5 * Double(count) ? .still : .unexplained
         }
         // Periodic content scores several shifts alike: take the one nearest the expectation.
@@ -200,7 +220,7 @@ public struct ScrollMotionEstimator: Sendable {
         var label = [Int8](repeating: 0, count: total) // 1 moved only, -1 fixed only, 2 neither
         for cell in detailed {
             let a = Int(cell), b = a + shift * bands
-            let moves = b >= 0 && b < total && matches(nl, nd, a, ol, od, b)
+            let moves = b >= 0 && b < total && matches(nl, nd, a, ol, od, b, between: bands)
             let stays = matches(nl, nd, a, ol, od, a)
             // Only cells whose content could have moved here vote on which bands move.
             let overlaps = b >= 0 && b < total
