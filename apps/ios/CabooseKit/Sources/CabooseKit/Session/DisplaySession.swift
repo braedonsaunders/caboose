@@ -55,6 +55,8 @@ public protocol DisplaySession: AnyObject {
     /// `["fullscreen": false]`.
     func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool])
     func focus(_ window: RemoteWindow?)
+    /// Asks the app to lay `window` out `size` larger than its geometry (`.zero` ends it).
+    func requestOverscan(_ window: RemoteWindow, _ size: CGSize)
     func close(_ window: RemoteWindow)
     /// Asks for a full repaint.
     func refresh(_ window: RemoteWindow)
@@ -108,6 +110,7 @@ public protocol DisplaySession: AnyObject {
 }
 
 public extension DisplaySession {
+    func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {}
     /// Leave application fullscreen (Escape also exits page/player fullscreen) and restore
     /// the shell's geometry. Available even when fullscreen metadata has not arrived yet.
     func exitFullscreen(_ window: RemoteWindow, frame: CGRect) {
