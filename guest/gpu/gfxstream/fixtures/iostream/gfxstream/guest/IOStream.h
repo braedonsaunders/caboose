@@ -18,5 +18,9 @@ public:
     virtual const unsigned char* commitBufferAndReadFully(size_t size, void* buf, size_t len) = 0;
     virtual const unsigned char* read(void* buf, size_t* inout_len) = 0;
     virtual int writeFully(const void* buf, size_t len) = 0;
+
+protected:
+    // Mesa's drops the buffer it handed out; the fixture holds none.
+    void rewind() {}
 };
 }  // namespace gfxstream::guest
