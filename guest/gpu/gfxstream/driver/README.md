@@ -89,6 +89,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0027 pause-on-loss | With `CABOOSE_GPU_ON_LOSS=pause`, calls that would report executor loss wait for a new executor first |
 | 0028 xlib-surface | VK_KHR_xlib_surface for X11 windows (Wine, Proton, SDL); an X11 surface's current extent is its window's |
 | 0029 presentation-support-entry-points | The X11 and Wayland presentation-support queries are returned from `vkGetInstanceProcAddr` by name |
+| 0030 process-connection | One connection manager per process on the socket transport, so the shared encoder outlives the thread that made it |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
