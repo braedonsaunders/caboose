@@ -678,7 +678,7 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | OpenGL through Xwayland, so Zink. |
-| Electron on X11, such as Visual Studio Code | ANGLE on OpenGL, so Zink. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client whose ANGLE draws with OpenGL, so Zink. |
 | Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 The broker listens on its local socket only while a phone's executor is ready. With no
@@ -701,7 +701,9 @@ Flatpak applications take the same paths inside their sandbox. `install-live.py
 extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
 runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
-override. The launch environment's variables pass into the sandbox unchanged.
+override. The launch environment's variables pass into the sandbox unchanged;
+`PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
+which shares no other part of the runtime directory with games.
 
 `guest/gpu/check-apps.sh` checks each path in a disposable container
 ([guest/gpu](../guest/gpu/README.md#application-routing-check)).

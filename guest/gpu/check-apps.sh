@@ -84,6 +84,8 @@ expect_env CABOOSE_GFXSTREAM_SOCKET "$gpu/gpu.sock"
 expect_env CABOOSE_GFXSTREAM_SURFACE_SOCKET "$gpu/surface.sock"
 expect_env LIBGL_KOPPER_DRI2 1
 expect_env GSK_RENDERER vulkan
+expect_env ELECTRON_OZONE_PLATFORM_HINT x11
+expect_env CABOOSE_GPU_EXECUTOR_SWITCH 1
 ! grep -q '^GALLIUM_DRIVER=' "$out/display.env" || fail 'launch environment selects a Gallium driver'
 
 # No phone: nothing listens, and every toolkit draws on the computer as before.
@@ -159,9 +161,9 @@ for _ in range(40):
                if re.search(pattern, cmdline(w['pid']) if w['pid'] else w['title'])]
     if windows:
         png = ask(f"screenshot {windows[0]['id']}")[1]
+        open(png_out, 'wb').write(png)
         values = drawn(png)
         if values >= 16:
-            open(png_out, 'wb').write(png)
             print(f"window {windows[0]['id']} {windows[0]['rect'][2]}x{windows[0]['rect'][3]}, {values} byte values")
             sys.exit(0)
     time.sleep(0.5)
@@ -208,7 +210,8 @@ Window {
 QML
 app qt-quick 20 '^qml6' --window env QSG_INFO=1 qml6 "$out/scene.qml"
 app chromium 40 'type=gpu-process' --window='^/usr/lib/chromium/chromium (?!.*--type=)' chromium --user-data-dir="$out/chromium" --no-first-run --no-default-browser-check about:blank
-# Electron, here Visual Studio Code: an X11 client whose ANGLE draws with OpenGL, so Zink.
+# Electron, here Visual Studio Code: an X11 client by the launch environment, whose ANGLE
+# draws with OpenGL, so Zink.
 app electron 40 'type=gpu-process' --window='^/usr/share/code/code (?!.*--type=)' \
   /usr/share/code/code --user-data-dir="$out/code" --disable-workspace-trust
 echo "PASS: every toolkit reached the phone's driver and ran on without a phone; records in $records"

@@ -19,6 +19,7 @@ mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
 mod ibus;
+mod ibus_portal;
 mod input;
 mod keymap;
 mod motion;
@@ -185,8 +186,10 @@ const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 /// own X11 surfaces. Mesa tries Zink before its CPU renderer only while no
 /// `GALLIUM_DRIVER` is selected, and falls back to the CPU renderer when Zink finds no
 /// GPU. GTK 4 draws with Vulkan, not with OpenGL, which on Wayland has no Zink without a
-/// DRM render node.
-const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("LIBGL_KOPPER_DRI2", "1"), ("GSK_RENDERER", "vulkan")];
+/// DRM render node; Electron runs as an X11 client, whose ANGLE draws with OpenGL, so
+/// Zink, where as a Wayland client its GPU process would find no render node.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] =
+    &[("LIBGL_KOPPER_DRI2", "1"), ("GSK_RENDERER", "vulkan"), ("ELECTRON_OZONE_PLATFORM_HINT", "x11")];
 
 /// On the seat that renders on the phone's GPU: every application's Vulkan loader also
 /// loads the phone's driver, which reaches the phone through the broker's sockets; they
@@ -201,11 +204,16 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
         tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
         return;
     }
-    // A selected Gallium driver stops Mesa trying Zink.
-    env.retain(|(k, _)| k != "GALLIUM_DRIVER");
+    // A selected Gallium driver stops Mesa trying Zink; the toolkit settings replace the
+    // seat's defaults.
+    env.retain(|(k, _)| k != "GALLIUM_DRIVER" && !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k));
     env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    // Steam's container runtime (pressure-vessel) shares only the paths it is told to.
+    if let Some(dir) = stream.parent() {
+        env.push(("PRESSURE_VESSEL_FILESYSTEMS_RW".into(), dir.display().to_string()));
+    }
     // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
     // CPU while no phone was attached are lost once one is, so applications move to it.
     env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
@@ -592,7 +600,15 @@ fn run(config: Config) -> Result<(), String> {
         }
         let path = dir.join("ibus");
         match ibus::Ibus::listen(&path, &handle) {
-            Ok(service) => state.ibus = Some(service),
+            Ok(service) => {
+                // Sandboxed applications reach it through the session bus.
+                if let Ok(address) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+                    if let Err(e) = ibus::Ibus::serve_portal(address, &handle) {
+                        tracing::warn!("input method: no IBus portal: {e}");
+                    }
+                }
+                state.ibus = Some(service);
+            }
             Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
         }
     }
@@ -730,14 +746,20 @@ mod tests {
     #[test]
     fn the_gpu_seat_routes_vulkan_and_opengl_to_the_phone() {
         let icd = tempfile_icd();
-        let mut env = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        let mut env = vec![
+            ("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned()),
+            ("ELECTRON_OZONE_PLATFORM_HINT".to_owned(), "auto".to_owned()),
+        ];
         apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(env.iter().filter(|(k, _)| k == "ELECTRON_OZONE_PLATFORM_HINT").count(), 1);
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
         assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
+        assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
+        assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
         std::fs::remove_file(&icd).unwrap();
     }
