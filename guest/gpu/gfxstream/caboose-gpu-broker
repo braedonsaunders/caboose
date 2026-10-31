@@ -175,6 +175,8 @@ DATA_READ_BYTES = 65536
 DATA_CREDIT_BYTES = DATA_READ_BYTES + 64 + 10  # CGLV header + maximum WS header
 CONTROL_HEADROOM_BYTES = 65536
 CONTROL_HEADROOM_MESSAGES = 8
+# An exited process whose surfaces have not retired this long after its last stream is stopped anyway.
+STALLED_SURFACE_SECONDS = 3
 
 
 class LocalSocketReader:
@@ -641,8 +643,8 @@ class Session:
         if frame.kind == Kind.SURFACE_RETIRED:
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
             surface = self.surfaces.get(key)
-            if (surface is None or not surface['retiring'] or surface.get('retire_sent') is False or
-                    surface['process'] != frame.process):
+            if (surface is None or surface['process'] != frame.process or
+                    (not surface.get('forced') and (not surface['retiring'] or surface.get('retire_sent') is False))):
                 raise ValueError('unexpected surface retirement')
             if self.indexed_enabled and not surface.get('disconnected') and (
                     surface['indexed'].creating or self.unfinished_presents(surface) or
@@ -668,7 +670,8 @@ class Session:
                 try: surface['replies'].put_nowait(data)
                 except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
             surface['retired'].set()
-            process['surfaces'].remove(key)
+            process['surfaces'].discard(key)
+            process.get('forced_surfaces', set()).discard(key)
             del self.surfaces[key]
             if surface.get('owner') is not None:
                 surface['owner'](Kind.SURFACE_RETIRED, frame.payload)
@@ -864,18 +867,56 @@ class Session:
 
     def stop_process_if_idle(self, process_id):
         process = self.processes.get(process_id)
-        if process is None or process['stopping'] or process['streams'] or process['surfaces'] or self.draining:
+        if process is None or process['stopping'] or process['streams'] or self.draining:
+            return
+        if process['surfaces']:
+            self.watch_stalled_surfaces(process_id, process)
             return
         process['stopping'] = True
         self.send(Kind.PROCESS_STOP, process_id)
         async def finish():
             try:
                 await asyncio.wait_for(process['retired'].wait(), 10)
+                # The phone's process retirement retired the surfaces it was stopped with.
+                for key in tuple(process.get('forced_surfaces', ())):
+                    surface = self.surfaces.pop(key, None)
+                    if surface is None: continue
+                    await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
+                    surface['retired'].set()
                 self.bindings.retire_process(self.binding_generation, process_id)
                 self.processes.pop(process_id, None)
             except (OSError, RuntimeError, asyncio.TimeoutError):
                 self.failed = True; self.writer.close()
         task = asyncio.create_task(finish())
+        self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
+
+    def watch_stalled_surfaces(self, process_id, process):
+        """An exited process whose surface retirement stalls is still stopped: the phone's
+        process retirement retires its surfaces, and its device and instance with it."""
+        if process.get('surface_watch'): return
+        async def watch():
+            await asyncio.sleep(STALLED_SURFACE_SECONDS)
+            process['surface_watch'] = None
+            if (self.processes.get(process_id) is not process or process['stopping'] or process['streams'] or
+                    not process['surfaces'] or self.draining or self.failed):
+                return
+            states = ' '.join(
+                f"{self.surfaces[key]['window']}:retiring={int(self.surfaces[key]['retiring'])}"
+                f",sent={int(bool(self.surfaces[key].get('retire_sent')))}"
+                f",disconnected={int(bool(self.surfaces[key].get('disconnected')))}"
+                f",bound={self.surfaces[key].get('bound')}"
+                for key in process['surfaces'] if key in self.surfaces)
+            alive = self.bindings.process_alive(self.binding_generation, process_id)
+            print(f'CABOOSE_GPU_BROKER process {process_id} has no streams but surfaces stall: alive={int(alive)} {states}',
+                  file=sys.stderr, flush=True)
+            if alive or not all(self.surfaces.get(key, {}).get('disconnected') for key in process['surfaces']):
+                return
+            for key in process['surfaces']: self.surfaces[key]['forced'] = True
+            process['forced_surfaces'] = set(process['surfaces'])
+            process['surfaces'] = set()
+            self.stop_process_if_idle(process_id)
+        task = asyncio.create_task(watch())
+        process['surface_watch'] = task
         self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
 
     async def revoke(self):
@@ -1403,6 +1444,10 @@ class Broker:
                 raise ValueError('token file too large')
             _computer, executor, response = admit(raw, token.strip())
             phone_features = admission_features(raw)
+            # A reconnect can arrive while the lost session is still ending its local clients.
+            for _ in range(50):
+                if self.lease.idle: break
+                await asyncio.sleep(0.1)
             generation = self.lease.admit(executor.bytes)
             session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed,
                               features=phone_features)
@@ -1489,8 +1534,9 @@ class Broker:
                 await session.close_after_retirement()
             else:
                 for task in done: task.result()
-        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
-            pass
+        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
+            # Every executor session that is refused or ends abnormally says why.
+            print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         finally:
             if surface_listener:
                 surface_listener.close()
@@ -1518,12 +1564,15 @@ class Broker:
                     except asyncio.TimeoutError:
                         session.failed = True
                 if not session.revoked.is_set():
-                    # Socket loss alone is not native finish; leave lease draining.
-                    self.lease.revoke(executor.bytes, generation)
+                    with contextlib.suppress(RuntimeError): self.lease.revoke(executor.bytes, generation)
                 for task in tuple(session.lifecycle_tasks): task.cancel()
                 if session.lifecycle_tasks:
                     await asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
+                # The phone dropped this generation's objects with its connection, and every
+                # local client of it has ended: release the lease so the executor can return.
+                if self.lease.abandoned(executor.bytes, generation):
+                    print('CABOOSE_GPU_BROKER lost executor generation released', file=sys.stderr, flush=True)
             if server:
                 with contextlib.suppress(OSError, asyncio.TimeoutError):
                     await asyncio.wait_for(server.wait_closed(), 1)

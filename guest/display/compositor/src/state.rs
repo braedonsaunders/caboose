@@ -288,6 +288,7 @@ impl HasNet for State {
             }
         }
     }
+    #[track_caller]
     fn on_gpu_control_failure(&mut self) { self.gpu_control_failed(); }
 }
 
@@ -419,7 +420,11 @@ impl State {
         }
     }
 
+    #[track_caller]
     pub(crate) fn gpu_control_failed(&mut self) {
+        // Each failure says where it came from: it also closes the display session.
+        let at = std::panic::Location::caller();
+        eprintln!("caboose-display: private GPU control failed at {}:{}", at.file(), at.line());
         // Without the broker no release will come: return every held buffer.
         self.release_remote_presents();
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }

@@ -95,6 +95,7 @@ pub trait HasNet: Sized + 'static {
     fn on_net_events(&mut self, events: Vec<NetEvent>);
     fn on_gpu_record(&mut self, record: crate::gpu_control::Record);
     fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>);
+    #[track_caller]
     fn on_gpu_control_failure(&mut self);
 }
 

@@ -1,10 +1,14 @@
 # Native GPU runtimes
 
 `CMakeLists.txt`, `src/` and `include/` build the GFXReconstruct replay player.
-[`gfxstream/`](gfxstream/README.md) contains the separate live Vulkan decoder,
-its pinned backend patches and real-provider validation fixtures.
+[`gfxstream/`](gfxstream/README.md) contains the separate live Vulkan decoder's
+adapter, the pin of its gfxstream fork and real-provider validation fixtures.
 
 ## Live runtime package
+
+`../scripts/build-live-gpu.sh OUTPUT_DIR` builds the runtime from source (MoltenVK
+and the gfxstream fork at its pinned commit) and packages it with the script below; see
+the [`ios-reference` recipe](gfxstream/ios-reference/README.md).
 
 `../scripts/package-live-gpu.py` packages an already-built, matching physical-iOS
 backend with one hash-checked patched MoltenVK archive. It does not download or
@@ -12,7 +16,7 @@ build those dependencies. The retained CMake build must contain the
 `caboose_gpu_native_runtime` target and its headless dependency closure, with
 `CABOOSE_GFXSTREAM_PRESENTATION_LEASE=ON` and `CABOOSE_GFXSTREAM_INDEXED_WSI=ON`; the
 caller must first build and validate that exact source using the
-[`ios-reference` recipe](gfxstream/patches/ios-reference/README.md).
+[`ios-reference` recipe](gfxstream/ios-reference/README.md).
 
 From `apps/ios`, with the input paths and digest set to the validated artifacts:
 

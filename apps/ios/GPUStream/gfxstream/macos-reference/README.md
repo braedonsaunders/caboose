@@ -7,16 +7,18 @@ pass on macOS; the full target has not been compiled, linked or run.
 It does not validate the decoder wire schema, GPU compute, readback, recovery,
 coherent memory or physical-phone viability.
 
-Starting from the verified pinned source archive, make a private writable copy.
-Apply only the loader-injection patch; do not apply the separate iOS headless
-factoring draft. From the Caboose checkout root, substitute absolute paths:
+It uses the gfxstream fork at `GFXSTREAM_LOADER_COMMIT` from
+[`../fork.env`](../fork.env): upstream plus loader injection only, without the iOS
+headless factoring that follows it. From the Caboose checkout root, substitute absolute
+paths:
 
 ```sh
 GFXSTREAM_SOURCE=/absolute/path/to/private/gfxstream
 GFXSTREAM_BUILD=/absolute/path/to/private/build
 CABOOSE_GFXSTREAM="$PWD/apps/ios/GPUStream/gfxstream"
-git -C "$GFXSTREAM_SOURCE" apply --check --unidiff-zero "$CABOOSE_GFXSTREAM/0001-inject-vulkan-loader.patch"
-git -C "$GFXSTREAM_SOURCE" apply --unidiff-zero "$CABOOSE_GFXSTREAM/0001-inject-vulkan-loader.patch"
+. "$CABOOSE_GFXSTREAM/fork.env"
+git clone -q "$GFXSTREAM_REPOSITORY" "$GFXSTREAM_SOURCE"
+git -C "$GFXSTREAM_SOURCE" checkout -q --detach "$GFXSTREAM_LOADER_COMMIT"
 cmake -S "$CABOOSE_GFXSTREAM/macos-reference" -B "$GFXSTREAM_BUILD" -G Ninja \
   -DCABOOSE_GFXSTREAM_SOURCE="$GFXSTREAM_SOURCE" \
   -DCMAKE_BUILD_TYPE=Debug -DDEPENDENCY_RESOLUTION=AOSP \
