@@ -110,7 +110,8 @@ access unit in decode order, exactly as in [codec-passthrough.md](codec-passthro
 Annex-B for H.264 and HEVC with parameter sets at random access points, a VP9 frame or
 superframe, an AV1 temporal unit. `flags` are those of `FRAME` there (key, hidden, replay).
 `serial` is the serial the unit's surface names, and `surface` is the surface the application
-shows the picture in.
+shows the picture in. A surface's serials never decrease from one unit to the next; a picture
+may be sent more than once with the same serial (a shown AV1 forward key frame, or a replay).
 
 The phone keeps, per connection token and surface, the latest picture it has decoded and its
 serial, until a later unit names the surface, SURFACE_GONE arrives or the connection closes.

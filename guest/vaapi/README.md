@@ -15,12 +15,19 @@ The compositor currently requests local decode for every stream because marker p
 cannot establish foreground alpha or occlusion. The experimental capture path remains
 available; codec advertisement does not enable production passthrough.
 
+In a process whose windows the phone renders (the Caboose Vulkan driver is loaded and the
+GPU broker's phone decodes the format), a stream is decoded on the phone instead: the
+driver sends the bitstream over a media stream of the GPU broker, and each surface's
+identity page names the phone's picture, which the Vulkan driver latches into the image
+that samples the surface. The contract is [docs/gpu-media.md](../../docs/gpu-media.md).
+
 ## Layout
 
 | Path | What |
 | --- | --- |
 | `src/driver.c` | libva entry point and objects; streams, the key-frame buffer, the switch to local decoding |
-| `src/surface.c` | Surface memory (memfd, exported through `/dev/udmabuf`), imported dmabufs, export descriptors |
+| `src/surface.c` | Surface memory (memfd exported through `/dev/udmabuf`, or a vgem buffer), identity pages, imported dmabufs, export descriptors |
+| `src/gpu.c`, `src/gpu_media.h` | The media connection to the phone; the wire, identity and latch layouts shared with the Vulkan driver |
 | `src/marker.c` | The marker painter and the reference detector (caboose-display carries a Rust port, `guest/display/compositor/src/video/marker.rs`) |
 | `src/sink.c`, `src/proto.h` | The video socket |
 | `src/h264.c`, `src/hevc.c`, `src/vp9.c`, `src/av1.c` | Bitstream rebuilders, one per codec; each file's header says what it rebuilds and what it refuses |
@@ -28,6 +35,8 @@ available; codec advertisement does not enable production passthrough.
 | `src/bits.c` | Bit writer and reader, Exp-Golomb, NAL escaping |
 | `tools/cbva-capture.c` | `split` a capture into elementary streams; `serve` a stub caboose-display |
 | `tools/cbva-detect.c` | Run the detector on a screenshot |
+| `tools/cbva-phone.c` | A stand-in broker and phone for the media connection; writes what it receives as a capture |
+| `tests/gpu-media.c`, `tests/gpu-media-vectors.txt` | The media wire and identity page against golden vectors, and the identity's sequence lock under a concurrent writer |
 | `tests/av1-state.c` | Source-level AV1 OBU/reference-state checks, including a paused held picture requested after an older surface |
 | `tests/unit.c` | Unit tests: bit I/O, escaping, the marker code, the detector on synthetic screens |
 | `tests/roundtrip.sh`, `tests/cases/` | Bit-exact round trips per codec through `ffmpeg -hwaccel vaapi` |
@@ -68,11 +77,16 @@ without a hardware decoder.
 | `CABOOSE_VIDEO_SOCKET` | The compositor's socket (default `$XDG_RUNTIME_DIR/caboose-video.sock`) |
 | `CABOOSE_VA_SINK=path` | Write the socket's messages to a file instead (tests); `cbva-capture split` reads it |
 | `CABOOSE_VA_MODE=decode` | Decode every stream locally; initialises without a compositor |
+| `CABOOSE_GFXSTREAM_SOCKET` | The GPU broker's socket; with it the driver opens the media connection to the phone |
+| `CABOOSE_VA_GPU=0` | Never decode on the phone |
 | `CABOOSE_VA_LOG=1` | Log streams, mode switches and refused bitstreams to stderr |
 
 Exporting surfaces needs read-write access to `/dev/udmabuf` (the `udmabuf` kernel module,
-and the device in a container). Without it the players that render through GL or Vulkan
-copy frames out instead, which is readback, so those streams decode locally.
+and the device in a container) or, where the kernel has no udmabuf (WSL), to vgem's primary
+node (`/dev/dri/card*` of the `vgem` module), whose dumb buffers are exported instead.
+Without either, the players that render through GL or Vulkan copy frames out instead, which
+is readback, so those streams decode locally. Chromium skips vgem render nodes when it looks
+for a VA device; give it the node with `--hardware-video-device-path=/dev/dri/renderD128`.
 
 ## Test
 
@@ -125,6 +139,11 @@ The round trips cover:
   intra block copy, error resilience, global motion, 128x128 superblocks with quantizer
   matrices and delta-q, lossless, superres, switch frames, and reference scaling.
 
+Each round trip also runs with `tools/cbva-phone` as the phone (`phone`: the units it
+receives decode to the source exactly and follow the media contract; `phone-rb`: a readback
+moves the stream from the phone to local decoding, exact as before). A stub library named
+like the Vulkan driver is preloaded so ffmpeg's streams take the phone path.
+
 For 10 s H.264 test clips at 20 Mb/s, the forwarded bitstream is about 0.02% larger than
 the source: the parameter sets sent in band.
 
@@ -134,7 +153,7 @@ See [docs/codec-passthrough.md, "Limits"](../../docs/codec-passthrough.md#limits
 readback (canvas, WebGL) is invisible to the driver and is the compositor's to catch;
 protected (hardware DRM) sessions are not offered; colour primaries, transfer and HDR
 metadata are not in VA; AV1 is forwarded one picture late; no `vaPutSurface` and no video
-processing entry point; export needs `/dev/udmabuf`; imported surfaces must be linear.
+processing entry point; export needs `/dev/udmabuf` or vgem; imported surfaces must be linear.
 Bitstreams refused per codec (the app then decodes in software):
 
 - H.264: `pic_order_cnt_type` 1, slice groups (FMO), 4:2:2 and 4:4:4.

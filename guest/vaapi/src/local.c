@@ -159,6 +159,7 @@ static void store(cb_context *c, const AVFrame *f, uint32_t seq)
     }
     cb_surface_end_cpu(s);
     s->mark = -1;
+    cb_surface_pixels(c->drv, s);
 }
 
 void cb_local_decode(cb_local *l, uint32_t seq, const uint8_t *data, size_t len)
