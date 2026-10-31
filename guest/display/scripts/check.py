@@ -265,6 +265,14 @@ def check_gtk_scroll_reports(version):
     return with_scroll_server(command)
 
 
+def check_qt_scroll_reports():
+    """The Qt Quick reporter (guest/scroll-reporter/qt) in its check application, preloaded.
+    CABOOSE_SCROLL_QT names the directory guest/scroll-reporter/qt/build.sh --check built."""
+    built = os.environ.get("CABOOSE_SCROLL_QT") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "qt", "out")
+    command = ["env", "QT_QPA_PLATFORM=wayland", f"LD_PRELOAD={built}/libcaboose-scroll-qt6.so", f"{built}/scroll-ruler-qt6"]
+    return with_scroll_server(command)
+
+
 def check_chromium_touch_fling():
     def run(proc, token):
         time.sleep(2)
@@ -1155,6 +1163,7 @@ CHECKS = [
     ("chromium-scroll-reports", check_chromium_scroll_reports),
     ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
     ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
+    ("qt6-scroll-reports", check_qt_scroll_reports),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("encoder-eviction", check_encoder_eviction),

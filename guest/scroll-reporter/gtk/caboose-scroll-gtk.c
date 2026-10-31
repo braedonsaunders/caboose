@@ -42,7 +42,8 @@
     FN(gpointer, g_object_ref, (gpointer)) \
     FN(void, g_object_unref, (gpointer)) \
     FN(GMainContext *, g_main_context_default, (void)) \
-    FN(GSource *, g_main_context_find_source_by_id, (GMainContext *, guint))
+    FN(GSource *, g_main_context_find_source_by_id, (GMainContext *, guint)) \
+    FN(void, gdk_frame_clock_request_phase, (GdkFrameClock *, GdkFrameClockPhase))
 #if CABOOSE_GTK == 4
 #define GTK_FNS \
     FN(gboolean, gtk_is_initialized, (void)) \
@@ -190,6 +191,7 @@ typedef struct {
 
 typedef struct {
     GtkWidget *window;
+    GdkFrameClock *clock;
 #if CABOOSE_GTK == 4
     GtkWidget *tag;
 #endif
@@ -452,6 +454,7 @@ static void hook(GtkWidget *window) {
     if (!clock) return;
     Win *w = calloc(1, sizeof *w);
     w->window = window;
+    w->clock = clock;
     p_g_object_ref(window);
     p_g_object_set_data((GObject *)window, "caboose-scroll", w);
 #if CABOOSE_GTK == 4
@@ -496,13 +499,11 @@ static void on_message(const char *json) {
     } else {
         return;
     }
-    // The next layout reports again with the new state.
-    for (int i = 0; i < nwins; i++) wins[i]->last[0] = 0;
-#if CABOOSE_GTK == 4
-    if (reporting) p_gtk_widget_queue_draw(reporting->window);
-#else
-    if (reporting) p_gtk_widget_queue_draw_area(reporting->window, 0, 0, 1, 1);
-#endif
+    // A frame reports again with the new state: its layout phase is where reports are made.
+    for (int i = 0; i < nwins; i++) {
+        wins[i]->last[0] = 0;
+        p_gdk_frame_clock_request_phase(wins[i]->clock, GDK_FRAME_CLOCK_PHASE_LAYOUT);
+    }
 }
 
 static gboolean on_socket(gint fd, GIOCondition condition, gpointer data) {

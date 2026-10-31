@@ -272,6 +272,15 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.scroll.socket {
         // Toolkit scroll reporters find the compositor here (scroll.rs).
         env.push(("CABOOSE_SCROLL_SOCKET".into(), socket.display().to_string()));
+        // The toolkit reporters' preload libraries, inert in processes without their toolkit.
+        let reporters = scroll::preload_libraries(std::path::Path::new(scroll::REPORTERS));
+        if !reporters.is_empty() {
+            let mut preload = reporters.join(":");
+            if let Some(existing) = std::env::var("LD_PRELOAD").ok().filter(|v| !v.is_empty()) {
+                preload = format!("{existing}:{preload}");
+            }
+            env.push(("LD_PRELOAD".into(), preload));
+        }
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
