@@ -174,3 +174,63 @@ bindings: the private macOS driver passes real two-/three-plane sampling and
 readback, and the same lifecycle fixture initializes its compositor. Descriptor
 arrays retain their previous behavior. A successful exit without checking
 pipeline failures is not a valid backend acceptance result.
+
+## Phone-decoded video
+
+The phone's half of [docs/gpu-media.md](../../../../docs/gpu-media.md). `decode_connection.cpp`
+hands a stream whose first word is `CBVM` to `runMediaSession` (`media_session.*`) instead of
+the Vulkan decoder, and executes each `CBVL` LATCH packet of a Vulkan stream
+(`executeLatch`, `media_latch.*`) in stream order, before the command that follows it.
+
+- `media_wire.h` parses media records and LATCH packets; `media_bitstream.*` turns units into
+  what Core Media takes (H.264 and HEVC parameter sets by ID and length-prefixed pictures,
+  AV1 temporal units and `av1C`, VP9 frames and `vpcC`).
+- `media_session.*` answers HELLO with CAPS, opens one decoder per stream, and applies the
+  FAIL and REPLAY rules. `media_registry.*` keeps each connection's latest picture per surface
+  for the whole executor; a latch waits on it for at most 200 ms.
+- `media_videotoolbox.mm` decodes in hardware with VideoToolbox into IOSurface-backed,
+  Metal-compatible buffers in a bi-planar 4:2:0 format matching the stream (`420v`, `420f`,
+  `x420`, `xf20`), so samples are copied unconverted. CAPS lists what
+  `VTIsHardwareDecodeSupported` reports.
+- `media_copy.mm` imports the picture's planes as MoltenVK images (`CVMetalTextureCache`,
+  `VkImportMetalTextureInfoEXT`) and copies them with `vkCmdCopyImage` into the application's
+  image (2-plane 4:2:0, or a single luma or chroma plane) on its queue, under its queue mutex,
+  between barriers that leave it in `GENERAL`; carried pixels go through a staging buffer. A
+  reclaimer thread waits for each copy's fence before releasing its resources and then the
+  decoder leases, so destroying the image or device waits only for the copy itself.
+- The decoder fork's `Caboose: media-latch-objects` commit adds `acquireCabooseMediaLatchObjects`, which
+  validates that the queue and a 2D single-level transfer-destination image belong to the
+  stream's context and returns them with instance, device, image and memory leases, and enables
+  `VK_EXT_metal_objects` on host devices that have it. The guest driver must create the phone
+  image of an imported dmabuf with `VK_IMAGE_USAGE_TRANSFER_DST_BIT`; images without it are
+  not latched.
+- Elsewhere (the Linux reference receiver) `media_platform_portable.cpp` reports no formats, so
+  the guest decodes every stream locally, and latches are validated and change nothing.
+
+Fixtures (`CABOOSE_GFXSTREAM_MEDIA_TESTS=ON` in a full configure, or directly):
+
+```sh
+cd apps/ios/GPUStream/gfxstream
+c++ -std=c++17 -I. tests/media_wire_test.cpp -o /tmp/media-wire && /tmp/media-wire ../../../../guest/vaapi/tests/gpu-media-vectors.txt
+c++ -std=c++17 -I. tests/media_bitstream_test.cpp media_bitstream.cpp -o /tmp/media-bitstream && /tmp/media-bitstream
+c++ -std=c++17 -I. tests/media_session_test.cpp media_session.cpp media_registry.cpp -o /tmp/media-session && /tmp/media-session
+# macOS, real VideoToolbox; the AV1 and VP9 cases need tests/media_fixtures.sh (FFmpeg)
+sh tests/media_fixtures.sh /tmp/media-fixtures
+clang++ -std=c++17 -fobjc-arc -I. tests/media_videotoolbox_test.mm media_videotoolbox.mm media_bitstream.cpp \
+  media_session.cpp media_registry.cpp -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
+  -framework Foundation -o /tmp/media-vt && /tmp/media-vt /tmp/media-fixtures
+# macOS, real MoltenVK (Homebrew molten-vk and vulkan-loader)
+clang++ -std=c++17 -fobjc-arc -I. -I/opt/homebrew/include tests/media_copy_test.mm media_copy.mm \
+  media_videotoolbox.mm media_bitstream.cpp media_session.cpp media_registry.cpp -L/opt/homebrew/lib -lvulkan \
+  -framework Metal -framework IOSurface -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
+  -framework Foundation -o /tmp/media-copy && /tmp/media-copy
+```
+
+The VideoToolbox fixture sends H.264 (with B-frames, video and full range), HEVC Main 10, AV1
+(8- and 10-bit) and VP9 (profiles 0 and 2, with hidden alt-ref frames) through
+`runMediaSession` as the guest driver sends them, waits for every serial as a latch would, and
+checks the output format and luma against the source (H.264, HEVC) or FFmpeg's decode (AV1,
+VP9). The copy fixture latches synthetic `420v` and `x420` pictures and a decoded H.264 frame
+into 2-plane and single-plane images, and carried pixels into an odd-sized image, and reads
+every copied byte back. They establish decoding and copying on Apple silicon with MoltenVK;
+they do not exercise the gfxstream decoder, the accessor patch or a phone.

@@ -24,14 +24,33 @@ if(APPLE)
     target_compile_definitions(caboose_gfxstream_abi INTERFACE
         VK_USE_PLATFORM_MACOS_MVK VK_USE_PLATFORM_METAL_EXT)
 endif()
-add_library(caboose_gfxstream_connection STATIC socket_stream.cpp packet_framing.cpp decode_connection.cpp completion_feed.cpp)
+add_library(caboose_gfxstream_connection STATIC socket_stream.cpp packet_framing.cpp decode_connection.cpp completion_feed.cpp
+    media_bitstream.cpp media_registry.cpp media_session.cpp)
+# Phone-decoded video (docs/gpu-media.md): VideoToolbox decoders and the latch copy on
+# Apple platforms, which need the decoder's media latch accessor; elsewhere media streams
+# report no formats and latches leave their images as they were.
+if(APPLE)
+    file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/vulkan/vk_decoder_global_state.h"
+        CABOOSE_MEDIA_LATCH REGEX "acquireCabooseMediaLatchObjects")
+    if(NOT CABOOSE_MEDIA_LATCH)
+        message(FATAL_ERROR "Phone-decoded video requires the decoder's media latch objects commit")
+    endif()
+    target_sources(caboose_gfxstream_connection PRIVATE media_videotoolbox.mm media_copy.mm media_latch.mm)
+    target_compile_options(caboose_gfxstream_connection PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+    target_link_libraries(caboose_gfxstream_connection PUBLIC "-framework VideoToolbox" "-framework CoreMedia"
+        "-framework CoreVideo" "-framework Metal" "-framework IOSurface" "-framework Foundation")
+else()
+    target_sources(caboose_gfxstream_connection PRIVATE media_platform_portable.cpp)
+endif()
 target_compile_definitions(caboose_gfxstream_connection PRIVATE GFXSTREAM_ENABLE_HOST_GLES=${CABOOSE_GFXSTREAM_HOST_GLES})
 target_compile_features(caboose_gfxstream_connection PRIVATE cxx_std_17)
 target_include_directories(caboose_gfxstream_connection PRIVATE
     "${GFXSTREAM_REPO_ROOT}"
     "${GFXSTREAM_REPO_ROOT}/host"
     "${GFXSTREAM_REPO_ROOT}/host/vulkan"
-    "${GFXSTREAM_REPO_ROOT}/host/include")
+    "${GFXSTREAM_REPO_ROOT}/host/vulkan/cereal/common"
+    "${GFXSTREAM_REPO_ROOT}/host/include"
+    "${GFXSTREAM_REPO_ROOT}/third_party/vulkan/include")
 target_link_libraries(caboose_gfxstream_connection PUBLIC caboose_gfxstream_abi PRIVATE gfxstream-vulkan-server gfxstream_host_iostream)
 # RenderThreadInfo's GLES variant includes gles_v2_decoder.h, which includes
 # gl_snapshot.h. Upstream GLSnapshot exposes this directory, but the Vulkan
@@ -213,6 +232,34 @@ if(TARGET gfxstream_backend_static)
         target_include_directories(caboose_gfxstream_framebuffer PRIVATE
             "${GFXSTREAM_REPO_ROOT}/host/gl/glsnapshot")
     endif()
+endif()
+
+# Fixtures for phone-decoded video. The wire and session fixtures are portable; on macOS the
+# VideoToolbox and MoltenVK fixtures decode and copy for real. Run them as the gfxstream
+# README describes ("Phone-decoded video").
+option(CABOOSE_GFXSTREAM_MEDIA_TESTS "Build phone-decoded video fixtures" OFF)
+if(CABOOSE_GFXSTREAM_MEDIA_TESTS)
+    add_executable(caboose_gpu_media_wire_test tests/media_wire_test.cpp)
+    add_executable(caboose_gpu_media_bitstream_test tests/media_bitstream_test.cpp media_bitstream.cpp)
+    add_executable(caboose_gpu_media_session_test tests/media_session_test.cpp media_session.cpp media_registry.cpp)
+    set(CABOOSE_MEDIA_TESTS caboose_gpu_media_wire_test caboose_gpu_media_bitstream_test caboose_gpu_media_session_test)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        find_package(Vulkan REQUIRED)
+        set(CABOOSE_MEDIA_APPLE media_videotoolbox.mm media_bitstream.cpp media_session.cpp media_registry.cpp)
+        add_executable(caboose_gpu_media_videotoolbox_test tests/media_videotoolbox_test.mm ${CABOOSE_MEDIA_APPLE})
+        add_executable(caboose_gpu_media_copy_test tests/media_copy_test.mm media_copy.mm ${CABOOSE_MEDIA_APPLE})
+        target_link_libraries(caboose_gpu_media_copy_test PRIVATE Vulkan::Vulkan "-framework Metal" "-framework IOSurface")
+        foreach(test caboose_gpu_media_videotoolbox_test caboose_gpu_media_copy_test)
+            target_compile_options(${test} PRIVATE -fobjc-arc)
+            target_link_libraries(${test} PRIVATE "-framework VideoToolbox" "-framework CoreMedia"
+                "-framework CoreVideo" "-framework Foundation")
+        endforeach()
+        list(APPEND CABOOSE_MEDIA_TESTS caboose_gpu_media_videotoolbox_test caboose_gpu_media_copy_test)
+    endif()
+    foreach(test ${CABOOSE_MEDIA_TESTS})
+        target_compile_features(${test} PRIVATE cxx_std_17)
+        target_include_directories(${test} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    endforeach()
 endif()
 
 option(CABOOSE_GFXSTREAM_FRAMING_TESTS "Build portable decoder framing fixtures" OFF)

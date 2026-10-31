@@ -9,6 +9,10 @@ which contains the machinery to forward it as a `passthrough` video stream (the 
 at the moment the app presents each frame. The code,
 its build and its tests are in [guest/vaapi](../guest/vaapi/README.md).
 
+In a window the phone renders through the live GPU path, the driver instead sends the
+bitstream to the phone, which decodes it into the window's own GPU images; that contract is
+[gpu-media.md](gpu-media.md).
+
 This document is the contract between the driver and caboose-display: the socket, the
 placeholder marker, how a stream is bound to a window, and how a stream falls back.
 
@@ -217,7 +221,7 @@ debugging.
 - **Apps that render through `vaPutSurface`** (mpv `--vo=vaapi`, old VLC outputs) get
   `VA_STATUS_ERROR_UNIMPLEMENTED` and use their GL paths instead. No video processing
   entry point (`VAEntrypointVideoProc`) is offered.
-- **Exporting surfaces needs `/dev/udmabuf`.** Without it, `vaExportSurfaceHandle` fails and
+- **Exporting surfaces needs `/dev/udmabuf` or vgem.** Without either, `vaExportSurfaceHandle` fails and
   players fall back to copying frames out, which is readback and so local decoding.
 - **Imported surfaces must be linear.** Apps that allocate their own buffers (Chromium on
   some GPUs) and hand tiled ones to `vaCreateSurfaces` are refused, and decode in software.

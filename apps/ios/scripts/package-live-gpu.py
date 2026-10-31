@@ -252,6 +252,7 @@ def main():
              "-framework", "Foundation", "-framework", "CoreGraphics",
              "-framework", "IOSurface", "-framework", "Metal",
              "-framework", "QuartzCore", "-framework", "UIKit",
+             "-framework", "VideoToolbox", "-framework", "CoreMedia", "-framework", "CoreVideo",
              str(probe), "-o", str(work / "LinkProbe")])
         framework = work / args.output.name
         run(["xcodebuild", "-create-xcframework", "-library", str(merged), "-headers", str(headers),

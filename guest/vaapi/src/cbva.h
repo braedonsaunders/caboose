@@ -10,6 +10,7 @@
 #include <va/va_drmcommon.h>
 
 #include "bits.h"
+#include "gpu_media.h"
 #include "proto.h"
 
 #define CB_UNSUPPORTED (-2)
@@ -18,6 +19,11 @@ typedef struct cb_driver cb_driver;
 typedef struct cb_context cb_context;
 typedef struct cb_sink cb_sink;
 typedef struct cb_local cb_local;
+typedef struct cb_gpu cb_gpu;
+
+/* A stream's pictures go to the phone over the media connection and its
+ * surfaces name them (gpu_media.h); local to this driver, not a socket mode. */
+#define CB_MODE_GPU 2
 
 typedef struct {
     VAProfile profile;
@@ -32,12 +38,14 @@ typedef struct {
     unsigned bps;    /* bytes per sample: 1 or 2 */
     unsigned pitch, rows; /* luma pitch and allocated rows */
     size_t uv_offset, size;
-    int memfd;      /* our memory, or -1 when imported */
-    int dmabuf;     /* udmabuf over memfd, or the imported dmabuf; -1 if none */
+    int memfd;      /* our memory, or -1 when imported or on vgem */
+    int dmabuf;     /* udmabuf over memfd, a vgem buffer, or the imported dmabuf; -1 if none */
     int imported;
     uint8_t *map;
     uint64_t dev, ino; /* the dmabuf's identity, for the compositor */
     int announced;
+    cb_gm_identity_page *identity; /* the last page of our own surfaces; NULL when imported */
+    int gpu_announced; /* the phone may retain a picture for it */
     int mark;          /* (tag << 6 | seq & 63) painted now; -1 when it holds pixels */
     VAContextID owner; /* context that last decoded into it */
     uint32_t seq;      /* that frame's sequence number */
@@ -128,6 +136,7 @@ struct cb_context {
     cb_local *local;
     VASurfaceID seq_surface[CB_SEQ_MAP];
     uint32_t seq_of[CB_SEQ_MAP];
+    uint64_t seq_serial[CB_SEQ_MAP]; /* GPU mode: the serial each picture's surface names */
 };
 
 struct cb_driver {
@@ -136,8 +145,12 @@ struct cb_driver {
     unsigned nobjs[5];
     cb_sink *sink;
     int udmabuf;
+    int vgem;       /* vgem's primary node, the exporter when udmabuf is missing; -1 if none */
     int force_decode;
     uint32_t next_stream;
+    cb_gpu *gpu;          /* the media connection to the phone, or NULL */
+    uint8_t token[16];    /* names this driver's pictures in surface identities */
+    uint64_t next_serial; /* the last serial written to a surface identity */
 };
 
 enum { CB_OBJ_CONFIG, CB_OBJ_CONTEXT, CB_OBJ_SURFACE, CB_OBJ_BUFFER, CB_OBJ_IMAGE };
@@ -153,12 +166,18 @@ void cb_unsupported(cb_context *c, const char *why);
 void cb_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /* Surfaces (surface.c) */
+int cb_vgem_open(void);
 VAStatus cb_surface_alloc(cb_driver *d, cb_surface *s, unsigned w, unsigned h, uint32_t fourcc);
 VAStatus cb_surface_import(cb_driver *d, cb_surface *s, const VADRMPRIMESurfaceDescriptor *desc);
 void cb_surface_free(cb_surface *s);
 void cb_surface_begin_cpu(cb_surface *s);
 void cb_surface_end_cpu(cb_surface *s);
 void cb_surface_mark(cb_surface *s, unsigned tag, uint32_t seq);
+/* Surface identities (gpu_media.h): the picture `serial` decoded on the phone,
+ * new pixels in the planes, or neither. No-ops on imported surfaces. */
+void cb_surface_phone(cb_driver *d, cb_surface *s, uint64_t serial);
+void cb_surface_pixels(cb_driver *d, cb_surface *s);
+void cb_surface_empty(cb_driver *d, cb_surface *s);
 VAStatus cb_surface_export(cb_surface *s, uint32_t mem_type, uint32_t flags, void *descriptor);
 
 /* The video socket (sink.c) */
@@ -178,6 +197,29 @@ int cb_sink_surface(cb_sink *s, uint32_t surface, uint64_t dev, uint64_t ino);
 int cb_sink_surface_gone(cb_sink *s, uint32_t surface);
 int cb_sink_close_stream(cb_sink *s, uint32_t stream, uint8_t reason);
 int cb_sink_poll(cb_sink *s, cb_sink_event *ev);
+
+/* The media connection to the phone (gpu.c) */
+typedef struct {
+    uint32_t type; /* CB_GM_FAIL or CB_GM_REPLAY */
+    uint32_t stream;
+    uint32_t reason;
+} cb_gpu_event;
+
+/* Connects when $CABOOSE_GFXSTREAM_SOCKET names a broker whose phone answers. */
+cb_gpu *cb_gpu_open(void);
+void cb_gpu_close(cb_gpu *g);
+const uint8_t *cb_gpu_token(const cb_gpu *g);
+/* The Caboose Vulkan driver is loaded in this process: it latches the phone's
+ * pictures into the images that sample our surfaces. */
+int cb_gpu_consumer_present(void);
+int cb_gpu_supports(const cb_gpu *g, uint8_t codec, unsigned depth, unsigned w, unsigned h);
+int cb_gpu_open_stream(cb_gpu *g, uint32_t stream, uint8_t codec, unsigned depth, unsigned w, unsigned h);
+int cb_gpu_unit(cb_gpu *g, uint32_t stream, uint32_t seq, uint32_t surface, unsigned flags,
+                uint64_t serial, unsigned w, unsigned h, const uint8_t *data, size_t len);
+int cb_gpu_close_stream(cb_gpu *g, uint32_t stream);
+int cb_gpu_surface_gone(cb_gpu *g, uint32_t surface);
+/* Returns 1 with an event, 0 when none is pending, -1 on a failed connection. */
+int cb_gpu_poll(cb_gpu *g, cb_gpu_event *ev);
 
 /* Local decoding, the fallback (local.c) */
 cb_local *cb_local_new(cb_context *c);

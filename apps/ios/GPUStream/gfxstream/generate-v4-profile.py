@@ -22,7 +22,8 @@ AUDIT_INPUTS = {
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
 }
-# vk_decoder_global_state.cpp after 0027/0028 (A2), 0029 (resource cache) and 0040 (guest-device Metal objects).
+# vk_decoder_global_state.cpp after 0027/0028 (A2), 0029 (resource cache), 0040 (guest-device Metal
+# objects), display timing and the media latch objects (fork caboose 60643544).
 RESOURCE_CACHE_INPUTS = {
     'host/vulkan/vk_decoder_global_state.cpp': '061a6f188701c898ab5c5ff59db65b186b381ad1e34cf395f77eb5f2e1dc5ad4',
     'host/vulkan/caboose_pipeline_cache.h': '55c33c7a126fdd693a3c0cb4b11eca7bfb062200eb93286288a89ce068ea3fe2',

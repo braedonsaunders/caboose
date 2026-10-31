@@ -174,11 +174,15 @@ export function detectGpu(exists: (path: string) => boolean = existsSync, drm: (
  * `docker run` arguments that hand the container the GPU. With a render node the
  * container also gets /dev/udmabuf when the host has it: the Caboose VA-API driver exports
  * its decode surfaces through it, so GL players keep video passthrough (guest/vaapi).
+ * WSL has neither a render node nor udmabuf; with the vgem module loaded the container
+ * gets its nodes instead, which the driver exports surfaces from and Chromium opens
+ * VA-API on (docs/gpu-media.md).
  */
 export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync): string[] {
   const udmabuf = exists('/dev/udmabuf') ? ['--device', '/dev/udmabuf'] : []
+  const vgem = exists('/sys/module/vgem') && exists('/dev/dri') ? ['--device', '/dev/dri'] : []
   switch (kind) {
-    case 'wsl': return ['--device', '/dev/dxg', '-v', '/usr/lib/wsl:/usr/lib/wsl:ro', '-e', 'LD_LIBRARY_PATH=/usr/lib/wsl/lib', '-e', 'CABOOSE_GPU=wsl']
+    case 'wsl': return ['--device', '/dev/dxg', ...vgem, '-v', '/usr/lib/wsl:/usr/lib/wsl:ro', '-e', 'LD_LIBRARY_PATH=/usr/lib/wsl/lib', '-e', 'CABOOSE_GPU=wsl']
     case 'nvidia': return ['--gpus', 'all', '-e', 'NVIDIA_DRIVER_CAPABILITIES=all', ...udmabuf, '-e', 'CABOOSE_GPU=nvidia']
     case 'dri': return ['--device', '/dev/dri', ...udmabuf, '-e', 'CABOOSE_GPU=dri']
     case 'none': return ['-e', 'CABOOSE_GPU=none']

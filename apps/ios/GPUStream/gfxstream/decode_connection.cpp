@@ -1,5 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "decode_connection.h"
+#include "media_latch.h"
+#include "media_session.h"
 #include "socket_stream.h"
 #include "packet_framing.h"
 #include "completion_feed.h"
@@ -133,8 +135,12 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
     };
     uint32_t flags;
     if (!stream.readFully(&flags, sizeof(flags))) return finish(DecodeStage::flags, stop ? 0 : stream.error());
+    // A media stream (docs/gpu-media.md) names itself in place of the client flags; it is
+    // decoded by the platform's media decoder, not the Vulkan decoder.
+    if (flags == media::kStreamFlags)
+        return finish(DecodeStage::stopped, media::runMediaSession(fd, stop, media::platformDecoders()));
     // Pinned upstream RenderThread consumes but does not interpret this word.
-    (void)flags;
+    const uint32_t contextId = static_cast<uint32_t>(thread_info.getPuid());
     gfxstream::host::GfxApiLogger logger;
     gfxstream::host::vk::VkDecoderContext context{};
     context.gfxApiLogger = &logger;
@@ -177,11 +183,27 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
-            // Caboose completion feed commands are served here, never by the decoder.
+            // Caboose completion feed commands and video LATCH packets are not Vulkan commands:
+            // they are handled here, in stream order, never by the decoder.
             if (pending.size() >= 8) {
                 uint32_t opcode = 0, declared = 0;
                 std::memcpy(&opcode, pending.data(), sizeof(opcode));
                 std::memcpy(&declared, pending.data() + 4, sizeof(declared));
+                if (opcode == media::kLatchOpcode) {
+                    if (declared < media::kLatchHead || declared > max_packet) return finish(DecodeStage::framing, EPROTO);
+                    if (pending.size() < declared) {
+                        if (!readMore(declared - pending.size())) {
+                            if (stop) return finish(DecodeStage::stopped, 0);
+                            if (stream.error()) return finish(DecodeStage::input, stream.error());
+                            return finish(DecodeStage::eof, EPROTO);
+                        }
+                        continue;
+                    }
+                    if (executeLatch(contextId, pending.data(), declared) != 0) return finish(DecodeStage::framing, EPROTO);
+                    pending.erase(pending.begin(), pending.begin() + declared);
+                    decodedAny = true;
+                    continue;
+                }
                 if (CompletionFeed::isFeedOpcode(opcode)) {
                     if (!completions || sequenced) return finish(DecodeStage::profile, ENOTSUP);
                     const size_t size = CompletionFeed::packetSize(opcode);

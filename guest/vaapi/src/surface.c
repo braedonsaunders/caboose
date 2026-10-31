@@ -1,7 +1,12 @@
 /* Surface memory. A surface is linear NV12 or P010 in a sealed memfd, exported to
  * the app as a dmabuf through /dev/udmabuf, so GL, Vulkan and Wayland can import
- * it like any decoder's output. Apps that bring their own dmabufs (Chromium
- * allocates through GBM) are imported when the buffer is linear. */
+ * it like any decoder's output. A kernel without udmabuf (WSL) exports a vgem
+ * buffer instead: shared memory pages behind a dmabuf, which is all udmabuf adds.
+ * Apps that bring their own dmabufs (Chromium allocates through GBM) are
+ * imported when the buffer is linear.
+ *
+ * The last page of every surface we allocate is its identity (gpu_media.h):
+ * what the planes mean, for a Vulkan driver in any process that imports it. */
 #define _GNU_SOURCE
 #include "cbva.h"
 #include "marker.h"
@@ -14,9 +19,11 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <va/va_drmcommon.h>
+#include <xf86drm.h>
 
 #define ALIGN(x, a) (((x) + (a) - 1) / (a) * (a))
 
@@ -38,6 +45,44 @@ static void paint_initial(cb_surface *s)
     cb_surface_end_cpu(s);
 }
 
+int cb_vgem_open(void)
+{
+    for (int minor = 0; minor < 16; minor++) {
+        char path[32];
+        snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
+        int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0)
+            continue;
+        drmVersionPtr v = drmGetVersion(fd);
+        int vgem = v && v->name && strcmp(v->name, "vgem") == 0;
+        drmFreeVersion(v);
+        if (vgem)
+            return fd;
+        close(fd);
+    }
+    return -1;
+}
+
+/* A dumb buffer of at least `size` bytes on vgem, as a dmabuf; its size in *size. */
+static int vgem_dmabuf(int vgem, size_t *size, unsigned pitch)
+{
+    struct drm_mode_create_dumb create = {
+        .width = pitch,
+        .height = (uint32_t)((*size + pitch - 1) / pitch),
+        .bpp = 8,
+    };
+    if (drmIoctl(vgem, DRM_IOCTL_MODE_CREATE_DUMB, &create) < 0)
+        return -1;
+    int fd = -1;
+    if (drmPrimeHandleToFD(vgem, create.handle, DRM_CLOEXEC | DRM_RDWR, &fd) < 0)
+        fd = -1;
+    struct drm_gem_close close_handle = { .handle = create.handle };
+    drmIoctl(vgem, DRM_IOCTL_GEM_CLOSE, &close_handle); /* the dmabuf keeps the buffer */
+    if (fd >= 0)
+        *size = (size_t)create.size;
+    return fd;
+}
+
 VAStatus cb_surface_alloc(cb_driver *d, cb_surface *s, unsigned w, unsigned h, uint32_t fourcc)
 {
     s->width = w;
@@ -47,9 +92,22 @@ VAStatus cb_surface_alloc(cb_driver *d, cb_surface *s, unsigned w, unsigned h, u
     s->pitch = ALIGN(w * s->bps, 256);
     s->rows = ALIGN(h, 32);
     s->uv_offset = (size_t)s->pitch * s->rows;
-    s->size = ALIGN(s->uv_offset + (size_t)s->pitch * s->rows / 2, 4096);
+    s->size = ALIGN(s->uv_offset + (size_t)s->pitch * s->rows / 2, 4096) + CB_GM_IDENTITY_PAGE;
     s->memfd = s->dmabuf = -1;
     s->owner = VA_INVALID_ID;
+    if (d->udmabuf < 0 && d->vgem >= 0) {
+        s->dmabuf = vgem_dmabuf(d->vgem, &s->size, s->pitch);
+        if (s->dmabuf < 0) {
+            cb_log("vgem: %s; surfaces cannot be exported", strerror(errno));
+        } else {
+            s->map = mmap(NULL, s->size, PROT_READ | PROT_WRITE, MAP_SHARED, s->dmabuf, 0);
+            if (s->map == MAP_FAILED) {
+                s->map = NULL;
+                goto fail;
+            }
+            goto identify;
+        }
+    }
     s->memfd = memfd_create("caboose-va-surface", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (s->memfd < 0 || ftruncate(s->memfd, (off_t)s->size) < 0)
         goto fail;
@@ -65,6 +123,9 @@ VAStatus cb_surface_alloc(cb_driver *d, cb_surface *s, unsigned w, unsigned h, u
         if (s->dmabuf < 0)
             cb_log("udmabuf: %s; surfaces cannot be exported", strerror(errno));
     }
+identify:
+    s->identity = cb_gm_identity_at(s->map, s->size);
+    cb_surface_empty(d, s);
     if (s->dmabuf >= 0) {
         struct stat st;
         if (fstat(s->dmabuf, &st) == 0) {
@@ -158,6 +219,33 @@ static void dmabuf_sync(cb_surface *s, uint64_t flags)
 
 void cb_surface_begin_cpu(cb_surface *s) { dmabuf_sync(s, DMA_BUF_SYNC_START); }
 void cb_surface_end_cpu(cb_surface *s) { dmabuf_sync(s, DMA_BUF_SYNC_END); }
+
+static void identity_write(cb_surface *s, uint32_t state, const uint8_t token[16], uint64_t serial)
+{
+    if (!s->identity)
+        return;
+    cb_gm_identity v = { .state = state, .serial = serial, .surface = s->id,
+                         .fourcc = s->fourcc == VA_FOURCC_P010 ? CB_GM_FOURCC_P010 : CB_GM_FOURCC_NV12,
+                         .width = (uint16_t)s->width, .height = (uint16_t)s->height,
+                         .pitch = s->pitch, .uv_offset = (uint32_t)s->uv_offset };
+    memcpy(v.token, token, 16);
+    cb_gm_identity_write(s->identity, &v);
+}
+
+void cb_surface_phone(cb_driver *d, cb_surface *s, uint64_t serial)
+{
+    identity_write(s, CB_GM_PHONE, d->token, serial);
+}
+
+void cb_surface_pixels(cb_driver *d, cb_surface *s)
+{
+    identity_write(s, CB_GM_PIXELS, d->token, ++d->next_serial);
+}
+
+void cb_surface_empty(cb_driver *d, cb_surface *s)
+{
+    identity_write(s, CB_GM_EMPTY, d->token, 0);
+}
 
 void cb_surface_mark(cb_surface *s, unsigned tag, uint32_t seq)
 {

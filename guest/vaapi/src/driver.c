@@ -6,7 +6,14 @@
  * forwards it to the client; the surface the app gets back holds the marker
  * (marker.h) that tells the compositor where the client should layer the video.
  * When passthrough cannot serve a stream, the same bitstream is decoded locally
- * (local.c) into the app's surfaces. docs/display.md is the design. */
+ * (local.c) into the app's surfaces. docs/display.md is the design.
+ *
+ * In a process whose windows the phone renders (the Caboose Vulkan driver is
+ * loaded and the GPU broker's phone decodes the format), a stream is in GPU
+ * mode instead: the bitstream goes to the phone over the media connection
+ * (gpu.c) and each surface's identity names the phone's picture, which the
+ * Vulkan driver latches into the image that samples the surface
+ * (docs/gpu-media.md). */
 #define _GNU_SOURCE
 #include "cbva.h"
 
@@ -16,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <unistd.h>
 #include <va/va_drmcommon.h>
 
@@ -100,20 +108,32 @@ static const struct {
 };
 #define NPROFILES (sizeof(profiles) / sizeof(profiles[0]))
 
-static int profile_index(VAProfile p)
+/* With a media connection, only what the phone decodes is a hardware format: an
+ * application that chooses its codec by the decoders it has (a site through
+ * MediaCapabilities) then picks one the phone decodes. */
+static int profile_offered(const cb_driver *d, unsigned i)
+{
+    if (!d->gpu)
+        return 1;
+    VAProfile p = profiles[i].profile;
+    unsigned depth = p == VAProfileH264High10 || p == VAProfileHEVCMain10 || p == VAProfileVP9Profile2 ? 10 : 8;
+    return cb_gpu_supports(d->gpu, profiles[i].codec->id, depth, 16, 16);
+}
+
+static int profile_index(const cb_driver *d, VAProfile p)
 {
     for (unsigned i = 0; i < NPROFILES; i++)
-        if (profiles[i].profile == p && profiles[i].codec)
+        if (profiles[i].profile == p && profiles[i].codec && profile_offered(d, i))
             return (int)i;
     return -1;
 }
 
 static VAStatus query_profiles(VADriverContextP ctx, VAProfile *list, int *num)
 {
-    (void)ctx;
     int n = 0;
     for (unsigned i = 0; i < NPROFILES; i++)
-        list[n++] = profiles[i].profile;
+        if (profile_offered(DRV(ctx), i))
+            list[n++] = profiles[i].profile;
     *num = n;
     return VA_STATUS_SUCCESS;
 }
@@ -121,7 +141,7 @@ static VAStatus query_profiles(VADriverContextP ctx, VAProfile *list, int *num)
 static VAStatus query_entrypoints(VADriverContextP ctx, VAProfile profile, VAEntrypoint *list, int *num)
 {
     (void)ctx;
-    if (profile_index(profile) < 0) {
+    if (profile_index(DRV(ctx), profile) < 0) {
         *num = 0;
         return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
     }
@@ -147,7 +167,7 @@ static VAStatus get_config_attributes(VADriverContextP ctx, VAProfile profile, V
                                       VAConfigAttrib *a, int n)
 {
     (void)ctx;
-    int pi = profile_index(profile);
+    int pi = profile_index(DRV(ctx), profile);
     if (pi < 0)
         return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
     if (ep != VAEntrypointVLD)
@@ -160,7 +180,7 @@ static VAStatus create_config(VADriverContextP ctx, VAProfile profile, VAEntrypo
                               VAConfigAttrib *a, int n, VAConfigID *out)
 {
     cb_driver *d = DRV(ctx);
-    int pi = profile_index(profile);
+    int pi = profile_index(DRV(ctx), profile);
     if (pi < 0)
         return VA_STATUS_ERROR_UNSUPPORTED_PROFILE;
     if (ep != VAEntrypointVLD)
@@ -338,6 +358,8 @@ static VAStatus destroy_surfaces(VADriverContextP ctx, VASurfaceID *list, int n)
             continue;
         if (s->announced && d->sink)
             cb_sink_surface_gone(d->sink, s->id);
+        if (s->gpu_announced && d->gpu)
+            cb_gpu_surface_gone(d->gpu, s->id);
         obj_remove(d, CB_OBJ_SURFACE, list[i]);
         cb_surface_free(s);
         free(s);
@@ -469,16 +491,22 @@ static void gop_add(cb_context *c, uint32_t seq, VASurfaceID surface, unsigned f
 }
 
 static void sink_failed(cb_driver *d);
+static void gpu_failed(cb_driver *d);
 
 static void switch_to_decode(cb_context *c, uint8_t reason)
 {
     if (c->mode == CB_MODE_DECODE)
         return;
     cb_driver *d = c->drv;
+    int was_gpu = c->mode == CB_MODE_GPU;
     c->mode = CB_MODE_DECODE;
     cb_log("stream %u (%s): decoding locally (reason %u)", c->stream, c->codec->name, reason);
-    if (d->sink && reason != CB_CLOSE_ERROR && cb_sink_close_stream(d->sink, c->stream, reason))
+    if (was_gpu) {
+        if (d->gpu && reason != CB_CLOSE_ERROR && cb_gpu_close_stream(d->gpu, c->stream))
+            gpu_failed(d);
+    } else if (d->sink && reason != CB_CLOSE_ERROR && cb_sink_close_stream(d->sink, c->stream, reason)) {
         sink_failed(d);
+    }
     c->local = cb_local_new(c);
     if (!c->local) {
         cb_log("stream %u: no local %s decoder", c->stream, c->codec->name);
@@ -501,7 +529,22 @@ static void sink_failed(cb_driver *d)
     cb_sink_close(s);
     for (unsigned i = 0; i < d->nobjs[CB_OBJ_CONTEXT]; i++) {
         cb_context *c = d->objs[CB_OBJ_CONTEXT][i];
-        if (c)
+        if (c && c->mode == CB_MODE_PASSTHROUGH)
+            switch_to_decode(c, CB_CLOSE_ERROR);
+    }
+}
+
+static void gpu_failed(cb_driver *d)
+{
+    cb_gpu *g = d->gpu;
+    if (!g)
+        return;
+    cb_log("media connection failed; every GPU stream decodes locally");
+    d->gpu = NULL;
+    cb_gpu_close(g);
+    for (unsigned i = 0; i < d->nobjs[CB_OBJ_CONTEXT]; i++) {
+        cb_context *c = d->objs[CB_OBJ_CONTEXT][i];
+        if (c && c->mode == CB_MODE_GPU)
             switch_to_decode(c, CB_CLOSE_ERROR);
     }
 }
@@ -516,20 +559,33 @@ static cb_context *context_by_stream(cb_driver *d, uint32_t stream)
     return NULL;
 }
 
+static uint64_t serial_of(const cb_context *c, uint32_t seq)
+{
+    unsigned i = seq % CB_SEQ_MAP;
+    return c->seq_of[i] == seq ? c->seq_serial[i] : 0;
+}
+
 static void replay(cb_context *c)
 {
     cb_driver *d = c->drv;
-    if (c->mode != CB_MODE_PASSTHROUGH || !d->sink || !c->gop_valid)
+    int gpu = c->mode == CB_MODE_GPU;
+    if ((gpu ? !d->gpu : c->mode != CB_MODE_PASSTHROUGH || !d->sink) || !c->gop_valid)
         return;
     unsigned from = 0;
     for (unsigned i = 0; i < c->gop_count; i++)
         if (c->gop_entries[i].flags & CB_FRAME_KEY)
             from = i;
-    for (unsigned i = from; i < c->gop_count && d->sink; i++) {
+    for (unsigned i = from; i < c->gop_count && (gpu ? d->gpu != NULL : d->sink != NULL); i++) {
         cb_gop_entry *e = &c->gop_entries[i];
-        if (cb_sink_frame(d->sink, c->stream, e->seq, e->surface, e->flags | CB_FRAME_REPLAY, e->w, e->h,
-                          c->gop.data + e->off, e->len))
+        const uint8_t *data = c->gop.data + e->off;
+        if (gpu) {
+            if (cb_gpu_unit(d->gpu, c->stream, e->seq, e->surface, e->flags | CB_FRAME_REPLAY,
+                            serial_of(c, e->seq), e->w, e->h, data, e->len))
+                gpu_failed(d);
+        } else if (cb_sink_frame(d->sink, c->stream, e->seq, e->surface, e->flags | CB_FRAME_REPLAY, e->w,
+                                 e->h, data, e->len)) {
             sink_failed(d);
+        }
     }
 }
 
@@ -550,6 +606,22 @@ static void poll_sink(cb_driver *d)
         else if (ev.type == CB_MSG_REPLAY)
             replay(c);
     }
+    cb_gpu_event gev;
+    while (d->gpu && (r = cb_gpu_poll(d->gpu, &gev)) != 0) {
+        if (r < 0) {
+            gpu_failed(d);
+            return;
+        }
+        cb_context *c = context_by_stream(d, gev.stream);
+        if (!c || c->mode != CB_MODE_GPU)
+            continue;
+        if (gev.type == CB_GM_FAIL) {
+            cb_log("stream %u: the phone cannot decode it (reason %u)", c->stream, gev.reason);
+            switch_to_decode(c, CB_CLOSE_REQUESTED);
+        } else if (gev.type == CB_GM_REPLAY) {
+            replay(c);
+        }
+    }
 }
 
 void cb_emit(cb_context *c, uint32_t seq, VASurfaceID surface, unsigned flags, const uint8_t *data,
@@ -560,6 +632,12 @@ void cb_emit(cb_context *c, uint32_t seq, VASurfaceID surface, unsigned flags, c
     if (c->mode == CB_MODE_PASSTHROUGH) {
         if (d->sink && cb_sink_frame(d->sink, c->stream, seq, surface, flags, w, h, data, len))
             sink_failed(d);
+    } else if (c->mode == CB_MODE_GPU) {
+        cb_surface *s = cb_get_surface(d, surface);
+        if (s)
+            s->gpu_announced = 1;
+        if (d->gpu && cb_gpu_unit(d->gpu, c->stream, seq, surface, flags, serial_of(c, seq), w, h, data, len))
+            gpu_failed(d);
     } else if (c->local) {
         cb_local_decode(c->local, seq, data, len);
     }
@@ -577,6 +655,10 @@ void cb_unsupported(cb_context *c, const char *why)
         c->mode = CB_MODE_DECODE;
         if (c->drv->sink && cb_sink_close_stream(c->drv->sink, c->stream, CB_CLOSE_UNSUPPORTED))
             sink_failed(c->drv);
+    } else if (c->mode == CB_MODE_GPU) {
+        c->mode = CB_MODE_DECODE;
+        if (c->drv->gpu && cb_gpu_close_stream(c->drv->gpu, c->stream))
+            gpu_failed(c->drv);
     }
 }
 
@@ -587,7 +669,7 @@ static void need_pixels(cb_driver *d, cb_surface *s, int readback)
     cb_context *c = cb_obj(d, CB_OBJ_CONTEXT, s->owner);
     if (!c)
         return;
-    if (readback && c->mode == CB_MODE_PASSTHROUGH && s->mark >= 0)
+    if (readback && (c->mode == CB_MODE_PASSTHROUGH || c->mode == CB_MODE_GPU) && s->mark >= 0)
         switch_to_decode(c, CB_CLOSE_READBACK);
     if (c->mode == CB_MODE_DECODE && c->local && c->codec->provisional && s->mark >= 0) {
         cb_buf b = { 0 };
@@ -612,7 +694,7 @@ static VAStatus create_context(VADriverContextP ctx, VAConfigID config, int w, i
         UNLOCK(d);
         return VA_STATUS_ERROR_INVALID_CONFIG;
     }
-    int pi = profile_index(cfg->profile);
+    int pi = profile_index(d, cfg->profile);
     cb_context *c = calloc(1, sizeof(*c));
     if (!c || pi < 0) {
         free(c);
@@ -638,7 +720,15 @@ static VAStatus create_context(VADriverContextP ctx, VAConfigID config, int w, i
     }
     c->stream = ++d->next_stream;
     c->mode = CB_MODE_DECODE;
-    if (d->sink && !d->force_decode) {
+    unsigned bit_depth = (cfg->rt_format & VA_RT_FORMAT_YUV420_10) ? 10 : 8;
+    if (d->gpu && !d->force_decode && cb_gpu_consumer_present() &&
+        cb_gpu_supports(d->gpu, c->codec->id, bit_depth, c->width, c->height)) {
+        if (cb_gpu_open_stream(d->gpu, c->stream, c->codec->id, bit_depth, c->width, c->height) == 0)
+            c->mode = CB_MODE_GPU;
+        else
+            gpu_failed(d);
+    }
+    if (c->mode == CB_MODE_DECODE && d->sink && !d->force_decode) {
         unsigned depth = (cfg->rt_format & VA_RT_FORMAT_YUV420_10) ? 10 : 8;
         unsigned tag;
         int mode;
@@ -657,7 +747,9 @@ static VAStatus create_context(VADriverContextP ctx, VAConfigID config, int w, i
             cb_log("stream %u: no local %s decoder", c->stream, c->codec->name);
     }
     cb_log("stream %u: %s %ux%u, %s", c->stream, c->codec->name, c->width, c->height,
-           c->mode == CB_MODE_PASSTHROUGH ? "passthrough" : "local decode");
+           c->mode == CB_MODE_GPU           ? "decoded on the phone"
+           : c->mode == CB_MODE_PASSTHROUGH ? "passthrough"
+                                            : "local decode");
     *out = c->id;
     UNLOCK(d);
     return VA_STATUS_SUCCESS;
@@ -689,6 +781,8 @@ static VAStatus destroy_context(VADriverContextP ctx, VAContextID id)
         c->codec->flush(c);
     if (c->mode == CB_MODE_PASSTHROUGH && d->sink && cb_sink_close_stream(d->sink, c->stream, CB_CLOSE_APP))
         sink_failed(d);
+    if (c->mode == CB_MODE_GPU && d->gpu && cb_gpu_close_stream(d->gpu, c->stream))
+        gpu_failed(d);
     obj_remove(d, CB_OBJ_CONTEXT, id);
     UNLOCK(d);
     if (c->codec->fini)
@@ -954,6 +1048,7 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID id)
         }
         c->seq_surface[seq % CB_SEQ_MAP] = shown->id;
         c->seq_of[seq % CB_SEQ_MAP] = seq;
+        c->seq_serial[seq % CB_SEQ_MAP] = c->mode == CB_MODE_GPU ? ++d->next_serial : 0;
         for (cb_surface *t = s; t; t = t == shown ? NULL : shown) {
             t->owner = c->id;
             t->seq = seq;
@@ -961,6 +1056,13 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID id)
                 cb_surface_mark(t, c->tag, seq);
             else
                 t->mark = (int)((c->tag & 63) << 6 | (seq & 63)); /* no pixels until decoded */
+            /* The phone's picture is the shown one; a separate decode target holds none. */
+            if (c->mode == CB_MODE_GPU) {
+                if (t == shown)
+                    cb_surface_phone(d, t, c->seq_serial[seq % CB_SEQ_MAP]);
+                else
+                    cb_surface_empty(d, t);
+            }
         }
         int r = c->codec->picture(c, p, seq);
         if (r == CB_UNSUPPORTED || c->unsupported) {
@@ -969,6 +1071,9 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID id)
         } else if (r < 0) {
             st = VA_STATUS_ERROR_DECODING_ERROR;
         }
+        /* No unit will name that picture: the surface must not promise it. */
+        if (st != VA_STATUS_SUCCESS && shown->identity && shown->mark >= 0)
+            cb_surface_empty(d, shown);
     }
     picture_clear(p);
     UNLOCK(d);
@@ -1275,8 +1380,11 @@ static VAStatus terminate(VADriverContextP ctx)
         free(d->objs[k]);
     }
     cb_sink_close(d->sink);
+    cb_gpu_close(d->gpu);
     if (d->udmabuf >= 0)
         close(d->udmabuf);
+    if (d->vgem >= 0)
+        close(d->vgem);
     pthread_mutex_destroy(&d->lock);
     free(d);
     ctx->pDriverData = NULL;
@@ -1294,17 +1402,23 @@ VAStatus __vaDriverInit_1_0(VADriverContextP ctx)
     const char *mode = getenv("CABOOSE_VA_MODE");
     d->force_decode = mode && strcmp(mode, "decode") == 0;
     d->sink = cb_sink_open();
-    if (!d->sink && !d->force_decode) {
-        /* No compositor to forward to: let the app decode the way it would
-         * without a hardware decoder. */
+    d->gpu = d->force_decode ? NULL : cb_gpu_open();
+    if (!d->sink && !d->gpu && !d->force_decode) {
+        /* No compositor or phone to forward to: let the app decode the way it
+         * would without a hardware decoder. */
         cb_log("no video socket; not initialising (CABOOSE_VA_MODE=decode decodes locally)");
         pthread_mutex_destroy(&d->lock);
         free(d);
         return VA_STATUS_ERROR_UNKNOWN;
     }
+    if (d->gpu)
+        memcpy(d->token, cb_gpu_token(d->gpu), sizeof(d->token));
+    else if (getrandom(d->token, sizeof(d->token), 0) != (ssize_t)sizeof(d->token))
+        memset(d->token, 0, sizeof(d->token)); /* only PIXELS identities use it then */
     d->udmabuf = open("/dev/udmabuf", O_RDWR | O_CLOEXEC);
-    if (d->udmabuf < 0)
-        cb_log("/dev/udmabuf unavailable: surfaces cannot be exported as dmabufs");
+    d->vgem = d->udmabuf < 0 ? cb_vgem_open() : -1;
+    if (d->udmabuf < 0 && d->vgem < 0)
+        cb_log("neither /dev/udmabuf nor vgem: surfaces cannot be exported as dmabufs");
     ctx->pDriverData = d;
     ctx->version_major = VA_MAJOR_VERSION;
     ctx->version_minor = VA_MINOR_VERSION;
