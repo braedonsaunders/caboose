@@ -523,7 +523,7 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | OpenGL through Xwayland, so Zink. |
-| Electron on X11, such as Visual Studio Code | ANGLE on OpenGL, so Zink. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client whose ANGLE draws with OpenGL, so Zink. |
 | Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 The broker listens on its local socket only while a phone's executor is ready. With no

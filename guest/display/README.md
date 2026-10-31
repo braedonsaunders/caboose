@@ -269,8 +269,8 @@ installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). Started with the private GPU
 sockets and with the phone's driver installed, it routes applications to the phone's GPU
 instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
-`CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `CABOOSE_GPU_EXECUTOR_SWITCH=1`, `LIBGL_KOPPER_DRI2=1` and
-`GSK_RENDERER=vulkan`,
+`CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `CABOOSE_GPU_EXECUTOR_SWITCH=1`, `LIBGL_KOPPER_DRI2=1`,
+`GSK_RENDERER=vulkan` and `ELECTRON_OZONE_PLATFORM_HINT=x11`,
 without `GALLIUM_DRIVER` ([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It also serves an input method,
 `IBUS_ADDRESS` and `IBUS_ADDRESS_FILE` (with `QT_IM_MODULE=ibus`): applications without
 text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS
