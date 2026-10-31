@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process'
 import { guardContainerPrinting } from './components.js'
 import { randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:net'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, readlinkSync } from 'node:fs'
 import { readFile, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import type { Config, GpuKind } from './config.js'
@@ -138,11 +138,29 @@ export function dockerCli(binary = 'docker'): Docker {
   })
 }
 
-/** The GPU this host can give a container, by the devices it has. */
-export function detectGpu(exists: (path: string) => boolean = existsSync): GpuKind {
+/** A DRM device node and the kernel driver behind it. */
+export interface DrmNode { path: string; driver: string; render: boolean }
+
+/** The host's DRM nodes, from sysfs. */
+export function drmNodes(): DrmNode[] {
+  let names: string[]
+  try { names = readdirSync('/sys/class/drm') } catch { return [] }
+  return names.filter(name => /^(card|renderD)\d+$/.test(name)).flatMap(name => {
+    try {
+      const driver = readlinkSync(`/sys/class/drm/${name}/device/driver`).split('/').pop() ?? ''
+      return [{ path: `/dev/dri/${name}`, driver, render: name.startsWith('renderD') }]
+    } catch { return [] }
+  })
+}
+
+/**
+ * The GPU this host can give a container, by the devices it has. vgem is the computer's
+ * own render node (docs/gpu-buffers.md), not a GPU.
+ */
+export function detectGpu(exists: (path: string) => boolean = existsSync, drm: () => DrmNode[] = drmNodes): GpuKind {
   if (exists('/dev/dxg')) return 'wsl'
   if (exists('/dev/nvidiactl') || exists('/dev/nvidia0')) return 'nvidia'
-  if (exists('/dev/dri/renderD128')) return 'dri'
+  if (drm().some(node => node.render && node.driver !== 'vgem')) return 'dri'
   return 'none'
 }
 
@@ -161,7 +179,22 @@ export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = exist
   }
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
+/**
+ * `docker run` arguments for the phone-GPU driver, whatever the host's own GPU. It tracks
+ * stores to large mapped Vulkan allocations with userfaultfd write protection, so a flush
+ * sends only what changed (guest/gpu/gfxstream/coherent); /dev/userfaultfd grants the
+ * kernel-fault mode that tracks read(2) into mapped memory, and without it the driver
+ * compares whole allocations instead. The vgem nodes are the computer's render node, where
+ * apps allocate the buffers they share (docs/gpu-buffers.md); with a `dri` GPU they arrive
+ * with the rest of /dev/dri.
+ */
+export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync, drm: () => DrmNode[] = drmNodes): string[] {
+  const userfaultfd = exists('/dev/userfaultfd') ? ['--device', '/dev/userfaultfd'] : []
+  const vgem = kind === 'dri' ? [] : drm().filter(node => node.driver === 'vgem').flatMap(node => ['--device', node.path])
+  return [...userfaultfd, ...vgem]
+}
+
+export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
@@ -169,7 +202,7 @@ export function createContainerController(config: Config, dependencies: { docker
   let resources: ComputerResources | null = null
   let lastError: string | null = null
   const name = place.name
-  const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
+  const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists, dependencies.drm) : config.gpu
   /** What an app launched onto the owner's display needs; caboose-display's, read at each wake. */
   let launchEnv: string[] = []
   let displayToken = ''
@@ -214,6 +247,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
       ...securityArgs(config.containerArgs),
       ...gpuArgs(gpu, dependencies.exists),
+      ...phoneGpuArgs(gpu, dependencies.exists, dependencies.drm),
       ...config.containerArgs,
       config.containerImage,
     ]

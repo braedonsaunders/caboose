@@ -10,7 +10,7 @@ wire contract, the Caboose Display Protocol.
 
 ```
  apps (Wayland, and X11 through Xwayland)
-   │ wl_shm and linear dmabuf buffers, surface damage, frame callbacks
+   │ wl_shm and dmabuf buffers (linear, or phone-resident: gpu-buffers.md), damage, frame callbacks
    ▼
  caboose-display   (headless Wayland compositor, Rust + Smithay, inside the computer)
    ├ one stream per toplevel, dialog, popup and X11 window

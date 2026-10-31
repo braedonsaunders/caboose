@@ -32,7 +32,8 @@ def receive_record(ipc, required_uid, expected_pid, expected_start_ticks):
             if not peer.alive():
                 raise ValueError('compositor exited during transfer')
             if record != 'handoff':
-                if not isinstance(record, (control_protocol.BindResult, control_protocol.RevokeGrant)):
+                if not isinstance(record, (control_protocol.BindResult, control_protocol.RevokeGrant,
+                                           control_protocol.BufferPresent)):
                     raise ValueError('invalid compositor record direction')
                 return record
             fd = descriptors.pop()
