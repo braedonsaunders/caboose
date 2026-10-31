@@ -169,6 +169,9 @@ pub struct WindowCreate {
     pub display: Option<u32>,
     pub xwayland: bool,
     pub alpha: bool,
+    /// The picture extends this far right of and below `geometry` (display pixels), while
+    /// the app has the enlarged size a `configure.overscan` asked for.
+    pub overscan: Option<Size>,
 }
 
 /// `window.update` (0x03): the id plus whichever fields changed.
@@ -187,6 +190,8 @@ pub struct WindowUpdate {
     pub display: Option<u32>,
     pub xwayland: Option<bool>,
     pub alpha: Option<bool>,
+    /// `[0, 0]` when the overscan ended.
+    pub overscan: Option<Size>,
 }
 
 impl WindowUpdate {
@@ -403,6 +408,9 @@ pub struct Configure {
     pub fullscreen: Option<bool>,
     pub maximized: Option<bool>,
     pub activated: Option<bool>,
+    /// Lay the window out this much wider and taller than `geometry`, which stays what the
+    /// client shows; `[0, 0]` ends it.
+    pub overscan: Option<Size>,
 }
 
 /// One contact in a `touch` message.
@@ -826,6 +834,7 @@ impl Message {
                 .opt("display", m.display)
                 .put("xwayland", m.xwayland)
                 .put("alpha", m.alpha)
+                .opt("overscan", m.overscan)
                 .build(),
             Message::WindowUpdate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -841,6 +850,7 @@ impl Message {
                 .opt("display", m.display)
                 .opt("xwayland", m.xwayland)
                 .opt("alpha", m.alpha)
+                .opt("overscan", m.overscan)
                 .build(),
             Message::WindowDestroy { id }
             | Message::Close { id }
@@ -1017,6 +1027,7 @@ impl Message {
                 .opt("fullscreen", m.fullscreen)
                 .opt("maximized", m.maximized)
                 .opt("activated", m.activated)
+                .opt("overscan", m.overscan)
                 .build(),
             Message::Displays { displays } => MapBuilder::new().put("displays", displays_value(displays)).build(),
             Message::Touch(m) => MapBuilder::new()
@@ -1105,6 +1116,7 @@ impl Message {
                 display: f.opt_u32("display")?,
                 xwayland: f.opt_bool("xwayland")?.unwrap_or(false),
                 alpha: f.opt_bool("alpha")?.unwrap_or(false),
+                overscan: f.opt_size("overscan")?,
             }),
             WINDOW_UPDATE => Message::WindowUpdate(WindowUpdate {
                 id: f.u64("id")?,
@@ -1123,6 +1135,7 @@ impl Message {
                 display: f.opt_u32("display")?,
                 xwayland: f.opt_bool("xwayland")?,
                 alpha: f.opt_bool("alpha")?,
+                overscan: f.opt_size("overscan")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
             FRAME => Message::Frame(Frame {
@@ -1279,6 +1292,7 @@ impl Message {
                 fullscreen: f.opt_bool("fullscreen")?,
                 maximized: f.opt_bool("maximized")?,
                 activated: f.opt_bool("activated")?,
+                overscan: f.opt_size("overscan")?,
             }),
             CLOSE => Message::Close { id: f.u64("id")? },
             REQUEST_KEYFRAME => Message::RequestKeyframe { id: f.u64("id")? },

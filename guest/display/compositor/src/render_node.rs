@@ -19,9 +19,9 @@ fn find_in(dev: &Path, sys: &Path) -> Option<(libc::dev_t, PathBuf)> {
     nodes.sort_by_key(|entry| entry.file_name());
     nodes.into_iter().find_map(|entry| {
         let name = entry.file_name();
-        // The driver behind the node, as the kernel names it.
-        let driver = std::fs::read_link(sys.join(&name).join("device/driver")).ok()?;
-        if driver.file_name()? != "vgem" { return None; }
+        // vgem is a platform device without a bound driver: the node's device is it.
+        let device = std::fs::read_link(sys.join(&name).join("device")).ok()?;
+        if device.file_name()? != "vgem" { return None; }
         let metadata = std::fs::metadata(entry.path()).ok()?;
         metadata.file_type().is_char_device().then(|| (metadata.rdev() as libc::dev_t, entry.path()))
     })
@@ -36,10 +36,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("caboose-render-node-{}", std::process::id()));
         let (dev, sys) = (root.join("dev"), root.join("sys"));
         std::fs::create_dir_all(&dev).unwrap();
-        for (node, driver) in [("renderD128", "nouveau"), ("renderD129", "vgem")] {
-            std::fs::create_dir_all(sys.join(node).join("device")).unwrap();
-            std::fs::create_dir_all(root.join("drivers").join(driver)).unwrap();
-            std::os::unix::fs::symlink(root.join("drivers").join(driver), sys.join(node).join("device/driver")).unwrap();
+        // As sysfs has them: a PCI GPU's node and the vgem platform device's node.
+        for (node, device) in [("renderD128", "0000:01:00.0"), ("renderD129", "vgem")] {
+            std::fs::create_dir_all(sys.join(node)).unwrap();
+            std::fs::create_dir_all(root.join("devices").join(device)).unwrap();
+            std::os::unix::fs::symlink(root.join("devices").join(device), sys.join(node).join("device")).unwrap();
         }
         // Regular files stand in for the nodes: neither is a character device.
         std::fs::write(dev.join("renderD128"), b"").unwrap();

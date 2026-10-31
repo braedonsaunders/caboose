@@ -394,9 +394,21 @@ impl State {
     }
 
     pub(crate) fn configure_gpu_window_to_display(&mut self, id: u64) {
-        let Some(window) = self.windows.get(id) else { return };
-        let Some(display) = self.displays.get(window.display) else { return };
-        let size = display.logical_size();
+        let Some(display) = self.windows.get(id).and_then(|w| self.displays.get(w.display)) else { return };
+        let mut size = display.logical_size();
+        let limit = (crate::windows::OVERSCAN_MAX_PICTURE as f64 / display.info.scale).round() as i32;
+        let Some(window) = self.windows.get_mut(id) else { return };
+        // The display's extent is what the client shows; an asked-for overscan adds to it.
+        window.overscan_size = None;
+        window.shown = Some(size);
+        if window.overscan.w > 0 || window.overscan.h > 0 {
+            let (whole, applied) = crate::windows::overscan_layout(size, window.overscan, window.max_size(), limit);
+            if applied.w > 0 || applied.h > 0 {
+                size = whole;
+                window.overscan_size = Some(whole);
+            }
+        }
+        let window = self.windows.get(id).unwrap();
         match &window.surface {
             Surface::Toplevel(toplevel) => {
                 toplevel.with_pending_state(|state| state.size = Some(size));
@@ -534,6 +546,9 @@ impl State {
             fullscreen: false,
             maximized: false,
             lineage: None,
+            overscan: (0, 0).into(),
+            overscan_size: None,
+            shown: None,
         });
         self.assign_output(id);
         if kind == WindowKind::Toplevel {
@@ -673,8 +688,14 @@ impl State {
                 let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };
                 let Some(display) = self.displays.get(w.display) else { continue };
                 let Some((width, height)) = virtual_target_pixels(size.w, size.h, display.info.scale) else { continue };
-                now.geometry.w = width;
-                now.geometry.h = height;
+                // A size configured with overscan shows the shown part as the geometry.
+                let over = (w.overscan_size == Some(size)).then_some(w.overscan)
+                    .and_then(|o| virtual_target_pixels(o.w.max(1), o.h.max(1), display.info.scale)
+                        .map(|(ow, oh)| proto::Size { w: if o.w > 0 { ow } else { 0 }, h: if o.h > 0 { oh } else { 0 } }));
+                let (ow, oh) = over.map_or((0, 0), |o| (o.w, o.h));
+                now.geometry.w = width - ow;
+                now.geometry.h = height - oh;
+                now.overscan = over;
             }
             match &w.announced {
                 None => {

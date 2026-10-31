@@ -178,6 +178,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(1),
         xwayland: false,
         alpha: false,
+        overscan: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -193,6 +194,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(1),
         xwayland: false,
         alpha: false,
+        overscan: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -208,6 +210,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(2),
         xwayland: true,
         alpha: false,
+        overscan: None,
     };
 
     vec![
@@ -249,9 +252,32 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu_live_epoch: Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             }),
         ),
-        one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),
+        one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal.clone())),
         one("window-create-popup", "A popup above its parent; geometry is relative to the parent and may be negative.", Message::WindowCreate(menu)),
         one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm)),
+        one(
+            "window-create-overscan",
+            "A window laid out 2556 pixels taller than the 1179x2556 the client shows: its pictures are 1179x5112.",
+            Message::WindowCreate(WindowCreate {
+                id: 14,
+                title: "Wikipedia — Chromium".into(),
+                app_id: "chromium".into(),
+                icon: None,
+                min: None,
+                overscan: Some(Size { w: 0, h: 2556 }),
+                ..terminal.clone()
+            }),
+        ),
+        one(
+            "window-update-overscan",
+            "The app now has the enlarged size: the picture extends 2556 pixels below the geometry.",
+            Message::WindowUpdate(WindowUpdate { id: 7, overscan: Some(Size { w: 0, h: 2556 }), ..Default::default() }),
+        ),
+        one(
+            "window-update-overscan-end",
+            "The overscan ended: [0, 0].",
+            Message::WindowUpdate(WindowUpdate { id: 7, overscan: Some(Size { w: 0, h: 0 }), ..Default::default() }),
+        ),
         one(
             "window-update-title",
             "Only the changed fields are present.",
@@ -757,6 +783,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 fullscreen: None,
                 maximized: Some(true),
                 activated: Some(true),
+                overscan: None,
+            }),
+        ),
+        one(
+            "configure-overscan",
+            "Ask for a window 2556 pixels taller than the 1179x2556 the client shows.",
+            Message::Configure(Configure {
+                id: 7,
+                geometry: Some(Rect::new(0, 0, 1179, 2556)),
+                overscan: Some(Size { w: 0, h: 2556 }),
+                ..Default::default()
             }),
         ),
         one("close", "", Message::Close { id: 7 }),
