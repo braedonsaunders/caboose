@@ -163,7 +163,7 @@ struct DesktopWindow: View {
                         WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
                         Spacer(minLength: 8 * ui)
                         if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
-                        Text(window.title.isEmpty ? "Window" : window.title)
+                        Text(model.windowTitle(window))
                             .font(.system(size: 13 * ui, weight: .semibold))
                             .lineLimit(1)
                         Spacer(minLength: 8 * ui)

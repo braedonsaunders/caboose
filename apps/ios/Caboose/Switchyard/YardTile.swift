@@ -42,7 +42,7 @@ struct YardTile: View {
         .modifier(WindowFrameStyle(radius: radius))
         .shadow(color: .black.opacity(0.32), radius: 10, y: 4)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(window.title.isEmpty ? "Window" : window.title)
+        .accessibilityLabel(model.windowTitle(window))
     }
 }
 
@@ -68,7 +68,7 @@ struct YardTitleBar: View {
 
     @GestureState private var carrying = false
 
-    private var title: String { window.title.isEmpty ? "Window" : window.title }
+    private var title: String { model.windowTitle(window) }
 
     var body: some View {
         let bar = yard.metrics.titleBar
@@ -138,7 +138,7 @@ struct YardTitleBar: View {
     private func openCard() { model.show(windowID: window.id, borderless: true) }
 
     @ViewBuilder private var menuContent: some View {
-        Section(window.title.isEmpty ? "Window" : window.title) {
+        Section(model.windowTitle(window)) {
             if yard.metrics.presets.count > 1, let index = yard.layout.columnIndex(of: window.id) {
                 let current = yard.metrics.effectiveFraction(yard.layout.columns[index].width)
                 Menu("Width", systemImage: "arrow.left.and.right") {

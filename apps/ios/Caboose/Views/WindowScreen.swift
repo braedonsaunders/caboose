@@ -60,7 +60,7 @@ struct WindowScreen: View {
                 }
                 ConnectionBanner()
             }
-            .navigationTitle(model.window(model.presentedWindowID)?.title ?? "Window")
+            .navigationTitle(model.window(model.presentedWindowID).map(model.windowTitle) ?? "Window")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .title)
             .toolbar {

@@ -350,6 +350,12 @@ extension AppModel {
         apps.first { matches(window, $0) }?.name ?? window.appClass?.name ?? "Window"
     }
 
+    /// What a window is called on its title bar: its own title, else its app's name, so an
+    /// untitled window (or one whose title has not arrived yet) still says what it is.
+    func windowTitle(_ window: RemoteWindow) -> String {
+        window.title.isEmpty ? appName(for: window) : window.title
+    }
+
     /// Application windows on the in-app desktop, most recently used first, for Quick Switch.
     var recentWindowIDs: [Int] { workspaceWindows.map(\.id) }
 }
