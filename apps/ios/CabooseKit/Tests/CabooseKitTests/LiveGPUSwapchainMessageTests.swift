@@ -40,7 +40,8 @@ final class LiveGPUSwapchainMessageTests: XCTestCase {
             ("map",64,15,8),("map",52,1,4),("acquire",56,0,8),("acquire",80,2,4),
             ("acquired",60,0,4),("acquired",76,256,4),("acquire-not-ready",72,1,4),
             ("acquire-local-timeout",56,0,4),("acquire-local-timeout",80,0,4),
-            ("acquired",80,1,4),("indexed-present",72,1000001002,4),("indexed-present",88,29,8)
+            ("acquired",80,1,4),("indexed-present",72,1000001002,4),("indexed-present",88,29,8),
+            ("ordered-present",64,0,8),("ordered-present",80,2,4),("ordered-present",96,29,8)
         ]
         for (name, offset, value, count) in mutations {
             var wire = bytes(name)
@@ -50,6 +51,18 @@ final class LiveGPUSwapchainMessageTests: XCTestCase {
             XCTAssertEqual(parser.bufferedBytes, 0)
             XCTAssertThrowsError(try parser.feed(Data()) { _ in XCTFail() })
         }
+    }
+    func testOrderedPresentCarriesItsMarkAndUsesItsOwnKind() throws {
+        let payload = Data(bytes("ordered-present").dropFirst(64))
+        let message = try LiveGPUSurfaceMessage.decode(kind: .swapchainPresentOrdered, payload: payload)
+        guard case .swapchain(.present(let present)) = message.body else { return XCTFail() }
+        XCTAssertEqual(present.order, 0x2a)
+        XCTAssertEqual(message.kind, .swapchainPresentOrdered)
+        // The same fields without a mark are an ordinary present of kind 34.
+        var plain = present; plain.order = 0
+        XCTAssertEqual(LiveGPUSurfaceMessage(identity: message.identity, body: .swapchain(.present(plain))).kind,
+                       .swapchainPresent)
+        XCTAssertThrowsError(try LiveGPUSurfaceMessage.decode(kind: .swapchainPresent, payload: payload))
     }
     func testActualAcquireAndLocalDeadlineStayDistinct() throws {
         func decode(_ name: String) throws -> LiveGPUSwapchainMessage {
@@ -82,12 +95,13 @@ final class LiveGPUSwapchainMessageTests: XCTestCase {
                 XCTAssertThrowsError(try parser.feed(Data(invalid.prefix(64))) { _ in XCTFail() })
             }
         }
-        for kind: LiveGPUEnvelope.Kind in [.swapchainCreate,.swapchainMap,.swapchainPresent] {
+        for kind: LiveGPUEnvelope.Kind in [.swapchainCreate,.swapchainMap,.swapchainPresent,.swapchainPresentOrdered] {
             XCTAssertThrowsError(try LiveGPUSurfaceMessage.validateLength(262080, kind: kind))
         }
     }
     // Independent complete vectors copied verbatim from parent ba47b120 and4e42e5cf.
     private static let vectors: [String: String] = [
+        "ordered-present": "43474c5601002700680000000000000000112233445566778899aabbccddeeff07000000000000000b00000000000000000000000000000001000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20030000000000000005000000000000001b000000000000000d000000000000002a00000000000000020000000000000001000000020000001d000000000000001f00000000000000",
         "present-retired": "43474c5601002400380000000000000000112233445566778899aabbccddeeff07000000000000000b00000000000000000000000000000001000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20030000000000000005000000000000001b00000000000000",
         "create": "43474c5601001900780000000000000000112233445566778899aabbccddeeff07000000000000000b00000000000000000000000000000001000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20030000000000000013000000000000000b00000000000000000000000000000000000000020000002c0000000000000080020000e00100000100000003000000010000000100000002000000010000000000000000000000",
         "created": "43474c5601001a00500000000000000000112233445566778899aabbccddeeff07000000000000000b00000000000000000000000000000001000000000000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20030000000000000013000000000000000500000000000000000000000100000000000000000000000300000000000000",

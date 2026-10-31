@@ -31,6 +31,9 @@ int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t ma
 int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t max_packet,
                                     size_t max_reply_buffer, uint64_t* entries);
 #endif
+// Blocks until the process's device stream has decoded ORDER mark `serial`, or
+// ECANCELED once it stops. Ordering only: never waits for GPU work.
+int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial);
 // Stop revokes admission, signals upstream cleanup and shuts down its streams.
 int caboose_gpu_runtime_stop(uint64_t token);
 // Finish only after every run has returned. Blocks for upstream queued process

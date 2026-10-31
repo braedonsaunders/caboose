@@ -68,6 +68,24 @@ not invoke the upstream decoder or validate arbitrary Vulkan command fields;
 the integrated Linux receiver also exercises the decoder. Arbitrary payload and
 handle validation is not established by these checks.
 
+## Completion feed
+
+`completion_feed.*` serves the completion feed described in
+[gpu-live.md](../../../../docs/gpu-live.md#completion-feed). `decode_connection.cpp`
+answers `COMPLETION_WATCH` and `COMPLETION_FEED` itself, before framing and decoding,
+and only for a process that has a feed (`process_registry.cpp` creates one per process).
+A watch submits a marker through `VkDecoderGlobalState::submitCabooseCompletionMarker`
+(patch 0028) and returns; the feed's watcher thread waits for markers in order, and the
+feed stream writes their records. Finishing a process waits for its outstanding
+markers. The portable fixture uses a fake marker backend and real socket pairs:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/completion_feed_test.cpp \
+  apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
+/tmp/caboose-completion-feed-test
+```
+
 ## Process lifetime
 
 `process_registry.h` defines the experimental C API. A broker-owned 64-bit process

@@ -1,0 +1,236 @@
+--- a/host/vulkan/vk_decoder.cpp
++++ b/host/vulkan/vk_decoder.cpp
+@@ -3835,6 +3835,8 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                             tmpval ? (VkCommandBuffer)(VkCommandBuffer)((VkCommandBuffer)tmpval)
+                                    : VK_NULL_HANDLE;
+                     }
++                    setNextGuestAssignedHandles(reinterpret_cast<const BoxedHandle*>(pCommandBuffers),
++                                                pAllocateInfo->commandBufferCount, Tag_VkCommandBuffer);
+                 }
+                 if (pAllocateInfo) {
+                     transform_tohost_VkCommandBufferAllocateInfo(
+@@ -3865,6 +3867,7 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                     vkStream->write((VkCommandBuffer*)pCommandBuffers,
+                                     8 * pAllocateInfo->commandBufferCount);
+                 }
++                clearNextGuestAssignedHandle();
+                 vkStream->write(&vkAllocateCommandBuffers_VkResult_return, sizeof(VkResult));
+                 vkStream->commitWrite();
+                 if (m_snapshotsEnabled) {
+@@ -6446,6 +6449,8 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                             tmpval ? (VkDescriptorSet)(VkDescriptorSet)((VkDescriptorSet)tmpval)
+                                    : VK_NULL_HANDLE;
+                     }
++                    setNextGuestAssignedHandles(reinterpret_cast<const BoxedHandle*>(pDescriptorSets),
++                                                pAllocateInfo->descriptorSetCount, Tag_VkDescriptorSet);
+                 }
+                 if (pAllocateInfo) {
+                     transform_tohost_VkDescriptorSetAllocateInfo(
+@@ -6478,6 +6483,7 @@ size_t VkDecoder::Impl::decode(void* buf, size_t len, IOStream* ioStream,
+                     vkStream->write((VkDescriptorSet*)pDescriptorSets,
+                                     8 * pAllocateInfo->descriptorSetCount);
+                 }
++                clearNextGuestAssignedHandle();
+                 // Begin manual non dispatchable handle create for pDescriptorSets;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+                 vkStream->write(&vkAllocateDescriptorSets_VkResult_return, sizeof(VkResult));
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -5561,6 +5561,9 @@ class VkDecoderGlobalState::Impl {
+                                                true /* destroy */);
+ 
+         deviceDispatch->vkDestroyDescriptorPool(device, descriptorPool, nullptr);
++        for (VkDescriptorPool overflow : takeCabooseOverflowPools(descriptorPool)) {
++            deviceDispatch->vkDestroyDescriptorPool(device, overflow, nullptr);
++        }
+     }
+ 
+     void destroyDescriptorPoolLocked(VkDevice device, VulkanDispatch* deviceDispatch,
+@@ -5602,6 +5605,8 @@ class VkDecoderGlobalState::Impl {
+ 
+         auto result = deviceDispatch->vkResetDescriptorPool(device, descriptorPool, flags);
+         if (result != VK_SUCCESS) return result;
++        result = resetCabooseOverflowPools(device, deviceDispatch, descriptorPool, flags);
++        if (result != VK_SUCCESS) return result;
+ 
+         std::lock_guard<std::mutex> lock(mMutex);
+         resetDescriptorPoolInfoLocked(descriptorPool);
+@@ -5661,6 +5666,11 @@ class VkDecoderGlobalState::Impl {
+         }
+ 
+         auto res = vk->vkAllocateDescriptorSets(device, pAllocateInfo, pDescriptorSets);
++        if ((res == VK_ERROR_OUT_OF_POOL_MEMORY || res == VK_ERROR_FRAGMENTED_POOL) &&
++            guestAssignedHandlesPending(Tag_VkDescriptorSet)) {
++            res = allocateCabooseOverflowDescriptorSetsLocked(vk, device, pAllocateInfo,
++                                                              pDescriptorSets);
++        }
+ 
+         if (res == VK_SUCCESS) {
+             auto* poolInfo =
+@@ -5686,8 +5696,8 @@ class VkDecoderGlobalState::Impl {
+         auto device = unbox_VkDevice(boxed_device);
+         auto vk = dispatch_VkDevice(boxed_device);
+ 
+-        auto res =
+-            vk->vkFreeDescriptorSets(device, descriptorPool, descriptorSetCount, pDescriptorSets);
++        auto res = freeCabooseDescriptorSets(vk, device, descriptorPool, descriptorSetCount,
++                                             pDescriptorSets);
+ 
+         if (res == VK_SUCCESS) {
+             std::lock_guard<std::mutex> lock(mMutex);
+@@ -12410,6 +12420,131 @@ class VkDecoderGlobalState::Impl {
+ 
+     std::mutex mMutex;
+ 
++    // Caboose guest-assigned descriptor sets. When the guest assigns a set's handle it has
++    // already returned success to the application, so a pool that cannot hold the set
++    // (VK_ERROR_OUT_OF_POOL_MEMORY, or VK_ERROR_FRAGMENTED_POOL, which MoltenVK returns
++    // for pools that free individual sets) must not fail it. The decoder then allocates
++    // the sets from an overflow pool it owns, made like the application's pool. Overflow
++    // pools are reset and destroyed with their application pool, and their sets are freed
++    // back to them; the application's pool bookkeeping counts them as its own.
++    VkResult allocateCabooseOverflowDescriptorSetsLocked(VulkanDispatch* vk, VkDevice device,
++                                                         const VkDescriptorSetAllocateInfo* pAllocateInfo,
++                                                         VkDescriptorSet* pDescriptorSets) REQUIRES(mMutex) {
++        auto* poolInfo = gfxstream::base::find(mDescriptorPoolInfo, pAllocateInfo->descriptorPool);
++        if (!poolInfo) return VK_ERROR_OUT_OF_POOL_MEMORY;
++        VkDescriptorSetAllocateInfo allocateInfo = *pAllocateInfo;
++        std::lock_guard<std::mutex> lock(mCabooseOverflowMutex);
++        auto& overflows = mCabooseOverflowPools[pAllocateInfo->descriptorPool];
++        auto record = [&](VkDescriptorPool overflow) {
++            for (uint32_t i = 0; i < allocateInfo.descriptorSetCount; ++i) {
++                mCabooseOverflowSets[pDescriptorSets[i]] = overflow;
++            }
++            return VK_SUCCESS;
++        };
++        for (VkDescriptorPool overflow : overflows) {
++            allocateInfo.descriptorPool = overflow;
++            if (vk->vkAllocateDescriptorSets(device, &allocateInfo, pDescriptorSets) == VK_SUCCESS) {
++                return record(overflow);
++            }
++        }
++        // A new pool with the application pool's flags and sizes; if even that cannot hold
++        // the request, one with every size scaled to fit the request on its own.
++        const uint32_t maxSets = std::max(poolInfo->maxSets, allocateInfo.descriptorSetCount);
++        for (uint32_t scale : {1u, allocateInfo.descriptorSetCount + 1}) {
++            std::vector<VkDescriptorPoolSize> sizes;
++            for (const auto& pool : poolInfo->pools) {
++                const uint64_t count = uint64_t(pool.descriptorCount) * scale;
++                sizes.push_back({pool.type, uint32_t(std::min<uint64_t>(count, UINT32_MAX))});
++            }
++            VkDescriptorPoolCreateInfo createInfo = {
++                VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
++                poolInfo->createInfo.flags, maxSets, static_cast<uint32_t>(sizes.size()),
++                sizes.data()};
++            VkDescriptorPool overflow = VK_NULL_HANDLE;
++            if (vk->vkCreateDescriptorPool(device, &createInfo, nullptr, &overflow) != VK_SUCCESS) {
++                continue;
++            }
++            overflows.push_back(overflow);
++            allocateInfo.descriptorPool = overflow;
++            if (vk->vkAllocateDescriptorSets(device, &allocateInfo, pDescriptorSets) == VK_SUCCESS) {
++                return record(overflow);
++            }
++        }
++        GFXSTREAM_ERROR("Caboose: guest-assigned descriptor sets fit no overflow pool");
++        return VK_ERROR_OUT_OF_POOL_MEMORY;
++    }
++
++    VkResult freeCabooseDescriptorSets(VulkanDispatch* vk, VkDevice device,
++                                       VkDescriptorPool descriptorPool, uint32_t descriptorSetCount,
++                                       const VkDescriptorSet* pDescriptorSets) {
++        std::vector<VkDescriptorSet> own;
++        std::unordered_map<VkDescriptorPool, std::vector<VkDescriptorSet>> overflowSets;
++        {
++            std::lock_guard<std::mutex> lock(mCabooseOverflowMutex);
++            if (mCabooseOverflowSets.empty()) {
++                return vk->vkFreeDescriptorSets(device, descriptorPool, descriptorSetCount,
++                                                pDescriptorSets);
++            }
++            for (uint32_t i = 0; i < descriptorSetCount; ++i) {
++                auto it = mCabooseOverflowSets.find(pDescriptorSets[i]);
++                if (it == mCabooseOverflowSets.end()) {
++                    own.push_back(pDescriptorSets[i]);
++                } else {
++                    overflowSets[it->second].push_back(pDescriptorSets[i]);
++                    mCabooseOverflowSets.erase(it);
++                }
++            }
++        }
++        VkResult result = VK_SUCCESS;
++        if (!own.empty()) {
++            result = vk->vkFreeDescriptorSets(device, descriptorPool, own.size(), own.data());
++        }
++        for (auto& [overflow, sets] : overflowSets) {
++            VkResult freed = vk->vkFreeDescriptorSets(device, overflow, sets.size(), sets.data());
++            if (result == VK_SUCCESS) result = freed;
++        }
++        return result;
++    }
++
++    VkResult resetCabooseOverflowPools(VkDevice device, VulkanDispatch* vk,
++                                       VkDescriptorPool descriptorPool,
++                                       VkDescriptorPoolResetFlags flags) {
++        std::lock_guard<std::mutex> lock(mCabooseOverflowMutex);
++        auto it = mCabooseOverflowPools.find(descriptorPool);
++        if (it == mCabooseOverflowPools.end()) return VK_SUCCESS;
++        forgetCabooseOverflowSetsLocked(it->second);
++        for (VkDescriptorPool overflow : it->second) {
++            VkResult result = vk->vkResetDescriptorPool(device, overflow, flags);
++            if (result != VK_SUCCESS) return result;
++        }
++        return VK_SUCCESS;
++    }
++
++    std::vector<VkDescriptorPool> takeCabooseOverflowPools(VkDescriptorPool descriptorPool) {
++        std::lock_guard<std::mutex> lock(mCabooseOverflowMutex);
++        auto it = mCabooseOverflowPools.find(descriptorPool);
++        if (it == mCabooseOverflowPools.end()) return {};
++        std::vector<VkDescriptorPool> overflows = std::move(it->second);
++        mCabooseOverflowPools.erase(it);
++        forgetCabooseOverflowSetsLocked(overflows);
++        return overflows;
++    }
++
++    void forgetCabooseOverflowSetsLocked(const std::vector<VkDescriptorPool>& overflows) {
++        if (overflows.empty()) return;
++        for (auto it = mCabooseOverflowSets.begin(); it != mCabooseOverflowSets.end();) {
++            it = std::find(overflows.begin(), overflows.end(), it->second) != overflows.end()
++                     ? mCabooseOverflowSets.erase(it)
++                     : std::next(it);
++        }
++    }
++
++    std::mutex mCabooseOverflowMutex;
++    // Application descriptor pool -> overflow pools the decoder made for it.
++    std::unordered_map<VkDescriptorPool, std::vector<VkDescriptorPool>> mCabooseOverflowPools;
++    // Descriptor set allocated from an overflow pool -> that pool.
++    std::unordered_map<VkDescriptorSet, VkDescriptorPool> mCabooseOverflowSets;
++
+     bool isBindingFeasibleForAlloc(const DescriptorPoolInfo::PoolState& poolState,
+                                    const VkDescriptorSetLayoutBinding& binding) {
+         if (binding.descriptorCount && (poolState.type != binding.descriptorType)) {
+--- a/host/vulkan/vulkan_boxed_handles.cpp
++++ b/host/vulkan/vulkan_boxed_handles.cpp
+@@ -99,6 +99,10 @@ void setNextGuestAssignedHandles(const BoxedHandle* handles, size_t count, Boxed
+     tNextGuestTag = tag;
+ }
+ 
++bool guestAssignedHandlesPending(BoxedHandleTypeTag tag) {
++    return tag == tNextGuestTag && (tNextGuestHandle || !tNextGuestHandles.empty());
++}
++
+ void clearNextGuestAssignedHandle() {
+     tNextGuestHandle = 0;
+     tNextGuestHandles.clear();
+--- a/host/vulkan/vulkan_boxed_handles.h
++++ b/host/vulkan/vulkan_boxed_handles.h
+@@ -138,6 +138,8 @@ extern BoxedHandleManager sBoxedHandleManager;
+ // handle(s) and clears them once the command returns.
+ void setNextGuestAssignedHandle(BoxedHandle handle, BoxedHandleTypeTag tag);
+ void setNextGuestAssignedHandles(const BoxedHandle* handles, size_t count, BoxedHandleTypeTag tag);
++// True while guest-assigned handles of `tag` remain to be taken on this thread.
++bool guestAssignedHandlesPending(BoxedHandleTypeTag tag);
+ void clearNextGuestAssignedHandle();
+ 
+ #define DEFINE_BOXED_DISPATCHABLE_HANDLE_API_DECL(type)               \

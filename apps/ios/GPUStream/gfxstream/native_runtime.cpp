@@ -196,6 +196,10 @@ extern "C" int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t ma
     return r ? caboose_gfx_process_run_counted(r, token, fd, max_packet, max_reply_buffer, entries) : ENODEV;
 }
 #endif
+extern "C" int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial) {
+    auto* r = getRegistry();
+    return r ? caboose_gfx_process_wait_order(r, token, serial) : ENODEV;
+}
 extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
     auto* r = getRegistry();
     return r ? caboose_gfx_process_stop(r, token) : ENODEV;
