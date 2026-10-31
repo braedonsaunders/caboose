@@ -1,0 +1,8 @@
+{
+  "name": "window-update-overscan-end",
+  "description": "The overscan ended: [0, 0].",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 7, "overscan": [0, 0]}}
+  ],
+  "hex": "0311000000a262696407686f7665727363616e820000"
+}

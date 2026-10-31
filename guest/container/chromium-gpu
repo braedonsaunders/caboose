@@ -6,7 +6,7 @@ fi
 # when it looks for one: name it, so its Wayland GPU path allocates shared buffers there.
 for node in /dev/dri/renderD*; do
   [ -e "$node" ] || continue
-  [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device/driver")")" = vgem ] || continue
+  [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
   CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$node"
   break
 done
