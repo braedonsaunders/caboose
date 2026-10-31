@@ -13,6 +13,7 @@ export interface Capacity {
   headroom: null | { memoryBytes: Measurement; vcpus: Measurement; diskBytes: Measurement }
   host?: {
     memoryTotalBytes: Measurement; memoryFreeBytes: Measurement; memoryAvailableBytes: Measurement
+    ksmSavedBytes?: Measurement
     cpuBusyPercent: Measurement; cpuSampleMs: Measurement; logicalCpus: Measurement
     loadAverage1m: Measurement
     diskTotalBytes: Measurement; diskAvailableBytes: Measurement
@@ -25,11 +26,13 @@ export interface Capacity {
 export interface UsageCounters {
   identity: string; at: number; cpuSeconds: number; vcpus: number
   memoryBytes: number; cacheBytes: number | null; memoryLimitBytes: number | null
+  pssBytes?: number | null; sharedBytes?: number | null
   memoryKind: 'cgroup' | 'resident'
 }
 export interface ComputerUsage {
   sampledAt: number | null; memoryBytes: number | null; cacheBytes: number | null
-  memoryLimitBytes: number | null; memoryKind: 'cgroup' | 'resident' | 'unavailable'
+  memoryLimitBytes: number | null; pssBytes?: number | null; sharedBytes?: number | null
+  memoryKind: 'cgroup' | 'resident' | 'unavailable'
   cpuPercent: number | null; cpuSeconds30d: number; coveredSeconds30d: number
   collectingSince: number | null; reason?: string
 }

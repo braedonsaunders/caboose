@@ -6,6 +6,7 @@ export interface ComputerDriver<T> {
   wake(mode?: WakeMode): Promise<T>
   promote?(): Promise<T>
   canFreeze?(): boolean
+  reclaimMemory?(): Promise<void>
   freeze?(): Promise<void>
   thaw?(): Promise<void>
   park(): Promise<void>
@@ -26,6 +27,7 @@ export class ComputerLifecycle<T> {
   private failure: string | null = null
   private mode: WakeMode = 'interactive'
   private beforeFreeze: () => Promise<boolean> = async () => true
+  private beforePark: (() => Promise<void>) | undefined
   private freezeAllowed: () => boolean = () => true
   private parkedGeneration = 0
   private cancelParkedWork: () => void = () => {}
@@ -42,7 +44,13 @@ export class ComputerLifecycle<T> {
   get acceptsConnections(): boolean { return (this.current === 'running' || this.current === 'frozen') && !this.restartPending }
   get lastError(): string | null { return this.failure }
   setBeforeFreeze(work: () => Promise<boolean>): void { this.beforeFreeze = work }
+  setBeforePark(work: () => Promise<void>): void { this.beforePark = work }
   setFreezeAllowed(check: () => boolean): void { this.freezeAllowed = check }
+
+  private async reclaimBeforeSuspend(): Promise<void> {
+    if (this.beforePark) try { await this.beforePark() } catch {}
+    if (this.driver.reclaimMemory) try { await this.driver.reclaimMemory() } catch {}
+  }
 
   /** Cancel external parked work synchronously before a state-changing admission is queued. */
   setParkedWorkCanceller(cancel: () => void): void { this.cancelParkedWork = cancel }
@@ -128,6 +136,7 @@ export class ComputerLifecycle<T> {
               this.armIdle(30_000)
               return
             }
+            if (this.beforePark || this.driver.reclaimMemory) await this.reclaimBeforeSuspend()
             await this.driver.freeze!()
             this.failure = null
           }
@@ -260,9 +269,11 @@ export class ComputerLifecycle<T> {
 
   private async parkNow(): Promise<void> {
     if (this.current !== 'running' && this.current !== 'frozen') return
+    const wasRunning = this.current === 'running'
     this.clearIdle()
     this.setState('parking')
     try {
+      if (wasRunning && (this.beforePark || this.driver.reclaimMemory)) await this.reclaimBeforeSuspend()
       await this.driver.park()
       this.value = undefined
       this.failure = null

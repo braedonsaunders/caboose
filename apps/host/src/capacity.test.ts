@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, open, rm, symlink, writeFile, lstat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { CapacitySampler, capacityFor, cpuDelta, linuxAvailableMemory, scanStorage, type CapacityContext } from './capacity.js'
+import { CapacitySampler, capacityFor, cpuDelta, linuxAvailableMemory, linuxKsmSavedMemory, scanStorage, type CapacityContext } from './capacity.js'
 import type { Capacity } from '../../../packages/capacity/types.js'
 const admin = { kind: 'admin' as const, userId: 'a', name: 'A', email: 'a@example.test', operator: false, tenantIds: ['a'] }
 const dirs: string[] = []
@@ -39,14 +39,22 @@ describe('authorized capacity snapshots', () => {
   it('operator gets host sampling, aggregate queue and actionable errors', async () => {
     const c = context(), data = (await capacityFor(c, { kind: 'owner' })).body as Capacity
     expect(data.scope).toBe('host'); expect(data.counts.queued.value).toBe(7); expect(data.counts.error).toBe(1)
-    expect(data.host?.cpuBusyPercent.value).toBeNull(); expect(data.host?.diskAvailableBytes.value).toBeNull(); expect(data.warnings.length).toBeGreaterThan(0)
+    expect(data.host?.cpuBusyPercent.value).toBeNull(); expect(data.host?.diskAvailableBytes.value).toBeNull(); expect(data.host?.ksmSavedBytes).toBeDefined(); expect(data.warnings.length).toBeGreaterThan(0)
   })
 })
-it('distinguishes Linux available memory, CPU counter percentage, and invalid counters', () => {
+it('distinguishes Linux available memory, KSM saved memory, CPU counter percentage, and invalid counters', async () => {
   expect(linuxAvailableMemory('MemFree: 1 kB\nMemAvailable: 1234 kB\n').value).toBe(1234 * 1024)
   expect(linuxAvailableMemory('MemFree: 123 kB').value).toBeNull()
   expect(cpuDelta({ idle: 10, total: 100 }, { idle: 35, total: 200 }).value).toBe(75)
   expect(cpuDelta({ idle: 10, total: 100 }, { idle: 1, total: 1 }).value).toBeNull()
+  const ksmDir = await temp()
+  await Promise.all([
+    writeFile(join(ksmDir, 'run'), '1\n'),
+    writeFile(join(ksmDir, 'pages_shared'), '128\n'),
+    writeFile(join(ksmDir, 'pages_sharing'), '512\n'),
+  ])
+  expect((await linuxKsmSavedMemory(ksmDir)).value).toBe(512 * 4096)
+  expect((await linuxKsmSavedMemory(join(ksmDir, 'absent'))).value).toBeNull()
 })
 it('scans sparse logical bytes separately from allocated 512-byte blocks', async () => {
   const dir = await temp(), path = join(dir, 'sparse'); const file = await open(path, 'w'); await file.truncate(16 * 1024 ** 2); await file.close()

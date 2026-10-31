@@ -107,6 +107,45 @@ describe('computer lifecycle', () => {
     expect(computer.state).toBe('parked')
   })
 
+  it('reclaims memory before freeze and before direct running-to-park transitions, but not when parking a frozen VM, ignoring reclaim errors', async () => {
+    vi.useFakeTimers()
+    const events: string[] = []
+    const driver = {
+      wake: vi.fn(async () => 'desk'),
+      canFreeze: () => true,
+      reclaimMemory: vi.fn(async () => { events.push('driver.reclaim') }),
+      freeze: vi.fn(async () => { events.push('freeze') }),
+      thaw: vi.fn(async () => { events.push('thaw') }),
+      park: vi.fn(async () => { events.push('park') }),
+    }
+    const computer = new ComputerLifecycle(driver, 10000)
+    const beforePark = vi.fn(async () => { events.push('beforePark') })
+    computer.setBeforePark(beforePark)
+
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('frozen')
+    expect(events).toEqual(['beforePark', 'driver.reclaim', 'freeze'])
+
+    // Parking from frozen must NOT call reclaim hooks again because vCPUs are paused.
+    events.length = 0
+    await vi.advanceTimersByTimeAsync(7000)
+    expect(computer.state).toBe('parked')
+    expect(events).toEqual(['park'])
+
+    // Parking directly from running calls reclaim hooks, and ignores any errors they throw.
+    events.length = 0
+    beforePark.mockRejectedValueOnce(new Error('guest hook failed'))
+    driver.reclaimMemory.mockRejectedValueOnce(new Error('reclaim command failed'))
+    await computer.wake()
+    await computer.park()
+    expect(computer.state).toBe('parked')
+    expect(computer.lastError).toBeNull()
+    expect(events).toEqual(['park'])
+    expect(beforePark).toHaveBeenCalledTimes(2)
+    expect(driver.reclaimMemory).toHaveBeenCalledTimes(2)
+  })
+
   it('fences work during an ambiguous pause and retries thaw before allowing it', async () => {
     vi.useFakeTimers()
     let rejectPause!: (error: Error) => void
