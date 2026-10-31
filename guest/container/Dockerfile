@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config clang libclang-dev \
       libwayland-dev libxkbcommon-dev libudev-dev libpixman-1-dev \
-      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libva-dev libdrm-dev && \
+      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libva-dev libdrm-dev libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
@@ -14,6 +14,9 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 # The codec passthrough VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
+# The GBM backend for the computer's render node (guest/gpu/gbm).
+COPY gpu/gbm /gbm
+RUN make -C /gbm BUILD=/out/gbm /out/gbm/vgem_gbm.so
 
 # The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
 FROM debian:trixie-slim AS gpu
@@ -88,9 +91,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbo
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
 COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so
+COPY --from=display /out/gbm/vgem_gbm.so /tmp/vgem_gbm.so
 RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
-    install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so
+    install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so && \
+    install -D -m 0644 /tmp/vgem_gbm.so "/usr/lib/$triplet/gbm/vgem_gbm.so" && rm /tmp/vgem_gbm.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session

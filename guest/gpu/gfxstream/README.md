@@ -317,3 +317,16 @@ frames remain observable after high-rate startup calls. Whole-call elapsed
 includes validation, encoder-lock wait, marshaling, buffered write and reply
 read; it is not network RTT, and records contain no handles, addresses or
 payloads.
+
+## Phone-resident buffers in windows
+
+`buffer_presentation.py` is the broker's presentation of phone-resident dma-bufs that a
+compositor window commits ([docs/gpu-buffers.md](../../../docs/gpu-buffers.md)): the
+registry of buffers drivers register on the surface socket (CGLS kinds 40 and 41, the
+dma-buf in `SCM_RIGHTS`), and each window's presentation state, one frame in flight and
+the newest commit waiting. `control_protocol.py` carries the compositor's
+`BUFFER_PRESENT` and the broker's `BUFFER_RELEASED`, and binds in the `BUFFER_WINDOW`
+namespace. `test_buffer_presentation.py` covers the records, registry ownership and the
+window state machine; `test_broker_buffers.py` drives a session through bind, present,
+replacement of a waiting commit, an `EBUSY` retry, release on source release, retirement
+and rebinding, and a resize. The driver's side is in `dmabuf/`.

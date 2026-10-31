@@ -22,6 +22,8 @@ mod motion;
 mod net;
 mod pencil;
 mod render;
+mod remote_buffers;
+mod render_node;
 mod session;
 mod state;
 mod stream;
@@ -46,7 +48,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::utils::Clock;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
-use smithay::wayland::dmabuf::DmabufState;
+use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -296,9 +298,29 @@ fn run(config: Config) -> Result<(), String> {
     // linux-dmabuf: the pixman renderer maps linear dmabufs, so clients that allocate
     // GPU buffers can hand them over without a copy into shm.
     let render::Renderer::Pixman(r) = &renderer;
-    let formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    let mut formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    // With the phone GPU, clients may also hand over buffers whose pixels are on the phone.
+    if config.private_gpu_stream.is_some() {
+        formats.extend(remote_buffers::formats());
+    }
     if !formats.is_empty() {
-        dmabuf.create_global::<State>(&dh, formats);
+        // With a render node, its dma-buf feedback names it as the device to allocate on.
+        let feedback = render_node::find().and_then(|(device, path)| {
+            match DmabufFeedbackBuilder::new(device, formats.iter().copied()).build() {
+                Ok(feedback) => {
+                    tracing::info!("render node: {}", path.display());
+                    Some(feedback)
+                }
+                Err(e) => {
+                    tracing::warn!("render node {}: no dma-buf feedback: {e}", path.display());
+                    None
+                }
+            }
+        });
+        match feedback {
+            Some(feedback) => { dmabuf.create_global_with_default_feedback::<State>(&dh, &feedback); }
+            None => { dmabuf.create_global::<State>(&dh, formats); }
+        }
     }
     OutputManagerState::new_with_xdg_output::<State>(&dh);
     XdgDecorationState::new::<State>(&dh);
@@ -447,6 +469,7 @@ fn run(config: Config) -> Result<(), String> {
         epoch: session::new_epoch(),
         gpu_grants: None,
         gpu_last_bind_request: 0,
+        remote_presents: Default::default(),
         stats: Default::default(),
         cursor: None,
         refine_timer: None,
