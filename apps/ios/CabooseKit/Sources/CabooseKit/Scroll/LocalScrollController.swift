@@ -42,8 +42,12 @@ public final class LocalScrollController {
     /// The newest touch sample's timestamp, for the send log.
     private var lastTouch: TimeInterval?
 
-    public init?() {
-        guard let renderer = LocalScrollRenderer.shared else { return nil }
+    /// Phone-owned scrolling runs only when the app is launched with `CABOOSE_LOCAL_SCROLL=1`;
+    /// otherwise every pan scrolls the app remotely, as before.
+    public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_LOCAL_SCROLL"] == "1"
+
+    public init?(enabled: Bool = LocalScrollController.enabled) {
+        guard enabled, let renderer = LocalScrollRenderer.shared else { return nil }
         self.renderer = renderer
         if LocalScrollProfile.enabled { model.note = { LocalScrollProfile.note($0) } }
     }
@@ -165,7 +169,10 @@ public final class LocalScrollController {
         guard let base = textures[composition.base] else { isComposing = false; return false }
         let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
         if layer.pixelFormat != format { layer.pixelFormat = format }
-        let size = CGSize(width: base.width, height: base.height)
+        // The viewport: the picture less its overscan along the axis.
+        let overscan = composition.overscan
+        let size = composition.axis == .vertical ? CGSize(width: base.width, height: max(1, base.height - overscan))
+                                                 : CGSize(width: max(1, base.width - overscan), height: base.height)
         if layer.drawableSize != size { layer.drawableSize = size }
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {

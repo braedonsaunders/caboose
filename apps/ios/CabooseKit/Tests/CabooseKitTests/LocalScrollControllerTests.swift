@@ -9,7 +9,7 @@ import Testing
 @MainActor
 struct LocalScrollControllerTests {
     @Test func flickComposesThenHandsBackAtTheAppsPosition() async throws {
-        guard let controller = LocalScrollController() else { return }
+        guard let controller = LocalScrollController(enabled: true) else { return }
         let width = 240, height = 480, header = 40, scale = 2.0
         let page = LocalScrollRendererTests.picture(width: width, height: 6000, seed: 21)
         let surface = WindowSurface()

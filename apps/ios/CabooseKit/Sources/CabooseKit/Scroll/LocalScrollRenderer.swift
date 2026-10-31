@@ -238,8 +238,17 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         }
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         // Fixed overlays stay where the newest picture shows them.
-        for fixed in composition.stationary {
+        for fixed in composition.stationary where fixed.along.upperBound <= region.along.upperBound {
             draw(Quad(rect: rect(along: fixed.along, across: fixed.across), offset: .zero, target: size, color: none), texture: base)
+        }
+        // With an overscan, what follows the region in the picture (a footer, a status bar)
+        // is anchored to the viewport's end.
+        let viewLines = vertical ? target.height : target.width
+        if composition.overscan > 0, region.along.upperBound < viewLines {
+            let shift = Float(-composition.overscan)
+            let span = vertical ? 0..<target.width : 0..<target.height
+            draw(Quad(rect: rect(along: region.along.upperBound..<viewLines, across: span),
+                      offset: vertical ? SIMD2(0, shift) : SIMD2(shift, 0), target: size, color: none), texture: base)
         }
         encoder.endEncoding()
         return true

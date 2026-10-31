@@ -21,6 +21,9 @@ struct ScrollReplay {
         var noise: Float = 0.8
         var footer = 0
         var sidebar = 0
+        /// Lines the window is laid out taller than the phone's viewport (an overscan window):
+        /// the app's pictures and scroll region grow by it, its footer moves to their end.
+        var overscan = 0
         var latency: TimeInterval { inputDelay + outputDelay + 0.5 / fps }
     }
 
@@ -122,7 +125,10 @@ struct ScrollReplay {
         return (180 + 50 * Self.unit(line, band, 10 + kind), 10 + 30 * Self.unit(line, band, 20 + kind))
     }
 
+    var pictureLines: Int { lines + app.overscan }
+
     func signature(offset: Int, seed: Int) -> ScrollSignature {
+        let lines = pictureLines
         let bands = ScrollSignature.bandCount(span: span)
         var luma = [Float](repeating: 0, count: lines * bands), detail = luma
         let sidebarBands = app.sidebar * bands / span
@@ -153,9 +159,10 @@ struct ScrollReplay {
         var report = Report(name: name)
         var model = initial ?? LocalScroll(configuration: configuration)
         if trace { model.note = { print("  NOTE", $0) } }
+        model.applyOverscan(app.overscan)
         let estimator = ScrollMotionEstimator()
         let tick = 1.0 / 120
-        let maxOffset = Double(app.pageLines - (lines - header - app.footer))
+        let maxOffset = Double(app.pageLines - (pictureLines - header - app.footer))
         var appOffset = app.startOffset
         var inbound: [(time: TimeInterval, wire: Double)] = []
         var outbound: [(time: TimeInterval, id: UInt64, offset: Int)] = []
