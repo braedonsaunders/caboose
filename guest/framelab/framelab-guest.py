@@ -196,9 +196,10 @@ def broker_log():
 class Run:
     """One launch of one app, measured."""
 
-    def __init__(self, app, control, env, out, broker_log_path, reference=False):
+    def __init__(self, app, control, env, out, broker_log_path, reference=False, size=None):
         self.app, self.control, self.env, self.out = app, control, env, out
         self.reference = reference
+        self.size = size
         self.broker_log_path = broker_log_path
         self.records, self.inputs, self.cpu = [], [], []
         self.windows, self.window_ids = {}, set()
@@ -404,6 +405,12 @@ class Run:
             while time.monotonic() < end_warmup:
                 self.control.ask('settle')
                 time.sleep(0.25)
+            if self.size and window.get('x11') and window['rect'][2:] != list(self.size):
+                # An X11 window takes the size its user (here, xdotool) asks for; a Wayland
+                # toplevel keeps the one its compositor configured.
+                subprocess.run(['xdotool', 'windowsize', str(window['x11']), str(self.size[0]), str(self.size[1])],
+                               env={**os.environ, **self.env}, capture_output=True, timeout=10)
+                time.sleep(1)
             # Windows often open small and grow; input goes to where the window is now.
             window = next((w for w in self.control.ask('windows')[0]['windows'] if w['id'] == window['id']), None)
             if window is None:
@@ -563,15 +570,17 @@ def main():
                 (out / f"{app['id']}.json").write_text(json.dumps(card, indent=2))
                 emit('skipped', app=app['id'], reason=card['skipped'])
                 continue
-            # The CPU reference runs first: it also warms what the app loads (a page from
-            # the network, its caches), so the measured run starts from the same state.
+            tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-", dir=work))
+            run = Run(app, control, env, out, log_path).measure(tmp, made, args.offline, f"{app['id']}.png")
+            # The CPU reference runs after, at the measured window's size: a window bound to
+            # the phone's GPU is configured to the display's extent (docs/gpu-live.md), and
+            # the same page at another width lays out differently.
             ref = None
             if app.get('correctness') and not args.no_reference:
                 ref_tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-ref-", dir=work))
-                ref = Run(app, control, env, out, None, reference=True).measure(
+                size = (run.get('window') or {}).get('rect', [0, 0, 0, 0])[2:] or None
+                ref = Run(app, control, env, out, None, reference=True, size=size).measure(
                     ref_tmp, made, args.offline, f"{app['id']}.reference.png")
-            tmp = Path(tempfile.mkdtemp(prefix=f"{app['id']}-", dir=work))
-            run = Run(app, control, env, out, log_path).measure(tmp, made, args.offline, f"{app['id']}.png")
             correctness = None
             if app.get('correctness') and run.get('picture'):
                 if args.no_reference:

@@ -78,8 +78,10 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   apart, and it passes at SSIM 0.9 and 5% changed. `candidate_source` says where the
   compared picture came from: the phone, or the compositor's own screenshot when the phone
   has none. A window the phone draws has no pixels in the compositor, so without a phone
-  picture its comparison is skipped. The reference runs first, so a page loaded from the
-  network is cached when the measured run loads it. An app with `ready_title` in the matrix
+  picture its comparison is skipped. The reference runs after the measured run, at the
+  measured window's size: a window bound to the phone's GPU is configured to the display's
+  extent ([gpu-live.md](../../docs/gpu-live.md)), so an X11 reference window is resized to
+  match with `xdotool windowsize` (a Wayland toplevel keeps the size its compositor gave it). An app with `ready_title` in the matrix
   has its picture taken only once its window title matches (a page stalled while loading is
   drawn and unchanging). Before comparing, a uniform border the color of each picture's
   corner is trimmed, so a swapchain's shadow margin does not count as a difference.
