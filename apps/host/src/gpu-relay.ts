@@ -6,7 +6,7 @@ export const GPU_MAX_PENDING = 1024 * 1024
 export const GPU_MAX_PENDING_MESSAGES = 64
 export const GPU_CLOSE_TIMEOUT_MS = 1000
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {

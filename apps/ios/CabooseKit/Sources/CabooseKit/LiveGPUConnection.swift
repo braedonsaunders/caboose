@@ -160,8 +160,9 @@ final class LiveGPUOutboundQueue {
 public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
     public static let subprotocolName = "caboose.gpu.live.v1"
     /// Capabilities of this app's native decoder that a computer may use: it registers
-    /// objects under Vulkan handles the guest assigns (patch 0026).
-    static let features = "guest-handles"
+    /// objects under Vulkan handles the guest assigns (patch 0026), including descriptor
+    /// sets and command buffers (patch 0027), and serves the completion feed (patch 0028).
+    static let features = "guest-handles,guest-handle-arrays,completion-feed"
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()

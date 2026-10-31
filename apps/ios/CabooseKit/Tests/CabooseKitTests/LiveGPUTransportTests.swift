@@ -8,7 +8,7 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "wss://example.com/v1/gpu")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "caboose.gpu.live.v1")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer phone")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles,guest-handle-arrays,completion-feed")
         XCTAssertNil(request.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
         for url in ["https://example.com?executor=forged", "https://user@example.com", "https://example.com#fragment", "file:///tmp/gpu"] {
             XCTAssertThrowsError(try LiveGPUConnection.makeRequest(hostURL: URL(string: url)!, phoneToken: "phone"))

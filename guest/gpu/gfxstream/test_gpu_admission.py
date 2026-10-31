@@ -21,6 +21,9 @@ class AdmissionTests(unittest.TestCase):
     def test_phone_features_are_known_names_only(self):
         self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: Guest-Handles, other\r\n')),
                          frozenset({'guest-handles'}))
+        self.assertEqual(admission.features(request(
+            extra=b'X-Caboose-GPU-Features: guest-handles,guest-handle-arrays,completion-feed\r\n')),
+            frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed'}))
         self.assertEqual(admission.features(request()), frozenset())
         self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: \xff\r\n')), frozenset())
 

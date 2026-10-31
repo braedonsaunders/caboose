@@ -24,6 +24,10 @@ from test_gpu_websocket import client_frame
 import control_protocol
 
 
+
+def hello(mask):
+    return broker.HELLO_V4[:12] + struct.pack('<I', mask) + broker.HELLO_V4[16:]
+
 class Writer:
     def __init__(self): self.data = bytearray(); self.eof = False; self.transport = self
     def write(self, data): self.data.extend(data)
@@ -243,12 +247,15 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.bindings.finish(session.binding_generation)
 
     async def test_guest_handle_hello_is_echoed_only_when_the_phone_supports_it(self):
-        cases = ((True, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4_GUEST_HANDLES),
-                 (False, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
-                 (True, broker.HELLO_V4, broker.HELLO_V4))
+        everything = frozenset(broker.HELLO_FEATURES)
+        cases = ((everything, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4_GUEST_HANDLES),
+                 (frozenset(), broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
+                 (everything, broker.HELLO_V4, broker.HELLO_V4),
+                 (everything, hello(0x3F0), hello(0x3F0)),
+                 (frozenset({'guest-handles'}), hello(0x3F0), hello(0xF0)))
         for supported, offered, expected in cases:
-            with self.subTest(supported=supported, offered=offered[12]):
-                session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True, guest_handles=supported)
+            with self.subTest(supported=sorted(supported), offered=offered[12:14].hex()):
+                session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True, features=supported)
                 session.session_ready.set()
                 class Peer:
                     uid, pid, start_ticks = 1000, 42, 123
@@ -278,8 +285,25 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 session.bindings.finish(session.binding_generation)
 
     async def test_plain_session_refuses_the_guest_handle_hello(self):
-        session = broker.Session(None, b'a' * 16, 1, None, Writer(), guest_handles=True)
-        self.assertFalse(session.guest_handles)
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
+        self.assertFalse(session.features)
+
+    def test_hello_negotiation_grants_offered_phone_features(self):
+        everything = frozenset(broker.HELLO_FEATURES)
+        negotiate = broker.negotiate_hello
+        self.assertEqual(negotiate(hello(0x70), everything), hello(0x70))
+        self.assertEqual(negotiate(hello(0xF0), everything), hello(0xF0))
+        self.assertEqual(negotiate(hello(0x270), everything), hello(0x270))
+        self.assertEqual(negotiate(hello(0x3F0), frozenset({'completion-feed'})), hello(0x270))
+        # Descriptor-set and command-buffer handles need guest handles themselves.
+        self.assertEqual(negotiate(hello(0x1F0), frozenset({'guest-handle-arrays'})), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x170), everything))
+        # Unknown bits, missing required bits, other versions and other sources are refused.
+        self.assertIsNone(negotiate(hello(0x470), everything))
+        self.assertIsNone(negotiate(hello(0x30), everything))
+        self.assertIsNone(negotiate(broker.HELLO, everything))
+        self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))
+        self.assertIsNone(negotiate(hello(0x70)[:47], everything))
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux peer pidfd')
     async def test_creator_exit_drains_fin_then_admits_fresh_process(self):

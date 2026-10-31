@@ -124,6 +124,7 @@ it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures(' Guest-Handles , bogus,guest-handles')).toEqual(['guest-handles'])
   expect(gpuFeatures(['x', 'guest-handles'])).toEqual(['guest-handles'])
   expect(gpuFeatures(undefined)).toEqual([])
+  expect(gpuFeatures('completion-feed, guest-handle-arrays,GUEST-HANDLES')).toEqual(['completion-feed', 'guest-handle-arrays', 'guest-handles'])
   const client = new WebSocket('ws://test') as ControlledSocket
   void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })
   const withFeatures = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
