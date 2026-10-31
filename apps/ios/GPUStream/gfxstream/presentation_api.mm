@@ -1013,6 +1013,17 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         completion = swapchain->device->guestCompletion;
         if (!completion) return fail(EBUSY);
         proof = completion->tryRelease();
+        if (!proof.valid() && swapchain->device && swapchain->device->vk &&
+            swapchain->device->vk->vkDeviceWaitIdle) {
+            auto before = completion->beforeDeviceIdle();
+            VkResult idleResult;
+            {
+                std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
+                idleResult = swapchain->device->vk->vkDeviceWaitIdle(swapchain->device->device);
+            }
+            completion->afterIdle(before, idleResult == VK_SUCCESS);
+            proof = completion->tryRelease();
+        }
         if (!proof.valid()) return fail(EBUSY);
         PresentationProviderResult provider{};
         VkResult result;

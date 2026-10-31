@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(UIKit)
+import UIKit
+#endif
 @testable import CabooseKit
 
 private final class SurfaceOutput: @unchecked Sendable {
@@ -39,6 +42,7 @@ private final class SurfaceRuntime: LiveGPURuntimeBackend, @unchecked Sendable {
 }
 private final class TestSurfaceBackend: LiveGPUSurfaceBackend, @unchecked Sendable {
     let resource = TestSurfaceResource()
+    var customResource: (any LiveGPUSurfaceResource)?
     var bindings: [(UInt64, UInt64)] = []
     var bindError: Int32 = 0
     var throwsBindError = false
@@ -47,8 +51,9 @@ private final class TestSurfaceBackend: LiveGPUSurfaceBackend, @unchecked Sendab
               instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
         bindings.append((processToken, window))
         if throwsBindError { throw LiveGPUBindingError.native(operation: "bind", code: bindError) }
+        let target = customResource ?? resource
         return .init(status: .init(nativeErrno: bindError, vkResult: nil),
-                     resource: bindError == 0 || retainsFailedResource ? resource : nil)
+                     resource: bindError == 0 || retainsFailedResource ? target : nil)
     }
 }
 final class LiveGPUSurfaceControllerTests: XCTestCase {
@@ -297,4 +302,121 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(controller.retainedCount, 1)
         XCTAssertEqual(backend.resource.retired, 0)
     }
+
+    #if canImport(UIKit)
+    @MainActor
+    func testPresentationOwnerInvalidationDetachesLayerViewImmediatelyAndRetainsLeaseUntilRelease() throws {
+        let stream = MockStream()
+        let decoder = FakeDecoder()
+        let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
+                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
+        let surface = WindowSurface()
+        surface.resize(width: 800, height: 600)
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  overrideRedirect: false, surface: surface)
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        let view = RemoteWindowView(session: session, window: window)
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        host.addSubview(view)
+
+        var invalidatedIdentities: [LiveGPUSurfaceIdentity] = []
+        let owners = LiveGPUPresentationOwners { invalidatedIdentities.append($0) }
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        view.layoutLiveGPU()
+
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 7) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        let layerView = try XCTUnwrap(lease.content)
+        XCTAssertTrue(layerView.superview === view)
+        XCTAssertTrue(lease.isValid)
+
+        // Window withdrawal/invalidation detaches the GPU presentation view from
+        // RemoteWindowView immediately so video/picture underneath is not covered,
+        // while keeping the lease and backing view retained until native release.
+        owners.withdraw(view)
+        XCTAssertEqual(invalidatedIdentities, [identity])
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNil(layerView.superview)
+        XCTAssertNotNil(lease.content)
+
+        // While the old lease is still unreleased by native detach, a new claim waits/rejects.
+        view.layoutLiveGPU()
+        let nextIdentity = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: 4, count: 16), generation: 2)
+        var secondClaim: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: nextIdentity, windowID: 7) { secondClaim = $0 }
+        XCTAssertNil(secondClaim)
+
+        // After native retirement releases the old lease, a new grant can claim and re-attach.
+        owners.release(lease)
+        XCTAssertNil(lease.content)
+        owners.observe(view)
+        let nextLease = try XCTUnwrap(secondClaim?.get())
+        let nextLayerView = try XCTUnwrap(nextLease.content)
+        XCTAssertTrue(nextLayerView.superview === view)
+
+        // Executor session revoke also immediately removes the GPU presentation view from RemoteWindowView.
+        owners.revoke()
+        XCTAssertFalse(nextLease.isValid)
+        XCTAssertNil(nextLayerView.superview)
+        XCTAssertNotNil(nextLease.content)
+        owners.release(nextLease)
+        XCTAssertNil(nextLease.content)
+    }
+
+    @MainActor
+    func testPresentationOwnerGeometryResizePreservesLeaseAndFitsLayerViewWithoutRevokingSurface() throws {
+        let stream = MockStream()
+        let decoder = FakeDecoder()
+        let display = DisplayInfo(id: 0, width: 1356, height: 932, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
+                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
+        let surface = WindowSurface()
+        surface.resize(width: 1356, height: 932)
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 1356, height: 932),
+                                  overrideRedirect: false, surface: surface)
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        let view = RemoteWindowView(session: session, window: window)
+        view.frame = CGRect(x: 0, y: 0, width: 678, height: 466)
+        host.addSubview(view)
+
+        var invalidatedIdentities: [LiveGPUSurfaceIdentity] = []
+        let owners = LiveGPUPresentationOwners { invalidatedIdentities.append($0) }
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        view.layoutLiveGPU()
+
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 7) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        let layerView = try XCTUnwrap(lease.content)
+        XCTAssertEqual(lease.extent, CGSize(width: 1356, height: 932))
+        XCTAssertTrue(lease.isValid)
+
+        // Simulate Chrome configuring its swapchain at a different drawable size (e.g., 943x648),
+        // then the user rotating/resizing the window and view (1356x932 -> 1021x691).
+        XCTAssertEqual(lease.configurePresentationExtent(CGSize(width: 943, height: 648)) { _ in 0 }, 0)
+        window.frame = CGRect(x: 0, y: 0, width: 1021, height: 691)
+        view.frame = CGRect(x: 0, y: 0, width: 510.5, height: 345.5)
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        view.layoutLiveGPU()
+
+        XCTAssertTrue(lease.isValid)
+        XCTAssertTrue(invalidatedIdentities.isEmpty)
+        XCTAssertEqual(lease.extent, CGSize(width: 1021, height: 691))
+        XCTAssertEqual(layerView.frame.size, CGSize(width: 510.5, height: 345.5))
+        XCTAssertTrue(layerView.superview === view)
+        // Swapchain recreation at the new size succeeds on the preserved lease.
+        XCTAssertEqual(lease.configurePresentationExtent(CGSize(width: 1021, height: 691)) { _ in 0 }, 0)
+        XCTAssertEqual(lease.layer?.drawableSize, CGSize(width: 1021, height: 691))
+
+        // Invalid/zero geometry still invalidates the lease and detaches the layer view.
+        window.frame = .zero
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        XCTAssertFalse(lease.isValid)
+        XCTAssertEqual(invalidatedIdentities, [identity])
+        XCTAssertNil(layerView.superview)
+        owners.release(lease)
+    }
+    #endif
 }

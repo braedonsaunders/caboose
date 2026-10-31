@@ -66,7 +66,11 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
             return resource.query(physicalDevice: physicalDevice)
         }
     }
-    private func output(_ body: LiveGPUSurfaceMessage.Body) throws { try emit(body) }
+    private func output(_ body: LiveGPUSurfaceMessage.Body) throws {
+        do { try emit(body) }
+        catch LiveGPUError.closed { if !revoking { failed(LiveGPUError.closed) } }
+        catch LiveGPUBindingError.outputRejected { if !revoking { failed(LiveGPUBindingError.outputRejected) } }
+    }
     private func reply(_ body: LiveGPUSwapchainMessage) throws { try output(.swapchain(body)) }
     private func handle(_ control: LiveGPUSwapchainMessage) throws {
         if let failure { throw failure }
@@ -171,6 +175,13 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 guard swap.tasks.isEmpty, swap.frames.isEmpty else { continue }
                 let status = swap.native.retire()
                 if status.succeeded { swaps.removeValue(forKey: id) }
+                else if revoking {
+                    failure = LiveGPUBindingError.native(
+                        operation: "indexed retirement",
+                        code: status.nativeErrno > 0 ? status.nativeErrno : EIO)
+                    retirement?()
+                    return
+                }
                 else { poison(LiveGPUAcquireFailure.provider(status)); return }
                 if !revoking {
                     do { try reply(.retired(swapchain: id, status: status)) } catch { poison(error); return }
@@ -212,7 +223,9 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 try output(body)
             case .swapchain(.presentRetired(let id, let actual)):
                 guard id == swapchain, actual == serial, frame.released else { throw violation("premature frame retirement") }
-                try output(body); swap.frames.removeValue(forKey: serial); advance()
+                swap.frames.removeValue(forKey: serial)
+                defer { advance() }
+                try output(body)
             case .presentResult(let actual, _, _, let event):
                 guard actual == serial, event != .submission else { throw violation("indexed callback result") }
                 try output(body)

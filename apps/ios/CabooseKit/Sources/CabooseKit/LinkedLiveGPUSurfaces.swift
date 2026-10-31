@@ -231,10 +231,15 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         }
     }
     func retire() throws {
+        lease.invalidate()
         guard let current = pointer else { return }
         let code = caboose_gpu_surface_retire(current)
-        guard code == 0 else { throw LiveGPUBindingError.native(operation: "surface retire", code: code) }
+        guard code == 0 else {
+            try? liveGPUOnMain { [lease] in lease.content?.removeFromSuperview() }
+            throw LiveGPUBindingError.native(operation: "surface retire", code: code)
+        }
         try liveGPUOnMain { [self] in
+            lease.content?.removeFromSuperview()
             var current = pointer
             let code = caboose_gpu_surface_detach(&current)
             guard code == 0, current == nil else {
