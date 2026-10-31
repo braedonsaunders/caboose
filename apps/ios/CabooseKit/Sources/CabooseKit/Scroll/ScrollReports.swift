@@ -27,6 +27,11 @@ public struct ScrollTree: Equatable, Sendable {
     public var epoch: UInt64
     /// The primary scroller first.
     public var scrollers: [Scroller]
+    /// The page's visual scale (a pinch zoom); while it is not 1 the primary scroller's
+    /// offset and range are in pixels of the zoomed content.
+    public var zoom: Double = 1
+    /// The scales the page allows.
+    public var zoomRange: ClosedRange<Double>?
 
     public init(window: Int, tag: Int?, tagRect: CGRect?, applied: UInt64, epoch: UInt64, scrollers: [Scroller]) {
         self.window = window; self.tag = tag; self.tagRect = tagRect; self.applied = applied; self.epoch = epoch
@@ -45,6 +50,10 @@ public struct ScrollTree: Equatable, Sendable {
         tagRect = body["tag_rect"].flatMap(WindowFields.rect)
         self.applied = applied
         self.epoch = epoch
+        zoom = body["zoom"]?.double ?? 1
+        if let r = body["zoom_range"]?.array, r.count == 2, let low = r[0].double, let high = r[1].double, low > 0, low <= high {
+            zoomRange = low ... high
+        }
         scrollers = list.compactMap { s in
             guard let id = s["id"]?.int, let rect = s["rect"].flatMap(WindowFields.rect),
                   let offset = pair(s["offset"]), let range = pair(s["range"]) else { return nil }
@@ -112,6 +121,12 @@ public final class ScrollReports {
 
     public func report(tag: Int) -> ScrollTree? { tagged.last { $0.tag == tag } }
 
+    /// The report a picture's tag luma names, if it decodes and is held.
+    public func report(luma: [Float]?) -> ScrollTree? {
+        guard let luma, let tag = ScrollTag.decode(luma) else { return nil }
+        return report(tag: tag)
+    }
+
     /// The primary scroller's offset once every target sent so far is applied.
     public var eventualOffset: CGPoint? {
         guard let primary = latest?.scrollers.first else { return nil }
@@ -156,7 +171,8 @@ public final class ScrollReports {
             let r = f.intersection(primary.rect)
             return r.isNull || r.isEmpty ? nil : region(r)
         }
+        // Offsets at another zoom have another scale: a zoom starts a placement epoch too.
         return .reported(offset: offset, region: region(primary.rect), bounds: 0 ... max(0, range), stationary: stationary,
-                         epoch: tree.epoch)
+                         epoch: tree.epoch &* 0x9E37_79B9_7F4A_7C15 ^ UInt64((tree.zoom * 4096).rounded()))
     }
 }

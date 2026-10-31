@@ -77,6 +77,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         made?.pictureOverscan = { [weak self] texture in
             self?.pictureOverscan(CGSize(width: texture.width, height: texture.height)) ?? .zero
         }
+        // A pinch hands back once a picture reports the scale it asked for.
+        made?.zoomReport = { [weak self] _, luma in self?.remoteWindow?.scrollReports.report(luma: luma) }
         // A toolkit reporter's frame tag names each picture's exact scroll report
         // (docs/display.md, "Scroll reports"); without one, pictures are measured.
         made?.tagRect = { [weak self] picture in
@@ -118,6 +120,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var scrollTouchGesture: UIPanGestureRecognizer?
+    private weak var pinchGesture: UIPinchGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
     private var holdUsesPointerDrag = false
     private weak var holdWindow: RemoteWindow?
@@ -356,6 +359,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if (localScrollEngaged || liveGPU), let localScroll, let window = remoteWindow {
             // A live GPU layer presents itself; local scrolling draws over it.
             let target = liveGPU ? overlay() : metalLayer
+            localScroll.displayScale = self.window?.screen.scale ?? traitCollection.displayScale
             let composed = localScroll.refresh(at: targetTime, surface: liveGPU ? nil : window.surface, layer: target)
             followLocalScroll()
             showOverlay(liveGPU && composed)
@@ -621,6 +625,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         scroll.require(toFail: longPress)
         tap.require(toFail: longPress)
 
+        // Two fingers pinching zoom the page on the phone (docs/display.md, "Phone-owned zoom").
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.delegate = self
+        pinchGesture = pinch
+        addGestureRecognizer(pinch)
+
         // Hardware wheel/trackpad events do not have direct finger contacts.
         let wheel = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         wheel.allowedTouchTypes = []
@@ -652,6 +662,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+        if gesture === pinchGesture { return zoomablePage() != nil }
         // A finger handed to the app keeps its drags: the scroll gesture does not take it back.
         if gesture === scrollTouchGesture, let handed = handedToApp, nativeTouches.contains(handed) { return false }
         return super.gestureRecognizerShouldBegin(gesture)
@@ -1224,6 +1235,59 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             return true
         }
         return true
+    }
+
+    // MARK: Phone-owned zoom
+
+    /// The window's reported page, when the phone can zoom it: its scale now and the scales
+    /// it allows. A reporter that applies `scroll.zoom` reports `zoom_range`.
+    private func zoomablePage() -> (scale: Double, range: ClosedRange<Double>)? {
+        guard isInteractive, localScroll != nil, let window = remoteWindow, canScrollLocally(window),
+              let tree = window.scrollReports.latest, !tree.scrollers.isEmpty, tree.zoom > 0,
+              let range = tree.zoomRange else { return nil }
+        return (tree.zoom, range)
+    }
+
+    /// The window's shown picture in its own pixels, and picture pixels per point.
+    private func zoomMapping() -> (picture: CGSize, perPoint: CGSize)? {
+        guard let localScroll, let window = remoteWindow, bounds.width > 0, bounds.height > 0 else { return nil }
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        guard let whole = liveGPU ? localScroll.pictureSize : window.surface.presentation().map({ CGSize(width: $0.texture.width, height: $0.texture.height) }) ?? window.presentationSize,
+              whole.width > 0, whole.height > 0 else { return nil }
+        let extra = pictureOverscan(whole)
+        let picture = CGSize(width: whole.width - extra.width, height: whole.height - extra.height)
+        return (picture, CGSize(width: picture.width / bounds.width, height: picture.height / bounds.height))
+    }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard let localScroll, let mapping = zoomMapping() else { return }
+        let location = gesture.location(in: self)
+        let centroid = CGPoint(x: location.x * mapping.perPoint.width, y: location.y * mapping.perPoint.height)
+        switch gesture.state {
+        case .began:
+            guard let page = zoomablePage() else { return }
+            stopMomentum()
+            localScrollEngaged = true
+            LocalScrollProfile.note(String(format: "zoom: pinch window=%d at scale %.3f", remoteWindow?.id ?? 0, page.scale))
+            localScroll.beginZoom(centroid: centroid, limits: (page.range.lowerBound / page.scale) ... (page.range.upperBound / page.scale))
+            localScroll.pinch(scale: Double(gesture.scale), centroid: centroid)
+        case .changed:
+            localScroll.pinch(scale: Double(gesture.scale), centroid: centroid)
+        case .ended, .cancelled, .failed:
+            guard localScroll.isZooming else { return }
+            let session = session, window = remoteWindow
+            localScroll.endZoom(at: CACurrentMediaTime()) { scale, focus in
+                guard let session, let window, let page = zoomablePage(), window.frame.width > 0, window.frame.height > 0 else { return nil }
+                let absolute = page.scale * scale
+                // Viewport pixels to window pixels.
+                let inWindow = CGPoint(x: focus.x * window.frame.width / mapping.picture.width,
+                                       y: focus.y * window.frame.height / mapping.picture.height)
+                guard let seq = session.scrollZoom(in: window, scale: absolute, focus: inWindow) else { return nil }
+                return (seq, absolute)
+            }
+        default:
+            break
+        }
     }
 
     // MARK: Synthetic replay
