@@ -27,7 +27,7 @@ def validate_surface(kind: int, payload: bytes):
         require(has_vk == 1 or vk == 0, "absent Vulkan result")
         return error, has_vk, vk
 
-    require(16 <= kind <= 36, "unknown surface kind")
+    require(16 <= kind <= 36 or kind == 39, "unknown surface kind")
     require(len(payload) >= 40, "truncated surface identity")
     require(payload[:16] != bytes(16) and payload[16:32] != bytes(16) and wide(32) != 0,
             "zero surface identity")
@@ -137,6 +137,15 @@ def validate_surface(kind: int, payload: bytes):
     elif kind == 32:
         exact(48)
         require(wide(40), "invalid swapchain retirement")
+    elif kind == 39:  # an indexed present ordered behind a device-stream ORDER mark
+        require(len(payload) >= 88, "truncated ordered present")
+        require(all(wide(offset) for offset in (40, 48, 56, 64)), "invalid ordered present identity")
+        require(word(72) < 256 and word(80) == 1, "invalid ordered present layout/index")
+        count = word(84)
+        require(count <= 64, "present semaphore limit")
+        exact(88 + 8 * count)
+        waits = [wide(offset) for offset in range(88, len(payload), 8)]
+        require(all(waits) and len(set(waits)) == count, "invalid binary waits")
     elif kind == 34:
         require(len(payload) >= 80, "truncated indexed present")
         require(all(wide(offset) for offset in (40, 48, 56)), "invalid indexed present identity")

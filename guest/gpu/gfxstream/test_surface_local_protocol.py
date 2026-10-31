@@ -17,7 +17,7 @@ class LocalSurfaceProtocolTests(unittest.TestCase):
             wire = bytes.fromhex(vector['wire'])
             kind = struct.unpack_from('<H', wire, 6)[0]
             payload = bytes.fromhex(vector['payload'])
-            if kind in (25, 27, 29, 31, 32, 34):
+            if kind in (25, 27, 29, 31, 32, 34, 39):
                 self.assertEqual(protocol.decode_request(request(kind, payload[40:])),
                                  (kind, payload[40:]))
                 with self.assertRaises(ValueError):

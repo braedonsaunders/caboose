@@ -60,6 +60,17 @@ private final class IndexedSurfaceProbe: LiveGPUIndexedSurfaceResource, @uncheck
     let swap = IndexedSwapProbe()
     var waitForSignalInQuery = false
     var retired = 0
+    /// The device stream's decoded ORDER mark; waits block until it reaches theirs.
+    private let orderLock = NSCondition()
+    private var decoded: UInt64 = 0
+    private var orderFailure: Int32 = 0
+    func decode(through order: UInt64) { orderLock.lock(); decoded = max(decoded, order); orderLock.broadcast(); orderLock.unlock() }
+    func failOrders(_ code: Int32) { orderLock.lock(); orderFailure = code; orderLock.broadcast(); orderLock.unlock() }
+    func waitOrder(_ serial: UInt64) -> Int32 {
+        orderLock.lock(); defer { orderLock.unlock() }
+        while decoded < serial && orderFailure == 0 { orderLock.wait() }
+        return decoded >= serial ? 0 : orderFailure
+    }
     func create(_ info: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?) {
         (.init(nativeErrno: 0, vkResult: 0), swap)
     }
@@ -114,8 +125,61 @@ final class LiveGPUIndexedSurfaceTests: XCTestCase {
     private func acquire(_ request: UInt64) -> LiveGPUSwapchainMessage {
         .acquire(.init(swapchain: 7, request: request, semaphore: 20, fence: 0, timeoutNanoseconds: .max, deviceMask: 1))
     }
-    private func present(_ serial: UInt64) -> LiveGPUSwapchainMessage {
-        .present(.init(swapchain: 7, serial: serial, queue: 30, index: 0, family: 0, layout: 1, waits: [20]))
+    private func present(_ serial: UInt64, order: UInt64 = 0, index: UInt32 = 0) -> LiveGPUSwapchainMessage {
+        .present(.init(swapchain: 7, serial: serial, queue: 30, index: index, family: 0, layout: 1, waits: [20], order: order))
+    }
+    private func kinds(_ receipts: IndexedReceipts) -> [LiveGPUEnvelope.Kind] {
+        receipts.bodies.map { LiveGPUSurfaceMessage(identity: .init(epoch: Data(), grant: Data(), generation: 1), body: $0).kind }
+    }
+    func testOrderedPresentRunsOnlyAfterItsDeviceStreamMark() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
+        let engine = try prepare(native, receipts)
+        try engine.enqueue(acquire(2)); try engine.enqueue(present(1, order: 5))
+        XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        native.decode(through: 4)
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+0.2), .timedOut, "presented before its mark was decoded")
+        XCTAssertEqual(native.swap.presents, 0)
+        native.decode(through: 5)
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        XCTAssertEqual(kinds(receipts), [.swapchainCreated,.swapchainMapped,.swapchainAcquired,.presentResult,.sourceReleased,.presentRetired])
+        // A later present whose mark is already decoded does not wait again.
+        try engine.enqueue(acquire(3)); try engine.enqueue(present(2, order: 5))
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        XCTAssertEqual(native.swap.presents, 2)
+        try engine.retire()
+        XCTAssertTrue(receipts.errors.isEmpty)
+    }
+    func testOrderedPresentsKeepTheirOrderWhenMarksArriveTogether() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
+        let engine = try prepare(native, receipts)
+        try engine.enqueue(acquire(2)); try engine.enqueue(present(1, order: 7, index: 0))
+        XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        native.decode(through: 9)
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        try engine.enqueue(acquire(3)); try engine.enqueue(present(2, order: 8, index: 0))
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        let results = receipts.bodies.compactMap { body -> UInt64? in
+            if case .presentResult(let serial, _, _, _) = body { return serial }; return nil
+        }
+        XCTAssertEqual(results, [1, 2])
+        try engine.retire()
+        XCTAssertTrue(receipts.errors.isEmpty)
+    }
+    func testOrderedPresentIsRejectedWhenItsProcessStops() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
+        let engine = try prepare(native, receipts)
+        try engine.enqueue(acquire(2)); try engine.enqueue(present(1, order: 3))
+        XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        native.failOrders(ECANCELED)
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline && !receipts.bodies.contains(where: {
+            if case .presentResult(1, let status, .rejected, .submission) = $0 { return status.nativeErrno == ECANCELED }
+            return false
+        }) { usleep(1000) }
+        XCTAssertTrue(receipts.bodies.contains { if case .presentResult(1, _, .rejected, _) = $0 { return true }; return false })
+        XCTAssertEqual(native.swap.presents, 0)
+        try engine.retire()
+        XCTAssertTrue(receipts.errors.isEmpty)
     }
     func testPresentationWaitsForSignalAndSerializesSynchronousFinalCallbacks() throws {
         let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
