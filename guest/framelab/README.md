@@ -151,8 +151,8 @@ is a Python script run on that machine with `python3 -` after the computer wakes
 install a build before measuring. The driver bounds every step with a timeout, and on any
 exit stops the phone app, the guest side and every process the guest launched, switches the present
 trace off and removes its files from the computer. `--no-phone-framelab` launches the phone without `CABOOSE_FRAMELAB=1`, to rule frame lab's
-own phone-side measurement in or out of a result. When `idevicesyslog` (libimobiledevice) is
-installed, the app's os_log lines are kept in `phone-syslog.log`. `--set KEY=VALUE` (repeatable) adds
+own phone-side measurement in or out of a result. Only what the app writes to standard
+output and error reaches `phone-console.log`; its os_log lines do not. `--set KEY=VALUE` (repeatable) adds
 to every app's launch environment, for a seat whose own environment does not yet route
 an app the way being measured. `--no-phone` runs the guest side on a
 computer without launching the phone app, and `--no-wake` skips waking a computer that is

@@ -245,7 +245,7 @@ def main():
             detail = {k: v for k, v in event.items() if k not in ('t', 'event', 'command')}
             log(f"guest {event['event']}: {json.dumps(detail)[:200]}")
 
-    phone = console = guest = syslog = None
+    phone = console = guest = None
     failed = True
     # However the driver is stopped, the cleanup below runs.
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -266,11 +266,6 @@ def main():
             environment = {'CABOOSE_PRIVATE_GPU_INDEXED': '1', 'CABOOSE_PRIVATE_GPU_MEMORY_AUDIT': '1',
                            **({} if args.no_phone_framelab else {'CABOOSE_FRAMELAB': '1'}),
                            **json.loads(args.phone_env)}
-            if shutil.which('idevicesyslog'):
-                # The app's os_log (Logger) lines, which the console does not carry.
-                syslog = subprocess.Popen(['idevicesyslog', '-u', args.device, '-p', 'Caboose', '--no-colors',
-                                           '-o', str(out / 'phone-syslog.log')],
-                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             phone, console = phone_launch(args, environment, out / 'phone-console.log', phone_line)
             log('waiting for the GPU socket')
             if not host.wait_for(args.gpu_socket, args.socket_timeout):
@@ -299,7 +294,6 @@ def main():
         failed = False
     finally:
         stop_process_group(phone)
-        stop_process_group(syslog)
         if console:
             console.close()
         stop_process_group(guest)
