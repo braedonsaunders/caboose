@@ -29,40 +29,21 @@ struct ScrollReplay {
         var start: TimeInterval
         var samples: [(time: TimeInterval, position: Double)]
         var release: TimeInterval { samples.last!.time }
-        var releaseVelocity: Double {
-            // UIKit's pan velocity: the recent slope of the finger.
-            let n = samples.count
-            guard n >= 3 else { return 0 }
-            let a = samples[max(0, n - 4)], b = samples[n - 1]
-            return (b.position - a.position) / max(0.001, b.time - a.time)
-        }
+        var releaseVelocity: Double { LocalScrollGesture(label: "", samples: samples).releaseVelocity }
 
-        /// A flick: the finger accelerates to `peak` points per second over `duration` and lifts.
+        /// The scripted gestures the device replay plays, here starting at `start`.
+        init(at start: TimeInterval, _ gesture: LocalScrollGesture) {
+            self.start = start
+            samples = gesture.samples.map { (start + $0.time, $0.position) }
+        }
+        init(start: TimeInterval, samples: [(time: TimeInterval, position: Double)]) {
+            self.start = start; self.samples = samples
+        }
         static func flick(at start: TimeInterval, peak: Double, duration: TimeInterval) -> Gesture {
-            var samples: [(TimeInterval, Double)] = []
-            var position = 0.0, t = 0.0
-            let dt = 1.0 / 120
-            while t < duration - 0.0001 {
-                t += dt
-                let phase = min(1, t / duration)
-                let speed = peak * sin(phase * .pi / 2) // rising through release
-                position += speed * dt
-                samples.append((start + t, position))
-            }
-            return Gesture(start: start, samples: samples)
+            Gesture(at: start, .flick("", peak: peak, duration: duration))
         }
-
-        /// A drag at constant speed that stops before lifting: no momentum.
         static func drag(at start: TimeInterval, speed: Double, duration: TimeInterval, hold: TimeInterval = 0.2) -> Gesture {
-            var samples: [(TimeInterval, Double)] = []
-            var position = 0.0, t = 0.0
-            let dt = 1.0 / 120
-            while t < duration + hold - 0.0001 {
-                t += dt
-                if t <= duration { position += speed * dt }
-                samples.append((start + t, position))
-            }
-            return Gesture(start: start, samples: samples)
+            Gesture(at: start, .drag("", speed: speed, duration: duration, hold: hold))
         }
     }
 

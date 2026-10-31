@@ -272,6 +272,15 @@ public struct LocalScroll {
         if var p = prefetch { p.returning = true; prefetch = p }
     }
 
+    /// Drops the captured frames and everything placed in their coordinates, keeping what
+    /// was learned about the window: its region, latency and gain.
+    public mutating func forgetHistory() {
+        guard phase == .idle else { return }
+        let kept = region
+        resetTrack()
+        region = kept
+    }
+
     /// The window, its geometry or the connection changed: forget the gesture, the
     /// captured frames and what was learned about the content.
     public mutating func cancel() {
@@ -530,7 +539,9 @@ public struct LocalScroll {
     }
 
     private mutating func detectEdge(at time: TimeInterval) {
-        guard let app = placedOffset, let since = unansweredSince, phase != .idle else { return }
+        // A picture still being measured may show the app moving.
+        guard let app = placedOffset, let since = unansweredSince, phase != .idle,
+              !frames.contains(where: { !$0.placed }) else { return }
         let ahead = commanded - app
         guard abs(ahead) > 24 else { return }
         let grace = 2 * latency + configuration.edgeGrace
