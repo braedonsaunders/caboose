@@ -11,7 +11,7 @@
 namespace caboose::dmabuf {
 
 // CABOOSE_FORMAT_MOD_REMOTE.
-inline constexpr uint64_t modifierRemote = uint64_t(0xcb) << 56 | 1;
+inline constexpr uint64_t modifierRemote = uint64_t(0x7e) << 56 | 1;
 inline constexpr uint64_t pitchAlign = 256;
 
 struct PlaneFormat {

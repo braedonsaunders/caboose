@@ -14,7 +14,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
 /// `CABOOSE_FORMAT_MOD_REMOTE` (guest/gpu/gbm/include/caboose_drm_formats.h).
-pub const MOD_REMOTE: u64 = 0xcb << 56 | 1;
+pub const MOD_REMOTE: u64 = 0x7e << 56 | 1;
 
 /// Formats a remote buffer can have: the GBM backend's format table.
 pub const REMOTE_FORMATS: [Fourcc; 17] = [
@@ -133,8 +133,8 @@ mod tests {
     #[test]
     fn remote_modifier_and_formats_match_the_gbm_backend() {
         let header = include_str!("../../../gpu/gbm/include/caboose_drm_formats.h");
-        assert!(header.contains("#define CABOOSE_FORMAT_MOD_REMOTE ((uint64_t)0xcb << 56 | 1)"));
-        assert_eq!(MOD_REMOTE, 0xcb00_0000_0000_0001);
+        assert!(header.contains("#define CABOOSE_FORMAT_MOD_REMOTE ((uint64_t)0x7e << 56 | 1)"));
+        assert_eq!(MOD_REMOTE, 0x7e00_0000_0000_0001);
         let table: Vec<String> = header.lines()
             .filter_map(|line| line.trim().strip_prefix("{DRM_FORMAT_"))
             .map(|rest| rest.split(',').next().unwrap().to_string())

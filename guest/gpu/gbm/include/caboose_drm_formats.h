@@ -10,9 +10,9 @@
 
 // A buffer whose pixels live in phone GPU memory. Its dma-buf has the nominal linear
 // size but no meaningful bytes: only a phone-GPU consumer (the Caboose Vulkan driver,
-// or caboose-display presenting through the GPU stream) can use it. Vendor 0xcb is not
+// or caboose-display presenting through the GPU stream) can use it. Vendor 0x7e is not
 // allocated in drm_fourcc.h.
-#define CABOOSE_FORMAT_MOD_REMOTE ((uint64_t)0xcb << 56 | 1)
+#define CABOOSE_FORMAT_MOD_REMOTE ((uint64_t)0x7e << 56 | 1)
 
 // Row pitch alignment for both layouts: satisfies Metal's linear texture alignment.
 #define CABOOSE_PITCH_ALIGN 256u
