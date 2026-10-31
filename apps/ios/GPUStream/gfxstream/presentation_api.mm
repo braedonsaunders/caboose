@@ -189,7 +189,7 @@ VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects&
     }
     if (!s.capture) {
         std::unique_ptr<PresentationCaptureRing> ring;
-        VkResult r = createCaptureRing(source.vk, source.physicalDevice, source.device, source.format,
+        VkResult r = createCaptureRing(source.vk, source.instance, source.physicalDevice, source.device, source.format,
                                        source.extent, kCaptureSlots, &ring);
         std::lock_guard<std::mutex> lock(s.mutex);
         if (r != VK_SUCCESS) {

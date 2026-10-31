@@ -1,26 +1,39 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_capture_internal.h"
 #include <vulkan/vulkan_metal.h>
+#include "metal_surface_internal.h"
 #include "vk_decoder_global_state.h"
 #include <cstdio>
 #include <new>
 
 namespace caboose::gpuv2 {
-VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDevice physical,
+VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance instance, VkPhysicalDevice physical,
     VkDevice device, VkFormat format, VkExtent3D extent, uint32_t count,
     std::unique_ptr<PresentationCaptureRing>* out) {
     if (!out) return VK_ERROR_INITIALIZATION_FAILED;
     out->reset();
-    if (!vk || !physical || !device || !count || count > 255 || !extent.width || !extent.height ||
-        !vk->vkCreateImage || !vk->vkDestroyImage || !vk->vkGetImageMemoryRequirements ||
-        !vk->vkAllocateMemory || !vk->vkFreeMemory || !vk->vkBindImageMemory ||
-        !vk->vkGetPhysicalDeviceMemoryProperties || !vk->vkGetDeviceProcAddr)
+    auto get = runtimeInstanceProcAddr();
+    // The device dispatch carries device-level entry points only; the memory properties
+    // query and the device proc lookup are instance-level.
+    auto memoryProperties = get && instance ? reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+        get(instance, "vkGetPhysicalDeviceMemoryProperties")) : nullptr;
+    auto deviceProc = get && instance ? reinterpret_cast<PFN_vkGetDeviceProcAddr>(get(instance, "vkGetDeviceProcAddr")) : nullptr;
+    const char* missing = !vk ? "device dispatch" : !get ? "vkGetInstanceProcAddr" : !instance ? "instance"
+        : !physical ? "physical device" : !device ? "device" : (!count || count > 255) ? "slot count"
+        : (!extent.width || !extent.height) ? "extent" : !vk->vkCreateImage ? "vkCreateImage"
+        : !vk->vkDestroyImage ? "vkDestroyImage" : !vk->vkGetImageMemoryRequirements ? "vkGetImageMemoryRequirements"
+        : !vk->vkAllocateMemory ? "vkAllocateMemory" : !vk->vkFreeMemory ? "vkFreeMemory"
+        : !vk->vkBindImageMemory ? "vkBindImageMemory" : !memoryProperties ? "vkGetPhysicalDeviceMemoryProperties"
+        : !deviceProc ? "vkGetDeviceProcAddr" : nullptr;
+    if (missing) {
+        fprintf(stderr, "caboose-scroll: capture ring: no %s\n", missing);
         return VK_ERROR_INITIALIZATION_FAILED;
-    auto exportObjects = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
-        vk->vkGetDeviceProcAddr(device, "vkExportMetalObjectsEXT"));
+    }
+    auto exportObjects = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(deviceProc(device, "vkExportMetalObjectsEXT"));
     // MoltenVK's own accessor serves a device created without VK_EXT_metal_objects.
     using GetTexture = void (*)(VkImage, void**);
-    auto getTexture = reinterpret_cast<GetTexture>(vk->vkGetDeviceProcAddr(device, "vkGetMTLTextureMVK"));
+    auto getTexture = reinterpret_cast<GetTexture>(deviceProc(device, "vkGetMTLTextureMVK"));
+    if (!getTexture) getTexture = reinterpret_cast<GetTexture>(get(instance, "vkGetMTLTextureMVK"));
     if (!exportObjects && !getTexture) {
         fprintf(stderr, "caboose-scroll: capture ring: neither vkExportMetalObjectsEXT nor vkGetMTLTextureMVK on the presenting device\n");
         return VK_ERROR_EXTENSION_NOT_PRESENT;
@@ -29,7 +42,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDe
     if (!ring) return VK_ERROR_OUT_OF_HOST_MEMORY;
     ring->vk = vk; ring->device = device; ring->format = format; ring->extent = extent;
     VkPhysicalDeviceMemoryProperties properties{};
-    vk->vkGetPhysicalDeviceMemoryProperties(physical, &properties);
+    memoryProperties(physical, &properties);
     try {
         for (uint32_t i = 0; i < count; ++i) {
             VkExportMetalObjectCreateInfoEXT exportInfo{};
