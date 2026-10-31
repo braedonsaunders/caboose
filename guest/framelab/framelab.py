@@ -408,6 +408,31 @@ def decode_png(data):
     return width, height, bytes(rgb)
 
 
+def trim(width, height, rgb, tolerance=12):
+    """The picture without a uniform border the color of its top-left corner: the
+    shadows or margin a swapchain or screenshot has around a window, which differ
+    between where pictures are taken."""
+    corner = rgb[0:3]
+
+    def differs(x, y):
+        o = (y * width + x) * 3
+        return any(abs(rgb[o + i] - corner[i]) > tolerance for i in range(3))
+
+    step_x, step_y = max(1, width // 256), max(1, height // 256)
+    rows = [y for y in range(0, height, step_y) if any(differs(x, y) for x in range(0, width, step_x))]
+    cols = [x for x in range(0, width, step_x) if any(differs(x, y) for y in range(0, height, step_y))]
+    if not rows or not cols:
+        return width, height, rgb
+    x0, x1 = cols[0], min(width, cols[-1] + step_x)
+    y0, y1 = rows[0], min(height, rows[-1] + step_y)
+    if (x1 - x0) * (y1 - y0) >= width * height * 0.98:
+        return width, height, rgb
+    out = bytearray()
+    for y in range(y0, y1):
+        out += rgb[(y * width + x0) * 3:(y * width + x1) * 3]
+    return x1 - x0, y1 - y0, bytes(out)
+
+
 def drawn(png, minimum=16):
     """Whether a PNG shows something drawn: an undrawn (uniform) window's decoded rows
     are almost one byte value. Cheap: no unfiltering, only the distinct bytes."""
@@ -442,8 +467,8 @@ def compare(reference, candidate, size=64, block=8):
     """A perceptual comparison of two pictures of the same scene: both reduced to a
     size x size luma grid (so scale and small offsets matter little), then mean SSIM over
     block x block tiles and the share of grid cells that differ by more than 10%."""
-    a = luma_grid(*decode_png(reference), size)
-    b = luma_grid(*decode_png(candidate), size)
+    a = luma_grid(*trim(*decode_png(reference)), size)
+    b = luma_grid(*trim(*decode_png(candidate)), size)
     c1, c2 = 0.01 ** 2, 0.03 ** 2
     scores = []
     for by in range(0, size, block):

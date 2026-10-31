@@ -243,6 +243,9 @@ class PictureTests(unittest.TestCase):
         self.assertTrue(fl.verdict(same))
         blank = fl.compare(png(128, 96, scene), png(128, 96, lambda x, y: (0, 0, 0)))
         self.assertFalse(fl.verdict(blank))
+        # The same scene inside a black margin (a swapchain's shadow area) still matches.
+        framed = png(160, 128, lambda x, y: (0, 0, 0) if not (16 <= x < 144 and 16 <= y < 112) else scene(x - 16, y - 16))
+        self.assertTrue(fl.verdict(fl.compare(png(128, 96, scene), framed)))
         # The same scene at another scale still matches.
         half = fl.compare(png(128, 96, scene), png(64, 48, lambda x, y: scene(x * 2, y * 2)))
         self.assertTrue(fl.verdict(half), half)
