@@ -529,6 +529,20 @@ uses it differently:
   moving, the phone probes for an end, and only a confirmed end springs the content back
   to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
 
+- **Overscan windows.** While a window has been scrolled locally within the last 30
+  seconds and its scrolling region is measured, the phone asks for an overscan of one
+  viewport along the scroll axis (`configure.overscan`, with the whole picture kept within
+  4096 pixels), and ends it after 30 idle seconds, when the window leaves the screen or
+  changes, or when the app goes to the background. It asks and ends only at rest. Once
+  pictures of the enlarged window arrive (recognised by their shape against the announced
+  overscan), the phone shows them through the viewport, also at rest. The header and the
+  region's first lines show as they are, and what follows the region in the picture (a
+  footer, a status bar) is anchored at the viewport's end. Touches and the pointer on
+  that anchored part reach the window the overscan further on. A live GPU layer shows
+  its viewport top-left aligned, the rest clipped, until the phone composes over it.
+  Content a flick reveals below is already drawn; content above comes from the frame
+  history and from driving the app ahead.
+
 The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
 most six of them, chosen for the content they add near the current position. Video layers
 over the picture move with the scrolled content.

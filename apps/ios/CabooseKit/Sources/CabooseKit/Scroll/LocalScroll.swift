@@ -143,6 +143,8 @@ public struct LocalScroll {
         var region: ScrollRegion?
         /// Fixed overlays inside its region.
         var holes: [ScrollRegion] = []
+        /// Its lines past the viewport along the axis.
+        var overscan = 0
         var placed: Bool { offset != nil }
     }
 
@@ -392,9 +394,10 @@ public struct LocalScroll {
 
     /// A new picture of the window was captured. Returns the shifts worth searching when
     /// measuring it against the previous capture, and the most likely one.
-    public mutating func captured(_ id: UInt64, at time: TimeInterval) -> (range: ClosedRange<Int>, center: Int) {
+    /// `overscan` is how many lines of this picture lie past the viewport along the axis.
+    public mutating func captured(_ id: UInt64, at time: TimeInterval, overscan pictureOverscan: Int = 0) -> (range: ClosedRange<Int>, center: Int) {
         let previous = frames.last?.offset ?? position
-        frames.append(Frame(id: id, time: time, offset: nil, region: nil))
+        frames.append(Frame(id: id, time: time, offset: nil, region: nil, overscan: max(0, pictureOverscan)))
         // The app can be anywhere it was commanded to over the input still in flight.
         var lowest = commanded, highest = commanded
         let since = time - 2 * latency - 0.1
@@ -466,6 +469,8 @@ public struct LocalScroll {
             if let bounds { edges = (bounds.lowerBound + bias, bounds.upperBound + bias) }
         }
         guard let i = frames.firstIndex(where: { $0.id == id }) else { return }
+        // The first picture laid out with another overscan changes the viewport mapping.
+        if frames[i].overscan != overscan { applyOverscan(frames[i].overscan) }
         frames[i].offset = offset
         frames[i].region = region
         frames[i].holes = holes
