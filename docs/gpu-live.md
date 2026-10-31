@@ -156,6 +156,72 @@ an exact match, not a subset of bits. `caboose_gpu_live_start_v4` strongly links
 actual indexed runtime; a version-3 artifact cannot authorize version 4. These
 wire fixtures do not initialize a provider or activate the driver.
 
+## Phone capabilities and local features
+
+The phone app names the capabilities of its native decoder in the
+`X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
+only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays` and
+`completion-feed`. The broker reads them from the authenticated upgrade request.
+
+A local process on the indexed v4 path may offer optional features in its 48-byte
+hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned handles),
+`0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
+`0x200` (completion feed). The broker replies with the required mask plus the offered
+bits whose capability the phone declared (`guest-handles`, `guest-handle-arrays`,
+`completion-feed` respectively); it drops `0x100` when it does not grant `0x80`. An
+offer with unknown bits, `0x100` without `0x80`, or any other difference from the v4
+hello closes the local connection. A process falls back to offering fewer features.
+
+### Guest-assigned handles
+
+With `0x80`, a create command carries an output handle the process chose, with `0xCA`
+in its top byte, a 24-bit per-process tag and a 32-bit counter. The decoder registers
+the object under that value instead of minting one, so the process continues without
+waiting for the reply; it reads the reply later and treats a refused or renamed handle
+as device loss. This covers device memory, fences, semaphores, buffers, images and
+views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
+and pools, command pools, render passes, framebuffers and pipelines. With `0x100` it
+also covers descriptor sets and command buffers: the decoder registers the i-th created
+object under the i-th guest handle. A descriptor set allocation whose handles the guest
+assigned never fails for lack of pool space: when the application's pool reports
+`VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL`, the decoder allocates the
+sets from an overflow pool it creates with the same flags and sizes. Overflow pools are
+reset and destroyed with their application pool, and their sets are freed back to them.
+
+### Completion feed
+
+With `0x200`, the process opens one more local stream with the same hello. After the
+client-flags word it sends a single `COMPLETION_FEED` command and nothing else. Both
+completion commands use the ordinary 8-byte packet header, little-endian:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| COMPLETION_FEED | `0x4342FE01` | 16 | version u32 = 1, reserved u32 = 0 |
+| COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
+
+After each queue submission that signals a fence or timeline semaphore, the process
+sends `COMPLETION_WATCH` with a new serial on the same device stream; neither command
+has a reply on its own stream. The decoder serves both commands itself. For a watch it
+submits, under the queue's lock, an empty batch whose new fence signals once all work
+submitted to that queue before it has completed, holding the queue's instance and
+device alive until a watcher thread has waited for and destroyed that fence. Queues of
+another process and virtually shared queues are not watched. On the feed stream the
+phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
+zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue
+cannot be watched. Records may arrive in any order. Watches made before the feed stream
+attaches are kept for it. Further bytes from the process on the feed stream are a
+protocol error; its end, or process stop, ends the feed. Watches still outstanding are
+waited for, and their records discarded.
+
+The process then knows the state of every fence and timeline semaphore whose signal
+operations it has seen. `vkGetFenceStatus`, `vkWaitForFences`,
+`vkGetSemaphoreCounterValue` and `vkWaitSemaphores` resolve locally, waiting for feed
+records without holding the device stream. A fence or semaphore whose payload is
+imported or exportable, a fence signaled by the presentation engine's acquire, sparse
+binding signals and unwatched queues are asked about on the device stream as before.
+A reported timeline value can trail the device's actual value, as a status query on any
+device can; it never exceeds it.
+
 ## Readiness and retirement
 
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
