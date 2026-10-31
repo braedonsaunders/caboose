@@ -331,6 +331,9 @@ impl GpuRouter {
 
     pub fn clone_control(&mut self) -> io::Result<UnixStream> { self.supervisor.clone_ipc() }
 
+    /// How the broker ended, if it has.
+    pub fn exit_status(&mut self) -> Option<std::process::ExitStatus> { self.supervisor.child.try_wait().ok().flatten() }
+
     pub fn fail(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(ipc) = &self.supervisor.ipc { let _ = ipc.shutdown(std::net::Shutdown::Both); }

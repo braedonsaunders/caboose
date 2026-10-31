@@ -170,6 +170,14 @@ impl Net {
         Ok(())
     }
 
+    /// Stops and reaps the current broker, if any, logging how it ended.
+    pub fn disable_private_gpu(&mut self) {
+        if let Some(mut router) = self.gpu_router.take() {
+            if let Some(status) = router.exit_status() { eprintln!("caboose-display: private GPU broker exited: {status}"); }
+            drop(router);
+        }
+    }
+
     pub fn fail_gpu_control(&mut self) {
         if let Some(router) = self.gpu_router.as_mut() { router.fail(); }
     }
