@@ -1,7 +1,7 @@
 //! X11 at the display's density. X11 has no per-window scale, so Xwayland gets the
 //! primary display's scale as its client scale: its windows, root and pointer are in
 //! display pixels, which smithay converts to and from the compositor's logical space,
-//! and X11 pictures and GPU swapchains have the display's own pixels. XSETTINGS
+//! and GPU swapchains of X11 windows have the display's own pixels. XSETTINGS
 //! `Xft/DPI` tells toolkits that read it (GTK, Qt, Chromium and Electron) to lay out at
 //! that density, so an X11 application is the size a Wayland one is.
 use crate::state::State;
