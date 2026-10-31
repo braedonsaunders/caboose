@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  INK_DARK, INK_LIGHT, LETTER_X, RAIL, TIE, WORDMARK_VIEWBOX, appIconSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
+  INK_DARK, INK_LIGHT, LETTER_X, RAIL, TIE, WHEEL_R, WORDMARK_VIEWBOX, appIconSvg, faviconSvg, readmeWordmarkSvg, wordmarkSvg,
 } from './brand.js'
 
 // The checked-in brand files are this module's output. `vitest -u` rewrites them.
@@ -32,22 +32,23 @@ describe('standalone files parse as XML', () => {
 
 describe('geometry', () => {
   it('spaces "caboose" by the clear space between letters, wheels for o', () => {
-    expect(LETTER_X).toEqual([0, 99, 223, 347, 461, 568, 676])
+    expect(LETTER_X).toEqual([0, 102, 226, 348, 462, 574, 678])
     // The wheels sit 14 apart, rim to rim: the spacing every other pair is set against.
     expect(LETTER_X[4]! - LETTER_X[3]! - 100).toBe(14)
   })
 
-  it('ends the rail flush with the c and the e, clear of the baseline, inside the view box', () => {
+  it('aligns the dual-flange rail under the wordmark, clear of the baseline, inside the view box', () => {
     const [x, , width] = WORDMARK_VIEWBOX
-    expect(RAIL.y - 6).toBeGreaterThan(100)
-    expect(RAIL.from - 6).toBe(0)
-    expect(RAIL.to + 6).toBe(LETTER_X[6]! + 100)
-    expect(x).toBeLessThan(RAIL.from - 6)
-    expect(x + width).toBeGreaterThan(RAIL.to + 6)
+    expect(RAIL.y - 3.5).toBeGreaterThan(100)
+    expect(RAIL.flangeY).toBeGreaterThan(RAIL.y)
+    expect(RAIL.from).toBeGreaterThan(0)
+    expect(RAIL.to).toBeLessThan(LETTER_X[6]! + 98)
+    expect(x).toBeLessThan(RAIL.from - 3.5)
+    expect(x + width).toBeGreaterThan(RAIL.to + 3.5)
   })
 
   it('rolls exactly one wheel revolution across a whole number of ties', () => {
-    const circumference = 2 * Math.PI * 40
+    const circumference = 2 * Math.PI * WHEEL_R
     expect(circumference / TIE).toBeCloseTo(6, 10)
   })
 
@@ -97,11 +98,11 @@ describe('rendering', () => {
     expect(wordmarkSvg({ ink: '#000' }).match(/fill="#F5A623"/g)).toHaveLength(2)
     const parked = wordmarkSvg({ ink: '#000', lit: false })
     expect(parked).not.toContain('#F5A623')
-    expect(parked.match(/r="10" fill="#000" opacity=".22"/g)).toHaveLength(2)
+    expect(parked.match(/r="10.5" fill="#000" opacity=".22"/g)).toHaveLength(2)
   })
 
   it('sizes from height when given, from CSS when not', () => {
-    expect(wordmarkSvg({ ink: '#000', height: 45 })).toContain('width="196" height="45"')
+    expect(wordmarkSvg({ ink: '#000', height: 45 })).toContain('width="193.55" height="45"')
     expect(wordmarkSvg({ ink: '#000' })).not.toMatch(/<svg[^>]* height=/)
   })
 })
