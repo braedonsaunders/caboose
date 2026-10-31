@@ -4,8 +4,9 @@ This app is a separate device diagnostic fixture. It does not modify the
 shipping Caboose app or enable a public guest ICD. Root owns build-slot scheduling,
 signing, installation and any physical-device execution. The iOS arm64 target
 compiles and links with the private patched MoltenVK archive and the half-close
-bridge. Physical-device execution is unverified. The compositor failure-propagation
-patch 0009 and real device-info patch 0012 are required in the private upstream source.
+bridge. Physical-device execution is unverified. It builds against the gfxstream fork
+at the pinned commit, which includes the compositor failure propagation (0009) and real
+device info (0012) it requires.
 
 The app starts no GPU or network work until the user presses **Start diagnostic**.
 The launch environment supplies a temporary broker's host and decimal port as
@@ -30,8 +31,7 @@ A 90-second transport timer also cancels and shuts down streams; actual Vulkan w
 or upstream cleanup may outlive it and need the external root watchdog. This is one private guest encoder thread and does
 not establish the multithreaded production transport.
 
-Starting from the reviewed private source and adapter with the iOS patches (plus
-parent's 0009), configure this app using the Xcode generator and the same iOS SDK,
+Starting from the fork checkout at the pinned commit and the adapter, configure this app using the Xcode generator and the same iOS SDK,
 arm64 and MoltenVK archive as the link probe. For example, after setting the three
 absolute source/archive variables in the parent shell:
 

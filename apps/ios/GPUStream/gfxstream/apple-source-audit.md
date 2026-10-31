@@ -5,28 +5,28 @@ framebuffer, process registry and adapter. The standalone diagnostic app also
 links with the private patched MoltenVK archive. Neither result establishes
 physical-phone execution. The macOS reference executes the compositor lifecycle
 with that patched provider, and the independent sampling fixture checks real
-Metal readback. See [diagnostics](../diagnostics/README.md).
+Metal readback. See [diagnostics](diagnostics/README.md).
 
 ## Compiled target boundaries
 
-- Patches 0002 and 0003 disable GLES ownership and calls while retaining actual
+- Fork commits 0002 and 0003 disable GLES ownership and calls while retaining actual
   Vulkan color-buffer and compositor operations. The iOS target uses Mach thread
   CPU accounting without AppKit/IOKit desktop implementations.
-- Patch 0004 uses `_NSGetExecutablePath` on iOS and preserves the macOS path.
+- Fork commit 0004 uses `_NSGetExecutablePath` on iOS and preserves the macOS path.
   It rejects native surface creation before the Cocoa layer lookup. The headless
   target has no `CAMetalLayer` binding or phone swapchain presentation endpoint.
-- Patches 0005 through 0008 expose actual Khronos declarations and Vulkan methods
+- Fork commits 0005 through 0008 expose actual Khronos declarations and Vulkan methods
   outside GLES guards. GL binding and post-callback readback are unsupported;
   they do not replace actual Vulkan memory readback.
-- Patches 0010 and 0012 expose the existing compositor/registration and device-info
+- Fork commits 0010 and 0012 expose the existing compositor/registration and device-info
   implementations to the GLES-disabled build. No replacement GPU, fake window,
   capability result or success-returning placeholder is linked.
-- Patch 0001 injects one process-owned provider before first dispatch. Its GIPA
+- Fork commit 0001 injects one process-owned provider before first dispatch. Its GIPA
   and export resolver must have the same lifetime and provider. The app force-loads
   one selected MoltenVK archive; arbitrary mixed-loader operation is unverified.
-- Patch 0009 propagates real compositor pipeline failure. With stock MoltenVK,
+- Fork commit 0009 propagates real compositor pipeline failure. With stock MoltenVK,
   supported multi-plane immutable YCbCr layouts hit the pinned SPIRV-Cross padding
-  lookup failure. Patch 0011 applies to SPIRV-Cross, not gfxstream, and fixes the
+  lookup failure. The SPIRV-Cross provider patch (in `provider-patches/`) fixes the
   tested scalar cases. Arrays are outside that fix.
 
 The target retains vendored GL type headers required by the upstream interfaces;
@@ -37,10 +37,10 @@ are not validated for hostile input.
 
 ## Build and runtime scope
 
-Use the exact private patch sequence in the [iOS reference](ios-reference/README.md),
-then include 0009 for runtime acceptance and 0012 for the diagnostic app's real
-executor identity query. Link the final executable: building static archives alone
-does not detect missing backend methods. The [app recipe](../diagnostics/app/README.md)
+Use the pinned fork commit with the [iOS reference](ios-reference/README.md); it
+includes 0009 for runtime acceptance and 0012 for the diagnostic app's real executor
+identity query. Link the final executable: building static archives alone
+does not detect missing backend methods. The [app recipe](diagnostics/app/README.md)
 describes the selected archive and same-provider dispatch.
 
 The iOS SDK compilation and final link do not establish the runtime behavior of

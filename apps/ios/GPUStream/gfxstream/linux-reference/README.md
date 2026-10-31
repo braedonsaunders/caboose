@@ -7,20 +7,16 @@ client flags and EOF over a socket pair, then stops and finishes both processes.
 It sends no Vulkan command and does not prove guest interoperability, compute,
 readback, coherent memory, security against hostile streams, or phone operation.
 
-Use a disposable private directory and the source archive for gfxstream commit
-`f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be`; its compressed SHA-256 is
-`93f2481ccf3af97a3bf501d6d8f407c064f401a4807e12510372bab5c03828c4`.
-From the repository root, with `WORK` set to that private directory and
-`ARCHIVE` to the verified archive:
+Use a disposable private directory and the gfxstream fork at `GFXSTREAM_LOADER_COMMIT`
+from [`../fork.env`](../fork.env): upstream plus loader injection only. From the
+repository root, with `WORK` set to that private directory:
 
 ```sh
 mkdir -p "$WORK"
-echo "93f2481ccf3af97a3bf501d6d8f407c064f401a4807e12510372bab5c03828c4  $ARCHIVE" | sha256sum -c -
-tar -xzf "$ARCHIVE" -C "$WORK"
-mv "$WORK/gfxstream-f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be" "$WORK/upstream"
 cp -R apps/ios/GPUStream/gfxstream "$WORK/gfxstream"
-git -C "$WORK/upstream" apply --check --unidiff-zero "$WORK/gfxstream/0001-inject-vulkan-loader.patch"
-git -C "$WORK/upstream" apply --unidiff-zero "$WORK/gfxstream/0001-inject-vulkan-loader.patch"
+. "$WORK/gfxstream/fork.env"
+git clone -q "$GFXSTREAM_REPOSITORY" "$WORK/upstream"
+git -C "$WORK/upstream" checkout -q --detach "$GFXSTREAM_LOADER_COMMIT"
 docker build -t caboose-decoder-reference "$WORK/gfxstream/linux-reference"
 docker run --rm --network none --cpus 2 --memory 3g -v "$WORK:/work" caboose-decoder-reference \
   cmake -S /work/gfxstream/linux-reference -B /work/build -G Ninja \

@@ -13,8 +13,18 @@ it does not establish on-screen presentation, game compatibility or a general dr
 
 ## Pinned source
 
-The decoder pin is Google gfxstream
-`f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be` (Apache-2.0). Its Mesa development
+The decoder source is the Caboose fork of Google gfxstream (Apache-2.0),
+[github.com/braedonsaunders/gfxstream](https://github.com/braedonsaunders/gfxstream)
+(private). Its `caboose` branch is upstream
+`f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be` plus one commit per Caboose change, each
+subject naming the change (`Caboose: 0028-completion-markers`); this document refers to
+them by number. [`fork.env`](fork.env) pins the exact commit every build checks out, and
+`generate-v4-profile.py --check --patched` verifies that checkout's decoder inputs by
+SHA-256. A decoder change is a commit on a topic branch of the fork, merged into
+`caboose`, with `fork.env` and the profile hashes updated in the same Caboose pull
+request. [`provider-patches/`](provider-patches) holds the two changes to other
+projects: SPIRV-Cross (multi-plane padding, applied to the MoltenVK build) and MoltenVK
+(missing-layer queries, for the layer diagnostic). Its Mesa development
 dependency is `541c56aa3fd24027ed46ae350287d21dcd56c901`. The guest source checks
 are in [guest/gpu/gfxstream](../../../../guest/gpu/gfxstream/README.md).
 Matching opcode values does not establish compatible marshaling or execution.
@@ -75,7 +85,7 @@ handle validation is not established by these checks.
 answers `COMPLETION_WATCH` and `COMPLETION_FEED` itself, before framing and decoding,
 and only for a process that has a feed (`process_registry.cpp` creates one per process).
 A watch submits a marker through `VkDecoderGlobalState::submitCabooseCompletionMarker`
-(patch 0028) and returns; the feed's watcher thread waits for markers in order, and the
+(fork commit 0028) and returns; the feed's watcher thread waits for markers in order, and the
 feed stream writes their records. Finishing a process waits for its outstanding
 markers. The portable fixture uses a fake marker backend and real socket pairs:
 
@@ -104,12 +114,11 @@ this does not establish retirement of future presentation resources.
 
 ## Real backend and loader
 
-`0001-inject-vulkan-loader.patch` adds install-before-first-use injection to the
+Fork commit 0001 adds install-before-first-use injection to the
 upstream dispatch singleton. Its resolver supplies actual loader export trampolines;
 `vkGetInstanceProcAddr(NULL, name)` alone cannot resolve instance/device exports.
 The resolver and GIPA must belong to one provider whose lifetime covers all decoder
-use. The patch applies to the pin; mixed capability-query/decoder execution remains
-unverified.
+use. Mixed capability-query/decoder execution remains unverified.
 
 `headless_framebuffer.*` calls the real upstream framebuffer initializer with an
 offscreen Vulkan compositor. It rejects native swapchain, direct/shared-memory
@@ -119,10 +128,11 @@ teardown are serialized. Decoder threads and processes must finish and cleanup
 must complete before framebuffer finalization.
 
 The adapter CMake target requires upstream backend targets. The macOS reference
-retains the real GL-capable desktop backend and its AppKit dependencies. The
-patches in `patches/` provide the GLES-disabled iOS reference. Its static link
-includes the real framebuffer, Vulkan decoder and stock MoltenVK; native surfaces
-and GL readback remain unsupported. The [source audit](patches/apple-source-audit.md)
+retains the real GL-capable desktop backend and its AppKit dependencies. The fork's
+commits provide the GLES-disabled [iOS reference](ios-reference/README.md), and
+[`../../scripts/build-live-gpu.sh`](../../scripts/build-live-gpu.sh) builds and packages
+the runtime from the pinned commit. Its static link includes the real framebuffer and
+Vulkan decoder; GL readback remains unsupported. The [source audit](apple-source-audit.md)
 describes these boundaries.
 
 ## Memory and proof boundary
@@ -144,11 +154,11 @@ memory, on-screen presentation and game execution remain unverified. The
 macOS lifecycle fixture sends startup flags and EOF only; it is not compute or
 readback evidence.
 
-`0009-propagate-compositor-pipeline-failure.patch` returns pipeline creation
+Fork commit 0009 returns pipeline creation
 failure to `CompositorVk::create` after releasing its temporary shader modules.
 The upstream emulation initializer treats that failure as fatal. The macOS
 reference fails on the stock MoltenVK multi-plane argument-buffer conversion
-error. Patch 0011 to the pinned SPIRV-Cross resolves scalar immutable YCbCr
+error. The SPIRV-Cross provider patch resolves scalar immutable YCbCr
 bindings: the private macOS driver passes real two-/three-plane sampling and
 readback, and the same lifecycle fixture initializes its compositor. Descriptor
 arrays retain their previous behavior. A successful exit without checking

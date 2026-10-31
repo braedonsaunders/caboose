@@ -605,7 +605,7 @@ queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
 
 With the `guest-query-pools` capability (hello feature `0x1000`, which requires `0x80`)
-the guest also assigns query pool handles (phone patch 0041).
+the guest also assigns query pool handles (gfxstream fork commit 0041).
 
 MAP flags are 0, or with the `guest-images` capability (hello feature `0x800`) 1 for
 guest-owned images or 3 for guest-owned images with mailbox. With guest-owned images the

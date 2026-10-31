@@ -13,8 +13,8 @@ error and uses `caboose_gpu_diagnostic_identity` to report the bound identity.
 The upstream dispatch singleton cannot be replaced: an initialization failure or
 finish requires a fresh app process for another diagnostic attempt. Upstream logs
 carry the detailed framebuffer/compositor error; initialization error `EIO` alone
-is not a Vulkan driver result. Parent patch 0009 for compositor pipeline failure
-propagation is required before claiming initialization failures are reported fully.
+is not a Vulkan driver result. Fork commit 0009 propagates compositor pipeline failure,
+so initialization failures are reported fully.
 
 The broker authenticates and binds each guest thread's separate, ordered,
 full-duplex connection to that exact process/session/generation outside this byte
@@ -79,8 +79,9 @@ readback checks. This does not establish physical-phone behavior.
 SPIRV-Cross revision `6c09849fe88c48eaed08413aa022aaa136a3a057` and includes the
 unchanged gfxstream vertex shader header. Arguments are plane count (1–3),
 sampler registration first (0 or 1), descriptor count (1 or 2), and decoy
-(0 = matching, 1 = wrong stage, 2 = wrong set). Patch 0011 targets that exact
-SPIRV-Cross revision, not gfxstream. It only resolves scalar immutable YCbCr
+(0 = matching, 1 = wrong stage, 2 = wrong set).
+`../provider-patches/spirv-cross-multiplane-padding.patch` targets that exact
+SPIRV-Cross revision. It only resolves scalar immutable YCbCr
 bindings; arrays retain their previous behavior. The patch passes the macOS
 Metal readback above; physical-phone execution is not verified.
 
@@ -97,6 +98,6 @@ Missing layers must return `VK_ERROR_LAYER_NOT_PRESENT`; the patch's error path
 also leaves count and property sentinels untouched. Null and known-layer controls
 check actual count/property consistency. A process crash is a failed case, not an
 unsupported result. The macOS fixture passes all eight instance/device cases
-with the provider patched by 0014. The baseline crashes on empty and unknown
+with the provider patched by `../provider-patches/moltenvk-missing-layer.patch`. The baseline crashes on empty and unknown
 instance layers. Null and known-layer counts match between providers; the fixture
 validates returned names but does not compare the full property lists.
