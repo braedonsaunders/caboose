@@ -72,6 +72,10 @@ reaches the terminal service on the container's bridge address.
 | `dri` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa | software |
 | `none` | any | nothing | Mesa software rendering | software |
 
+Every kind also gets `/dev/userfaultfd` when the host has it; `caboose-session start` gives
+it to the `caboose` group for the phone-GPU driver's write tracking
+(`guest/gpu/gfxstream/coherent`).
+
 The image does not install a Linux NVIDIA driver; WSL supplies `libcuda` and NVENC through
 `/usr/lib/wsl/lib`, and on Linux the NVIDIA container toolkit supplies the driver's
 libraries.

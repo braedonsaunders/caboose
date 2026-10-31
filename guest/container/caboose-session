@@ -158,6 +158,9 @@ start_owner() {
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
+  # The phone-GPU driver tracks stores to mapped memory through /dev/userfaultfd (passed
+  # in when the host has it); this container's node is the session user's to use.
+  if [ -e /dev/userfaultfd ]; then chgrp caboose /dev/userfaultfd && chmod 0660 /dev/userfaultfd; fi
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
   bridge_daemon "$bus"
 }

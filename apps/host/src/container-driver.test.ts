@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneGpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -156,6 +156,18 @@ describe('GPU selection', () => {
     expect(gpuArgs('nvidia', path => path === '/dev/udmabuf')).toEqual(expect.arrayContaining(['--device', '/dev/udmabuf']))
     expect(gpuArgs('wsl', () => true)).not.toContain('/dev/udmabuf')
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
+  })
+
+  it('hands every computer userfaultfd for the phone-GPU driver when the host has it', async () => {
+    expect(phoneGpuArgs(path => path === '/dev/userfaultfd')).toEqual(['--device', '/dev/userfaultfd'])
+    expect(phoneGpuArgs(() => false)).toEqual([])
+    const fake = fakeDocker('missing')
+    const controller = createContainerController({ ...settings, gpu: 'none' }, {
+      fence: async () => {}, docker: fake.docker, exists: path => path === '/dev/userfaultfd',
+    })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!
+    expect(run.join(' ')).toContain('--device /dev/userfaultfd')
   })
 
   it('does not expose shared host input devices to a computer', async () => {

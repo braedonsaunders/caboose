@@ -161,6 +161,17 @@ export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = exist
   }
 }
 
+/**
+ * `docker run` arguments for the phone-GPU driver, whatever the host's own GPU: it tracks
+ * stores to large mapped Vulkan allocations with userfaultfd write protection, so a flush
+ * sends only what changed (guest/gpu/gfxstream/coherent). /dev/userfaultfd grants the
+ * kernel-fault mode that tracks read(2) into mapped memory; without it the driver compares
+ * whole allocations instead.
+ */
+export function phoneGpuArgs(exists: (path: string) => boolean = existsSync): string[] {
+  return exists('/dev/userfaultfd') ? ['--device', '/dev/userfaultfd'] : []
+}
+
 export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
@@ -214,6 +225,7 @@ export function createContainerController(config: Config, dependencies: { docker
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
       ...securityArgs(config.containerArgs),
       ...gpuArgs(gpu, dependencies.exists),
+      ...phoneGpuArgs(dependencies.exists),
       ...config.containerArgs,
       config.containerImage,
     ]

@@ -315,6 +315,10 @@ host's devices when unset or `auto`:
 | `dri` | `/dev/dri/renderD128` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa + VA-API |
 | `none` | otherwise | any | nothing | CPU |
 
+Whatever its GPU, the container also gets `/dev/userfaultfd` when the host has it, owned
+by the session user's group: the phone-GPU driver tracks stores to large mapped Vulkan
+allocations with it ([coherent write tracking](../guest/gpu/gfxstream/coherent/README.md#kernel-write-tracking)).
+
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
