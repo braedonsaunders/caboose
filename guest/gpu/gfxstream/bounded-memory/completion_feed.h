@@ -385,6 +385,9 @@ inline uint64_t socketInode() {
 inline void awaitExecutorReturn() {
     if (!pauseOnLoss() || !executorLost.load(std::memory_order_acquire)) return;
     if (!std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return;
+    // The broker removes its socket before it ends an executor's streams: a socket still
+    // there at the loss means one stream failed while the executor stayed. Nothing returns.
+    if (lostSocketInode.load()) return;
     static std::atomic<bool> noted{false};
     if (!noted.exchange(true)) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_PAUSED until a phone executor returns\n");
     for (;;) {
@@ -392,6 +395,16 @@ inline void awaitExecutorReturn() {
         if (inode && inode != lostSocketInode.load()) return;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+}
+// The socket of the executor this process connected to.
+inline std::atomic<uint64_t> connectedSocketId{0};
+inline void noteExecutorSocket() { connectedSocketId.store(socketInode()); }
+inline void markExecutorLost();
+// A stream other than the device stream ended (the feed, a surface connection): the
+// executor is lost only if its socket is gone or replaced; otherwise only that stream is.
+inline void executorEndedIfGone() {
+    const uint64_t now = socketInode();
+    if (!now || now != connectedSocketId.load()) markExecutorLost();
 }
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;

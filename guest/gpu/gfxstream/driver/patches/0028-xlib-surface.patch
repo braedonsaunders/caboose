@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 28/28] Offer Xlib surfaces for X11 windows
+
+VK_KHR_xlib_surface is advertised as a guest-provided instance extension, so
+Xlib clients (Wine and Proton through DXVK and VKD3D, SDL) can create the same
+virtual X11-window surface as XCB clients; caboose-wsi/mesa_surface.inc binds
+it to the window and never uses the Display.
+---
+ src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index cd4d693..9189b93 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -88,6 +88,7 @@ static const char* const kGuestEmulatedInstanceExtensions[] = {
+     VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+ #endif
+     "VK_KHR_xcb_surface",
++    "VK_KHR_xlib_surface",
+     "VK_EXT_headless_surface",
+     VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+ };
+-- 
+2.52.0
+

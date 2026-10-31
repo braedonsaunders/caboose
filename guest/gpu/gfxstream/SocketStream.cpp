@@ -171,8 +171,8 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
             std::memcpy(&status, record + 8, sizeof(status));
             caboose::completion::tracker().complete(serial, status);
         }
-        // The broker ends a feed only when its executor leaves.
-        caboose::completion::markExecutorLost();
+        // A feed ends with its executor, or alone (its waits then ask the device).
+        caboose::completion::executorEndedIfGone();
         caboose::completion::feedActive.store(false, std::memory_order_release);
         caboose::completion::tracker().feedClosed();
         close(fd);
@@ -257,6 +257,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     CabooseSocketStream* none = nullptr;
     if (firstStream.compare_exchange_strong(none, this)) firstPath = path;
     caboose::completion::executorConnected();
+    caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     if (features & kCompletionFeed) startCompletionFeed(path, reply);
 #endif

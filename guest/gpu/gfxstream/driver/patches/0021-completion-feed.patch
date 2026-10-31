@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 21/27] Learn fence and timeline completion from the completion
+Subject: [PATCH 21/28] Learn fence and timeline completion from the completion
  feed
 
 With bit 0x200 the process opens a completion feed stream and sends
