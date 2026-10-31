@@ -811,6 +811,11 @@ uses it differently:
   moving, the phone probes for an end, and only a confirmed end springs the content back
   to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
 
+- **Resizes hold the picture.** When a window's drawable is about to change size (an
+  overscan enlarging or ending, a new scale) or a drawn window's frame changes, the phone
+  keeps showing the picture on screen, unscaled, until the application has drawn the new
+  size and stopped drawing for 120 ms (4 s at most, or until a gesture begins). A picture
+  of the old size is never shown stretched to the new one, nor a half-drawn one.
 - **Overscan windows.** While a window has been scrolled locally within the last 30
   seconds and its scrolling region is measured, or while a reporter's `scroll.tree` names a
   scroller with a range (so the first gesture already carries frame tags), the phone asks
@@ -876,8 +881,8 @@ tag. `applied` is the last `scroll.target` `seq` the application had applied whe
 the frame, 0 for none. `epoch` changes when content moved in document coordinates, such
 as an image loading above the viewport or scroll anchoring. Pictures of two epochs are not
 placed against each other by their offsets. The phone anchors a new epoch's first picture
-where it had driven the application to, as it does the first report, because the content
-on screen did not move. `tag` and `tag_rect` are present while the
+where its own measurement against the previous picture puts it, or, when it cannot be
+measured, where the phone had driven the application to, as it does the first report. `tag` and `tag_rect` are present while the
 frame tag is drawn.
 
 **Frame tag.** The application's pictures reach the phone on their own path (a video

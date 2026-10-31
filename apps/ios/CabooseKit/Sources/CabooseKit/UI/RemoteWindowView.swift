@@ -347,8 +347,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// One display refresh of the window's picture: the phone's own composition while it
     /// owns the scroll, the app's picture otherwise.
     fileprivate func refreshPicture(at targetTime: CFTimeInterval) {
+        followWindowGeometry()
         let liveGPU = liveGPUOwners?.presents(in: self) ?? false
-        if (localScrollEngaged || liveGPU), let localScroll, let window = remoteWindow {
+        if let localScroll, localScrollEngaged || liveGPU || localScroll.isHolding, let window = remoteWindow {
             // A live GPU layer presents itself; local scrolling draws over it.
             let target = liveGPU ? overlay() : metalLayer
             localScroll.displayScale = self.window?.screen.scale ?? traitCollection.displayScale
@@ -398,6 +399,30 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// A live GPU layer in this view presented `texture` (its own copy, read only until
     /// `release`), for local scrolling to start from and measure.
+    /// The window's GPU drawable is about to change size (an overscan, a new scale): its
+    /// layer would show the last picture stretched until the app presents at the new size.
+    func liveGPUExtentWillChange(from old: CGSize, to new: CGSize) {
+        LocalScrollProfile.note("gpu extent window=\(remoteWindow?.id ?? 0) \(Int(old.width))x\(Int(old.height)) -> \(Int(new.width))x\(Int(new.height))")
+        localScroll?.holdPicture(expecting: new)
+    }
+
+    /// The window's frame or overscan as last seen, to log and hold through their changes.
+    private var seenGeometry: (frame: CGSize, overscan: CGSize)?
+
+    private func followWindowGeometry() {
+        guard let window = remoteWindow else { seenGeometry = nil; return }
+        let now = (window.frame.size, window.overscan)
+        guard let seen = seenGeometry, seen.frame != now.0 || seen.overscan != now.1 else {
+            if seenGeometry == nil { seenGeometry = now }
+            return
+        }
+        seenGeometry = now
+        LocalScrollProfile.note("window \(window.id) frame \(Int(seen.frame.width))x\(Int(seen.frame.height)) -> \(Int(now.0.width))x\(Int(now.0.height)), overscan \(Int(seen.overscan.width))x\(Int(seen.overscan.height)) -> \(Int(now.1.width))x\(Int(now.1.height)), view \(Int(bounds.width))x\(Int(bounds.height)) pt")
+        // A drawn picture of the old geometry would show scaled or cropped wrongly until the
+        // app draws the new one: the picture on screen holds.
+        if !(liveGPUOwners?.presents(in: self) ?? false) { localScroll?.holdPicture(expecting: nil) }
+    }
+
     func liveGPUPictureCaptured(_ texture: MTLTexture, serial: UInt64, release: @escaping @Sendable () -> Void) {
         guard isInteractive, window != nil, let localScroll, liveGPUOwners?.presents(in: self) ?? false else {
             if !liveGPUCaptureDropNoted {
@@ -1056,7 +1081,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let key = ObjectIdentifier(window)
         let asked = overscanAsked?.window == key ? overscanAsked!.size : .zero
         guard wanted != asked else { return }
-        LocalScrollProfile.note("overscan request window=\(window.id) \(Int(wanted.width))x\(Int(wanted.height))")
+        LocalScrollProfile.note("overscan \(wanted == .zero ? "shrink" : asked == .zero ? "enlarge" : "change") request window=\(window.id) \(Int(wanted.width))x\(Int(wanted.height)) (frame \(Int(window.frame.width))x\(Int(window.frame.height)))")
         session.requestOverscan(window, wanted)
         if wanted == .zero, overscanAsked != nil { overscanLingersUntil = now + 3 }
         overscanAsked = wanted == .zero ? nil : (key, wanted)

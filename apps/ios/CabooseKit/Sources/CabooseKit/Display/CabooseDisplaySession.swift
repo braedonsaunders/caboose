@@ -361,6 +361,10 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func send(_ message: ClientMessage) {
+        if LocalScrollProfile.enabled, case .configure(let window, let geometry, _, let fullscreen, let maximized, _, let overscan) = message,
+           geometry != nil || overscan != nil || fullscreen != nil || maximized != nil {
+            LocalScrollProfile.note("configure window=\(window)\(geometry.map { " geometry=\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "")\(overscan.map { " overscan=\(Int($0.width))x\(Int($0.height))" } ?? "")\(fullscreen.map { " fullscreen=\($0)" } ?? "")\(maximized.map { " maximized=\($0)" } ?? "")")
+        }
         stream?.send(DisplayFraming.encode(message.frame))
     }
 
@@ -599,6 +603,9 @@ public final class CabooseDisplaySession: DisplaySession {
             }
         }
         placement[fields.id] = entry
+        if LocalScrollProfile.enabled, fields.geometry != nil || fields.overscan != nil {
+            LocalScrollProfile.note("window.update id=\(fields.id)\(fields.geometry.map { " geometry=\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "")\(fields.overscan.map { " overscan=\(Int($0.width))x\(Int($0.height))" } ?? "")")
+        }
         apply(fields, to: window)
         if fields.geometry != nil || fields.parent != nil { place(window) }
     }
