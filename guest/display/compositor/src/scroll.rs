@@ -51,6 +51,15 @@ const MAX_FIXED: usize = 32;
 /// Where guest/scroll-reporter/install.sh puts the toolkit reporters' preload libraries.
 pub const REPORTERS: &str = "/opt/caboose/scroll-reporter/lib";
 
+/// Where install.sh puts the Electron reporter, loaded through NODE_OPTIONS.
+pub const ELECTRON: &str = "/opt/caboose/scroll-reporter/electron/main.js";
+
+/// The Electron reporter's path, when it is installed and needs no quoting in NODE_OPTIONS.
+pub fn electron_reporter(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    (path.is_file() && !text.contains(char::is_whitespace)).then(|| text.to_owned())
+}
+
 /// The preload libraries in `dir`: `libcaboose-scroll-*.so`, sorted. A reporter loads
 /// anything else it needs itself.
 pub fn preload_libraries(dir: &Path) -> Vec<String> {

@@ -277,6 +277,14 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
             }
             env.push(("LD_PRELOAD".into(), preload));
         }
+        // Electron applications load the Electron reporter into their main process.
+        if let Some(electron) = scroll::electron_reporter(std::path::Path::new(scroll::ELECTRON)) {
+            let mut options = format!("--require={electron}");
+            if let Some(existing) = std::env::var("NODE_OPTIONS").ok().filter(|v| !v.is_empty()) {
+                options = format!("{existing} {options}");
+            }
+            env.push(("NODE_OPTIONS".into(), options));
+        }
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
