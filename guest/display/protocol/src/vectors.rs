@@ -179,6 +179,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: false,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -195,6 +196,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: false,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -211,6 +213,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: true,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
 
     vec![
@@ -266,7 +269,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal.clone())),
         one("window-create-popup", "A popup above its parent; geometry is relative to the parent and may be negative.", Message::WindowCreate(menu)),
-        one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm)),
+        one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm.clone())),
+        one(
+            "window-create-launched",
+            "An X11 window whose process a launch of org.example.Game.desktop started, through a wrapper script that set its own class.",
+            Message::WindowCreate(WindowCreate {
+                id: 13,
+                title: "Game".into(),
+                app_id: "game-engine".into(),
+                desktop_id: Some("org.example.Game.desktop".into()),
+                ..xterm
+            }),
+        ),
         one(
             "window-create-overscan",
             "A window laid out 2556 pixels taller than the 1179x2556 the client shows: its pictures are 1179x5112.",
@@ -277,6 +291,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 icon: None,
                 min: None,
                 overscan: Some(Size { w: 0, h: 2556 }),
+                desktop_id: None,
                 ..terminal.clone()
             }),
         ),

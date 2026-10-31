@@ -1,0 +1,8 @@
+{
+  "name": "window-create-launched",
+  "description": "An X11 window whose process a launch of org.example.Game.desktop started, through a wrapper script that set its own class.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 13, "max": [32767, 32767], "min": [10, 17], "kind": "toplevel", "alpha": false, "title": "Game", "app_id": "game-engine", "display": 2, "geometry": [0, 0, 1920, 1080], "xwayland": true, "desktop_id": "org.example.Game.desktop", "fullscreen": true}}
+  ],
+  "hex": "02a0000000ac6269640d636d617882197fff197fff636d696e820a11646b696e6468746f706c6576656c65616c706861f4657469746c656447616d65666170705f69646b67616d652d656e67696e6567646973706c6179026867656f6d6574727984000019078019043868787761796c616e64f56a6465736b746f705f696478186f72672e6578616d706c652e47616d652e6465736b746f706a66756c6c73637265656ef5"
+}

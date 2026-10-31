@@ -24,6 +24,7 @@ mod ibus;
 mod ibus_portal;
 mod input;
 mod keymap;
+mod launch;
 mod motion;
 mod net;
 mod pencil;

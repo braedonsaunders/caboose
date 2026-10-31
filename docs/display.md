@@ -354,7 +354,7 @@ Server → client (`0x01`–`0x7F`):
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
 | `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]`, `epoch?: text` (1–64 bytes; caboose-display sends 16 hex characters) |
-| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size` |
+| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size`, `desktop_id?: text` ([Windows and launches](#windows-and-launches)) |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes`, `input_seq?: uint` ([Input sequencing](#input-sequencing)) |
@@ -592,6 +592,20 @@ guest, `guest/scene` provides:
    switches to non-blocking local passthrough mode (`SO_NOSIGPIPE` / `MSG_NOSIGNAL` /
    `O_NONBLOCK`) without stalling the application or raising `SIGPIPE` (< 5 ms for 1,000
    commits).
+
+### Windows and launches
+
+`desktop_id` names the desktop entry whose launch started a toplevel's process, as
+`<id>.desktop`. It holds when the window's class says something else, as it does for an
+application behind a wrapper script or a game started by its own launcher. A launch marks
+the process it starts through its environment, which everything it starts inherits: GLib
+sets `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID` for any entry it launches,
+and Caboose's Apps launch adds `CABOOSE_DESKTOP_ID`. caboose-display reads them from the
+window's process, or from its nearest ancestor that has them when the process cleared its
+environment. A window belongs to the launch only if no process between it and the launched
+process has a window of its own. So a program started from a launched terminal's shell is not
+the terminal. A client matches launches and taskbar entries to windows by `desktop_id` first,
+then by class (`app_id`, `StartupWMClass`).
 
 ### Overscan
 

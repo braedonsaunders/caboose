@@ -9,6 +9,9 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var title: String = ""
     /// WM_CLASS instance and class, e.g. ("xfce4-terminal", "Xfce4-terminal").
     public internal(set) var appClass: (instance: String, name: String)?
+    /// The desktop entry the computer launched this window's process from, when it knows:
+    /// it names the app even when the window's class does not (a wrapper script, a game).
+    public internal(set) var desktopID: String?
     public internal(set) var isOverrideRedirect: Bool
     public internal(set) var transientFor: Int?
     public internal(set) var windowTypes: [String] = []

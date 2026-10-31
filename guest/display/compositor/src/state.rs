@@ -675,6 +675,7 @@ impl State {
             fullscreen: false,
             maximized: false,
             lineage: None,
+            desktop_id: None,
             scroll_seq_delivered: 0,
             scroll_seq_committed: 0,
             overscan: (0, 0).into(),
@@ -790,10 +791,45 @@ impl State {
     }
 
     /// Announces new windows and changes to known ones; retracts unmapped ones.
+    /// Looks up, once, the desktop entry a toplevel's process was launched from. Other
+    /// windows' processes bound it: one under a launched terminal's shell is not the terminal.
+    fn find_desktop_id(&mut self, id: u64) {
+        let toplevel = self.windows.get(id).is_some_and(|w| w.parent.is_none() && w.desktop_id.is_none());
+        if !toplevel {
+            return;
+        }
+        let dh = self.dh.clone();
+        let mut windowed = std::collections::HashSet::new();
+        for other in self.windows.ids() {
+            if other == id {
+                continue;
+            }
+            if let Some(w) = self.windows.get_mut(other) {
+                let lineage = w.lineage.get_or_insert_with(|| crate::session::window_lineage(&dh, &w.surface));
+                windowed.extend(lineage.first().copied());
+            }
+        }
+        let Some(w) = self.windows.get_mut(id) else { return };
+        // An X11 window may not name its process yet: look again at the next sync.
+        if w.lineage.as_ref().is_none_or(|l| l.is_empty()) {
+            w.lineage = Some(crate::session::window_lineage(&dh, &w.surface));
+        }
+        let lineage = w.lineage.clone().unwrap_or_default();
+        if lineage.is_empty() {
+            return;
+        }
+        let found = crate::launch::desktop_id(&lineage, &windowed, crate::launch::read_environ);
+        if let Some(desktop) = &found {
+            tracing::info!("window {id}: launched from {desktop}");
+        }
+        w.desktop_id = Some(found);
+    }
+
     pub fn sync_windows(&mut self) {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut resized = false;
         for id in self.windows.parent_first() {
+            self.find_desktop_id(id);
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application whose stream the client renders never presents here, so its
             // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
