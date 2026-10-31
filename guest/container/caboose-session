@@ -165,7 +165,7 @@ start_owner() {
   # the host has them: the session user's to allocate shared buffers on.
   for node in /dev/dri/card* /dev/dri/renderD*; do
     [ -e "$node" ] || continue
-    [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device/driver")")" = vgem ] || continue
+    [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
     chgrp caboose "$node" && chmod 0660 "$node"
   done
   start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
