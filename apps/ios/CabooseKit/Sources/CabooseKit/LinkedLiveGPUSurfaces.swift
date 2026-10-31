@@ -1,5 +1,6 @@
 #if canImport(CabooseGPULive) && canImport(UIKit)
 import Foundation
+import Metal
 import UIKit
 import CabooseGPULive
 
@@ -90,6 +91,7 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
             }
             return .init(status: .init(nativeErrno: attached, vkResult: nil), resource: nil)
         }
+        resource.startCapture()
         return .init(status: .init(nativeErrno: 0, vkResult: nil), resource: resource)
     }
 }
@@ -104,10 +106,57 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     private var nativeLifetime: LinkedLiveGPUSurface?
     private let callbackLock = NSLock()
     private var callbacks: [UInt64: @Sendable (LiveGPUSurfaceMessage.Body) -> Void] = [:]
+    /// Guards capture releases against retirement; native captures stop before retire.
+    private let captureLock = NSLock()
+    private var capturing = false
     init(pointer: OpaquePointer, bind: caboose_gpu_surface_bind_info,
          lease: LiveGPULayerLease, owners: LiveGPUPresentationOwners) {
         self.pointer = pointer; self.bind = bind; self.lease = lease; self.owners = owners
         nativeLifetime = self
+    }
+
+    /// Presented pictures go to the owning view for phone-owned scrolling (docs/display.md,
+    /// "Phone-owned scrolling"). A device that cannot share them presents without captures.
+    func startCapture() {
+        guard let pointer else { return }
+        captureLock.withLock {
+            capturing = caboose_gpu_surface_set_capture(pointer, { context, _, token, texture in
+                guard let context, let texture else { return }
+                Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
+                    .captured(token: token, texture: texture)
+            }, Unmanaged.passUnretained(self).toOpaque()) == 0
+        }
+    }
+
+    /// Frame worker: the picture is lent until `releaseCapture(token)`.
+    private func captured(token: UInt32, texture: UnsafeMutableRawPointer) {
+        guard let metal = Unmanaged<AnyObject>.fromOpaque(texture).takeUnretainedValue() as? MTLTexture else {
+            releaseCapture(token)
+            return
+        }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let release: @Sendable () -> Void = { [weak self] in self?.releaseCapture(token) }
+                guard self.lease.isValid, let view = self.lease.view else { release(); return }
+                view.liveGPUPictureCaptured(metal, release: release)
+            }
+        }
+    }
+
+    private func releaseCapture(_ token: UInt32) {
+        captureLock.withLock {
+            guard capturing, let pointer else { return }
+            _ = caboose_gpu_surface_release_capture(pointer, token)
+        }
+    }
+
+    private func stopCapture() {
+        captureLock.withLock {
+            guard capturing, let pointer else { return }
+            _ = caboose_gpu_surface_set_capture(pointer, nil, nil)
+            capturing = false
+        }
     }
     func create(_ request: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?) {
         guard lease.isValid, let pointer else { return (.init(nativeErrno: ECANCELED, vkResult: nil), nil) }
@@ -232,6 +281,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     }
     func retire() throws {
         lease.invalidate()
+        stopCapture()
         guard let current = pointer else { return }
         let code = caboose_gpu_surface_retire(current)
         guard code == 0 else {

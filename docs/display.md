@@ -453,6 +453,63 @@ rotation, fitting and output scale, including 1.5; other responses remain propor
 Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
 model. The client does not infer or compensate for per-application response differences.
 
+### Phone-owned scrolling
+
+A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
+the phone itself. That covers a window whose picture the phone draws (a card or tile) and
+a live GPU window whose presented pictures the phone captures
+([presented-picture capture](gpu-live.md#presented-picture-capture)). Games and GPU
+streams are not covered. Over a live GPU layer, the phone draws its compositions in an
+overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
+uses it differently:
+
+- **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
+  deceleration, 0.998 per millisecond) move the content at display rate, 120 Hz on
+  ProMotion, from the first movement. The phone draws the window's captured pictures moved
+  to that position.
+- **The app is driven ahead.** Forwarded scroll aims the app where the phone will be once
+  the app's picture arrives: the position one measured input-to-picture latency ahead. That
+  target is exact during momentum and extrapolated from finger velocity while tracking.
+  While content moves fast, the target adds up to half the region more, fading below 1500
+  picture pixels per second. The content a flick brings into view is therefore already in a
+  captured picture. Earlier pictures cover the content behind it.
+- **Prefetch at rest.** 0.1 s after a scroll hands back, the phone drives the app 0.7 of
+  the scrolling region further in the scroll's direction and back. It shows the unchanged
+  picture throughout, so the next flick's first frames find their content captured. Other
+  input (a tap, a key) brings the app straight back.
+- **Every picture is measured.** Each captured picture gets line signatures on the GPU:
+  per row and per vertical band of about 40 pixels, the mean colour and the mean luma step
+  along the row. Horizontal scrolling uses the transpose. A coarse search of sampled
+  detailed cells, over the shifts the forwarded scroll makes possible, finds the rigid
+  motion relative to the previous picture. A full search follows only for an unexpected
+  jump, and it must be explained by much more of the picture. Cells explained only by
+  standing still bound the moving region. Toolbars, sticky headers, status bars, sidebars
+  and gutters are drawn from the newest picture, unmoved. No application identity is used.
+- **Learning the window.** The measured placements give the app's latency (the 75th
+  percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
+  rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
+  finger one to one. If the app stops moving while it is still being driven for twice its
+  latency plus 120 ms, its content has ended there. The phone then resists past that edge as
+  UIScrollView does, and momentum that reaches it springs back.
+- **Bounded reveal.** Content no captured picture covers shows in the colour of the
+  nearest captured edge. It may fill at most a quarter of the region. Past that, the shown
+  position resists and catches up as pictures arrive, never slower than the gesture.
+- **Hand back.** When the phone comes to rest, the app is brought to the same position,
+  with up to three correction rounds at the newly learned gain. After that, the phone eases
+  onto the app's position. Once the app's newest picture shows that position, the phone
+  draws the app's own picture again. A touch on moving content stops it without clicking,
+  as in any iOS scroll view.
+
+The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
+most six of them, chosen for the content they add near the current position. Video layers
+over the picture move with the scrolled content.
+
+`CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
+`ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
+`LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
+exact scroll offset, region, range and fixed rectangles replaces measurement for that
+picture (`ScrollObservation.reported`).
+
 ### Audio
 
 The computer's sound is one Opus stream: each `audio` message is one 20 ms packet (960

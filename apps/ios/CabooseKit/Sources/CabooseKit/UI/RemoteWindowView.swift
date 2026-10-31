@@ -13,7 +13,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public override static var layerClass: AnyClass { CAMetalLayer.self }
 
     public weak var session: (any DisplaySession)? {
-        willSet { if session !== newValue { cancelTouches() } }
+        willSet { if session !== newValue { cancelTouches(); localScroll?.cancel() } }
         didSet { layoutLiveGPU() }
     }
     /// The session whose pictures this view shows, told of each refresh of the screen it is
@@ -70,6 +70,19 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
+    /// Phone-owned scrolling of the window's picture (docs/display.md, "Phone-owned
+    /// scrolling"); nil where Metal cannot run it.
+    private lazy var localScroll: LocalScrollController? = LocalScrollController()
+    /// The current pan scrolls through `localScroll` rather than `scrollDriver`.
+    private var scrollIsLocal = false
+    /// `localScroll` has been used: refreshes go through it.
+    private var localScrollEngaged = false
+    /// The touch that began now stopped a moving scroll, so its tap does not click.
+    private var touchStoppedScroll = false
+    /// A live GPU layer here sends its presented pictures for local scrolling.
+    private var liveGPUCaptures = false
+    /// Where local scrolling draws over a live GPU layer, shown only while it composes.
+    private var scrollOverlay: CAMetalLayer?
     private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
@@ -93,7 +106,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         metalLayer.presentsWithTransaction = false
         backgroundColor = .black
         isMultipleTouchEnabled = true
-        NotificationCenter.default.addObserver(self, selector: #selector(cancelTouches),
+        NotificationCenter.default.addObserver(self, selector: #selector(resignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
         installGestures()
         attach(window)
@@ -110,6 +123,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             focusCheck = nil
             resetTyping()
             cancelTouches()
+            localScroll?.cancel()
+            liveGPUCaptures = false
             laidOutVideos = nil
         }
         remoteWindow = window
@@ -125,6 +140,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         layoutLiveGPU()
         if self.window == nil {
             cancelTouches()
+            localScroll?.cancel()
             focusCheck = nil
             releaseVideos()
         }
@@ -275,6 +291,83 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
         hostedVideos.removeAll()
         laidOutVideos = nil
+    }
+
+    /// One display refresh of the window's picture: the phone's own composition while it
+    /// owns the scroll, the app's picture otherwise.
+    fileprivate func refreshPicture(at targetTime: CFTimeInterval) {
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        if (localScrollEngaged || liveGPU), let localScroll, let window = remoteWindow {
+            // A live GPU layer presents itself; local scrolling draws over it.
+            let target = liveGPU ? overlay() : metalLayer
+            let composed = localScroll.refresh(at: targetTime, surface: liveGPU ? nil : window.surface, layer: target)
+            followLocalScroll()
+            showOverlay(liveGPU && composed)
+            if composed {
+                // When the app's picture returns it is drawn afresh.
+                if !liveGPU { presentedGeneration = .max }
+                return
+            }
+        } else {
+            showOverlay(false)
+        }
+        present()
+    }
+
+    private func overlay() -> CAMetalLayer {
+        if let scrollOverlay, scrollOverlay.superlayer === layer {
+            if scrollOverlay.frame != bounds { scrollOverlay.frame = bounds }
+            return scrollOverlay
+        }
+        let made = CAMetalLayer()
+        made.device = SurfaceRenderer.shared.device
+        made.framebufferOnly = true
+        made.isOpaque = true
+        made.contentsGravity = .resize
+        made.presentsWithTransaction = false
+        made.isHidden = true
+        made.frame = bounds
+        // Above the live GPU layer, below the videos laid over the picture.
+        made.zPosition = 0.5
+        layer.addSublayer(made)
+        scrollOverlay = made
+        return made
+    }
+
+    private func showOverlay(_ shown: Bool) {
+        guard let scrollOverlay, scrollOverlay.isHidden == shown else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scrollOverlay.isHidden = !shown
+        // A hidden overlay keeps no stale composition to show when it next appears.
+        if !shown { scrollOverlay.contents = nil }
+        CATransaction.commit()
+    }
+
+    /// A live GPU layer in this view presented `texture` (its own copy, read only until
+    /// `release`), for local scrolling to start from and measure.
+    func liveGPUPictureCaptured(_ texture: MTLTexture, release: @escaping @Sendable () -> Void) {
+        guard isInteractive, window != nil, let localScroll, liveGPUOwners?.presents(in: self) ?? false else {
+            release()
+            return
+        }
+        liveGPUCaptures = true
+        localScroll.offer(texture, done: release)
+    }
+
+    /// Video layers over the picture move with the content the phone is scrolling.
+    private func followLocalScroll() {
+        let shift = localScroll?.contentShift ?? .zero
+        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0 else { return }
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        let picture = (liveGPU ? localScroll?.pictureSize : nil) ?? window.presentationSize
+        let offset = CGPoint(x: shift.x * bounds.width / max(1, picture.width), y: shift.y * bounds.height / max(1, picture.height))
+        let transform = offset == .zero ? CATransform3DIdentity : CATransform3DMakeTranslation(offset.x, offset.y, 0)
+        guard hostedVideos.contains(where: { !CATransform3DEqualToTransform($0.transform, transform) }) else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for container in hostedVideos { container.transform = transform }
+        CATransaction.commit()
     }
 
     fileprivate func present() {
@@ -456,7 +549,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        // As in any iOS scroll view, a tap on moving content only stops it.
+        if touchStoppedScroll { touchStoppedScroll = false; return }
         stopMomentum()
+        localScroll?.interrupt()
         click(at: gesture.location(in: self))
         tapped()
     }
@@ -640,7 +736,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         // A second contact belongs to the current recognizer. Its topology check
         // cancels the whole gesture; do not silently strand an active driver here.
-        if !scrollOwnership.isActive { stopMomentum() }
+        if !scrollOwnership.isActive {
+            touchStoppedScroll = localScroll?.isMoving ?? false
+            stopMomentum()
+        }
         let native = touches.filter(routesNatively)
         nativeTouches.formUnion(native.map(ObjectIdentifier.init))
         if !native.isEmpty {
@@ -736,6 +835,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
     }
 
+    @objc private func resignActive() {
+        cancelTouches()
+        localScroll?.cancel()
+    }
+
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
     @objc private func cancelTouches() {
         pointerClicks.cancel()
@@ -786,6 +890,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let epoch = session.epoch
             let connection = (session as? CabooseDisplaySession)?.connections
             scrollOwnership.begin(owner, contacts: gesture.numberOfTouches)
+            if directContent, beginLocalScroll(at: now - 1.0 / 120, location: gesture.location(in: self),
+                                                 translation: gesture.translation(in: self)) {
+                appendScroll(gesture, at: now)
+                return
+            }
+            scrollIsLocal = false
             scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
                 guard let self, let session, let remoteWindow, self.isInteractive,
                       self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
@@ -802,7 +912,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             appendScroll(gesture, at: now)
         case .changed:
             guard scrollOwnership.update(owner, contacts: gesture.numberOfTouches) else {
-                if !scrollOwnership.isActive { scrollDriver.cancel() }
+                if !scrollOwnership.isActive { scrollDriver.cancel(); if scrollIsLocal { localScroll?.halt(at: now) } }
                 return
             }
             appendScroll(gesture, at: now)
@@ -810,10 +920,17 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             guard scrollOwnership.end(owner) else { return }
             appendScroll(gesture, at: now)
             let velocity = gesture.velocity(in: self)
+            if scrollIsLocal {
+                localScroll?.release(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: true)
+                return
+            }
             // Indirect hardware scrolling already includes OS momentum.
             scrollDriver.end(at: now, velocity: CGPoint(x: -velocity.x, y: -velocity.y), coast: scrollUsesDirectTouch)
         case .cancelled, .failed:
-            if scrollOwnership.end(owner) { scrollDriver.cancel() }
+            if scrollOwnership.end(owner) {
+                scrollDriver.cancel()
+                if scrollIsLocal { localScroll?.halt(at: now) }
+            }
         default: break
         }
     }
@@ -821,14 +938,82 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private func appendScroll(_ gesture: UIPanGestureRecognizer, at time: TimeInterval) {
         let translation = gesture.translation(in: self)
         gesture.setTranslation(.zero, in: self)
-        if translation != .zero {
-            scrollDriver.append(CGPoint(x: -translation.x, y: -translation.y), at: time)
-        }
+        guard translation != .zero else { return }
+        let delta = CGPoint(x: -translation.x, y: -translation.y)
+        if scrollIsLocal { localScroll?.track(delta, at: time) } else { scrollDriver.append(delta, at: time) }
     }
 
     private func stopMomentum() {
         scrollOwnership.cancel()
         scrollDriver.cancel()
+        localScroll?.halt(at: CACurrentMediaTime())
+    }
+
+    /// Starts a phone-owned scroll of a finger at `location` whose pan has moved
+    /// `translation` so far, when this window can scroll locally. The pointer is already at
+    /// `location`. The scroll forwards to the app only while the session, window, connection
+    /// and mapping it began with stay current.
+    private func beginLocalScroll(at time: TimeInterval, location: CGPoint, translation: CGPoint) -> Bool {
+        guard let localScroll, let session, let remoteWindow, canScrollLocally(remoteWindow) else { return false }
+        let anchor = lastPointer, scale = pixelsPerPoint, geometry = bounds, size = remoteWindow.frame.size
+        let epoch = session.epoch, connection = (session as? CabooseDisplaySession)?.connections
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        guard let picture = liveGPU ? localScroll.pictureSize : remoteWindow.presentationSize,
+              picture.width > 0, picture.height > 0 else { return false }
+        let toPicture = CGSize(width: picture.width / max(1, geometry.width), height: picture.height / max(1, geometry.height))
+        let toFrame = CGSize(width: size.width / max(1, picture.width), height: size.height / max(1, picture.height))
+        scrollIsLocal = true
+        localScrollEngaged = true
+        localScroll.begin(at: time, delta: CGPoint(x: -translation.x, y: -translation.y),
+                          anchor: CGPoint(x: location.x * toPicture.width, y: location.y * toPicture.height), scale: toPicture) {
+            [weak self, weak session, weak remoteWindow] delta, _ in
+            guard let self, let session, let remoteWindow, self.isInteractive,
+                  self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
+                  session.state == .ready, session.windows[remoteWindow.id] === remoteWindow,
+                  session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
+                  self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
+            else { return false }
+            let mapped = CGPoint(x: delta.x * toFrame.width, y: delta.y * toFrame.height)
+            let precise = DirectScrollCalibration.preciseDelta(mapped, directContent: true)
+            session.scroll(in: remoteWindow, dx: precise.x, dy: precise.y, at: anchor)
+            return true
+        }
+        return true
+    }
+
+    // MARK: Synthetic replay
+
+    private var replay: LocalScrollReplay?
+
+    /// `CABOOSE_SCROLL_REPLAY=1`: once this interactive window has been on screen for three
+    /// seconds, the standard flick script plays through the same local scroll path as a
+    /// finger, for `LocalScrollProfile` to measure on the device.
+    fileprivate func driveReplay(at time: CFTimeInterval) {
+        guard LocalScrollReplay.enabled, isInteractive, window != nil, let session, session.state == .ready,
+              let remoteWindow, canScrollLocally(remoteWindow) else { replay = nil; return }
+        if replay == nil { replay = LocalScrollReplay(start: time + 3) }
+        guard let events = replay?.events(until: time), !events.isEmpty else { return }
+        let location = CGPoint(x: bounds.midX, y: bounds.midY)
+        for event in events {
+            switch event {
+            case .begin(let label, let at, let delta):
+                localScroll?.profile.label(label)
+                stopMomentum()
+                move(to: location)
+                if !beginLocalScroll(at: at, location: location, translation: CGPoint(x: -delta.x, y: -delta.y)) { replay = nil; return }
+                localScroll?.track(delta, at: at)
+            case .move(let at, let delta):
+                localScroll?.track(delta, at: at)
+            case .release(let at, let velocity):
+                localScroll?.release(at: at, velocity: velocity, coast: true)
+            }
+        }
+    }
+
+    /// Phone-owned scrolling covers windows whose picture this view draws, and live GPU
+    /// windows whose presented pictures arrive here; not games or GPU streams.
+    private func canScrollLocally(_ window: RemoteWindow) -> Bool {
+        window.game == nil && window.gpuStream == nil && (liveGPUCaptures || !(liveGPUOwners?.presents(in: self) ?? false))
     }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.
@@ -847,6 +1032,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func send(_ edits: [TypingBuffer.Edit]) {
         guard !holdsGameInput else { return }
+        localScroll?.interrupt()
         session?.edit(edits, in: remoteWindow)
     }
 
@@ -874,6 +1060,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
         guard !holdsGameInput else { return }
+        localScroll?.interrupt()
         session?.key(stroke, pressed: true, in: remoteWindow, extraModifiers: modifiers)
         session?.key(stroke, pressed: false, in: remoteWindow, extraModifiers: modifiers)
     }
@@ -882,6 +1069,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         // Keys the game's page left unhandled travel on up the responder chain, not to the computer.
         guard !holdsGameInput else { return super.pressesBegan(presses, with: event) }
         resetTyping()
+        localScroll?.interrupt()
         var unhandled = Set<UIPress>()
         for press in presses {
             if let (stroke, modifiers) = Self.stroke(for: press) {
@@ -953,7 +1141,8 @@ private final class DisplayLinkTarget: NSObject {
         view.layoutGame()
         view.layoutGPUStream()
         view.layoutLiveGPU()
-        view.present()
+        view.driveReplay(at: CACurrentMediaTime())
+        view.refreshPicture(at: link.targetTimestamp)
         view.layoutVideos()
     }
 }

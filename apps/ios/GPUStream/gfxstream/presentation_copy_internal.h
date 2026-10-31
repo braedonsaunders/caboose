@@ -12,9 +12,12 @@ namespace caboose::gpuv2 {
 // If acquired is null, the caller must already have observed the real acquire
 // signal completion; a guest acquire binary semaphore must never be waited twice.
 // A success means submission only; it is not an image-release receipt.
+// A non-null `capture` (same format and extent as the source, owned by the caller's capture
+// ring) receives a second copy of the source in the same submission.
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
-    VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider);
+    VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider,
+    VkImage capture = VK_NULL_HANDLE);
 // A successful return means queued presentation, not displayed-vsync completion.
 // Caller must have queried and enabled swapchain maintenance1 on this actual
 // device. The ready semaphore and swapchain remain alive until presentFence is

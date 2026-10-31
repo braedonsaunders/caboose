@@ -395,6 +395,28 @@ and layer reserved and prevents process finish from bypassing the instance lease
 The controller's tests use injected native boundaries; the package and unsigned
 app link checks do not establish physical presentation or game compatibility.
 
+## Presented-picture capture
+
+The owner view's [phone-owned scrolling](display.md#phone-owned-scrolling) reads what a
+live GPU window presents. With a capture callback set (`caboose_gpu_surface_set_capture`),
+each present's copy submission also copies the guest source into one of two device-local
+capture images on the presenting device. This happens only when a capture image is free,
+and it adds no wait. The images are created with `VK_EXT_metal_objects` export, and the
+decoder enables that extension on guest devices where the provider offers it (patch
+`0040-guest-device-metal-objects`). A device that cannot export Metal objects presents
+without captures.
+
+Once the copy fence has actually signaled, the frame worker passes the present serial, a
+token and the image's `MTLTexture` to the callback. The Swift surface hands the texture to
+its owner view on main. The view's scroll controller copies it into its own history
+texture and then releases the token (`caboose_gpu_surface_release_capture`). Until that
+release, the slot is not written again. Tokens carry the ring's generation: a resized or
+reformatted picture gets a new ring once no copy writes the old one, and releases for the
+old ring are ignored. A copy whose fence outcome is unknown quarantines its slot. Retire
+stops captures and destroys the ring with the presenting device's other resources. The
+capture never reaches the guest, never changes what is presented, and is not a display
+or vsync receipt. `tests/presentation_capture_state_test.cpp` checks slot ownership.
+
 ## Indexed swapchain wire
 
 The codec and linked Swift/native adapter cover kinds 25–36, with independent

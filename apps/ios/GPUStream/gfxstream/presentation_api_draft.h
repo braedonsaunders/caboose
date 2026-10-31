@@ -105,6 +105,23 @@ void caboose_gpu_surface_capabilities_release(caboose_gpu_surface_capabilities* 
 caboose_gpu_submit_result caboose_gpu_surface_present(caboose_gpu_surface* surface,
     const caboose_gpu_present_info* present, caboose_gpu_present_callback callback, void* context);
 
+// Presented-picture capture for the phone's own compositing (phone-owned scrolling).
+// With a callback set, each present also copies its source into one of two device-local
+// capture images when one is free, in the same submission. Once that copy's fence has
+// actually signaled, the callback receives the present serial, a token and the image's
+// MTLTexture (id<MTLTexture>, unretained; valid while retained by the receiver). The slot
+// is not written again until release_capture(token). The callback runs on the frame
+// worker: it must not call surface methods or wait for main work. A device that cannot
+// export Metal objects presents without captures, and set_capture then returns ENOTSUP.
+// A null callback (with a null context) stops captures; retire stops them as well.
+typedef void (*caboose_gpu_capture_callback)(void* context, uint64_t present_serial, uint32_t token,
+                                             void* metal_texture);
+// Any thread. EBUSY after revocation.
+int caboose_gpu_surface_set_capture(caboose_gpu_surface* surface, caboose_gpu_capture_callback callback,
+                                    void* context);
+// Any thread. ESTALE for a token already released or from a replaced ring.
+int caboose_gpu_surface_release_capture(caboose_gpu_surface* surface, uint32_t token);
+
 // Worker only; revokes admission and blocks until all GPU source reads and
 // presentation resources are retired, or actual terminal device loss. It never
 // waits under the decoder global mutex. A failure/unknown outcome keeps the
