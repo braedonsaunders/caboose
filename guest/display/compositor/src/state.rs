@@ -215,6 +215,12 @@ pub struct State {
     pub epoch: String,
     pub gpu_grants: Option<crate::gpu_grant::Grants>,
     pub gpu_last_bind_request: u64,
+    /// The private GPU broker is restarted whenever it ends: a restart is pending, the
+    /// delay before the next one (doubling to 30 s, reset by a broker that lasted a
+    /// minute), and when the current broker started.
+    pub gpu_restart_pending: bool,
+    pub gpu_restart_delay: std::time::Duration,
+    pub gpu_started_at: std::time::Instant,
     /// Phone-resident buffers committed to windows and held until the broker releases them.
     pub remote_presents: crate::remote_buffers::Presents,
     pub stats: Stats,
@@ -379,6 +385,52 @@ impl State {
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
+        self.schedule_gpu_restart();
+    }
+
+    fn schedule_gpu_restart(&mut self) {
+        if self.gpu_restart_pending || self.config.private_gpu_stream.is_none() { return; }
+        self.gpu_restart_pending = true;
+        if self.gpu_started_at.elapsed() >= std::time::Duration::from_secs(60) {
+            self.gpu_restart_delay = std::time::Duration::from_secs(1);
+        }
+        let delay = self.gpu_restart_delay;
+        self.gpu_restart_delay = (delay * 2).min(std::time::Duration::from_secs(30));
+        eprintln!("caboose-display: the private GPU broker ended; restarting in {} ms", delay.as_millis());
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let inserted = self.handle.insert_source(Timer::from_duration(delay), |_, _, state: &mut State| {
+            state.restart_private_gpu();
+            TimeoutAction::Drop
+        });
+        if inserted.is_err() { self.gpu_restart_pending = false; }
+    }
+
+    fn restart_private_gpu(&mut self) {
+        self.gpu_restart_pending = false;
+        let (Some(stream), Some(surface), Some(token)) = (self.config.private_gpu_stream.clone(),
+            self.config.private_gpu_surface.clone(), self.config.token_file.clone()) else { return };
+        // Stops and reaps the previous broker, reporting how it ended.
+        self.net.disable_private_gpu();
+        // A broker that died without cleaning up leaves its sockets behind.
+        for path in [&stream, &surface] {
+            use std::os::unix::fs::FileTypeExt;
+            if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket()) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        let grants = match crate::gpu_grant::Grants::new() {
+            Ok(grants) => grants,
+            Err(error) => { eprintln!("caboose-display: private GPU entropy: {error}"); self.schedule_gpu_restart(); return; }
+        };
+        let handle = self.handle.clone();
+        match self.net.enable_private_gpu(&token, &stream, &surface, self.config.private_gpu_indexed, &handle) {
+            Ok(()) => {
+                self.gpu_grants = Some(grants);
+                self.gpu_started_at = std::time::Instant::now();
+                eprintln!("caboose-display: private GPU broker restarted");
+            }
+            Err(error) => { eprintln!("caboose-display: private GPU broker restart failed: {error}"); self.schedule_gpu_restart(); }
+        }
     }
 
     fn reconnect_for_gpu_epoch(&mut self) {

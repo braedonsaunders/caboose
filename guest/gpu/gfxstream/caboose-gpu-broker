@@ -774,6 +774,9 @@ class Session:
             if not bound.done(): bound.set_result(False)
             self.buffer_step(window, window.retired())
 
+    def has_surface(self, record):
+        return (record.epoch, record.grant, record.generation) in self.surfaces
+
     def request_surface_retire(self, record):
         key = (record.epoch, record.grant, record.generation)
         surface = self.surfaces.get(key)
@@ -1288,7 +1291,11 @@ class Broker:
                     future.set_result(record)
                     return
                 if isinstance(record, control_protocol.RevokeGrant):
-                    if self.session is None: raise ValueError('surface revoke without session')
+                    # A revoke can cross the end of its session or surface: nothing is left
+                    # to retire, and the broker goes on serving the next executor.
+                    if self.session is None or not self.session.has_surface(record):
+                        print('CABOOSE_GPU_BROKER revoke for a surface that is already gone', file=sys.stderr, flush=True)
+                        return
                     self.session.request_surface_retire(record)
                     return
                 if isinstance(record, control_protocol.BufferPresent):
@@ -1301,7 +1308,9 @@ class Broker:
                     return
                 stream = record
             except BlockingIOError: return
-            except (OSError, ValueError, PermissionError): self.closing.set(); return
+            except (OSError, ValueError, PermissionError) as error:
+                print(f'CABOOSE_GPU_BROKER control channel failed: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+                self.closing.set(); return
             if len(self.tasks) >= MAX_QUEUED_MESSAGES:
                 stream.close(); return
             stream.setblocking(False)
@@ -1479,7 +1488,13 @@ def main():
     control = socket.socket(fileno=args.control_fd)
     if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
         raise SystemExit('private Unix sequenced-packet control socket required')
-    asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed).run())
+    # The supervisor restarts the broker; its log says why each one ended.
+    try:
+        asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed).run())
+    except BaseException as error:
+        print(f'CABOOSE_GPU_BROKER_EXIT error {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+        raise
+    print('CABOOSE_GPU_BROKER_EXIT control channel closed', file=sys.stderr, flush=True)
 
 
 if __name__ == '__main__': main()
