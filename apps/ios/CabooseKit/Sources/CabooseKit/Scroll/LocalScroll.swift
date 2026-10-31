@@ -732,8 +732,9 @@ public struct LocalScroll {
 
     /// Returns scroll to send now for a probe, in picture pixels along the axis.
     private mutating func detectEdge(at time: TimeInterval, commandedBefore: Double) -> Double {
-        // A picture still being measured may show the app moving.
-        guard let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
+        // A picture still being measured may show the app moving. A reporter states the
+        // app's range; its ends are not inferred.
+        guard reportedBias == nil, let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
         if let p = probe {
             if chainBroken > p.sentAt {
                 // A picture since the probe could not be measured: its answer is unknowable.
