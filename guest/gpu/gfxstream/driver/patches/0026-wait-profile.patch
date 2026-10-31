@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 26/26] Count local waits in the read profile
+Subject: [PATCH 26/27] Count local waits in the read profile
 
 CABOOSE_READ_PROFILE counted only blocking reads of device replies. Fence and
 timeline waits the completion feed answers locally now count as waitN, and the

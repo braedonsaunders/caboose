@@ -6,6 +6,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <sys/stat.h>
+#include <thread>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -350,8 +353,49 @@ struct WaitTimer {
 inline void executorConnected() {
     if (executorLost.exchange(false, std::memory_order_acq_rel)) tracker().revive();
 }
+// CABOOSE_GPU_ON_LOSS=pause: an application that must not restart while the phone is away.
+// Its devices cannot survive the executor (their objects lived there), so every call that
+// would report the loss first waits until a new executor is available, then reports it;
+// the application recreates its device on the returned phone. Otherwise loss is reported
+// at once (restart, the default).
+inline bool pauseOnLoss() {
+    static const bool pause = [] {
+        const char* mode = std::getenv("CABOOSE_GPU_ON_LOSS");
+        return mode && std::strcmp(mode, "pause") == 0;
+    }();
+    return pause;
+}
+// The socket the lost executor was reached through, if it is still there (a broker that
+// did not remove it): a returned executor is a socket made since.
+// Inode numbers are reused, so a socket is identified by its inode and change time.
+inline std::atomic<uint64_t> lostSocketInode{0};
+inline uint64_t socketInode() {
+    const char* path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
+    struct stat info;
+    if (!path || !*path || stat(path, &info) != 0 || !S_ISSOCK(info.st_mode)) return 0;
+#if defined(__APPLE__)
+    const uint64_t changed = uint64_t(info.st_ctimespec.tv_sec) * 1000000000ull + uint64_t(info.st_ctimespec.tv_nsec);
+#else
+    const uint64_t changed = uint64_t(info.st_ctim.tv_sec) * 1000000000ull + uint64_t(info.st_ctim.tv_nsec);
+#endif
+    return (uint64_t(info.st_ino) * 1000003ull) ^ changed ^ 1;  // never 0
+}
+// The broker makes its socket when it has a ready executor and removes it when the
+// executor leaves.
+inline void awaitExecutorReturn() {
+    if (!pauseOnLoss() || !executorLost.load(std::memory_order_acquire)) return;
+    if (!std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return;
+    static std::atomic<bool> noted{false};
+    if (!noted.exchange(true)) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_PAUSED until a phone executor returns\n");
+    for (;;) {
+        const uint64_t inode = socketInode();
+        if (inode && inode != lostSocketInode.load()) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;
+    lostSocketInode.store(socketInode());
     std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
     tracker().loseAll();
 }

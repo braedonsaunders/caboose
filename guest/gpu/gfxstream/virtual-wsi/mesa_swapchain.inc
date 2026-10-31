@@ -409,12 +409,16 @@ static VkResult VKAPI_CALL getImages(VkDevice device, VkSwapchainKHR handle, uin
 // Once the executor is gone, a failed acquire or present is device loss: the application
 // recreates its instance and finds whichever executor exists, as after any lost device.
 static VkResult executorResult(VkResult result) {
+    if (result<0) caboose::completion::awaitExecutorReturn();
     return result<0 && caboose::completion::executorLost.load(std::memory_order_acquire) ? VK_ERROR_DEVICE_LOST
                                                                                          : result;
 }
 static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, uint64_t timeout,
     VkSemaphore semaphore, VkFence fence, uint32_t* index) {
-    if (caboose::completion::executorLost.load(std::memory_order_acquire)) return VK_ERROR_DEVICE_LOST;
+    if (caboose::completion::executorLost.load(std::memory_order_acquire)) {
+        caboose::completion::awaitExecutorReturn();
+        return VK_ERROR_DEVICE_LOST;
+    }
     return executorResult(guarded([&]() -> VkResult {
         auto swap=lookupSwapchain(handle);
         if (!swap || swap->device!=device || !index || (!semaphore && !fence)) return VK_ERROR_INITIALIZATION_FAILED;
@@ -526,6 +530,7 @@ static VkResult VKAPI_CALL acquireImage2(VkDevice device, const VkAcquireNextIma
 }
 static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info) {
     if (caboose::completion::executorLost.load(std::memory_order_acquire)) {
+        caboose::completion::awaitExecutorReturn();
         if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=VK_ERROR_DEVICE_LOST;
         return VK_ERROR_DEVICE_LOST;
     }

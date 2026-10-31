@@ -191,6 +191,7 @@ static std::string firstPath;
 // as VK_ERROR_DEVICE_LOST in every 32-bit word instead: a call's VkResult says the device
 // is lost and its other outputs go unused.
 static const unsigned char* lostReply(unsigned char* data, size_t len) {
+    caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
     const int32_t lost = -4;
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
     return data;
