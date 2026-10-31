@@ -1,0 +1,148 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -736,6 +736,54 @@ class VkDecoderGlobalState::Impl {
+         return VK_SUCCESS;
+     }
+ 
++    VkResult acquireCabooseMediaLatchObjects(uint32_t contextId, VkQueue boxedQueue,
++        VkImage boxedImage, std::unique_ptr<CabooseMediaLatchObjects>* out) {
++        if (!out) return VK_ERROR_INITIALIZATION_FAILED;
++        out->reset();
++        if (!contextId || !boxedQueue || !boxedImage) return VK_ERROR_INITIALIZATION_FAILED;
++        auto result = std::make_unique<CabooseMediaLatchObjects>();
++        std::lock_guard<std::mutex> lock(mMutex);
++        VkQueue queue = try_unbox_VkQueue(boxedQueue);
++        VkImage image = try_unbox_VkImage(boxedImage);
++        auto* queueInfo = gfxstream::base::find(mQueueInfo, queue);
++        auto* imageInfo = gfxstream::base::find(mImageInfo, image);
++        if (!queue || !image || !queueInfo || !imageInfo || queueInfo->boxed != boxedQueue ||
++            imageInfo->boxed != boxedImage || queueInfo->device != imageInfo->device ||
++            queueInfo->usingSharedPhysicalQueue || !queueInfo->queueMutex)
++            return VK_ERROR_INITIALIZATION_FAILED;
++        VkDevice device = queueInfo->device;
++        auto* deviceInfo = gfxstream::base::find(mDeviceInfo, device);
++        if (!deviceInfo || !deviceInfo->boxed) return VK_ERROR_INITIALIZATION_FAILED;
++        auto* physicalInfo = gfxstream::base::find(mPhysdevInfo, deviceInfo->physicalDevice);
++        auto* instanceInfo = physicalInfo ? gfxstream::base::find(mInstanceInfo, physicalInfo->instance) : nullptr;
++        if (!instanceInfo || instanceInfo->contextId != contextId) return VK_ERROR_INITIALIZATION_FAILED;
++        const auto& ci = imageInfo->imageCreateInfoShallow;
++        if (ci.imageType != VK_IMAGE_TYPE_2D || ci.extent.depth != 1 || ci.mipLevels != 1 ||
++            ci.arrayLayers != 1 || ci.samples != VK_SAMPLE_COUNT_1_BIT ||
++            !(ci.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || imageInfo->anbInfo ||
++            imageInfo->compressInfo || imageInfo->boundColorBuffer ||
++            imageInfo->memory == VK_NULL_HANDLE) return VK_ERROR_FEATURE_NOT_PRESENT;
++        auto* memoryInfo = gfxstream::base::find(mMemoryInfo, imageInfo->memory);
++        if (!memoryInfo) return VK_ERROR_INITIALIZATION_FAILED;
++        if (!result->lease.acquire(instanceInfo->cabooseLifetime) ||
++            !result->lease.acquire(deviceInfo->cabooseLifetime) ||
++            !result->lease.acquire(imageInfo->cabooseLifetime) ||
++            !result->lease.acquire(memoryInfo->cabooseLifetime)) return VK_ERROR_INITIALIZATION_FAILED;
++        result->vk = dispatch_VkDevice(deviceInfo->boxed);
++        if (!result->vk) return VK_ERROR_INITIALIZATION_FAILED;
++        result->physicalDevice = deviceInfo->physicalDevice;
++        result->device = device;
++        result->queue = queue;
++        result->queueFamily = queueInfo->queueFamilyIndex;
++        result->queueMutex = queueInfo->queueMutex;
++        result->image = image;
++        result->format = ci.format;
++        result->extent = ci.extent;
++        result->metalObjects = deviceInfo->cabooseMetalObjects;
++        *out = std::move(result);
++        return VK_SUCCESS;
++    }
++
+     // Resets all internal tracking info.
+     // Assumes that the heavyweight cleanup operations have already happened.
+     void clearLocked() REQUIRES(mMutex) {
+@@ -3082,6 +3130,20 @@ class VkDecoderGlobalState::Impl {
+             caboosePresentFenceEnabled = true;
+         }
+ 
++        // Phone-decoded video latches import VideoToolbox planes as Metal textures
++        // (docs/gpu-media.md), which needs VK_EXT_metal_objects on the device.
++        bool cabooseMetalObjects = false;
++        {
++            std::vector<VkExtensionProperties> hostDeviceExtensions;
++            if (enumerateDeviceExtensionProperties(vk, physicalDevice, nullptr, hostDeviceExtensions) == VK_SUCCESS &&
++                hasDeviceExtension(hostDeviceExtensions, "VK_EXT_metal_objects")) {
++                if (std::none_of(updatedDeviceExtensions.begin(), updatedDeviceExtensions.end(),
++                        [](const char* name) { return name && strcmp(name, "VK_EXT_metal_objects") == 0; }))
++                    updatedDeviceExtensions.push_back("VK_EXT_metal_objects");
++                cabooseMetalObjects = true;
++            }
++        }
++
+         VkDeviceQueueCreateInfo filteredQueueCreateInfo = {};
+         // Use VulkanVirtualQueue directly to avoid locking for hasVirtualGraphicsQueue call.
+         if (m_vkEmulation->getFeatures().VulkanVirtualQueue.enabled() &&
+@@ -3220,6 +3282,7 @@ class VkDecoderGlobalState::Impl {
+         auto& deviceInfo = mDeviceInfo[*pDevice];
+         deviceInfo.physicalDevice = physicalDevice;
+         deviceInfo.caboosePresentFenceEnabled = caboosePresentFenceEnabled;
++        deviceInfo.cabooseMetalObjects = cabooseMetalObjects;
+         if (m_vkEmulation->getFeatures().CabooseVirtualWsi.enabled()) {
+             deviceInfo.cabooseGuestCompletion = std::make_shared<caboose::gpuv2::GuestGpuCompletion>();
+             const auto& features = m_vkEmulation->getFeatures();
+@@ -12753,6 +12816,12 @@ VkResult VkDecoderGlobalState::acquireCaboosePresentationObjects(
+     }
+ }
+ 
++VkResult VkDecoderGlobalState::acquireCabooseMediaLatchObjects(uint32_t contextId,
++    VkQueue boxedQueue, VkImage boxedImage, std::unique_ptr<CabooseMediaLatchObjects>* out) {
++    try { return mImpl->acquireCabooseMediaLatchObjects(contextId, boxedQueue, boxedImage, out); }
++    catch (const std::bad_alloc&) { if (out) out->reset(); return VK_ERROR_OUT_OF_HOST_MEMORY; }
++}
++
+ bool VkDecoderGlobalState::save(gfxstream::Stream* stream) {
+     return mImpl->save(stream);
+ }
+--- a/host/vulkan/vk_decoder_global_state.h
++++ b/host/vulkan/vk_decoder_global_state.h
+@@ -124,6 +124,24 @@ struct CaboosePresentationObjects {
+     VulkanDispatch* vk = nullptr;
+ };
+ 
++// The application image a phone-decoded video latch fills (docs/gpu-media.md), validated
++// against the authenticated context. The lease keeps the instance, device, image and its
++// memory alive until the latch's copy has completed.
++struct CabooseMediaLatchObjects {
++    caboose::gpuv2::PresentationLease lease;
++    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
++    VkDevice device = VK_NULL_HANDLE;
++    VkQueue queue = VK_NULL_HANDLE;
++    uint32_t queueFamily = 0;
++    std::shared_ptr<std::mutex> queueMutex;
++    VkImage image = VK_NULL_HANDLE;
++    VkFormat format = VK_FORMAT_UNDEFINED;
++    VkExtent3D extent{};
++    // VK_EXT_metal_objects is enabled on the device.
++    bool metalObjects = false;
++    VulkanDispatch* vk = nullptr;
++};
++
+ // Class for tracking host-side state. Currently we only care about
+ // tracking VkDeviceMemory to make it easier to pass the right data
+ // from mapped pointers to the guest, but this could get more stuff
+@@ -177,6 +195,10 @@ class VkDecoderGlobalState {
+         VkFormat format, uint32_t width, uint32_t height, uint32_t queueFamily,
+         uint32_t waitCount, const VkSemaphore* boxedWaits,
+         std::unique_ptr<CaboosePresentationObjects>* out);
++    // A queue and a 2D, single-level, transfer-destination image of the same device, both
++    // owned by the context. It does not validate layout or the application's synchronization.
++    VkResult acquireCabooseMediaLatchObjects(uint32_t contextId, VkQueue boxedQueue,
++        VkImage boxedImage, std::unique_ptr<CabooseMediaLatchObjects>* out);
+ 
+     // Snapshot save/load
+     bool snapshotsEnabled() const;
+--- a/host/vulkan/vk_decoder_internal_structs.h
++++ b/host/vulkan/vk_decoder_internal_structs.h
+@@ -249,6 +249,8 @@ struct ExternalFenceInfo {
+ struct DeviceInfo {
+     std::shared_ptr<caboose::gpuv2::GuestGpuCompletion> cabooseGuestCompletion;
+     bool caboosePresentFenceEnabled = false;
++    // VK_EXT_metal_objects is enabled, for phone-decoded video latches.
++    bool cabooseMetalObjects = false;
+     std::shared_ptr<caboose::gpuv2::PresentationLifetime> cabooseLifetime =
+         std::make_shared<caboose::gpuv2::PresentationLifetime>();
+     std::unordered_map<uint32_t, std::vector<VkQueue>> queues;
