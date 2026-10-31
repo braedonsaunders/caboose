@@ -348,7 +348,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(negotiate(hello(0x170), everything))
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
-        self.assertIsNone(negotiate(hello(0x870), everything))
+        self.assertIsNone(negotiate(hello(0x1070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
         self.assertIsNone(negotiate(broker.HELLO, everything))
         self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))

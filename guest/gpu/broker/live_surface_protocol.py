@@ -103,10 +103,10 @@ def validate_surface(kind: int, payload: bytes):
         else:
             require(error != 0 or (has_vk and vk != 0), "creation needs actual result")
             require(wide(48) == 0 and word(72) == 0, "failed create has resources")
-    elif kind == 27:  # map exactly the provider count, checked by native state
+    elif kind == 27:  # the provider count, or up to 8 guest-owned images (flag 1, 3 with mailbox)
         require(len(payload) >= 56 and wide(40), "invalid swapchain map")
-        count = word(48)
-        require(1 <= count <= 256 and word(52) == 0, "invalid source count")
+        count, flags = word(48), word(52)
+        require(1 <= count <= 256 and flags in (0, 1, 3) and (flags == 0 or count <= 8), "invalid source count")
         exact(56 + 8 * count)
         images = [wide(offset) for offset in range(56, len(payload), 8)]
         require(all(images) and len(set(images)) == count, "invalid source images")

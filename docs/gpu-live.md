@@ -573,7 +573,7 @@ structural parsing alone does not prove them.
 | --- | --- | --- |
 | 25 | SWAPCHAIN_CREATE | request ID, boxed device, old swapchain ID (3 u64); 14 u32 creation fields; queue-family array |
 | 26 | SWAPCHAIN_CREATED | request ID, actual swapchain ID (2 u64); status; actual image count, reserved zero (2 u32) |
-| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, reserved zero (2 u32); ordered boxed source images (u64 each) |
+| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, flags (2 u32); ordered boxed source images (u64 each) |
 | 28 | SWAPCHAIN_MAPPED | swapchain ID (u64); status |
 | 29 | SWAPCHAIN_ACQUIRE | swapchain ID, request ID, boxed binary semaphore, boxed fence, timeout nanoseconds (5 u64); device mask, reserved zero (2 u32) |
 | 30 | SWAPCHAIN_ACQUIRED | swapchain ID, request ID (2 u64); status; has-index, index, local reason, reserved zero (4 u32) |
@@ -592,6 +592,15 @@ The guest rejects unsupported `pNext` rather than dropping it. The native path
 honors every accepted parameter or returns an explicit error. Creation has no
 queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
+
+MAP flags are 0, or with the `guest-images` capability (hello feature `0x800`) 1 for
+guest-owned images or 3 for guest-owned images with mailbox. With guest-owned images the
+guest maps its own pool of 1 to 8 images instead of the provider's count. There is no
+SWAPCHAIN_ACQUIRE: the guest hands an image to the application once its previous copy
+was released, and signals the application's semaphore and fence itself. Each present
+names a guest image, and native acquires a provider image inside the present, waiting up
+to 1 s, or not at all with mailbox. A present that finds no provider image is dropped: it
+reports QUEUED, then releases its source and retires. Up to 8 frames may be in flight.
 
 Creation success carries actual `VK_SUCCESS`, the native ID and the provider's
 complete image count (1–256). Failure carries no ID or image count. MAP supplies

@@ -9,7 +9,7 @@ export const GPU_CLOSE_TIMEOUT_MS = 1000
 export const GPU_HEARTBEAT_MS = 1000
 export const GPU_HEARTBEAT_TIMEOUT_MS = 3000
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {
