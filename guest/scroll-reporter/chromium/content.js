@@ -289,10 +289,19 @@
     if (bind && bind.active) schedule()
   }
 
+  let stall = null
   function schedule() {
     if (scheduled) return
     scheduled = true
     requestAnimationFrame(onFrame)
+    clearTimeout(stall)
+    stall = setTimeout(() => {
+      // No frame came: the page draws nothing (its GPU process stalled, frames throttled).
+      // Report anyway, so the window binds; the frame that does come reports again.
+      if (!scheduled || document.visibilityState !== 'visible') return
+      attach()
+      measure()
+    }, 500)
   }
 
   // ---- The service worker.
