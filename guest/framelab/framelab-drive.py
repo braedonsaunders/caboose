@@ -155,7 +155,8 @@ def rescore(out, apps, phone_records, offset, pictures):
             reference = correctness and correctness.get('reference')
             if shot and shot.exists() and reference:
                 comparison = framelab.compare((out / 'guest' / reference).read_bytes(), shot.read_bytes())
-                run['correctness'] = {**comparison, 'pass': framelab.verdict(comparison), 'reference': reference,
+                sizes = {k: correctness[k] for k in ('reference_size', 'candidate_size', 'sizes_differ') if k in correctness}
+                run['correctness'] = {**comparison, **sizes, 'pass': framelab.verdict(comparison), 'reference': reference,
                                       'candidate': str(shot.relative_to(out)), 'candidate_source': 'phone'}
             card = framelab.scorecard(app, run, phone_records, offset)
         elif card_path.exists():

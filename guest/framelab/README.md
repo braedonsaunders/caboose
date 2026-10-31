@@ -80,6 +80,8 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   has its picture taken only once its window title matches (a page stalled while loading is
   drawn and unchanging). Before comparing, a uniform border the color of each picture's
   corner is trimmed, so a swapchain's shadow margin does not count as a difference.
+  `sizes_differ` notes when the two runs' windows had different sizes (a window bound to
+  the phone's GPU can be configured to another extent), so their layouts differ too.
 
 ## Where the numbers come from
 

@@ -590,6 +590,11 @@ def main():
                                        'candidate_source': 'compositor'}
                     else:
                         correctness = {'skipped': f"no reference picture: {ref.get('error')}"}
+            if correctness is not None and ref and ref.get('window') and run.get('window'):
+                # Pictures of differently sized windows lay out differently; say so.
+                correctness['reference_size'] = ref['window']['rect'][2:]
+                correctness['candidate_size'] = run['window']['rect'][2:]
+                correctness['sizes_differ'] = correctness['reference_size'] != correctness['candidate_size']
             run['correctness'] = correctness
             (out / f"{app['id']}.run.json").write_text(json.dumps(run))
             card = framelab.scorecard(app, run)
