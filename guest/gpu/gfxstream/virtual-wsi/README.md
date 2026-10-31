@@ -184,4 +184,10 @@ destination. The images keep the application's usage but are created without fla
 (`VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR` is accepted and not passed on, since the
 phone maps only images without flags) and exclusive. A swapchain whose extent, format or
 queue family does not fit the bound window reports `VK_ERROR_OUT_OF_DATE_KHR` at its
-next present, as on any window system after a resize.
+next present, as on any window system after a resize. An X11 swapchain (XCB or Xlib)
+whose window no longer has its extent, asked of the X server at most every 50 ms, reports
+`VK_ERROR_OUT_OF_DATE_KHR` from present and acquire, and that frame is not sent: the
+compositor configures a window it grants to the phone's display, and the phone shows only
+frames of the window's size. The X11 libraries' functions are taken from the copies the
+application loaded, also when it loaded them privately (SDL loads libX11 with
+`RTLD_LOCAL`).
