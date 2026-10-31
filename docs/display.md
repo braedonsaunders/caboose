@@ -413,10 +413,10 @@ Client → server (`0x81`–`0xFF`):
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x95` | `scroll.target` | `id`, `scroller: uint`, `seq: uint`, `delta: [dx, dy]` ([Scroll reports](#scroll-reports)) |
-| `0x99` | `scroll.zoom` | `id`, `seq: uint`, `scale: float`, `focus: [x, y]` ([Scroll reports](#scroll-reports)) |
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
+| `0x99` | `scroll.zoom` | `id`, `seq: uint`, `scale: float`, `focus: [x, y]` ([Scroll reports](#scroll-reports)) |
 | `0x9A` | `scene.scroll` | `id`, `node: uint`, `sx: float`, `sy: float` (client-predicted scroll offset synced back to the guest) |
 | `0xA0` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` |
 | `0xA1` | `drop.enter` | `id`, `x`, `y`, `mimes: [mime]` |
