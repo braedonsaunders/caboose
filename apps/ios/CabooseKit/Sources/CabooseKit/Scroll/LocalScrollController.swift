@@ -38,6 +38,17 @@ public final class LocalScrollController {
     /// A toolkit adapter's report for exactly the captured picture, when it has one; the
     /// report replaces measurement for that picture.
     public var report: ((PictureSource) -> ScrollObservation?)?
+    /// How many of a captured picture's pixels lie past the viewport, right and below (an
+    /// overscan window); none by default.
+    public var pictureOverscan: (MTLTexture) -> CGSize = { _ in .zero }
+    /// Where the viewport's region ends along the axis, in picture pixels, while an overscan
+    /// applies: points after it show the picture's lines that many pixels further on.
+    public var anchoredFrom: (axis: ScrollAxis, start: Int, viewport: Int)? {
+        guard model.overscan > 0, let composition = lastComposition, lastViewport > 0 else { return nil }
+        return (composition.axis, composition.region.along.upperBound, lastViewport)
+    }
+    private var lastViewport = 0
+    private var lastComposition: ScrollComposition?
 
     /// The newest touch sample's timestamp, for the send log.
     private var lastTouch: TimeInterval?
@@ -159,6 +170,7 @@ public final class LocalScrollController {
             cancel()
             return false
         }
+        lastComposition = tick.composition
         guard let composition = tick.composition else {
             isComposing = false
             contentShift = .zero
@@ -174,6 +186,7 @@ public final class LocalScrollController {
         let size = composition.axis == .vertical ? CGSize(width: base.width, height: max(1, base.height - overscan))
                                                  : CGSize(width: max(1, base.width - overscan), height: base.height)
         if layer.drawableSize != size { layer.drawableSize = size }
+        lastViewport = Int(composition.axis == .vertical ? size.height : size.width)
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {
             isComposing = false
@@ -218,10 +231,11 @@ public final class LocalScrollController {
 
     private func capture(_ texture: MTLTexture, at time: CFTimeInterval, source: PictureSource,
                          done: (@Sendable () -> Void)? = nil) {
+        let overscan = Int((model.axis == .vertical ? pictureOverscan(texture).height : pictureOverscan(texture).width).rounded())
         let id = nextID
         nextID += 1
         measuringID = id
-        let hint = model.captured(id, at: time)
+        let hint = model.captured(id, at: time, overscan: overscan)
         let reported = report?(source)
         let axis = model.axis, generation = generation, chain = chain, estimator = estimator
         let anchor: Int? = nil

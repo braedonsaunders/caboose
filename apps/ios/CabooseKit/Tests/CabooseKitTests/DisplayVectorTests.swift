@@ -204,6 +204,12 @@ import Testing
 
         guard case .windowUpdate(let liberal) = try server("liberal-window-update").first else { Issue.record("liberal"); return }
         #expect(liberal.id == 7 && liberal.title == "x")
+        guard case .windowCreate(let tall) = try server("window-create-overscan").first else { Issue.record("overscan create"); return }
+        #expect(tall.geometry == CGRect(x: 0, y: 0, width: 1179, height: 2556) && tall.overscan == CGSize(width: 0, height: 2556))
+        guard case .windowUpdate(let applied) = try server("window-update-overscan").first,
+              case .windowUpdate(let ended) = try server("window-update-overscan-end").first else { Issue.record("overscan update"); return }
+        #expect(applied.overscan == CGSize(width: 0, height: 2556) && applied.geometry == nil)
+        #expect(ended.overscan == .zero)
     }
 
     @Test func pictures() throws {
@@ -349,6 +355,8 @@ import Testing
         ]),
         "clipboard-client": .clipboard(mime: "text/plain;charset=utf-8", data: Data("copied on the phone".utf8)),
         "close": .close(window: 7),
+        "configure-overscan": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 1179, height: 2556),
+                                         overscan: CGSize(width: 0, height: 2556)),
         "configure": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 2556, height: 1179), display: 1,
                                 maximized: true, activated: true),
         "displays": .displays([DisplayInfo(id: 1, width: 2556, height: 1179, scale: 3, refreshHz: 120, hdr: true)]),

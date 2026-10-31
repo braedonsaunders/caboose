@@ -512,8 +512,12 @@ uses it differently:
   driven at most 0.6 of the region per picture interval. While it has shown nothing for
   one and a half picture intervals (and 50 ms), its drive is capped half a region past its
   last picture. It is never held, since an app that draws only when it scrolls would
-  otherwise stay silent. A picture that cannot be related to earlier ones is placed where
-  the forwarded scroll had taken the app, and the earlier pictures are dropped.
+  otherwise stay silent.
+- **Nothing is guessed.** A measurement must explain at least half of the detail that
+  could reappear at its shift, judged on the overlap. A picture that cannot be measured
+  (a new page, a reflow, a jump past the overlap) is never placed by the forwarded scroll.
+  Composition ends for that run instead: the app's own picture shows, scrolled by the
+  finger and momentum without lead, until the scroll rests.
 - **Bounded reveal.** Content no captured picture covers shows in the colour of the
   nearest captured edge. It may fill at most 40% of the region. Past that, the shown
   position resists and catches up as pictures arrive, never slower than the gesture.
@@ -524,6 +528,20 @@ uses it differently:
   rest. The one exception is a native bounce: if a correction lands without the app
   moving, the phone probes for an end, and only a confirmed end springs the content back
   to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
+
+- **Overscan windows.** While a window has been scrolled locally within the last 30
+  seconds and its scrolling region is measured, the phone asks for an overscan of one
+  viewport along the scroll axis (`configure.overscan`, with the whole picture kept within
+  4096 pixels), and ends it after 30 idle seconds, when the window leaves the screen or
+  changes, or when the app goes to the background. It asks and ends only at rest. Once
+  pictures of the enlarged window arrive (recognised by their shape against the announced
+  overscan), the phone shows them through the viewport, also at rest. The header and the
+  region's first lines show as they are, and what follows the region in the picture (a
+  footer, a status bar) is anchored at the viewport's end. Touches and the pointer on
+  that anchored part reach the window the overscan further on. A live GPU layer shows
+  its viewport top-left aligned, the rest clipped, until the phone composes over it.
+  Content a flick reveals below is already drawn; content above comes from the frame
+  history and from driving the app ahead.
 
 The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
 most six of them, chosen for the content they add near the current position. Video layers
