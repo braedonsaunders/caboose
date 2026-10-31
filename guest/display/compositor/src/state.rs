@@ -591,7 +591,14 @@ impl State {
             }
             Record::BufferReleased { request, status } => {
                 if !self.remote_presents.released(request) { self.gpu_control_failed(); return }
-                if status != 0 { tracing::debug!("remote buffer present {request} not shown: errno {status}"); }
+                // Rate-limited: the first few of each outcome, then every 1024th.
+                static OUTCOMES: [std::sync::atomic::AtomicU64; 2] =
+                    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+                let n = OUTCOMES[usize::from(status != 0)].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if n < 16 || n % 1024 == 0 {
+                    if status == 0 { tracing::info!("remote buffer shown {}", n + 1); }
+                    else { tracing::info!("remote buffer present {request} not shown: errno {status} (unshown {})", n + 1); }
+                }
             }
             Record::Lifecycle { kind, executor, generation } => {
                 if kind == 5 { self.release_remote_presents(); }
