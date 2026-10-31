@@ -23,6 +23,11 @@
 //! type TEXT                    the rest of the line; `\n` and `\\` are escapes
 //! settle                       let every window draw now (frame callbacks), as if watched
 //! screenshot [ID]              a window, or the whole display: {"png":N,…} then N bytes
+//! frames [SINCE]               what happened after SINCE (CLOCK_MONOTONIC µs, default 0):
+//!                              now_us; per window its commits and the pictures sent to the
+//!                              client as [at, pts, bytes, refined]; input from the client as
+//!                              [at, kind] (pointer, scroll, touch, key, text). Each list
+//!                              keeps the newest 1024 entries.
 //! ```
 
 use crate::encode::CpuImage;
@@ -349,6 +354,11 @@ impl State {
                 },
                 None => self.screenshot(None),
             },
+            "frames" => match args.first().map(|a| a.parse::<u64>()) {
+                None => Ok(self.control_frames(0)),
+                Some(Ok(since)) => Ok(self.control_frames(since)),
+                Some(Err(_)) => Err("frames: SINCE must be a number".to_owned()),
+            },
             "" => Err("empty request".to_owned()),
             other => Err(format!("unknown request {other}")),
         };
@@ -413,7 +423,7 @@ impl State {
         out
     }
 
-    fn window_pid(&self, surface: &Surface) -> Option<u32> {
+    pub(crate) fn window_pid(&self, surface: &Surface) -> Option<u32> {
         use smithay::reexports::wayland_server::Resource;
         match surface {
             Surface::X11(x) => x.pid(),
@@ -486,6 +496,34 @@ impl State {
             b.loc.y,
             b.size.w,
             b.size.h
+        )
+        .into_bytes()
+    }
+
+    fn control_frames(&self, since: u64) -> Vec<u8> {
+        let windows: Vec<String> = self
+            .windows
+            .ids()
+            .into_iter()
+            .filter_map(|id| self.windows.get(id).map(|w| (id, &w.stream.trace)))
+            .map(|(id, trace)| {
+                let commits: Vec<String> = trace.commits.after(since, |t| *t).iter().map(u64::to_string).collect();
+                let sent: Vec<String> = trace
+                    .sent
+                    .after(since, |s| s.at_us)
+                    .iter()
+                    .map(|s| format!("[{},{},{},{}]", s.at_us, s.pts_us, s.bytes, s.refined))
+                    .collect();
+                format!("{{\"id\":{id},\"commits\":[{}],\"sent\":[{}]}}", commits.join(","), sent.join(","))
+            })
+            .collect();
+        let input: Vec<String> =
+            self.input_trace.after(since, |i| i.at_us).iter().map(|i| format!("[{},\"{}\"]", i.at_us, i.kind)).collect();
+        format!(
+            "{{\"ok\":true,\"now_us\":{},\"windows\":[{}],\"input\":[{}]}}\n",
+            self.now_us(),
+            windows.join(","),
+            input.join(",")
         )
         .into_bytes()
     }

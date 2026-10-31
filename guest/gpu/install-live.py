@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Stage the supervised broker; does not start it or install/enable an ICD."""
+"""Stage the supervised broker, and with --driver the phone's Vulkan driver (with
+--executor-switch its implicit layer); starts nothing.
+
+The driver goes to /usr/local/lib/caboose-gpu-live with its loader manifest, icd.json,
+which no loader finds by itself: caboose-display names it to the applications of the
+seat that renders on the phone's GPU (docs/gpu-live.md, "Applications")."""
 import argparse
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -8,6 +14,75 @@ import tempfile
 MODULES = ("gpu_admission.py", "gpu_websocket.py", "ipc_handoff.py",
            "process_binding.py", "executor_lease.py", "control_protocol.py",
            "surface_local_protocol.py")
+
+DRIVER_DIR = Path("usr/local/lib/caboose-gpu-live")
+DRIVER = "libvulkan_gfxstream.so"
+# The Vulkan version the driver reports to the loader; the phone's device reports its own.
+DRIVER_API_VERSION = "1.3.0"
+
+
+def write_atomically(destination_file: Path, data: bytes, mode: int):
+    fd, temporary = tempfile.mkstemp(prefix=".gpu-install-", dir=destination_file.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fchmod(output.fileno(), mode)
+        os.replace(temporary, destination_file)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def manifest(library: Path) -> bytes:
+    return (json.dumps({"file_format_version": "1.0.1",
+                        "ICD": {"library_path": str(library), "api_version": DRIVER_API_VERSION}},
+                       indent=4) + "\n").encode()
+
+
+def install_driver(library: Path, destination: Path):
+    data = library.read_bytes()
+    if data[:4] != b"\x7fELF":
+        raise ValueError(f"{library} is not a shared library")
+    directory = destination / DRIVER_DIR
+    if directory.is_symlink():
+        raise ValueError("driver install directory must not be a symlink")
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    # The library first: the manifest never names a library that is not there.
+    write_atomically(directory / DRIVER, data, 0o644)
+    write_atomically(directory / "icd.json", manifest(Path("/") / DRIVER_DIR / DRIVER), 0o644)
+
+
+SWITCH_LAYER = "libVkLayer_caboose_executor_switch.so"
+SWITCH_MANIFEST = Path("usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json")
+
+
+def switch_manifest() -> bytes:
+    """The implicit layer that moves CPU devices back to the phone (guest/gpu/executor-switch)."""
+    return (json.dumps({"file_format_version": "1.2.0", "layer": {
+        "name": "VK_LAYER_CABOOSE_executor_switch",
+        "type": "GLOBAL",
+        "library_path": str(Path("/") / DRIVER_DIR / SWITCH_LAYER),
+        "api_version": "1.3.275",
+        "implementation_version": "1",
+        "description": "Loses CPU-implementation devices once a phone GPU executor is available",
+        "enable_environment": {"CABOOSE_GPU_EXECUTOR_SWITCH": "1"},
+        "disable_environment": {"CABOOSE_GPU_EXECUTOR_SWITCH_DISABLE": "1"},
+    }}, indent=4) + "\n").encode()
+
+
+def install_switch_layer(library: Path, destination: Path):
+    data = library.read_bytes()
+    if data[:4] != b"\x7fELF":
+        raise ValueError(f"{library} is not a shared library")
+    directory = destination / DRIVER_DIR
+    manifests = destination / SWITCH_MANIFEST.parent
+    if directory.is_symlink() or manifests.is_symlink():
+        raise ValueError("layer install directories must not be symlinks")
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    manifests.mkdir(mode=0o755, parents=True, exist_ok=True)
+    write_atomically(directory / SWITCH_LAYER, data, 0o644)
+    write_atomically(destination / SWITCH_MANIFEST, switch_manifest(), 0o644)
 
 
 def install(source: Path, destination: Path):
@@ -25,21 +100,19 @@ def install(source: Path, destination: Path):
         raise ValueError("broker install directories must not be symlinks")
     private.mkdir(mode=0o755, parents=True, exist_ok=True)
     for data, destination_file, mode in contents:
-        fd, temporary = tempfile.mkstemp(prefix=".gpu-install-", dir=destination_file.parent)
-        try:
-            with os.fdopen(fd, "wb") as output:
-                output.write(data)
-                output.flush()
-                os.fchmod(output.fileno(), mode)
-            os.replace(temporary, destination_file)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        write_atomically(destination_file, data, mode)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--destdir", type=Path, default=Path("/"))
+    parser.add_argument("--driver", type=Path, help="a built libvulkan_gfxstream.so to install")
+    parser.add_argument("--executor-switch", type=Path,
+                        help="a built libVkLayer_caboose_executor_switch.so to install as an implicit layer")
     args = parser.parse_args()
     install(args.source_root, args.destdir)
+    if args.driver:
+        install_driver(args.driver, args.destdir)
+    if args.executor_switch:
+        install_switch_layer(args.executor_switch, args.destdir)

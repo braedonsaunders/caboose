@@ -487,7 +487,9 @@ Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` when opt-in scene interception (`CABOOSE_SCENE=1`) is enabled,
 `CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
 `CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display when explicitly opted in (never on the agent seat), plus
-`LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed.
+`LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed, and on the owner's display started with the private GPU
+sockets the variables that route applications to the phone's GPU
+([gpu-live.md](gpu-live.md#applications)).
 
 **OS Decomposition ("Zero Server Video") & Headless Liveness Invariant.** When a client
 connects with `atlas: true` in `ClientHello` (including zero-video `decoders: []`),
@@ -544,6 +546,7 @@ also see as their root window's.
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
 | `settle` | `{ ok: true, released: N }`: number of windows whose pending frame callbacks were released |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
+| `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
 `guest/desktop-mcp/seat.py` is its client, as a library and a command.
 

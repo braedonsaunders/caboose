@@ -151,6 +151,9 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
             releaseCapture(token)
             return
         }
+        if FrameLabPictures.enabled {
+            FrameLabPictures.shared.consider(window: bind.identity.window_id, serial: serial, texture: metal)
+        }
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }

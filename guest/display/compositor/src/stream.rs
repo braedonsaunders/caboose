@@ -660,6 +660,8 @@ pub struct Stream {
     pub motion: Option<MotionStream>,
     /// Watches for a motion region, at the picture size it was made for.
     pub tracker: Option<motion::Tracker>,
+    /// Commits and sent pictures, for frame lab.
+    pub trace: crate::frame_trace::WindowTrace,
 }
 
 /// A `motion` video stream: a region of the window sent as its own video.
@@ -701,6 +703,7 @@ impl Stream {
     }
 
     pub fn mark_dirty(&mut self, now_us: u64) {
+        self.trace.commits.push(now_us);
         self.commit_us = now_us;
         self.dirty = true;
         self.callbacks_pending = true;

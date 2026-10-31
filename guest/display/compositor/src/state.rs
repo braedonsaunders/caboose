@@ -189,6 +189,10 @@ pub struct State {
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
+    /// The input-method service for applications without text-input-v3 (ibus.rs).
+    pub ibus: Option<crate::ibus::Ibus>,
+    /// The IBus field the phone's keyboard was last shown for, and its window's surface.
+    pub ibus_shown: Option<(WlSurface, crate::ibus::Field)>,
     pub text_inputs: TextInputs,
 
     pub windows: Windows,
@@ -224,6 +228,8 @@ pub struct State {
     /// Phone-resident buffers committed to windows and held until the broker releases them.
     pub remote_presents: crate::remote_buffers::Presents,
     pub stats: Stats,
+    /// When client input arrived, for frame lab (`frames` on the control socket).
+    pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
     /// The wake-up for the next refinement: when (monotonic µs), and its timer.
@@ -238,7 +244,30 @@ impl HasNet for State {
         self.handle.clone()
     }
     fn on_net_events(&mut self, events: Vec<NetEvent>) {
+        use caboose_display_protocol::Message;
+        let input = events.iter().any(|e| matches!(e, NetEvent::Message(_, Message::Pointer(_) | Message::Touch(_)
+            | Message::Key(_) | Message::Text(_) | Message::Pencil(_))));
+        let trace = input_trace().then(|| {
+            let scrolls: Vec<(f64, f64)> = events.iter().filter_map(|e| match e {
+                NetEvent::Message(_, Message::Pointer(p)) => p.scroll.as_ref().map(|s| (s.dx, s.dy)),
+                _ => None,
+            }).collect();
+            (crate::state::monotonic_us(), scrolls)
+        });
         for event in events { self.on_net_event(event); }
+        // Input reaches applications now, not after this turn's rendering: a window's
+        // composition can take longer than the next input sample's interval.
+        if input {
+            if let Err(e) = self.dh.flush_clients() {
+                tracing::warn!("flushing Wayland clients: {e}");
+            }
+        }
+        if let Some((received, scrolls)) = trace {
+            let injected = crate::state::monotonic_us();
+            for (dx, dy) in &scrolls {
+                eprintln!("CABOOSE_INPUT_TRACE kind=scroll received_us={received} flushed_us={injected} batch={} dx={dx:.2} dy={dy:.2}", scrolls.len());
+            }
+        }
     }
     fn on_gpu_record(&mut self, record: crate::gpu_control::Record) { self.handle_gpu_record(record); }
     fn on_gpu_control_sent(&mut self, grant: Option<crate::gpu_grant::Grant>) {
@@ -743,7 +772,14 @@ impl State {
     /// Runs after every batch of events: announce, render, encode, flush.
     pub fn tick(&mut self) {
         self.sync_windows();
+        let started = input_trace().then(monotonic_us);
         self.render_streams();
+        if let Some(started) = started {
+            let took = monotonic_us() - started;
+            if took >= 4000 {
+                eprintln!("CABOOSE_INPUT_TRACE kind=render started_us={started} took_us={took}");
+            }
+        }
         if let Err(e) = self.dh.flush_clients() {
             tracing::warn!("flushing Wayland clients: {e}");
         }
@@ -752,6 +788,22 @@ impl State {
 
 impl BufferHandler for State {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+}
+
+/// CLOCK_MONOTONIC in microseconds: the clock of the input trace, comparable across the
+/// computer's processes.
+pub(crate) fn monotonic_us() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: clock_gettime writes one timespec.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000 + ts.tv_nsec as u64 / 1000
+}
+
+/// `CABOOSE_DISPLAY_INPUT_TRACE=1`: log when each phone scroll arrives and reaches
+/// applications, and main-loop rendering that holds input back.
+pub(crate) fn input_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CABOOSE_DISPLAY_INPUT_TRACE").is_some_and(|v| v == "1"))
 }
 
 fn virtual_target_pixels(width: i32, height: i32, scale: f64) -> Option<(i32, i32)> {
@@ -1103,6 +1155,7 @@ impl SeatHandler for State {
         for toggle in self.text_inputs.set_focus(surface.as_ref()) {
             self.on_text_input_toggle(toggle);
         }
+        self.sync_ibus_focus_to(surface);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {

@@ -300,7 +300,19 @@ toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket)
 `LIBVA_DRIVER_NAME=caboose`,
 `GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
 installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
-`MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). It then runs `COMMAND` with that
+`MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). Started with the private GPU
+sockets and with the phone's driver installed, it routes applications to the phone's GPU
+instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
+`CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `CABOOSE_GPU_EXECUTOR_SWITCH=1`, `LIBGL_KOPPER_DRI2=1` and
+`GSK_RENDERER=vulkan`,
+without `GALLIUM_DRIVER` ([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It also serves an input method,
+`IBUS_ADDRESS` and `IBUS_ADDRESS_FILE` (with `QT_IM_MODULE=ibus`): applications without
+text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS
+`Gtk/IMModule`; Qt; SDL) tell it when an editable field gains or loses focus, which shows
+and hides the phone's keyboard, and receive its commits and pre-edit text as IBus signals
+(`compositor/src/ibus.rs`, D-Bus wire format in `compositor/src/dbus.rs`). No IBus daemon
+runs; the image carries IBus's GTK modules and `ibus-daemon`, whose presence Qt requires.
+It then runs `COMMAND` with that
 environment and exits when it does. SIGTERM stops it cleanly and logs a per-stage CPU
 summary.
 
@@ -373,7 +385,9 @@ Each instance listens on `control.sock` in its private directory
 processes of its own user. It is how the computer's own tools see and drive a seat, Wayland
 and X11 windows alike: `windows` (each window's id, kind, title, app id, process, X window
 for Xwayland, geometry, root surface and focus, bottom to top), `focus`, `click`, `press`,
-`release`, `move`, `scroll`, `key`, `type`, `settle` and `screenshot`. Requests are single
+`release`, `move`, `scroll`, `key`, `type`, `settle`, `screenshot` and `frames` (the
+seat's timeline: each window's commits and sent pictures, and input, in CLOCK_MONOTONIC
+microseconds, for [frame lab](../framelab/README.md)). Requests are single
 lines and answers single JSON lines (a screenshot's is followed by the PNG); the full list is
 in [docs/architecture.md § Displays](../../docs/architecture.md#displays) and the code in
 `compositor/src/control.rs`. Its path is in the launch environment as

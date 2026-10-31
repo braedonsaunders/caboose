@@ -10,7 +10,8 @@ calls it makes. The design, the relay in caboose-display and the protocol are in
 | `caboose-gpu-run` | The launcher (Python 3, no dependencies) |
 | `build.sh` | Builds the driver and layers it loads, from pinned sources |
 | `profile.json` | The client GPU the application is shown (Khronos profiles format) |
-| `executor-switch/` | Implicit Vulkan layer that moves applications from lavapipe back onto the phone's GPU when its executor returns ([README](executor-switch/README.md)) |
+| `install-live.py` | Installs the live GPU broker, with `--driver` the phone's Vulkan driver and with `--executor-switch` the executor-switch layer ([docs/gpu-live.md](../../docs/gpu-live.md#applications)) |
+| `check-apps.sh`, `socket-recorder.py` | The application routing check below |
 
 ## Building
 
@@ -93,3 +94,30 @@ gfxrecon-replay --remove-unsupported -m rebind guest/gpu/out/gpu-check.gfxr
 and checks real image samples on a selected stock MoltenVK archive. Control, cull-distance,
 direct geometry, indirect geometry and indexed-indirect geometry are reported separately;
 unsupported features are not enabled or counted as passes.
+
+## Application routing check
+
+[docs/gpu-live.md, "Applications"](../../docs/gpu-live.md#applications) describes how the
+owner's display routes every toolkit to the phone's GPU. `check-apps.sh` checks it without
+a phone, in a disposable container of a computer image with `vulkan-tools`, `mesa-utils`,
+`gtk-4-examples` and `qml-qt6` added:
+
+```sh
+guest/display/scripts/dev.sh cargo build --release -p caboose-display -p caboose-display-probe
+guest/gpu/check-apps.sh IMAGE guest/display/target/release path/to/libvulkan_gfxstream.so [OUT]
+```
+
+It installs the driver with `install-live.py --driver`, starts a private caboose-display as
+the owner's seat with the private GPU sockets, watched by caboose-display-probe, and checks
+its launch environment. `socket-recorder.py` then stands in for the broker on its two
+sockets: it records which process opens one and closes the connection, as happens when no
+phone is attached. For Vulkan on Wayland and X11 (`vkcube`), GLX (`glxgears`, `glxinfo`),
+EGL on X11 (`eglinfo`), GTK 4 (`gtk4-widget-factory`), Qt Quick (`qml6`), Chromium and
+Electron (Visual Studio Code) it checks that the Vulkan loader loaded the driver, that the
+application's own process (Chromium's and Electron's GPU process) opened the broker's
+socket, and that the application went on to draw on the computer: a window with a picture,
+read through the display's control socket, or a clean exit. Logs, the socket record and the
+windows' pictures stay in OUT (default `guest/gpu/out/apps`). `CABOOSE_CHECK_CPUS` and
+`CABOOSE_CHECK_MEMORY` (default 4 and 4g) bound the container. Whether the phone renders
+what arrives is for a trial with a phone. `bash guest/gpu/check-apps.sh --here [OUT]` runs
+the same steps as root where everything is installed.

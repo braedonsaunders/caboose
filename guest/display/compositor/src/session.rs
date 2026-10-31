@@ -515,16 +515,14 @@ impl State {
         // Text input enabled before this client connected still needs the keyboard; the
         // toggle itself went to no one (or to the previous client).
         if let Some(surface) = self.keyboard_focus_surface() {
-            if let (Some(purpose), Some(id)) =
-                (self.text_inputs.enabled_purpose(&surface), self.window_of_surface(&surface))
-            {
+            let ibus = self.ibus_shown.as_ref().filter(|(s, _)| *s == surface).map(|(_, f)| f.clone());
+            let enabled = match self.text_inputs.enabled_purpose(&surface) {
+                Some(purpose) => Some((purpose.map(str::to_owned), self.text_inputs.surrounding(&surface))),
+                None => ibus.map(|f| (Some(f.purpose.to_owned()), f.surrounding.as_ref().map(|s| s.wire()))),
+            };
+            if let (Some((purpose, surrounding)), Some(id)) = (enabled, self.window_of_surface(&surface)) {
                 if self.windows.get(id).is_some_and(|w| w.announced.is_some()) {
-                    let state = proto::TextInputState {
-                        id,
-                        enabled: true,
-                        purpose: purpose.map(str::to_owned),
-                        surrounding: self.text_inputs.surrounding(&surface),
-                    };
+                    let state = proto::TextInputState { id, enabled: true, purpose, surrounding };
                     self.net.send(conn, &Message::TextInput(state));
                 }
             }
@@ -901,6 +899,7 @@ impl State {
         let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
         let mut refined = false;
         let mut frame_sent = atlas && done.surface_batch.is_none() && done.result.is_none();
+        let mut sent_bytes = 0;
         if let Some((batch, cpu_us, batch_epoch)) = done.surface_batch {
             let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
             let num_tiles = batch.tiles.len() as u64;
@@ -925,6 +924,7 @@ impl State {
                 self.stats.frames += 1;
                 self.stats.tiles += num_tiles;
                 self.stats.bytes += tile_bytes as u64;
+                sent_bytes += tile_bytes as u64;
                 self.stats.encode_cpu_us += cpu_us;
                 frame_sent = true;
             } else {
@@ -949,6 +949,7 @@ impl State {
             Some(Ok(encoded)) => {
                 refined = encoded.refined;
                 w.stream.in_flight.push_back(done.pts_us);
+                sent_bytes += encoded.data.len() as u64;
                 w.stream.refine_at_us = encoded.refine_in_ms.map(|ms| now_us + ms * 1000);
                 self.stats.frames += 1;
                 self.stats.refines += encoded.refined as u64;
@@ -992,6 +993,7 @@ impl State {
             self.stats.encode_cpu_us += t.cpu_us;
             for (rect, data) in t.tiles {
                 self.stats.bytes += data.len() as u64;
+                sent_bytes += data.len() as u64;
                 let tile = proto::Tile { id: done.window, rect, format: proto::TileFormat::Png, data };
                 self.net.send(conn, &Message::Tile(tile));
             }
@@ -1003,6 +1005,7 @@ impl State {
                 m.in_flight.push_back(seq);
                 self.stats.motion_frames += 1;
                 self.stats.bytes += encoded.data.len() as u64;
+                sent_bytes += encoded.data.len() as u64;
                 self.stats.encode_cpu_us += encoded.cpu_us;
                 tracing::trace!(
                     "motion {id}: {} bytes {} in {} µs ({} µs CPU)",
@@ -1030,6 +1033,10 @@ impl State {
                 w.stream.dirty = true;
             }
             _ => {}
+        }
+        if sent_bytes > 0 {
+            let sent = crate::frame_trace::Sent { at_us: now_us, pts_us: done.pts_us, bytes: sent_bytes, refined };
+            w.stream.trace.sent.push(sent);
         }
         if let Some(id) = done.ends_motion {
             // After the window picture that repaints its region.

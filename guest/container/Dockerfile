@@ -48,6 +48,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
       libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libpixman-1-0 libxkbcommon0 \
+      ibus ibus-gtk3 ibus-gtk4 \
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
@@ -89,6 +90,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
+COPY container/chromium-policy.json /etc/chromium/policies/managed/caboose-gpu.json
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
 COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so
 COPY --from=display /out/gbm/vgem_gbm.so /tmp/vgem_gbm.so

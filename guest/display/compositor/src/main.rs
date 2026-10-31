@@ -6,9 +6,11 @@ mod devices;
 mod clipboard;
 mod config;
 mod control;
+mod dbus;
 mod displays;
 mod dnd;
 mod encode;
+mod frame_trace;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
@@ -18,6 +20,7 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod ibus;
 mod input;
 mod keymap;
 mod motion;
@@ -185,10 +188,48 @@ fn launch_env(
     env
 }
 
+/// The Vulkan loader manifest of the phone's GPU driver (guest/gpu/gfxstream), as the
+/// image installs it.
+const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
+
+/// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
+/// "Applications"). `LIBGL_KOPPER_DRI2` lets Mesa's GLX and X11 EGL try Zink (OpenGL on
+/// Vulkan) on Xwayland, which has no DRI3: Zink then presents through the Vulkan driver's
+/// own X11 surfaces. Mesa tries Zink before its CPU renderer only while no
+/// `GALLIUM_DRIVER` is selected, and falls back to the CPU renderer when Zink finds no
+/// GPU. GTK 4 draws with Vulkan, not with OpenGL, which on Wayland has no Zink without a
+/// DRM render node.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("LIBGL_KOPPER_DRI2", "1"), ("GSK_RENDERER", "vulkan")];
+
+/// On the seat that renders on the phone's GPU: every application's Vulkan loader also
+/// loads the phone's driver, which reaches the phone through the broker's sockets; they
+/// exist only while a phone's GPU is attached. Without one the driver fails its instance and the
+/// loader keeps the computer's own drivers, so applications draw on the computer and
+/// reach the phone as pictures.
+fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::path::Path) {
+    let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
+        return;
+    };
+    if !icd.is_file() {
+        tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
+        return;
+    }
+    // A selected Gallium driver stops Mesa trying Zink.
+    env.retain(|(k, _)| k != "GALLIUM_DRIVER");
+    env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
+    // CPU while no phone was attached are lost once one is, so applications move to it.
+    env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
+    env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+}
+
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
     let mut env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
+    apply_gpu_live(&mut env, &state.config, std::path::Path::new(GPU_LIVE_ICD));
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
@@ -200,6 +241,13 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.scene.socket {
         // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
         env.push(("CABOOSE_SCENE_SOCKET".into(), socket.display().to_string()));
+    }
+    if let Some(ibus) = &state.ibus {
+        // Applications without text-input-v3 reach the phone's keyboard through IBus:
+        // Qt by its module setting, GTK on X11 by the window manager's XSETTINGS, SDL by itself.
+        env.push(("IBUS_ADDRESS".into(), ibus.address()));
+        env.push(("IBUS_ADDRESS_FILE".into(), ibus.address_file().display().to_string()));
+        env.push(("QT_IM_MODULE".into(), "ibus".into()));
     }
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
@@ -480,6 +528,8 @@ fn run(config: Config) -> Result<(), String> {
         xwm: None,
         x11_foreground: None,
         gpu_x11: None,
+        ibus: None,
+        ibus_shown: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -507,6 +557,7 @@ fn run(config: Config) -> Result<(), String> {
         gpu_last_bind_request: 0,
         remote_presents: Default::default(),
         stats: Default::default(),
+        input_trace: Default::default(),
         cursor: None,
         refine_timer: None,
     };
@@ -586,6 +637,11 @@ fn run(config: Config) -> Result<(), String> {
             }
             Err(e) => tracing::warn!("no control socket: cannot listen on {}: {e}", path.display()),
         }
+        let path = dir.join("ibus");
+        match ibus::Ibus::listen(&path, &handle) {
+            Ok(service) => state.ibus = Some(service),
+            Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
+        }
     }
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
@@ -628,7 +684,15 @@ fn run(config: Config) -> Result<(), String> {
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
-                            Ok(wm) => {
+                            Ok(mut wm) => {
+                                // GTK on X11 (and Chromium and Electron, which use its input
+                                // methods) selects its input-method module from XSETTINGS,
+                                // which Wayland clients do not read: X11 clients reach the
+                                // IBus service (ibus.rs), Wayland clients keep text-input-v3.
+                                let settings = [("Gtk/IMModule".to_owned(), "ibus".to_owned().into())];
+                                if let Err(error) = wm.set_xsettings(settings.into_iter()) {
+                                    tracing::warn!("XSETTINGS for X11 clients: {error}");
+                                }
                                 state.xwm = Some(wm);
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
@@ -703,5 +767,54 @@ mod tests {
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
         assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
+    }
+
+    const GPU_ARGS: &[&str] = &[
+        "--token-file",
+        "/run/caboose/display-token",
+        "--private-gpu-stream-socket",
+        "/run/user/1000/caboose-gpu/gpu.sock",
+        "--private-gpu-surface-socket",
+        "/run/user/1000/caboose-gpu/surface.sock",
+        "--private-gpu-indexed",
+    ];
+
+    #[test]
+    fn the_gpu_seat_routes_vulkan_and_opengl_to_the_phone() {
+        let icd = tempfile_icd();
+        let mut env = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
+        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
+        assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
+        assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    #[test]
+    fn other_seats_and_missing_drivers_keep_the_computers_gpu() {
+        let icd = tempfile_icd();
+        let before = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        let mut env = before.clone();
+        apply_gpu_live(&mut env, &config(&[]), &icd);
+        assert_eq!(env, before);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
+        assert_eq!(env, before);
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    fn tempfile_icd() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "caboose-icd-{}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, "{}").unwrap();
+        path
     }
 }
