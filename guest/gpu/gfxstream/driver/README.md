@@ -90,6 +90,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0028 xlib-surface | VK_KHR_xlib_surface for X11 windows (Wine, Proton, SDL); an X11 surface's current extent is its window's |
 | 0029 presentation-support-entry-points | The X11 and Wayland presentation-support queries are returned from `vkGetInstanceProcAddr` by name |
 | 0030 process-connection | One connection manager per process on the socket transport, so the shared encoder outlives the thread that made it |
+| 0031 loss-at-entry | After the executor left, every encoder call reports device loss at entry without touching its outputs |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

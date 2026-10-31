@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 30/30] Keep one connection per process on the socket transport
+Subject: [PATCH 30/31] Keep one connection per process on the socket transport
 
 Every thread shares the first thread's encoder (ResourceTracker::
 getThreadLocalEncoder), but that encoder belonged to the first thread's

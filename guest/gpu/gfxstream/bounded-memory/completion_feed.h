@@ -406,6 +406,14 @@ inline void executorEndedIfGone() {
     const uint64_t now = socketInode();
     if (!now || now != connectedSocketId.load()) markExecutorLost();
 }
+// Encoder calls after the executor is gone: true when the call must not reach the
+// stream (it reports device loss without touching its outputs), after a paused
+// application's wait for a new executor.
+inline bool lostCall() {
+    if (!executorLost.load(std::memory_order_acquire)) return false;
+    awaitExecutorReturn();
+    return true;
+}
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;
     lostSocketInode.store(socketInode());
