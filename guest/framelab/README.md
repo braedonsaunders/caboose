@@ -58,7 +58,8 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   not, with a cause. An animated app should always draw, so any frame gap counts. An
   input-driven app owes a picture from each input until its next frame (at most 2 s, for
   an input that changes nothing). Causes, first match wins:
-  `phone_decode` (the phone spent 50 ms or more decoding commands inside the stall,
+  `surface_failed` (the broker ended one of the app's surface connections inside the stall,
+  `CABOOSE_GPU_SURFACE_FAILED`), `phone_decode` (the phone spent 50 ms or more decoding commands inside the stall,
   `CABOOSE_GPU_DECODE_TIMING`), `guest_read` (the app's processes were blocked reading
   replies for at least half the stall in the `CABOOSE_READ_PROFILE` window covering it),
   `app_busy` (the app used at least half a core) and `app_idle` (none of these). The
@@ -73,7 +74,9 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   luma grid; the score is mean SSIM over 8x8 tiles and the share of cells more than 10%
   apart, and it passes at SSIM 0.9 and 5% changed. `candidate_source` says where the
   compared picture came from: the phone, or the compositor's own screenshot when the phone
-  has none.
+  has none. A window the phone draws has no pixels in the compositor, so without a phone
+  picture its comparison is skipped. The reference runs first, so a page loaded from the
+  network is cached when the measured run loads it.
 
 ## Where the numbers come from
 
@@ -95,7 +98,8 @@ All guest times are the computer's CLOCK_MONOTONIC.
   was shown and N when the line was written, both on the phone's clock. With
   `CABOOSE_FRAMELAB=1` the phone also writes each live GPU window's settled picture (the
   same twice, a second apart) to `Documents/framelab/<window>-<serial>.png` and prints
-  `caboose-framelab: picture window=W serial=S file=F now_ns=N`
+  `caboose-framelab: picture window=W serial=S file=F settled=1 now_ns=N`; a window that never
+  settles has its latest picture written every ten seconds with `settled=0`
   (`CabooseKit/GPU/FrameLabPictures.swift`); the driver copies the directory out and
   compares the one nearest the guest's own picture in place of the compositor's.
 
@@ -153,6 +157,9 @@ python3 framelab-guest.py --out /tmp/framelab [--apps vkcube,terminal] [--offlin
 ```
 
 It prints one JSON event per line and writes the same files as the driver's `guest/`.
+`--wait-gpu SECONDS` (the driver passes 120 when it launches the phone) first waits until
+`vulkaninfo`, launched like an app, sees the phone's GPU, so the first app does not measure
+the executor's arrival.
 
 ## Check it headless
 
