@@ -87,13 +87,20 @@ class IndexedSurface:
         state = self.swaps.get(swap)
         if state is None: raise ValueError('unknown swapchain')
         if kind == 27:
-            if state['mapping'] or state['mapped'] or state['retiring'] or struct.unpack_from('<I', body, 8)[0] != state['count']:
+            count, flags = struct.unpack_from('<II', body, 8)
+            # Guest-owned images (flag 1) map the guest's own pool of up to 8 images.
+            guest = bool(flags & 1)
+            if (state['mapping'] or state['mapped'] or state['retiring'] or
+                    (count > 8 if guest else count != state['count'])):
                 raise ValueError('invalid swapchain mapping')
             state['mapping'] = True
+            state['guest_images'] = guest
+            if guest: state['count'] = count
         elif kind == 29:
             request = struct.unpack_from('<Q', body, 8)[0]
             self.request(request)
-            if not state['mapped'] or state['retiring'] or state['acquire'] is not None:
+            if (not state['mapped'] or state['retiring'] or state['acquire'] is not None or
+                    state.get('guest_images')):
                 raise ValueError('acquire unavailable')
             state['acquire'] = request
         elif kind == 31:
@@ -104,9 +111,14 @@ class IndexedSurface:
             state['retiring'] = True
         elif kind in (34, 39):
             index = struct.unpack_from('<I', body, 24 if kind == 34 else 32)[0]
-            if not state['mapped'] or state['retiring'] or index not in state['acquired']:
+            if not state['mapped'] or state['retiring']:
                 raise ValueError('present source not acquired')
-            state['acquired'].remove(index)
+            if state.get('guest_images'):
+                # The guest acquires its own images; the phone checks each source is free.
+                if index >= state['count']: raise ValueError('present source not acquired')
+            else:
+                if index not in state['acquired']: raise ValueError('present source not acquired')
+                state['acquired'].remove(index)
         else: raise ValueError('invalid indexed request')
 
     def reply(self, kind, payload):
