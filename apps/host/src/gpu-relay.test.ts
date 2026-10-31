@@ -165,3 +165,16 @@ it('does not count a phone held back by a slow guest as silent', async () => {
     client.peerClose(1006)
   } finally { vi.useRealTimers() }
 })
+
+it('counts pings from the phone as life while it reads nothing', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client } = pair()
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_MS)
+      client.emit('ping')
+    }
+    expect(client.readyState).toBe(WebSocket.OPEN)
+    client.peerClose(1006)
+  } finally { vi.useRealTimers() }
+})

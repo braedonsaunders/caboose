@@ -69,7 +69,9 @@ export function relayGPU(client: WebSocket, options: {
     // A phone that vanishes without closing would leave the guest's GPU clients waiting on
     // it: silence ends the relay, and the broker then ends the executor's streams.
     let heard = Date.now()
+    // The phone pings on its own while delivery to a busy decoder holds back its reading.
     client.on('pong', () => { heard = Date.now() })
+    client.on('ping', () => { heard = Date.now() })
     const heartbeat = setInterval(() => {
       if (client.readyState !== WebSocket.OPEN) return
       // While the relay itself holds the phone back, its replies wait unread: not silence.
