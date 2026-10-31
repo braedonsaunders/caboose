@@ -66,6 +66,7 @@ static void exerciseRefusedBind() {
         recvPacket(refused,16); close(refused);
         int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
         recvPacket(fd,16);
+        usleep(200000); // the reply arrives after the client stopped waiting once
         Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
         sendPacket(fd,17,bound);
         auto query=recvPacket(fd,18); assert(u64(query,16)==1 && u64(query,24)==11);
@@ -84,7 +85,12 @@ static void exerciseRefusedBind() {
     assert(refused && !client.bound() && peerGoneCalls==0);
     client.reset();
     client.connect(path.c_str(),deadline);
-    assert(status(client.bind(7,13,0,0,deadline).body,48).success() && client.bound());
+    // A bind's reply not there yet leaves the bind outstanding; a later wait collects it.
+    client.beginBind(7,13,0,0,deadline);
+    Record bindReply;
+    assert(!client.awaitBind(std::chrono::steady_clock::now()+std::chrono::milliseconds(20),&bindReply));
+    assert(client.bindPending() && !client.bound());
+    assert(client.awaitBind(deadline,&bindReply) && status(bindReply.body,48).success() && client.bound());
     // A query sent without waiting is kept when it arrives and taken once.
     client.beginQuery(1,11,deadline);
     Record reply;
