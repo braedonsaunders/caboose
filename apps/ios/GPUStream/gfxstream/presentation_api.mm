@@ -140,6 +140,9 @@ struct caboose_gpu_surface {
     caboose_gpu_capture_callback captureCallback = nullptr;
     void* captureContext = nullptr;
     bool captureUnsupported = false;
+    // Why the ring could not be made, for diagnosis: its creation's provider result.
+    VkResult captureFailure = VK_SUCCESS;
+    bool captureAttempted = false;
 #ifdef CABOOSE_GPU_INDEXED_WSI
     uint64_t nextSwapchainId = 1;
     caboose_gpu_virtual_swapchain* indexed = nullptr;
@@ -179,7 +182,8 @@ VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects&
         VkResult r = createCaptureRing(source.vk, source.physicalDevice, source.device, source.format,
                                        source.extent, kCaptureSlots, &ring);
         std::lock_guard<std::mutex> lock(s.mutex);
-        if (r != VK_SUCCESS) { s.captureUnsupported = true; return VK_NULL_HANDLE; }
+        s.captureAttempted = true;
+        if (r != VK_SUCCESS) { s.captureUnsupported = true; s.captureFailure = r; return VK_NULL_HANDLE; }
         s.capture = std::move(ring);
         s.captureState.reset(kCaptureSlots);
     }
@@ -624,6 +628,15 @@ extern "C" int caboose_gpu_surface_set_capture(caboose_gpu_surface* s, caboose_g
     if (callback && s->captureUnsupported) return ENOTSUP;
     s->captureCallback = callback;
     s->captureContext = context;
+    return 0;
+}
+
+extern "C" int caboose_gpu_surface_capture_state(caboose_gpu_surface* s, int32_t* vulkan_result) {
+    if (!s) return EINVAL;
+    std::lock_guard<std::mutex> lock(s->mutex);
+    if (vulkan_result) *vulkan_result = static_cast<int32_t>(s->captureFailure);
+    if (s->captureUnsupported) return ENOTSUP;
+    if (!s->captureAttempted) return EAGAIN;
     return 0;
 }
 

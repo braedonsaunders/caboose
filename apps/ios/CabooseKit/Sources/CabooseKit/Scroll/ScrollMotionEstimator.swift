@@ -13,9 +13,19 @@ public struct ScrollMotion: Equatable, Sendable {
     public var bands: Range<Int>
     /// The fraction of sampled detail that this motion explains, 0–1.
     public var support: Double
+    /// Fixed overlays inside the moving region (a floating button, a chat bubble): blocks
+    /// whose detail stayed while the content around them moved, at most four.
+    public var stationary: [(lines: Range<Int>, bands: Range<Int>)]
 
-    public init(shift: Int, lines: Range<Int>, bands: Range<Int>, support: Double) {
+    public init(shift: Int, lines: Range<Int>, bands: Range<Int>, support: Double,
+                stationary: [(lines: Range<Int>, bands: Range<Int>)] = []) {
         self.shift = shift; self.lines = lines; self.bands = bands; self.support = support
+        self.stationary = stationary
+    }
+
+    public static func == (a: ScrollMotion, b: ScrollMotion) -> Bool {
+        a.shift == b.shift && a.lines == b.lines && a.bands == b.bands && a.support == b.support
+            && a.stationary.map(\.lines) == b.stationary.map(\.lines) && a.stationary.map(\.bands) == b.stationary.map(\.bands)
     }
 }
 
@@ -244,6 +254,51 @@ public struct ScrollMotionEstimator: Sendable {
             if sum > strongest { strongest = sum; bottom = line }
         }
         guard top < bottom else { return .still }
-        return .moved(ScrollMotion(shift: shift, lines: top..<bottom, bands: run, support: support))
+        let stationary = Self.stationaryBlocks(label: label, bands: bands, lines: top..<bottom, run: run)
+        return .moved(ScrollMotion(shift: shift, lines: top..<bottom, bands: run, support: support, stationary: stationary))
+    }
+
+    /// Blocks of 16 lines by one band inside the region whose detail stood still while the
+    /// content moved, joined into rectangles of at least two blocks; the four largest.
+    static func stationaryBlocks(label: [Int8], bands: Int, lines: Range<Int>, run: Range<Int>) -> [(lines: Range<Int>, bands: Range<Int>)] {
+        let height = 16
+        let rows = lines.count / height, columns = run.count
+        guard rows > 0, columns > 0 else { return [] }
+        var still = [Bool](repeating: false, count: rows * columns)
+        for row in 0..<rows {
+            for column in 0..<columns {
+                var fixed = 0, moved = 0
+                for line in (lines.lowerBound + row * height)..<(lines.lowerBound + (row + 1) * height) {
+                    switch label[line * bands + run.lowerBound + column] {
+                    case -1: fixed += 1
+                    case 1: moved += 1
+                    default: break
+                    }
+                }
+                still[row * columns + column] = fixed >= 6 && fixed >= 3 * (moved + 1)
+            }
+        }
+        var seen = [Bool](repeating: false, count: still.count)
+        var found: [(lines: Range<Int>, bands: Range<Int>, size: Int)] = []
+        for start in still.indices where still[start] && !seen[start] {
+            var stack = [start], size = 0
+            var top = rows, bottom = 0, left = columns, right = 0
+            seen[start] = true
+            while let cell = stack.popLast() {
+                size += 1
+                let row = cell / columns, column = cell % columns
+                top = min(top, row); bottom = max(bottom, row + 1); left = min(left, column); right = max(right, column + 1)
+                for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let r = row + dr, c = column + dc
+                    guard r >= 0, r < rows, c >= 0, c < columns else { continue }
+                    let next = r * columns + c
+                    if still[next] && !seen[next] { seen[next] = true; stack.append(next) }
+                }
+            }
+            guard size >= 2 else { continue }
+            found.append(((lines.lowerBound + top * height)..<(lines.lowerBound + bottom * height),
+                          (run.lowerBound + left)..<(run.lowerBound + right), size))
+        }
+        return found.sorted { $0.size > $1.size }.prefix(4).map { ($0.lines, $0.bands) }
     }
 }

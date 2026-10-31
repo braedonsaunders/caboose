@@ -9,8 +9,11 @@ import QuartzCore
 /// glass latency (a touch sample's timestamp to the presented time of the first drawable
 /// that includes it), frame pacing (intervals between presented drawables, and refreshes
 /// that presented nothing while composing), the blank fraction of the region, and how
-/// pictures were placed. Each gesture is logged (subsystem `org.caboose`, category
-/// `scroll`) and appended as one JSON line to `Documents/scroll-profile.jsonl`.
+/// pictures were placed. Each gesture is written to standard output as a line starting
+/// `caboose-scroll: gesture `, logged (subsystem `org.caboose`, category `scroll`) and
+/// appended as one JSON line to `Documents/scroll-profile.jsonl`. Decisions along the way
+/// (whether a pan scrolls locally and why not, live GPU capture state) are written to
+/// standard output and the log as `caboose-scroll:` lines.
 public final class LocalScrollProfile: @unchecked Sendable {
     public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_SCROLL_PROFILE"] == "1"
     private static let log = Logger(subsystem: "org.caboose", category: "scroll")
@@ -27,6 +30,15 @@ public final class LocalScrollProfile: @unchecked Sendable {
     private var label = ""
 
     public init() {}
+
+    /// A `caboose-scroll:` line on standard output and in the log, when profiling.
+    public static func note(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        let line = message()
+        print("caboose-scroll: \(line)")
+        fflush(stdout)
+        log.notice("\(line, privacy: .public)")
+    }
 
     /// Names the next gestures, for synthetic replays.
     public func label(_ name: String) { lock.withLock { label = name } }
@@ -117,6 +129,8 @@ public final class LocalScrollProfile: @unchecked Sendable {
             return String(decoding: data, as: UTF8.self)
         }
         guard let line else { return }
+        print("caboose-scroll: gesture \(line)")
+        fflush(stdout)
         Self.log.notice("\(line, privacy: .public)")
         guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let url = directory.appendingPathComponent("scroll-profile.jsonl")
