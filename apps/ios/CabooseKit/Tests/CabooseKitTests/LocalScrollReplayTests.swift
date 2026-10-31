@@ -72,8 +72,8 @@ struct LocalScrollReplayTrace {
         guard ProcessInfo.processInfo.environment["CABOOSE_SCROLL_TRACE"] == "1" else { return }
         var app = ScrollReplay.App()
         app.inputDelay = 0.032; app.outputDelay = 0.048 - 0.5 / app.fps
-        app.hitch = (every: 1.6, duration: 0.55)
-        let (report, _) = ScrollReplay(app: app, gestures: LocalScrollReplayTests.warm(LocalScrollReplayTests.fastFlick + [ScrollReplay.Gesture.flick(at: 3.5, peak: 2500, duration: 0.12)]), duration: 9).run(name: "trace", measureFrom: 1.45, trace: true)
+        app.pageLines = 7000
+        let (report, _) = ScrollReplay(app: app, gestures: LocalScrollReplayTests.warm(LocalScrollReplayTests.fastFlick), duration: 8).run(name: "trace", measureFrom: 1.45, trace: true)
         print(report.line)
     }
 }
@@ -126,9 +126,10 @@ struct LocalScrollRobustnessTests {
         // A stall during the warm-up, one during the fast flick's first frames and others later.
         app.hitch = (every: 1.6, duration: stall)
         let report = T.run("stall \(Int(stall * 1000))ms", app, T.fastFlick + [ScrollReplay.Gesture.flick(at: 3.5, peak: 2500, duration: 0.12)], duration: 12)
-        // A stall is not the end of the content.
+        // A stall is not the end of the content. A picture after a long stall that no longer
+        // overlaps is placed by the forwarded scroll, within a pixel or two.
         #expect(!report.edgeFound)
-        #expect(report.misplacement <= 1)
+        #expect(report.misplacement <= 2)
         #expect(report.finalError <= 1)
         #expect(report.handoffJump <= 2)
         // Nothing new exists during a stall: the shown position resists at the reveal limit.
