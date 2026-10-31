@@ -367,11 +367,17 @@ impl State {
         if ours && toplevel && self.remote_presents.presenting(window) { vec![window] } else { Vec::new() }
     }
 
-    /// A toplevel committed a new remote buffer: ask the broker to show it.
+    /// A toplevel committed a new remote buffer, on its own surface or on a subsurface that
+    /// covers its window geometry (Chromium's primary plane, over a one-pixel root): ask the
+    /// broker to show it.
     fn present_remote_buffer(&mut self, surface: &WlSurface) {
         if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return }
-        let Some(id) = self.windows.by_surface(surface) else { return };
-        if !matches!(self.windows.get(id).map(|w| &w.surface), Some(Surface::Toplevel(_))) { return }
+        let Some(id) = self.window_of_surface(surface) else { return };
+        let Some(window) = self.windows.get(id) else { return };
+        if !matches!(window.surface, Surface::Toplevel(_)) { return }
+        if window.surface.wl_surface().as_ref() != Some(surface) && !covers_geometry(surface, window.local_geometry()) {
+            return;
+        }
         let Some(buffer) = with_renderer_surface_state(surface, |state| state.buffer().cloned()).flatten() else { return };
         let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer) else { return };
         if !crate::remote_buffers::is_remote(dmabuf) { return }
@@ -919,11 +925,17 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         // Smithay's renderer consumes this assignment, so inspect it first.
         // A missing buffer assignment is not an explicit unmap.
-        let (detached, new_buffer) = smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
-            let buffer = attributes.current().buffer.as_ref();
-            (is_explicit_buffer_detach(buffer), matches!(buffer, Some(BufferAssignment::NewBuffer(_))))
+        let detached = smithay::wayland::compositor::with_states(surface, |states| {
+            is_explicit_buffer_detach(states.cached_state.get::<SurfaceAttributes>().current().buffer.as_ref())
         });
+        // Surfaces of this tree with a new buffer: this one, and synchronized subsurfaces
+        // whose state this commit applied.
+        let mut new_buffers = Vec::new();
+        with_surface_tree_downward(surface, (), |_, _, _| TraversalAction::DoChildren(()), |child, states, _| {
+            if matches!(states.cached_state.get::<SurfaceAttributes>().current().buffer, Some(BufferAssignment::NewBuffer(_))) {
+                new_buffers.push(child.clone());
+            }
+        }, |_, _, _| true);
         if detached {
             if let Some(id) = self.windows.by_surface(surface) {
                 let revoke = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
@@ -937,8 +949,8 @@ impl CompositorHandler for State {
         if let Some(w) = self.windows.by_surface(surface).and_then(|id| self.windows.get_mut(id)) {
             w.scroll_seq_committed = w.scroll_seq_delivered;
         }
-        if new_buffer {
-            self.present_remote_buffer(surface);
+        for fresh in &new_buffers {
+            self.present_remote_buffer(fresh);
         }
         let Renderer::Pixman(r) = &mut self.renderer;
         // Import now so a client's shm buffer is released as early as possible.
@@ -1364,3 +1376,17 @@ smithay::delegate_fractional_scale!(State);
 smithay::delegate_cursor_shape!(State);
 smithay::delegate_tablet_manager!(State);
 smithay::delegate_xwayland_shell!(State);
+
+/// Whether a subsurface's buffer, at its position relative to its root surface, covers
+/// `geometry` (in the root's surface coordinates).
+fn covers_geometry(surface: &WlSurface, geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>) -> bool {
+    use smithay::wayland::compositor::{with_states, SubsurfaceCachedState};
+    let Some(size) = with_renderer_surface_state(surface, |state| state.surface_size()).flatten() else { return false };
+    let mut location = smithay::utils::Point::<i32, smithay::utils::Logical>::from((0, 0));
+    let mut current = surface.clone();
+    while let Some(parent) = get_parent(&current) {
+        location += with_states(&current, |states| states.cached_state.get::<SubsurfaceCachedState>().current().location);
+        current = parent;
+    }
+    smithay::utils::Rectangle::new(location, size).contains_rect(geometry)
+}
