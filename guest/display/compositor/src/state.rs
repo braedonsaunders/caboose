@@ -222,6 +222,8 @@ pub struct State {
     /// Phone-resident buffers committed to windows and held until the broker releases them.
     pub remote_presents: crate::remote_buffers::Presents,
     pub stats: Stats,
+    /// When client input arrived, for frame lab (`frames` on the control socket).
+    pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
     /// The wake-up for the next refinement: when (monotonic µs), and its timer.

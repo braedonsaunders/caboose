@@ -462,6 +462,7 @@ also see as their root window's.
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
 | `settle` | Releases pending frame callbacks, so applications on a seat nobody watches draw now |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
+| `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
 `guest/desktop-mcp/seat.py` is its client, as a library and a command.
 

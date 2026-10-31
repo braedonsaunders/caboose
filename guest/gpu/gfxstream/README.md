@@ -298,6 +298,16 @@ received from the guest (`presented`, with ordered presents also counted as
 interval between presents (`gap_max_ms`) and between results (`result_gap_max_ms`)
 in that window, so a hitch is visible on either side of the phone.
 
+For [frame lab](../../framelab/README.md) the broker also writes a present timeline,
+without the bounds above, while `CABOOSE_PRIVATE_GPU_PRESENT_TRACE=1` is set or while the
+file `$XDG_RUNTIME_DIR/caboose-gpu-present-trace` exists (looked at once a second, so a
+running seat can be measured without a restart): `CABOOSE_GPU_PRESENT event=present|result|released
+monotonic_ns=…` for every present from the guest and every present result and source
+release from the phone, and every second `CABOOSE_GPU_STREAM elapsed_ms=… to_phone_bytes=…
+from_phone_bytes=… monotonic_ns=…`, the WebSocket bytes written to the phone and the
+message payload bytes read from it. Times are the broker's CLOCK_MONOTONIC; lines carry no
+payloads, handles or identities.
+
 The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
 flush diagnostics. Up to 128 numeric call records and one limit marker report
 pre-lock validation time, encoder-lock wait time, serialization time, first-reply

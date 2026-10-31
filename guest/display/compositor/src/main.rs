@@ -8,6 +8,7 @@ mod control;
 mod dbus;
 mod displays;
 mod encode;
+mod frame_trace;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
@@ -520,6 +521,7 @@ fn run(config: Config) -> Result<(), String> {
         gpu_last_bind_request: 0,
         remote_presents: Default::default(),
         stats: Default::default(),
+        input_trace: Default::default(),
         cursor: None,
         refine_timer: None,
     };

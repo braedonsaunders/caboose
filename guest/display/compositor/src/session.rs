@@ -741,6 +741,7 @@ impl State {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut refined = false;
         let mut frame_sent = false;
+        let mut sent_bytes = 0;
         match done.result {
             None => {}
             // The relay carries at most 16 MiB per message; a picture that does not fit
@@ -757,6 +758,7 @@ impl State {
             Some(Ok(encoded)) => {
                 refined = encoded.refined;
                 w.stream.in_flight.push_back(done.pts_us);
+                sent_bytes += encoded.data.len() as u64;
                 w.stream.refine_at_us = encoded.refine_in_ms.map(|ms| now_us + ms * 1000);
                 self.stats.frames += 1;
                 self.stats.refines += encoded.refined as u64;
@@ -800,6 +802,7 @@ impl State {
             self.stats.encode_cpu_us += t.cpu_us;
             for (rect, data) in t.tiles {
                 self.stats.bytes += data.len() as u64;
+                sent_bytes += data.len() as u64;
                 let tile = proto::Tile { id: done.window, rect, format: proto::TileFormat::Png, data };
                 self.net.send(conn, &Message::Tile(tile));
             }
@@ -811,6 +814,7 @@ impl State {
                 m.in_flight.push_back(seq);
                 self.stats.motion_frames += 1;
                 self.stats.bytes += encoded.data.len() as u64;
+                sent_bytes += encoded.data.len() as u64;
                 self.stats.encode_cpu_us += encoded.cpu_us;
                 tracing::trace!(
                     "motion {id}: {} bytes {} in {} µs ({} µs CPU)",
@@ -838,6 +842,10 @@ impl State {
                 w.stream.dirty = true;
             }
             _ => {}
+        }
+        if sent_bytes > 0 {
+            let sent = crate::frame_trace::Sent { at_us: now_us, pts_us: done.pts_us, bytes: sent_bytes, refined };
+            w.stream.trace.sent.push(sent);
         }
         if let Some(id) = done.ends_motion {
             // After the window picture that repaints its region.

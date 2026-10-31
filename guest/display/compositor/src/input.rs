@@ -140,6 +140,8 @@ impl State {
     }
 
     pub fn pointer(&mut self, m: &proto::Pointer) {
+        let kind = if m.scroll.is_some() { "scroll" } else { "pointer" };
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind });
         let Some((location, under)) = self.locate(m.id, m.x, m.y) else { return };
         let Some(pointer) = self.seat.get_pointer() else { return };
         let utime = self.now_us();
@@ -213,6 +215,7 @@ impl State {
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "touch" });
         let Some(touch) = self.seat.get_touch() else { return };
         let time = self.now_ms();
         for p in &m.points {
@@ -277,6 +280,7 @@ impl State {
     }
 
     pub fn key(&mut self, m: &proto::Key) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "key" });
         let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {
@@ -338,6 +342,7 @@ impl State {
     }
 
     pub fn text(&mut self, m: &proto::Text) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "text" });
         let Some(surface) = self.keyboard_focus_surface() else { return };
         // Deletions are BackSpace and Delete presses, for every surface. They remove one
         // grapheme cluster in every toolkit, which is what the client counts; text-input-v3's

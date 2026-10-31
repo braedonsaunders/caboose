@@ -112,6 +112,34 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
             rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
 
+    def test_present_trace_follows_its_flag_file_and_reports_presents_and_bytes(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            trace = broker.PresentTrace({'XDG_RUNTIME_DIR': runtime})
+            clock = iter(range(0, 10_000_000_000, 400_000_000))
+            with mock.patch.object(broker.time, 'monotonic_ns', side_effect=lambda: next(clock)), \
+                    mock.patch('builtins.print') as output:
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT))  # 0 s: off
+                output.assert_not_called()
+                Path(runtime, 'caboose-gpu-present-trace').touch()
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT))  # 0.4 s: not looked yet
+                output.assert_not_called()
+                trace.surface('received_from_phone', int(Kind.PRESENT_RESULT))  # 0.8 s: not looked yet
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))  # 1.2 s: on
+                trace.surface('received_from_phone', int(Kind.PRESENT_RESULT))  # 1.6 s
+                trace.surface('queued_to_phone', int(Kind.SWAPCHAIN_PRESENT))  # not traced, no clock
+                trace.stream(to_phone=100)  # 2.0 s
+                trace.stream(from_phone=7)
+                trace.stream(to_phone=50)
+                trace.stream(to_phone=1)
+            lines = [c.args[0] for c in output.call_args_list]
+            self.assertEqual(lines[0], 'CABOOSE_GPU_PRESENT event=present monotonic_ns=1200000000')
+            self.assertEqual(lines[1], 'CABOOSE_GPU_PRESENT event=result monotonic_ns=1600000000')
+            self.assertEqual(lines[2], 'CABOOSE_GPU_STREAM elapsed_ms=1200 to_phone_bytes=151 from_phone_bytes=7 '
+                                       'monotonic_ns=3200000000')
+            self.assertEqual(len(lines), 3)
+        self.assertTrue(broker.PresentTrace({'CABOOSE_PRIVATE_GPU_PRESENT_TRACE': '1'}).enabled(0))
+        self.assertFalse(broker.PresentTrace({}).enabled(0))
+
     def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             session = broker.Session(None, b'a' * 16, 1, None, Writer())
