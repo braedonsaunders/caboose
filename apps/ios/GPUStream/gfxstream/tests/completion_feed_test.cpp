@@ -89,16 +89,21 @@ int main() {
         gpu.release(0x2, -4);
         r = readRecord(sockets[0]);
         assert(r.serial == 3 && r.status == CompletionFeed::kDeviceLost);
-        // A second feed stream is refused.
+        // A later feed stream (the guest connected again) takes over; the earlier returns.
         int other[2];
         assert(socketpair(AF_UNIX, SOCK_STREAM, 0, other) == 0);
-        assert(completions.run(other[1], stop) == EBUSY);
-        ::close(other[0]); ::close(other[1]);
+        std::thread second([&] { assert(completions.run(other[1], stop) == 0); });
+        reader.join();
+        completions.watch(0x5, 6);
+        gpu.release(0x5);
+        r = readRecord(other[0]);
+        assert(r.serial == 6 && r.status == CompletionFeed::kCompleted);
         // A marker outstanding when the guest closes is still waited for (it holds its
         // device), and its record is dropped.
         completions.watch(0x3, 4);
-        shutdown(sockets[0], SHUT_WR);
-        reader.join();
+        shutdown(other[0], SHUT_WR);
+        second.join();
+        ::close(other[0]); ::close(other[1]);
         // After the guest is gone, a late watch from the device stream submits nothing,
         // and the outstanding marker is still waited for by the watcher.
         completions.watch(0x4, 5);
@@ -106,7 +111,7 @@ int main() {
         for (int i = 0; i < 200 && gpu.outstanding; ++i) usleep(5000);
         assert(gpu.outstanding == 0);
     }  // destruction joins the watcher after every marker completed
-    assert(gpu.outstanding == 0 && gpu.submitted == 3);
+    assert(gpu.outstanding == 0 && gpu.submitted == 4);
     ::close(sockets[0]); ::close(sockets[1]);
 
     // Bytes after the feed command are a protocol violation.
