@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include <atomic>
+#include <chrono>
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
@@ -45,6 +46,9 @@ inline constexpr uint64_t prefetchedFenceWaitNs = 250'000'000;
 // Set while the encoder sends a prefetched fence wait instead of a real one.
 inline thread_local bool sendingPrefetchedFenceWait = false;
 
+// Told how long each drain that had replies to read blocked, in microseconds.
+inline void (*drainObserver)(uint64_t us) = nullptr;
+
 // Pending replies and their commands' bytes per encoder. Callers
 // hold the encoder lock. A prefetched fence wait that succeeds records its
 // fence as signaled until the fence is reset, destroyed or imported; the
@@ -69,60 +73,115 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), replies, Reply{});
+        entry.replies.back().bytes = bytes;
         entry.bytes += bytes;
         total_.fetch_add(replies, std::memory_order_relaxed);
     }
 
     // A create whose handle the guest assigned: its reply is the handle and a result.
     void addHandleCreate(const void* encoder, uint64_t handle, uint64_t bytes) {
+        addHandleCreates(encoder, handle, 1, bytes);
+    }
+    // A create of `count` objects whose consecutive handles start at `first`: its reply
+    // is those handles, then one result.
+    void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({0, 0, handle});
+        entry.replies.push_back({0, 0, first, false, count, bytes});
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
     // A command whose failure the application can no longer observe: any failure is device loss.
     void addCheckedResult(const void* encoder, uint64_t bytes) {
+        addCheckedResults(encoder, 1, bytes);
+    }
+    void addCheckedResults(const void* encoder, uint32_t results, uint64_t bytes) {
+        if (!results) return;
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({0, 0, 0, true});
+        entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true});
+        entry.replies.back().bytes = bytes;
         entry.bytes += bytes;
-        total_.fetch_add(1, std::memory_order_relaxed);
+        total_.fetch_add(results, std::memory_order_relaxed);
     }
     void addFenceWait(const void* encoder, uint64_t fence, uint64_t bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({fence, generations_[fence]});
+        entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes});
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
 
     template<class Stream>
-    bool drain(const void* encoder, Stream* stream) {
+    bool drain(const void* encoder, Stream* stream) { return drainPrefix(encoder, stream, false); }
+
+    // Reads replies only through the last pending create or submit, so the device has
+    // created every object and accepted every submission this encoder sent; later fence
+    // waits and plain results stay pending. Used before another channel names them.
+    template<class Stream>
+    bool drainObjects(const void* encoder, Stream* stream) { return drainPrefix(encoder, stream, true); }
+
+    template<class Stream>
+    bool drainPrefix(const void* encoder, Stream* stream, bool objectsOnly) {
         if (!total_.load(std::memory_order_relaxed)) return true;
         std::vector<Reply> replies;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end()) return true;
-            replies.swap(found->second.replies);
-            pending_.erase(found);
+            auto& queued = found->second.replies;
+            size_t count = queued.size();
+            if (objectsOnly) {
+                while (count && !queued[count - 1].handle && !queued[count - 1].checked) --count;
+                if (!count) return true;
+            }
+            if (count == queued.size()) {
+                replies.swap(queued);
+                pending_.erase(found);
+            } else {
+                replies.assign(queued.begin(), queued.begin() + count);
+                queued.erase(queued.begin(), queued.begin() + count);
+                uint64_t remaining = 0;
+                for (const Reply& reply : queued) remaining += reply.bytes;
+                found->second.bytes = remaining;
+            }
             total_.fetch_sub(replies.size(), std::memory_order_relaxed);
         }
+        struct Observe {
+            void (*observer)(uint64_t);
+            std::chrono::steady_clock::time_point started;
+            ~Observe() {
+                if (observer)
+                    observer(std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started).count());
+            }
+        } observe{drainObserver, drainObserver ? std::chrono::steady_clock::now()
+                                               : std::chrono::steady_clock::time_point{}};
         for (const Reply& reply : replies) {
             if (reply.handle) {
-                uint64_t created = 0;
+                for (uint32_t i = 0; i < reply.count; ++i) {
+                    uint64_t created = 0;
+                    if (!stream->tryRead(&created, sizeof(created))) {
+                        stream->invalidate();
+                        return false;
+                    }
+                    if (created != reply.handle + i) {
+                        std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
+                                     reply.handle + i, created);
+                        stream->invalidate();
+                        return false;
+                    }
+                }
                 int32_t createResult = 0;
-                if (!stream->tryRead(&created, sizeof(created)) ||
-                    !stream->tryRead(&createResult, sizeof(createResult))) {
+                if (!stream->tryRead(&createResult, sizeof(createResult))) {
                     stream->invalidate();
                     return false;
                 }
-                if (created != reply.handle || createResult != 0) {
-                    // The guest already handed this handle out; a device that refused or
-                    // renamed it has diverged from the application's view: device loss.
-                    std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 " result=%" PRId32 "\n",
-                                 reply.handle, created, createResult);
+                if (createResult != 0) {
+                    // The guest already handed these handles out; a device that refused or
+                    // renamed them has diverged from the application's view: device loss.
+                    std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
+                                 reply.handle, reply.count, createResult);
                     stream->invalidate();
                     return false;
                 }
@@ -196,7 +255,7 @@ public:
     uint64_t pending() const { return total_.load(std::memory_order_relaxed); }
 
 private:
-    struct Reply { uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; };
+    struct Reply { uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; uint32_t count = 1; uint64_t bytes = 0; };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0; };
     std::mutex mutex_;
     std::unordered_map<const void*, Entry> pending_;

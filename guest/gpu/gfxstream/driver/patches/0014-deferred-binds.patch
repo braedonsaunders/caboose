@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 14/15] Defer the results of buffer and image memory binds
+Subject: [PATCH 14/17] Defer the results of buffer and image memory binds
 
 With guest-assigned handles and a single encoder, vkBindBufferMemory and
 vkBindImageMemory (and their 2/2KHR forms) no longer wait for their result.

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 06/15] Defer replies the caller does not need
+Subject: [PATCH 06/17] Defer replies the caller does not need
 
 Mapped-memory flushes and fence resets are sent without waiting for their
 result. Their 4-byte replies stay queued on the stream and are drained in

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 08/15] Support Chromium's ANGLE Vulkan backend and X11
+Subject: [PATCH 08/17] Support Chromium's ANGLE Vulkan backend and X11
  surfaces
 
 ANGLE's ES 3.0 requirements are met: VK_EXT_provoking_vertex is advertised and

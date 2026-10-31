@@ -178,6 +178,8 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 if (result!=VK_SUCCESS) return cleanup(result);
                 images.push_back(get_host_u64_VkImage(image.image));
             }
+            // The phone maps images this device stream created, allocated and bound.
+            if (!encoder->cabooseDrainDeferredObjects(true)) return cleanup(VK_ERROR_DEVICE_LOST);
             auto mapped=surface->client.mapSwapchain(swap->native,images,deadline());
             result=apiStatus(status(mapped.body,48)); if (result!=VK_SUCCESS) return cleanup(result);
             *out=guestHandle; return VK_SUCCESS;
@@ -240,6 +242,9 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
         }
         if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t request=++surface.query;
+        // The phone signals a semaphore and fence the device stream created.
+        if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
+            return VK_ERROR_DEVICE_LOST;
         surface.client.beginAcquire(swap->native,request,boxedSemaphore,boxedFence,timeout,deadline());
         // A transport deadline is never relabelled as a Vulkan acquire timeout.
         auto reply=surface.client.finishAcquire(swap->native,request,deadline());
@@ -295,6 +300,10 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         if (surface.presentSerial==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t serial=++surface.presentSerial;
+        // The phone presents on the queue after the work, and waits for the semaphores,
+        // the device stream submitted.
+        if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
+            return VK_ERROR_DEVICE_LOST;
         auto reply=surface.client.presentIndexed(swap->native,serial,
             get_host_u64_VkQueue(queue->internal_object),index,swap->family,waits,deadline());
         auto result=apiStatus(status(reply.body,48));

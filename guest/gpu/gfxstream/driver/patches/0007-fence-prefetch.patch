@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 07/15] Prefetch the frame fence wait with its queue submit
+Subject: [PATCH 07/17] Prefetch the frame fence wait with its queue submit
 
 A submit that signals a fence is followed on the same stream by a bounded wait
 for that fence, so its result arrives while the application presents. A later

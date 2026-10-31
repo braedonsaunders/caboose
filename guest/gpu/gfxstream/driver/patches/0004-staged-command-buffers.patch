@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 04/15] Record command buffers locally and send them with their
+Subject: [PATCH 04/17] Record command buffers locally and send them with their
  submit
 
 In the synchronous socket profile, vkBeginCommandBuffer..vkEndCommandBuffer are

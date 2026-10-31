@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 03/15] Transfer mapped memory in bounded, packed chunks
+Subject: [PATCH 03/17] Transfer mapped memory in bounded, packed chunks
 
 Flush and invalidate of socket-shadowed memory are split into chunks no larger
 than the device link's window and packed into one multi-range packet per

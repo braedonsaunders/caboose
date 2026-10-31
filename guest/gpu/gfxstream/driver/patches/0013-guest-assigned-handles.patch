@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 13/15] Assign Vulkan handles in the guest when the client
+Subject: [PATCH 13/17] Assign Vulkan handles in the guest when the client
  device supports it
 
 The hello offers feature bit 0x80. When the broker echoes it, the connected

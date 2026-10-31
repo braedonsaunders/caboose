@@ -75,6 +75,8 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0013 guest-assigned-handles | Creates use handles the guest assigns, when the hello negotiates it |
 | 0014 deferred-binds | Buffer and image memory binds no longer wait for their result |
 | 0015 diagnostics-on-request | The read profile and coherent-memory reports run only when asked |
+| 0016 async-creates-and-submits | Queue submits do not wait for their results; with guest-assigned handles, neither do creates and plain allocations; WSI requests first drain created objects |
+| 0017 profile-new-reads-on-request | The reply reads added in 0016 are timed only with the read profile on |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -89,8 +91,8 @@ broker answers with the same 48 bytes when the connected phone registers guest-a
 handles (bit 7, `0x80`), and with mask `0x70` otherwise. A broker that does not know bit 7
 closes the connection, and the driver reconnects offering `0x70`. Any other answer fails
 the connection, and with it Vulkan instance creation. `CABOOSE_GFXSTREAM_GUEST_HANDLES=0`
-offers `0x70` only. Patches 0013 and 0014 take effect only when bit 7 was agreed; the rest
-of the series requires the `0x70` contract.
+offers `0x70` only. Patches 0013 and 0014, and the creates and allocations of 0016, take
+effect only when bit 7 was agreed; the rest of the series requires the `0x70` contract.
 
 | Bit | Meaning |
 | --- | --- |
@@ -106,7 +108,7 @@ of the series requires the `0x70` contract.
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
-| `CABOOSE_READ_PROFILE=1` | Every two seconds, the eight opcodes with the most blocking read time, on stderr |
+| `CABOOSE_READ_PROFILE=1` | Every two seconds, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies), on stderr |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |
 | `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` | Bounded timing of ten synchronous calls on stderr |

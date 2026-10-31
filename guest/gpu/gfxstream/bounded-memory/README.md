@@ -12,6 +12,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 256-byte blocks that differ, within pages the host already holds |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
 | `deferred_replies.h` | Replies the caller does not wait for, drained in order; prefetched fence waits; guest-assigned handle checks |
+| `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
 ## Mapped memory
@@ -33,13 +34,15 @@ traffic. `vkQueueSubmit` sends every staged command buffer, secondaries first, a
 submit in one round trip. A command buffer that overflows fails its submit with
 `VK_ERROR_OUT_OF_HOST_MEMORY` and sends nothing partial.
 
-Flushes, fence and command-pool resets, binds and guest-assigned creates do not wait for
-their replies. `DeferredReplies` queues them per encoder; every later read drains them
+Flushes, fence and command-pool resets, binds, queue submits, guest-assigned creates and
+plain allocations within the heap budget do not wait for their replies. `DeferredReplies` queues them per encoder; every later read drains them
 first, in stream order, and in-flight deferred commands stay under 960 KiB. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the
 device refused or renamed, invalidates the stream: the application can no longer observe
 that failure, so the device is lost. Only the first encoder of a process may defer; a
-second encoder turns deferral off for the process.
+second encoder turns deferral off for the process. Before the WSI surface socket names
+objects or work from the stream, `drainObjects` reads replies through the last pending
+create or submit and leaves later fence waits and plain results pending.
 
 A submit that signals a fence is followed by a bounded (250 ms) wait for that fence.
 When the wait's reply reports success, the fence is known signaled until it is reset,
@@ -58,5 +61,6 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG test_ranges.cpp -o /tmp/t
 The tests cover 32 MiB transfers, failure without publication, overlapping ranges,
 partial maps, allocation tails, atom limits, budget pressure from concurrent callers,
 command buffer staging, changed-block shadows, packet limits, deferred replies, fence
-prefetch generations, guest-assigned handle checks and single-encoder ownership. They
+prefetch generations, guest-assigned handle checks (single and arrays), deferred submit
+results, the object drain, the allocation budget and single-encoder ownership. They
 exercise the headers, not the generated encoder or a device.

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 01/15] Connect the guest encoder to the client device over a
+Subject: [PATCH 01/17] Connect the guest encoder to the client device over a
  Unix socket
 
 CABOOSE_GFXSTREAM_SOCKET selects CabooseSocketStream (connection-manager/

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 09/15] Provide host-coherent memory over the socket transport
+Subject: [PATCH 09/17] Provide host-coherent memory over the socket transport
 
 A synthetic HOST_VISIBLE|HOST_COHERENT memory type is appended after the
 device's host-visible type and mapped back to it on the wire. Before every

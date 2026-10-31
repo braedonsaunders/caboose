@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 12/15] Share one encoder among all threads of a process
+Subject: [PATCH 12/17] Share one encoder among all threads of a process
 
 On the socket transport every thread uses the first thread's encoder, so the
 device sees one ordered stream: a fence reset on one thread can never be

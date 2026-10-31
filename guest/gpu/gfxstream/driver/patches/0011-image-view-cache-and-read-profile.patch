@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 11/15] Reuse image views and profile blocking reads
+Subject: [PATCH 11/17] Reuse image views and profile blocking reads
 
 Chromium's ANGLE creates and destroys the same image views every frame, each
 waiting a round trip for the host's handle. A destroyed view of an image this
