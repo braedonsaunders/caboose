@@ -21,7 +21,9 @@ struct PresentationCaptureRing {
 // Creates `count` device-local images of `format` and `extent` and exports their Metal
 // textures. VK_ERROR_EXTENSION_NOT_PRESENT when the device cannot export Metal objects;
 // the caller then presents without captures. On failure nothing is retained.
-VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDevice physical,
+// `vk` is the device's dispatch; instance-level entry points come from `instance` through the
+// runtime's vkGetInstanceProcAddr.
+VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance instance, VkPhysicalDevice physical,
     VkDevice device, VkFormat format, VkExtent3D extent, uint32_t count,
     std::unique_ptr<PresentationCaptureRing>* out);
 // Caller guarantees no submitted copy into the ring is outstanding.
