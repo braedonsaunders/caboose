@@ -329,16 +329,25 @@ X11 `_NET_WM_PID` is not authority.
 The app's visible interactive owner view supplies the native layer; thumbnails
 cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
 and linked surface backend; ordinary display and agent sessions do not. The
-registry matches the display epoch, window object and one visible eligible view.
+registry matches the display epoch and window object, and places the layer in the
+one visible eligible view showing that window.
+
+Visibility never stalls the guest. While no eligible view shows a bound window
+(another tab is in front, the view is hidden, off screen, rebuilt, or reused for
+another window) its lease is parked: the presentation view leaves the hierarchy,
+but the lease, its binding and its swapchain stay valid and keep accepting
+presents. When an eligible view shows the window again, the same layer returns to
+it with the latest frame presented. A bind for a window no view currently shows
+starts parked at the window's server pixel size.
 The executor survives an ordinary display reconnect and seamless display or
 owner-view geometry changes (such as device rotation): when the display or
 window extent changes to a valid new size, the compositor reconfigures the
 bound toplevel window to the new display dimensions and the owner view updates
 the active lease extent and fits the presentation view in place while the
 application reconfigures its swapchain at the new extent, without revoking the
-surface grant or dropping the executor. Losing the owner view, removing its
-display, or invalid/zero geometry requests revocation of only the affected
-surface (`SURFACE_REVOKE_REQUEST`). Background or computer
+surface grant or dropping the executor. A changed display epoch or window object,
+or invalid/zero server geometry, requests revocation of only the affected surface
+(`SURFACE_REVOKE_REQUEST`). Background or computer
 replacement drains the entire executor. This path is not enabled
 by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
 AppModel then opens the existing authenticated host endpoint and updates the
@@ -472,13 +481,14 @@ PRESENT_RETIRED callback. It then removes the frame record while keeping the
 monotonic serial high-water mark. Rejected submissions keep their acquired image
 and original wait set available to the caller.
 
-Owner-view invalidation enters the bounded serial consumer queue and emits kind
-35 once for the complete retained grant. When a lease is invalidated, withdrawn,
+Owner invalidation enters the bounded serial consumer queue and emits kind
+35 once for the complete retained grant. When a lease is invalidated, parked,
 revoked, or retired, the owner view immediately removes the GPU presentation view
 from its superview so the underlying window picture and video path remain visible
 without a frozen GPU overlay, while the lease retains its strong reference to the
-`CAMetalLayer`-backed view until native surface retirement and detachment finish
-and only re-attaches when a new grant binds. It preserves the process and callback
+`CAMetalLayer`-backed view until native surface retirement and detachment finish.
+An invalidated lease's layer never returns; a parked one returns to the next
+eligible view showing its window. It preserves the process and callback
 context until the compositor requests retirement and native cleanup succeeds.
 Late local invalidations after retirement are ignored; foreign peer records still
 reject. Already-in-transit query or present requests receive a local stale-owner
