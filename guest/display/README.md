@@ -24,7 +24,10 @@ This directory is a Cargo workspace:
 - **Wayland and X11 applications.** A headless [Smithay](https://github.com/Smithay/smithay)
   compositor with xdg-shell (toplevels and popups), xdg-decoration (applications are told
   the phone draws the frame, so they draw no title bar of their own), viewporter,
-  fractional scale, cursor-shape, linux-dmabuf (linear buffers) and wl_shm. Xwayland runs
+  fractional scale, cursor-shape, linux-dmabuf and wl_shm. Linear dma-bufs are mapped like
+  shared memory; with the computer's render node, the dma-buf feedback names it, and with
+  the phone GPU, phone-resident buffers are shown through the GPU stream
+  ([docs/gpu-buffers.md](../../docs/gpu-buffers.md)). Xwayland runs
   with a window manager, so X11 applications are windows too, with a per-boot
   MIT-MAGIC-COOKIE in an Xauthority file.
 - **One stream per window.** Every toplevel, dialog, popup and X11 window is announced

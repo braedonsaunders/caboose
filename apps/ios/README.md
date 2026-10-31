@@ -87,8 +87,9 @@ computer; the `handoff: "files"` contract and fallback are in
 capability itself through `AgentAppNetServer`, the app's network origin on a second loopback
 port. A page that is playing media when Caboose leaves the screen is kept running
 (`AgentAppPages`) and taken over by the app's next announcement without a reload, which is
-why the app declares the `audio` background mode; the display's own sound still stops when
-Caboose leaves the screen, because the display session ends. App Transport Security allows
+why the app declares the `audio` background mode. The display's own sound keeps playing
+too: while the computer is playing sound, the display connection stays open in the
+background without pictures. App Transport Security allows
 arbitrary loads so app pages and `net` requests reach plain-http servers.
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
@@ -322,8 +323,8 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   explicit playout policy restarts for backlog beyond another 300 ms. There is no continuous
   sample-clock correction: sustained source/host clock mismatch can require rebuffering,
   and hardware/host clock drift can accumulate between explicit rebufferings. Interruptions
-  reset the anchor. The display closes
-  when the app goes to the background, and the sound with it.
+  reset the anchor. When the app goes to the background the display stays connected for its
+  sound if any is playing; otherwise it closes.
   The `display-audio` five-second report includes fixed-size timing maxima in milliseconds:
   `rx_gap` measures all socket callbacks, `audio_rx_gap` those completing audio packets,
   `incoming_wait` callback-to-parser entry, and `incoming` synchronous parsing/frame dispatch.

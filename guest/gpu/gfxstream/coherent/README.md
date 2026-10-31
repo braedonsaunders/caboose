@@ -56,6 +56,52 @@ not track dirty pages, produce upload deltas, handle fork aliases, or synchroniz
 GPU snapshots. No GPU wait, transport wait or application callback is allowed inside
 the cut. Holding a cut across those operations reintroduces the event deadlock.
 
+## Kernel write tracking
+
+`write_tracker.h` is a header-only C++17 library that tells a flush which pages of a
+mapped allocation were stored to since they were last flushed, so the flush compares and
+sends only those pages instead of the whole mapping. It does not replace the comparison:
+the reported pages still go through the shadow comparison that sends changed 256-byte
+blocks, and an allocation too large to shadow sends the reported pages.
+
+`WriteTracker::allocate` returns an anonymous private mapping registered for userfaultfd
+write protection and initially protected. The first store to a protected page faults to
+one process-wide handler thread, which marks the pages of an extent as written and makes
+the extent writable; later stores to it run at full speed. The extent starts at 64 KiB and
+doubles up to 4 MiB while faults continue exactly where the previous extent ended, so a
+sequential writer takes a logarithmic number of faults; a caller that cannot compare
+reported bytes bounds the extent instead. `consume(offset, size, visit)` write-protects
+the marked pages in the interval, then reports them as runs clipped to the interval. A
+store is therefore either reported by that call or faults again and is reported by a
+later one. The region mutex keeps the invariant that a writable page is marked.
+
+The descriptor handles kernel-origin faults, so `read(fd, mappedPointer, n)` into tracked
+memory is tracked; `UFFD_USER_MODE_ONLY` would make that call fail with `EFAULT`. It comes
+from `/dev/userfaultfd`, or the `userfaultfd` syscall where the process may use it.
+Container computers receive `/dev/userfaultfd` when the host has it, owned by the session
+user's group. This grants userfaultfd's kernel-fault mode inside the computer, which the
+default `vm.unprivileged_userfaultfd=0` withholds from unprivileged processes on the host.
+Unpopulated pages are protected with `UFFD_FEATURE_WP_UNPOPULATED` (Linux 6.4 and later);
+otherwise the mapping is populated first. A forked child does not use its parent's
+descriptor. `CABOOSE_COHERENT_WRITE_TRACKING=off` disables tracking; when the descriptor
+is unavailable, `WriteTracker::get()` returns null and the caller compares whole mappings.
+
+The driver tracks host-visible allocations of 2 MiB or more and skips a coherent
+allocation with no marked page at submission. It opens the descriptor during
+`vkCreateInstance`, before a process such as Chromium's GPU process enters its sandbox. It
+prints `CABOOSE_COHERENT_TRACKING mode=userfaultfd` or `mode=compare reason=…` once,
+then at most 128 lines of two-second aggregates: submissions, live regions, faults, mean
+and maximum handler time, reported KiB, and coherent allocations skipped as unwritten.
+
+On the WSL2 6.6 kernel of an RTX 4080 workstation, the test's measurements for a 64 MiB
+region are: first touch of every page 13.6 ms with 22 faults (12.7 ms untracked); a frame
+rewriting 1 MiB in place 0.3 ms of faults and a 19 µs consume reporting 1.9 MiB; 64
+scattered 256-byte stores 2.0 ms of faults (about 30 µs each, half of it the write-protect
+ioctl's TLB shootdown under the hypervisor). Comparing 64 MiB takes several milliseconds
+per flush, and an allocation larger than 32 MiB has no shadow and was sent whole. Below
+2 MiB, comparing costs less than tracking. The handler polls for 200 µs after each fault
+before sleeping, which halves the cost of fault bursts there.
+
 ## Build and test
 
 In an allocated isolated build slot:
@@ -71,6 +117,13 @@ The C++ test uses an ordinary CPU store loop next to a published GPU byte, alloc
 aliases, independent queues, dependency ordering, same-value journal entries,
 transaction validation, stale IDs, replay rejection and isolated device loss. It tests
 the library, not a Vulkan transport. It can also run under ThreadSanitizer.
+
+On Linux, `write_tracker_test` checks reporting, extents, clipping and a partly covered
+page, re-protection, a `read(2)` destination, a forked child, and a mirror rebuilt only
+from consumed runs while three threads store concurrently, and prints the measurements
+above. It also passes under AddressSanitizer, UndefinedBehaviorSanitizer and
+ThreadSanitizer, and as an unprivileged user under the container computer's seccomp
+profile with `/dev/userfaultfd` passed in; without the device it exits 77.
 
 On Linux, `protected_mapping_test` also checks a real ordinary CPU store across the
 write-protection cut. Exit 77 is unsupported and is reported as skipped, never passed.

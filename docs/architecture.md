@@ -372,6 +372,13 @@ host's devices when unset or `auto`:
 | `dri` | `/dev/dri/renderD128` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa + VA-API |
 | `none` | otherwise | any | nothing | CPU |
 
+Whatever its GPU, the container also gets `/dev/userfaultfd` when the host has it, owned
+by the session user's group: the phone-GPU driver tracks stores to large mapped Vulkan
+allocations with it ([coherent write tracking](../guest/gpu/gfxstream/coherent/README.md#kernel-write-tracking)).
+It also gets the host's `vgem` nodes, the computer's render node ([gpu-buffers.md](gpu-buffers.md)),
+likewise owned by the session user's group; the Linux installer loads `vgem` for the
+container runtime. A host whose only render node is `vgem` is detected as `none`.
+
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
@@ -2738,6 +2745,13 @@ the app card, and a detached view releases its layers.
   window is away. The computer parks on idle and resumes on the next foreground. The last
   frame of every window is cached with the server's `epoch`, and shown on reopening only
   when the new hello has the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
+- **Lifecycle.** The display socket closes when the app goes to the background, unless the
+  computer is playing sound: then the connection stays open for it (the app's `audio`
+  background mode), pictures are acknowledged without being decoded so windows run at the
+  minimised rate, and every window and video restarts at a keyframe on the next
+  foreground. Otherwise the computer parks on idle and resumes on the next foreground. The last frame of every window
+  is cached with the server's `epoch`, and shown on reopening only when the new hello has
+  the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
   off the main thread, most recently raised first within a 24 MiB budget. Home's kept
   pictures use a 640-pixel long edge. Cache generations discard late readbacks.
 - **Connection recovery.** While the app is in use, one display connection is open at a

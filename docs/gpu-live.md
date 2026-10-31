@@ -496,7 +496,17 @@ error while retirement is pending. No successful retirement is inferred from the
 request being sent.
 
 App backgrounding requests bounded UIKit background time for graceful executor
-drain; expiration aborts local transport. Computer switches and display takeover
+drain; expiration aborts local transport. iOS runs no GPU work in the background, so
+the executor always leaves then, even while the display connection stays open for
+sound. The host relay pings the phone every second and ends the relay after 3 s of
+silence, so a phone that leaves without closing ends its executor within seconds.
+When the executor's streams end, every guest process using it sees
+`VK_ERROR_DEVICE_LOST` at once, with no waits and no aborts, and recreates its
+instance. With no executor the Caboose ICD fails `vkCreateInstance` and the loader
+offers lavapipe. When the phone returns, the executor switch layer
+(`guest/gpu/executor-switch`) makes those lavapipe devices report device loss, and
+the applications move back onto the phone. Returning to the foreground starts a new
+executor. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
 app releases its process-wide owner reservation only after native cleanup, its
 REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss

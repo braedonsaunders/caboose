@@ -1,6 +1,7 @@
 """CGLS v1 records for the private, per-surface Unix socket."""
 import struct
 
+from buffer_presentation import decode_forget, decode_register
 from live_surface_protocol import validate_surface
 
 HEADER = struct.Struct('<4sHHII')
@@ -30,6 +31,10 @@ def decode_request(data):
     elif kind == 23:
         if body:
             raise ValueError('invalid retirement')
+    elif kind == 40:
+        decode_register(body)
+    elif kind == 41:
+        decode_forget(body)
     else:
         raise ValueError('unexpected CGLS request')
     return kind, body

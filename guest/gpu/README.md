@@ -10,6 +10,7 @@ calls it makes. The design, the relay in caboose-display and the protocol are in
 | `caboose-gpu-run` | The launcher (Python 3, no dependencies) |
 | `build.sh` | Builds the driver and layers it loads, from pinned sources |
 | `profile.json` | The client GPU the application is shown (Khronos profiles format) |
+| `executor-switch/` | Implicit Vulkan layer that moves applications from lavapipe back onto the phone's GPU when its executor returns ([README](executor-switch/README.md)) |
 
 ## Building
 

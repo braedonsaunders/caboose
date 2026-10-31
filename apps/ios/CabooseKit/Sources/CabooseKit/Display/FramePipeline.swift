@@ -162,6 +162,19 @@ final class FramePipeline: @unchecked Sendable {
                       width: picture.width * sx, height: picture.height * sy)
     }
 
+    /// Pictures were dropped (the app was in the background): decoding starts again at a
+    /// keyframe, on a fresh decoder, since the system may have invalidated the old one.
+    func resumeAfterGap() {
+        queue.async { [self] in
+            guard !isRetired else { return }
+            decoder?.decoder.invalidate()
+            decoder = nil
+            awaitingKeyframe = true
+            lastKeyframeRequest = 0
+            requestKeyframe(now: DispatchTime.now().uptimeNanoseconds)
+        }
+    }
+
     /// At most one request every half second while the stream is broken.
     private func requestKeyframe(now: UInt64) {
         guard now &- lastKeyframeRequest > 500_000_000 else { return }
@@ -248,6 +261,8 @@ final class FramePipelineRegistry: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return pipelines.removeValue(forKey: wid)
     }
+
+    var all: [FramePipeline] { lock.lock(); defer { lock.unlock() }; return Array(pipelines.values) }
 
     func removeAll() -> [FramePipeline] {
         lock.lock(); defer { lock.unlock() }
