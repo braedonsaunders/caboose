@@ -1065,8 +1065,9 @@ text field the trackpad focuses opens Keyboard & Trackpad. The keyboard's globe 
 the system keyboard for languages, emoji and dictation, without the shortcut header (which
 would land above the hinge) and with a button above it that returns to Laptop's keyboard.
 Hide Keyboard returns to the trackpad. Gamepad fills the lower panel with the [on-screen controller](#on-screen-controller). The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
-the hinge. The upper desktop hides Caboose title bars and gives their space to the app;
-app-owned chrome remains. Its pointer reaches both the app and relocated dock. Tablet
+the hinge. Each window on the upper desktop keeps a thin Caboose title bar with its
+controls and the shared window outline, and shows in its snap down to the hinge: a window
+still at another size, or one that cannot grow, is fitted inside the snap, never cut off. Its pointer reaches both the app and relocated dock. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger
 scroll/right-click, pinch zoom, three-finger drag and four-finger window switching use
 the shared trackpad gestures. Four fingers up opens the window chooser; down closes it.
