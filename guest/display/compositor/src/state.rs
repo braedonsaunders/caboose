@@ -371,16 +371,17 @@ impl State {
     /// covers its window geometry (Chromium's primary plane, over a one-pixel root): ask the
     /// broker to show it.
     fn present_remote_buffer(&mut self, surface: &WlSurface) {
-        if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return }
-        let Some(id) = self.window_of_surface(surface) else { return };
-        let Some(window) = self.windows.get(id) else { return };
-        if !matches!(window.surface, Surface::Toplevel(_)) { return }
-        if window.surface.wl_surface().as_ref() != Some(surface) && !covers_geometry(surface, window.local_geometry()) {
-            return;
-        }
         let Some(buffer) = with_renderer_surface_state(surface, |state| state.buffer().cloned()).flatten() else { return };
         let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer) else { return };
         if !crate::remote_buffers::is_remote(dmabuf) { return }
+        let skipped = |reason: &str| tracing::debug!("remote buffer not presented: {reason}");
+        if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return skipped("no GPU epoch") }
+        let Some(id) = self.window_of_surface(surface) else { return skipped("no window") };
+        let Some(window) = self.windows.get(id) else { return skipped("no window") };
+        if !matches!(window.surface, Surface::Toplevel(_)) { return skipped("not a toplevel") }
+        if window.surface.wl_surface().as_ref() != Some(surface) && !covers_geometry(surface, window.local_geometry()) {
+            return skipped("subsurface does not cover the window");
+        }
         let (Some(identity), size) = (crate::remote_buffers::identity(dmabuf), smithay::backend::allocator::Buffer::size(dmabuf)) else { return };
         let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else { return };
         let fence = crate::remote_buffers::pending_fence(dmabuf);
