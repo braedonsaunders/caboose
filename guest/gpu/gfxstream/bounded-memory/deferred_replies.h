@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 #include "completion_feed.h"
+#include "query_results.h"
 
 namespace caboose::memory {
 inline thread_local uint32_t lastOpcode = 0;
@@ -93,6 +94,16 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({0, 0, first, false, count, bytes});
+        entry.bytes += bytes;
+        total_.fetch_add(1, std::memory_order_relaxed);
+    }
+    // A command whose reply is data and then a result, kept in `reply` when it is read
+    // (query_results.h).
+    void addDataReply(const void* encoder, std::shared_ptr<QueryReply> reply, uint64_t bytes) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& entry = pending_[encoder];
+        Reply value; value.data = std::move(reply); value.bytes = bytes;
+        entry.replies.push_back(std::move(value));
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -260,10 +271,23 @@ public:
 private:
     struct Reply;
     static size_t wireSize(const Reply& reply) {
+        if (reply.data) return reply.data->data.size() + sizeof(int32_t);
         return reply.handle ? size_t(reply.count) * sizeof(uint64_t) + sizeof(int32_t) : sizeof(int32_t);
     }
     template<class Stream>
     bool readReply(const Reply& reply, Stream* stream) {
+        if (reply.data) {
+            auto& data = reply.data->data;
+            int32_t result = 0;
+            if ((!data.empty() && !stream->tryRead(data.data(), data.size())) ||
+                !stream->tryRead(&result, sizeof(result))) {
+                stream->invalidate();
+                return false;
+            }
+            reply.data->result = result;
+            reply.data->done.store(true, std::memory_order_release);
+            return true;
+        }
         if (reply.handle) {
             for (uint32_t i = 0; i < reply.count; ++i) {
                 uint64_t created = 0;
@@ -315,7 +339,11 @@ private:
         }
         return true;
     }
-    struct Reply { uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; uint32_t count = 1; uint64_t bytes = 0; };
+    struct Reply {
+        uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; uint32_t count = 1;
+        uint64_t bytes = 0;
+        std::shared_ptr<QueryReply> data;  // a data reply (addDataReply)
+    };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0; };
     std::mutex mutex_;
     std::unordered_map<const void*, Entry> pending_;
