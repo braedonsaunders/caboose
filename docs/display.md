@@ -783,7 +783,8 @@ uses it differently:
   picture placed beyond an end removes it. A toolkit adapter's reported range stays.
 - **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
   driven at most 0.6 of the region per picture interval. While it has shown nothing for
-  two picture intervals (and 100 ms), its drive is capped half a region past its
+  two picture intervals (and 100 ms) of being driven, counted from its last picture or,
+  for an app at rest, from the first scroll sent since, its drive is capped half a region past its
   last picture. It is never held, since an app that draws only when it scrolls would
   otherwise stay silent.
 - **Nothing is guessed.** A measurement must explain at least half of the detail that
