@@ -18,7 +18,6 @@ struct YardTile: View {
 
     var body: some View {
         let radius = yard.metrics.cornerRadius
-        let shape = ConcentricRectangle(cornerRadius: radius)
         let available = yard.metrics.content(ofTile: rect).size
         let natural = DesktopGeometry.surfaceSize(
             natural: CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint),
@@ -38,15 +37,9 @@ struct YardTile: View {
         }
         .frame(width: rect.width, height: rect.height)
         .background(Color(white: 0.06))
-        .clipShape(shape)
         // Keep the system container inherited by both the concentric clip and the
         // title bar's corner-inset reader; a tile does not redefine screen geometry.
-        // The bevel: light along the top edge, a little shade along the bottom, as glass has.
-        .overlay {
-            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.07), .black.opacity(0.28)],
-                                              startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
-                .allowsHitTesting(false)
-        }
+        .modifier(WindowFrameStyle(radius: radius))
         .shadow(color: .black.opacity(0.32), radius: 10, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(window.title.isEmpty ? "Window" : window.title)

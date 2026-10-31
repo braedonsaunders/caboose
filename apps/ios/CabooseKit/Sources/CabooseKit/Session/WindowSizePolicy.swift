@@ -31,6 +31,15 @@ public enum WindowSizePolicy {
                        maximum: maximum, fullscreen: false)
     }
 
+    /// A window that cannot grow to fill `area` (a fixed-size starter window, a capped
+    /// dialog) sits in its middle, as a tile shows it; one that must be larger keeps the
+    /// area's leading and top edges.
+    public static func centred(_ fitted: CGRect, in area: CGRect) -> CGRect {
+        CGRect(x: (area.minX + max(0, area.width - fitted.width) / 2).rounded(),
+               y: (area.minY + max(0, area.height - fitted.height) / 2).rounded(),
+               width: fitted.width, height: fitted.height)
+    }
+
     public static func request(_ proposed: CGRect, minimum: CGSize?, maximum: CGSize?,
                                fullscreen: Bool) -> CGRect? {
         guard !fullscreen, proposed.minX.isFinite, proposed.minY.isFinite,

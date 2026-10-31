@@ -1049,7 +1049,8 @@ system toolbar. The lower-right control rail offers Keyboard, Trackpad, Keyboard
 or Gamepad from one input button showing the current input, then Windows (every app window,
 the front one checked), Computer settings, Go to (the app's tabs in tab-bar order) and power. Opening a window from the Laptop
 desktop focuses it in that workspace, and every app window fills the upper screen (one whose
-minimum size is larger keeps its own); there is no separate Full Screen route or Exit App Full
+minimum size is larger keeps its own, and a fixed-size one such as a starter window sits in its
+middle); there is no separate Full Screen route or Exit App Full
 Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
 shortcut header; Keyboard & Trackpad puts a full-width trackpad across the upper third and
 the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: a
