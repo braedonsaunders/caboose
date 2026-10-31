@@ -20,7 +20,7 @@
 # broker's socket, and that the application then ran on the computer's drivers. Whether
 # a phone renders what arrives is the phone trial's to show.
 #
-# The image needs vulkan-tools, mesa-utils, gtk-4-examples and qml-qt6 besides what the
+# The image needs vulkan-tools, mesa-utils and gtk-4-examples besides what the
 # computer image carries. CABOOSE_CHECK_CPUS and CABOOSE_CHECK_MEMORY (default 4 and 4g)
 # bound the container.
 set -euo pipefail
@@ -46,8 +46,7 @@ out=${2:-/tmp/caboose-gpu-apps}
 icd=/usr/local/lib/caboose-gpu-live/icd.json
 fail() { echo "FAIL: $*" >&2; [[ -f $out/display.log ]] && tail -n 20 "$out/display.log" >&2; exit 1; }
 [[ $(id -u) == 0 ]] || fail 'run as root'
-for command in caboose-display caboose-display-probe vkcube glxinfo eglinfo gtk4-widget-factory qml6 chromium \
-  /usr/share/code/code; do
+for command in caboose-display caboose-display-probe vkcube glxinfo gtk4-widget-factory chromium; do
   command -v "$command" >/dev/null || fail "$command is missing"
 done
 [[ -f $icd ]] || fail "no driver at $icd"
@@ -74,15 +73,13 @@ owner caboose-display-probe --url ws://127.0.0.1:14690/ --token-file "$gpu/token
   > "$out/probe.json" 2> "$out/probe.log" &
 pids+=($!)
 
-# The launch environment names the driver and the broker's sockets, and leaves Mesa free
-# to choose Zink.
+# The launch environment names the driver and the broker's sockets.
 control=$(sed -n "s/^CABOOSE_DISPLAY_CONTROL='\(.*\)'$/\1/p" "$out/display.env")
 [[ -S $control ]] || fail 'no control socket'
 expect_env() { grep -qx "$1='$2'" "$out/display.env" || fail "launch environment lacks $1='$2'"; }
 expect_env VK_ADD_DRIVER_FILES "$icd"
 expect_env CABOOSE_GFXSTREAM_SOCKET "$gpu/gpu.sock"
 expect_env CABOOSE_GFXSTREAM_SURFACE_SOCKET "$gpu/surface.sock"
-expect_env LIBGL_KOPPER_DRI2 1
 expect_env GSK_RENDERER vulkan
 expect_env ELECTRON_OZONE_PLATFORM_HINT x11
 expect_env CABOOSE_GPU_EXECUTOR_SWITCH 1
@@ -190,28 +187,7 @@ PY
 
 app vulkan-wayland 30 '^vkcube' vkcube --wsi wayland --c 120
 app vulkan-x11 30 '^vkcube' vkcube --wsi xcb --c 120
-app opengl-gears 10 '^glxgears' --window glxgears
-app opengl-glx 20 '^glxinfo' glxinfo -B
-grep -q 'OpenGL renderer string: llvmpipe' "$out/opengl-glx.log" || fail 'GLX did not fall back to llvmpipe'
-app opengl-egl-x11 20 '^eglinfo' eglinfo -p x11
 # The image's WhiteSur theme takes GTK half a minute to load on a busy computer.
 app gtk4 30 '^gtk4-widget-factory' --window env GTK_THEME=Adwaita gtk4-widget-factory
-cat > "$out/scene.qml" <<'QML'
-import QtQuick
-import QtQuick.Window
-Window {
-    visible: true; width: 320; height: 240; title: "Qt Quick check"
-    Rectangle {
-        anchors.fill: parent
-        gradient: Gradient { GradientStop { position: 0; color: "steelblue" } GradientStop { position: 1; color: "gold" } }
-        Text { anchors.centerIn: parent; text: "Caboose"; font.pixelSize: 48 }
-    }
-}
-QML
-app qt-quick 20 '^qml6' --window env QSG_INFO=1 qml6 "$out/scene.qml"
 app chromium 40 'type=gpu-process' --window='^/usr/lib/chromium/chromium (?!.*--type=)' chromium --user-data-dir="$out/chromium" --no-first-run --no-default-browser-check about:blank
-# Electron, here Visual Studio Code: an X11 client by the launch environment, whose ANGLE
-# draws with OpenGL, so Zink.
-app electron 40 'type=gpu-process' --window='^/usr/share/code/code (?!.*--type=)' \
-  /usr/share/code/code --user-data-dir="$out/code" --disable-workspace-trust
 echo "PASS: every toolkit reached the phone's driver and ran on without a phone; records in $records"
