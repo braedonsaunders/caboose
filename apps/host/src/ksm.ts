@@ -92,7 +92,7 @@ export function parseKsmMetrics(files: Record<string, string>, pageSize = DEFAUL
     fullScans,
     sleepMillisecs,
     pagesToScan,
-    pageSize: safePageSize,
+    pageSize,
     savedBytes: pagesSharing * safePageSize,
     sharedBytes: pagesShared * safePageSize,
   }
@@ -223,6 +223,97 @@ export async function readSmapsRollup(pid: number, procRoot = '/proc'): Promise<
   } catch {
     return null
   }
+}
+
+function candidateCgroupDirs(containerId: string, cgroupRoot = '/sys/fs/cgroup'): string[] {
+  if (!/^[a-fA-F0-9]{12,128}$/.test(containerId)) return []
+  return [
+    join(cgroupRoot, 'system.slice', `docker-${containerId}.scope`),
+    join(cgroupRoot, 'docker', containerId),
+  ]
+}
+
+/**
+ * Aggregates `/proc/<pid>/smaps_rollup` across all processes in a container's cgroup (`cgroup.procs`),
+ * falling back to `fallbackPid` when the cgroup process list is unavailable.
+ */
+export async function readCgroupSmapsRollup(
+  containerId: string,
+  fallbackPid?: number,
+  cgroupRoot = '/sys/fs/cgroup',
+  procRoot = '/proc',
+): Promise<SmapsRollup | null> {
+  for (const dir of candidateCgroupDirs(containerId, cgroupRoot)) {
+    try {
+      const rawProcs = await readFile(join(dir, 'cgroup.procs'), 'utf8')
+      const pids = rawProcs
+        .split(/\s+/)
+        .map(s => Number(s.trim()))
+        .filter(n => Number.isSafeInteger(n) && n > 0)
+      if (!pids.length) continue
+      const rollups = (await Promise.all(pids.map(pid => readSmapsRollup(pid, procRoot)))).filter(
+        (r): r is SmapsRollup => r !== null,
+      )
+      if (!rollups.length) continue
+      return rollups.reduce<SmapsRollup>(
+        (acc, r) => ({
+          rssBytes: acc.rssBytes + r.rssBytes,
+          pssBytes: acc.pssBytes + r.pssBytes,
+          sharedCleanBytes: acc.sharedCleanBytes + r.sharedCleanBytes,
+          sharedDirtyBytes: acc.sharedDirtyBytes + r.sharedDirtyBytes,
+          privateCleanBytes: acc.privateCleanBytes + r.privateCleanBytes,
+          privateDirtyBytes: acc.privateDirtyBytes + r.privateDirtyBytes,
+          swapPssBytes: acc.swapPssBytes + r.swapPssBytes,
+          sharedBytes: acc.sharedBytes + r.sharedBytes,
+          privateBytes: acc.privateBytes + r.privateBytes,
+        }),
+        {
+          rssBytes: 0,
+          pssBytes: 0,
+          sharedCleanBytes: 0,
+          sharedDirtyBytes: 0,
+          privateCleanBytes: 0,
+          privateDirtyBytes: 0,
+          swapPssBytes: 0,
+          sharedBytes: 0,
+          privateBytes: 0,
+        },
+      )
+    } catch {
+      continue
+    }
+  }
+  return typeof fallbackPid === 'number' && fallbackPid > 0 ? readSmapsRollup(fallbackPid, procRoot) : null
+}
+
+/**
+ * Triggers host-side cgroup v2 proactive memory reclaim (`memory.reclaim`) for a container cgroup.
+ * Linux returns `EAGAIN` when fewer bytes than requested could be reclaimed; that still indicates
+ * cold pages were reclaimed and is treated as success.
+ */
+export async function reclaimCgroupMemory(
+  containerId: string,
+  mode: 'freeze' | 'park' | 'pressure' = 'freeze',
+  cgroupRoot = '/sys/fs/cgroup',
+): Promise<boolean> {
+  const ratio = mode === 'park' ? 0.5 : mode === 'pressure' ? 0.25 : 0.35
+  for (const dir of candidateCgroupDirs(containerId, cgroupRoot)) {
+    try {
+      const currentRaw = await readFile(join(dir, 'memory.current'), 'utf8')
+      const currentBytes = parseNonNegativeInt(currentRaw)
+      if (currentBytes <= 0) continue
+      const requestedBytes = Math.max(4 * 1024 * 1024, Math.floor((currentBytes * ratio) / DEFAULT_PAGE_SIZE) * DEFAULT_PAGE_SIZE)
+      try {
+        await writeFile(join(dir, 'memory.reclaim'), `${requestedBytes}\n`, 'utf8')
+        return true
+      } catch (err: any) {
+        if (err?.code === 'EAGAIN') return true
+      }
+    } catch {
+      continue
+    }
+  }
+  return false
 }
 
 /**

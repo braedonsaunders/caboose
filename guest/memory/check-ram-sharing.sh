@@ -18,7 +18,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/caboose-ram-check.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 if command -v mkfs.erofs >/dev/null 2>&1 && command -v fsck.erofs >/dev/null 2>&1; then
-  mkdir -p "$WORK/root/usr/bin" "$WORK/root/etc"
+  mkdir -p "$WORK/root/usr/bin" "$WORK/root/opt" "$WORK/root/etc"
   dd if=/dev/urandom of="$WORK/root/usr/bin/sample-bin" bs=4096 count=64 status=none
   CABOOSE_SYSTEM_IMAGE_FORMAT=dax "$REPO/guest/image/make-system-image.sh" "$WORK/root" "$WORK/system.erofs"
   SIZE=$(stat -c '%s' "$WORK/system.erofs" 2>/dev/null || stat -f '%z' "$WORK/system.erofs")
@@ -40,7 +40,7 @@ work = pathlib.Path(sys.argv[1])
 shared_file = work / "shared-system.dax"
 # Create a 32 MiB shared system image backing file + 16 MiB mergeable anonymous arena per VM
 shared_size = 32 * 1024 * 1024
-shared_file.write_bytes((b"CABOOSE_DAX_SHARED_PAGE_" * 170)[:4096] * (shared_size // 4096))
+shared_file.write_bytes((b"CABOOSE_DAX_SHARED_PAGE_" * 171)[:4096] * (shared_size // 4096))
 
 worker_code = """
 import ctypes, mmap, os, signal, sys, time

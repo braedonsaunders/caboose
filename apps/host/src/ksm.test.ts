@@ -8,8 +8,10 @@ import {
   parseProcStat,
   parseSmapsRollup,
   pulseKsmMergeBoost,
+  readCgroupSmapsRollup,
   readKsmSnapshot,
   readSmapsRollup,
+  reclaimCgroupMemory,
 } from './ksm.js'
 
 const dirs: string[] = []
@@ -201,5 +203,29 @@ describe('smaps_rollup parser and reader', () => {
     expect(found?.cpuSeconds).toBe(4)
     expect(found?.smaps.pssBytes).toBe(180224 * 1024)
     expect(found?.smaps.sharedBytes).toBe(393216 * 1024)
+  })
+
+  it('aggregates smaps_rollup across cgroup.procs and triggers cgroup memory.reclaim', async () => {
+    const cgroupRoot = await tempDir('cgroup-')
+    const procRoot = await tempDir('proc-cg-')
+    const containerId = '00d9c8f9968a575c5863311ddf43a1cc04699d495533e0602a71221e5b094e8e'
+    const scopeDir = join(cgroupRoot, 'system.slice', `docker-${containerId}.scope`)
+    await mkdir(scopeDir, { recursive: true })
+    await writeFile(join(scopeDir, 'cgroup.procs'), '1001\n1002\n')
+    await writeFile(join(scopeDir, 'memory.current'), String(100 * 1024 * 1024) + '\n')
+    await writeFile(join(scopeDir, 'memory.reclaim'), '0\n')
+
+    await mkdir(join(procRoot, '1001'), { recursive: true })
+    await mkdir(join(procRoot, '1002'), { recursive: true })
+    await writeFile(join(procRoot, '1001', 'smaps_rollup'), sampleSmaps)
+    await writeFile(join(procRoot, '1002', 'smaps_rollup'), sampleSmaps)
+
+    const summed = await readCgroupSmapsRollup(containerId, undefined, cgroupRoot, procRoot)
+    expect(summed?.pssBytes).toBe(2 * 180224 * 1024)
+    expect(summed?.sharedBytes).toBe(2 * 393216 * 1024)
+
+    const reclaimed = await reclaimCgroupMemory(containerId, 'park', cgroupRoot)
+    expect(reclaimed).toBe(true)
+    expect((await readFile(join(scopeDir, 'memory.reclaim'), 'utf8')).trim()).toBe(String(50 * 1024 * 1024))
   })
 })

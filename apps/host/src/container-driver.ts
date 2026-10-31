@@ -14,7 +14,7 @@ import type { ComputerSettings } from './settings.js'
 import { fenceBridge, unfenceBridge } from './network.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
-import { pulseKsmMergeBoost } from './ksm.js'
+import { pulseKsmMergeBoost, reclaimCgroupMemory } from './ksm.js'
 
 /** The owner computer's own Docker network, so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
@@ -79,107 +79,104 @@ export async function withContainerPorts<T>(docker: Docker, work: (ports: { disp
         for (const value of Object.values(bindings)) {
           if (!Array.isArray(value)) continue
           for (const item of value) {
-            const port = Number((item as { HostPort?: unknown } | null)?.HostPort)
-            if (Number.isInteger(port) && port > 0) occupied.add(port)
+            const port = Number(item?.HostPort)
+            if (Number.isInteger(port) && port > 0 && port <= 65535) occupied.add(port)
           }
         }
       }
     }
-    for (let base = 21_000; base <= 60_000; base += 10) {
-      const candidate = [base, base + 1, base + 2, base + 3] as const
-      if (candidate.some(port => occupied.has(port))) continue
-      if (!(await available(candidate))) continue
-      return work({ display: candidate[0], agent: candidate[1], files: candidate[2], terminal: candidate[3] })
+    let races = 0
+    for (let base = 21000; base <= 65532; base += 4) {
+      const ports = [base, base + 1, base + 2, base + 3]
+      if (ports.some(port => occupied.has(port)) || !await available(ports)) continue
+      try { return await work({ display: base, agent: base + 1, files: base + 2, terminal: base + 3 }) }
+      catch (error) { if (!(error instanceof PortBindRace)) throw error; if (++races >= 32) throw new Error('Could not reserve container ports after 32 bind races', { cause: error }) }
     }
-    throw new Error('No free container port block in 21000–60000')
+    throw new Error('No loopback ports remain for another container computer')
   })
   allocationQueue = run.then(() => {}, () => {})
   return run
 }
 
 /**
- * The flags a container needs to reach a host GPU. Kept out of the default `runArgs` so tests
- * and `CABOOSE_GPU=none` stay identical on machines without a device.
+ * The computer as a container instead of a microVM, for hosts whose GPU a container can use
+ * but a VM cannot have: WSL2's paravirtual /dev/dxg (any vendor), a Linux NVIDIA GPU through
+ * the container toolkit, or Linux render nodes (Intel, AMD). The image reads CABOOSE_GPU to
+ * pick its GL driver and caboose-display's video encoder; with no GPU it runs on the CPU.
+ *
+ * The image provides `caboose-session start | ready | start-agent | start-files`, which runs
+ * D-Bus and the two caboose-display instances (the owner's display and the agent seat) as
+ * `caboose`, reading the per-wake token from /run/caboose/display-token. Displays are
+ * published on loopback only.
+ *
+ * Parking freezes the container (cgroup freezer): memory stays in RAM and resume is
+ * instant, but unlike a microVM snapshot it does not survive a restart of the host;
+ * after one the computer boots fresh with its home intact. See docs/architecture.md.
  */
-export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync): string[] {
-  if (kind === 'none') return []
-  if (kind === 'nvidia') return ['--gpus', 'all', '-e', 'NVIDIA_DRIVER_CAPABILITIES=all']
-  if (kind === 'dri') return ['--device', '/dev/dri:/dev/dri']
-  if (kind === 'wsl') {
-    const args = ['--device', '/dev/dxg:/dev/dxg', '-v', '/usr/lib/wsl:/usr/lib/wsl:ro']
-    if (exists('/dev/dri')) args.push('--device', '/dev/dri:/dev/dri')
-    // WSLg's pulse server is optional; audio falls back if the host is headless.
-    if (exists('/mnt/wslg/PulseServer')) {
-      args.push('-v', '/mnt/wslg/PulseServer:/mnt/wslg/PulseServer', '-e', 'PULSE_SERVER=unix:/mnt/wslg/PulseServer')
-    }
-    return args
-  }
-  return []
-}
-
 /**
- * Desktop and coding apps inside the container use user namespaces (Chromium, bubblewrap) and
- * ptrace (gdb, strace). Give them the capabilities and seccomp policy they need while still
- * running an unprivileged container (`--privileged` would hand the guest every host device).
- * An operator who already passes their own `--security-opt` in `CABOOSE_CONTAINER_ARGS` keeps it.
+ * Caboose's seccomp profile: Moby's default, plus the namespaces and mounts that Chromium's
+ * and Flatpak's sandboxes make inside user namespaces of their own. The kernel still requires
+ * CAP_SYS_ADMIN in the owning user namespace, which the container's root does not have.
  */
-const SECCOMP_PROFILE = fileURLToPath(new URL('../container-seccomp.json', import.meta.url))
-export function securityArgs(customArgs: readonly string[]): string[] {
-  const args = ['--cap-add', 'SYS_ADMIN', '--cap-add', 'SYS_PTRACE']
-  const hasSeccomp = customArgs.some((arg, index) => (arg === '--security-opt' && customArgs[index + 1]?.startsWith('seccomp=')) || arg.startsWith('--security-opt=seccomp='))
-  if (!hasSeccomp) args.push('--security-opt', `seccomp=${SECCOMP_PROFILE}`)
-  return args
-}
+export const SECCOMP_PROFILE = fileURLToPath(new URL('../../../guest/container/caboose-seccomp.json', import.meta.url))
+/** The Docker volume holding the host's shared Flatpak runtimes (docs/architecture.md § Runtime depot). */
+export const DEPOT_VOLUME = 'caboose-depot'
 
-/** Shared Flatpak depot volume mounted read-only into every container. */
-export const DEPOT_VOLUME = 'caboose-flathub-depot'
+/** The profile, unless the operator's own arguments choose a seccomp policy. */
+export function securityArgs(extra: readonly string[]): string[] {
+  const chosen = extra.some((arg, index) => arg.startsWith('--security-opt=seccomp') || (extra[index - 1] === '--security-opt' && arg.startsWith('seccomp')))
+  return chosen ? [] : ['--security-opt', `seccomp=${SECCOMP_PROFILE}`]
+}
 
 export type Docker = (args: string[], timeoutMs?: number) => Promise<string>
 
-function runDocker(args: string[], timeoutMs = 60_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`docker ${args[0]} failed: ${stderr.trim() || error.message}`))
+export function dockerCli(binary = 'docker'): Docker {
+  return (args, timeoutMs = 60_000) => new Promise((resolve, reject) => {
+    execFile(binary, args, { timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(new Error(`docker ${args[0]} failed: ${(stderr || error.message).trim()}`))
       else resolve(stdout)
     })
   })
 }
 
-export function detectGpu(configured: GpuKind, exists: (path: string) => boolean = existsSync): Exclude<GpuKind, 'auto'> {
-  if (configured !== 'auto') return configured
-  if (exists('/dev/dxg') && exists('/usr/lib/wsl')) return 'wsl'
-  if (exists('/dev/nvidiactl')) return 'nvidia'
+/** The GPU this host can give a container, by the devices it has. */
+export function detectGpu(exists: (path: string) => boolean = existsSync): GpuKind {
+  if (exists('/dev/dxg')) return 'wsl'
+  if (exists('/dev/nvidiactl') || exists('/dev/nvidia0')) return 'nvidia'
   if (exists('/dev/dri/renderD128')) return 'dri'
   return 'none'
 }
 
 /**
- * Drives a single Docker container as a Caboose computer.
- *
- * Unlike the microVM, the container is created once and kept across wakes: `park()` pauses its
- * cgroup (`docker pause`), and `wake()` unpauses it (`docker unpause`), so open windows and
- * running processes survive with near-instant resume. If the container was stopped (for example
- * across a host reboot) `wake()` starts it again and re-launches the display.
+ * `docker run` arguments that hand the container the GPU. With a render node the
+ * container also gets /dev/udmabuf when the host has it: the Caboose VA-API driver exports
+ * its decode surfaces through it, so GL players keep video passthrough (guest/vaapi).
  */
-export function createContainerController(config: Config, dependencies: {
-  docker?: Docker
-  exists?: (path: string) => boolean
-  identity?: ComputerIdentity
-  settings?: () => ComputerSettings
-  fence?: (bridge: string) => Promise<void>
-  unfence?: (bridge: string) => Promise<void>
-} = {}): Controller {
-  const docker = dependencies.docker ?? runDocker
-  const gpu = detectGpu(config.gpu, dependencies.exists)
+export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync): string[] {
+  const udmabuf = exists('/dev/udmabuf') ? ['--device', '/dev/udmabuf'] : []
+  switch (kind) {
+    case 'wsl': return ['--device', '/dev/dxg', '-v', '/usr/lib/wsl:/usr/lib/wsl:ro', '-e', 'LD_LIBRARY_PATH=/usr/lib/wsl/lib', '-e', 'CABOOSE_GPU=wsl']
+    case 'nvidia': return ['--gpus', 'all', '-e', 'NVIDIA_DRIVER_CAPABILITIES=all', ...udmabuf, '-e', 'CABOOSE_GPU=nvidia']
+    case 'dri': return ['--device', '/dev/dri', ...udmabuf, '-e', 'CABOOSE_GPU=dri']
+    case 'none': return ['-e', 'CABOOSE_GPU=none']
+  }
+}
+
+export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
+  const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
-  const name = place.name
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
-  let running = false
-  let displayToken = ''
-  let launchEnv: string[] = []
+  /** What the container was created with; settings changes apply on the next restart. */
   let resources: ComputerResources | null = null
   let lastError: string | null = null
+  const name = place.name
+  const gpu: GpuKind = config.gpu === 'auto' ? detectGpu(dependencies.exists) : config.gpu
+  /** What an app launched onto the owner's display needs; caboose-display's, read at each wake. */
+  let launchEnv: string[] = []
+  let displayToken = ''
+  let running = false
   let filesPortWarning: string | undefined
+  /** Where the terminal service is reached: its loopback port, or the computer's bridge address. */
   let terminalUrl = `http://127.0.0.1:${place.ports.terminal}`
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
@@ -357,6 +354,12 @@ export function createContainerController(config: Config, dependencies: {
         await exec('root', '/usr/local/libexec/caboose-memory', ['reclaim', '--mode=park', '--json'], 10_000)
       } catch {
         // Containers without caboose-memory installed skip reclamation cleanly.
+      }
+      try {
+        const id = (await docker(['inspect', '-f', '{{.Id}}', name], 5_000)).trim()
+        await reclaimCgroupMemory(id, 'park')
+      } catch {
+        // Host-side cgroup reclaim is best-effort.
       }
     },
     async park() {
