@@ -8,6 +8,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -93,6 +94,7 @@ public:
         auto& state = fences_[fence];
         state.state = Fence::Untracked;
         state.serial = 0;
+        changed_.notify_all();  // a waiter now asks the device
     }
     Fence fence(uint64_t fence) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -102,15 +104,17 @@ public:
     // A submission's signal operations on `queue`, before it is sent. Returns the serial
     // to watch.
     uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
-                       uint64_t queue = 0) {
+                       uint64_t queue = 0, uint64_t device = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
         watch.queue = queue;
+        watch.device = device;
         if (fence) {
             auto& state = fences_[fence];
             state.state = Fence::Pending;
             state.serial = serial;
+            state.device = device;
             watch.fence = fence;
         }
         for (const auto& [semaphore, value] : timelineSignals) {
@@ -129,23 +133,24 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return lastSerial_;
     }
-    // The device reported `queue` idle (vkQueueWaitIdle), or every queue (0, vkDeviceWaitIdle),
-    // for a wait sent after serial `through`: every watched submission there up to it has
-    // completed, even if its record is still in flight.
-    void idle(uint64_t queue, uint64_t through) {
+    // The device reported `queue` idle (vkQueueWaitIdle), or every queue of `device`
+    // (vkDeviceWaitIdle, queue 0), for a wait sent after serial `through`: every watched
+    // submission there up to it has completed, even if its record is still in flight.
+    void idle(uint64_t queue, uint64_t device, uint64_t through) {
         std::vector<uint64_t> serials;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (const auto& [serial, watch] : watches_)
-                if (serial <= through && (!queue || watch.queue == queue)) serials.push_back(serial);
+                if (serial <= through && (queue ? watch.queue == queue : watch.device == device))
+                    serials.push_back(serial);
         }
         for (uint64_t serial : serials) complete(serial, kCompleted);
     }
 
     // --- Timeline semaphores ------------------------------------------------------------
-    void timelineCreated(uint64_t semaphore, uint64_t initialValue) {
+    void timelineCreated(uint64_t semaphore, uint64_t initialValue, uint64_t device = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
-        semaphores_[semaphore] = SemaphoreState{true, initialValue, initialValue};
+        semaphores_[semaphore] = SemaphoreState{true, initialValue, initialValue, device};
     }
     void semaphoreDestroyed(uint64_t semaphore) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -155,6 +160,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = semaphores_.find(semaphore);
         if (it != semaphores_.end()) it->second.tracked = false;
+        changed_.notify_all();  // a waiter now asks the device
     }
     // vkSignalSemaphore: the host sets the value directly.
     void timelineSignaledByHost(uint64_t semaphore, uint64_t value) {
@@ -182,7 +188,8 @@ public:
         Watch watch = std::move(it->second);
         watches_.erase(it);
         if (status == kDeviceLost) {
-            lost_ = true;
+            if (watch.device) lostDevices_.insert(watch.device);
+            else lost_ = true;
         } else if (watch.fence) {
             auto fence = fences_.find(watch.fence);
             if (fence != fences_.end() && fence->second.state == Fence::Pending &&
@@ -205,9 +212,9 @@ public:
         closed_ = true;
         changed_.notify_all();
     }
-    bool deviceLost() {
+    bool deviceLost(uint64_t device = 0) {
         std::lock_guard<std::mutex> lock(mutex_);
-        return lost_;
+        return lost_ || (device && lostDevices_.count(device));
     }
 
     // --- Queries and waits ---------------------------------------------------------------
@@ -250,9 +257,12 @@ public:
     }
 
 private:
-    struct FenceState { Fence state = Fence::Unsignaled; uint64_t serial = 0; };
-    struct SemaphoreState { bool tracked = false; uint64_t value = 0; uint64_t pending = 0; };
-    struct Watch { uint64_t fence = 0; uint64_t queue = 0; std::vector<std::pair<uint64_t, uint64_t>> signals; };
+    struct FenceState { Fence state = Fence::Unsignaled; uint64_t serial = 0; uint64_t device = 0; };
+    struct SemaphoreState { bool tracked = false; uint64_t value = 0; uint64_t pending = 0; uint64_t device = 0; };
+    struct Watch {
+        uint64_t fence = 0, queue = 0, device = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> signals;
+    };
 
     Answer fencesLocked(const uint64_t* fences, uint32_t count, bool all) {
         if (lost_) return Answer::DeviceLost;
@@ -260,6 +270,7 @@ private:
         for (uint32_t i = 0; i < count; ++i) {
             auto it = fences_.find(fences[i]);
             if (it == fences_.end() || it->second.state == Fence::Untracked) return Answer::AskDevice;
+            if (it->second.device && lostDevices_.count(it->second.device)) return Answer::DeviceLost;
             if (it->second.state == Fence::Signaled) ++signaled;
         }
         // An unsignaled fence with no pending submission can only be signaled by a later
@@ -272,6 +283,7 @@ private:
         for (uint32_t i = 0; i < count; ++i) {
             auto it = semaphores_.find(semaphores[i]);
             if (it == semaphores_.end() || !it->second.tracked) return Answer::AskDevice;
+            if (it->second.device && lostDevices_.count(it->second.device)) return Answer::DeviceLost;
             if (it->second.value >= values[i]) ++reached;
         }
         return (all ? reached == count : reached > 0) ? Answer::Satisfied : Answer::NotYet;
@@ -283,7 +295,8 @@ private:
     std::unordered_map<uint64_t, SemaphoreState> semaphores_;
     std::unordered_map<uint64_t, Watch> watches_;
     uint64_t lastSerial_ = 0;
-    bool lost_ = false;
+    bool lost_ = false;                         // a loss not tied to a known device
+    std::unordered_set<uint64_t> lostDevices_;
     bool closed_ = false;
 };
 

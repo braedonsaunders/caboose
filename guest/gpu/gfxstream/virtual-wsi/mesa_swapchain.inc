@@ -59,17 +59,26 @@ static uint32_t presentFamily(const ProviderCaps& caps) {
         if (queue[3] && (queue[1]&VK_QUEUE_GRAPHICS_BIT)) family=std::min(family,queue[0]);
     return family;
 }
+// Whether a slot's last hand-off ran, waiting up to `timeout`. The completion feed answers
+// locally; a fence it does not track is asked about on the device stream.
+static bool slotHandoffDone(DeviceSwapchain& swap, AcquireSlot& slot, uint64_t timeout) {
+    uint64_t key=uint64_t(uintptr_t(slot.fence));
+    auto answer=timeout ? caboose::completion::tracker().waitFences(&key,1,true,
+                              std::chrono::steady_clock::now()+std::chrono::nanoseconds(timeout))
+                        : caboose::completion::tracker().fencesSignaled(&key,1,true);
+    if (answer!=caboose::completion::Tracker::Answer::AskDevice)
+        return answer==caboose::completion::Tracker::Answer::Satisfied;
+    VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+    auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+    return encoder->vkWaitForFences(device->internal_object,1,&slot.fence,VK_TRUE,timeout,true)==VK_SUCCESS;
+}
 static void freeImages(DeviceSwapchain& swap) {
     VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
     auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
     auto* tracker=gfxstream::vk::ResourceTracker::get();
     for (auto& slot:swap.slots) {
         // A hand-off still running keeps its fence and semaphore.
-        if (slot.fenceSubmitted) {
-            uint64_t key=uint64_t(uintptr_t(slot.fence));
-            if (caboose::completion::tracker().waitFences(&key,1,true,deadline())!=
-                caboose::completion::Tracker::Answer::Satisfied) continue;
-        }
+        if (slot.fenceSubmitted && !slotHandoffDone(swap,slot,10'000'000'000ull)) continue;
         if (slot.semaphore) tracker->on_vkDestroySemaphore(encoder,device->internal_object,slot.semaphore,nullptr);
         if (slot.fence) tracker->on_vkDestroyFence(encoder,device->internal_object,slot.fence,nullptr);
         slot={};
@@ -85,9 +94,13 @@ static void freeImages(DeviceSwapchain& swap) {
         }
     }
 }
+// Acquisition ahead of the application needs the completion feed for its slot fences and
+// a single encoder, so the device stream that created a slot's semaphore is the one the
+// application's work follows.
 static bool pipelinedAcquire(const DeviceSwapchain& swap) {
     return caboose_gfxstream_ordered_present==1 && swap.handoffQueue && swap.slots.size()==kAcquireSlots &&
-           caboose::completion::feedActive.load(std::memory_order_acquire);
+           caboose::completion::feedActive.load(std::memory_order_acquire) &&
+           caboose::memory::deferredReplies.singleEncoder(gfxstream::vk::ResourceTracker::getThreadLocalEncoder());
 }
 // Creates the private acquire semaphores and fences, before the phone maps the swapchain,
 // and picks a queue of the presentation family for the hand-off submissions. Without
@@ -122,9 +135,7 @@ static void startPreAcquire(DeviceSwapchain& swap) {
     auto& slot=swap.slots[index];
     if (slot.fenceSubmitted) {
         // The slot's semaphore is free again only once its previous hand-off ran.
-        uint64_t key=uint64_t(uintptr_t(slot.fence));
-        if (caboose::completion::tracker().fencesSignaled(&key,1,true)!=caboose::completion::Tracker::Answer::Satisfied)
-            return;
+        if (!slotHandoffDone(swap,slot,0)) return;
         VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
         auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
         if (gfxstream::vk::ResourceTracker::get()->on_vkResetFences(encoder,VK_SUCCESS,device->internal_object,1,&slot.fence)!=VK_SUCCESS)
@@ -355,14 +366,19 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             boxedFence=get_host_u64_VkFence(value->internal_object);
         }
         if (swap->preRequest) {
-            // The image was acquired ahead of time against a private semaphore.
-            // Wait as long as the application allows, within the transport deadline.
-            const int64_t transport=std::max<int64_t>(0,
-                std::chrono::duration_cast<std::chrono::nanoseconds>(deadline()-std::chrono::steady_clock::now()).count());
-            const auto patience=std::min<uint64_t>(timeout,uint64_t(transport));
-            if (!surface.client.awaitAcquireReply(swap->native,
-                    std::chrono::steady_clock::now()+std::chrono::nanoseconds(patience)))
-                return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+            // The image was acquired ahead of time against a private semaphore: wait as
+            // long as the application allows. The phone's acquire has no timeout of its
+            // own, so an unanswered one stays outstanding for the next call. Long timeouts
+            // are waited for a day at a time, keeping deadlines representable.
+            constexpr uint64_t kDay=86400ull*1000000000ull;
+            uint64_t remaining=timeout;
+            for (;;) {
+                const uint64_t chunk=std::min(remaining,kDay);
+                if (surface.client.awaitAcquireReply(swap->native,
+                        std::chrono::steady_clock::now()+std::chrono::nanoseconds(chunk))) break;
+                if (timeout!=UINT64_MAX) remaining-=chunk;
+                if (!remaining) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+            }
             auto reply=surface.client.finishAcquire(swap->native,swap->preRequest,deadline());
             const size_t slotIndex=swap->preSlot;
             swap->preRequest=0;

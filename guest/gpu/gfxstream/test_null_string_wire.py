@@ -70,7 +70,11 @@ class NullStringWire(unittest.TestCase):
         patch = (HERE / 'driver/patches/0001-socket-transport.patch').read_text()
         self.assertIn('features.hasVulkanNullOptionalStrings = true;', patch)
         socket = (HERE / 'SocketStream.cpp').read_text()
-        self.assertIn('std::memcmp(reply, kHello, sizeof(kHello))', socket)
+        # The reply must equal the hello outside the feature mask, which may only add
+        # features that were offered.
+        self.assertIn('!std::memcmp(reply, kHello, 12)', socket)
+        self.assertIn('!std::memcmp(reply + 16, kHello + 16, sizeof(kHello) - 16)', socket)
+        self.assertIn('(accepted & required) == required && !(*features & ~offered)', socket)
         self.assertIn("'C','B','G','L','R','E','F','1', 2,0,0,0, 0x10,0,0,0", socket)
         self.assertIn("'C','B','G','L','R','E','F','1', 3,0,0,0, 0x30,0,0,0", socket)
         self.assertIn('errno = EPROTO', socket)
