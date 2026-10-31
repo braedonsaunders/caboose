@@ -159,7 +159,7 @@ the Vulkan decoder, and executes each `CBVL` LATCH packet of a Vulkan stream
   between barriers that leave it in `GENERAL`; carried pixels go through a staging buffer. A
   reclaimer thread waits for each copy's fence before releasing its resources and then the
   decoder leases, so destroying the image or device waits only for the copy itself.
-- `patches/0060-media-latch-objects.patch` adds `acquireCabooseMediaLatchObjects`, which
+- The decoder fork's `Caboose: media-latch-objects` commit adds `acquireCabooseMediaLatchObjects`, which
   validates that the queue and a 2D single-level transfer-destination image belong to the
   stream's context and returns them with instance, device, image and memory leases, and enables
   `VK_EXT_metal_objects` on host devices that have it. The guest driver must create the phone

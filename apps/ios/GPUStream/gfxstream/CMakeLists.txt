@@ -33,7 +33,7 @@ if(APPLE)
     file(STRINGS "${GFXSTREAM_REPO_ROOT}/host/vulkan/vk_decoder_global_state.h"
         CABOOSE_MEDIA_LATCH REGEX "acquireCabooseMediaLatchObjects")
     if(NOT CABOOSE_MEDIA_LATCH)
-        message(FATAL_ERROR "Phone-decoded video requires the media latch objects patch (0060)")
+        message(FATAL_ERROR "Phone-decoded video requires the decoder's media latch objects commit")
     endif()
     target_sources(caboose_gfxstream_connection PRIVATE media_videotoolbox.mm media_copy.mm media_latch.mm)
     target_compile_options(caboose_gfxstream_connection PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
