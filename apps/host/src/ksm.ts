@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const DEFAULT_KSM_ROOT = '/sys/kernel/mm/ksm'
@@ -38,6 +38,12 @@ export interface SmapsRollup {
   swapPssBytes: number
   sharedBytes: number
   privateBytes: number
+}
+
+export interface ProcStatTelemetry {
+  pid: number
+  starttimeTicks: number
+  cpuSeconds: number
 }
 
 const KSM_METRIC_FILES = [
@@ -93,16 +99,17 @@ export function parseKsmMetrics(files: Record<string, string>, pageSize = DEFAUL
 }
 
 /**
- * Reads `/sys/kernel/mm/ksm/*` and returns a snapshot, or `null` when KSM sysfs is absent or unreadable.
+ * Reads `/sys/kernel/mm/ksm/*` counters. Returns `null` when KSM sysfs is absent or unreadable.
  */
 export async function readKsmSnapshot(ksmRoot = DEFAULT_KSM_ROOT, pageSize = DEFAULT_PAGE_SIZE): Promise<KsmSnapshot | null> {
   try {
-    const runRaw = await readFile(join(ksmRoot, 'run'), 'utf8')
-    const trimmedRun = runRaw.trim()
-    if (trimmedRun !== '0' && trimmedRun !== '1' && trimmedRun !== '2') return null
-    const entries = await Promise.all(
-      KSM_METRIC_FILES.map(async name => {
-        if (name === 'run') return [name, runRaw] as const
+    const [run, pagesShared, pagesSharing] = await Promise.all([
+      readFile(join(ksmRoot, 'run'), 'utf8'),
+      readFile(join(ksmRoot, 'pages_shared'), 'utf8'),
+      readFile(join(ksmRoot, 'pages_sharing'), 'utf8'),
+    ])
+    const optional = await Promise.all(
+      (['pages_unshared', 'pages_volatile', 'full_scans', 'sleep_millisecs', 'pages_to_scan'] as const).map(async name => {
         try {
           return [name, await readFile(join(ksmRoot, name), 'utf8')] as const
         } catch {
@@ -110,25 +117,41 @@ export async function readKsmSnapshot(ksmRoot = DEFAULT_KSM_ROOT, pageSize = DEF
         }
       }),
     )
-    return parseKsmMetrics(Object.fromEntries(entries), pageSize)
+    return parseKsmMetrics(
+      {
+        run,
+        pages_shared: pagesShared,
+        pages_sharing: pagesSharing,
+        ...Object.fromEntries(optional),
+      },
+      pageSize,
+    )
   } catch {
     return null
   }
 }
 
+function clearBoostTimer(ksmRoot: string): void {
+  const existing = activeBoostTimers.get(ksmRoot)
+  if (existing) {
+    clearTimeout(existing)
+    activeBoostTimers.delete(ksmRoot)
+  }
+}
+
 /**
- * Event-driven KSM merge boost controller.
- * Temporarily increases KSM scan speed when a VM freezes or finishes waking/forking,
- * then throttles back to a low-CPU steady state after `durationMs`.
- * Gracefully no-ops when non-root or when `/sys/kernel/mm/ksm` is absent/read-only.
+ * Event-driven KSM scan-boost controller.
+ * On VM wake, template fork, or freeze, raises `pages_to_scan` and lowers `sleep_millisecs`
+ * (`run=1`) for `durationMs` so newly faulted/compacted identical pages merge quickly, then
+ * steps down to a low steady background scan rate.
  */
 export async function pulseKsmMergeBoost(options: KsmBoostOptions = {}): Promise<boolean> {
   const ksmRoot = options.ksmRoot ?? DEFAULT_KSM_ROOT
   const boostPagesToScan = options.boostPagesToScan ?? 4096
   const boostSleepMs = options.boostSleepMs ?? 20
-  const steadyPagesToScan = options.steadyPagesToScan ?? 512
-  const steadySleepMs = options.steadySleepMs ?? 100
-  const durationMs = options.durationMs ?? 15_000
+  const steadyPagesToScan = options.steadyPagesToScan ?? 256
+  const steadySleepMs = options.steadySleepMs ?? 500
+  const durationMs = options.durationMs ?? 20_000
 
   try {
     await writeFile(join(ksmRoot, 'pages_to_scan'), `${boostPagesToScan}\n`, 'utf8')
@@ -138,9 +161,7 @@ export async function pulseKsmMergeBoost(options: KsmBoostOptions = {}): Promise
     return false
   }
 
-  const existing = activeBoostTimers.get(ksmRoot)
-  if (existing) clearTimeout(existing)
-
+  clearBoostTimer(ksmRoot)
   const timer = setTimeout(() => {
     activeBoostTimers.delete(ksmRoot)
     void (async () => {
@@ -202,4 +223,62 @@ export async function readSmapsRollup(pid: number, procRoot = '/proc'): Promise<
   } catch {
     return null
   }
+}
+
+/**
+ * Parses Linux `/proc/<pid>/stat` to extract PID, `utime + stime` CPU seconds, and `starttime` ticks.
+ */
+export function parseProcStat(text: string, clockTicksPerSec = 100): ProcStatTelemetry | null {
+  const closeParen = text.lastIndexOf(')')
+  if (closeParen <= 0) return null
+  const pidMatch = /^\s*(\d+)\s+\(/.exec(text)
+  if (!pidMatch) return null
+  const pid = Number(pidMatch[1])
+  const fields = text.slice(closeParen + 1).trim().split(/\s+/)
+  // In /proc/<pid>/stat after `(comm)`: field[0]=state(3), field[11]=utime(14), field[12]=stime(15), field[19]=starttime(22)
+  if (fields.length < 20) return null
+  const utime = Number(fields[11])
+  const stime = Number(fields[12])
+  const starttimeTicks = Number(fields[19])
+  if (![pid, utime, stime, starttimeTicks].every(n => Number.isSafeInteger(n) && n >= 0) || pid <= 0 || clockTicksPerSec <= 0) {
+    return null
+  }
+  return {
+    pid,
+    starttimeTicks,
+    cpuSeconds: (utime + stime) / clockTicksPerSec,
+  }
+}
+
+/**
+ * Reads `/proc/<pid>/stat` and `/proc/<pid>/smaps_rollup` for a process matching `matchCmdline`
+ * (or a known `pid`), returning its CPU and proportional/shared memory telemetry.
+ */
+export async function findProcessTelemetry(
+  matchCmdline: (args: string[]) => boolean,
+  procRoot = '/proc',
+): Promise<(ProcStatTelemetry & { smaps: SmapsRollup }) | null> {
+  try {
+    const entries = await readdir(procRoot)
+    for (const entry of entries) {
+      if (!/^\d+$/.test(entry)) continue
+      const pid = Number(entry)
+      try {
+        const rawCmd = await readFile(join(procRoot, entry, 'cmdline'), 'utf8')
+        const args = rawCmd.split('\0').filter(Boolean)
+        if (!args.length || !matchCmdline(args)) continue
+        const [statRaw, smaps] = await Promise.all([
+          readFile(join(procRoot, entry, 'stat'), 'utf8'),
+          readSmapsRollup(pid, procRoot),
+        ])
+        const stat = parseProcStat(statRaw)
+        if (stat && smaps) return { ...stat, smaps }
+      } catch {
+        continue
+      }
+    }
+  } catch {
+    // Ignore unreadable procRoot
+  }
+  return null
 }

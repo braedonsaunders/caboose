@@ -14,7 +14,8 @@ import { TERMINAL_PORT } from './terminal.js'
 import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
-import { selectSystemImage, usesSystemImage } from './system-image.js'
+import { resolveSystemImageAttachmentKind, selectSystemImage, systemImageAttachment, usesSystemImage } from './system-image.js'
+import { findProcessTelemetry, pulseKsmMergeBoost } from './ksm.js'
 import { assertRestorable, discardRestoredDisk, installRestoredDisk, recoverRestoredDisk, type RestoredDisk } from './restore-journal.js'
 import { writePrivateJson, type ComputerSettings } from './settings.js'
 import { ownerScopeCommand } from './owner-scope.js'
@@ -121,6 +122,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   removeNetwork?: () => Promise<void>
   settings?: () => ComputerSettings
   splitImage?: string
+  systemImageKind?: string
   depotPath?: string
   /** Enable only when a compatible parked Files reader is installed. */
   parkedFilesEnabled?: boolean
@@ -231,6 +233,24 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     bindParkedFilesGuard: guard => { parkedFilesGuard = guard },
     parkedFilesView: () => parkedFilesStore.read(),
     componentsMode: 'vm',
+    async usageCounters() {
+      if (!desk || nativeMac) throw new Error('MicroVM is not running')
+      const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
+      const telemetry = await findProcessTelemetry(args => args.some(arg => arg.includes(overlayPath) || arg.includes(`/${id}/`) || arg.includes(`desk-${id}`)))
+      if (!telemetry) throw new Error('VMM process telemetry unavailable')
+      return {
+        identity: `${id}:${telemetry.pid}:${telemetry.starttimeTicks}`,
+        at: Date.now(),
+        cpuSeconds: telemetry.cpuSeconds,
+        vcpus: size.vcpus,
+        memoryBytes: telemetry.smaps.rssBytes,
+        cacheBytes: null,
+        memoryLimitBytes: size.memoryMb * 1024 ** 2,
+        pssBytes: telemetry.smaps.pssBytes,
+        sharedBytes: telemetry.smaps.sharedBytes,
+        memoryKind: 'resident',
+      }
+    },
     get displayUrl() { return endpoint(OWNER_DISPLAY_PORT, 'ws') },
     get agentDisplayUrl() { return endpoint(AGENT_DISPLAY_PORT, 'ws') },
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
@@ -264,12 +284,14 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('--fs')) throw new Error('MicroVM depot requires an AppKit desk release with read-only shares')
       }
       if (nativeMac && await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) throw new Error('Split system images require Cloud Hypervisor')
+      const attachmentKind = resolveSystemImageAttachmentKind(dependencies.systemImageKind ?? process.env.CABOOSE_SYSTEM_IMAGE_KIND, Boolean(paths.template && !coldStart))
       if (await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) {
         // Fail closed with an older AppKit: it would silently ignore the device.
         const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
-          ...{ readOnlyAttachments: [{ path: '/system', sha256: '0'.repeat(64), kind: 'block' as const }] } },
+          ...{ readOnlyAttachments: [{ path: '/system', sha256: '0'.repeat(64), kind: attachmentKind }] } },
           { pathExists: () => true, deviceExists: () => true })
-        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('path=/system,readonly=on,image_type=raw')) throw new Error('Split images require an AppKit desk release with read-only attachments')
+        const expectedArg = attachmentKind === 'pmem' ? 'file=/system,discard_writes=on' : 'path=/system,readonly=on,image_type=raw'
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes(expectedArg)) throw new Error('Split images require an AppKit desk release with read-only attachments')
       }
       const systemImage = await selectSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)
       const imageDirectory = systemImage?.directory ?? config.imageRoot
@@ -287,7 +309,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       let templateOptions: ReturnType<typeof templateFork> | undefined
       if (paths.template && !coldStart) {
         const base = join(imageDirectory, 'base.raw'), kernel = join(imageDirectory, 'vmlinux'), initramfs = join(imageDirectory, 'initrd')
-        const attachments = systemImage ? [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] : []
+        const attachments = systemImage ? [systemImageAttachment(systemImage, attachmentKind)] : []
         let sourceId = 'existing'
         if (!existsSync(initializedPath) && !existsSync(join(paths.directory, '.prepared'))) {
           const identity = createHash('sha256')
@@ -307,7 +329,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       const mac = [6, 0, (slot >>> 24) & 255, (slot >>> 16) & 255, (slot >>> 8) & 255, slot & 255].map(value => value.toString(16).padStart(2, '0')).join(':')
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
         ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
-        ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [{ path: join(imageDirectory, 'system.erofs'), sha256: systemImage.hashes['system.erofs'], kind: 'block' as const }] } : {}),
+        ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [systemImageAttachment(systemImage, attachmentKind)] } : {}),
         ...(config.vmFreePageReporting ? { freePageReporting: true } : {}),
         memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
         ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest, ...(paths.template ? { macAddress: mac } : {}) } }),
@@ -349,6 +371,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         displayToken = randomBytes(32).toString('hex')
         await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         if (mode === 'interactive') await ownerDisplay()
+        if (!nativeMac) void pulseKsmMergeBoost().catch(() => {})
         clearHeartbeat()
         heartbeat = setInterval(() => {
           try { desk?.renewLease(APPKIT_LEASE_MS) } catch (error) { console.error('Desk lease renewal failed:', error) }
@@ -374,9 +397,18 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     async promote() { await ownerDisplay(); return session() },
     canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
+    async reclaimMemory() {
+      if (!desk || nativeMac) return
+      try {
+        await desk.exec({ command: '/usr/local/libexec/caboose-memory', args: ['reclaim', '--mode=freeze', '--json'], timeoutMs: 10_000 })
+      } catch {
+        // Older guests without caboose-memory or unresponsive guests skip reclamation cleanly.
+      }
+    },
     async freeze() {
       if (!pausable.pause) throw new Error('Resident pause is unavailable')
       await pausable.pause(id)
+      if (!nativeMac) void pulseKsmMergeBoost().catch(() => {})
     },
     async thaw() { desk = await host.resume(id) },
     async park() {

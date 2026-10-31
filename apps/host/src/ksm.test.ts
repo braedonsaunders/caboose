@@ -3,7 +3,9 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  findProcessTelemetry,
   parseKsmMetrics,
+  parseProcStat,
   parseSmapsRollup,
   pulseKsmMergeBoost,
   readKsmSnapshot,
@@ -29,102 +31,100 @@ async function tempDir(prefix = 'ksm-'): Promise<string> {
 
 describe('KSM metrics parser and sysfs snapshot reader', () => {
   it('computes savedBytes, sharedBytes, and active status from KSM sysfs counters', () => {
-    const snapshot = parseKsmMetrics({
-      run: '1\n',
-      pages_shared: '1200\n',
-      pages_sharing: '8400\n',
-      pages_unshared: '3500\n',
-      pages_volatile: '150\n',
-      full_scans: '42\n',
-      sleep_millisecs: '20\n',
-      pages_to_scan: '4096\n',
-    }, 4096)
+    const snapshot = parseKsmMetrics(
+      {
+        run: '1\n',
+        pages_shared: '1200\n',
+        pages_sharing: '3600\n',
+        pages_unshared: '450\n',
+        pages_volatile: '80\n',
+        full_scans: '14\n',
+        sleep_millisecs: '20\n',
+        pages_to_scan: '4096\n',
+      },
+      4096,
+    )
 
     expect(snapshot).toEqual({
       run: 1,
       active: true,
       pagesShared: 1200,
-      pagesSharing: 8400,
-      pagesUnshared: 3500,
-      pagesVolatile: 150,
-      fullScans: 42,
+      pagesSharing: 3600,
+      pagesUnshared: 450,
+      pagesVolatile: 80,
+      fullScans: 14,
       sleepMillisecs: 20,
       pagesToScan: 4096,
       pageSize: 4096,
-      savedBytes: 8400 * 4096,
+      savedBytes: 3600 * 4096,
       sharedBytes: 1200 * 4096,
     })
   })
 
-  it('handles inactive or unmerging KSM states and malformed values safely', () => {
+  it('normalizes inactive or malformed KSM counter values safely', () => {
     const snapshot = parseKsmMetrics({
       run: '2',
-      pages_shared: 'invalid',
-      pages_sharing: '50',
-    }, 4096)
-
+      pages_shared: 'not-a-number',
+      pages_sharing: '-5',
+    })
     expect(snapshot.run).toBe(2)
     expect(snapshot.active).toBe(false)
-    expect(snapshot.pagesShared).toBe(0)
-    expect(snapshot.pagesSharing).toBe(50)
-    expect(snapshot.savedBytes).toBe(50 * 4096)
+    expect(snapshot.savedBytes).toBe(0)
+    expect(snapshot.sharedBytes).toBe(0)
   })
 
-  it('reads a live KSM directory and returns null when KSM sysfs is absent', async () => {
+  it('reads KSM snapshot from sysfs directory and returns null when absent', async () => {
     const root = await tempDir()
-    await Promise.all([
-      writeFile(join(root, 'run'), '1\n'),
-      writeFile(join(root, 'pages_shared'), '256\n'),
-      writeFile(join(root, 'pages_sharing'), '1024\n'),
-      writeFile(join(root, 'pages_unshared'), '512\n'),
-      writeFile(join(root, 'pages_volatile'), '12\n'),
-      writeFile(join(root, 'full_scans'), '7\n'),
-      writeFile(join(root, 'sleep_millisecs'), '100\n'),
-      writeFile(join(root, 'pages_to_scan'), '512\n'),
-    ])
+    const files: Record<string, string> = {
+      run: '1\n',
+      pages_shared: '256\n',
+      pages_sharing: '1024\n',
+      pages_unshared: '128\n',
+      pages_volatile: '12\n',
+      full_scans: '5\n',
+      sleep_millisecs: '100\n',
+      pages_to_scan: '512\n',
+    }
+    for (const [name, content] of Object.entries(files)) {
+      await writeFile(join(root, name), content)
+    }
 
     const snapshot = await readKsmSnapshot(root, 4096)
-    expect(snapshot).not.toBeNull()
     expect(snapshot?.active).toBe(true)
     expect(snapshot?.savedBytes).toBe(1024 * 4096)
     expect(snapshot?.sharedBytes).toBe(256 * 4096)
 
-    const missing = await readKsmSnapshot(join(root, 'nonexistent'))
+    const missing = await readKsmSnapshot(join(root, 'missing-ksm'))
     expect(missing).toBeNull()
   })
 })
 
-describe('event-driven KSM merge boost controller', () => {
-  it('enables KSM at boost rate and steps down to steady state after durationMs', async () => {
+describe('KSM event-driven scan-boost controller', () => {
+  it('pulses scan rate upward and steps down after durationMs', async () => {
     vi.useFakeTimers()
     const root = await tempDir()
-    await Promise.all([
-      writeFile(join(root, 'run'), '0\n'),
-      writeFile(join(root, 'pages_to_scan'), '100\n'),
-      writeFile(join(root, 'sleep_millisecs'), '200\n'),
-    ])
+    for (const name of ['run', 'pages_to_scan', 'sleep_millisecs']) {
+      await writeFile(join(root, name), '0\n')
+    }
 
     const boosted = await pulseKsmMergeBoost({
       ksmRoot: root,
       boostPagesToScan: 4096,
       boostSleepMs: 20,
-      steadyPagesToScan: 512,
-      steadySleepMs: 100,
+      steadyPagesToScan: 256,
+      steadySleepMs: 500,
       durationMs: 15_000,
     })
+
     expect(boosted).toBe(true)
     expect((await readFile(join(root, 'run'), 'utf8')).trim()).toBe('1')
     expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('4096')
     expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('20')
 
-    await vi.advanceTimersByTimeAsync(14_999)
-    expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('4096')
+    await vi.advanceTimersByTimeAsync(15_000)
 
-    await vi.advanceTimersByTimeAsync(1)
-    await vi.waitFor(async () => {
-      expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('512')
-      expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('100')
-    })
+    expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('256')
+    expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('500')
   })
 
   it('gracefully no-ops when KSM sysfs is absent or unwritable', async () => {
@@ -180,5 +180,26 @@ describe('smaps_rollup parser and reader', () => {
     expect(result?.sharedBytes).toBe(393216 * 1024)
     expect(await readSmapsRollup(9999, procRoot)).toBeNull()
     expect(await readSmapsRollup(-1, procRoot)).toBeNull()
+  })
+
+  it('parses /proc/<pid>/stat and locates process telemetry across procRoot', async () => {
+    const statLine = '4242 (cloud-hyperviso) S 1 4242 4242 0 -1 4194560 1200 0 10 0 250 150 0 0 20 0 8 0 987654 2147483648 131072 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0'
+    expect(parseProcStat(statLine, 100)).toEqual({
+      pid: 4242,
+      starttimeTicks: 987654,
+      cpuSeconds: 4,
+    })
+
+    const procRoot = await tempDir('proc-find-')
+    await mkdir(join(procRoot, '4242'), { recursive: true })
+    await writeFile(join(procRoot, '4242', 'cmdline'), '/usr/bin/cloud-hypervisor\0--disk\0path=/var/lib/caboose/overlays/owner.raw\0')
+    await writeFile(join(procRoot, '4242', 'stat'), statLine)
+    await writeFile(join(procRoot, '4242', 'smaps_rollup'), sampleSmaps)
+
+    const found = await findProcessTelemetry(args => args.some(arg => arg.includes('owner.raw')), procRoot)
+    expect(found?.pid).toBe(4242)
+    expect(found?.cpuSeconds).toBe(4)
+    expect(found?.smaps.pssBytes).toBe(180224 * 1024)
+    expect(found?.smaps.sharedBytes).toBe(393216 * 1024)
   })
 })

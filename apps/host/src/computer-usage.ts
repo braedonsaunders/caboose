@@ -58,7 +58,10 @@ export class UsageHistory {
     if (sample) this.previous.set(id, sample); else this.previous.delete(id)
     this.current.set(id, {
       sampledAt: now, memoryBytes: sample?.memoryBytes ?? null, cacheBytes: sample?.cacheBytes ?? null,
-      memoryLimitBytes: sample?.memoryLimitBytes ?? null, memoryKind: sample?.memoryKind ?? 'unavailable',
+      memoryLimitBytes: sample?.memoryLimitBytes ?? null,
+      ...(sample?.pssBytes !== undefined ? { pssBytes: sample.pssBytes } : {}),
+      ...(sample?.sharedBytes !== undefined ? { sharedBytes: sample.sharedBytes } : {}),
+      memoryKind: sample?.memoryKind ?? 'unavailable',
       cpuPercent: percent, cpuSeconds30d: h.buckets.reduce((n, b) => n + b.seconds, 0),
       coveredSeconds30d: h.buckets.reduce((n, b) => n + b.coveredMs / 1000, 0), collectingSince: h.since,
       reason: sample ? undefined : reason,

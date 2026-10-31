@@ -27,7 +27,8 @@ it('excludes gaps, identity changes, negative deltas, time reversal and resource
 it('bounds rolling history and never bridges a host restart or failed sample', async () => {
   const file = join(await temp(), 'history.json'), at = Date.now()
   const first = new UsageHistory(file)
-  await first.record('a', sample(at), at)
+  await first.record('a', { ...sample(at), pssBytes: 90, sharedBytes: 50 }, at)
+  expect(first.get('a')).toMatchObject({ memoryBytes: 123, pssBytes: 90, sharedBytes: 50 })
   await first.record('a', sample(at + 60000, 60), at + 60000)
   await first.save(['a'])
   const second = new UsageHistory(file)
