@@ -925,7 +925,11 @@ another zoom starts a new placement epoch on the phone, as `epoch` does.
 **`scroll.zoom`** (`0x99`): zoom window `id`'s page to the absolute `scale` about `focus`,
 a window-pixel point that stays still, which may lie outside the window. `seq` is the
 window's input sequence number. The reporter applies it so that the first frame whose
-report has `applied ≥ seq` shows the page at exactly `scale`.
+report has `applied ≥ seq` shows the page at exactly `scale`, with the content that was at
+`focus` there. Its frames while the zoom settles carry no tag. Chromium and Electron pages
+zoom their visual viewport (as a trackpad pinch does, without relayout) between 1 and 4.
+A page that takes no pinch, such as an Electron application that keeps pinch zoom off,
+stops sending `zoom_range` after its first `scroll.zoom`.
 
 #### Input sequencing
 
