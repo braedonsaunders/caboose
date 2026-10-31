@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "native_runtime.h"
+#include "caboose_pipeline_cache.h"
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 #include "memory_audit.h"
 #endif
@@ -49,6 +50,7 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     installedResolve = resolve;
     installedVirtualWsi = virtualWsi;
     installedMode = mode;
+    (void)caboose::gpuv2::enableConcurrentShaderCompilation();
     if (!gfxstream::host::vk::installVulkanLoader(get, resolve)) return startResult = EBUSY;
     gfxstream::host::FeatureSet features;
     features.Vulkan.setEnabled(true);
