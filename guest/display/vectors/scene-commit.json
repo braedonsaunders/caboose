@@ -1,0 +1,8 @@
+{
+  "name": "scene-commit",
+  "description": "A retained vector and glyph scene-graph commit with group, scroll container, and positioned glyph run.",
+  "messages": [
+    {"direction": "server", "type": "scene.commit", "type_id": 38, "fields": {"id": 7, "seq": 1, "root": 1, "nodes": [{"id": 1, "kind": "group", "rect": [0, 0, 1179, 2556], "children": [2, 3]}, {"id": 2, "kind": "scroll", "rect": [0, 64, 1179, 2492], "scroll": [0, 120, 1179, 7200], "children": [3]}, {"id": 3, "font": 9650029242287828579, "kind": "glyphs", "rect": [24, 96, 600, 32], "size": {"$float": 16.0}, "color": 3453416703, "glyphs": {"$bytes": "24000000c0410000e041"}}], "reset": true, "pts_us": 1234567890}}
+  ],
+  "hex": "26e9000000a662696407637365710164726f6f7401656e6f64657383a462696401646b696e646567726f7570647265637484000019049b1909fc686368696c6472656e820203a562696402646b696e64667363726f6c6c64726563748400184019049b1909bc667363726f6c6c8400187819049b191c20686368696c6472656e8103a76269640364666f6e741b85ebca77c2b2ae63646b696e6466676c797068736472656374841818186019025818206473697a65fb403000000000000065636f6c6f721acdd6f4ff66676c797068734a24000000c0410000e041657265736574f5667074735f75731a499602d2"
+}

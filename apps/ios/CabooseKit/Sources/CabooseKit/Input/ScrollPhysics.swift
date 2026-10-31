@@ -81,6 +81,17 @@ public struct ScrollPhysics {
         return result
     }
 
+    /// The distance coasting still covers within `horizon` seconds, at the same exact
+    /// decay and stop threshold as `frame(elapsed:)`; zero while not coasting.
+    public func projectedDistance(over horizon: TimeInterval) -> CGPoint {
+        guard isCoasting, horizon > 0, horizon.isFinite else { return .zero }
+        let speed = hypot(velocity.x, velocity.y)
+        guard speed > 20 else { return .zero }
+        let dt = min(horizon, log(speed / 20) / decay)
+        let travelled = (1 - exp(-decay * dt)) / decay
+        return CGPoint(x: velocity.x * travelled, y: velocity.y * travelled)
+    }
+
     public mutating func cancel() {
         velocity = .zero
         pending = .zero

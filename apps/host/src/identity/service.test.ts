@@ -148,25 +148,50 @@ describe('tenants, administrators and invitations', () => {
 })
 
 describe('sign-in throttling', () => {
+  const request = (address: string, headers: Record<string, string> = {}) => ({ headers, socket: { remoteAddress: address } }) as never
+
   it('lets twenty attempts through in ten minutes from one address, then waits', async () => {
     const { SignInThrottle, isSignInAttempt } = await import('./routes.js')
     let now = 0
-    const throttle = new SignInThrottle(20, 600_000, () => now)
-    const from = (address: string) => ({ headers: {}, socket: { remoteAddress: address } }) as never
-    for (let attempt = 0; attempt < 20; attempt++) expect(throttle.allow(from('203.0.113.1'))).toBe(true)
-    expect(throttle.allow(from('203.0.113.1'))).toBe(false)
-    expect(throttle.allow(from('203.0.113.2'))).toBe(true)
+    const throttle = new SignInThrottle({ now: () => now })
+    for (let attempt = 0; attempt < 20; attempt++) expect(throttle.allow(request('203.0.113.1'))).toBe(true)
+    expect(throttle.allow(request('203.0.113.1'))).toBe(false)
+    expect(throttle.allow(request('203.0.113.2'))).toBe(true)
     // A remote client cannot dodge the count by inventing a forwarded address.
-    expect(throttle.allow({ headers: { 'x-forwarded-for': '198.51.100.7' }, socket: { remoteAddress: '203.0.113.1' } } as never)).toBe(false)
+    expect(throttle.allow(request('203.0.113.1', { 'x-forwarded-for': '198.51.100.7' }))).toBe(false)
     // Behind a proxy on this machine, the address the proxy saw is the client.
-    expect(throttle.allow({ headers: { 'x-forwarded-for': '198.51.100.7' }, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe(true)
+    expect(throttle.allow(request('127.0.0.1', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
     now += 600_000
-    expect(throttle.allow(from('203.0.113.1'))).toBe(true)
+    expect(throttle.allow(request('203.0.113.1'))).toBe(true)
     expect(isSignInAttempt('POST', '/v1/auth/sign-in/email')).toBe(true)
     expect(isSignInAttempt('POST', '/v1/invites/abc/accept')).toBe(true)
     expect(isSignInAttempt('POST', '/v1/setup')).toBe(true)
     expect(isSignInAttempt('GET', '/v1/setup')).toBe(false)
     expect(isSignInAttempt('POST', '/v1/auth/sign-out')).toBe(false)
+  })
+
+  it('counts the forwarded client behind a trusted proxy, and the peer behind anyone else', async () => {
+    const { SignInThrottle } = await import('./routes.js')
+    const { parseTrustedProxies } = await import('../proxies.js')
+    const throttle = new SignInThrottle({ limit: 2, trustedProxies: parseTrustedProxies('172.31.250.0/24, 2001:db8::/32') })
+    // Caddy in another container: each internet client gets its own count.
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(false)
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '198.51.100.8' }))).toBe(true)
+    // The same client through the proxy's IPv4-mapped socket, and through two of our proxies.
+    expect(throttle.allow(request('::ffff:172.31.250.4', { 'x-forwarded-for': '198.51.100.7, 172.31.250.3' }))).toBe(false)
+    // The client's own forwarded entries sit to the left of what the proxy appended.
+    expect(throttle.allow(request('172.31.250.3', { 'x-forwarded-for': '10.9.9.9, 198.51.100.7' }))).toBe(false)
+    // An IPv6 proxy and an IPv6 client.
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(true)
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(true)
+    expect(throttle.allow(request('2001:db8:1::2', { 'x-forwarded-for': '2001:db8:ffff::9' }))).toBe(false)
+    // A peer outside the ranges is its own client, whatever it forwards.
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.7' }))).toBe(true)
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.9' }))).toBe(true)
+    expect(throttle.allow(request('172.31.251.3', { 'x-forwarded-for': '198.51.100.10' }))).toBe(false)
+    expect(throttle.allow(request('2001:db9::1', { 'x-forwarded-for': '198.51.100.11' }))).toBe(true)
   })
 })
 

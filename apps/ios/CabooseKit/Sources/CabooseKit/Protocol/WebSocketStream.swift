@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import QuartzCore
 
 /// A full-duplex byte stream over the host's `/v1/display` WebSocket relay, which carries
@@ -26,53 +27,74 @@ public enum ByteStreamEvent: Sendable {
     case closed(Error?)
 }
 
-public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDelegate, @unchecked Sendable {
-    private let request: URLRequest
+/// The display WebSocket over Network.framework with Nagle's algorithm off.
+///
+/// Input is small and frequent while pictures stream the other way. With Nagle on, each
+/// small send waits for the acknowledgement of the previous one, and that acknowledgement
+/// rides back behind the downstream pictures queued in the Wi-Fi access point: samples sent
+/// every display refresh then leave in one burst hundreds of milliseconds later (measured:
+/// 71 scroll samples sent over 583 ms arrived together after 657 ms). URLSession's WebSocket
+/// task offers no way to set TCP_NODELAY, so the connection is built here.
+public final class WebSocketStream: ByteStream, @unchecked Sendable {
+    private let url: URL
+    private let token: String
     private let queue = DispatchQueue(label: "caboose.display.socket")
-    private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
+    private var connection: NWConnection?
     private var closed = false
+    private var opened = false
     private var onEvent: (@Sendable (ByteStreamEvent) -> Void)?
     private let backlogLock = NSLock()
     /// When each send not yet completed was handed over, oldest first (sends complete in order).
     private var pending: [CFTimeInterval] = []
 
     public init(url: URL, token: String) {
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("binary", forHTTPHeaderField: "Sec-WebSocket-Protocol")
-        request.timeoutInterval = 20
-        self.request = request
+        self.url = url
+        self.token = token
     }
 
     public func open(onEvent: @escaping @Sendable (ByteStreamEvent) -> Void) {
         queue.async { [self] in
-            guard task == nil else { return }
+            guard connection == nil, !closed else { return }
             self.onEvent = onEvent
-            let configuration = URLSessionConfiguration.default
-            configuration.waitsForConnectivity = false
-            configuration.timeoutIntervalForRequest = 20
-            let delegateQueue = OperationQueue()
-            delegateQueue.underlyingQueue = queue
-            delegateQueue.maxConcurrentOperationCount = 1
-            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
-            let task = session.webSocketTask(with: request)
-            task.maximumMessageSize = 64 * 1024 * 1024
-            self.session = session
-            self.task = task
-            task.resume()
-            receive()
+            let tcp = NWProtocolTCP.Options()
+            tcp.noDelay = true
+            tcp.connectionTimeout = 20
+            let secure = url.scheme?.lowercased() == "wss" || url.scheme?.lowercased() == "https"
+            let parameters = NWParameters(tls: secure ? NWProtocolTLS.Options() : nil, tcp: tcp)
+            let websocket = NWProtocolWebSocket.Options()
+            websocket.autoReplyPing = true
+            websocket.maximumMessageSize = 64 * 1024 * 1024
+            websocket.setSubprotocols(["binary"])
+            websocket.setAdditionalHeaders([("Authorization", "Bearer \(token)")])
+            parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
+            let connection = NWConnection(to: .url(url), using: parameters)
+            self.connection = connection
+            connection.stateUpdateHandler = { [weak self] state in
+                guard let self else { return }
+                switch state {
+                case .ready:
+                    if !self.opened { self.opened = true; self.onEvent?(.opened); self.receive() }
+                case .failed(let error): self.finish(error)
+                case .cancelled: self.finish(nil)
+                case .waiting(let error): self.finish(error)  // no waiting for connectivity
+                default: break
+                }
+            }
+            connection.start(queue: queue)
         }
     }
 
     public func send(_ data: Data) {
         backlogLock.withLock { pending.append(CACurrentMediaTime()) }
         queue.async { [self] in
-            guard let task, !closed else { return sent() }
-            task.send(.data(data)) { [weak self] error in
+            guard let connection, !closed else { return sent() }
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+            let context = NWConnection.ContentContext(identifier: "message", metadata: [metadata])
+            connection.send(content: data, contentContext: context, isComplete: true,
+                            completion: .contentProcessed { [weak self] error in
                 self?.sent()
                 if let error { self?.finish(error) }
-            }
+            })
         }
     }
 
@@ -88,57 +110,56 @@ public final class WebSocketStream: NSObject, ByteStream, URLSessionWebSocketDel
 
     public func close() {
         queue.async { [self] in
-            task?.cancel(with: .normalClosure, reason: nil)
+            if let connection, opened {
+                // A normal close frame, then the connection goes.
+                let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+                metadata.closeCode = .protocolCode(.normalClosure)
+                let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+                connection.send(content: nil, contentContext: context, isComplete: true, completion: .idempotent)
+            }
             finish(nil)
         }
     }
 
     public func fail(_ error: Error) {
-        queue.async { [self] in
-            task?.cancel(with: .protocolError, reason: nil)
-            finish(error)
-        }
+        queue.async { [self] in finish(error) }
     }
 
     private func receive() {
-        task?.receive { [weak self] result in
+        connection?.receiveMessage { [weak self] content, context, _, error in
             guard let self, !self.closed else { return }
-            switch result {
-            case .failure(let error):
-                self.finish(error)
-            case .success(let message):
-                switch message {
-                case .data(let bytes): self.onEvent?(.data(bytes))
-                case .string(let text): self.onEvent?(.data(Data(text.utf8)))
-                @unknown default: break
-                }
-                self.receive()
+            if let error { return self.finish(error) }
+            let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
+            switch metadata?.opcode {
+            case .close:
+                let code = metadata.map { closeCode($0.closeCode) } ?? 1000
+                return self.finish(code == 1000 ? nil : TransportError.closed(code: code))
+            case .binary, .text:
+                if let content, !content.isEmpty { self.onEvent?(.data(content)) }
+            default:
+                break
             }
+            self.receive()
         }
     }
 
     private func finish(_ error: Error?) {
         guard !closed else { return }
         closed = true
-        #if DEBUG && canImport(CabooseGPUMemoryAudit)
-        LiveGPUMemoryAudit.displayClosed(status: (task?.response as? HTTPURLResponse)?.statusCode,
-            closeCode: task?.closeCode.rawValue,
-            scoped: request.url?.path.hasPrefix("/v1/computers/") == true, error: error)
-        #endif
         backlogLock.withLock { pending.removeAll() }
-        session?.invalidateAndCancel()
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
         onEvent?(.closed(error))
         onEvent = nil
     }
+}
 
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didOpenWithProtocol protocol: String?) {
-        onEvent?(.opened)
-    }
-
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        finish(closeCode == .normalClosure ? nil : TransportError.closed(code: closeCode.rawValue))
+private func closeCode(_ code: NWProtocolWebSocket.CloseCode) -> Int {
+    switch code {
+    case .protocolCode(let value): Int(value.rawValue)
+    case .applicationCode(let value): Int(value)
+    case .privateCode(let value): Int(value)
+    @unknown default: 1006
     }
 }
 

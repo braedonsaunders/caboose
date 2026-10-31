@@ -109,6 +109,13 @@ int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
 int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* swapchain,
     const uint64_t* boxed_images, uint32_t image_count);
 
+// Guest-owned images: 1-8 distinct decoder-owned images of the guest's own pool, in any
+// number. Presents then name one of them, and the native image is acquired inside each
+// present. flags bit 1: mailbox, a present that finds no free native image is dropped.
+// Acquire requests are refused for such a swapchain.
+int caboose_gpu_virtual_swapchain_map_guest_images(caboose_gpu_virtual_swapchain* swapchain,
+    const uint64_t* boxed_images, uint32_t image_count, uint32_t flags);
+
 // Begin leases the original synchronization objects and may create an internal
 // fence; it does not acquire an image or signal the guest objects. Poll makes one real zero-timeout provider
 // acquire, without holding the decoder global lock across it. NOT_READY has no

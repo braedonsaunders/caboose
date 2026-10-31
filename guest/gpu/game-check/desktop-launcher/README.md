@@ -11,8 +11,8 @@ Wayland socket, Xwayland, control socket, audio, device and display-environment 
 It adds the indexed private GPU sockets under an owner-only runtime directory. The
 existing host still supplies `/run/caboose/display-token` and relays port 14600. The
 existing Caboose debug app supplies the executor over that authenticated display
-session with `CABOOSE_PRIVATE_GPU_INDEXED=1`. No standalone executor is involved.
-Release apps and ordinary app launches without that debug environment cannot execute
+session (Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`). No standalone executor is involved.
+Release apps, and Debug apps launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, cannot execute
 this private GPU lane. The acceptance wrapper enables the broker's bounded numeric
 surface-progress records; it does not log packet contents or credentials.
 
@@ -45,7 +45,7 @@ Required existing artifacts inside the acceptance computer:
 - the fixture's SDL2/Vulkan/audio-codec runtime dependency closure, either in a verified
   private dependency sysroot or explicitly selected installed-library mode;
 - a matching signed debug Caboose app using the private v4 package, paired to this
-  computer and launched with `CABOOSE_PRIVATE_GPU_INDEXED=1`.
+  computer and launched without `CABOOSE_PRIVATE_GPU_INDEXED=0`.
 
 The game hash and driver hash are pinned in the source. A different artifact requires
 explicit provenance review and an updated pin. Neither game nor driver is downloaded

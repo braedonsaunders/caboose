@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- The scroll reporter check's page (check.py chromium-scroll-reports): a tall document
+     whose every 16 px band shows its index down the left edge in 16 black or white 8 px
+     blocks (probe/src/scroll.rs reads it back), under a sticky header. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>ruler</title>
+<style>
+  html, body { margin: 0; background: #808080; }
+  header { position: sticky; top: 0; height: 48px; background: #3050c0; z-index: 1; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<header></header>
+<canvas id="ruler" width="160"></canvas>
+<script>
+  const BAND = 16, BITS = 16, BLOCK = 8, X = 8, HEIGHT = 30000
+  const c = document.getElementById('ruler')
+  // The ruler starts below the header, so document y = canvas y + 48.
+  c.height = HEIGHT
+  const g = c.getContext('2d')
+  g.fillStyle = '#808080'
+  g.fillRect(0, 0, c.width, c.height)
+  for (let y0 = -48; y0 < HEIGHT; y0 += BAND) {
+    const docY = y0 + 48
+    const band = docY / BAND
+    for (let i = 0; i < BITS; i++) {
+      g.fillStyle = (band >> (BITS - 1 - i)) & 1 ? '#ffffff' : '#000000'
+      g.fillRect(X + i * BLOCK, y0, BLOCK, BAND)
+    }
+  }
+</script>
+</body>
+</html>

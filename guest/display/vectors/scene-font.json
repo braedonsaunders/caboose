@@ -1,0 +1,8 @@
+{
+  "name": "scene-font",
+  "description": "Registers a TrueType/OpenType font face by its XXH64 hash for scene.commit glyph runs.",
+  "messages": [
+    {"direction": "server", "type": "scene.font", "type_id": 37, "fields": {"data": {"$bytes": "00010000000c008000030040"}, "font": 9650029242287828579, "index": 0, "family": "Inter"}}
+  ],
+  "hex": "2535000000a464646174614c00010000000c00800003004064666f6e741b85ebca77c2b2ae6365696e646578006666616d696c7965496e746572"
+}

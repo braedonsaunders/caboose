@@ -26,9 +26,9 @@ export interface IdentityDatabase {
 
 const SOCKET_PORT = 5432
 
-export async function openIdentityDatabase(options: { url?: string | null; dataDir: string }): Promise<IdentityDatabase> {
+export async function openIdentityDatabase(options: { url?: string | null; dataDir: string; queryTimeoutMs?: number }): Promise<IdentityDatabase> {
   if (options.url) {
-    const pool = new pg.Pool({ connectionString: options.url, max: 10 })
+    const pool = new pg.Pool({ connectionString: options.url, max: 10, query_timeout: options.queryTimeoutMs, connectionTimeoutMillis: options.queryTimeoutMs, statement_timeout: options.queryTimeoutMs })
     pool.on('error', error => console.error('Identity database connection error:', error.message))
     const db = drizzle(pool, { schema })
     await migrateIdentity(db)

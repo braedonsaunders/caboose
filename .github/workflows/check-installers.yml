@@ -1,0 +1,80 @@
+name: Check consumer installers
+
+on:
+  pull_request:
+    paths:
+      - 'apps/macos/**'
+      - 'apps/windows/**'
+      - 'deploy/macos/**'
+      - 'deploy/windows/**'
+      - 'apps/host/scripts/bundle.sh'
+      - '.github/workflows/check-installers.yml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test --package-path apps/macos --disable-sandbox -j 2
+      - run: bash apps/macos/scripts/build.sh "$RUNNER_TEMP/menu"
+      - name: Validate packaging scripts
+        run: bash -n apps/host/scripts/bundle.sh deploy/macos/install.sh deploy/macos/package-dmg.sh
+  mac-package:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      CABOOSE_VERSION: v0.0.0-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: brew install xz
+      - run: pnpm install --frozen-lockfile
+      - run: bash apps/host/scripts/bundle.sh darwin arm64 dist/release
+      - run: bash apps/host/scripts/check-bundle.sh dist/release/caboose-host-darwin-arm64.tar.gz
+      - run: bash deploy/macos/check.sh dist/release/caboose-host-darwin-arm64.tar.gz
+      - run: bash deploy/macos/package-dmg.sh dist/release/caboose-host-darwin-arm64.tar.gz dist/release/Caboose-macos-arm64.dmg
+      - name: Verify disk image and all release checksums
+        run: |
+          hdiutil verify dist/release/Caboose-macos-arm64.dmg
+          (cd dist/release && shasum -a 256 -c SHA256SUMS)
+  windows-rootfs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the distribution and inspect required boot files
+        run: |
+          bash deploy/windows/build-rootfs.sh dist/windows
+          tar -tzf dist/windows/caboose-wsl-rootfs-amd64.tar.gz > "$RUNNER_TEMP/rootfs-files"
+          for file in etc/wsl.conf usr/lib/systemd/systemd; do
+            grep -Fx "$file" "$RUNNER_TEMP/rootfs-files"
+          done
+          grep -Ex 'usr/(s)?bin/dockerd' "$RUNNER_TEMP/rootfs-files"
+          tar -xOzf dist/windows/caboose-wsl-rootfs-amd64.tar.gz etc/wsl.conf | grep -Fx systemd=true
+          (cd dist/windows && sha256sum -c caboose-wsl-rootfs-amd64.tar.gz.sha256)
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --manifest-path apps/windows/Cargo.toml --check
+      - name: Build the embedded supervisor
+        run: |
+          cargo build --manifest-path apps/windows/Cargo.toml --bin caboose-agent --locked
+          "CABOOSE_AGENT_PATH=$((Resolve-Path apps/windows/target/debug/caboose-agent.exe).Path)" >> $env:GITHUB_ENV
+      - run: cargo test --manifest-path apps/windows/Cargo.toml --locked
+      - run: cargo check --manifest-path apps/windows/Cargo.toml --all-targets --locked
+      - run: pwsh -NoProfile -File deploy/windows/setup-wsl.tests.ps1
+      - run: pwsh -NoProfile -File deploy/windows/start-wsl.tests.ps1

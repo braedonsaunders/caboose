@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
+#include "caboose_pipeline_cache.h"
 #include "metal_surface_internal.h"
 #include <cerrno>
 #include <new>
@@ -87,11 +88,20 @@ int createMetalSurface(VkInstance instance, void* metalLayer, MetalSurface** out
     surface->instance = instance;
     surface->destroy = destroy;
     surface->layer = (CAMetalLayer*)value;
+    (void)enableConcurrentShaderCompilation();
     VkMetalSurfaceCreateInfoEXT info{};
     info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
     info.pLayer = surface->layer;
     *vulkanResult = create(instance, &info, nullptr, &surface->surface);
     if (*vulkanResult != VK_SUCCESS) { delete surface; return EIO; }
+    id layerDevice = surface->layer.device;
+    if (layerDevice) {
+        const SEL setConcurrentSel = sel_registerName("setShouldMaximizeConcurrentCompilation:");
+        if ([layerDevice respondsToSelector:setConcurrentSel]) {
+            auto setFn = reinterpret_cast<void (*)(id, SEL, BOOL)>(objc_msgSend);
+            setFn(layerDevice, setConcurrentSel, YES);
+        }
+    }
     *out = surface;
     return 0;
 }

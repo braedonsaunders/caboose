@@ -33,6 +33,9 @@ int caboose_gfx_process_run(caboose_gfx_registry* registry, uint64_t puid, int f
 int caboose_gfx_process_run_counted(caboose_gfx_registry* registry, uint64_t puid, int fd,
                                     size_t max_packet, size_t max_reply_buffer, uint64_t* entries);
 #endif
+// Blocks until the process's device stream has decoded its ORDER mark `serial`
+// (completion_feed.h); ECANCELED once the process stops. Never waits for the GPU.
+int caboose_gfx_process_wait_order(caboose_gfx_registry* registry, uint64_t puid, uint64_t serial);
 // Revokes admission, marks guest dead and shuts down all active sockets.
 int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t puid);
 // After every run returns, remove the entry; upstream cleanup remains asynchronous.

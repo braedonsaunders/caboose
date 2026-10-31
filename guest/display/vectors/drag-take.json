@@ -1,0 +1,8 @@
+{
+  "name": "drag-take",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "drag.take", "type_id": 165, "fields": {}}
+  ],
+  "hex": "a501000000a0"
+}

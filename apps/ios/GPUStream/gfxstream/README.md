@@ -68,6 +68,24 @@ not invoke the upstream decoder or validate arbitrary Vulkan command fields;
 the integrated Linux receiver also exercises the decoder. Arbitrary payload and
 handle validation is not established by these checks.
 
+## Completion feed
+
+`completion_feed.*` serves the completion feed described in
+[gpu-live.md](../../../../docs/gpu-live.md#completion-feed). `decode_connection.cpp`
+answers `COMPLETION_WATCH` and `COMPLETION_FEED` itself, before framing and decoding,
+and only for a process that has a feed (`process_registry.cpp` creates one per process).
+A watch submits a marker through `VkDecoderGlobalState::submitCabooseCompletionMarker`
+(patch 0028) and returns; the feed's watcher thread waits for markers in order, and the
+feed stream writes their records. Finishing a process waits for its outstanding
+markers. The portable fixture uses a fake marker backend and real socket pairs:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/completion_feed_test.cpp \
+  apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
+/tmp/caboose-completion-feed-test
+```
+
 ## Process lifetime
 
 `process_registry.h` defines the experimental C API. A broker-owned 64-bit process
@@ -106,6 +124,17 @@ patches in `patches/` provide the GLES-disabled iOS reference. Its static link
 includes the real framebuffer, Vulkan decoder and stock MoltenVK; native surfaces
 and GL readback remain unsupported. The [source audit](patches/apple-source-audit.md)
 describes these boundaries.
+
+## Display times for frame lab
+
+With `CABOOSE_FRAMELAB=1` in the app's environment, the gfxstream fork's commit
+"Caboose: enable VK_GOOGLE_display_timing for frame lab" enables
+`VK_GOOGLE_display_timing` on the decoder's device when the device offers it, every
+native present carries its present serial as the present ID, and once a frame's present
+fence completes the swapchain's past presentation timings are written to standard error
+as `caboose-framelab: present window=W seq=S presented_ns=P now_ns=N`
+(`framelab_timing.h`). [Frame lab](../../../../guest/framelab/README.md) turns these into
+input-to-glass latency. Without the variable, device creation and presents are unchanged.
 
 ## Memory and proof boundary
 

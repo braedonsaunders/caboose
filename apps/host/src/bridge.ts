@@ -3,12 +3,12 @@ import { AgentNotFoundError, AgentOperationError, AgentUnavailableError, type Ag
 
 /**
  * The native bridge's host side: file chooser requests from the guest's portal relayed to
- * the phone and answered from it, the phone's appearance, and the phone's location for
+ * the phone and answered from it (and `caboose-scan`'s scans), the phone's appearance, and the phone's location for
  * GeoClue. The guest is owner-controlled but may produce malformed data, so everything it
  * prints is validated field by field; everything the phone sends is validated strictly.
  * See docs/native-bridge.md.
  */
-export type BridgeRequestType = 'file.open' | 'file.save'
+export type BridgeRequestType = 'file.open' | 'file.save' | 'scan'
 
 export interface BridgeFilter { name: string; patterns: string[]; mimeTypes: string[] }
 
@@ -104,13 +104,24 @@ function parseFilter(value: unknown): BridgeFilter | null {
   return { name, patterns: [...patterns], mimeTypes: [...mimeTypes] }
 }
 
+/** The formats a `scan` request may ask for, each as its only filter: one PDF, or JPEG pages. */
+export const SCAN_FORMATS: readonly { filter: BridgeFilter; multiple: boolean }[] = [
+  { filter: { name: 'PDF', patterns: ['*.pdf'], mimeTypes: ['application/pdf'] }, multiple: false },
+  { filter: { name: 'JPEG', patterns: ['*.jpg', '*.jpeg'], mimeTypes: ['image/jpeg'] }, multiple: true },
+]
+
+function sameFilter(a: BridgeFilter, b: BridgeFilter): boolean {
+  const same = (x: string[], y: string[]) => x.length === y.length && x.every((entry, n) => entry === y[n])
+  return a.name === b.name && same(a.patterns, b.patterns) && same(a.mimeTypes, b.mimeTypes)
+}
+
 /** A request printed by `caboose-bridge drain`, or null when any field is malformed. */
 export function parseBridgeRequest(value: unknown): BridgeRequest | null {
   const r = record(value)
   if (!r) return null
   const { id, type, app, title, acceptLabel, multiple, directory, filters, currentFilter, currentName, currentFolder, created } = r
   if (typeof id !== 'string' || !BRIDGE_ID.test(id)) return null
-  if (type !== 'file.open' && type !== 'file.save') return null
+  if (type !== 'file.open' && type !== 'file.save' && type !== 'scan') return null
   if (!text(app, 200) || !text(title, 200) || !text(acceptLabel, 64)) return null
   if (typeof multiple !== 'boolean' || typeof directory !== 'boolean') return null
   if (type === 'file.save' && (multiple || directory)) return null
@@ -123,8 +134,13 @@ export function parseBridgeRequest(value: unknown): BridgeRequest | null {
   }
   if (currentFilter !== null && !index(currentFilter, parsed.length)) return null
   if (typeof currentName !== 'string' || CONTROL.test(currentName) || Buffer.byteLength(currentName) > 255) return null
-  if (type === 'file.open' ? currentName !== '' : currentName.includes('/') || currentName === '.' || currentName === '..') return null
+  if (type === 'file.save' ? currentName.includes('/') || currentName === '.' || currentName === '..' : currentName !== '') return null
   if (currentFolder !== '' && !homePath(currentFolder, true)) return null
+  // A scan names its format as its one filter, and nothing about a folder.
+  if (type === 'scan') {
+    if (directory || currentFolder !== '' || parsed.length !== 1 || currentFilter !== 0) return null
+    if (!SCAN_FORMATS.some(format => format.multiple === multiple && sameFilter(format.filter, parsed[0]!))) return null
+  }
   if (!Number.isSafeInteger(created) || (created as number) < 0) return null
   return {
     id, type, app, title, acceptLabel, multiple, directory, filters: parsed,
@@ -186,10 +202,13 @@ export function parseLocation(input: Record<string, unknown>): SharedLocation {
 }
 
 /**
- * Relays file chooser requests to the phone sockets while a phone is connected, and their
+ * Relays file chooser and scan requests to the phone sockets while a phone is connected, and their
  * answers back. Delivery is at most once; the ids delivered are remembered for 24 hours so
  * an answer can be checked against its request. `emit` sends to the phone sockets, except
- * those of the phone `exceptPhone` when given.
+ * those of the phone `exceptPhone` when given, and only to those that scan when
+ * `scanners` is set. A scan request with no such socket (`canScan`) goes back to the guest
+ * as `computer` at once, so `caboose-scan` fails rather than waiting on a phone app that
+ * cannot answer it.
  */
 export class BridgeRelay {
   private timer: (() => void) | undefined
@@ -199,10 +218,12 @@ export class BridgeRelay {
   private generation = 0
   /** The phone's latest appearance, applied at every wake. */
   appearance: Appearance | null = null
+  /** Whether a connected phone socket answers scan requests (opened with `?scan=1`). */
+  canScan: () => boolean = () => false
 
   constructor(
     private readonly guest: () => AgentGuest | undefined,
-    private readonly emit: (event: BridgeEvent, exceptPhone?: string) => void,
+    private readonly emit: (event: BridgeEvent, exceptPhone?: string, scanners?: boolean) => void,
     private readonly pollMs = 1000,
     private readonly now: () => number = Date.now,
     private readonly subscribe?: EventSubscribe,
@@ -261,15 +282,16 @@ export class BridgeRelay {
       this.prune()
       for (const raw of requests) {
         const request = parseBridgeRequest(raw)
-        if (request) {
+        if (request && (request.type !== 'scan' || this.canScan())) {
           if (this.outstanding.has(request.id)) continue
-          this.emit({ type: 'bridge.request', request })
           this.outstanding.set(request.id, { type: request.type, multiple: request.multiple, directory: request.directory, filters: request.filters.length, deliveredAt: this.now() })
+          try { this.emit({ type: 'bridge.request', request }, undefined, request.type === 'scan') }
+          catch (error) { this.outstanding.delete(request.id); throw error }
           continue
         }
-        // A claimed request the phone cannot be shown goes to the computer's own dialog now,
-        // rather than waiting until the phone leaves.
-        const id = record(raw)?.id
+        // A claimed request no phone can be shown (malformed, or a scan without a phone app
+        // that scans) goes back now: to the computer's own dialog, or caboose-scan fails.
+        const id = request?.id ?? record(raw)?.id
         if (typeof id === 'string' && BRIDGE_ID.test(id)) {
           await bridgeCommand(guest, ['respond', JSON.stringify({ id, response: 'computer' })])
           if (generation !== this.generation) return

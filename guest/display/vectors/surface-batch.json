@@ -1,0 +1,8 @@
+{
+  "name": "surface-batch",
+  "description": "An atomic byte-perfect surface damage batch with CopyRect, solid fills, cached XXH64 tile refs, and a Pal2Lz4 tile.",
+  "messages": [
+    {"direction": "server", "type": "surface.batch", "type_id": 35, "fields": {"id": 7, "seq": 1, "rect": [0, 0, 1179, 2556], "refs": [[0, 0, 11400714785074694791]], "size": [1179, 2556], "fills": [[0, 1920, 1179, 636, 505294591]], "tiles": [{"h": 64, "w": 64, "x": 64, "y": 0, "fmt": "pal2-lz4", "data": {"$bytes": "0c000000c01e1e2effffffffffaa55aa55"}, "hash": 14029467366897019727}], "copies": [[0, -64, 0, 0, 1179, 1920]], "pts_us": 1234567890, "keyframe": true}}
+  ],
+  "hex": "23c0000000aa626964076373657101647265637484000019049b1909fc6472656673818300001b9e3779b185ebca876473697a658219049b1909fc6566696c6c7381850019078019049b19027c1a1e1e2eff6574696c657381a761681840617718406178184061790063666d746870616c322d6c7a346464617461510c000000c01e1e2effffffffffaa55aa5564686173681bc2b2ae3d27d4eb4f66636f70696573818600383f000019049b190780667074735f75731a499602d2686b65796672616d65f5"
+}

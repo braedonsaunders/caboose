@@ -4,6 +4,12 @@ Requires Apple Silicon, macOS 14 or later, and APFS for the computer disks. The 
 installer needs neither Docker, Homebrew, nor administrator privileges. It installs the
 bundled Node host, signed Virtualization.framework helper and Caboose menu bar app.
 
+Download `Caboose-macos-arm64.dmg` from a release, drag Caboose to Applications and
+open it. The app installs its bundled host for the current login and opens native phone
+pairing; an unclaimed host first offers account creation in the web console.
+
+The command-line path installs the same host:
+
 ```sh
 bash deploy/macos/install.sh
 ```
@@ -14,7 +20,7 @@ bundle. Downloads are verified against the release's SHA256SUMS. `--dry-run` pri
 `--stage-home <directory>` with `--no-start` stages files for checks without touching login services. Local builds are signed ad hoc;
 release signing and notarization require the distributor's Apple credentials.
 
-The installer opens the local one-time setup link. Create the operator account, then use
+The command-line installer opens the local one-time setup link. Create the operator account, then use
 the console's Remote Access page to connect Tailscale and enable Serve for HTTPS phone
 access. The host listens on port 7310 by default. Existing Tailscale state is not changed
 by installation.

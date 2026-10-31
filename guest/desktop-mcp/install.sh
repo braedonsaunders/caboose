@@ -7,7 +7,8 @@ set -eu
 here=$(dirname "$0")
 install -d -m 0755 /opt/caboose
 install -m 0755 "$here/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
-install -m 0755 "$here/a11y.py" "$here/seat.py" /opt/caboose/
+install -m 0644 "$here/worker.mjs" "$here/ensure-agent-seat.mjs" /opt/caboose/
+install -m 0755 "$here/a11y.py" "$here/seat.py" "$here/annotate.py" /opt/caboose/
 # Chromium joins the accessibility bus and builds page trees only when asked.
 install -d -m 0755 /etc/chromium.d
 install -m 0644 "$here/chromium-accessibility" /etc/chromium.d/caboose-accessibility

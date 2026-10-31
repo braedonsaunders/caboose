@@ -31,6 +31,7 @@ final class AirPlayCenter {
     private static let lastKey = "caboose.airplay.last"
 
     init() {
+        Self.configureDefault()
         if let data = UserDefaults.standard.data(forKey: Self.lastKey) {
             last = try? JSONDecoder().decode(AirPlayRoute.self, from: data)
         }

@@ -129,11 +129,12 @@ int main(int argc, char** argv) {
     const int writeResult = stream.writeFully(&reply, sizeof(reply));
     const int writeError = stream.error();
     close(fd[1]);
-    if (writeResult != -1 || (writeError != EPIPE && writeError != ECONNRESET)) {
+    // The write is dropped without failing (the decoder would abort); the error ends the connection.
+    if (writeResult != 0 || (writeError != EPIPE && writeError != ECONNRESET)) {
         std::fprintf(stderr, "closed peer write result=%d errno=%d\n", writeResult, writeError);
         return 1;
     }
-    std::printf("closed peer write failed (errno=%d)\n", writeError);
+    std::printf("closed peer write dropped (errno=%d)\n", writeError);
     // Provider remains loaded for process lifetime.
     return 0;
 }

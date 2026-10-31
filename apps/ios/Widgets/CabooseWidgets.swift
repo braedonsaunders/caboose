@@ -18,7 +18,7 @@ struct JobActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: JobAttributes.self) { context in
             VStack(alignment: .leading, spacing: 6) {
-                Label(context.attributes.title, systemImage: "sparkles").font(.headline)
+                Label(context.attributes.title, systemImage: symbol(context.attributes)).font(.headline)
                 Text(context.state.detail.isEmpty ? context.state.status.capitalized : context.state.detail)
                     .font(.subheadline).lineLimit(2)
                 Text(context.state.status.capitalized).font(.caption).foregroundStyle(.secondary)
@@ -28,17 +28,23 @@ struct JobActivityWidget: Widget {
             .widgetURL(taskURL(context.attributes))
         } dynamicIsland: { context in
             DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) { Image(systemName: "sparkles") }
+                DynamicIslandExpandedRegion(.leading) { Image(systemName: symbol(context.attributes)) }
                 DynamicIslandExpandedRegion(.center) { Text(context.attributes.title).lineLimit(1) }
                 DynamicIslandExpandedRegion(.bottom) { Text(context.state.detail.isEmpty ? context.state.status.capitalized : context.state.detail).lineLimit(2) }
-            } compactLeading: { Image(systemName: "sparkles") }
+            } compactLeading: { Image(systemName: symbol(context.attributes)) }
               compactTrailing: { Image(systemName: context.state.status == "running" ? "ellipsis" : "checkmark") }
-              minimal: { Image(systemName: "sparkles") }
+              minimal: { Image(systemName: symbol(context.attributes)) }
             .widgetURL(taskURL(context.attributes))
         }
     }
     private func taskURL(_ attributes: JobAttributes) -> URL? {
-        guard attributes.kind == "agent" else { return URL(string: "caboose://home") }
-        return URL(string: "caboose://task/\(attributes.jobID)")
+        switch attributes.kind {
+        case "agent": return URL(string: "caboose://task/\(attributes.jobID)")
+        case "command": return URL(string: "caboose://command/\(attributes.jobID)")
+        default: return URL(string: "caboose://home")
+        }
+    }
+    private func symbol(_ attributes: JobAttributes) -> String {
+        attributes.kind == "command" ? "terminal" : "sparkles"
     }
 }

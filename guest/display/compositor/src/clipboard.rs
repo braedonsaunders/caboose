@@ -5,86 +5,314 @@
 //!   through Xwayland's window manager;
 //! - an X11 application: the window manager announces it and the compositor offers it as
 //!   its own Wayland selection ([`Owner::X11`]), reading from X11 on demand;
-//! - the phone (`clipboard` from the client): the compositor holds the text and offers it
-//!   to both ([`Owner::Phone`]).
+//! - the phone (`clipboard` from the client): the compositor holds what it copied and
+//!   offers it to both ([`Owner::Phone`]).
 //!
-//! Text copied on the computer is read through a pipe on a short-lived thread and sent to
-//! the phone; text from the phone is written to readers the same way, so a slow client
-//! never blocks the compositor.
+//! A copy carries text, an image (PNG or JPEG) and files (`text/uri-list`), in any
+//! combination, within [`proto::clipboard::MAX_BYTES`] together. What applications copy
+//! is read through pipes on short-lived threads, each bounded in size and time, and sent
+//! to the phone in the types it asked for in its hello; what the phone copied is written
+//! to readers the same way, so a slow application never blocks the compositor.
 
+use crate::pipes;
 use crate::state::State;
-use caboose_display_protocol::{self as proto, Message};
+use caboose_display_protocol::clipboard::{self as types, JPEG, PNG, TEXT, URI_LIST};
+use caboose_display_protocol::{self as proto, ClipboardEntry, Message};
 use smithay::reexports::calloop::channel::Sender;
 use smithay::wayland::selection::data_device::{request_data_device_client_selection, set_data_device_selection};
 use smithay::wayland::selection::{SelectionSource, SelectionTarget};
-use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
+use std::time::Duration;
 
-/// The protocol's clipboard type.
-pub const MIME: &str = "text/plain;charset=utf-8";
 /// Text types offered for the phone's text and looked for in the computer's, best first.
-pub const TEXT_MIMES: &[&str] = &[MIME, "UTF8_STRING", "text/plain", "TEXT", "STRING"];
-/// The most the phone is sent at once.
-pub const MAX_BYTES: usize = 1024 * 1024;
+pub const TEXT_MIMES: &[&str] = &[TEXT, "UTF8_STRING", "text/plain", "TEXT", "STRING"];
+/// Image types looked for in the computer's copies, best first.
+const IMAGE_MIMES: &[&str] = &[PNG, JPEG];
+/// GNOME's and Thunar's list of copied files: `copy` or `cut`, then one URI per line.
+const GNOME_FILES: &str = "x-special/gnome-copied-files";
+/// How long an application has to hand over what it copied.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an application has to take what it pastes.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most of an X11 copy read directly (not through Smithay), and for how long.
+pub const X11_LIMIT: usize = types::MAX_BYTES;
+pub const X11_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Who provides a selection the compositor owns.
 #[derive(Debug, Clone)]
 pub enum Owner {
     X11,
-    Phone(Arc<Vec<u8>>),
+    Phone(Arc<Offer>),
 }
 
-/// The best text type among those offered.
-pub fn text_mime(offered: &[String]) -> Option<String> {
-    TEXT_MIMES.iter().find(|m| offered.iter().any(|o| o == *m)).map(|m| m.to_string())
+/// What the phone copied, as applications are offered it.
+#[derive(Debug)]
+pub struct Offer {
+    /// Every type applications may ask for, with its bytes.
+    types: Vec<(String, Arc<Vec<u8>>)>,
 }
 
-fn pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
-    let mut fds = [0; 2];
-    // SAFETY: pipe2 fills the two descriptors it is given.
-    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: both descriptors are new and owned from here on.
-    unsafe {
-        Ok((
-            <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fds[0]),
-            <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fds[1]),
-        ))
-    }
-}
-
-/// Writes `data` to a reader's descriptor without blocking the loop.
-pub fn write_to(fd: OwnedFd, data: Arc<Vec<u8>>) {
-    std::thread::spawn(move || {
-        let _ = std::fs::File::from(fd).write_all(&data);
-    });
-}
-
-/// Reads what a source writes into a pipe, up to [`MAX_BYTES`], on a thread; the text
-/// arrives on `done`.
-fn read_from(read: OwnedFd, done: Sender<Vec<u8>>) {
-    std::thread::spawn(move || {
-        let mut data = Vec::new();
-        let mut file = std::fs::File::from(read);
-        let _ = (&mut file).take(MAX_BYTES as u64 + 1).read_to_end(&mut data);
-        if data.len() <= MAX_BYTES && !data.is_empty() {
-            let _ = done.send(data);
+impl Offer {
+    /// The offer for a copy that passed [`types::validate`].
+    pub fn new(content: &proto::Clipboard) -> Self {
+        let mut offered = Vec::new();
+        for (mime, data) in content.entries() {
+            let data = Arc::new(data.to_vec());
+            match mime {
+                TEXT => offered.extend(TEXT_MIMES.iter().map(|m| (m.to_string(), data.clone()))),
+                URI_LIST => {
+                    let mut gnome = b"copy".to_vec();
+                    for line in data.split(|b| *b == b'\n') {
+                        let line = line.strip_suffix(b"\r").unwrap_or(line);
+                        if !line.is_empty() && !line.starts_with(b"#") {
+                            gnome.push(b'\n');
+                            gnome.extend_from_slice(line);
+                        }
+                    }
+                    offered.push((URI_LIST.to_string(), data));
+                    offered.push((GNOME_FILES.to_string(), Arc::new(gnome)));
+                }
+                other => offered.push((other.to_string(), data)),
+            }
         }
-    });
+        Self { types: offered }
+    }
+
+    /// The types applications are offered for content in the protocol's `types`.
+    pub fn app_types(types: &[String]) -> Vec<String> {
+        let mut out = Vec::new();
+        for t in types {
+            match t.as_str() {
+                TEXT => out.extend(TEXT_MIMES.iter().map(|m| m.to_string())),
+                URI_LIST => out.extend([URI_LIST.to_string(), GNOME_FILES.to_string()]),
+                PNG | JPEG => out.push(t.clone()),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub fn mime_types(&self) -> Vec<String> {
+        self.types.iter().map(|(m, _)| m.clone()).collect()
+    }
+
+    /// The bytes for a type an application asked for.
+    pub fn data(&self, mime: &str) -> Option<Arc<Vec<u8>>> {
+        self.types.iter().find(|(m, _)| m == mime).map(|(_, d)| d.clone())
+    }
+
+    /// Writes the bytes for `mime` to a reader's descriptor without blocking the loop;
+    /// a type that is not offered closes the descriptor.
+    pub fn send(&self, mime: &str, fd: OwnedFd) {
+        self.send_then(mime, fd, || {});
+    }
+
+    /// As `send`, calling `done` once the reader has everything (or gave up).
+    pub fn send_then(&self, mime: &str, fd: OwnedFd, done: impl FnOnce() + Send + 'static) {
+        match self.data(mime) {
+            Some(data) => {
+                std::thread::spawn(move || {
+                    pipes::write_bounded(fd, &data, WRITE_TIMEOUT);
+                    done();
+                });
+            }
+            None => done(),
+        }
+    }
+}
+
+/// One representation of a copy to read from an application: the type it offers, the
+/// protocol type it becomes, and the most it may take.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wanted {
+    pub offered: String,
+    pub mime: &'static str,
+    pub limit: usize,
+}
+
+/// The representations worth reading from a copy offering `offered`: its best text, its
+/// best image and its files, within the clipboard's limit together.
+pub fn wanted(offered: &[String]) -> Vec<Wanted> {
+    let has = |m: &str| offered.iter().any(|o| o == m);
+    let mut wanted = Vec::new();
+    if let Some(m) = TEXT_MIMES.iter().find(|m| has(m)) {
+        wanted.push(Wanted { offered: m.to_string(), mime: TEXT, limit: types::MAX_TEXT_BYTES });
+    }
+    let files = if has(URI_LIST) { Some(URI_LIST) } else { has(GNOME_FILES).then_some(GNOME_FILES) };
+    if let Some(m) = files {
+        // GNOME's list has a `copy` or `cut` line before the URIs.
+        wanted.push(Wanted { offered: m.to_string(), mime: URI_LIST, limit: types::MAX_URI_LIST_BYTES + 8 });
+    }
+    if let Some(m) = IMAGE_MIMES.iter().find(|m| has(m)) {
+        let rest: usize = wanted.iter().map(|w| w.limit).sum();
+        wanted.push(Wanted {
+            offered: m.to_string(),
+            mime: if *m == PNG { PNG } else { JPEG },
+            limit: types::MAX_BYTES - rest,
+        });
+    }
+    wanted
+}
+
+/// The protocol's bytes for what an application wrote: GNOME's list of files becomes a
+/// `text/uri-list`.
+fn normalize(offered: &str, data: Vec<u8>) -> Vec<u8> {
+    if offered != GNOME_FILES {
+        return data;
+    }
+    let mut out = Vec::new();
+    for line in data.split(|b| *b == b'\n').skip(1) {
+        if !line.is_empty() {
+            out.extend_from_slice(line);
+            out.extend_from_slice(b"\r\n");
+        }
+    }
+    out
+}
+
+/// A copy from a set of representations read from an application: the valid ones, in
+/// the protocol's order, or None if none is.
+pub fn assemble(read: Vec<(&'static str, Vec<u8>)>) -> Option<proto::Clipboard> {
+    let mut entries: Vec<ClipboardEntry> = types::TYPES
+        .iter()
+        .filter_map(|t| read.iter().find(|(m, _)| m == t))
+        .filter(|(m, d)| types::matches(m, d).is_ok())
+        .map(|(m, d)| ClipboardEntry { mime: m.to_string(), data: d.clone() })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let first = entries.remove(0);
+    let mut clip = proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries };
+    // Over the limit together (a file list grows a little as it is normalized): the
+    // largest alternative goes first.
+    while types::validate(&clip).is_err() && !clip.alternatives.is_empty() {
+        let largest = (0..clip.alternatives.len()).max_by_key(|i| clip.alternatives[*i].data.len()).unwrap();
+        clip.alternatives.remove(largest);
+    }
+    types::validate(&clip).is_ok().then_some(clip)
+}
+
+/// What a client is sent of a copy: the types it takes (text always), or None if that
+/// leaves nothing.
+pub fn for_client(content: &proto::Clipboard, takes: &[String]) -> Option<proto::Clipboard> {
+    let mut entries: Vec<ClipboardEntry> = content
+        .entries()
+        .filter(|(m, _)| *m == TEXT || takes.iter().any(|t| t == m))
+        .map(|(m, d)| ClipboardEntry { mime: m.to_owned(), data: d.to_vec() })
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    let first = entries.remove(0);
+    Some(proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries })
+}
+
+/// A representation read from an application, for the copy numbered `serial`; None
+/// when it could not be read in time or within its limit.
+pub struct Read {
+    pub serial: u64,
+    pub mime: &'static str,
+    pub data: Option<Vec<u8>>,
+}
+
+/// What to read of a copy (or a drag) offering `offered`: each type to ask for, with
+/// where its bytes go once read, tagged `serial`.
+pub fn sinks(serial: u64, offered: &[String], done: &Sender<Read>) -> Vec<(String, Sink)> {
+    wanted(offered).into_iter().map(|w| (w.offered.clone(), Sink { serial, wanted: w, done: done.clone() })).collect()
+}
+
+/// Whether every file a copy names is in the transfer area, where the phone's files are.
+pub fn files_in_transfer_area(content: &proto::Clipboard) -> bool {
+    let Some((_, list)) = content.entries().find(|(m, _)| *m == URI_LIST) else { return true };
+    let home = crate::transfers::home();
+    types::file_paths(list).is_ok_and(|paths| paths.iter().all(|p| crate::transfers::open(&home, p).is_some()))
+}
+
+/// A copy being read.
+struct Pending {
+    serial: u64,
+    expected: usize,
+    read: Vec<(&'static str, Vec<u8>)>,
+}
+
+/// Clipboard state: the channel reads arrive on, the copy being read, and what the
+/// phone last saw.
+pub struct Clipboard {
+    pub done: Sender<Read>,
+    serial: u64,
+    pending: Option<Pending>,
+    /// The copy the phone has (sent to it, or copied on it).
+    pub last_sent: Option<Arc<proto::Clipboard>>,
+}
+
+impl Clipboard {
+    pub fn new(done: Sender<Read>) -> Self {
+        Self { done, serial: 0, pending: None, last_sent: None }
+    }
+
+    /// Starts reading a new copy offering `offered`; returns what to read, each with
+    /// where its bytes go. Reads of an older copy still in flight are ignored.
+    fn begin(&mut self, offered: &[String]) -> Vec<(String, Sink)> {
+        self.serial += 1;
+        let sinks = sinks(self.serial, offered, &self.done);
+        self.pending =
+            (!sinks.is_empty()).then(|| Pending { serial: self.serial, expected: sinks.len(), read: Vec::new() });
+        sinks
+    }
+}
+
+/// Where one representation's bytes go once an application has written them.
+pub struct Sink {
+    serial: u64,
+    wanted: Wanted,
+    done: Sender<Read>,
+}
+
+impl Sink {
+    /// The most this representation may be.
+    pub fn limit(&self) -> usize {
+        self.wanted.limit
+    }
+
+    /// The protocol type this representation becomes.
+    pub fn mime(&self) -> &'static str {
+        self.wanted.mime
+    }
+
+    /// Reads from the pipe's read end on a thread.
+    pub fn read_from(self, read: OwnedFd) {
+        std::thread::spawn(move || {
+            let data =
+                pipes::read_bounded(read, self.wanted.limit, READ_TIMEOUT).map(|d| normalize(&self.wanted.offered, d));
+            let _ = self.done.send(Read { serial: self.serial, mime: self.wanted.mime, data });
+        });
+    }
+
+    pub fn failed(self) {
+        let _ = self.done.send(Read { serial: self.serial, mime: self.wanted.mime, data: None });
+    }
 }
 
 impl State {
-    /// The phone copied: offer its text to Wayland and X11 applications.
+    /// The phone copied: offer its text, image or files to Wayland and X11 applications.
     pub fn clipboard_from_phone(&mut self, c: proto::Clipboard) {
-        if !c.mime.starts_with("text/plain") || c.data.len() > MAX_BYTES {
+        if let Err(refusal) = types::validate(&c) {
+            tracing::warn!("clipboard: refused the phone's copy: {refusal:?}");
             return;
         }
-        let data = Arc::new(c.data);
-        self.clipboard.last_sent = Some(data.clone());
-        let mimes: Vec<String> = TEXT_MIMES.iter().map(|m| m.to_string()).collect();
-        set_data_device_selection(&self.dh, &self.seat, mimes.clone(), Owner::Phone(data));
+        // Files from the phone are the ones it uploaded to the transfer area, nothing else.
+        if !files_in_transfer_area(&c) {
+            tracing::warn!("clipboard: refused the phone's copy: a file is not in the transfer area");
+            return;
+        }
+        let offer = Arc::new(Offer::new(&c));
+        self.clipboard.serial += 1;
+        self.clipboard.pending = None;
+        self.clipboard.last_sent = Some(Arc::new(c));
+        let mimes = offer.mime_types();
+        set_data_device_selection(&self.dh, &self.seat, mimes.clone(), Owner::Phone(offer));
         if let Some(xwm) = self.xwm.as_mut() {
             if let Err(e) = xwm.new_selection(SelectionTarget::Clipboard, Some(mimes)) {
                 tracing::warn!("cannot offer the clipboard to X11: {e}");
@@ -92,7 +320,7 @@ impl State {
         }
     }
 
-    /// A Wayland client copied: tell X11, and read the text for the phone.
+    /// A Wayland client copied: tell X11, and read the copy for the phone.
     pub fn clipboard_from_wayland(&mut self, ty: SelectionTarget, source: Option<SelectionSource>) {
         if let Some(xwm) = self.xwm.as_mut() {
             if let Err(e) = xwm.new_selection(ty, source.as_ref().map(|s| s.mime_types())) {
@@ -104,70 +332,166 @@ impl State {
         }
         let offered = source.map(|s| s.mime_types()).unwrap_or_default();
         tracing::debug!("clipboard: a Wayland client copied {offered:?}");
-        let Some(mime) = text_mime(&offered) else { return };
+        let reads = self.clipboard.begin(&offered);
+        if reads.is_empty() {
+            return;
+        }
         // Smithay reports the new selection before it records it as the seat's; ask for
         // the data once the request has been handled.
         self.handle.insert_idle(move |state| {
-            let Ok((read, write)) = pipe() else { return };
-            match request_data_device_client_selection(&state.seat, mime, write) {
-                Ok(()) => read_from(read, state.clipboard.done.clone()),
-                Err(e) => tracing::debug!("clipboard: cannot read the new selection: {e}"),
+            for (mime, sink) in reads {
+                let Ok((read, write)) = pipes::pipe() else {
+                    sink.failed();
+                    continue;
+                };
+                match request_data_device_client_selection(&state.seat, mime, write) {
+                    Ok(()) => sink.read_from(read),
+                    Err(e) => {
+                        tracing::debug!("clipboard: cannot read the new selection: {e}");
+                        sink.failed();
+                    }
+                }
             }
         });
     }
 
-    /// An X11 application copied: read the text for the phone.
+    /// An X11 application copied: read the copy for the phone.
     pub fn clipboard_from_x11(&mut self, mime_types: &[String]) {
-        let Some(mime) = text_mime(mime_types) else { return };
-        let Ok((read, write)) = pipe() else { return };
-        let handle = self.handle.clone();
-        let Some(xwm) = self.xwm.as_mut() else { return };
-        if xwm.send_selection(SelectionTarget::Clipboard, mime, write, handle).is_ok() {
-            read_from(read, self.clipboard.done.clone());
+        let reads = self.clipboard.begin(mime_types);
+        for (mime, sink) in reads {
+            let Ok((read, write)) = pipes::pipe() else {
+                sink.failed();
+                continue;
+            };
+            if !crate::x11sel::smithay_transfers(&mime) {
+                // Smithay's window manager cannot transfer this type; read it directly.
+                match self.x11.clone() {
+                    Some(access) => {
+                        crate::x11sel::copy_into(access, mime, write, sink.limit(), READ_TIMEOUT);
+                        sink.read_from(read);
+                    }
+                    None => sink.failed(),
+                }
+                continue;
+            }
+            let handle = self.handle.clone();
+            match self.xwm.as_mut().map(|xwm| xwm.send_selection(SelectionTarget::Clipboard, mime, write, handle)) {
+                Some(Ok(())) => sink.read_from(read),
+                _ => sink.failed(),
+            }
         }
     }
 
-    /// Text copied on the computer arrived from its source.
-    pub fn clipboard_read(&mut self, data: Vec<u8>) {
-        tracing::debug!("clipboard: read {} bytes from the computer", data.len());
-        // The phone's own text coming back through an application is not news.
-        if self.clipboard.last_sent.as_deref() == Some(&data) {
+    /// One representation of a copy arrived from its application.
+    pub fn clipboard_read(&mut self, read: Read) {
+        let Some(pending) = self.clipboard.pending.as_mut().filter(|p| p.serial == read.serial) else { return };
+        pending.expected -= 1;
+        if let Some(data) = read.data {
+            tracing::debug!("clipboard: read {} bytes of {} from the computer", data.len(), read.mime);
+            pending.read.push((read.mime, data));
+        }
+        if pending.expected > 0 {
             return;
         }
-        let data = Arc::new(data);
-        self.clipboard.last_sent = Some(data.clone());
-        if let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) {
-            self.net
-                .send(conn, &Message::ServerClipboard(proto::Clipboard { mime: MIME.into(), data: (*data).clone() }));
+        let pending = self.clipboard.pending.take().unwrap();
+        let Some(content) = assemble(pending.read) else { return };
+        // The phone's own copy coming back through an application is not news.
+        if self.clipboard.last_sent.as_deref() == Some(&content) {
+            return;
         }
+        let content = Arc::new(content);
+        self.clipboard.last_sent = Some(content.clone());
+        self.send_clipboard(&content);
     }
-}
 
-/// Clipboard state: the channel text arrives on, and what the phone last saw.
-pub struct Clipboard {
-    pub done: Sender<Vec<u8>>,
-    /// The text the phone has (sent to it, or copied on it).
-    pub last_sent: Option<Arc<Vec<u8>>>,
+    /// Sends a copy to the connected client, in the types it takes.
+    pub fn send_clipboard(&mut self, content: &proto::Clipboard) {
+        let Some((conn, clip)) = self
+            .session
+            .as_ref()
+            .filter(|s| s.ready)
+            .and_then(|s| for_client(content, &s.clipboard_types).map(|clip| (s.conn, clip)))
+        else {
+            return;
+        };
+        self.net.send(conn, &Message::ServerClipboard(clip));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn offered(m: &[&str]) -> Vec<String> {
+        m.iter().map(|s| s.to_string()).collect()
+    }
+
+    const PNG_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
     #[test]
-    fn utf8_text_is_preferred() {
-        let offered = |m: &[&str]| m.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(text_mime(&offered(&["STRING", "text/plain;charset=utf-8", "image/png"])).as_deref(), Some(MIME));
-        assert_eq!(text_mime(&offered(&["TEXT", "UTF8_STRING"])).as_deref(), Some("UTF8_STRING"));
-        assert_eq!(text_mime(&offered(&["image/png"])), None);
+    fn the_best_text_image_and_files_are_read() {
+        let w = wanted(&offered(&["STRING", TEXT, "image/bmp", JPEG, PNG, GNOME_FILES]));
+        let pairs: Vec<_> = w.iter().map(|w| (w.offered.as_str(), w.mime)).collect();
+        assert_eq!(pairs, vec![(TEXT, TEXT), (GNOME_FILES, URI_LIST), (PNG, PNG)]);
+        assert!(w.iter().map(|w| w.limit).sum::<usize>() <= types::MAX_BYTES);
+        let w = wanted(&offered(&["TARGETS", "UTF8_STRING", URI_LIST, GNOME_FILES]));
+        let pairs: Vec<_> = w.iter().map(|w| (w.offered.as_str(), w.mime)).collect();
+        assert_eq!(pairs, vec![("UTF8_STRING", TEXT), (URI_LIST, URI_LIST)]);
+        assert!(wanted(&offered(&["text/html", "image/bmp"])).is_empty());
     }
 
     #[test]
-    fn a_pipe_carries_text_to_the_reader() {
-        let (read, write) = pipe().unwrap();
-        write_to(write, Arc::new(b"copied".to_vec()));
-        let mut got = String::new();
-        std::fs::File::from(read).read_to_string(&mut got).unwrap();
-        assert_eq!(got, "copied");
+    fn gnome_file_lists_become_uri_lists() {
+        let data = normalize(GNOME_FILES, b"copy\nfile:///home/caboose/a\nfile:///home/caboose/b".to_vec());
+        assert_eq!(data, b"file:///home/caboose/a\r\nfile:///home/caboose/b\r\n");
+        assert_eq!(normalize(URI_LIST, b"file:///x\r\n".to_vec()), b"file:///x\r\n");
+    }
+
+    #[test]
+    fn a_copy_keeps_its_valid_representations_in_order() {
+        let clip = assemble(vec![(PNG, PNG_BYTES.to_vec()), (TEXT, b"hi".to_vec())]).unwrap();
+        assert_eq!(clip.mime, TEXT);
+        assert_eq!(clip.alternatives.iter().map(|e| e.mime.as_str()).collect::<Vec<_>>(), vec![PNG]);
+        // An image without its signature is left out; the text stays.
+        let clip = assemble(vec![(PNG, b"not a png".to_vec()), (TEXT, b"hi".to_vec())]).unwrap();
+        assert!(clip.alternatives.is_empty());
+        assert!(assemble(vec![(PNG, b"not a png".to_vec())]).is_none());
+    }
+
+    #[test]
+    fn a_client_gets_only_the_types_it_takes() {
+        let clip = assemble(vec![
+            (TEXT, b"a.png".to_vec()),
+            (PNG, PNG_BYTES.to_vec()),
+            (URI_LIST, b"file:///home/caboose/a.png\r\n".to_vec()),
+        ])
+        .unwrap();
+        let text_only = for_client(&clip, &[]).unwrap();
+        assert_eq!((text_only.mime.as_str(), text_only.alternatives.len()), (TEXT, 0));
+        let images = for_client(&clip, &offered(&[PNG])).unwrap();
+        assert_eq!(images.alternatives.iter().map(|e| e.mime.as_str()).collect::<Vec<_>>(), vec![PNG]);
+        let image_only = assemble(vec![(PNG, PNG_BYTES.to_vec())]).unwrap();
+        assert!(for_client(&image_only, &[]).is_none());
+        assert_eq!(for_client(&image_only, &offered(&[PNG])).unwrap().mime, PNG);
+    }
+
+    #[test]
+    fn the_phones_copy_is_offered_in_every_type_applications_ask_for() {
+        let clip = proto::Clipboard {
+            mime: TEXT.into(),
+            data: b"hi".to_vec(),
+            alternatives: vec![ClipboardEntry {
+                mime: URI_LIST.into(),
+                data: b"file:///h/a\r\nfile:///h/b\r\n".to_vec(),
+            }],
+        };
+        let offer = Offer::new(&clip);
+        let mimes = offer.mime_types();
+        for m in TEXT_MIMES.iter().chain([&URI_LIST, &GNOME_FILES]) {
+            assert!(mimes.iter().any(|o| o == m), "{m}");
+        }
+        assert_eq!(offer.data("UTF8_STRING").unwrap().as_slice(), b"hi");
+        assert_eq!(offer.data(GNOME_FILES).unwrap().as_slice(), b"copy\nfile:///h/a\nfile:///h/b");
+        assert!(offer.data(PNG).is_none());
     }
 }

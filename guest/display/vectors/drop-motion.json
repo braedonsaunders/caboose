@@ -1,0 +1,8 @@
+{
+  "name": "drop-motion",
+  "description": "",
+  "messages": [
+    {"direction": "client", "type": "drop.motion", "type_id": 162, "fields": {"x": {"$float": 420.0}, "y": {"$float": 830.25}, "id": 7}}
+  ],
+  "hex": "a21b000000a36178fb407a4000000000006179fb4089f2000000000062696407"
+}

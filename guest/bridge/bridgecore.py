@@ -188,6 +188,44 @@ def new_request(kind, app, title, options, now=None):
     }
 
 
+# The two formats `caboose-scan` asks for, each as a request's only filter: a PDF is one
+# file; JPEG is one image per page.
+SCAN_FORMATS = {
+    'pdf': ({'name': 'PDF', 'patterns': ['*.pdf'], 'mimeTypes': ['application/pdf']}, False),
+    'jpeg': ({'name': 'JPEG', 'patterns': ['*.jpg', '*.jpeg'], 'mimeTypes': ['image/jpeg']}, True),
+}
+
+
+def new_scan_request(fmt, now=None):
+    """The request `caboose-scan` writes: scan a document with the phone, as `fmt`."""
+    filter_, multiple = SCAN_FORMATS[fmt]
+    return {
+        'id': os.urandom(16).hex(),
+        'type': 'scan',
+        'app': '',
+        'title': '',
+        'acceptLabel': '',
+        'multiple': multiple,
+        'directory': False,
+        'filters': [{**filter_, 'patterns': list(filter_['patterns']), 'mimeTypes': list(filter_['mimeTypes'])}],
+        'currentFilter': 0,
+        'currentName': '',
+        'currentFolder': '',
+        'created': int(time.time() if now is None else now),
+    }
+
+
+def withdraw(ident):
+    """Takes back a request: unclaimed, it is simply gone; claimed, the host is told
+    (`bridge/cancels/<id>`) so the phone takes down what it shows for it."""
+    (REQUESTS / f'{ident}.json').unlink(missing_ok=True)
+    claimed = CLAIMED / f'{ident}.json'
+    if claimed.exists():
+        claimed.unlink(missing_ok=True)
+        prepare()
+        (CANCELS / ident).touch(mode=0o600)
+
+
 def check_answer(answer, request=None):
     """An answer the host passes to `respond`, validated again: the guest trusts no input."""
     if not isinstance(answer, dict) or not isinstance(answer.get('id'), str) or not ID.match(answer['id']):
@@ -215,18 +253,39 @@ def check_answer(answer, request=None):
 
 def chosen(request, answer, exists=os.path.exists, isdir=os.path.isdir):
     """The paths of an `ok` answer as the portal returns them, or None when they cannot be:
-    an open names existing files (folders when choosing one); a save names a file whose
-    folder exists."""
+    an open or a scan names existing files (folders when choosing one); a save names a file
+    whose folder exists."""
     paths = answer['paths']
-    if request['type'] == 'file.open':
+    if request['type'] != 'file.save':
         for p in paths:
-            if not exists(p) or isdir(p) != request['directory']:
+            if not exists(p) or isdir(p) != request.get('directory', False):
                 return None
     else:
         p = paths[0]
         if not isdir(os.path.dirname(p)) or isdir(p):
             return None
     return paths
+
+
+def scan_output_problem(output, fmt, exists=os.path.exists, isdir=os.path.isdir):
+    """Why `caboose-scan --output` cannot be used, or None. A PDF goes into a folder that
+    exists, or to a file in one; JPEG pages go into a folder, made when missing."""
+    parent = os.path.dirname(os.path.abspath(output))
+    if isdir(output):
+        return None
+    if fmt == 'jpeg' and exists(output):
+        return f'{output} is not a folder; JPEG pages are saved in a folder'
+    if not isdir(parent):
+        return f'{parent} does not exist'
+    return None
+
+
+def scan_destinations(paths, output, fmt, isdir=os.path.isdir):
+    """Where each scanned file moves for `--output`: into it when it is a folder (JPEG pages
+    always are), else to it."""
+    if fmt == 'pdf' and not isdir(output):
+        return [(paths[0], output)]
+    return [(p, os.path.join(output, os.path.basename(p))) for p in paths]
 
 
 # Appearance -------------------------------------------------------------------------------

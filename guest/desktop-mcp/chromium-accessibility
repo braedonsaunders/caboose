@@ -3,5 +3,7 @@
 # desktop asks for it), and builds web pages' trees only with
 # --force-renderer-accessibility. With both, a11y.py and the desktop tools see the links,
 # buttons, fields and text inside pages, not just the browser's frame.
+# --ozone-platform-hint=auto selects native Wayland when WAYLAND_DISPLAY is present so
+# Chromium renders at the display's native Retina scale and receives direct Wayland touch.
 export ACCESSIBILITY_ENABLED=1
-export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform-hint=auto --force-renderer-accessibility"

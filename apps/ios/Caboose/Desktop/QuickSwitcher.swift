@@ -350,6 +350,6 @@ extension AppModel {
         apps.first { matches(window, $0) }?.name ?? window.appClass?.name ?? "Window"
     }
 
-    /// Application windows, most recently used first, for Quick Switch.
-    var recentWindowIDs: [Int] { appWindows.map(\.id) }
+    /// Application windows on the in-app desktop, most recently used first, for Quick Switch.
+    var recentWindowIDs: [Int] { workspaceWindows.map(\.id) }
 }

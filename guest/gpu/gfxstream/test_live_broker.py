@@ -24,6 +24,10 @@ from test_gpu_websocket import client_frame
 import control_protocol
 
 
+
+def hello(mask):
+    return broker.HELLO_V4[:12] + struct.pack('<I', mask) + broker.HELLO_V4[16:]
+
 class Writer:
     def __init__(self): self.data = bytearray(); self.eof = False; self.transport = self
     def write(self, data): self.data.extend(data)
@@ -87,6 +91,54 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             timing.begin(surface, pending)
             timing.event(pending, 'retire')
             self.assertEqual(timing.records, 1)
+
+    def test_present_rate_counts_ordered_presents_and_result_gaps(self):
+        with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_PROGRESS': '1'}, clear=True):
+            session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        clock = iter([0, 10, 20, 400_000_000, 410_000_000, 2_000_000_000])
+        with mock.patch.object(broker.time, 'monotonic_ns', side_effect=lambda: next(clock)), \
+                mock.patch('builtins.print') as output:
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)   # 0
+            session.present_rate('received_from_phone', Kind.PRESENT_RESULT)              # 10
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT)           # 20
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)   # 400 ms
+            session.present_rate('received_from_phone', Kind.PRESENT_RESULT)              # 410 ms
+            session.present_rate('received_from_phone', Kind.SOURCE_RELEASED)             # 2 s
+        line = output.call_args.args[0]
+        self.assertIn('presented=3 ordered=2 results=2 released=1', line)
+        self.assertIn('gap_max_ms=399 result_gap_max_ms=409', line)
+        # Ordered presents reach the progress hook like every other surface control.
+        with mock.patch.object(session, 'present_rate') as rate, mock.patch('builtins.print'):
+            session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
+            rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
+
+    def test_present_trace_follows_its_flag_file_and_reports_presents_and_bytes(self):
+        with tempfile.TemporaryDirectory() as runtime:
+            trace = broker.PresentTrace({'XDG_RUNTIME_DIR': runtime})
+            clock = iter(range(0, 10_000_000_000, 400_000_000))
+            with mock.patch.object(broker.time, 'monotonic_ns', side_effect=lambda: next(clock)), \
+                    mock.patch('builtins.print') as output:
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT))  # 0 s: off
+                output.assert_not_called()
+                Path(runtime, 'caboose-gpu-present-trace').touch()
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT))  # 0.4 s: not looked yet
+                output.assert_not_called()
+                trace.surface('received_from_phone', int(Kind.PRESENT_RESULT))  # 0.8 s: not looked yet
+                trace.surface('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))  # 1.2 s: on
+                trace.surface('received_from_phone', int(Kind.PRESENT_RESULT))  # 1.6 s
+                trace.surface('queued_to_phone', int(Kind.SWAPCHAIN_PRESENT))  # not traced, no clock
+                trace.stream(to_phone=100)  # 2.0 s
+                trace.stream(from_phone=7)
+                trace.stream(to_phone=50)
+                trace.stream(to_phone=1)
+            lines = [c.args[0] for c in output.call_args_list]
+            self.assertEqual(lines[0], 'CABOOSE_GPU_PRESENT event=present monotonic_ns=1200000000')
+            self.assertEqual(lines[1], 'CABOOSE_GPU_PRESENT event=result monotonic_ns=1600000000')
+            self.assertEqual(lines[2], 'CABOOSE_GPU_STREAM elapsed_ms=1200 to_phone_bytes=151 from_phone_bytes=7 '
+                                       'monotonic_ns=3200000000')
+            self.assertEqual(len(lines), 3)
+        self.assertTrue(broker.PresentTrace({'CABOOSE_PRIVATE_GPU_PRESENT_TRACE': '1'}).enabled(0))
+        self.assertFalse(broker.PresentTrace({}).enabled(0))
 
     def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -243,12 +295,15 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.bindings.finish(session.binding_generation)
 
     async def test_guest_handle_hello_is_echoed_only_when_the_phone_supports_it(self):
-        cases = ((True, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4_GUEST_HANDLES),
-                 (False, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
-                 (True, broker.HELLO_V4, broker.HELLO_V4))
+        everything = frozenset(broker.HELLO_FEATURES)
+        cases = ((everything, broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4_GUEST_HANDLES),
+                 (frozenset(), broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
+                 (everything, broker.HELLO_V4, broker.HELLO_V4),
+                 (everything, hello(0x3F0), hello(0x3F0)),
+                 (frozenset({'guest-handles'}), hello(0x3F0), hello(0xF0)))
         for supported, offered, expected in cases:
-            with self.subTest(supported=supported, offered=offered[12]):
-                session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True, guest_handles=supported)
+            with self.subTest(supported=sorted(supported), offered=offered[12:14].hex()):
+                session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True, features=supported)
                 session.session_ready.set()
                 class Peer:
                     uid, pid, start_ticks = 1000, 42, 123
@@ -278,8 +333,26 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 session.bindings.finish(session.binding_generation)
 
     async def test_plain_session_refuses_the_guest_handle_hello(self):
-        session = broker.Session(None, b'a' * 16, 1, None, Writer(), guest_handles=True)
-        self.assertFalse(session.guest_handles)
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
+        self.assertFalse(session.features)
+
+    def test_hello_negotiation_grants_offered_phone_features(self):
+        everything = frozenset(broker.HELLO_FEATURES)
+        negotiate = broker.negotiate_hello
+        self.assertEqual(negotiate(hello(0x70), everything), hello(0x70))
+        self.assertEqual(negotiate(hello(0xF0), everything), hello(0xF0))
+        self.assertEqual(negotiate(hello(0x270), everything), hello(0x270))
+        self.assertEqual(negotiate(hello(0x3F0), frozenset({'completion-feed'})), hello(0x270))
+        # Descriptor-set and command-buffer handles need guest handles themselves.
+        self.assertEqual(negotiate(hello(0x1F0), frozenset({'guest-handle-arrays'})), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x170), everything))
+        # Unknown bits, missing required bits, other versions and other sources are refused.
+        self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
+        self.assertIsNone(negotiate(hello(0x1070), everything))
+        self.assertIsNone(negotiate(hello(0x30), everything))
+        self.assertIsNone(negotiate(broker.HELLO, everything))
+        self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))
+        self.assertIsNone(negotiate(hello(0x70)[:47], everything))
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux peer pidfd')
     async def test_creator_exit_drains_fin_then_admits_fresh_process(self):

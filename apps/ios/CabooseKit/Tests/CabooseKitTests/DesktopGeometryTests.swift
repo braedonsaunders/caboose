@@ -158,4 +158,37 @@ struct DesktopGeometryTests {
         }
     }
 
+    @Test func theKeyboardSlidesTheDesktopOnlyAsFarAsTheCaretNeeds() {
+        // A stage from y 100 to 900, the keyboard's top at 560.
+        let pan = { (caret: CGFloat?) in
+            DesktopGeometry.keyboardPan(caretY: caret, stageMinY: 100, stageMaxY: 900, keyboardTopY: 560, margin: 56)
+        }
+        #expect(pan(200) == 0)            // an address bar near the top stays put
+        #expect(pan(504) == 0)            // exactly margin above the keyboard
+        #expect(pan(700) == 196)          // a field under the keyboard rises above it
+        #expect(pan(890) == 340)          // never more than the keyboard covers of the stage
+        #expect(pan(nil) == 0)            // no tap to follow
+        #expect(pan(950) == 0)            // a tap outside the stage is not this desktop's
+        #expect(DesktopGeometry.keyboardPan(caretY: 700, stageMinY: 100, stageMaxY: 500, keyboardTopY: 560) == 0)
+    }
+
+    @Test func keyboardPanRemainsStableWhenCaretIsRecordedWhileStageIsAlreadyPanned() {
+        let stageMinY: CGFloat = 60
+        let stageMaxY: CGFloat = 900
+        let keyboardTopY: CGFloat = 560
+        let unpannedFieldY: CGFloat = 740
+        let initialPan = DesktopGeometry.keyboardPan(
+            caretY: unpannedFieldY, stageMinY: stageMinY, stageMaxY: stageMaxY, keyboardTopY: keyboardTopY
+        )
+        #expect(initialPan == 236)
+        // While panned upward by initialPan, UIWindow conversion reports (unpannedFieldY - initialPan).
+        // Restoring currentKeyboardPan keeps the recorded caret at unpannedFieldY so a second tap
+        // in the same field does not collapse the pan back to 0.
+        let windowConvertedY = unpannedFieldY - initialPan
+        let restoredCaretY = windowConvertedY + initialPan
+        let secondPan = DesktopGeometry.keyboardPan(
+            caretY: restoredCaretY, stageMinY: stageMinY, stageMaxY: stageMaxY, keyboardTopY: keyboardTopY
+        )
+        #expect(secondPan == initialPan)
+    }
 }

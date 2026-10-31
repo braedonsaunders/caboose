@@ -12,7 +12,10 @@ class ControlProtocolTests(unittest.TestCase):
                   (p.RevokeRequest(b'a'*16,b'b'*16,3), p.encode_revoke_request, 64, 0),
                   (p.ExecutorLifecycle(4, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(5, b'e'*16, 1), p.encode_lifecycle, 48, 0),
-                  (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0)]
+                  (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.BufferPresent(1, 7, 0x10, 2**40, 1920, 1080), p.encode_buffer_present, 56, 0),
+                  (p.BufferReleased(1, 0), p.encode_buffer_released, 32, 0),
+                  (p.BufferReleased(2, 11), p.encode_buffer_released, 32, 0)]
         for value, encoder, length, fds in values:
             with self.subTest(value=value):
                 raw=encoder(value); self.assertEqual(len(raw), length)
@@ -33,9 +36,19 @@ class ControlProtocolTests(unittest.TestCase):
         self.assertEqual(len(raw), 56)
         self.assertEqual(p.decode(raw, 1), value)
         self.assertEqual(p.decode(p.encode_bind(p.Bind(1,2,1000,42,1234,17)), 1).space, p.WAYLAND_SURFACE)
-        with self.assertRaises(p.ControlError): p.encode_bind(p.Bind(1,2,1000,42,1234,17,2))
-        bad = bytearray(raw); bad[52] = 2
+        self.assertEqual(p.decode(p.encode_bind(p.Bind(1,2,1000,42,1234,9,p.BUFFER_WINDOW)), 1).space, p.BUFFER_WINDOW)
+        with self.assertRaises(p.ControlError): p.encode_bind(p.Bind(1,2,1000,42,1234,17,3))
+        bad = bytearray(raw); bad[52] = 3
         with self.assertRaises(p.ControlError): p.decode(bytes(bad), 1)
+
+    def test_buffer_records_reject_missing_identity(self):
+        for value in (p.BufferPresent(0, 7, 1, 2, 3, 4), p.BufferPresent(1, 0, 1, 2, 3, 4),
+                      p.BufferPresent(1, 7, 1, 0, 3, 4), p.BufferPresent(1, 7, 1, 2, 0, 4)):
+            with self.assertRaises(p.ControlError): p.encode_buffer_present(value)
+        for value in (p.BufferReleased(0, 0), p.BufferReleased(1, -1)):
+            with self.assertRaises(p.ControlError): p.encode_buffer_released(value)
+        raw = bytearray(p.encode_buffer_released(p.BufferReleased(1, 0))); raw[28] = 1
+        with self.assertRaises(p.ControlError): p.decode(bytes(raw), 0)
 
     def test_reserved_and_unknown_are_terminal(self):
         raw=bytearray(p.encode_bind(p.Bind(1,2,1000,42,1234,17)))

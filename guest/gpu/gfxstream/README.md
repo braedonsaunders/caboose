@@ -292,6 +292,21 @@ from indexed-present admission to result, source release and retirement, the
 interval between admissions, and queued DATA bytes. They contain no payloads or
 identities. Retirement receipt rate is not displayed FPS; intervals include relay
 and executor scheduling, and do not isolate GPU execution time.
+Every two seconds while frames flow it also prints `CABOOSE_GPU_PRESENT_RATE`: presents
+received from the guest (`presented`, with ordered presents also counted as
+`ordered`), present results and source releases from the phone, and the longest
+interval between presents (`gap_max_ms`) and between results (`result_gap_max_ms`)
+in that window, so a hitch is visible on either side of the phone.
+
+For [frame lab](../../framelab/README.md) the broker also writes a present timeline,
+without the bounds above, while `CABOOSE_PRIVATE_GPU_PRESENT_TRACE=1` is set or while the
+file `$XDG_RUNTIME_DIR/caboose-gpu-present-trace` exists (looked at once a second, so a
+running seat can be measured without a restart): `CABOOSE_GPU_PRESENT event=present|result|released
+monotonic_ns=…` for every present from the guest and every present result and source
+release from the phone, and every second `CABOOSE_GPU_STREAM elapsed_ms=… to_phone_bytes=…
+from_phone_bytes=… monotonic_ns=…`, the WebSocket bytes written to the phone and the
+message payload bytes read from it. Times are the broker's CLOCK_MONOTONIC; lines carry no
+payloads, handles or identities.
 
 The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
 flush diagnostics. Up to 128 numeric call records and one limit marker report
@@ -317,3 +332,16 @@ frames remain observable after high-rate startup calls. Whole-call elapsed
 includes validation, encoder-lock wait, marshaling, buffered write and reply
 read; it is not network RTT, and records contain no handles, addresses or
 payloads.
+
+## Phone-resident buffers in windows
+
+`buffer_presentation.py` is the broker's presentation of phone-resident dma-bufs that a
+compositor window commits ([docs/gpu-buffers.md](../../../docs/gpu-buffers.md)): the
+registry of buffers drivers register on the surface socket (CGLS kinds 40 and 41, the
+dma-buf in `SCM_RIGHTS`), and each window's presentation state, one frame in flight and
+the newest commit waiting. `control_protocol.py` carries the compositor's
+`BUFFER_PRESENT` and the broker's `BUFFER_RELEASED`, and binds in the `BUFFER_WINDOW`
+namespace. `test_buffer_presentation.py` covers the records, registry ownership and the
+window state machine; `test_broker_buffers.py` drives a session through bind, present,
+replacement of a waiting commit, an `EBUSY` retry, release on source release, retirement
+and rebinding, and a resize. The driver's side is in `dmabuf/`.

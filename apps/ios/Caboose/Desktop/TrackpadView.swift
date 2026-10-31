@@ -108,11 +108,7 @@ struct Trackpad: UIViewRepresentable {
         view.bareSystemKeyboard = bareSystemKeyboard
         view.dismissInline = dismissInline
         view.wantsKeyboard = (keyboardVisible || inlineControls) && enabled
-        if view.autocorrectChoice == nil {
-            if let purpose = model.session?.textPurpose {
-                view.prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"].contains(purpose)
-            } else { view.prefersProse = !RemoteWindowView.isCodeApp(target) }
-        }
+        view.followField(purpose: model.session?.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
         if (!enabled && view.inputEnabled) || (!pointerEnabled && view.pointerEnabled) { view.endInteraction() }
         view.inputEnabled = enabled
         view.pointerEnabled = pointerEnabled
@@ -258,7 +254,7 @@ final class TrackpadSurface: RemoteTextInputView {
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
                 resetTyping()
-                defer { prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow) }
+                defer { followField(purpose: session?.textPurpose, isCode: RemoteWindowView.isCodeApp(focusedWindow)) }
                 desktop?.click(button: button, session: session, open: open)
                 if button == 1 { checkDesktopTextFocus() }
                 haptics.impactOccurred()
@@ -369,7 +365,7 @@ final class TrackpadSurface: RemoteTextInputView {
             model.quickSwitch.cancel()
             (desktop ?? model.desktop).launchpadOpen = false
         case .left, .right:
-            let windows = model.appWindows.sorted { $0.id < $1.id }
+            let windows = model.workspaceWindows.sorted { $0.id < $1.id }
             guard !windows.isEmpty else { return }
             let current = focusedWindow?.id
             let index = windows.firstIndex { $0.id == current } ?? 0
@@ -399,7 +395,7 @@ final class TrackpadSurface: RemoteTextInputView {
                       self.inputEnabled, self.focusedWindow === target, self.session === session, self.window != nil else { return }
                 if let wanted = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
                                                     isText: session.cursorIsText, keyboardVisible: self.model?.keyboardVisible == true) {
-                    self.prefersProse = self.autocorrectChoice ?? !RemoteWindowView.isCodeApp(target)
+                    self.followField(purpose: session.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
                     self.model?.keyboardVisible = wanted
                     return
                 }

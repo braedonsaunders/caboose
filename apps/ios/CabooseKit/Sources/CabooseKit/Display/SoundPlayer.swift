@@ -66,6 +66,8 @@ final class SoundPlayer: @unchecked Sendable {
     let timing = AudioTimingMetrics()
     private let queue = DispatchQueue(label: "caboose.display.sound", qos: .userInteractive)
     private let ingress = AudioIngress()
+    private let lastPacketLock = NSLock()
+    private var lastPacketAt: TimeInterval = 0
     // On `queue`:
     private var ingressContinuity = AudioIngressContinuity()
     private var decoder: OpusDecoder?
@@ -94,7 +96,11 @@ final class SoundPlayer: @unchecked Sendable {
 
     init(clock: MediaClock, now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }, activate: @escaping () throws -> Void = {
         #if os(iOS)
-        try AVAudioSession.sharedInstance().setActive(true)
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback, session.category != .playAndRecord {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        }
+        try session.setActive(true)
         #endif
     }) {
         self.clock = clock
@@ -182,8 +188,15 @@ final class SoundPlayer: @unchecked Sendable {
         }
     }
 
+    /// Whether sound arrived within the last two seconds: the computer is playing something.
+    var isPlaying: Bool {
+        let last = lastPacketLock.withLock { lastPacketAt }
+        return last > 0 && now() - last < 2
+    }
+
     func play(_ packet: AudioPacket, receivedAt: TimeInterval? = nil) {
         let dispatchedAt = now()
+        lastPacketLock.withLock { lastPacketAt = dispatchedAt }
         let receivedAt = receivedAt ?? dispatchedAt
         ingress.submit(bytes: packet.data.count) { ticket in
             queue.async { [self] in

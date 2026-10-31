@@ -62,6 +62,10 @@ It does not need a common Wayland backend or create a Linux presentation buffer.
 Binding uses `wl_proxy_get_id`, an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
 and a ten-second deadline. Provider replies populate base capabilities, formats
 and modes, including the base `*2` forms. Unknown extension chains fail explicitly.
+With the indexed path active, queue family 0 also reports Wayland and XCB presentation
+support, so X11 clients (Xwayland) select the same provider, and the instance keeps
+`VK_KHR_xcb_surface` and `VK_EXT_headless_surface`. Physical-device features report
+`provokingVertexLast` and `transformFeedbackPreservesProvokingVertex`.
 Uncertain binding or retirement retains the bounded wrapper and instance lease.
 
 `mesa_swapchain.inc` supplies the separate indexed device candidate under
@@ -69,7 +73,10 @@ Uncertain binding or retirement retains the bounded wrapper and instance lease.
 v4/0x70 handshake and a read-only check of Mesa's actual synchronous feature
 selection. The canonical socket implementation is guest-owner commit `6dfa6e45`.
 The diagnostic v2 and query-only v3 paths retain their existing behavior; v3
-advertises no swapchain. The indexed path exposes basic KHR_swapchain only;
+advertises no swapchain. The indexed path exposes basic KHR_swapchain only; a swapchain create chain may carry
+only `VkImageFormatListCreateInfo`. Creating with `oldSwapchain` first waits for the
+old swapchain's presentation to go idle and retires it on the provider, so a resize
+never holds two native swapchains;
 unsupported presentation extensions, device groups and host-image-copy features
 are disabled or rejected before native device creation.
 

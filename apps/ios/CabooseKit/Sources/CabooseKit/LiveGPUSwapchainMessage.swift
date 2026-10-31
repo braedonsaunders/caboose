@@ -37,13 +37,17 @@ struct LiveGPUIndexedPresent: Equatable, Sendable {
     let family: UInt32
     let layout: UInt32
     let waits: [UInt64]
+    /// Nonzero for SWAPCHAIN_PRESENT_ORDERED: the ORDER mark the process's device stream
+    /// must have decoded before this present runs.
+    var order: UInt64 = 0
 }
 enum LiveGPUAcquireLocalReason: UInt32, Sendable { case none, deadline, cancelled, other }
 
 enum LiveGPUSwapchainMessage: Equatable, Sendable {
     case create(LiveGPUSwapchainCreate)
     case created(request: UInt64, swapchain: UInt64, status: LiveGPUSurfaceStatus, count: UInt32)
-    case map(swapchain: UInt64, images: [UInt64])
+    /// `flags`: 0, or 1 (guest-owned images, any count up to 8), or 3 (also mailbox).
+    case map(swapchain: UInt64, images: [UInt64], flags: UInt32 = 0)
     case mapped(swapchain: UInt64, status: LiveGPUSurfaceStatus)
     case acquire(LiveGPUSwapchainAcquire)
     case acquired(swapchain: UInt64, request: UInt64, status: LiveGPUSurfaceStatus,
@@ -66,7 +70,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .cancelAcquire: return .swapchainCancelAcquire
         case .retire: return .swapchainRetire
         case .retired: return .swapchainRetired
-        case .present: return .swapchainPresent
+        case .present(let p): return p.order == 0 ? .swapchainPresent : .swapchainPresentOrdered
         case .revokeSurface: return .surfaceRevokeRequest
         case .presentRetired: return .presentRetired
         }
@@ -83,6 +87,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .swapchainCancelAcquire, .presentRetired: valid = n == 56
         case .swapchainRetire: valid = n == 48
         case .swapchainPresent: valid = n >= 80 && n <= 592 && (n - 80) % 8 == 0
+        case .swapchainPresentOrdered: valid = n >= 88 && n <= 600 && (n - 88) % 8 == 0
         case .surfaceRevokeRequest: valid = n == 40
         default: valid = false
         }
@@ -118,11 +123,12 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             }
             value = .created(request: request, swapchain: swapchain, status: status, count: count)
         case .swapchainMap:
-            let swapchain = try r.u64(), count = try r.u32(), reserved = try r.u32()
-            try check(swapchain > 0 && (1...256).contains(count) && reserved == 0 && r.remaining == Int(count) * 8, "map fields")
+            let swapchain = try r.u64(), count = try r.u32(), flags = try r.u32()
+            try check(swapchain > 0 && (1...256).contains(count) && [0, 1, 3].contains(flags) &&
+                      (flags == 0 || count <= 8) && r.remaining == Int(count) * 8, "map fields")
             let images = try (0..<count).map { _ in try r.u64() }
             try check(images.allSatisfy { $0 > 0 } && Set(images).count == images.count, "source image identities")
-            value = .map(swapchain: swapchain, images: images)
+            value = .map(swapchain: swapchain, images: images, flags: flags)
         case .swapchainMapped, .swapchainRetired:
             let swapchain = try r.u64(), status = try r.status()
             try check(swapchain > 0, "swapchain identity")
@@ -152,8 +158,10 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .swapchainRetire:
             let swapchain = try r.u64(); try check(swapchain > 0, "retire identity")
             value = .retire(swapchain: swapchain)
-        case .swapchainPresent:
+        case .swapchainPresent, .swapchainPresentOrdered:
             let swapchain = try r.u64(), serial = try r.u64(), queue = try r.u64()
+            let order = kind == .swapchainPresentOrdered ? try r.u64() : 0
+            try check(kind == .swapchainPresent || order > 0, "present order mark")
             let index = try r.u32(), family = try r.u32(), layout = try r.u32(), count = try r.u32()
             try check(swapchain > 0 && serial > 0 && queue > 0 && index < 256 && layout == 1 && count <= 64,
                       "indexed present fields")
@@ -161,7 +169,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             let waits = try (0..<count).map { _ in try r.u64() }
             try check(waits.allSatisfy { $0 > 0 } && Set(waits).count == waits.count, "indexed waits")
             value = .present(.init(swapchain: swapchain, serial: serial, queue: queue, index: index,
-                                  family: family, layout: layout, waits: waits))
+                                  family: family, layout: layout, waits: waits, order: order))
         case .presentRetired:
             let swapchain = try r.u64(), serial = try r.u64()
             try check(swapchain > 0 && serial > 0, "retired frame identity")
@@ -184,9 +192,9 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             for v in c.families { w.u32(v) }
         case let .created(request, swapchain, status, count):
             w.u64(request); w.u64(swapchain); w.status(status); w.u32(count); w.u32(0)
-        case let .map(swapchain, images):
+        case let .map(swapchain, images, flags):
             try Self.check(images.count <= 256, "image limit")
-            w.u64(swapchain); w.u32(UInt32(images.count)); w.u32(0)
+            w.u64(swapchain); w.u32(UInt32(images.count)); w.u32(flags)
             for v in images { w.u64(v) }
         case let .mapped(swapchain, status), let .retired(swapchain, status): w.u64(swapchain); w.status(status)
         case .acquire(let a):
@@ -200,6 +208,7 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
         case .present(let p):
             try Self.check(p.waits.count <= 64, "wait limit")
             for v in [p.swapchain, p.serial, p.queue] { w.u64(v) }
+            if p.order != 0 { w.u64(p.order) }
             for v in [p.index, p.family, p.layout, UInt32(p.waits.count)] { w.u32(v) }
             for v in p.waits { w.u64(v) }
         case .presentRetired(let swapchain, let serial): w.u64(swapchain); w.u64(serial)

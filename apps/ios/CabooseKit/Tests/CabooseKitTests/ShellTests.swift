@@ -51,12 +51,16 @@ final class ShellLinkTests: XCTestCase {
         XCTAssertEqual(ShellLink(URL(string: "caboose://apps")!), .tab(.apps))
         XCTAssertEqual(ShellLink(URL(string: "caboose://terminal")!), .tab(.terminal))
         XCTAssertEqual(ShellLink(URL(string: "caboose://task/abc123")!), .task("abc123"))
+        XCTAssertEqual(ShellLink(URL(string: "caboose://command/0123456789abcdef0123456789abcdef")!), .command("0123456789abcdef0123456789abcdef"))
         XCTAssertEqual(ShellLink(URL(string: "caboose://airplay")!), .airPlay)
     }
 
     func testOtherLinksAreNotShellLinks() {
         XCTAssertNil(ShellLink(URL(string: "caboose://connect?host=http://h&token=t")!))
         XCTAssertNil(ShellLink(URL(string: "caboose://task")!))
+        XCTAssertNil(ShellLink(URL(string: "caboose://command")!))
+        XCTAssertNil(ShellLink(URL(string: "caboose://command/ABC")!))
+        XCTAssertNil(ShellLink(URL(string: "caboose://command/0123456789abcdef0123456789abcdeg")!))
         XCTAssertNil(ShellLink(URL(string: "https://home")!))
         XCTAssertNil(ShellLink(URL(string: "caboose://settings")!))
     }

@@ -90,6 +90,37 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertNil(output.error)
         XCTAssertEqual(runtime.finishedTokens, [1])
     }
+    func testRapidHalfCloseAndRetirementAcrossManyStreamsNeverHangs() throws {
+        for eprotoOnEOF in [false, true] {
+            let runtime = LiveRuntimeProbe()
+            runtime.runEprotoOnEOF = eprotoOnEOF
+            let binding = try LiveGPUNativeBinding(backend: runtime)
+            let output = LiveOutputProbe()
+            try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+            var seq: UInt64 = 0
+            func send(_ kind: LiveGPUEnvelope.Kind, _ p: UInt64 = 0, _ s: UInt64 = 0, _ data: Data = Data()) throws {
+                seq += 1; try binding.consume(wire(kind, sequence: seq, process: p, stream: s, payload: data))
+            }
+            try send(.session, 0, 0, LiveGPUEnvelope.hello)
+            var streamID: UInt64 = 0
+            for procID: UInt64 in 1...16 {
+                try send(.processOpen, procID)
+                for _ in 1...4 {
+                    streamID += 1
+                    try send(.streamOpen, procID, streamID)
+                    try send(.data, procID, streamID, Data([0x11, 0x22, 0x33, 0x44]))
+                    try send(.fin, procID, streamID)
+                }
+                XCTAssertTrue(output.waitForFINs(4))
+                try send(.processStop, procID)
+            }
+            try send(.revoke)
+            try binding.finish()
+            XCTAssertNil(output.error)
+            XCTAssertEqual(runtime.finishedTokens.count, 16)
+            XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
+        }
+    }
     func testDrainWaitsForSessionThenEmitsOnceWithoutInventingRetirement() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)

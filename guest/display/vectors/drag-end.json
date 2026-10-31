@@ -1,0 +1,8 @@
+{
+  "name": "drag-end",
+  "description": "The drag the client took ended.",
+  "messages": [
+    {"direction": "server", "type": "drag.end", "type_id": 53, "fields": {"taken": true}}
+  ],
+  "hex": "3508000000a16574616b656ef5"
+}

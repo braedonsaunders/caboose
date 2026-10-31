@@ -1,0 +1,8 @@
+{
+  "name": "drop-result-ok",
+  "description": "",
+  "messages": [
+    {"direction": "server", "type": "drop.result", "type_id": 51, "fields": {"ok": true}}
+  ],
+  "hex": "3305000000a1626f6bf5"
+}

@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_copy_internal.h"
+#include "framelab_timing.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <memory>
@@ -10,11 +11,13 @@
 namespace caboose::gpuv2 {
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
-    VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider) {
+    VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider,
+    VkImage capture) {
     if (provider) *provider = {};
     auto* vk = objects.vk;
     if (!vk || !objects.device || !objects.queue || !objects.image || !objects.queueMutex ||
-        !destination || destination == objects.image || !ready || acquired == ready ||
+        !destination || destination == objects.image || capture == objects.image || capture == destination ||
+        !ready || acquired == ready ||
         !copyFence || !commandBuffer || !vk->vkBeginCommandBuffer || !vk->vkEndCommandBuffer ||
         !vk->vkCmdPipelineBarrier || !vk->vkCmdCopyImage || !vk->vkQueueSubmit)
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -33,7 +36,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         VkImageSubresourceRange range{};
         range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         range.levelCount = 1; range.layerCount = 1;
-        VkImageMemoryBarrier barriers[2]{};
+        VkImageMemoryBarrier barriers[3]{};
         for (auto& barrier : barriers) {
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -49,8 +52,12 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        // The capture's previous contents were read by Metal before the slot was released.
+        barriers[2] = barriers[1];
+        barriers[2].image = capture;
+        const uint32_t count = capture ? 3 : 2;
         vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, count, barriers);
         VkImageCopy region{};
         region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.srcSubresource.layerCount = 1;
@@ -58,6 +65,10 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         region.extent = objects.extent;
         vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        if (capture) {
+            vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                capture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        }
         barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barriers[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
         barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -66,8 +77,13 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         barriers[1].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barriers[1].dstAccessMask = 0;
+        // Metal reads the capture after the copy fence; its layout is GENERAL from here.
+        barriers[2].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barriers[2].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barriers[2].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barriers[2].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, count, barriers);
         result = vk->vkEndCommandBuffer(commandBuffer);
         if (result != VK_SUCCESS) return provider ? provider->record(result) : result;
         VkSubmitInfo submit{};
@@ -84,7 +100,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
 }
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence,
-    PresentationProviderResult* provider) {
+    PresentationProviderResult* provider, uint64_t presentId) {
     if (provider) *provider = {};
     if (!objects.vk || !objects.vk->vkQueuePresentKHR || !objects.queue ||
         !objects.queueMutex || !swapchain || !ready || !presentFence) return VK_ERROR_INITIALIZATION_FAILED;
@@ -96,6 +112,12 @@ VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& obje
     info.pNext = &fenceInfo;
     info.waitSemaphoreCount = 1; info.pWaitSemaphores = &ready;
     info.swapchainCount = 1; info.pSwapchains = &swapchain; info.pImageIndices = &imageIndex;
+    VkPresentTimeGOOGLE time{static_cast<uint32_t>(presentId), 0};
+    VkPresentTimesInfoGOOGLE times{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, nullptr, 1, &time};
+    if (presentId && caboose::framelab::pastTiming(objects.vk, objects.device)) {
+        times.pNext = info.pNext;
+        info.pNext = &times;
+    }
     std::lock_guard<std::mutex> lock(*objects.queueMutex);
     VkResult result = objects.vk->vkQueuePresentKHR(objects.queue, &info);
     return provider ? provider->record(result) : result;

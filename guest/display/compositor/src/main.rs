@@ -1,12 +1,16 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
+mod atlas;
 mod audio;
 mod devices;
 mod clipboard;
 mod config;
 mod control;
+mod dbus;
 mod displays;
+mod dnd;
 mod encode;
+mod frame_trace;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
 mod gpu_supervisor;
@@ -16,20 +20,31 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod ibus;
+mod ibus_portal;
 mod input;
 mod keymap;
 mod motion;
 mod net;
 mod pencil;
+mod pipes;
 mod render;
+mod scene;
+mod remote_buffers;
+mod render_node;
+mod scroll;
 mod session;
 mod state;
 mod stream;
 mod text_input;
+mod transfers;
 mod video;
 mod windows;
 mod x11_focus;
+mod x11sel;
 mod xauth;
+mod xdnd;
+mod x11_scale;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -46,7 +61,7 @@ use smithay::reexports::wayland_server::Display;
 use smithay::utils::Clock;
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
-use smithay::wayland::dmabuf::DmabufState;
+use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufState};
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::output::OutputManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
@@ -74,6 +89,8 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
     ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
+    ("OZONE_PLATFORM", "wayland"),
+    ("CHROMIUM_USER_FLAGS", "--ozone-platform-hint=auto"),
 ];
 
 fn main() {
@@ -128,6 +145,7 @@ fn launch_env(
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
     }
+    let is_agent = std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") || !config.games;
     // Agent application state and IPC must follow its private home on every launch.
     // The owner keeps the existing environment contract.
     if std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") {
@@ -151,6 +169,9 @@ fn launch_env(
         }
         env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
+    if !is_agent && std::env::var("CABOOSE_WSI_AUTO_PROMOTE").as_deref() == Ok("1") {
+        env.push(("CABOOSE_WSI_AUTO_PROMOTE".into(), "1".into()));
+    }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the
     // bitstream to this compositor. Only here: without the compositor's socket the driver
@@ -170,10 +191,58 @@ fn launch_env(
     env
 }
 
+/// The Vulkan loader manifest of the phone's GPU driver (guest/gpu/gfxstream), as the
+/// image installs it.
+const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
+
+/// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
+/// "Applications"). GTK 4 draws with Vulkan, not with OpenGL, which on Wayland would stay
+/// on the CPU without a DRM render node; Electron runs as an X11 client, where its input
+/// methods and windows behave as Chromium's do. OpenGL stays on the computer's renderer:
+/// Zink on the phone's GPU offers only OpenGL ES 2.0 (the phone has no logic operations),
+/// so desktop OpenGL contexts would fail.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("GSK_RENDERER", "vulkan"), ("ELECTRON_OZONE_PLATFORM_HINT", "x11")];
+
+/// On the seat that renders on the phone's GPU: every application's Vulkan loader also
+/// loads the phone's driver, which reaches the phone through the broker's sockets; they
+/// exist only while a phone's GPU is attached. Without one the driver fails its instance and the
+/// loader keeps the computer's own drivers, so applications draw on the computer and
+/// reach the phone as pictures.
+fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::path::Path) {
+    let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
+        return;
+    };
+    if !icd.is_file() {
+        tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
+        return;
+    }
+    // The toolkit settings replace the seat's defaults.
+    env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k));
+    env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
+    env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
+    // Steam's container runtime (pressure-vessel) shares only the paths it is told to.
+    if let Some(dir) = stream.parent() {
+        env.push(("PRESSURE_VESSEL_FILESYSTEMS_RW".into(), dir.display().to_string()));
+    }
+    // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
+    // CPU while no phone was attached are lost once one is, so applications move to it.
+    env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
+    // The routing layer (guest/gpu/routing-layer) lists the phone's GPU first, in place of
+    // Mesa's device-select layer, which orders by the computer's own GPUs, and settles
+    // each process's device-loss policy: whether the driver reports the phone's departure
+    // as device loss (applications that recover from it) or pauses the application.
+    env.push(("CABOOSE_GPU_ROUTING".into(), "1".into()));
+    env.push(("NODEVICE_SELECT".into(), "1".into()));
+    env.push(("CABOOSE_GPU_ON_LOSS".into(), "auto".into()));
+    env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+}
+
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
     let mut env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
+    apply_gpu_live(&mut env, &state.config, std::path::Path::new(GPU_LIVE_ICD));
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
@@ -182,9 +251,33 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
     }
+    if let Some(socket) = &state.scene.socket {
+        // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
+        env.push(("CABOOSE_SCENE_SOCKET".into(), socket.display().to_string()));
+    }
+    if let Some(ibus) = &state.ibus {
+        // Applications without text-input-v3 reach the phone's keyboard through IBus:
+        // Qt by its module setting, GTK on X11 by the window manager's XSETTINGS, SDL by itself.
+        env.push(("IBUS_ADDRESS".into(), ibus.address()));
+        env.push(("IBUS_ADDRESS_FILE".into(), ibus.address_file().display().to_string()));
+        env.push(("QT_IM_MODULE".into(), "ibus".into()));
+    }
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
         env.push(("CABOOSE_DISPLAY_CONTROL".into(), socket.display().to_string()));
+    }
+    if let Some(socket) = &state.scroll.socket {
+        // Toolkit scroll reporters find the compositor here (scroll.rs).
+        env.push(("CABOOSE_SCROLL_SOCKET".into(), socket.display().to_string()));
+        // The toolkit reporters' preload libraries, inert in processes without their toolkit.
+        let reporters = scroll::preload_libraries(std::path::Path::new(scroll::REPORTERS));
+        if !reporters.is_empty() {
+            let mut preload = reporters.join(":");
+            if let Some(existing) = std::env::var("LD_PRELOAD").ok().filter(|v| !v.is_empty()) {
+                preload = format!("{existing}:{preload}");
+            }
+            env.push(("LD_PRELOAD".into(), preload));
+        }
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
@@ -296,9 +389,29 @@ fn run(config: Config) -> Result<(), String> {
     // linux-dmabuf: the pixman renderer maps linear dmabufs, so clients that allocate
     // GPU buffers can hand them over without a copy into shm.
     let render::Renderer::Pixman(r) = &renderer;
-    let formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    let mut formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    // With the phone GPU, clients may also hand over buffers whose pixels are on the phone.
+    if config.private_gpu_stream.is_some() {
+        formats.extend(remote_buffers::formats());
+    }
     if !formats.is_empty() {
-        dmabuf.create_global::<State>(&dh, formats);
+        // With a render node, its dma-buf feedback names it as the device to allocate on.
+        let feedback = render_node::find().and_then(|(device, path)| {
+            match DmabufFeedbackBuilder::new(device, formats.iter().copied()).build() {
+                Ok(feedback) => {
+                    tracing::info!("render node: {}", path.display());
+                    Some(feedback)
+                }
+                Err(e) => {
+                    tracing::warn!("render node {}: no dma-buf feedback: {e}", path.display());
+                    None
+                }
+            }
+        });
+        match feedback {
+            Some(feedback) => { dmabuf.create_global_with_default_feedback::<State>(&dh, &feedback); }
+            None => { dmabuf.create_global::<State>(&dh, formats); }
+        }
     }
     OutputManagerState::new_with_xdg_output::<State>(&dh);
     XdgDecorationState::new::<State>(&dh);
@@ -347,11 +460,27 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let (clip_tx, clip_rx) = channel::<Vec<u8>>();
+    let (clip_tx, clip_rx) = channel::<clipboard::Read>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
-            if let ChannelEvent::Msg(data) = event {
-                state.clipboard_read(data);
+            if let ChannelEvent::Msg(read) = event {
+                state.clipboard_read(read);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (xdnd_tx, xdnd_rx) = channel::<(u64, xdnd::Report)>();
+    handle
+        .insert_source(xdnd_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg((serial, report)) = event {
+                state.on_xdnd_report(serial, report);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (drag_tx, drag_rx) = channel::<clipboard::Read>();
+    handle
+        .insert_source(drag_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(read) = event {
+                state.on_drag_read(read);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -423,8 +552,12 @@ fn run(config: Config) -> Result<(), String> {
         xwayland_shell,
         seat,
         xwm: None,
+        xwayland_client: None,
+        x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
+        ibus: None,
+        ibus_shown: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -437,8 +570,12 @@ fn run(config: Config) -> Result<(), String> {
         focus_history: Vec::new(),
         videos: Default::default(),
         games: Default::default(),
+        scene: Default::default(),
         control: Default::default(),
-        clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
+        scroll: Default::default(),
+        clipboard: clipboard::Clipboard::new(clip_tx),
+        x11: None,
+        dnd: dnd::Dnd::new(xdnd_tx, drag_tx),
         audio: None,
         audio_tx,
         devices: None,
@@ -447,7 +584,12 @@ fn run(config: Config) -> Result<(), String> {
         epoch: session::new_epoch(),
         gpu_grants: None,
         gpu_last_bind_request: 0,
+        gpu_restart_pending: false,
+        gpu_restart_delay: Duration::from_secs(1),
+        gpu_started_at: std::time::Instant::now(),
+        remote_presents: Default::default(),
         stats: Default::default(),
+        input_trace: Default::default(),
         cursor: None,
         refine_timer: None,
     };
@@ -500,6 +642,17 @@ fn run(config: Config) -> Result<(), String> {
         },
         None => tracing::info!("no game handoff"),
     }
+    let is_owner_seat = state.config.games && std::env::var("CABOOSE_SEAT").as_deref() != Ok("agent");
+    match scene::socket_path().filter(|_| is_owner_seat) {
+        Some(path) => match scene::SceneServer::listen(&path, &handle) {
+            Ok(s) => {
+                tracing::info!("scene socket: {}", path.display());
+                state.scene = s;
+            }
+            Err(e) => tracing::warn!("no scene socket: cannot listen on {}: {e}", path.display()),
+        },
+        None => tracing::info!("no scene socket"),
+    }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
     if let Some(dir) = &instance_dir {
         let path = dir.join("control.sock");
@@ -515,6 +668,27 @@ fn run(config: Config) -> Result<(), String> {
                 state.control = c;
             }
             Err(e) => tracing::warn!("no control socket: cannot listen on {}: {e}", path.display()),
+        }
+        let path = dir.join("ibus");
+        match ibus::Ibus::listen(&path, &handle) {
+            Ok(service) => {
+                // Sandboxed applications reach it through the session bus.
+                if let Ok(address) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+                    if let Err(e) = ibus::Ibus::serve_portal(address, &handle) {
+                        tracing::warn!("input method: no IBus portal: {e}");
+                    }
+                }
+                state.ibus = Some(service);
+            }
+            Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
+        }
+        let path = dir.join("scroll.sock");
+        match scroll::ScrollHub::listen(&path, &handle) {
+            Ok(hub) => {
+                tracing::info!("scroll socket: {}", path.display());
+                state.scroll = hub;
+            }
+            Err(e) => tracing::warn!("no scroll reports: cannot listen on {}: {e}", path.display()),
         }
     }
     let spawned = x_display.and_then(|number| {
@@ -558,11 +732,22 @@ fn run(config: Config) -> Result<(), String> {
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
-                            Ok(wm) => {
+                            Ok(mut wm) => {
+                                // GTK on X11 (and Chromium and Electron, which use its input
+                                // methods) selects its input-method module from XSETTINGS,
+                                // which Wayland clients do not read: X11 clients reach the
+                                // IBus service (ibus.rs), Wayland clients keep text-input-v3.
+                                let settings = [("Gtk/IMModule".to_owned(), "ibus".to_owned().into())];
+                                if let Err(error) = wm.set_xsettings(settings.into_iter()) {
+                                    tracing::warn!("XSETTINGS for X11 clients: {error}");
+                                }
                                 state.xwm = Some(wm);
+                                state.xwayland_client = Some(client.clone());
+                                state.apply_x11_scale();
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
                                 }
+                                state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 if state.gpu_grants.is_some() {
                                     match gpu_x11::X11Windows::connect(display_number, &cookie) {
                                         Ok(windows) => state.gpu_x11 = Some(windows),
@@ -614,13 +799,16 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
+        assert_eq!(get(&env, "OZONE_PLATFORM"), Some("wayland"));
+        assert_eq!(get(&env, "CHROMIUM_USER_FLAGS"), Some("--ozone-platform-hint=auto"));
+        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     #[test]
     fn each_instance_names_its_own_sockets() {
         let auth = std::path::Path::new("/run/user/1000/caboose-display/wayland-caboose-agent/Xauthority");
         let env = launch_env(
-            &config(&["--socket", "wayland-caboose-agent", "--x-display", "101"]),
+            &config(&["--socket", "wayland-caboose-agent", "--x-display", "101", "--no-games"]),
             Some(101),
             Some(auth),
             None,
@@ -628,5 +816,64 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-agent"));
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
+        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
+    }
+
+    const GPU_ARGS: &[&str] = &[
+        "--token-file",
+        "/run/caboose/display-token",
+        "--private-gpu-stream-socket",
+        "/run/user/1000/caboose-gpu/gpu.sock",
+        "--private-gpu-surface-socket",
+        "/run/user/1000/caboose-gpu/surface.sock",
+        "--private-gpu-indexed",
+    ];
+
+    #[test]
+    fn the_gpu_seat_routes_vulkan_and_opengl_to_the_phone() {
+        let icd = tempfile_icd();
+        let mut env = vec![
+            ("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned()),
+            ("ELECTRON_OZONE_PLATFORM_HINT".to_owned(), "auto".to_owned()),
+        ];
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(env.iter().filter(|(k, _)| k == "ELECTRON_OZONE_PLATFORM_HINT").count(), 1);
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
+        assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
+        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), None);
+        assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
+        assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
+        assert_eq!(get(&env, "CABOOSE_GPU_ROUTING"), Some("1"));
+        assert_eq!(get(&env, "NODEVICE_SELECT"), Some("1"));
+        assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
+        assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
+        assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("d3d12"), "OpenGL keeps the computer's renderer");
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    #[test]
+    fn other_seats_and_missing_drivers_keep_the_computers_gpu() {
+        let icd = tempfile_icd();
+        let before = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
+        let mut env = before.clone();
+        apply_gpu_live(&mut env, &config(&[]), &icd);
+        assert_eq!(env, before);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
+        assert_eq!(env, before);
+        std::fs::remove_file(&icd).unwrap();
+    }
+
+    fn tempfile_icd() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "caboose-icd-{}-{}.json",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, "{}").unwrap();
+        path
     }
 }

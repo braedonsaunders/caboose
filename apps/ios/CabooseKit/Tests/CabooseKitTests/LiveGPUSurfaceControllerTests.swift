@@ -316,6 +316,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
                                   overrideRedirect: false, surface: surface)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
         let view = RemoteWindowView(session: session, window: window)
         view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
         host.addSubview(view)
@@ -332,26 +333,45 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(layerView.superview === view)
         XCTAssertTrue(lease.isValid)
 
-        // Window withdrawal/invalidation detaches the GPU presentation view from
-        // RemoteWindowView immediately so video/picture underneath is not covered,
-        // while keeping the lease and backing view retained until native release.
+        // A view that stops showing the window parks the lease: the layer leaves the
+        // view so the picture underneath is not covered, but the binding stays valid
+        // and the guest is never asked to give up its surface.
         owners.withdraw(view)
+        XCTAssertTrue(invalidatedIdentities.isEmpty)
+        XCTAssertTrue(lease.isValid)
+        XCTAssertTrue(lease.parked)
+        XCTAssertNil(layerView.superview)
+        XCTAssertNotNil(lease.layer)
+
+        // A bound window takes no second claim while its lease is parked.
+        let nextIdentity = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: 4, count: 16), generation: 2)
+        var busyClaim: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: nextIdentity, windowID: 7) { busyClaim = $0 }
+        XCTAssertThrowsError(try XCTUnwrap(busyClaim).get())
+
+        // Showing the window again restores the same layer, with its latest frame.
+        view.layoutLiveGPU()
+        XCTAssertFalse(lease.parked)
+        XCTAssertTrue(layerView.superview === view)
+
+        // A change of window identity ends the lease and asks the guest to retire it.
+        let replacement = RemoteWindow(id: 7, frame: window.frame, overrideRedirect: false, surface: surface)
+        owners.update(epoch: identity.epoch, windows: [7: replacement])
         XCTAssertEqual(invalidatedIdentities, [identity])
         XCTAssertFalse(lease.isValid)
         XCTAssertNil(layerView.superview)
         XCTAssertNotNil(lease.content)
+        owners.update(epoch: identity.epoch, windows: [7: window])
 
-        // While the old lease is still unreleased by native detach, a new claim waits/rejects.
-        view.layoutLiveGPU()
-        let nextIdentity = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: 4, count: 16), generation: 2)
+        // While the old lease is still unreleased by native detach, a new claim is refused.
         var secondClaim: Result<LiveGPULayerLease, Error>?
         owners.requestClaim(identity: nextIdentity, windowID: 7) { secondClaim = $0 }
-        XCTAssertNil(secondClaim)
+        XCTAssertThrowsError(try XCTUnwrap(secondClaim).get())
 
-        // After native retirement releases the old lease, a new grant can claim and re-attach.
+        // After native retirement releases the old lease, a new grant can claim and attach.
         owners.release(lease)
         XCTAssertNil(lease.content)
-        owners.observe(view)
+        owners.requestClaim(identity: nextIdentity, windowID: 7) { secondClaim = $0 }
         let nextLease = try XCTUnwrap(secondClaim?.get())
         let nextLayerView = try XCTUnwrap(nextLease.content)
         XCTAssertTrue(nextLayerView.superview === view)
@@ -366,6 +386,75 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testHidingTheWindowParksTheLeaseAndShowingItRestoresTheLayer() throws {
+        let stream = MockStream()
+        let decoder = FakeDecoder()
+        let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
+                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
+        let surface = WindowSurface()
+        surface.resize(width: 800, height: 600)
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  overrideRedirect: false, surface: surface)
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
+        let tab = UIView(frame: host.bounds)
+        host.addSubview(tab)
+        let view = RemoteWindowView(session: session, window: window)
+        view.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        tab.addSubview(view)
+
+        var invalidatedIdentities: [LiveGPUSurfaceIdentity] = []
+        let owners = LiveGPUPresentationOwners { invalidatedIdentities.append($0) }
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        view.layoutLiveGPU()
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 7) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        let layerView = try XCTUnwrap(lease.content)
+
+        // Another tab covers the desktop: the lease parks, still bound and presenting.
+        tab.isHidden = true
+        view.layoutLiveGPU()
+        XCTAssertTrue(lease.parked)
+        XCTAssertTrue(lease.isValid)
+        XCTAssertNil(layerView.superview)
+        XCTAssertNotNil(lease.layer)
+        // The guest may still reconfigure its swapchain while hidden.
+        XCTAssertEqual(lease.configurePresentationExtent(CGSize(width: 800, height: 600)) { _ in 0 }, 0)
+
+        // The desktop tab's view is rebuilt: the new view takes the same layer.
+        view.removeFromSuperview()
+        let rebuilt = RemoteWindowView(session: session, window: window)
+        rebuilt.frame = CGRect(x: 0, y: 0, width: 400, height: 300)
+        tab.isHidden = false
+        tab.addSubview(rebuilt)
+        rebuilt.layoutLiveGPU()
+        XCTAssertFalse(lease.parked)
+        XCTAssertTrue(layerView.superview === rebuilt)
+        XCTAssertTrue(invalidatedIdentities.isEmpty)
+        owners.revoke()
+        owners.release(lease)
+    }
+
+    @MainActor
+    func testClaimWithNoViewShowingTheWindowBindsParkedAtTheServerExtent() throws {
+        let surface = WindowSurface()
+        surface.resize(width: 800, height: 600)
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  overrideRedirect: false, surface: surface)
+        let owners = LiveGPUPresentationOwners { _ in XCTFail("no invalidation expected") }
+        owners.update(epoch: identity.epoch, windows: [7: window])
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 7) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        XCTAssertTrue(lease.parked)
+        XCTAssertEqual(lease.extent, CGSize(width: 800, height: 600))
+        XCTAssertEqual(lease.layer?.drawableSize, CGSize(width: 800, height: 600))
+        owners.release(lease)
+    }
+
+    @MainActor
     func testPresentationOwnerGeometryResizePreservesLeaseAndFitsLayerViewWithoutRevokingSurface() throws {
         let stream = MockStream()
         let decoder = FakeDecoder()
@@ -377,6 +466,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 1356, height: 932),
                                   overrideRedirect: false, surface: surface)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
+        host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
         let view = RemoteWindowView(session: session, window: window)
         view.frame = CGRect(x: 0, y: 0, width: 678, height: 466)
         host.addSubview(view)

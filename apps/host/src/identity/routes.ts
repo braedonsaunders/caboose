@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { NOT_FOUND, json, readJson } from '../http.js'
+import { clientAddress, type TrustedProxies } from '../proxies.js'
 import type { ComputerRecord } from '../computers.js'
 import type { ComputerSettings } from '../settings.js'
 import { IdentityConflictError, IdentityInputError, type AdminPrincipal, type Identity, type Tenant } from './service.js'
@@ -199,20 +200,26 @@ export async function tenancyRoute(context: TenancyContext, request: IncomingMes
  * Attempts to sign in (and to set up or accept an invitation, which sign in too), counted per
  * client address: twenty in ten minutes, then 429 until the window moves on. Better Auth's
  * own limiter needs a client address it cannot see behind Node's server, so the host keeps
- * this one.
+ * this one. Behind a trusted proxy the client is the address the proxy forwarded; from
+ * anyone else it is the peer, since a client could invent a forwarded address.
  */
 export class SignInThrottle {
   private attempts = new Map<string, number[]>()
+  private readonly trustedProxies: TrustedProxies
+  private readonly limit: number
+  private readonly windowMs: number
+  private readonly now: () => number
 
-  constructor(private readonly limit = 20, private readonly windowMs = 10 * 60_000, private readonly now: () => number = Date.now) {}
+  constructor(options: { trustedProxies?: TrustedProxies; limit?: number; windowMs?: number; now?: () => number } = {}) {
+    this.trustedProxies = options.trustedProxies ?? []
+    this.limit = options.limit ?? 20
+    this.windowMs = options.windowMs ?? 10 * 60_000
+    this.now = options.now ?? Date.now
+  }
 
   /** True when this attempt may go ahead. */
   allow(request: IncomingMessage): boolean {
-    // A forwarded address counts only from a proxy on this machine; anyone else could invent one.
-    const peer = request.socket.remoteAddress ?? 'unknown'
-    const local = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1'
-    const forwarded = local ? String(request.headers['x-forwarded-for'] ?? '').split(',').pop()?.trim() : undefined
-    const client = forwarded || peer
+    const client = clientAddress(request, this.trustedProxies)
     const now = this.now()
     const recent = (this.attempts.get(client) ?? []).filter(at => now - at < this.windowMs)
     if (recent.length >= this.limit) {

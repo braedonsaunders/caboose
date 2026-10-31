@@ -15,4 +15,15 @@ struct DockMenuTests {
         #expect(actions == [.open, .unpin, .close(window: 4, title: "~/src — bash"), .close(window: 9, title: "Terminal")])
         #expect(actions.map(\.title) == ["Open", "Unpin", "Close ~/src — bash", "Close Terminal"])
     }
+
+    @Test func onAniPadEachWindowCanHaveAWindowOfItsOwn() {
+        let actions = DockMenu.actions(appName: "Code", pinned: false, windows: [
+            .init(id: 4, title: "main.swift"), .init(id: 9, title: "", detached: true),
+        ], windowScenes: true)
+        #expect(actions == [.open, .pin, .openInNewWindow(window: 4, title: "main.swift"),
+                            .moveToDesktop(window: 9, title: "Code"),
+                            .close(window: 4, title: "main.swift"), .close(window: 9, title: "Code")])
+        #expect(actions.map(\.title) == ["Open", "Pin", "Open main.swift in New Window", "Move Code to Desktop",
+                                         "Close main.swift", "Close Code"])
+    }
 }

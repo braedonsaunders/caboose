@@ -1,0 +1,8 @@
+{
+  "name": "scene-scroll",
+  "description": "Client-predicted scroll offset synced back to the guest.",
+  "messages": [
+    {"direction": "client", "type": "scene.scroll", "type_id": 154, "fields": {"id": 7, "sx": {"$float": 0.0}, "sy": {"$float": 240.5}, "node": 2}}
+  ],
+  "hex": "9a23000000a462696407627378fb0000000000000000627379fb406e100000000000646e6f646502"
+}

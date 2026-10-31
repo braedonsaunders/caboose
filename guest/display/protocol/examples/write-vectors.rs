@@ -13,6 +13,7 @@ fn main() -> std::io::Result<()> {
         std::fs::write(dir.join(format!("{}.json", vector.name)), vector.json())?;
         println!("{}", vector.name);
     }
+    std::fs::write(dir.join("scroll-tag/scroll-tag.json"), caboose_display_protocol::scroll_tag::vector_json())?;
     Ok(())
 }
 

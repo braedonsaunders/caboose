@@ -7,6 +7,9 @@ use std::os::unix::net::UnixStream;
 /// A bind's object: a Wayland client's wl_surface protocol ID, or an X11 window ID.
 pub const WAYLAND_SURFACE: u32 = 0;
 pub const X11_WINDOW: u32 = 1;
+/// A compositor window showing phone-resident buffers the bound process rendered
+/// (docs/gpu-buffers.md); the object is the window ID.
+pub const BUFFER_WINDOW: u32 = 2;
 
 #[derive(Debug)]
 pub struct Bind {
@@ -26,6 +29,8 @@ pub enum Record {
     SurfaceRetired { epoch: [u8; 16], grant: [u8; 16], generation: u64 },
     RevokeRequest { epoch: [u8; 16], grant: [u8; 16], generation: u64 },
     Lifecycle { kind: u16, executor: [u8; 16], generation: u64 },
+    /// A buffer present's buffer is free; status 0 when it was shown, else an errno.
+    BufferReleased { request: u64, status: i32 },
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 { u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) }
@@ -72,7 +77,7 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
     if data.len() < 16 || &data[..4] != b"CGB1" || u16_at(data, 4) != 1 ||
         u32_at(data, 8) as usize != data.len() || u32_at(data, 12) != 0 { return Err(invalid()); }
     match u16_at(data, 6) {
-        1 if data.len() == 56 && fds.len() == 1 && matches!(u32_at(data, 52), WAYLAND_SURFACE | X11_WINDOW) => {
+        1 if data.len() == 56 && fds.len() == 1 && matches!(u32_at(data, 52), WAYLAND_SURFACE | X11_WINDOW | BUFFER_WINDOW) => {
             let (request, process, uid, pid, start_ticks, object, space) = (u64_at(data, 16), u64_at(data, 24),
                 u32_at(data, 32), u32_at(data, 36), u64_at(data, 40), u32_at(data, 48), u32_at(data, 52));
             if request == 0 || process == 0 || pid == 0 || start_ticks == 0 || object == 0 { return Err(invalid()); }
@@ -85,6 +90,11 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
             if epoch == [0; 16] || grant == [0; 16] || generation == 0 { return Err(invalid()); }
             if kind == 7 { Ok(Record::SurfaceRetired { epoch, grant, generation }) }
             else { Ok(Record::RevokeRequest { epoch, grant, generation }) }
+        }
+        10 if data.len() == 32 && fds.is_empty() && u32_at(data, 28) == 0 => {
+            let (request, status) = (u64_at(data, 16), u32_at(data, 24) as i32);
+            if request == 0 || status < 0 { return Err(invalid()); }
+            Ok(Record::BufferReleased { request, status })
         }
         kind @ 4..=6 if data.len() == 48 && fds.is_empty() && u64_at(data, 40) == 0 => {
             let executor: [u8; 16] = data[16..32].try_into().unwrap();
@@ -109,6 +119,19 @@ pub fn response(request: u64, grant: Option<crate::gpu_grant::Grant>) -> io::Res
     } else {
         data[24..28].copy_from_slice(&1u32.to_le_bytes());
     }
+    Ok(data)
+}
+
+/// Asks the broker to show a committed remote buffer, named by its dma-buf's device and
+/// inode, in a window.
+pub fn buffer_present(request: u64, window: u64, buffer: (u64, u64), width: u32, height: u32) -> io::Result<Vec<u8>> {
+    if request == 0 || window == 0 || buffer.1 == 0 || width == 0 || height == 0 { return Err(invalid()); }
+    let mut data = vec![0u8; 56];
+    data[..4].copy_from_slice(b"CGB1"); data[4..6].copy_from_slice(&1u16.to_le_bytes());
+    data[6..8].copy_from_slice(&9u16.to_le_bytes()); data[8..12].copy_from_slice(&56u32.to_le_bytes());
+    data[16..24].copy_from_slice(&request.to_le_bytes()); data[24..32].copy_from_slice(&window.to_le_bytes());
+    data[32..40].copy_from_slice(&buffer.0.to_le_bytes()); data[40..48].copy_from_slice(&buffer.1.to_le_bytes());
+    data[48..52].copy_from_slice(&width.to_le_bytes()); data[52..56].copy_from_slice(&height.to_le_bytes());
     Ok(data)
 }
 
@@ -214,7 +237,31 @@ mod tests {
         let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
         assert_eq!((bind.object, bind.space), (0x400003, X11_WINDOW));
         assert!(crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()));
-        send_with_fd(&sender, bind_packet(&peer, 0x400003, 2), &pidfd);
+        send_with_fd(&sender, bind_packet(&peer, 9, BUFFER_WINDOW), &pidfd);
+        let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
+        assert_eq!((bind.object, bind.space), (9, BUFFER_WINDOW));
+        send_with_fd(&sender, bind_packet(&peer, 0x400003, 3), &pidfd);
+        assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn buffer_present_and_release_match_the_broker_records() {
+        // Byte-for-byte what guest/gpu/gfxstream/control_protocol.py encodes.
+        let present = buffer_present(1, 7, (0x10, 1 << 40), 1920, 1080).unwrap();
+        assert_eq!(present.len(), 56);
+        assert_eq!((u16_at(&present, 6), u64_at(&present, 16), u64_at(&present, 24)), (9, 1, 7));
+        assert_eq!((u64_at(&present, 32), u64_at(&present, 40)), (0x10, 1 << 40));
+        assert_eq!((u32_at(&present, 48), u32_at(&present, 52)), (1920, 1080));
+        assert!(buffer_present(1, 7, (1, 0), 1, 1).is_err());
+        let (mut sender, receiver) = pair();
+        let mut released = vec![0u8; 32];
+        released[..4].copy_from_slice(b"CGB1"); released[4..6].copy_from_slice(&1u16.to_le_bytes());
+        released[6..8].copy_from_slice(&10u16.to_le_bytes()); released[8..12].copy_from_slice(&32u32.to_le_bytes());
+        released[16..24].copy_from_slice(&5u64.to_le_bytes()); released[24..28].copy_from_slice(&11i32.to_le_bytes());
+        sender.write_all(&released).unwrap();
+        assert!(matches!(receive(&receiver).unwrap(), Record::BufferReleased { request: 5, status: 11 }));
+        released[28] = 1;
+        sender.write_all(&released).unwrap();
         assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
 

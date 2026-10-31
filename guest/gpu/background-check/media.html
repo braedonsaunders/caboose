@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Caboose background media check</title>
+<style>
+body { margin:0; background:#111; color:#eee; font:16px sans-serif }
+video { width:640px; height:360px; display:block; background:black }
+#ticker { font:48px monospace; padding:12px }
+</style>
+<video id="video" src="clip.webm" loop playsinline preload="auto"></video>
+<div id="ticker">0</div>
+<script>
+// Media whose continuity the watcher samples: a looping video with sound, a Web Audio
+// tone and a requestAnimationFrame counter that repaints every frame. A click (the watcher
+// sends one through CDP, which counts as a user gesture) starts playback with sound.
+const video = document.getElementById('video');
+const ticker = document.getElementById('ticker');
+let audio = null, frames = 0, started = false;
+function tick() { frames++; ticker.textContent = frames; requestAnimationFrame(tick); }
+requestAnimationFrame(tick);
+document.addEventListener('click', async () => {
+  if (started) return;
+  started = true;
+  audio = new AudioContext();
+  const tone = audio.createOscillator(), gain = audio.createGain();
+  gain.gain.value = 0.05; tone.frequency.value = 440;
+  tone.connect(gain).connect(audio.destination); tone.start();
+  await video.play();
+});
+window.mediaState = () => {
+  const quality = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : {};
+  return {
+    timeOrigin: performance.timeOrigin,
+    started,
+    videoTime: video.currentTime,
+    paused: video.paused,
+    ended: video.ended,
+    error: video.error ? video.error.code : 0,
+    decodedFrames: quality.totalVideoFrames || 0,
+    droppedFrames: quality.droppedVideoFrames || 0,
+    audioState: audio ? audio.state : 'none',
+    audioTime: audio ? audio.currentTime : 0,
+    frames,
+  };
+};
+</script>

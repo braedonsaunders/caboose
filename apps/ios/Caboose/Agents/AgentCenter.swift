@@ -589,7 +589,9 @@ final class AgentCenter {
     private func openControl() {
         guard attached, let host, control == nil else { return }
         var components = URLComponents(url: host.socketURL("/v1/control"), resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "foreground", value: "1"), URLQueryItem(name: "phone", value: "1")]
+        // `scan=1`: this app answers the native bridge's scan requests (docs/native-bridge.md).
+        components.queryItems = [URLQueryItem(name: "foreground", value: "1"), URLQueryItem(name: "phone", value: "1"),
+                                 URLQueryItem(name: "scan", value: "1")]
         var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(host.token)", forHTTPHeaderField: "Authorization")
         let task = URLSession.shared.webSocketTask(with: request)

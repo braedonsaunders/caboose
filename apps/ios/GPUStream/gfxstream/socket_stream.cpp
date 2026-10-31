@@ -36,10 +36,13 @@ int SocketStream::writeFully(const void* data, size_t size) {
         const auto n = send(fd_, p, size, 0);
 #endif
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { fail(n == 0 ? EPIPE : errno); return -1; }
+        if (n <= 0) { fail(n == 0 ? EPIPE : errno); break; }
         p += n; size -= static_cast<size_t>(n);
     }
-    return error() ? -1 : 0;
+    // A reply to a peer that is gone is dropped, not reported: the upstream decoder aborts
+    // the process on a failed reply write. error() is set, so the decode loop ends this
+    // connection after the current command.
+    return 0;
 }
 const unsigned char* SocketStream::readRaw(void* data, size_t* size) {
     if (error()) return nullptr;

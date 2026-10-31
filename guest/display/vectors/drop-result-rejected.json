@@ -1,0 +1,8 @@
+{
+  "name": "drop-result-rejected",
+  "description": "The application under the drop did not accept it.",
+  "messages": [
+    {"direction": "server", "type": "drop.result", "type_id": 51, "fields": {"ok": false, "reason": "rejected"}}
+  ],
+  "hex": "3315000000a2626f6bf466726561736f6e6872656a6563746564"
+}

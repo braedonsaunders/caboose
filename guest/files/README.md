@@ -13,6 +13,16 @@ protocol is in [`docs/architecture.md`](../../docs/architecture.md) § Files.
   outside the home.
 - **Changes.** `/changes` reports changes from Linux inotify through a bounded, per-process
   journal.
+- **Transfer area.** `PUT /transfer?id=&name=` streams a file the phone hands to Linux
+  applications (a copy, a drop) into `~/.cache/caboose/transfers/<id>/<name>` and answers
+  `201 { path, size }` with the home-relative path; `DELETE /transfer?id=` removes a
+  transfer. `id` is 32 lowercase hex digits and `name` one path component. Every level
+  below `.cache` must be owned by the service's user, and the area and each transfer are
+  private (mode 0700). An upload needs a `Content-Length` of at most 512 MiB (413 over
+  it), the area holds at most 2 GiB (507 when full) and a transfer at most 64 files (409),
+  an existing name is never replaced (409), and an upload cut short leaves nothing.
+  Transfers are removed a day after their last upload. A peer silent for 120 s on any
+  request is disconnected.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

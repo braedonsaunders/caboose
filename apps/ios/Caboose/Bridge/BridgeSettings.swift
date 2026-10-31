@@ -49,7 +49,7 @@ struct NativeBridgeSettingsSection: View {
         } header: {
             Text("\(device) Integration")
         } footer: {
-            Text("Linux apps choose files with \(device) pickers, follow your appearance and text size, and show their audio in Now Playing. Location is shared only while Caboose is open.")
+            Text("Linux apps open files from Files, Photos, the camera and the document scanner, save with \(device) sheets, follow your appearance and text size, and show their audio in Now Playing. Location is shared only while Caboose is open.")
         }
     }
 }

@@ -15,6 +15,14 @@ with tempfile.TemporaryDirectory() as root:
                 with self.assertRaises(ValueError): fs.parts(path)
             os.symlink('/etc', os.path.join(root, 'outside'))
             with self.assertRaises(OSError): fs.directory(['outside'])
+        def test_transfer_names(self):
+            for name in ('photo 1.png', 'naïve.txt', '.hidden'):
+                self.assertEqual(fs.transfer_name(name), name)
+            for name in ('', '.', '..', 'a/b', 'a\nb', '.caboose-upload-x', 'x' * 256, None):
+                with self.assertRaises(ValueError): fs.transfer_name(name)
+            self.assertEqual(fs.transfer_id('0' * 32), '0' * 32)
+            for value in ('0' * 31, 'A' * 32, '0' * 32 + '\n', '../' + '0' * 29):
+                with self.assertRaises(ValueError): fs.transfer_id(value)
         def test_range(self):
             self.assertEqual(fs.byte_range(None, 5), (0, 4, False))
             self.assertEqual(fs.byte_range('bytes=1-2', 5), (1, 2, True))

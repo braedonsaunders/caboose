@@ -1,4 +1,5 @@
 import AppIntents
+import CabooseKit
 import Foundation
 import UniformTypeIdentifiers
 
@@ -60,6 +61,7 @@ private func craftRun(_ app: String, files: [IntentFile], format: String) async 
 }
 
 struct PhotoCraftConvertIntent: AppIntent {
+    static var isDiscoverable: Bool = false
     static var title: LocalizedStringResource = "Convert Images with PhotoCraft"
     @Parameter(title: "Images") var files: [IntentFile]
     @Parameter(title: "Format", default: .png) var format: ImageCraftFormat
@@ -69,7 +71,7 @@ struct PhotoCraftConvertIntent: AppIntent {
     }
 }
 struct PDFCraftCombineIntent: AppIntent {
-    static var title: LocalizedStringResource = "Combine PDFs with PDFCraft"
+    static var title: LocalizedStringResource = "Combine PDFs"
     @Parameter(title: "PDFs") var files: [IntentFile]
     func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> & ProvidesDialog {
         let result = try await craftRun("pdfcraft", files: files, format: "pdf")
@@ -77,6 +79,7 @@ struct PDFCraftCombineIntent: AppIntent {
     }
 }
 struct LightCraftRenderIntent: AppIntent {
+    static var isDiscoverable: Bool = false
     static var title: LocalizedStringResource = "Develop Photo with LightCraft"
     @Parameter(title: "Photo") var file: IntentFile
     @Parameter(title: "Format", default: .jpg) var format: ImageCraftFormat
@@ -86,11 +89,57 @@ struct LightCraftRenderIntent: AppIntent {
     }
 }
 struct FilmCraftExportIntent: AppIntent {
+    static var isDiscoverable: Bool = false
     static var title: LocalizedStringResource = "Export FilmCraft Project"
     @Parameter(title: "Project") var file: IntentFile
     @Parameter(title: "Format", default: .mp4) var format: FilmCraftFormat
     func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> & ProvidesDialog {
         let result = try await craftRun("filmcraft", files: [file], format: format.rawValue)
+        return .result(value: result.files, dialog: IntentDialog(stringLiteral: result.warnings.isEmpty ? "Finished." : result.warnings.joined(separator: "\n")))
+    }
+}
+
+enum ExportApp: String, AppEnum {
+    case photocraft, lightcraft, filmcraft
+
+    var configuration: FileExportApplication {
+        switch self {
+        case .photocraft: .photocraft
+        case .lightcraft: .lightcraft
+        case .filmcraft: .filmcraft
+        }
+    }
+
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Export App")
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] = [
+        .photocraft: "PhotoCraft — Convert Images",
+        .lightcraft: "LightCraft — Develop Photo",
+        .filmcraft: "FilmCraft — Export Project",
+    ]
+}
+
+struct ExportFormatOptions: DynamicOptionsProvider {
+    @IntentParameterDependency<ExportFilesIntent>(\.$app) var intent
+
+    func results() async throws -> [String] {
+        intent?.app.configuration.formats ?? []
+    }
+}
+
+struct ExportFilesIntent: AppIntent {
+    static var title: LocalizedStringResource = "Export Files"
+    static var description = IntentDescription("Export files using an app installed on your computer. Choose the app, input files and output format, then pass the results to another action. FilmCraft projects need their media at its original paths on the computer.")
+    @Parameter(title: "App") var app: ExportApp
+    @Parameter(title: "Files") var files: [IntentFile]
+    @Parameter(title: "Format", optionsProvider: ExportFormatOptions()) var format: String
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("Export \(\.$files) using \(\.$app) as \(\.$format)")
+    }
+
+    func perform() async throws -> some IntentResult & ReturnsValue<[IntentFile]> & ProvidesDialog {
+        try app.configuration.validate(format: format, count: files.count)
+        let result = try await craftRun(app.rawValue, files: files, format: format)
         return .result(value: result.files, dialog: IntentDialog(stringLiteral: result.warnings.isEmpty ? "Finished." : result.warnings.joined(separator: "\n")))
     }
 }

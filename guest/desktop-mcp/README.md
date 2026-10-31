@@ -21,12 +21,13 @@ control by id rather than by guessed coordinates.
 
 | Tool | Arguments | Does |
 | --- | --- | --- |
-| `elements` | — | the focused window's controls: `{ window: { title, app }, elements: [{ id, role, name, states, bounds }] }` |
+| `elements` | — | the focused window's controls: `{ window: { title, app }, elements: [{ id, role, name, value?, states, bounds }] }` |
 | `find` | `query`, `role?` | elements whose name contains `query` (case-insensitive), optionally of one role |
 | `click_element` | `id` | press it: its AT-SPI action, else a click at its centre |
 | `set_text` | `id`, `text` | replace an editable element's text |
+| `batch` | `steps`, `observe?` | 1–20 sequential actions, stopping at the first failure; updated elements by default |
 | `read_text` | — | the focused window's readable text, page text included |
-| `screenshot` | `window?` | PNG of the seat or one window |
+| `screenshot` | `window?`, `annotate?` | PNG; annotation adds numbered accessibility bounds and a legend |
 | `list_windows`, `focus` | `window` | windows bottom to top with id, kind, title, app, geometry and focus; give one the keyboard |
 | `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | the seat's pointer and keyboard; `click` takes `button` 1–3 and `count` 1–3, `scroll` wheel clicks |
 | `launch` | `command` | start an app on the agent seat with the accessibility environment below |
@@ -52,6 +53,30 @@ bounds. `screenshot` without a window is every window composed bottom to top ove
 seat's displays on a dark background, rendered by the compositor. A seat nobody watches
 lets applications draw once a second, so `seat.py` asks the compositor to let them draw
 (`settle`) before it takes a picture. Every tool works with no client attached.
+
+Mutating tools accept `observe: true` to append the focused window's updated elements.
+The default is false for single actions and true for `batch`. A batch accepts
+`click_element`, `set_text`, `focus_element`, `click`, `drag`, `type`, `key`, `scroll`,
+`focus`, and `wait` (10–5000 ms), with each step's normal arguments. It returns
+`{ completed, total, error?, state?, observationError? }`. Failure stops later steps;
+a changed focused window or stale element ID fails an element step. Observation failures
+preserve the completed action count. Settling permits rendering for at most three 50 ms
+rounds, stopping immediately when no callbacks were released; it does not guarantee an
+application has finished navigation.
+
+`elements` and `find` include optional `value` strings (up to 200 characters) for editable
+fields, selected options and numeric controls. Password/sensitive fields omit values.
+Values never contribute to ID fingerprints. `screenshot` with `annotate: true` returns an
+image and a JSON legend of `{ mark, id, role, name, center, bounds }` for the focused
+window's visible controls intersecting the capture. Window-specific captures exclude
+controls from other windows. Bounds and centers stay in seat coordinates; badges are
+translated into image coordinates. Without annotation the response remains one image.
+
+The server keeps one accessibility worker and one seat worker warm, serializes requests
+and whole batches, and closes helpers on EOF or termination. Workers restart after exit
+or timeout on the next call. A lost response is never replayed automatically because an
+input may already have executed. Cached seat environments are checked through the control
+socket, avoiding repeated privileged startup and any watcher-replacing display hello.
 
 ## `seat.py`
 
@@ -85,6 +110,7 @@ a11y.py find     --display :101 --query save [--role button]
 a11y.py act      --display :101 --element ID --action press|focus|set-text [--text T]
 a11y.py text     --display :101
 a11y.py bus      --display :101 [--wait SECONDS]
+a11y.py serve    --display :101
 ```
 
 - `elements`: `{ "window": { "title", "app" }, "elements": [{ "id", "role", "name", "states",
@@ -110,6 +136,12 @@ a11y.py bus      --display :101 [--wait SECONDS]
   each embedded object (a link in a paragraph, a paragraph in a page) expanded where it sits;
   at most 20000 characters, with `"truncated": true` when cut.
 - `bus`: `{ "address", "source" }`; see below.
+- `serve`: newline-delimited JSON requests on stdin with `op` (`elements`, `find`, `act`,
+  `text`) and the corresponding CLI option names; one JSON response per request. The
+  display is fixed for the worker lifetime. Python/GI and the AT-SPI connection stay warm;
+  queued accessibility events refresh the normal libatspi cache between requests;
+  a bus fallback executes a bounded single-call helper against the next bus. Existing CLI
+  commands and `act`'s `{ "ok": true }` response remain unchanged.
 
 When a list is empty for a reason (no window, a window whose application exposes no tree,
 an application with windows on two displays), `note` says so, and the agent falls back to
@@ -216,6 +248,14 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
 
 ## Test
 
+- `node --test ensure-agent-seat.test.mjs worker.test.mjs` checks cached startup,
+  recovery, warm helpers, timeouts and restart without replay.
+- `python3 -m unittest test_a11y.py test_readiness.py` checks password/value handling
+  and that readiness sends no WebSocket handshake (the readiness stand-in runs unprivileged).
+- `./check-bounded.sh` runs the Linux Docker gate with a two-CPU, 4 GiB, 512-process
+  builder (30-minute build timeout) and a two-CPU, 1500 MiB, 256-process test container
+  (180-second test timeout). It removes both containers on exit and retains the image ID.
+  `CABOOSE_CHECK_IMAGE=sha256:…` reuses an immutable local compatible test image.
 - `node selftest.mjs` checks the protocol, the tool list and its order, schemas, argument
   validation, and that helper failures come back as tool errors, without a display.
 - `python3 -m unittest test_seat.py` checks `seat.py` against a stand-in control socket:
@@ -257,6 +297,8 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   - **The agent seat with nobody watching**: an agent app is found and pressed, the seat
     lists no owner window, an owner element's id is rejected with exit 3, and the owner's
     window is untouched.
+  - **Warm MCP contract**: batch execution, stale-ID stop, observation, field values,
+    numbered screenshots, and reported warm accessibility timing.
   - **Coordinate tools**, through `caboose-desktop-mcp` over stdio: `list_windows` shows the
     dialog; `click`, `key` and `type` at the elements' bounds fill its field; `click`
     presses Save; `screenshot` shows the new window rather than a blank seat.

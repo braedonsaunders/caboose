@@ -14,6 +14,15 @@ root=$stage/Library/Application\ Support/Caboose
 node=$root/current/node/bin/node
 [[ -x $stage/Applications/Caboose.app/Contents/MacOS/CabooseMenu ]]
 [[ -x $root/current/bin/appkit-desk-vz ]]
+resources=$stage/Applications/Caboose.app/Contents/Resources
+[[ -f $resources/runtime.tar.gz && -f $resources/install.sh && -f $resources/VERSION ]]
+mkdir "$work/embedded"
+tar -xzf "$resources/runtime.tar.gz" -C "$work/embedded"
+[[ -x $work/embedded/caboose-host/bin/caboose-host ]]
+[[ ! -e $work/embedded/caboose-host/Caboose.app/Contents/Resources/runtime.tar.gz ]]
+# The app's own archive runs the same installer and stages valid LaunchAgents.
+bash "$resources/install.sh" --bundle "$resources/runtime.tar.gz" --from-app --no-start --stage-home "$work/app-home"
+[[ -x $work/app-home/Library/Application\ Support/Caboose/current/bin/caboose-host ]]
 plutil -lint "$stage/Library/LaunchAgents/"*.plist
 "$node" - "$root" "$stage/Library/LaunchAgents/com.caboose.host.plist" <<'JS'
 const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path')

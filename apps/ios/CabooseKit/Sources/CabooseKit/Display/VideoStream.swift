@@ -188,6 +188,19 @@ public final class RemoteVideo: @unchecked Sendable {
         CFDictionarySetValue(dictionary, Unmanaged.passUnretained(key).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
     }
 
+    /// Frames were dropped (the app was in the background): decoding starts again at a
+    /// keyframe, on a fresh session, since the system may have invalidated the old one.
+    func resumeAfterGap() {
+        queue.async { [self] in
+            if let session { VTDecompressionSessionInvalidate(session) }
+            session = nil
+            kept.removeAll()
+            awaitingKeyframe = true
+            lastKeyframeRequest = 0
+            requestKeyframe()
+        }
+    }
+
     /// At most one request every half second while the stream is broken.
     private func requestKeyframe() {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -211,6 +224,8 @@ final class VideoRegistry: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return videos.removeValue(forKey: id)
     }
+
+    var all: [RemoteVideo] { lock.lock(); defer { lock.unlock() }; return Array(videos.values) }
 
     func removeAll() -> [RemoteVideo] {
         lock.lock(); defer { lock.unlock() }

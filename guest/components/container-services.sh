@@ -1,6 +1,6 @@
 #!/bin/bash
-# Caboose plumbing for a container: the file and terminal services, the notification monitor
-# and printing.
+# Caboose plumbing for a container: the file and terminal services, updating the owner's
+# notification endpoint, and printing.
 set -euo pipefail
 uid=$(id -u caboose)
 runtime=/run/user/$uid
@@ -148,26 +148,31 @@ PY
 session_bus "$runtime/bus"
 owner_service files /opt/caboose/files/caboose-files.py 14700 'Caboose file service'
 owner_service terminal /opt/caboose/terminal/caboose-terminal.py 14701 'Caboose terminal service'
+# The owner's notification endpoint (guest/notifications) runs with the owner's display
+# (caboose-session) and records the owner's notifications itself; a separate monitor from
+# older components is stopped. An update restarts a running endpoint so it loads the new code;
+# the old one releases the D-Bus name before the new one asks for it.
+owner_process() {
+  local pidfile=$1 script=$2 pid
+  [ -s "$pidfile" ] || return 1
+  pid=$(cat "$pidfile")
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && [ "$(stat -c %u "/proc/$pid")" = "$uid" ] &&
+    [ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ] && runuser -u caboose -- grep -zFxq "$script" "/proc/$pid/cmdline"
+}
 monitor_pid="$runtime/caboose-notifications.pid"
-monitor_running=false
-if [ -s "$monitor_pid" ]; then
-  pid=$(cat "$monitor_pid")
-  if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/$pid/cmdline" ] && [ "$(stat -c %u "/proc/$pid")" = "$uid" ] && runuser -u caboose -- grep -zFxq /opt/caboose/notifications/monitor.py "/proc/$pid/cmdline"; then monitor_running=true; fi
-fi
-if $monitor_running && [ "${1:-}" = restart ]; then
-  runuser -u caboose -- kill -TERM "$pid"
-  rm -f "$monitor_pid"
-  monitor_running=false
-fi
-if ! $monitor_running && [ -S "$runtime/bus" ]; then
-  runuser -u caboose -- touch /home/caboose/.cache/caboose-notifications.log
-  runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
-    /bin/sh -c 'echo $$ > "$XDG_RUNTIME_DIR/caboose-notifications.pid"; exec /usr/bin/python3 /opt/caboose/notifications/monitor.py' \
-    >>/home/caboose/.cache/caboose-notifications.log 2>&1 < /dev/null &
-  sleep 1
-  if [ ! -s "$monitor_pid" ] || ! runuser -u caboose -- kill -0 "$(cat "$monitor_pid")" 2>/dev/null; then
-    echo 'The notification monitor did not start.' >&2; exit 1
+if owner_process "$monitor_pid" /opt/caboose/notifications/monitor.py; then runuser -u caboose -- kill -TERM "$(cat "$monitor_pid")" || true; fi
+rm -f "$monitor_pid"
+endpoint_pid="$runtime/caboose-notification-daemon.pid"
+if [ "$MODE" = restart ] && owner_process "$endpoint_pid" /opt/caboose/notifications/daemon.py; then
+  runuser -u caboose -- kill -TERM "$(cat "$endpoint_pid")" || true
+  for _ in $(seq 1 50); do owner_process "$endpoint_pid" /opt/caboose/notifications/daemon.py || break; sleep 0.1; done
+  if owner_process "$endpoint_pid" /opt/caboose/notifications/daemon.py; then
+    echo 'The previous notification endpoint did not stop.' >&2; exit 1
   fi
+  runuser -u caboose -- touch /home/caboose/.cache/caboose-notification-daemon.log
+  runuser -u caboose -- env HOME=/home/caboose XDG_RUNTIME_DIR="$runtime" DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+    /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/notifications/daemon.py --owner' "$endpoint_pid" \
+    >>/home/caboose/.cache/caboose-notification-daemon.log 2>&1 < /dev/null &
 fi
 # The native bridge runs with the owner's display (caboose-session); an update restarts a
 # running one so it loads the new code.

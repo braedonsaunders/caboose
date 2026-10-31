@@ -1,0 +1,8 @@
+{
+  "name": "configure-overscan",
+  "description": "Ask for a window 2556 pixels taller than the 1179x2556 the client shows.",
+  "messages": [
+    {"direction": "client", "type": "configure", "type_id": 132, "fields": {"id": 7, "geometry": [0, 0, 1179, 2556], "overscan": [0, 2556]}}
+  ],
+  "hex": "8425000000a3626964076867656f6d6574727984000019049b1909fc686f7665727363616e82001909fc"
+}

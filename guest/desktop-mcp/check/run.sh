@@ -202,6 +202,7 @@ mcp() {  # one tool call per server process, so calls run strictly in order
 }
 on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat.log" ready; sleep 1
+check 'high-APM persistent MCP contract' on agent timeout 60 node /src/check/high-apm.mjs
 check 'mcp list_windows shows the dialog' yes "$(mcp list_windows '{}' | py "any(w['title'] == 'Save changes?' for w in json.loads(d['result']['content'][0]['text']))")"
 centre() {
   seat find --display :101 --query "$1" ${2:+--role "$2"} |
@@ -246,6 +247,8 @@ printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find","arguments":{"query":"read the docs","role":"link"}}}' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_text","arguments":{}}}' |
   on agent env CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs > "$logs/mcp.out"
+# Preserve helper errors/stacks before JSON assertions consume the response text.
+cat "$logs/mcp.out"
 answer() { python3 -c "import json, sys; [print(m['result']['content'][0]['text']) for m in map(json.loads, open('$logs/mcp.out')) if m.get('id') == $1]"; }
 check 'mcp find' yes "$(answer 2 | py "[(e['role'], e['name']) for e in d['elements']] == [('link', 'Read the docs')]")"
 check 'mcp read_text' yes "$(answer 3 | py "'PAGE-BODY-TEXT' in d['text']")"

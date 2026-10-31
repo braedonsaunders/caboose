@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import seat  # noqa: E402
@@ -34,38 +35,41 @@ class StandIn:
             except OSError:
                 return
             with conn:
-                data = b""
-                while not data.endswith(b"\n"):
-                    chunk = conn.recv(4096)
-                    if not chunk:
+                while True:
+                    data = b""
+                    while not data.endswith(b"\n"):
+                        chunk = conn.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    if not data:
                         break
-                    data += chunk
-                line = data.decode().rstrip("\n")
-                self.lines.append(line)
-                op = line.split(" ", 1)[0]
-                if op == "windows":
-                    conn.sendall(json.dumps({"ok": True, "windows": [{"id": 7, "pid": 42}], "focused": 7}).encode() + b"\n")
-                elif op == "screenshot":
-                    conn.sendall(json.dumps({"ok": True, "png": len(PNG), "rect": [0, 0, 10, 10]}).encode() + b"\n")
-                    for start in range(0, len(PNG), 1000):  # a picture arrives in pieces
-                        conn.sendall(PNG[start:start + 1000])
-                elif op == "focus" and line.endswith(" 99"):
-                    conn.sendall(b'{"ok":false,"error":"no such window"}\n')
-                else:
-                    conn.sendall(b'{"ok":true}\n')
-
+                    line = data.decode().rstrip("\n")
+                    self.lines.append(line)
+                    op = line.split(" ", 1)[0]
+                    if op == "windows":
+                        conn.sendall(json.dumps({"ok": True, "windows": [{"id": 7, "pid": 42}], "focused": 7}).encode() + b"\n")
+                    elif op == "screenshot":
+                        conn.sendall(json.dumps({"ok": True, "png": len(PNG), "rect": [0, 0, 10, 10]}).encode() + b"\n")
+                        for start in range(0, len(PNG), 1000):  # a picture arrives in pieces
+                            conn.sendall(PNG[start:start + 1000])
+                    elif op == "focus" and line.endswith(" 99"):
+                        conn.sendall(b'{"ok":false,"error":"no such window"}\n')
+                    else:
+                        conn.sendall(b'{"ok":true}\n')
     def close(self):
         self.server.close()
 
 
 class SeatTest(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
+        self.dir = tempfile.TemporaryDirectory(dir="/tmp")
         self.path = os.path.join(self.dir.name, "control.sock")
         self.stand_in = StandIn(self.path)
         self.seat = seat.Seat(self.path)
 
     def tearDown(self):
+        self.seat.close()
         self.stand_in.close()
         self.dir.cleanup()
 
@@ -85,6 +89,21 @@ class SeatTest(unittest.TestCase):
     def test_a_refusal_is_an_error(self):
         with self.assertRaisesRegex(seat.SeatError, "no such window"):
             self.seat.focus(99)
+
+    def test_settle_does_not_sleep_when_nothing_was_released(self):
+        with patch.object(self.seat, "request", return_value=({"ok": True, "released": 0}, None)) as request, patch.object(seat.time, "sleep") as sleep:
+            self.seat.settle()
+            request.assert_called_once_with("settle")
+            sleep.assert_not_called()
+
+    def test_reuses_connection_and_recovers_on_next_request(self):
+        self.seat.windows()
+        conn = self.seat.conn
+        self.seat.windows()
+        self.assertIs(self.seat.conn, conn)
+        self.seat.close()
+        self.assertEqual(self.seat.windows()["focused"], 7)
+        self.assertIsNot(self.seat.conn, conn)
 
     def test_windows(self):
         self.assertEqual(self.seat.windows()["focused"], 7)

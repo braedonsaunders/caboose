@@ -4,7 +4,8 @@ The live GPU source is separate from the GFXReconstruct capture protocol in
 [gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
-It does not activate a general Vulkan driver or provide window presentation.
+Applications reach it through their launch environment, as [Applications](#applications)
+describes.
 
 ## Connection and authority
 
@@ -85,6 +86,7 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 24 | SURFACE_RETIRED | Process | 56 bytes |
 | 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1, maximum decoded record u32 = 65600 |
 | 38 | TRANSPORT_READY | Session | Exact matching configuration |
+| 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
 
 Kinds 14 and 15 are reserved and rejected.
 
@@ -156,6 +158,109 @@ an exact match, not a subset of bits. `caboose_gpu_live_start_v4` strongly links
 actual indexed runtime; a version-3 artifact cannot authorize version 4. These
 wire fixtures do not initialize a provider or activate the driver.
 
+## Phone capabilities and local features
+
+The phone app names the capabilities of its native decoder in the
+`X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
+only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
+`completion-feed` and `ordered-present`. The broker reads them from the authenticated
+upgrade request.
+
+A local process on the indexed v4 path may offer optional features in its 48-byte
+hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned handles),
+`0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
+`0x200` (completion feed) and `0x400` (ordered presents). The broker replies with the
+required mask plus the offered bits whose capability the phone declared (`guest-handles`,
+`guest-handle-arrays`, `completion-feed`, `ordered-present` respectively); it drops
+`0x100` when it does not grant `0x80`. An
+offer with unknown bits, `0x100` without `0x80`, or any other difference from the v4
+hello closes the local connection. A process falls back to offering fewer features.
+
+### Guest-assigned handles
+
+With `0x80`, a create command carries an output handle the process chose, with `0xCA`
+in its top byte, a 24-bit per-process tag and a 32-bit counter. The decoder registers
+the object under that value instead of minting one, so the process continues without
+waiting for the reply; it reads the reply later and treats a refused or renamed handle
+as device loss. This covers device memory, fences, semaphores, buffers, images and
+views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
+and pools, command pools, render passes, framebuffers and pipelines. With `0x100` it
+also covers descriptor sets and command buffers: the decoder registers the i-th created
+object under the i-th guest handle. A descriptor set allocation whose handles the guest
+assigned never fails for lack of pool space: when the application's pool reports
+`VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL`, the decoder allocates the
+sets from an overflow pool it creates with the same flags and sizes. Overflow pools are
+reset and destroyed with their application pool, and their sets are freed back to them.
+
+### Completion feed
+
+With `0x200`, the process opens one more local stream with the same hello. After the
+client-flags word it sends a single `COMPLETION_FEED` command and nothing else. Both
+completion commands use the ordinary 8-byte packet header, little-endian:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| COMPLETION_FEED | `0x4342FE01` | 16 | version u32 = 1, reserved u32 = 0 |
+| COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
+| COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
+
+After each queue submission that signals a fence or timeline semaphore, the process
+sends `COMPLETION_WATCH` with a new serial on the same device stream; neither command
+has a reply on its own stream. The decoder serves both commands itself. For a watch it
+submits, under the queue's lock, an empty batch whose new fence signals once all work
+submitted to that queue before it has completed, holding the queue's instance and
+device alive until a watcher thread has waited for and destroyed that fence. Queues of
+another process and virtually shared queues are not watched. On the feed stream the
+phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
+zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue
+cannot be watched. Records may arrive in any order. Watches made before the feed stream
+attaches are kept for it. Further bytes from the process on the feed stream are a
+protocol error; its end, or process stop, ends the feed. Watches still outstanding are
+waited for, and their records discarded.
+
+The process then knows the state of every fence and timeline semaphore whose signal
+operations it has seen. `vkGetFenceStatus`, `vkWaitForFences`,
+`vkGetSemaphoreCounterValue` and `vkWaitSemaphores` resolve locally, waiting for feed
+records without holding the device stream. A fence or semaphore whose payload is
+imported or exportable, a fence signaled by the presentation engine's acquire, sparse
+binding signals and unwatched queues are asked about on the device stream as before.
+A reported timeline value can trail the device's actual value, as a status query on any
+device can; it never exceeds it.
+
+### Ordered presents
+
+With `0x400`, a process presents without waiting on either socket. It sends
+`COMPLETION_ORDER` with its next order serial on its device stream, then
+`SWAPCHAIN_PRESENT_ORDERED` on its surface socket: swapchain ID, present serial, boxed
+queue and order serial (four u64), then kind 34's image index, queue family, actual
+layout, wait count and boxed binary waits. Order serials rise with the stream; a process
+uses them only while one device stream carries all its work. The decoder records each
+order mark as it passes it. The phone's indexed surface runs an ordered present only
+after the process's decoder has passed its mark, so the present follows every
+submission and signal the process sent before it, and presents of a surface still run in
+serial order. That wait is for decoding only, never for GPU work, and it overlaps
+acquisition; stopping the process cancels it and the present is rejected with
+`ECANCELED`.
+
+Native presentation keeps up to two indexed frames in flight per surface, each observed
+by its own worker, so a frame's copy is queued while the previous one presents; the
+legacy present path keeps one. A frame that does not finish keeps its slot, and a device
+or queue change waits until no frame is in flight. A process using ordered presents
+sends its next present once fewer than two of its frames are unretired.
+
+The process does not wait for PRESENT_RESULT: it is consumed whenever it arrives. A
+present that was not queued ends its swapchain, and the next present or acquire on it
+returns `VK_ERROR_OUT_OF_DATE_KHR`, or `VK_ERROR_DEVICE_LOST` for actual device loss; a
+rejected frame's image counts as released. A frame whose outcome is uncertain never
+retires and is not waited for by later presents.
+
+With the completion feed as well, the process acquires its next image ahead of the
+application: right after each present it sends an ordinary SWAPCHAIN_ACQUIRE naming one
+of its private binary semaphores. When the application acquires, the process returns
+that image once its ACQUIRED reply is in, and one queue submission waits for the private
+semaphore and signals the application's semaphore and fence. Neither the phone nor the
+wire changes for this.
+
 ## Readiness and retirement
 
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
@@ -225,16 +330,25 @@ X11 `_NET_WM_PID` is not authority.
 The app's visible interactive owner view supplies the native layer; thumbnails
 cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
 and linked surface backend; ordinary display and agent sessions do not. The
-registry matches the display epoch, window object and one visible eligible view.
+registry matches the display epoch and window object, and places the layer in the
+one visible eligible view showing that window.
+
+Visibility never stalls the guest. While no eligible view shows a bound window
+(another tab is in front, the view is hidden, off screen, rebuilt, or reused for
+another window) its lease is parked: the presentation view leaves the hierarchy,
+but the lease, its binding and its swapchain stay valid and keep accepting
+presents. When an eligible view shows the window again, the same layer returns to
+it with the latest frame presented. A bind for a window no view currently shows
+starts parked at the window's server pixel size.
 The executor survives an ordinary display reconnect and seamless display or
 owner-view geometry changes (such as device rotation): when the display or
 window extent changes to a valid new size, the compositor reconfigures the
 bound toplevel window to the new display dimensions and the owner view updates
 the active lease extent and fits the presentation view in place while the
 application reconfigures its swapchain at the new extent, without revoking the
-surface grant or dropping the executor. Losing the owner view, removing its
-display, or invalid/zero geometry requests revocation of only the affected
-surface (`SURFACE_REVOKE_REQUEST`). Background or computer
+surface grant or dropping the executor. A changed display epoch or window object,
+or invalid/zero server geometry, requests revocation of only the affected surface
+(`SURFACE_REVOKE_REQUEST`). Background or computer
 replacement drains the entire executor. This path is not enabled
 by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
 AppModel then opens the existing authenticated host endpoint and updates the
@@ -368,13 +482,14 @@ PRESENT_RETIRED callback. It then removes the frame record while keeping the
 monotonic serial high-water mark. Rejected submissions keep their acquired image
 and original wait set available to the caller.
 
-Owner-view invalidation enters the bounded serial consumer queue and emits kind
-35 once for the complete retained grant. When a lease is invalidated, withdrawn,
+Owner invalidation enters the bounded serial consumer queue and emits kind
+35 once for the complete retained grant. When a lease is invalidated, parked,
 revoked, or retired, the owner view immediately removes the GPU presentation view
 from its superview so the underlying window picture and video path remain visible
 without a frozen GPU overlay, while the lease retains its strong reference to the
-`CAMetalLayer`-backed view until native surface retirement and detachment finish
-and only re-attaches when a new grant binds. It preserves the process and callback
+`CAMetalLayer`-backed view until native surface retirement and detachment finish.
+An invalidated lease's layer never returns; a parked one returns to the next
+eligible view showing its window. It preserves the process and callback
 context until the compositor requests retirement and native cleanup succeeds.
 Late local invalidations after retirement are ignored; foreign peer records still
 reject. Already-in-transit query or present requests receive a local stale-owner
@@ -382,11 +497,30 @@ error while retirement is pending. No successful retirement is inferred from the
 request being sent.
 
 App backgrounding requests bounded UIKit background time for graceful executor
-drain; expiration aborts local transport. Computer switches and display takeover
+drain; expiration aborts local transport. iOS runs no GPU work in the background, so
+the executor always leaves then, even while the display connection stays open for
+sound. The host relay pings the phone every second and ends the relay after 3 s of
+silence, so a phone that leaves without closing ends its executor within seconds.
+When the executor's streams end, every guest process using it sees
+`VK_ERROR_DEVICE_LOST` at once, with no waits and no aborts, and recreates its
+instance. With no executor the Caboose ICD fails `vkCreateInstance` and the loader
+offers lavapipe. When the phone returns, the executor switch layer
+(`guest/gpu/executor-switch`) makes those lavapipe devices report device loss, and
+the applications move back onto the phone. Returning to the foreground starts a new
+executor. An application launched with `CABOOSE_GPU_ON_LOSS=pause` instead
+waits: every call that would report the loss blocks until the broker has a new
+executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its device
+on the returned phone. Its devices cannot be resumed as they were, because their
+objects lived on the executor that left. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
-app releases its process-wide owner reservation only after native cleanup, its
-REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss
-or failed cleanup retains the reservation and never triggers automatic retry.
+app releases its process-wide owner reservation once local native cleanup succeeds; the
+server fences the old executor (the host relay ends only after both of its sides close,
+and the broker revokes the old lease). While the app is in the foreground, an executor
+that ends, including after a lost transport, is started again after 1 s, doubling to
+30 s, reset by one that ran a minute. Failed native cleanup keeps the reservation and is
+never retried. The host relay logs why it ended any relay early (phone silence, a full
+queue, a socket error or an abnormal close), and each side may queue up to 2048 messages
+or 8 MiB before a peer that keeps sending past that is ended.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never
@@ -394,6 +528,28 @@ waits for the decoder worker. Failed bind cleanup or retirement keeps its surfac
 and layer reserved and prevents process finish from bypassing the instance lease.
 The controller's tests use injected native boundaries; the package and unsigned
 app link checks do not establish physical presentation or game compatibility.
+
+## Presented-picture capture
+
+The owner view's [phone-owned scrolling](display.md#phone-owned-scrolling) reads what a
+live GPU window presents. With a capture callback set (`caboose_gpu_surface_set_capture`),
+each present's copy submission also copies the guest source into one of three device-local
+capture images on the presenting device. This happens only when a capture image is free,
+and it adds no wait. The images are created with `VK_EXT_metal_objects` export, and the
+decoder enables that extension on guest devices where the provider offers it (patch
+`0040-guest-device-metal-objects`). A device that cannot export Metal objects presents
+without captures.
+
+Once the copy fence has actually signaled, the frame worker passes the present serial, a
+token and the image's `MTLTexture` to the callback. The Swift surface hands the texture to
+its owner view on main. The view's scroll controller copies it into its own history
+texture and then releases the token (`caboose_gpu_surface_release_capture`). Until that
+release, the slot is not written again. Tokens carry the ring's generation: a resized or
+reformatted picture gets a new ring once no copy writes the old one, and releases for the
+old ring are ignored. A copy whose fence outcome is unknown quarantines its slot. Retire
+stops captures and destroys the ring with the presenting device's other resources. The
+capture never reaches the guest, never changes what is presented, and is not a display
+or vsync receipt. `tests/presentation_capture_state_test.cpp` checks slot ownership.
 
 ## Indexed swapchain wire
 
@@ -426,7 +582,7 @@ structural parsing alone does not prove them.
 | --- | --- | --- |
 | 25 | SWAPCHAIN_CREATE | request ID, boxed device, old swapchain ID (3 u64); 14 u32 creation fields; queue-family array |
 | 26 | SWAPCHAIN_CREATED | request ID, actual swapchain ID (2 u64); status; actual image count, reserved zero (2 u32) |
-| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, reserved zero (2 u32); ordered boxed source images (u64 each) |
+| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, flags (2 u32); ordered boxed source images (u64 each) |
 | 28 | SWAPCHAIN_MAPPED | swapchain ID (u64); status |
 | 29 | SWAPCHAIN_ACQUIRE | swapchain ID, request ID, boxed binary semaphore, boxed fence, timeout nanoseconds (5 u64); device mask, reserved zero (2 u32) |
 | 30 | SWAPCHAIN_ACQUIRED | swapchain ID, request ID (2 u64); status; has-index, index, local reason, reserved zero (4 u32) |
@@ -445,6 +601,18 @@ The guest rejects unsupported `pNext` rather than dropping it. The native path
 honors every accepted parameter or returns an explicit error. Creation has no
 queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
+
+With the `guest-query-pools` capability (hello feature `0x1000`, which requires `0x80`)
+the guest also assigns query pool handles (phone patch 0041).
+
+MAP flags are 0, or with the `guest-images` capability (hello feature `0x800`) 1 for
+guest-owned images or 3 for guest-owned images with mailbox. With guest-owned images the
+guest maps its own pool of 1 to 8 images instead of the provider's count. There is no
+SWAPCHAIN_ACQUIRE: the guest hands an image to the application once its previous copy
+was released, and signals the application's semaphore and fence itself. Each present
+names a guest image, and native acquires a provider image inside the present, waiting up
+to 1 s, or not at all with mailbox. A present that finds no provider image is dropped: it
+reports QUEUED, then releases its source and retires. Up to 8 frames may be in flight.
 
 Creation success carries actual `VK_SUCCESS`, the native ID and the provider's
 complete image count (1–256). Failure carries no ID or image count. MAP supplies
@@ -506,3 +674,51 @@ it. Replies retain the full native payload. The CGLS parser does not activate
 these operations or imply that a native implementation exists.
 
 The opt-in memory-audit package records at most 64 decoder calls taking 50 ms or longer per runtime process. Each record contains a local stream ordinal, opcode and elapsed time; the pinned command-buffer host-sync call also includes its two numeric ordering fields. It also records up to 64 stream totals and 128 two-second samples per runtime process, counting decode time (including mapped-memory flushes), socket read wait and bytes, and reply flush time. Counters saturate instead of wrapping. Stream wait includes time when the guest has no work and does not identify a transport fault by itself. Handles, addresses and command contents are excluded. Execution and timeout behavior are unchanged.
+
+## Applications
+
+The owner's display started with the private GPU sockets
+(`--private-gpu-stream-socket`, `--private-gpu-surface-socket`) routes its applications to
+the phone's GPU through their launch environment, when the driver is installed: `python3
+guest/gpu/install-live.py --driver libvulkan_gfxstream.so` puts it and its loader manifest
+in `/usr/local/lib/caboose-gpu-live`, a directory no Vulkan loader searches by itself. No
+application is configured individually; each toolkit's own GPU path reaches the driver.
+
+| Applications | Path to the phone's GPU |
+| --- | --- |
+| Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the routing layer (`guest/gpu/routing-layer`, enabled by `CABOOSE_GPU_ROUTING=1` in place of Mesa's device-select layer) lists the phone's GPU first and CPU renderers such as lavapipe last. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
+| GTK 4 | `GSK_RENDERER=vulkan`. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+
+The broker listens on its local socket only while a phone's executor is ready. With no
+phone the driver fails its Vulkan instance and the loader continues with the computer's
+drivers; GTK and Chromium draw with lavapipe.
+Those applications draw on the computer and reach the phone as pictures, like every
+application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
+lavapipe device lose itself once a phone's executor is ready, and an application that
+recreates lost devices, as Chromium does, moves to the phone.
+
+When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
+`restart` reports device loss, `pause` holds the application until the phone returns.
+The launch environment sets `auto`, which the routing layer resolves per process:
+`restart` for Chromium-family GPU processes (Chromium, Electron), which restart, and for
+Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
+recover from device loss (GTK 4, Vulkan applications and games).
+
+Some applications draw on the computer even with a phone attached: OpenGL
+applications, Qt Quick and Electron among them, because Zink (OpenGL on Vulkan) on the
+phone's GPU offers only OpenGL ES 2.0, the phone having no logic operations.
+
+Flatpak applications take the same paths inside their sandbox. `install-live.py
+--driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
+extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
+runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
+override. The launch environment's variables pass into the sandbox unchanged;
+`PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
+which shares no other part of the runtime directory with games.
+
+`guest/gpu/check-apps.sh` checks each path in a disposable container
+([guest/gpu](../guest/gpu/README.md#application-routing-check)).

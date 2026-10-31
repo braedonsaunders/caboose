@@ -52,6 +52,7 @@ class Kind(IntEnum):
     PRESENT_RETIRED = 36
     TRANSPORT_CONFIG = 37
     TRANSPORT_READY = 38
+    SWAPCHAIN_PRESENT_ORDERED = 39
 
 
 class ProtocolError(ValueError):
@@ -92,12 +93,12 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
     if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN, Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
         if process or stream:
             raise ProtocolError("session message has resource identity")
-    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
+    elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or is_surface(kind):
         if not process or stream:
             raise ProtocolError("invalid process scope")
     elif not process or not stream:
         raise ProtocolError("invalid stream scope")
-    if Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
+    if is_surface(kind):
         if length < 40:
             raise ProtocolError("truncated surface control")
     elif kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
@@ -114,6 +115,11 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
     return kind
 
 
+def is_surface(kind):
+    """Surface and indexed swapchain controls: process scope, a 40-byte surface identity."""
+    return Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED or kind == Kind.SWAPCHAIN_PRESENT_ORDERED
+
+
 def _transport(kind, payload):
     if kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY) and payload != struct.pack("<II", 1, 65600):
         raise ProtocolError("invalid transport configuration")
@@ -122,7 +128,7 @@ def _transport(kind, payload):
 def encode(message: Envelope) -> bytes:
     kind = _validate(message.kind, message.executor, message.generation,
                      message.process, message.stream, message.sequence, len(message.payload))
-    if Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED:
+    if is_surface(kind):
         _surface(kind, message.payload)
     _transport(kind, message.payload)
     return HEADER.pack(b"CGLV", 1, kind, len(message.payload), 0, message.executor,
@@ -189,7 +195,7 @@ class Decoder:
                 _, _, kind, _, _, executor, generation, process, stream, sequence = self._header
                 frame = Envelope(Kind(kind), executor, generation, process, stream,
                                  sequence, bytes(self._buffer))
-                if Kind.SURFACE_BIND <= frame.kind <= Kind.PRESENT_RETIRED:
+                if is_surface(frame.kind):
                     _surface(frame.kind, frame.payload)
                 _transport(frame.kind, frame.payload)
                 self._header = None

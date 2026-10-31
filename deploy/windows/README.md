@@ -139,3 +139,26 @@ powershell -ExecutionPolicy Bypass -File check.ps1 -Port 7310 -Distro Ubuntu-24.
 To confirm a phone's connection is direct, connect the phone and run, inside WSL,
 `ss -tn state established sport = :7310`. The peer is the phone's own address, not
 `172.x.0.1`.
+
+## Native consumer installer
+
+The Rust [Windows app](../../apps/windows/README.md) embeds these scripts and installs a
+dedicated `Caboose` distribution from checksummed release assets. Existing manual installs
+remain independent; the native installer does not adopt a distribution it did not create.
+
+After a native install, run `check-consumer.ps1` in elevated PowerShell as the same WSL owner.
+For complete acceptance on a disposable Windows 11 x64 PC:
+
+1. Install with no existing WSL distribution, follow any requested Windows restart, reopen
+   Caboose and verify setup completes. Cancel UAC once and confirm a retry succeeds.
+2. Open the web console, create an account, scan the native QR on a real iPhone, and verify
+   the confirmation, image progress and expired-code renewal. Enable Tailscale HTTPS after
+   signing Tailscale in inside the distribution; scan the new address on the phone.
+3. Restart Windows without signing in. From a second machine check that the host answers
+   and the paired phone can open its computer. Only then sign in and run `check-consumer.ps1`.
+   This before-sign-in observation is required to verify unattended recovery.
+4. Re-run the installer and confirm computer data and unrelated `.wslconfig` keys survive.
+   Interrupt one download and retry; a `.part` file must never be imported or executed.
+5. Uninstall without purge, confirm the computer's distribution remains and startup/networking
+   changes revert. Reinstall, then explicitly choose permanent deletion on the disposable PC
+   and confirm only the owned Caboose distribution is removed.

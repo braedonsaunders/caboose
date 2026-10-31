@@ -11,8 +11,9 @@ struct LiveGPUEnvelope: Equatable {
         case surfaceBind = 16, surfaceBound, surfaceQuery, surfaceCaps, present, presentResult, sourceReleased, surfaceRetire, surfaceRetired
         case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest, presentRetired
         case transportConfig = 37, transportReady
-        var isSurface: Bool { rawValue >= 16 && rawValue <= 36 }
-        var isIndexed: Bool { rawValue >= 25 && rawValue <= 36 }
+        case swapchainPresentOrdered = 39
+        var isSurface: Bool { (rawValue >= 16 && rawValue <= 36) || self == .swapchainPresentOrdered }
+        var isIndexed: Bool { (rawValue >= 25 && rawValue <= 36) || self == .swapchainPresentOrdered }
     }
     let kind: Kind
     let executor: Data

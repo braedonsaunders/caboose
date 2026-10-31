@@ -1,0 +1,8 @@
+{
+  "name": "drop-status-unknown",
+  "description": "Over an application that decides only once it has the content: no answer until the drop.",
+  "messages": [
+    {"direction": "server", "type": "drop.status", "type_id": 50, "fields": {}}
+  ],
+  "hex": "3201000000a0"
+}

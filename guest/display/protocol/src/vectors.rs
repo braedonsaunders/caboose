@@ -178,6 +178,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(1),
         xwayland: false,
         alpha: false,
+        overscan: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -193,6 +194,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(1),
         xwayland: false,
         alpha: false,
+        overscan: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -208,6 +210,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         display: Some(2),
         xwayland: true,
         alpha: false,
+        overscan: None,
     };
 
     vec![
@@ -249,9 +252,44 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu_live_epoch: Some([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
             }),
         ),
-        one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal)),
+        one(
+            "server-hello-atlas",
+            "A zero-video server hello when the client negotiates atlas and scene.",
+            Message::ServerHello(ServerHello {
+                version: 0,
+                displays: vec![1],
+                encoders: vec![],
+                features: ["vsync", "ack", "atlas", "scene"].map(String::from).to_vec(),
+                epoch: Some("5f3a9c01d2e4b678".into()),
+                gpu_live_epoch: None,
+            }),
+        ),
+        one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal.clone())),
         one("window-create-popup", "A popup above its parent; geometry is relative to the parent and may be negative.", Message::WindowCreate(menu)),
         one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm)),
+        one(
+            "window-create-overscan",
+            "A window laid out 2556 pixels taller than the 1179x2556 the client shows: its pictures are 1179x5112.",
+            Message::WindowCreate(WindowCreate {
+                id: 14,
+                title: "Wikipedia — Chromium".into(),
+                app_id: "chromium".into(),
+                icon: None,
+                min: None,
+                overscan: Some(Size { w: 0, h: 2556 }),
+                ..terminal.clone()
+            }),
+        ),
+        one(
+            "window-update-overscan",
+            "The app now has the enlarged size: the picture extends 2556 pixels below the geometry.",
+            Message::WindowUpdate(WindowUpdate { id: 7, overscan: Some(Size { w: 0, h: 2556 }), ..Default::default() }),
+        ),
+        one(
+            "window-update-overscan-end",
+            "The overscan ended: [0, 0].",
+            Message::WindowUpdate(WindowUpdate { id: 7, overscan: Some(Size { w: 0, h: 0 }), ..Default::default() }),
+        ),
         one(
             "window-update-title",
             "Only the changed fields are present.",
@@ -280,6 +318,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 rect: Rect::new(0, 0, 64, 64),
                 crop: Rect::new(0, 0, 64, 64),
                 data: media.h264_keyframe.clone(),
+                input_seq: None,
             }),
         ),
         one(
@@ -293,12 +332,140 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 rect: Rect::new(0, 0, 124, 120),
                 crop: Rect::new(0, 0, 62, 60),
                 data: media.hevc_keyframe.clone(),
+                input_seq: None,
+            }),
+        ),
+        one(
+            "frame-input-seq",
+            "A non-key frame whose picture contains no scroll input after the window's sequence 41.",
+            Message::Frame(Frame {
+                id: 7,
+                codec: Codec::Hevc,
+                keyframe: false,
+                pts_us: 1_234_600_000,
+                rect: Rect::new(0, 0, 64, 64),
+                crop: Rect::new(0, 0, 64, 64),
+                data: vec![0, 0, 0, 1, 0x02, 0x01, 0xd0],
+                input_seq: Some(41),
+            }),
+        ),
+        one(
+            "scroll-tree",
+            "A Chromium report for the pictures tagged 0x03_2A10: the root scroller under a 180 px toolbar with a stuck 120 px header and the tag in its fixed rects, and an inner list; scroll.target 17 applied, layout epoch 2.",
+            Message::ScrollTree(ScrollTree {
+                id: 7,
+                tag: Some(0x03_2A10),
+                tag_rect: Some(Rect::new(0, 2556, 384, 12)),
+                applied: 17,
+                epoch: 2,
+                scrollers: vec![
+                    Scroller {
+                        id: 0,
+                        rect: Rect::new(0, 180, 1179, 4932),
+                        offset: [0.0, 2412.75],
+                        range: [0.0, 18_904.5],
+                        fixed: vec![Rect::new(0, 180, 1179, 120), Rect::new(0, 2556, 384, 12)],
+                    },
+                    Scroller { id: 4, rect: Rect::new(60, 900, 1059, 600), offset: [0.0, 96.0], range: [0.0, 1404.0], fixed: vec![] },
+                ],
             }),
         ),
         one(
             "tile-png",
             "A lossless tile.",
             Message::Tile(Tile { id: 7, rect: Rect::new(16, 32, 16, 16), format: TileFormat::Png, data: media.png.clone() }),
+        ),
+        one(
+            "surface-batch",
+            "An atomic byte-perfect surface damage batch with CopyRect, solid fills, cached XXH64 tile refs, and a Pal2Lz4 tile.",
+            Message::SurfaceBatch(SurfaceBatch {
+                id: 7,
+                seq: 1,
+                pts_us: 1_234_567_890,
+                size: Size { w: 1179, h: 2556 },
+                rect: Rect::new(0, 0, 1179, 2556),
+                keyframe: true,
+                copies: vec![SurfaceCopy { dx: 0, dy: -64, rect: Rect::new(0, 0, 1179, 1920) }],
+                fills: vec![SurfaceFill { rect: Rect::new(0, 1920, 1179, 636), rgba: 0x1E1E2EFF }],
+                refs: vec![SurfaceTileRef { x: 0, y: 0, hash: 0x9E37_79B1_85EB_CA87 }],
+                tiles: vec![SurfaceTile {
+                    rect: Rect::new(64, 0, 64, 64),
+                    hash: Some(0xC2B2_AE3D_27D4_EB4F),
+                    format: AtlasTileFormat::Pal2Lz4,
+                    data: vec![0x0c, 0x00, 0x00, 0x00, 0xc0, 0x1e, 0x1e, 0x2e, 0xff, 0xff, 0xff, 0xff, 0xff, 0xAA, 0x55, 0xAA, 0x55],
+                }],
+            }),
+        ),
+        one(
+            "surface-reset",
+            "Resets the client's XXH64 tile cache on a new epoch.",
+            Message::SurfaceReset { epoch: 2 },
+        ),
+        one(
+            "scene-font",
+            "Registers a TrueType/OpenType font face by its XXH64 hash for scene.commit glyph runs.",
+            Message::SceneFont(SceneFont {
+                font: 0x85EB_CA77_C2B2_AE63,
+                index: 0,
+                family: Some("Inter".into()),
+                data: vec![0x00, 0x01, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x80, 0x00, 0x03, 0x00, 0x40],
+            }),
+        ),
+        one(
+            "scene-commit",
+            "A retained vector and glyph scene-graph commit with group, scroll container, and positioned glyph run.",
+            Message::SceneCommit(SceneCommit {
+                id: 7,
+                seq: 1,
+                pts_us: 1_234_567_890,
+                root: 1,
+                reset: true,
+                nodes: vec![
+                    SceneNode {
+                        id: 1,
+                        kind: SceneNodeKind::Group,
+                        rect: Some(Rect::new(0, 0, 1179, 2556)),
+                        radius: None,
+                        color: None,
+                        scroll: None,
+                        children: Some(vec![2, 3]),
+                        font: None,
+                        size: None,
+                        glyphs: None,
+                        path: None,
+                        surface: None,
+                    },
+                    SceneNode {
+                        id: 2,
+                        kind: SceneNodeKind::Scroll,
+                        rect: Some(Rect::new(0, 64, 1179, 2492)),
+                        radius: None,
+                        color: None,
+                        scroll: Some(Rect::new(0, 120, 1179, 7200)),
+                        children: Some(vec![3]),
+                        font: None,
+                        size: None,
+                        glyphs: None,
+                        path: None,
+                        surface: None,
+                    },
+                    SceneNode {
+                        id: 3,
+                        kind: SceneNodeKind::Glyphs,
+                        rect: Some(Rect::new(24, 96, 600, 32)),
+                        radius: None,
+                        color: Some(0xCDD6F4FF),
+                        scroll: None,
+                        children: None,
+                        font: Some(0x85EB_CA77_C2B2_AE63),
+                        size: Some(16.0),
+                        glyphs: Some(vec![0x24, 0x00, 0x00, 0x00, 0xC0, 0x41, 0x00, 0x00, 0xE0, 0x41]),
+                        path: None,
+                        surface: None,
+                    },
+                ],
+                remove: vec![],
+            }),
         ),
         one("cursor-image", "", Message::Cursor(Cursor { id: Some(7), image: media.png.clone(), hotspot: [3, 1] })),
         one("cursor-named-text", "A text cursor: the client may show the keyboard.", Message::CursorNamed { name: "text".into() }),
@@ -325,7 +492,57 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "clipboard-server",
             "",
-            Message::ServerClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: "héllo ✓".as_bytes().to_vec() }),
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: "héllo ✓".as_bytes().to_vec(),
+                alternatives: Vec::new(),
+            }),
+        ),
+        one(
+            "clipboard-server-types",
+            "A copy of files in a file manager, for a client that takes images and files: text first, then a PNG and the files as a text/uri-list.",
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"/home/caboose/Pictures/a b.png".to_vec(),
+                alternatives: vec![
+                    ClipboardEntry { mime: "image/png".into(), data: media.png.clone() },
+                    ClipboardEntry {
+                        mime: "text/uri-list".into(),
+                        data: b"file:///home/caboose/Pictures/a%20b.png\r\n".to_vec(),
+                    },
+                ],
+            }),
+        ),
+        one(
+            "drop-status",
+            "The application under the client's drop accepts it.",
+            Message::DropStatus { accepted: Some(true) },
+        ),
+        one(
+            "drop-status-unknown",
+            "Over an application that decides only once it has the content: no answer until the drop.",
+            Message::DropStatus { accepted: None },
+        ),
+        one(
+            "drop-result-rejected",
+            "The application under the drop did not accept it.",
+            Message::DropResult { ok: false, reason: Some(DropFailure::Rejected) },
+        ),
+        one("drop-result-ok", "", Message::DropResult { ok: true, reason: None }),
+        one(
+            "drag-start",
+            "A file manager started dragging a file, offered as a list of files and its path as text.",
+            Message::DragStart { mimes: vec!["text/plain;charset=utf-8".into(), "text/uri-list".into()] },
+        ),
+        one("drag-end", "The drag the client took ended.", Message::DragEnd { taken: true }),
+        one(
+            "drag-data",
+            "What the client took from the drag: one file under the home.",
+            Message::DragData(Clipboard {
+                mime: "text/uri-list".into(),
+                data: b"file:///home/caboose/Documents/report.pdf\r\n".to_vec(),
+                alternatives: Vec::new(),
+            }),
         ),
         one(
             "notification",
@@ -500,6 +717,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu: false,
                 scaled_motion: false,
                 devices: false,
+                atlas: false,
+                scene: false,
+                clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -508,6 +728,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false,
+                atlas: false, scene: false, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -525,6 +746,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu: false,
                 scaled_motion: false,
                 devices: false,
+                atlas: false,
+                scene: false,
+                clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -541,7 +765,28 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
+                devices: false, clipboard_types: None, atlas: false, scene: false, scroll: false,
+            }),
+        ),
+        one(
+            "client-hello-clipboard",
+            "client-hello-audio plus images and files from the computer's clipboard.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
                 devices: false,
+                clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
+                atlas: false,
+                scene: false,
+                scroll: false,
             }),
         ),
         one(
@@ -559,6 +804,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu: true,
                 scaled_motion: false,
                 devices: false,
+                atlas: false,
+                scene: false,
+                clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -576,6 +824,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 gpu: false,
                 scaled_motion: false,
                 devices: false,
+                atlas: false,
+                scene: false,
+                clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -585,7 +836,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
-                devices: false,
+                devices: false, atlas: false, scene: false, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -595,7 +846,37 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, devices: true,
+                scaled_motion: false, devices: true, atlas: false, scene: false, clipboard_types: None, scroll: false,
+            }),
+        ),
+        one(
+            "client-hello-scroll",
+            "client-hello-audio from a phone that places pictures by toolkit scroll reports.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
+                scaled_motion: false, devices: false, scroll: true, atlas: false, scene: false, clipboard_types: None,
+            }),
+        ),
+        one(
+            "client-hello-atlas",
+            "Zero-video client hello advertising Surface Atlas and Scene Graph support with empty window decoders.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![],
+                displays: vec![phone()],
+                video_decoders: Some(vec![Codec::Hevc, Codec::H264]),
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                gpu: false,
+                scaled_motion: false,
+                devices: false,
+                atlas: true,
+                scene: true,
+                clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -757,6 +1038,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 fullscreen: None,
                 maximized: Some(true),
                 activated: Some(true),
+                overscan: None,
+            }),
+        ),
+        one(
+            "configure-overscan",
+            "Ask for a window 2556 pixels taller than the 1179x2556 the client shows.",
+            Message::Configure(Configure {
+                id: 7,
+                geometry: Some(Rect::new(0, 0, 1179, 2556)),
+                overscan: Some(Size { w: 0, h: 2556 }),
+                ..Default::default()
             }),
         ),
         one("close", "", Message::Close { id: 7 }),
@@ -805,8 +1097,24 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 x: 640.0,
                 y: 480.0,
                 buttons: 0,
-                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true }),
+                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: None }),
             }),
+        ),
+        one(
+            "pointer-scroll-seq",
+            "Pixel scroll carrying the window's input sequence number 42.",
+            Message::Pointer(Pointer {
+                id: 7,
+                x: 640.0,
+                y: 480.0,
+                buttons: 0,
+                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: Some(42) }),
+            }),
+        ),
+        one(
+            "scroll-target",
+            "Scroll the root scroller of window 7 down by 37.25 content pixels, as the window's input 18.",
+            Message::ScrollTarget(ScrollTarget { id: 7, scroller: 0, seq: 18, delta: [0.0, 37.25] }),
         ),
         one(
             "key-shift-a",
@@ -825,10 +1133,50 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::Text(Text { commit: Some("the ".into()), delete_before: Some(2), ..Default::default() }),
         ),
         one(
+            "scene-scroll",
+            "Client-predicted scroll offset synced back to the guest.",
+            Message::SceneScroll(SceneScroll { id: 7, node: 2, sx: 0.0, sy: 240.5 }),
+        ),
+        one(
             "clipboard-client",
             "",
-            Message::ClientClipboard(Clipboard { mime: "text/plain;charset=utf-8".into(), data: b"copied on the phone".to_vec() }),
+            Message::ClientClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"copied on the phone".to_vec(),
+                alternatives: Vec::new(),
+            }),
         ),
+        one(
+            "clipboard-client-image",
+            "An image copied on the phone, with no text.",
+            Message::ClientClipboard(Clipboard { mime: "image/png".into(), data: media.png.clone(), alternatives: Vec::new() }),
+        ),
+        one(
+            "drop-enter",
+            "A photo dragged over window 7, offered as a JPEG and as a file.",
+            Message::DropEnter(DropEnter {
+                id: 7,
+                x: 400.5,
+                y: 812.0,
+                mimes: vec!["image/jpeg".into(), "text/uri-list".into()],
+            }),
+        ),
+        one("drop-motion", "", Message::DropMotion { id: 7, x: 420.0, y: 830.25 }),
+        one("drop-leave", "", Message::DropLeave),
+        one(
+            "drop-perform",
+            "The drop: the photo's bytes and the file uploaded to the transfer area.",
+            Message::DropPerform(Clipboard {
+                mime: "image/jpeg".into(),
+                data: vec![0xff, 0xd8, 0xff, 0xe0],
+                alternatives: vec![ClipboardEntry {
+                    mime: "text/uri-list".into(),
+                    data: b"file:///home/caboose/.cache/caboose/transfers/0123456789abcdef0123456789abcdef/IMG_0001.jpeg\r\n"
+                        .to_vec(),
+                }],
+            }),
+        ),
+        one("drag-take", "", Message::DragTake),
         one("ping", "", Message::Ping { t_us: 98_765_432_100 }),
         Vector {
             name: "stream-unknown-skipped",

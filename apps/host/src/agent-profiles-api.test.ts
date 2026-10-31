@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterEach, expect, it, vi } from 'vitest'
-import { AgentProfiles } from './agent-profiles.js'
-import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
+import { AgentProfiles, profileContext } from './agent-profiles.js'
+import { AgentIdentityError } from './agents.js'
+import { createCabooseServer, defaultIdentity, type ComputerPieces, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 import { ComputerRegistry, PhoneTokens } from './computers.js'
 
@@ -64,4 +65,22 @@ it('manages durable profile memory while parked and isolates phone access to its
   const saved = await AgentProfiles.open(join(root, 'agent-profiles.json'))
   expect(saved.get(profile.id).memories).toMatchObject([{ title: 'Timezone', content: 'America/Toronto' }])
   expect(wake).not.toHaveBeenCalled()
+})
+
+it('resolves ordinary chats to the visible default identity and requires restoring an archived one', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-default-identity-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const profiles = await AgentProfiles.open(join(root, 'agent-profiles.json'))
+  const changed = vi.fn()
+  const resolve = defaultIdentity(profiles, changed)
+  const [first, second] = await Promise.all([resolve('codex-acp', 'Codex'), resolve('codex-acp', 'Codex')])
+  expect(first).toEqual(second)
+  expect(changed).toHaveBeenCalledTimes(1)
+  const [profile] = profiles.list()
+  expect(first).toEqual({ id: profile!.id, instructions: profileContext(profile!) })
+  expect(first.instructions).toContain('routine tools')
+  await profiles.update(profile!.id, { archived: true })
+  await expect(resolve('codex-acp', 'Codex')).rejects.toThrow(AgentIdentityError)
+  await expect(resolve('codex-acp', 'Codex')).rejects.toThrow('Restore it')
+  expect(profiles.list(true)).toHaveLength(1)
 })

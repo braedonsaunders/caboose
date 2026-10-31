@@ -6,12 +6,14 @@ bundle=
 dry=0
 start=1
 stage_home=
+from_app=0
 while [[ $# -gt 0 ]]; do
   case $1 in
     --version) version=${2:?}; shift 2 ;;
     --bundle) bundle=${2:?}; shift 2 ;;
     --dry-run) dry=1; shift ;;
     --no-start) start=0; shift ;;
+    --from-app) from_app=1; shift ;;
     --stage-home) stage_home=${2:?}; shift 2 ;;
     -h|--help) echo 'Usage: install.sh [--version tag] [--bundle archive.tar.gz] [--dry-run] [--no-start] [--stage-home directory]'; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
@@ -125,7 +127,9 @@ if [[ $start == 0 ]]; then
   exit 0
 fi
 launchctl bootstrap "$label" "$agents/com.caboose.host.plist"
-launchctl bootstrap "$label" "$agents/com.caboose.menu.plist"
+if [[ $from_app == 0 ]]; then launchctl bootstrap "$label" "$agents/com.caboose.menu.plist"; fi
+# The already running app owns onboarding; do not open a second browser flow.
+[[ $from_app == 0 ]] || exit 0
 "$node" - "$root" <<'JS'
 const fs = require('fs'), path = require('path')
 const root = process.argv[2], settings = JSON.parse(fs.readFileSync(path.join(root,'install.json'),'utf8'))

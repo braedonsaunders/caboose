@@ -208,14 +208,14 @@ impl XwmHandler for State {
     }
 
     fn send_selection(&mut self, _xwm: XwmId, selection: SelectionTarget, mime_type: String, fd: OwnedFd) {
-        // The phone's text is the compositor's own selection: write it directly.
+        // The phone's copy is the compositor's own selection: write it directly.
         if selection == SelectionTarget::Clipboard {
             let phone = current_data_device_selection_userdata(&self.seat).and_then(|owner| match &*owner {
-                crate::clipboard::Owner::Phone(data) => Some(data.clone()),
+                crate::clipboard::Owner::Phone(offer) => Some(offer.clone()),
                 crate::clipboard::Owner::X11 => None,
             });
-            if let Some(data) = phone {
-                crate::clipboard::write_to(fd, data);
+            if let Some(offer) = phone {
+                offer.send(&mime_type, fd);
                 return;
             }
         }

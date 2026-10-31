@@ -1,0 +1,8 @@
+{
+  "name": "window-update-overscan",
+  "description": "The app now has the enlarged size: the picture extends 2556 pixels below the geometry.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 7, "overscan": [0, 2556]}}
+  ],
+  "hex": "0313000000a262696407686f7665727363616e82001909fc"
+}

@@ -49,13 +49,19 @@ struct CabooseApp: App {
                 }
                 .externalDesktopAccessory(model)
         }
-        .onChange(of: scenePhase) { _, phase in
-            switch phase {
-            case .active: model.sceneBecameActive()
-            case .background: model.sceneEnteredBackground()
-            default: break
-            }
+        // The App-level phase is every scene's together: the display stays connected while any
+        // of the app's windows is in the foreground.
+        .onChange(of: scenePhase) { _, phase in model.appPhaseChanged(phase) }
+
+        // On iPad, a Linux window in an iPadOS window of its own (Open in New Window, or
+        // dragged out of the app). Restored with the computer, epoch and window it showed.
+        WindowGroup("Linux Window", for: LinuxWindowRef.self) { $ref in
+            LinuxWindowScene(ref: $ref)
+                .environment(model)
+                .preferredColorScheme(.dark)
         }
+        .handlesExternalEvents(matching: [LinuxWindowRef.activityType])
+        .onChange(of: scenePhase) { _, phase in model.appPhaseChanged(phase) }
     }
 }
 
@@ -79,11 +85,28 @@ struct RootView: View {
         .animation(.snappy, value: model.agents.awaitingApproval.first?.pendingApproval?.id)
         .overlay(alignment: .top) { if model.phase == .ready { ConnectionBanner() } }
         .animation(.snappy, value: model.link.status)
+        // The shell's own iPadOS windows, which Move to Desktop brings forward.
+        .background {
+            SceneProbe(connected: { window in
+                if let id = window.windowScene?.session.persistentIdentifier { model.shellSceneConnected(id) }
+            })
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .overlay(alignment: .bottom) {
             // Which of the phone's hardware a computer app is using now (docs/devices.md).
             if model.phase == .ready { DeviceInUseIndicator(devices: model.devices).padding(.bottom, 6).allowsHitTesting(false) }
         }
         .animation(.snappy, value: model.devices.inUse)
+        // Drag and drop with the computer: the phone's target while a Linux app drags,
+        // and what was taken from it.
+        .overlay(alignment: .bottom) {
+            VStack {
+                DragShelfView()
+                DragOutTarget()
+            }
+        }
+        .animation(.snappy, value: model.session?.computerDrag != nil)
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }
@@ -127,6 +150,12 @@ struct RootView: View {
                 }
                 .navigationTitle("Agent Task")
                 .toolbar { Button("Done") { model.notificationTaskID = nil } }
+            }
+        }
+        .sheet(item: Binding(get: { model.notificationCommandID.map(NotificationCommand.init) }, set: { model.notificationCommandID = $0?.id })) { destination in
+            NavigationStack {
+                CommandView(id: destination.id)
+                    .toolbar { Button("Done") { model.notificationCommandID = nil } }
             }
         }
         .sheet(isPresented: Bindable(model).showAgentSettings) {
@@ -328,3 +357,4 @@ struct SetupView: View {
 }
 
 private struct NotificationTask: Identifiable { let id: String }
+private struct NotificationCommand: Identifiable { let id: String }

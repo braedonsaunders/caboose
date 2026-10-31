@@ -7,7 +7,7 @@ and a phone token 403. Authorization precedes quota lookup and storage sampling.
 Tenant responses contain only that tenant's totals and no host measurements or
 aggregate runtime queue count. Responses use `Cache-Control: no-store`.
 
-The browser-safe contract is `packages/capacity/types.ts`. The host implementation
+The browser-safe contract is `packages/capacity/types.d.ts`. The host implementation
 is `apps/host/src/capacity.ts`; the console uses AppKit dashboard and UI primitives
 in `apps/web/src/pages/Capacity.tsx`. AppKit analytics queries are not needed for
 these instantaneous, domain-owned measurements.

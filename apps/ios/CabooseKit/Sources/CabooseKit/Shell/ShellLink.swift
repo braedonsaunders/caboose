@@ -12,6 +12,8 @@ public enum ShellLink: Equatable, Sendable {
     case tab(ShellTab)
     /// `caboose://task/<id>`: an agent task.
     case task(String)
+    /// `caboose://command/<id>`: a command run on the computer.
+    case command(String)
     /// `caboose://airplay`: Home's AirPlay action.
     case airPlay
 
@@ -21,6 +23,9 @@ public enum ShellLink: Equatable, Sendable {
         case "task":
             guard let id = url.pathComponents.dropFirst().first, !id.isEmpty else { return nil }
             self = .task(id)
+        case "command":
+            guard let id = url.pathComponents.dropFirst().first, ComputerCommand.isValidID(id) else { return nil }
+            self = .command(id)
         case "airplay":
             self = .airPlay
         default:

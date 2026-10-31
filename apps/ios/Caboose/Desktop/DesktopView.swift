@@ -89,6 +89,7 @@ struct DesktopView: View {
             }
         }
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
+        .ignoresSafeArea(.keyboard)
         .clipped()
     }
 }

@@ -20,16 +20,23 @@ struct DecodeDurationSample {
 };
 
 struct DecodeTimingSnapshot {
-    // Opcode 20025 is pinned as OP_vkFlushMappedMemoryRanges in packet_framing.cpp.
+    // Pinned opcodes:
+    //   20021 = OP_vkCreateComputePipelines
+    //   20025 = OP_vkFlushMappedMemoryRanges
+    //   20065 = OP_vkCreateGraphicsPipelines
     DecodeDurationSample decode_all{};
+    DecodeDurationSample decode_20021{};
     DecodeDurationSample decode_20025{};
+    DecodeDurationSample decode_20065{};
     DecodeDurationSample read_wait{};
     uint64_t read_bytes = 0;
     DecodeDurationSample flush{};
 
     void recordDecode(uint32_t opcode, uint64_t elapsed_us) {
         decode_all.add(elapsed_us);
-        if (opcode == 20025u) decode_20025.add(elapsed_us);
+        if (opcode == 20021u) decode_20021.add(elapsed_us);
+        else if (opcode == 20025u) decode_20025.add(elapsed_us);
+        else if (opcode == 20065u) decode_20065.add(elapsed_us);
     }
 
     void recordRead(size_t bytes, uint64_t elapsed_us) {

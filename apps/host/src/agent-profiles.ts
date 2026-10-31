@@ -19,6 +19,8 @@ export interface AgentProfile {
   agent: string
   approvals: 'ask' | 'auto'
   archived: boolean
+  /** Set only by the host: this computer's implicit identity for ordinary chats with that registry agent. */
+  defaultFor?: string
   createdAt: string
   updatedAt: string
   memories: AgentMemory[]
@@ -31,6 +33,7 @@ const PROVIDER = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const MAX_PROFILES = 100
 const MAX_MEMORIES = 100
 const MAX_MEMORY_TEXT = 64_000
+const DEFAULT_INSTRUCTIONS = 'When the owner asks you to remember something, or to do something later or on a schedule, use your Caboose memory and routine tools. A routine runs as a new chat, and its result reaches the owner as a notification.'
 
 function text(value: unknown, name: string, max: number, empty = false): string {
   if (typeof value !== 'string' || value.includes('\0') || value.length > max || (!empty && !value.trim())) {
@@ -82,9 +85,13 @@ function storedState(value: unknown): ProfileState {
       return { id: m.id, title: text(m.title, 'title', 120), content: text(m.content, 'content', 8_000), createdAt: date(m.createdAt), updatedAt: date(m.updatedAt) }
     })
     if (new Set(memories.map(m => m.id)).size !== memories.length || memories.reduce((n, m) => n + m.content.length, 0) > MAX_MEMORY_TEXT) throw new Error('Invalid agent memory collection')
-    return { id: p.id, ...fields({ name: p.name, description: p.description, instructions: p.instructions, agent: p.agent, approvals: p.approvals, archived: p.archived }), createdAt: date(p.createdAt), updatedAt: date(p.updatedAt), memories }
+    const identity = fields({ name: p.name, description: p.description, instructions: p.instructions, agent: p.agent, approvals: p.approvals, archived: p.archived })
+    if (p.defaultFor !== undefined && p.defaultFor !== identity.agent) throw new Error('Invalid default agent profile')
+    return { id: p.id, ...identity, ...(p.defaultFor === undefined ? {} : { defaultFor: identity.agent }), createdAt: date(p.createdAt), updatedAt: date(p.updatedAt), memories }
   })
   if (new Set(profiles.map(p => p.id)).size !== profiles.length) throw new Error('Duplicate agent profile')
+  const defaults = profiles.flatMap(p => p.defaultFor === undefined ? [] : [p.defaultFor])
+  if (new Set(defaults).size !== defaults.length) throw new Error('Duplicate default agent profile')
   return { version: 1, profiles }
 }
 
@@ -110,10 +117,13 @@ export class AgentProfiles {
     return structuredClone(profile)
   }
 
-  private change<T>(update: (state: ProfileState) => T): Promise<T> {
+  /** An update that returns `unchanged` skips the write. */
+  private change<T>(update: (state: ProfileState) => T | { unchanged: T }): Promise<T> {
     const operation = this.sequence.then(async () => {
       const next = structuredClone(this.state)
-      const result = update(next)
+      const outcome = update(next)
+      if (outcome && typeof outcome === 'object' && 'unchanged' in outcome) return structuredClone(outcome.unchanged)
+      const result = outcome as T
       await this.persistence.save(next)
       this.state = next
       return structuredClone(result)
@@ -138,8 +148,32 @@ export class AgentProfiles {
     return this.change(state => {
       const profile = state.profiles.find(profile => profile.id === id)
       if (!profile) throw new AgentNotFoundError('Agent profile not found')
-      Object.assign(profile, fields(input, profile), { updatedAt: new Date().toISOString() })
+      const next = fields(input, profile)
+      if (profile.defaultFor !== undefined && next.agent !== profile.agent) throw new AgentInputError('A default identity keeps its agent; create a profile for another agent')
+      Object.assign(profile, next, { updatedAt: new Date().toISOString() })
       return profile
+    })
+  }
+
+  /**
+   * The identity ordinary chats with `agent` use. Serialized and idempotent: concurrent callers
+   * get one record. An archived default is returned as is, never replaced or restored; callers
+   * refuse to start or continue its chats until the owner restores it.
+   */
+  ensureDefault(agent: string, name: string): Promise<{ profile: AgentProfile; created: boolean }> {
+    if (!PROVIDER.test(agent)) throw new AgentInputError('Choose an agent from the registry')
+    const label = name.trim().slice(0, 80) || agent
+    return this.change<{ profile: AgentProfile; created: boolean }>(state => {
+      const existing = state.profiles.find(profile => profile.defaultFor === agent)
+      if (existing) return { unchanged: { profile: existing, created: false } }
+      if (state.profiles.length >= MAX_PROFILES) throw new AgentConflictError('This computer has reached its agent profile limit')
+      const now = new Date().toISOString()
+      const profile: AgentProfile = {
+        id: randomUUID(), name: label, description: `The identity of ordinary ${label} chats on this computer.`,
+        instructions: DEFAULT_INSTRUCTIONS, agent, approvals: 'ask', archived: false, defaultFor: agent, createdAt: now, updatedAt: now, memories: [],
+      }
+      state.profiles.push(profile)
+      return { profile, created: true }
     })
   }
 

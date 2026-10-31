@@ -21,8 +21,11 @@ public enum LiveGPUTransportEvent: Sendable {
 /// physical RSS proof. Revocation never releases a running permit.
 final class LiveGPUBudget: @unchecked Sendable {
     static let messageLimit = 256 * 1024
-    static let byteLimit = 1024 * 1024
-    static let countLimit = 64
+    /// Outbound work the phone may queue while the network or host is slower than the
+    /// decoder's replies: replies leave the native bridge in 16 KiB pieces, so a busy
+    /// stream (video, a pipeline compile backlog) queues many small messages.
+    static let byteLimit = 8 * 1024 * 1024
+    static let countLimit = 2048
     private let lock = NSLock()
     private var bytes = 0
     private var count = 0
@@ -160,8 +163,10 @@ final class LiveGPUOutboundQueue {
 public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
     public static let subprotocolName = "caboose.gpu.live.v1"
     /// Capabilities of this app's native decoder that a computer may use: it registers
-    /// objects under Vulkan handles the guest assigns (patch 0026).
-    static let features = "guest-handles"
+    /// objects under Vulkan handles the guest assigns (patch 0026), including descriptor
+    /// sets and command buffers (patch 0027), serves the completion feed (patch 0028), and
+    /// runs presents ordered behind device-stream ORDER marks.
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools"
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
@@ -172,6 +177,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private var started = false
     private var ended = false
     private var ready = false
+    /// Pings the host every second from its own queue, so the relay sees this phone alive
+    /// even while delivery to a busy decoder holds back receiving (and so pong replies).
+    private let pingQueue = DispatchQueue(label: "caboose.gpu.ping")
+    private var pinger: DispatchSourceTimer?
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
@@ -279,6 +288,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private func finish(_ error: Error?) {
         guard !ended else { return }
         ended = true; ready = false; budget.revoke()
+        pinger?.cancel(); pinger = nil
         outbound.discardPending()
         task?.cancel(with: error == nil ? .normalClosure : .policyViolation, reason: nil)
         session?.invalidateAndCancel()
@@ -293,6 +303,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
             let response = webSocketTask.response as? HTTPURLResponse
             try Self.validateUpgrade(selected: selected, extensions: response?.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
             ready = true; event?(.opened); receive()
+            let timer = DispatchSource.makeTimerSource(queue: pingQueue)
+            timer.schedule(deadline: .now() + 1, repeating: 1)
+            timer.setEventHandler { [weak webSocketTask] in webSocketTask?.sendPing { _ in } }
+            timer.resume(); pinger = timer
         } catch { finish(error) }
     }
 

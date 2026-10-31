@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "process_registry.h"
+#include "completion_feed.h"
 #include "decode_connection.h"
 #include "frame_buffer.h"
 #include "render_thread_info.h"
@@ -31,6 +32,8 @@ bool registryExists = false;
 struct Process {
     uint32_t context;
     std::shared_ptr<const ProcessResources> resources;
+    // Completion feedback for this guest process, shared by all its streams.
+    std::shared_ptr<caboose::gpuv2::CompletionFeed> completions;
     std::atomic_bool stopped{false};
     std::set<int> sockets;
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -90,6 +93,22 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
     try {
         auto process = std::make_shared<Process>();
         process->context = context;
+        process->completions = std::make_shared<caboose::gpuv2::CompletionFeed>(
+            [context](uint64_t boxedQueue) -> caboose::gpuv2::CompletionFeed::Waiter {
+                auto* state = gfxstream::host::vk::VkDecoderGlobalState::get();
+                std::unique_ptr<gfxstream::host::vk::CabooseCompletionMarker> marker;
+                if (!state || state->submitCabooseCompletionMarker(context,
+                        (VkQueue)(uintptr_t)boxedQueue, &marker) != VK_SUCCESS)
+                    return {};
+                std::shared_ptr<gfxstream::host::vk::CabooseCompletionMarker> held(std::move(marker));
+                return [held]() -> int32_t {
+                    VkResult result = held->vk->vkWaitForFences(held->device, 1, &held->fence,
+                                                                VK_TRUE, UINT64_MAX);
+                    held->vk->vkDestroyFence(held->device, held->fence, nullptr);
+                    held->fence = VK_NULL_HANDLE;
+                    return result;
+                };
+            });
         auto [it, inserted] = registry->processes.emplace(puid, process);
         if (!inserted) return EEXIST;
         try {
@@ -157,7 +176,8 @@ static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
             int result;
             try {
                 result = caboose::gpuv2::decodeConnection(fd, max_packet, max_reply_buffer,
-                    threadInfo, process->stopped, registry->synchronousOnly, decoderEntries, diagnostic);
+                    threadInfo, process->stopped, registry->synchronousOnly, decoderEntries, diagnostic,
+                    process->completions.get());
             } catch (const std::bad_alloc&) {
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
                 if (diagnostic) emitDecodeTerminal(*process, puid, terminal, ENOMEM, max_packet, max_reply_buffer);
@@ -210,19 +230,37 @@ extern "C" int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t
     if (it == registry->processes.end()) return ENOENT;
     auto& process = *it->second;
     if (process.stopped.exchange(true)) return 0;
+    if (process.completions) process.completions->cancelOrders();
     FrameBuffer::getFB()->signalGuestProcessDead(process.context);
     for (int fd : process.sockets) shutdown(fd, SHUT_RDWR);
     return 0;
 }
+extern "C" int caboose_gfx_process_wait_order(caboose_gfx_registry* registry, uint64_t puid,
+                                              uint64_t serial) {
+    if (!registry || !serial) return EINVAL;
+    std::shared_ptr<caboose::gpuv2::CompletionFeed> completions;
+    {
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        auto it = registry->processes.find(puid);
+        if (it == registry->processes.end()) return ENOENT;
+        if (it->second->stopped) return ECANCELED;
+        completions = it->second->completions;
+    }
+    return completions ? completions->waitOrdered(serial) : ENOTSUP;
+}
 extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64_t puid) {
     if (!registry) return EINVAL;
-    std::lock_guard<std::mutex> lock(registry->mutex);
+    std::unique_lock<std::mutex> lock(registry->mutex);
     auto it = registry->processes.find(puid);
     if (it == registry->processes.end()) return ENOENT;
     if (!it->second->stopped || !it->second->sockets.empty()) return EBUSY;
     // Upstream retains the resources in its asynchronous cleanup closure. IDs
     // are not reused while that cleanup may still be running.
+    auto completions = std::move(it->second->completions);
     registry->processes.erase(it);
+    lock.unlock();
+    // Outstanding completion markers each hold their device; they finish with the GPU.
+    completions.reset();
     return 0;
 }
 #ifdef CABOOSE_GPU_MEMORY_AUDIT

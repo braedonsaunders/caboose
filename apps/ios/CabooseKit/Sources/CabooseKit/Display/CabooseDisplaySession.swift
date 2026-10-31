@@ -34,8 +34,23 @@ public final class CabooseDisplaySession: DisplaySession {
     public var epoch: String? { server?.epoch }
     public var typingEchoMs: Int? { echo.median }
 
-    public var onClipboardText: ((String) -> Void)?
-    public var clipboardProvider: (() -> String?)?
+    /// The computer's clipboard changed: the representations this client takes, checked.
+    public var onClipboard: ((ClipboardContent) -> Void)?
+    public var onPasteItems: ((_ paste: @escaping @MainActor () -> Void) -> Bool)?
+    /// Whether the application under the phone's drop accepts it; nil when it has not
+    /// said, or answers only on the drop.
+    public private(set) var dropAccepted: Bool?
+    /// A drop from the phone ended: whether the application took it, else why not.
+    public var onDropResult: ((Bool, String?) -> Void)?
+    /// The types of a computer application's drag in progress, nil when there is none.
+    public private(set) var computerDrag: [String]?
+    /// The phone's target for taking a computer drag, in window (screen) coordinates; set
+    /// by the view that shows it.
+    public var dragOutFrame: CGRect?
+    /// Whether the finger dragging on the computer is over `dragOutFrame`.
+    public private(set) var dragOutHovering = false
+    /// What the phone took from a computer drag, checked.
+    public var onDragData: ((ClipboardContent) -> Void)?
     public var onNotification: ((RemoteNotification) -> Void)?
     public var onBell: (() -> Void)?
     public var onRaise: ((Int) -> Void)?
@@ -50,6 +65,10 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Whether to render windows from their applications' Vulkan calls (`gpu` in the hello,
     /// docs/gpu-stream.md), where this build has the player. Set before `connect()`.
     public var rendersGPUStreams = RemoteGPUStream.isSupported
+    /// Whether to negotiate Surface & Tile Atlas rendering (`atlas` in the hello). Set before `connect()`.
+    public var rendersSurfaceAtlas = false
+    /// Whether to negotiate Retained Vector & Glyph Scene Graph rendering (`scene` in the hello). Set before `connect()`.
+    public var rendersSceneGraph = false
     /// The phone's hardware offered to the computer as devices (docs/devices.md), attached
     /// while a connection whose server accepts them is up. Set before `connect()`.
     public var devices: DeviceCenter?
@@ -71,6 +90,8 @@ public final class CabooseDisplaySession: DisplaySession {
     private let videoDecoders: [DisplayCodec]
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private var stream: ByteStream?
+    private var incoming: Incoming?
+    private var picturesSuspended = false
     /// This connection's windows' decode pipelines; a new connection gets new ones, so nothing
     /// a closed socket still delivers can reach the next.
     private var pipelines = FramePipelineRegistry()
@@ -103,11 +124,16 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Geometry the phone asked for and the server has not confirmed yet, with when: updates
     /// still on their way from before it would otherwise snap a dragged window back.
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval, display: DisplayInfo?)] = [:]
+    /// The overscan last asked for per window on this connection.
+    private var requestedOverscan: [Int: CGSize] = [:]
+    /// Each window's last scroll input sequence number this connection (docs/display.md,
+    /// "Input sequencing").
+    private var scrollSeq: [Int: UInt64] = [:]
     /// Authenticated window output assignment; never inferred from the view's screen.
     private var windowDisplays: [Int: Int] = [:]
     private var lastVsync: [Int: UInt64] = [:]
     private var preedit: (text: String, cursor: (Int, Int))?
-    private var lastClipboard: String?
+    private var lastClipboard: ClipboardContent?
 
     /// - Parameters:
     ///   - displayURL: the host's `/v1/display` WebSocket.
@@ -115,7 +141,10 @@ public final class CabooseDisplaySession: DisplaySession {
     ///   - password: the per-wake display token from `/v1/session`, sent in hello.
     public convenience init(displayURL: URL, token: String, password: String, capabilities: ClientCapabilities?, computerIdentity: String? = nil) {
         self.init(stream: { WebSocketStream(url: displayURL, token: token) }, token: password,
-                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders)
+                  displays: capabilities.map { [DisplayInfo($0)] } ?? [], decoders: Self.hardwareDecoders,
+                  videoDecoders: Self.hardwareDecoders)
+        rendersSurfaceAtlas = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] != "0"
+        rendersSceneGraph = false
         gameHost = GameHostAccess(displayURL: displayURL, token: token, computerIdentity: computerIdentity)
     }
 
@@ -136,6 +165,26 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func has(_ feature: String) -> Bool { server?.features.contains(feature) ?? false }
+
+    // MARK: Background
+
+    /// The computer is playing sound: the app keeps this connection in the background for it.
+    public var playsSoundNow: Bool { state == .ready && sound?.isPlaying == true }
+
+    /// In the background: pictures are acknowledged without being decoded; sound plays on.
+    public func suspendPictures() {
+        picturesSuspended = true
+        incoming?.setPicturesSuspended(true)
+    }
+
+    /// Back in the foreground: every window and video starts again at a keyframe.
+    public func resumePictures() {
+        guard picturesSuspended else { return }
+        picturesSuspended = false
+        incoming?.setPicturesSuspended(false)
+        for pipeline in pipelines.all { pipeline.resumeAfterGap() }
+        for video in videos.all { video.resumeAfterGap() }
+    }
 
     // MARK: Connection
 
@@ -158,6 +207,7 @@ public final class CabooseDisplaySession: DisplaySession {
         startLivenessTimer()
         let clock = MediaClock()
         sound = playsAudio ? SoundPlayer(clock: clock) : nil
+        picturesSuspended = false
         let incoming = Incoming(pipelines: pipelines, videos: videos, gpuFeeds: gpuFeeds, clock: clock, sound: sound, echo: echo, metrics: metrics,
                                 carried: Carried(retained, epoch: server?.epoch),
                                 makeDecoder: makeDecoder, retire: { [weak self] id, generation in
@@ -165,6 +215,7 @@ public final class CabooseDisplaySession: DisplaySession {
         }) { message in
             stream.send(DisplayFraming.encode(message.frame))
         }
+        self.incoming = incoming
         let meter = metrics
         stream.open { [weak self] event in
             switch event {
@@ -263,6 +314,9 @@ public final class CabooseDisplaySession: DisplaySession {
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
+        requestedOverscan.removeAll()
+        scrollSeq.removeAll()
+        for window in windows.values { window.scrollReports.forget() }
         if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
@@ -314,7 +368,8 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames, devices: devices != nil))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
+                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled))
     }
 
     // MARK: Server messages
@@ -332,6 +387,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .cursorNamed(let name):
                 cursorName = name.lowercased()
                 cursorSerial &+= 1
+            case .scrollTree(let tree):
+                windows[tree.window]?.scrollReports.record(tree)
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
                 if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {
@@ -343,10 +400,23 @@ public final class CabooseDisplaySession: DisplaySession {
                 } else if surroundingText?.window == window {
                     surroundingText = nil
                 }
-            case .clipboard(let mime, let data):
-                guard mime.hasPrefix("text/plain"), let text = String(data: data, encoding: .utf8) else { continue }
-                lastClipboard = text
-                onClipboardText?(text)
+            case .clipboard(let content):
+                guard let kept = ClipboardPolicy.accepted(content) else { continue }
+                lastClipboard = kept
+                onClipboard?(kept)
+            case .dropStatus(let accepted):
+                dropAccepted = accepted
+            case .dropResult(let ok, let reason):
+                dropAccepted = nil
+                onDropResult?(ok, reason)
+            case .dragStart(let types):
+                computerDrag = types
+                dragOutHovering = false
+            case .dragEnd:
+                computerDrag = nil
+                dragOutHovering = false
+            case .dragData(let content):
+                if let kept = ClipboardPolicy.accepted(content) { onDragData?(kept) }
             case .notification(let id, let app, let summary, let body):
                 onNotification?(RemoteNotification(id: id, appName: app, summary: summary, body: body))
             case .pong(let sent):
@@ -355,6 +425,8 @@ public final class CabooseDisplaySession: DisplaySession {
                     latencyMs = Double(now - sent) / 1000
                     metrics.roundTrip(ms: Double(now - sent) / 1000)
                 }
+                LocalScrollProfile.note(String(format: "rtt sent=%.6f pong=%.6f rtt_ms=%.3f",
+                                               Double(sent) / 1_000_000, Double(now) / 1_000_000, Double(now) / 1000 - Double(sent) / 1000))
                 if let reconciling, reconciling.marker == sent { finishReconciling(reconciling.announced) }
             case .bye(let reason):
                 isReplaced = reason == "replaced"
@@ -378,7 +450,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 }
             case .deviceStatus, .deviceOpen, .deviceClose, .deviceRumble, .deviceKeyframe:
                 devices?.handle(message)
-            case .frame, .tile, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+            case .frame, .tile, .surfaceBatch, .surfaceReset, .sceneFont, .sceneCommit, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }
@@ -689,6 +761,7 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         if let fullscreen = fields.fullscreen { window.isFullscreen = fullscreen }
         if let alpha = fields.alpha { window.hasAlpha = alpha }
+        if let overscan = fields.overscan { window.overscan = overscan }
         if let size = fields.minimumSize { window.minimumSize = size }
         if let size = fields.maximumSize { window.maximumSize = size }
         if let icon = fields.icon, let source = CGImageSourceCreateWithData(icon as CFData, nil),
@@ -734,7 +807,11 @@ public final class CabooseDisplaySession: DisplaySession {
     // Match only the compositor's exact physical/logical round trip on the same
     // assigned output and scale. This does not turn metadata into a configure ACK.
     func pendingPresentationSize(_ window: RemoteWindow) -> CGSize? {
-        guard let pending = pendingGeometry[window.id] else { return nil }
+        // A request is kept for up to a second against a server size that differs
+        // (updateWindow); after that the server's size stands. A client that constrained
+        // the size sends no further update to clear the request, and a GPU surface bind
+        // would wait for it forever (vkcube's X11 window).
+        guard let pending = pendingGeometry[window.id], CACurrentMediaTime() - pending.at < 1 else { return nil }
         guard let sentDisplay = pending.display else { return pending.geometry.size }
         guard assignedDisplay(window.id) == sentDisplay else { return .zero }
         return LiveGPUDrawableGeometry.quantizedRequest(pending.geometry.size, scale: sentDisplay.scale) ?? .zero
@@ -775,6 +852,15 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)
+    }
+
+    /// Asks the app to lay `window` out `size` larger than its geometry, right and below, so
+    /// its pictures hold content beyond what the phone shows; `.zero` ends it. The server
+    /// reports the overscan actually applied in `window.update`.
+    public func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {
+        guard state == .ready, window.game == nil, requestedOverscan[window.id, default: .zero] != size else { return }
+        requestedOverscan[window.id] = size
+        send(.configure(window: window.id, geometry: nil, overscan: size))
     }
 
     public func focus(_ window: RemoteWindow?) {
@@ -819,10 +905,53 @@ public final class CabooseDisplaySession: DisplaySession {
         if state == .ready || state == .authenticating { send(.displays(displays)) }
     }
 
-    public func offerClipboard(_ text: String) {
-        guard state == .ready, has("clipboard"), text != lastClipboard else { return }
-        lastClipboard = text
-        send(.clipboard(mime: "text/plain;charset=utf-8", data: Data(text.utf8)))
+    public func offerClipboard(_ content: ClipboardContent) {
+        guard state == .ready, has("clipboard") else { return }
+        // A server without `clipboard-types` takes text only.
+        let offered = has("clipboard-types") ? content : ClipboardContent(content.entries.filter { $0.mime == ClipboardPolicy.text })
+        guard let offered, offered != lastClipboard, ClipboardPolicy.validate(offered) == nil else { return }
+        lastClipboard = offered
+        send(.clipboard(offered))
+    }
+
+    // MARK: Drag and drop
+
+    public func dropEnter(_ window: RemoteWindow, at point: CGPoint, types: [String]) {
+        guard state == .ready, has("drop") else { return }
+        dropAccepted = nil
+        send(.dropEnter(window: window.id, x: Double(point.x), y: Double(point.y), types: types))
+    }
+
+    public func dropMove(_ window: RemoteWindow, at point: CGPoint) {
+        guard state == .ready, has("drop") else { return }
+        send(.dropMotion(window: window.id, x: Double(point.x), y: Double(point.y)))
+    }
+
+    public func dropLeave() {
+        guard state == .ready, has("drop") else { return }
+        dropAccepted = nil
+        send(.dropLeave)
+    }
+
+    public func dropPerform(_ content: ClipboardContent) {
+        guard state == .ready, has("drop"), ClipboardPolicy.validate(content) == nil else { return }
+        send(.dropPerform(content))
+    }
+
+    /// Follows a finger dragging on the computer: whether it is over the phone's target.
+    public func trackDragOut(at windowPoint: CGPoint) {
+        let over = computerDrag != nil && dragOutFrame?.contains(windowPoint) == true
+        if over != dragOutHovering { dragOutHovering = over }
+    }
+
+    /// Before a release: takes the computer's drag if the release is over the phone's
+    /// target. The release that follows then ends the drag on the computer as not dropped.
+    @discardableResult
+    public func takeDragIfOver(_ windowPoint: CGPoint) -> Bool {
+        guard state == .ready, has("drag"), computerDrag != nil, dragOutFrame?.contains(windowPoint) == true else { return false }
+        dragOutHovering = false
+        send(.dragTake)
+        return true
     }
 
     // MARK: Pacing
@@ -874,10 +1003,29 @@ public final class CabooseDisplaySession: DisplaySession {
         guard dx != 0 || dy != 0 else { return }
         if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size, modifiers: modifiers) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
-                      scroll: (Double(dx), Double(dy), true)))
+                      scroll: (Double(dx), Double(dy), true), scrollSeq: nextScrollSeq(window.id)))
+    }
+
+    private func nextScrollSeq(_ window: Int) -> UInt64 {
+        let seq = scrollSeq[window, default: 0] + 1
+        scrollSeq[window] = seq
+        return seq
+    }
+
+    public func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool {
+        guard state == .ready, window.game == nil, delta != .zero else { return state == .ready }
+        let seq = nextScrollSeq(window.id)
+        window.scrollReports.sent(seq: seq, delta: delta)
+        send(.scrollTarget(window: window.id, scroller: scroller, seq: seq, delta: delta))
+        return true
     }
 
     public func resetScroll() {}
+
+    /// Reports a 120 Hz local scroll on scene node `nodeID` in `window` back to the compositor.
+    public func scrollSceneNode(_ nodeID: UInt64, in window: RemoteWindow, offset: CGPoint) {
+        send(.sceneScroll(window: window.id, node: Int(nodeID), sx: Double(offset.x), sy: Double(offset.y)))
+    }
 
     /// The window keys and text go to: `window`, or the focused window when none is named.
     private func inputTarget(_ window: RemoteWindow?) -> RemoteWindow? {
@@ -1072,6 +1220,29 @@ private final class Incoming: @unchecked Sendable {
     private let retire: @Sendable (Int, UInt64) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let send: @Sendable (ClientMessage) -> Void
+    private let tileCache = TileAtlasCache()
+    private let fontCache = SceneFontCache()
+    // Socket-queue counters for an explicitly launched atlas acceptance run. No payloads.
+    private let atlasAudit = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] != "0"
+    private var atlasBatches: UInt64 = 0
+    private var windowVideoFrames: UInt64 = 0
+    private var passthroughVideoFrames: UInt64 = 0
+    private var atlasAuditLast: TimeInterval = 0
+    private var atlasAuditRows = 0
+
+    private func recordAtlasWire() {
+        guard atlasAudit, atlasAuditRows < 256 else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard atlasAuditRows == 0 || now - atlasAuditLast >= 1 else { return }
+        atlasAuditLast = now
+        atlasAuditRows += 1
+        NSLog("CABOOSE_ATLAS_WIRE batches=%llu frames=%llu videoFrames=%llu", atlasBatches, windowVideoFrames, passthroughVideoFrames)
+    }
+    private let suspendedLock = NSLock()
+    private var suspended = false
+
+    /// While suspended, pictures are acknowledged unseen and sound plays on.
+    func setPicturesSuspended(_ value: Bool) { suspendedLock.withLock { suspended = value } }
 
     init(pipelines: FramePipelineRegistry, videos: VideoRegistry, gpuFeeds: GPUStreamFeeds, clock: MediaClock, sound: SoundPlayer?, echo: EchoMeter,
          metrics: ConnectionMetrics, carried: Carried,
@@ -1099,16 +1270,48 @@ private final class Incoming: @unchecked Sendable {
             sound?.timing.update { $0.finishIncoming(start: incomingAt, end: finishedAt) }
         }
         var others: [ServerMessage] = []
+        let picturesSuspended = suspendedLock.withLock { suspended }
         for frame in try parser.append(data) {
             let message = ServerMessage(frame)
+            if picturesSuspended {
+                // The app is in the background, where it cannot decode or show pictures:
+                // each is acknowledged unseen, so window flow control keeps the windows
+                // running (at the minimised rate, without vsync) and video sources unblocked.
+                switch message {
+                case .frame(let picture):
+                    send(.ack(window: picture.window, ptsMicros: picture.ptsMicros, decodedMicros: 0)); continue
+                case .videoFrame(let frame):
+                    send(.videoAck(video: frame.video, seq: frame.seq)); continue
+                case .tile, .videoPresent:
+                    continue
+                default:
+                    break
+                }
+            }
             switch message {
             case .frame(let picture):
+                windowVideoFrames &+= 1
+                recordAtlasWire()
                 guard let pipeline = pipelines[picture.window] else { continue }
                 echo.drew(picture.window)
                 pipeline.frame(picture)
             case .tile(let tile):
                 pipelines[tile.window]?.tile(tile)
+            case .surfaceBatch(let batch):
+                atlasBatches &+= 1
+                recordAtlasWire()
+                echo.drew(batch.window)
+                pipelines[batch.window]?.surfaceBatch(batch, cache: tileCache)
+            case .surfaceReset(let epoch):
+                tileCache.reset(epoch: epoch)
+            case .sceneFont(let font):
+                fontCache.register(font)
+            case .sceneCommit(let commit):
+                echo.drew(commit.window)
+                pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
             case .videoFrame(let frame):
+                passthroughVideoFrames &+= 1
+                recordAtlasWire()
                 videos[frame.video]?.frame(frame)
             case .videoPresent(let id, let seq, let pts):
                 videos[id]?.present(seq: seq, at: pts)

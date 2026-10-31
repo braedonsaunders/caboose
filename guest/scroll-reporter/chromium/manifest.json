@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Caboose scroll reporter",
+  "version": "1.0.0",
+  "description": "Tells the Caboose app where each page is scrolled in every frame, so your iPhone scrolls it locally at display rate.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2s0TwQmMfD2inURHJfbTkgw2Pfuq6h0OFIiIOHTPhGgylpYi++92jgT3kwhQ+wyL1vWPwL3d+zN5GGAUalKENrzfNPbNNWoY6ZecR/7dJPqFsp5HjBRisobhCvdXUZ1OeSgKWBHqDOFMoV5ogmciMdpivI8h5CPewns8nVmC1sFCUbTOx7mQCTv65o1TQd99zRB8dwjvnz2/he6jk7uHZ8o8WWd8cOuCo8k3+xpvQ3CYsiO+zVQBboWwMozKHxVCNUr9I5hUhTI4KnoLH9lRxErZJsO8E9UWmZ5O+FN0wfdRQYzOh2tUCm/AWYJKAAXVH4oVyC4T0F/K556OxHh7VQIDAQAB",
+  "minimum_chrome_version": "120",
+  "permissions": ["nativeMessaging"],
+  "background": { "service_worker": "service-worker.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file://*/*"],
+      "all_frames": false,
+      "run_at": "document_start",
+      "js": ["core.js", "content.js"]
+    }
+  ]
+}

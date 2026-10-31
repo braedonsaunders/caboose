@@ -70,6 +70,7 @@ echo "Building the host and the console ($version)"
 ( cd "$repo" && pnpm --filter caboose-web build >/dev/null )
 rm -rf "$repo/apps/host/dist"
 ( cd "$repo/apps/host" && pnpm exec tsc --outDir dist )
+[[ -f $repo/apps/host/dist/index.js ]] || { echo "Host compilation did not emit dist/index.js" >&2; exit 1; }
 cp "$repo"/apps/host/src/*.py "$repo/apps/host/dist/"
 find "$repo/apps/host/dist" -name '*.test.js' -delete
 
@@ -173,6 +174,20 @@ chmod 0755 "$root/bin/caboose-host" "$root/bin/caboose-setup-disks"
 } >"$root/defaults.env"
 printf '%s\n' "$version" >"$root/VERSION"
 cp "$repo/LICENSE" "$root/LICENSE"
+
+# Embed a complete, non-recursive install archive. The archive contains the bare menu
+# app; only the outer app carries the archive, so installed login apps need no duplicate.
+if [[ $os == darwin ]]; then
+  resources=$root/Caboose.app/Contents/Resources
+  payload=$work/runtime.tar.gz
+  COPYFILE_DISABLE=1 tar -C "$work" -czf "$payload" caboose-host
+  mkdir -p "$resources"
+  mv "$payload" "$resources/runtime.tar.gz"
+  cp "$repo/deploy/macos/install.sh" "$resources/install.sh"
+  cp "$root/VERSION" "$resources/VERSION"
+  codesign --force --sign "${CABOOSE_CODESIGN_IDENTITY:--}" "$root/Caboose.app"
+  codesign --verify --strict --deep "$root/Caboose.app"
+fi
 
 extension=tar.zst
 [[ $os != darwin ]] || extension=tar.gz

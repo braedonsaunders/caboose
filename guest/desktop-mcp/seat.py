@@ -48,18 +48,29 @@ def all_sockets():
 
 class Seat:
     def __init__(self, path=None):
+        self.conn = None
         self.path = path or control_path()
         if not self.path:
             raise SeatError("CABOOSE_DISPLAY_CONTROL is not set: no Caboose Display seat to talk to")
+
+    def close(self):
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None
+
+    def __del__(self):
+        self.close()
 
     def request(self, line):
         """One request: the JSON answer, and the bytes that follow it (a picture), if any."""
         if "\n" in line:
             raise SeatError("a request is one line")
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(TIMEOUT)
         try:
-            conn.connect(self.path)
+            if self.conn is None:
+                self.conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.conn.settimeout(TIMEOUT)
+                self.conn.connect(self.path)
+            conn = self.conn
             conn.sendall(line.encode() + b"\n")
             data = b""
             while b"\n" not in data:
@@ -85,9 +96,11 @@ class Seat:
                 payload = b"".join(chunks)[:need]
             return answer, payload
         except OSError as error:
+            self.close()
             raise SeatError(f"cannot reach the seat at {self.path}: {error}") from None
-        finally:
-            conn.close()
+        except (SeatError, ValueError):
+            self.close()
+            raise
 
     def windows(self):
         return self.request("windows")[0]
@@ -118,11 +131,13 @@ class Seat:
         if text:
             self.request("type " + text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t"))
 
-    def settle(self, rounds=3, pause=0.15):
+    def settle(self, rounds=3, pause=0.05):
         """Let applications draw what they have: a seat nobody watches paces them at once a
         second, so a picture taken right after an action could show the moment before it."""
         for _ in range(rounds):
-            self.request("settle")
+            answer, _ = self.request("settle")
+            if answer.get("released") == 0:
+                break
             time.sleep(pause)
 
     def screenshot(self, window=None):
@@ -151,6 +166,49 @@ class Parser(argparse.ArgumentParser):
     def error(self, message):
         print(json.dumps({"error": message}))
         sys.exit(2)
+
+
+def serve():
+    seat = Seat()
+    try:
+        for line in sys.stdin:
+            try:
+                args = json.loads(line)["args"]
+                op = args[0]
+                if op == "annotate":
+                    from annotate import annotate
+                    print(json.dumps({"legend": annotate(*args[1:])}), flush=True)
+                    continue
+                if op == "windows":
+                    result = seat.windows()
+                    result.pop("ok", None)
+                elif op == "settle":
+                    seat.settle()
+                    result = {"ok": True}
+                elif op == "screenshot":
+                    window = int(args[args.index("--window") + 1]) if "--window" in args else None
+                    answer, png = seat.screenshot(window)
+                    with open(args[args.index("--out") + 1], "wb") as handle:
+                        handle.write(png)
+                    result = answer
+                elif op == "click":
+                    result = seat.click(float(args[1]), float(args[2]), args[4], int(args[6]))
+                elif op in ("drag", "scroll"):
+                    getattr(seat, op)(*[float(v) for v in args[1:]])
+                    result = {"ok": True}
+                elif op == "focus":
+                    seat.focus(int(args[1]))
+                    result = {"ok": True}
+                elif op in ("key", "type"):
+                    getattr(seat, op)(*args[2:])
+                    result = {"ok": True}
+                else:
+                    raise SeatError("unknown worker operation")
+            except Exception as error:
+                result = {"error": str(error)}
+            print(json.dumps(result), flush=True)
+    finally:
+        seat.close()
 
 
 def main(argv):
@@ -212,4 +270,7 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    if sys.argv[1:] == ["serve"]:
+        serve()
+    else:
+        main(sys.argv[1:])

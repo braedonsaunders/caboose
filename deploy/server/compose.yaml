@@ -23,6 +23,8 @@ services:
       CABOOSE_MAX_RUNNING: ${CABOOSE_MAX_RUNNING:-4}
       CABOOSE_DISK_SIZE: ${CABOOSE_DISK_SIZE:-400G}
       CABOOSE_GUEST_LAN: deny
+      # Caddy's forwarded client addresses and scheme are believed from the compose network.
+      CABOOSE_TRUSTED_PROXIES: ${CABOOSE_PROXY_NETWORK:-172.31.250.0/24}
     volumes:
       - ${CABOOSE_STATE_DIR:-/data/caboose}:/data/caboose
     expose:
@@ -50,6 +52,13 @@ services:
       - caddy-config:/config
     depends_on:
       - caboose-host
+
+# A fixed subnet, so the host knows which peers are Caddy.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: ${CABOOSE_PROXY_NETWORK:-172.31.250.0/24}
 
 volumes:
   caddy-data:

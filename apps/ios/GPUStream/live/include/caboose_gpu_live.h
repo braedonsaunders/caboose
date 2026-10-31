@@ -19,6 +19,9 @@ int caboose_gpu_live_start_v4(void);
 int caboose_gpu_runtime_open(uint64_t* token);
 // Blocking, ordered raw decoder connection. The caller retains the descriptor.
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);
+// Blocks until the process's device stream has decoded its ORDER mark `serial`
+// (an ordered present); ECANCELED once the process stops. Never waits for the GPU.
+int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial);
 int caboose_gpu_runtime_stop(uint64_t token);
 // Call off UI/network threads after all run calls return. Waits for upstream
 // process cleanup. First retire all GPU surface work on a worker and detach

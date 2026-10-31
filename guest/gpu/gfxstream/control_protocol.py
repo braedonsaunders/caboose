@@ -7,6 +7,8 @@ _BIND = struct.Struct('<4sHHIIQQIIQII')
 _RESULT = struct.Struct('<4sHHIIQII16s16sQQ')
 _REVOKE = struct.Struct('<4sHHII16s16sQQ')
 _LIFECYCLE = struct.Struct('<4sHHII16sQQ')
+_BUFFER_PRESENT = struct.Struct('<4sHHIIQQQQII')
+_BUFFER_RELEASED = struct.Struct('<4sHHIIQiI')
 
 
 class ControlError(ValueError):
@@ -17,6 +19,9 @@ class ControlError(ValueError):
 # X11 window ID on the display's Xwayland.
 WAYLAND_SURFACE = 0
 X11_WINDOW = 1
+# A window showing a phone-resident buffer the bound process rendered (docs/gpu-buffers.md):
+# the object is the compositor's window ID.
+BUFFER_WINDOW = 2
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,24 @@ class RevokeRequest:
 
 
 @dataclass(frozen=True)
+class BufferPresent:
+    """Compositor to broker: show a committed phone-resident buffer in a window."""
+    request: int
+    window: int
+    device: int  # the dma-buf's st_dev and st_ino
+    inode: int
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class BufferReleased:
+    """Broker to compositor: the buffer of a present is free; status 0 when it was shown."""
+    request: int
+    status: int
+
+
+@dataclass(frozen=True)
 class ExecutorLifecycle:
     kind: int  # 4 ready, 5 lost, 6 retired
     executor: bytes
@@ -75,7 +98,7 @@ def _nonzero(data):
 def encode_bind(value):
     if not all((value.request, value.process, value.pid, value.start_ticks, value.object_id)):
         raise ControlError('invalid bind identity')
-    if value.space not in (WAYLAND_SURFACE, X11_WINDOW):
+    if value.space not in (WAYLAND_SURFACE, X11_WINDOW, BUFFER_WINDOW):
         raise ControlError('invalid bind namespace')
     try:
         return _BIND.pack(b'CGB1', 1, 1, _BIND.size, 0, value.request, value.process,
@@ -133,6 +156,25 @@ def encode_lifecycle(value):
         raise ControlError('lifecycle field out of range') from error
 
 
+def encode_buffer_present(value):
+    if not all((value.request, value.window, value.inode, value.width, value.height)):
+        raise ControlError('invalid buffer present')
+    try:
+        return _BUFFER_PRESENT.pack(b'CGB1', 1, 9, _BUFFER_PRESENT.size, 0, value.request, value.window,
+                                    value.device, value.inode, value.width, value.height)
+    except (struct.error, OverflowError) as error:
+        raise ControlError('buffer present field out of range') from error
+
+
+def encode_buffer_released(value):
+    if not value.request or value.status < 0:
+        raise ControlError('invalid buffer release')
+    try:
+        return _BUFFER_RELEASED.pack(b'CGB1', 1, 10, _BUFFER_RELEASED.size, 0, value.request, value.status, 0)
+    except (struct.error, OverflowError) as error:
+        raise ControlError('buffer release field out of range') from error
+
+
 def decode(data, fd_count):
     if data == b'G':
         if fd_count != 1: raise ControlError('handoff requires exactly one fd')
@@ -174,5 +216,17 @@ def decode(data, fd_count):
         if tail: raise ControlError('nonzero reserved field')
         value = ExecutorLifecycle(kind, executor, generation)
         encode_lifecycle(value)
+        return value
+    if kind == 9:
+        if length != _BUFFER_PRESENT.size or fd_count: raise ControlError('invalid buffer present record')
+        value = BufferPresent(*_BUFFER_PRESENT.unpack(data)[5:])
+        encode_buffer_present(value)
+        return value
+    if kind == 10:
+        if length != _BUFFER_RELEASED.size or fd_count: raise ControlError('invalid buffer release record')
+        _, _, _, _, _, request, status, tail = _BUFFER_RELEASED.unpack(data)
+        if tail: raise ControlError('nonzero reserved field')
+        value = BufferReleased(request, status)
+        encode_buffer_released(value)
         return value
     raise ControlError('unknown control record')

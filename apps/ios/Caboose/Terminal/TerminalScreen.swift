@@ -3,7 +3,7 @@ import GameController
 import SwiftUI
 
 /// A real shell on the computer, drawn natively: `TerminalModel` keeps the session, and
-/// `CabooseTerminalView` (SwiftTerm) renders it. The screen is the tab's content; the shell
+/// `CabooseTerminalView` (libghostty) renders it. The screen is the tab's content; the shell
 /// around it supplies the navigation stack, the wallpaper and its own toolbar items, and this
 /// adds the session menu. Like Desktop, the grid fills the space beside a vertical sidebar.
 struct TerminalScreen: View {

@@ -27,7 +27,7 @@ def validate_surface(kind: int, payload: bytes):
         require(has_vk == 1 or vk == 0, "absent Vulkan result")
         return error, has_vk, vk
 
-    require(16 <= kind <= 36, "unknown surface kind")
+    require(16 <= kind <= 36 or kind == 39, "unknown surface kind")
     require(len(payload) >= 40, "truncated surface identity")
     require(payload[:16] != bytes(16) and payload[16:32] != bytes(16) and wide(32) != 0,
             "zero surface identity")
@@ -103,10 +103,10 @@ def validate_surface(kind: int, payload: bytes):
         else:
             require(error != 0 or (has_vk and vk != 0), "creation needs actual result")
             require(wide(48) == 0 and word(72) == 0, "failed create has resources")
-    elif kind == 27:  # map exactly the provider count, checked by native state
+    elif kind == 27:  # the provider count, or up to 8 guest-owned images (flag 1, 3 with mailbox)
         require(len(payload) >= 56 and wide(40), "invalid swapchain map")
-        count = word(48)
-        require(1 <= count <= 256 and word(52) == 0, "invalid source count")
+        count, flags = word(48), word(52)
+        require(1 <= count <= 256 and flags in (0, 1, 3) and (flags == 0 or count <= 8), "invalid source count")
         exact(56 + 8 * count)
         images = [wide(offset) for offset in range(56, len(payload), 8)]
         require(all(images) and len(set(images)) == count, "invalid source images")
@@ -137,6 +137,15 @@ def validate_surface(kind: int, payload: bytes):
     elif kind == 32:
         exact(48)
         require(wide(40), "invalid swapchain retirement")
+    elif kind == 39:  # an indexed present ordered behind a device-stream ORDER mark
+        require(len(payload) >= 88, "truncated ordered present")
+        require(all(wide(offset) for offset in (40, 48, 56, 64)), "invalid ordered present identity")
+        require(word(72) < 256 and word(80) == 1, "invalid ordered present layout/index")
+        count = word(84)
+        require(count <= 64, "present semaphore limit")
+        exact(88 + 8 * count)
+        waits = [wide(offset) for offset in range(88, len(payload), 8)]
+        require(all(waits) and len(set(waits)) == count, "invalid binary waits")
     elif kind == 34:
         require(len(payload) >= 80, "truncated indexed present")
         require(all(wide(offset) for offset in (40, 48, 56)), "invalid indexed present identity")

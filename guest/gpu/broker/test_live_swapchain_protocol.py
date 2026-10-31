@@ -36,7 +36,7 @@ class SwapchainWireTests(unittest.TestCase):
             ("created", 60, bytes(4)), ("created", 72, struct.pack('<I', 257)),
             ("create-error", 48, struct.pack('<Q', 5)),
             ("map", 64, struct.pack('<Q', 15)),
-            ("map", 52, struct.pack('<I', 1)),
+            ("map", 52, struct.pack('<I', 2)),
             ("acquire", 56, bytes(8)), ("acquire", 80, struct.pack('<I', 2)),
             ("acquired", 60, bytes(4)), ("acquired", 76, struct.pack('<I', 256)),
             ("acquire-not-ready", 72, struct.pack('<I', 1)),
@@ -45,6 +45,9 @@ class SwapchainWireTests(unittest.TestCase):
             ("acquired", 80, struct.pack('<I', 1)),
             ("indexed-present", 72, struct.pack('<I', 1000001002)),
             ("indexed-present", 88, struct.pack('<Q', 29)),
+            ("ordered-present", 64, bytes(8)),
+            ("ordered-present", 80, struct.pack('<I', 2)),
+            ("ordered-present", 96, struct.pack('<Q', 29)),
             ("owner-revoke", 16, bytes(16)),
         ]
         for name, offset, replacement in mutations:

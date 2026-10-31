@@ -1,0 +1,8 @@
+{
+  "name": "drag-data",
+  "description": "What the client took from the drag: one file under the home.",
+  "messages": [
+    {"direction": "server", "type": "drag.data", "type_id": 54, "fields": {"data": {"$bytes": "66696c653a2f2f2f686f6d652f6361626f6f73652f446f63756d656e74732f7265706f72742e7064660d0a"}, "mime": "text/uri-list"}}
+  ],
+  "hex": "3646000000a26464617461582b66696c653a2f2f2f686f6d652f6361626f6f73652f446f63756d656e74732f7265706f72742e7064660d0a646d696d656d746578742f7572692d6c697374"
+}

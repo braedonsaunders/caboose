@@ -17,6 +17,8 @@ final class FramePipeline: @unchecked Sendable {
     private let send: @Sendable (ClientMessage) -> Void
     private let makeDecoder: (DisplayCodec) -> PictureDecoder
     private let metrics: ConnectionMetrics?
+    private let atlasRenderer: SurfaceAtlasRenderer
+    private let sceneState: WindowSceneState
     /// Set by `close()` at once, so pictures still queued from a closed connection are
     /// dropped instead of painting over what a later connection shows.
     private let retiredLock = NSLock()
@@ -37,6 +39,8 @@ final class FramePipeline: @unchecked Sendable {
         self.send = send
         self.makeDecoder = makeDecoder
         self.metrics = metrics
+        atlasRenderer = SurfaceAtlasRenderer()
+        sceneState = WindowSceneState(windowID: windowID)
         surface = WindowSurface()
         queue = DispatchQueue(label: "caboose.display.window.\(windowID)", qos: .userInteractive)
         surface.resize(width: width, height: height)
@@ -53,6 +57,8 @@ final class FramePipeline: @unchecked Sendable {
         self.send = send
         self.makeDecoder = makeDecoder
         self.metrics = metrics
+        atlasRenderer = closed.atlasRenderer
+        sceneState = closed.sceneState
         showsLivePicture = true
         surface.resize(width: width, height: height)
     }
@@ -71,7 +77,9 @@ final class FramePipeline: @unchecked Sendable {
         queue.async { [self] in
             // Metadata may precede the replacement picture. Keep the old picture's
             // coordinate space until its successor is decoded, so overlays scale with it.
-            if !showsLivePicture { surface.resize(width: width, height: height) }
+            // A window shown only as tiles (one with alpha) has no replacement frame to
+            // wait for: its next picture is a whole tile at the new size.
+            if !showsLivePicture || decoder == nil { surface.resize(width: width, height: height) }
         }
     }
 
@@ -154,6 +162,19 @@ final class FramePipeline: @unchecked Sendable {
                       width: picture.width * sx, height: picture.height * sy)
     }
 
+    /// Pictures were dropped (the app was in the background): decoding starts again at a
+    /// keyframe, on a fresh decoder, since the system may have invalidated the old one.
+    func resumeAfterGap() {
+        queue.async { [self] in
+            guard !isRetired else { return }
+            decoder?.decoder.invalidate()
+            decoder = nil
+            awaitingKeyframe = true
+            lastKeyframeRequest = 0
+            requestKeyframe(now: DispatchTime.now().uptimeNanoseconds)
+        }
+    }
+
     /// At most one request every half second while the stream is broken.
     private func requestKeyframe(now: UInt64) {
         guard now &- lastKeyframeRequest > 500_000_000 else { return }
@@ -176,6 +197,54 @@ final class FramePipeline: @unchecked Sendable {
             DrawStatistics.shared.record("tile-\(tile.format)", failed: false)
         }
     }
+
+    func surfaceBatch(_ batch: SurfaceBatch, cache: TileAtlasCache) {
+        let arrived = CACurrentMediaTime()
+        queue.async { [self] in
+            guard !isRetired else { return }
+            let started = CACurrentMediaTime()
+            let start = DispatchTime.now().uptimeNanoseconds
+            if !batch.keyframe && awaitingKeyframe {
+                requestKeyframe(now: start)
+                DrawStatistics.shared.record("atlas", failed: true)
+                let finished = CACurrentMediaTime()
+                metrics?.picture(window: windowID, waited: started - arrived, took: finished - started, failed: true, at: finished)
+                send(.ack(window: windowID, ptsMicros: batch.ptsMicros, decodedMicros: -1))
+                return
+            }
+            if atlasRenderer.applyAndUpload(batch, cache: cache, to: surface) {
+                placement = (CGRect(origin: .zero, size: batch.size), batch.rect)
+                showsLivePicture = true
+                awaitingKeyframe = false
+                DrawStatistics.shared.record("atlas", failed: false)
+                let finished = CACurrentMediaTime()
+                metrics?.picture(window: windowID, waited: started - arrived, took: finished - started, failed: false, at: finished)
+                let micros = Int((DispatchTime.now().uptimeNanoseconds - start) / 1000)
+                send(.ack(window: windowID, ptsMicros: batch.ptsMicros, decodedMicros: micros))
+            } else {
+                awaitingKeyframe = true
+                requestKeyframe(now: start)
+                DrawStatistics.shared.record("atlas", failed: true)
+                let finished = CACurrentMediaTime()
+                metrics?.picture(window: windowID, waited: started - arrived, took: finished - started, failed: true, at: finished)
+                send(.ack(window: windowID, ptsMicros: batch.ptsMicros, decodedMicros: -1))
+            }
+        }
+    }
+
+    func sceneCommit(_ commit: SceneCommit, fontCache: SceneFontCache) {
+        queue.async { [self] in
+            guard !isRetired else { return }
+            sceneState.apply(commit)
+            guard let image = sceneState.render(size: surface.pixelSize, scale: 1.0, fontCache: fontCache) else {
+                DrawStatistics.shared.record("scene", failed: true)
+                return
+            }
+            surface.upload(image: image, into: CGRect(origin: .zero, size: surface.pixelSize))
+            showsLivePicture = true
+            DrawStatistics.shared.record("scene", failed: false)
+        }
+    }
 }
 
 /// Window id → frame pipeline, readable from the socket's queue.
@@ -192,6 +261,8 @@ final class FramePipelineRegistry: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return pipelines.removeValue(forKey: wid)
     }
+
+    var all: [FramePipeline] { lock.lock(); defer { lock.unlock() }; return Array(pipelines.values) }
 
     func removeAll() -> [FramePipeline] {
         lock.lock(); defer { lock.unlock() }

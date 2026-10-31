@@ -49,11 +49,12 @@ struct LaptopContainer<Content: View>: View {
                                                size: geometry.hostSize ?? proxy.size, division: geometry.physicalDivision,
                                                partiallyOpen: geometry.partiallyOpen)
             let frames = LaptopLayout.frames(size: proxy.size, division: geometry.division, keyboard: geometry.keyboard)
+            let upperScreen = LaptopLayout.frames(size: proxy.size, division: geometry.division, keyboard: 0).screen
             let physicalPanel = active ? geometry.hostSize.map {
                 LaptopLayout.frames(size: $0, division: geometry.physicalDivision, keyboard: 0).screen.size
             } : nil
             ZStack(alignment: .topLeading) {
-                LaptopUpperPanel(screen: frames.screen, division: geometry.division,
+                LaptopUpperPanel(screen: upperScreen, division: geometry.division,
                                  active: active, size: proxy.size) {
                     content(active)
                         .environment(\.laptopInputOwned, active)
@@ -141,8 +142,9 @@ struct LaptopContainer<Content: View>: View {
         // uses the custom rail; app cards retain their own toolbar safe areas.
         // Laptop owns the whole display and draws navigation below the hinge.
         .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge != nil || (!isCard && tabPlacement == .sidebar) ? [.top, .bottom] : []))
-        // Only the split layout owns keyboard avoidance. Tablet uses SwiftUI's proposal.
-        .ignoresSafeArea(.keyboard, edges: layoutActive ? .bottom : [])
+        // Neither Laptop nor Phone/Tablet shrinks the upper desktop when the keyboard appears;
+        // the desktop stage slides above the keyboard instead of resizing remote windows.
+        .ignoresSafeArea(.keyboard, edges: .bottom)
     }
     private func updatePointerArea(active: Bool, frames: LaptopLayout.Frames) {
         guard active, !isCard, !model.externalDisplayActive else { return }

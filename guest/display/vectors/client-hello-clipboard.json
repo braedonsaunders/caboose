@@ -1,0 +1,8 @@
+{
+  "name": "client-hello-clipboard",
+  "description": "client-hello-audio plus images and files from the computer's clipboard.",
+  "messages": [
+    {"direction": "client", "type": "hello", "type_id": 129, "fields": {"token": "f3a9c1d27e8b4a6f", "version": 0, "decoders": ["hevc", "h264"], "displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 1179, "height": 2556, "refresh_hz": {"$float": 120.0}}], "audio_decoders": ["opus"], "video_decoders": ["hevc", "h264"], "clipboard_types": ["image/png", "image/jpeg", "text/uri-list"]}}
+  ],
+  "hex": "81e2000000a765746f6b656e70663361396331643237653862346136666776657273696f6e00686465636f64657273826468657663646832363468646973706c61797381a66269640163686472f5657363616c65fb400800000000000065776964746819049b666865696768741909fc6a726566726573685f687afb405e0000000000006e617564696f5f6465636f6465727381646f7075736e766964656f5f6465636f6465727382646865766364683236346f636c6970626f6172645f74797065738369696d6167652f706e676a696d6167652f6a7065676d746578742f7572692d6c697374"
+}

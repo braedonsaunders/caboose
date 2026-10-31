@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config clang libclang-dev \
       libwayland-dev libxkbcommon-dev libudev-dev libpixman-1-dev \
-      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libva-dev libdrm-dev && \
+      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libva-dev libdrm-dev libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
@@ -14,6 +14,9 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 # The codec passthrough VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
+# The GBM backend for the computer's render node (guest/gpu/gbm).
+COPY gpu/gbm /gbm
+RUN make -C /gbm BUILD=/out/gbm /out/gbm/vgem_gbm.so
 
 # The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
 FROM debian:trixie-slim AS gpu
@@ -25,6 +28,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY gpu /gpu
 ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
+
+# The GTK and Qt scroll reporters' preload libraries (guest/scroll-reporter).
+FROM debian:trixie-slim AS scroll-reporters
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc g++ libc6-dev pkg-config libgtk-3-dev libgtk-4-dev qt6-declarative-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY scroll-reporter /scroll-reporter
+RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh
 
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -45,6 +57,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
       libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libpixman-1-0 libxkbcommon0 \
+      ibus ibus-gtk3 ibus-gtk4 \
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
@@ -73,6 +86,10 @@ COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
+COPY scroll-reporter /tmp/scroll-reporter
+COPY --from=scroll-reporters /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
+COPY --from=scroll-reporters /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
+RUN /tmp/scroll-reporter/install.sh && rm -rf /tmp/scroll-reporter
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \
@@ -86,11 +103,14 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
+COPY container/chromium-policy.json /etc/chromium/policies/managed/caboose-gpu.json
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
 COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so
+COPY --from=display /out/gbm/vgem_gbm.so /tmp/vgem_gbm.so
 RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
-    install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so
+    install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so && \
+    install -D -m 0644 /tmp/vgem_gbm.so "/usr/lib/$triplet/gbm/vgem_gbm.so" && rm /tmp/vgem_gbm.so
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session

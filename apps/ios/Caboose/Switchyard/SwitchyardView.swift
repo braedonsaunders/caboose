@@ -23,29 +23,25 @@ struct SwitchyardView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // While typing, tiles use all of the already keyboard-adjusted viewport.
+            // The keyboard does not change the layout; the stage slides above it instead.
             let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
                                                           windowInset: shellBottomInset,
-                                                          verticalBar: verticalBar,
-                                                          keyboardVisible: keyboard.visible)
-            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height,
-                                                  bottomInset: bottom, keyboardVisible: keyboard.visible)
+                                                          verticalBar: verticalBar)
+            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
-                    if !keyboard.visible {
-                        YardDock(yard: yard, width: proxy.size.width - 16)
-                            .padding(.top, 6)
-                            .padding(.bottom, bottom)
-                            .frame(maxWidth: .infinity)
-                    }
+                    YardDock(yard: yard, width: proxy.size.width - 16)
+                        .padding(.top, 6)
+                        .padding(.bottom, bottom)
+                        .frame(maxWidth: .infinity)
                 }
                 if let id = yard.coverWindow, let window = model.session?.windows[id] {
                     cover(window, screen: area)
                         .zIndex(yard.carry?.window == id ? 10 : 4)
                 }
-                popups(model.session?.windows ?? [:], keyTarget: yard.keyTarget(in: model.session?.windows ?? [:]),
-                       size: area)
+                // Menus and dialogs of a window in its own iPadOS window appear there instead.
+                popups(model.desktopWindows, keyTarget: yard.keyTarget(in: model.desktopWindows), size: area)
                     .zIndex(4.5)
                 if yard.overviewOpen {
                     YardOverview(yard: yard)
@@ -69,6 +65,7 @@ struct SwitchyardView: View {
             .onAppear { yard.finishCarryGesture(); yard.screenSize = area }
             .onChange(of: area) { _, size in yard.screenSize = size }
         }
+        .ignoresSafeArea(.keyboard)
         .onDisappear { yard.cancelCarry() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { yard.cancelCarry() } }
         .onChange(of: carryingCover) { _, active in
@@ -85,7 +82,7 @@ struct SwitchyardView: View {
 
     /// The tiles on their track, in the space above the dock.
     private func tracks(size: CGSize) -> some View {
-        let windows = model.session?.windows ?? [:]
+        let windows = model.desktopWindows
         let tiles = yard.tiles
         let live = yard.liveWindows
         let keyTarget = yard.keyTarget(in: windows)
@@ -96,7 +93,7 @@ struct SwitchyardView: View {
                 if let window = windows[id], let rect = tiles[id] {
                     let carried = yard.carry?.window == id
                     YardTile(window: window, yard: yard, rect: rect, focused: yard.layout.focused == id,
-                             keyboard: model.keyboardVisible && keyTarget == id, keyboardResize: keyboard.visible, onAsk: { askingAbout = $0 })
+                             keyboard: model.keyboardVisible && keyTarget == id, keyboardResize: false, onAsk: { askingAbout = $0 })
                         .scaleEffect(carried ? (yard.carry?.rect.width ?? rect.width) / max(1, rect.width) : 1, anchor: .top)
                         // Scaled about its top centre, so the centre follows the finger.
                         .offset(x: carried ? yard.carry!.rect.midX - rect.width / 2 : rect.minX,
@@ -143,7 +140,7 @@ struct SwitchyardView: View {
     /// The covering window uses the same carry proposal as a tile; a cancelled drop
     /// leaves its fullscreen state and geometry intact.
     private func cover(_ window: RemoteWindow, screen: CGSize) -> some View {
-        let keyTarget = yard.keyTarget(in: model.session?.windows ?? [:])
+        let keyTarget = yard.keyTarget(in: model.desktopWindows)
         let p = yard.carry?.window == window.id ? 1 : yard.coverProgress
         let rect = coverFrame(window.id, screen: screen)
         return YardSurface(window: window, pixelsPerPoint: yard.pixelsPerPoint, stretch: p > 0 || yard.stretches(window.id),
@@ -288,7 +285,7 @@ struct SwitchyardView: View {
                                  height: window.presentationSize.height / yard.pixelsPerPoint)
             let surface = DesktopGeometry.surfaceFrame(natural: natural, available: container.size,
                                                        resizing: yard.stretches(window.id) || (covering && (yard.coverProgress > 0 || yard.carry != nil)),
-                                                       fullscreen: window.isFullscreen, keyboardResize: keyboard.visible && !covering)
+                                                       fullscreen: window.isFullscreen, keyboardResize: false)
             var shown = surface.offsetBy(dx: container.minX, dy: container.minY)
             if !covering, let carry = yard.carry, carry.window == window.id {
                 let factor = carry.rect.width / max(1, tile.width)

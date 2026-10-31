@@ -6,9 +6,12 @@
 //! payload is one canonical CBOR map. The stream is parsed as bytes; WebSocket message
 //! boundaries carry no meaning.
 
+pub mod atlas;
 pub mod cbor;
+pub mod clipboard;
 mod fields;
 mod messages;
+pub mod scroll_tag;
 pub mod vectors;
 
 pub use messages::*;
@@ -178,6 +181,7 @@ mod tests {
                 rect: Rect::new(0, 0, 10, 10),
                 crop: Rect::new(0, 0, 10, 10),
                 data: vec![0, 0, 0, 1, 0x41, 0x9a],
+                input_seq: None,
             }),
             Message::Vsync { display: 1, t_us: 2 },
         ]

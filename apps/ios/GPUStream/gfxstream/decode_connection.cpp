@@ -4,6 +4,7 @@
 #include "media_session.h"
 #include "socket_stream.h"
 #include "packet_framing.h"
+#include "completion_feed.h"
 #include "frame_buffer.h"
 #include "gfxstream/host/features.h"
 #include "render_thread_info.h"
@@ -41,6 +42,8 @@ void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
         "%s ordinal=%u stream=%llu elapsed_us=%llu stage=%u result=%d "
         "decode_count=%llu decode_sum_us=%llu decode_max_us=%llu "
         "flush20025_count=%llu flush20025_sum_us=%llu flush20025_max_us=%llu "
+        "gfxpipe20065_count=%llu gfxpipe20065_sum_us=%llu gfxpipe20065_max_us=%llu "
+        "cmppipe20021_count=%llu cmppipe20021_sum_us=%llu cmppipe20021_max_us=%llu "
         "read_count=%llu read_sum_us=%llu read_max_us=%llu read_bytes=%llu "
         "flush_count=%llu flush_sum_us=%llu flush_max_us=%llu\n",
         prefix, ordinal, static_cast<unsigned long long>(stream),
@@ -52,6 +55,12 @@ void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
         static_cast<unsigned long long>(snap.decode_20025.count),
         static_cast<unsigned long long>(snap.decode_20025.sum_us),
         static_cast<unsigned long long>(snap.decode_20025.max_us),
+        static_cast<unsigned long long>(snap.decode_20065.count),
+        static_cast<unsigned long long>(snap.decode_20065.sum_us),
+        static_cast<unsigned long long>(snap.decode_20065.max_us),
+        static_cast<unsigned long long>(snap.decode_20021.count),
+        static_cast<unsigned long long>(snap.decode_20021.sum_us),
+        static_cast<unsigned long long>(snap.decode_20021.max_us),
         static_cast<unsigned long long>(snap.read_wait.count),
         static_cast<unsigned long long>(snap.read_wait.sum_us),
         static_cast<unsigned long long>(snap.read_wait.max_us),
@@ -69,7 +78,7 @@ DecodeDiagnostic lastDecodeDiagnosticForTesting() { return testingDiagnostic; }
 int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                      gfxstream::host::RenderThreadInfo& thread_info,
                      std::atomic_bool& stop, bool synchronousOnly, uint64_t* decoderEntries,
-                     DecodeDiagnostic* diagnostic) {
+                     DecodeDiagnostic* diagnostic, CompletionFeed* completions) {
 #ifdef CABOOSE_GPU_DECODER_TESTING
     if (!diagnostic) diagnostic = &testingDiagnostic;
     struct SaveDiagnostic {
@@ -170,11 +179,12 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         // This must be the same immutable feature used by VkDecoder at construction.
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
+        bool decodedAny = false;
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
-            // LATCH is not a Vulkan command: it is handled here, in stream order, before the
-            // command that follows it reaches the decoder.
+            // Caboose completion feed commands and video LATCH packets are not Vulkan commands:
+            // they are handled here, in stream order, never by the decoder.
             if (pending.size() >= 8) {
                 uint32_t opcode = 0, declared = 0;
                 std::memcpy(&opcode, pending.data(), sizeof(opcode));
@@ -191,7 +201,44 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     }
                     if (executeLatch(contextId, pending.data(), declared) != 0) return finish(DecodeStage::framing, EPROTO);
                     pending.erase(pending.begin(), pending.begin() + declared);
+                    decodedAny = true;
                     continue;
+                }
+                if (CompletionFeed::isFeedOpcode(opcode)) {
+                    if (!completions || sequenced) return finish(DecodeStage::profile, ENOTSUP);
+                    const size_t size = CompletionFeed::packetSize(opcode);
+                    if (declared != size) return finish(DecodeStage::framing, EPROTO);
+                    if (pending.size() < size) {
+                        if (!readMore(size - pending.size())) {
+                            if (stop) return finish(DecodeStage::stopped, 0);
+                            if (stream.error()) return finish(DecodeStage::input, stream.error());
+                            return finish(DecodeStage::eof, EPROTO);
+                        }
+                        continue;
+                    }
+                    if (opcode == CompletionFeed::kOrderOpcode) {
+                        uint64_t serial = 0;
+                        if (!CompletionFeed::parseOrder(pending.data(), size, &serial))
+                            return finish(DecodeStage::framing, EPROTO);
+                        completions->ordered(serial);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
+                        continue;
+                    }
+                    if (opcode == CompletionFeed::kWatchOpcode) {
+                        uint64_t queue = 0, serial = 0;
+                        if (!CompletionFeed::parseWatch(pending.data(), size, &queue, &serial))
+                            return finish(DecodeStage::framing, EPROTO);
+                        completions->watch(queue, serial);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
+                        continue;
+                    }
+                    // A feed stream carries the feed command alone, as its first command.
+                    if (decodedAny || pending.size() != size ||
+                        !CompletionFeed::parseFeed(pending.data(), size))
+                        return finish(DecodeStage::framing, EPROTO);
+                    return finish(DecodeStage::stopped, completions->run(fd, stop));
                 }
             }
             if (synchronousOnly && pending.size() >= 8) {
@@ -253,6 +300,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             }
 #endif
             if (diagnostic) diagnostic->consumed = consumed;
+            decodedAny = true;
             if (stream.error()) return finish(DecodeStage::decoder, stream.error());
             // Never retry a command after entering the decoder: a retry can
             // repeat side effects, including writes from earlier flush ranges.

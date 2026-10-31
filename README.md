@@ -40,9 +40,9 @@ The machine belongs to the agent, and you watch.
 Caboose starts from the other end:
 
 - **Linux apps as native surfaces.** Every window streams on its own, with its title,
-  icon, menus and dialogs. On iPhone it behaves like an app; on iPad or a TV it behaves
-  like a window. Menus and dialogs sit next to the window they belong to, not in a
-  separate frame.
+  menus and dialogs, and the icon of the app it belongs to. On iPhone it behaves like an
+  app; on iPad or a TV it behaves like a window. Menus and dialogs sit next to the window
+  they belong to, not in a separate frame.
 - **Resumable, not rebooted.** Your computer parks with its memory. Reopen the app and
   every program is exactly where you left it.
 - **Shared with agents, without fighting them.** Any agent from the Agent Client
@@ -103,8 +103,9 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 ```
 
 - **Per-window, not per-desktop.** Every window is its own stream with its own title,
-  icon, size hints and parent, and only what changed is re-encoded. That's what lets the
-  phone show a Linux app as an app.
+  size hints and parent, and only what changed is re-encoded; the phone takes the icon
+  from the app the window belongs to. That's what lets the phone show a Linux app as an
+  app.
 - **Relay, don't transcode.** The host passes the stream through untouched, so latency
   is guest-to-phone and the host spends nothing on pixels.
 - **Park with memory.** Cloud Hypervisor snapshots (via
@@ -132,14 +133,15 @@ The full contract between app, host and guest is [docs/architecture.md](docs/arc
 
 ## Run your own
 
-Paste the line for your machine into a terminal on it. Each installs the same host and web
-console, downloads a verified release and the computer's image, and starts at boot.
+Download the desktop installer for your machine, or use the terminal command below.
+Each installs the same host and web console and downloads the computer's image. Linux
+and Windows register startup services; the Mac starts at login.
 
 | Machine | Install |
 | --- | --- |
-| Apple Silicon Mac, macOS 14+ | [Native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
+| Apple Silicon Mac, macOS 14+ | `Caboose-macos-arm64.dmg` from [Releases](https://github.com/braedonsaunders/caboose/releases), or the [native Mac installer](deploy/macos/README.md): a menu bar app and host that starts at login, without Docker or administrator privileges. The Mac must stay awake and logged in. |
 | Linux PC, amd64 or arm64 | [Native Linux installer](deploy/linux/README.md): a systemd service, with `/dev/kvm` for microVMs or Docker for the GPU container runtime. |
-| Windows 11 PC | [WSL2](deploy/windows/README.md): the Linux installer in WSL with the GPU container runtime, and `setup-wsl.ps1` for mirrored networking so phones connect to it directly. |
+| Windows 11 x64 PC | `CabooseSetup-windows-x64.exe` from [Releases](https://github.com/braedonsaunders/caboose/releases): a dedicated WSL2 distribution, host, tray app and native phone pairing. See [Windows installation](deploy/windows/README.md). |
 | Linux server with a domain | [Server installer](deploy/server/README.md): the host behind Caddy with automatic HTTPS, for households or teams. |
 
 **Linux PC** (amd64 or arm64, with systemd and `/dev/kvm`):
@@ -166,10 +168,10 @@ When it finishes, the installer prints the console's address and a one-time setu
 Mac opens it for you), and the Linux installers print a QR code for the iPhone:
 
 1. **Open the setup link** in any browser that reaches the machine, and make your account
-   and your household or team.
+   and your household or team. The next screen shows phone pairing and image download status.
 2. **Sign in the iPhone.** Scan the installer's QR code with the Camera within 10 minutes,
    or in the console open your computer under **Computers**, then **Phones › Sign in a
-   phone**.
+   phone**. The Mac and Windows apps also show a native pairing window.
 3. **Open Caboose on the iPhone.** The computer's image finishes downloading in the
    background after the first start (a few GB); until then a wake shows its progress.
 

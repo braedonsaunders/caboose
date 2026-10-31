@@ -14,6 +14,7 @@ import struct
 import subprocess
 import secrets
 import socket
+import shutil
 import stat
 import threading
 import time
@@ -55,6 +56,16 @@ def bridge_open(instance):
     except BaseException:
         connection.close()
         raise
+# Files the phone hands to applications (a drop, a copy): one private directory per
+# transfer, removed a day after its last upload.
+TRANSFER_AREA = ('.cache', 'caboose', 'transfers')
+TRANSFER_FILE_MAX = 512 * 1024 * 1024
+TRANSFER_QUOTA = 2 * 1024 * 1024 * 1024
+TRANSFER_FILES_MAX = 64
+TRANSFER_TTL = 24 * 3600
+TRANSFER_ID = re.compile(r'[0-9a-f]{32}\Z')
+transfer_lock = threading.Lock()
+transfer_reserved = 0
 
 
 def parts(path):
@@ -93,6 +104,55 @@ def rename_no_replace(srcfd, src, dstfd, dst):
     if rename(srcfd, os.fsencode(src), dstfd, os.fsencode(dst), 1) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
+
+
+def transfer_name(name):
+    if (not isinstance(name, str) or not name or len(name.encode()) > 255 or name in ('.', '..') or '/' in name
+            or name.startswith('.caboose-upload-') or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+        raise ValueError('invalid name')
+    return name
+
+
+def transfer_id(value):
+    if not isinstance(value, str) or not TRANSFER_ID.match(value):
+        raise ValueError('invalid transfer')
+    return value
+
+
+def transfer_area():
+    """The transfer area, created as needed: every level opened without following links,
+    the levels below .cache owned by this user, and the area itself private."""
+    fd = os.dup(rootfd)
+    try:
+        for level, name in enumerate(TRANSFER_AREA):
+            try: os.mkdir(name, 0o700, dir_fd=fd)
+            except FileExistsError: pass
+            new = os.open(name, DIR, dir_fd=fd); os.close(fd); fd = new
+            if level > 0 and os.fstat(fd).st_uid != os.geteuid():
+                raise PermissionError('transfer area not owned by this user')
+        os.fchmod(fd, 0o700)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def transfer_usage(area, now):
+    """Removes transfers past their time and returns the bytes the others hold."""
+    used = 0
+    for name in os.listdir(area):
+        if not TRANSFER_ID.match(name): continue
+        s = os.stat(name, dir_fd=area, follow_symlinks=False)
+        if not stat.S_ISDIR(s.st_mode): continue
+        if s.st_mtime < now - TRANSFER_TTL:
+            shutil.rmtree(name, dir_fd=area)
+            continue
+        fd = os.open(name, DIR, dir_fd=area)
+        try:
+            with os.scandir(fd) as entries:
+                used += sum(e.stat(follow_symlinks=False).st_size for e in entries if e.is_file(follow_symlinks=False))
+        finally: os.close(fd)
+    return used
 
 
 def version(s):
@@ -269,6 +329,9 @@ def trash(path):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
+    # A peer that stops sending or reading for this long is dropped (the host's relay
+    # gives up after 60 s without progress).
+    timeout = 120
     def log_message(self, fmt, *args):
         pass
     def reply(self, status, body=None, headers=None):
@@ -416,6 +479,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.command == 'PUT' and u.path == '/content':
                 return self.upload(path)
+            if self.command == 'PUT' and u.path == '/transfer':
+                return self.transfer(transfer_id(q.get('id', [''])[0]), transfer_name(q.get('name', [''])[0]))
+            if self.command == 'DELETE' and u.path == '/transfer':
+                ident = transfer_id(q.get('id', [''])[0]); area = transfer_area()
+                try:
+                    with transfer_lock: shutil.rmtree(ident, dir_fd=area)
+                finally: os.close(area)
+                return self.reply(200, {'deleted': True})
             if self.command == 'DELETE' and u.path == '/item':
                 with lock:
                     match = self.headers.get('If-Match')
@@ -443,12 +514,60 @@ class Handler(BaseHTTPRequestHandler):
                 finally: os.close(srcfd)
                 return self.reply(200, file_stat(target))
             self.reply(404, {'error': 'not found'})
-        except (ValueError, TypeError, json.JSONDecodeError): self.close_connection = True; self.reply(400, {'error': 'invalid request'})
-        except FileNotFoundError: self.reply(404, {'error': 'not found'})
-        except (PermissionError, NotADirectoryError): self.reply(403, {'error': 'access denied'})
-        except FileExistsError: self.reply(409, {'error': 'already exists'})
+        except (ValueError, TypeError, json.JSONDecodeError): self.fail(400, 'invalid request')
+        except FileNotFoundError: self.fail(404, 'not found')
+        except (PermissionError, NotADirectoryError): self.fail(403, 'access denied')
+        except FileExistsError: self.fail(409, 'already exists')
         except BrokenPipeError: pass
-        except OSError: self.close_connection = True; self.reply(500, {'error': 'filesystem error'})
+        except OSError: self.fail(500, 'filesystem error')
+    def fail(self, status, error):
+        # The peer may already be gone (an upload cut short); there is no one to tell.
+        self.close_connection = True
+        try: self.reply(status, {'error': error})
+        except OSError: pass
+    def transfer(self, ident, name):
+        """Streams one file of a transfer into place, within the per-file limit and the
+        area's quota, without holding it in memory; an interrupted upload leaves nothing."""
+        global transfer_reserved
+        length = self.headers.get('Content-Length')
+        if length is None or self.headers.get('Transfer-Encoding'):
+            return self.reply(411, {'error': 'content length required'})
+        length = int(length)
+        if length < 0: raise ValueError('invalid length')
+        if length > TRANSFER_FILE_MAX: return self.reply(413, {'error': 'file too large'})
+        area = transfer_area(); folder = None; temp = '.caboose-upload-' + secrets.token_hex(16)
+        try:
+            with transfer_lock:
+                if transfer_usage(area, time.time()) + transfer_reserved + length > TRANSFER_QUOTA:
+                    return self.reply(507, {'error': 'transfer area full'})
+                try: os.mkdir(ident, 0o700, dir_fd=area)
+                except FileExistsError: pass
+                folder = os.open(ident, DIR, dir_fd=area)
+                if os.fstat(folder).st_uid != os.geteuid(): raise PermissionError('transfer not owned by this user')
+                if len(os.listdir(folder)) >= TRANSFER_FILES_MAX: return self.reply(409, {'error': 'too many files'})
+                transfer_reserved += length
+            try:
+                out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+                try:
+                    left = length
+                    while left:
+                        chunk = self.rfile.read(min(left, 1024 * 1024))
+                        if not chunk: raise ValueError('incomplete upload')
+                        view = memoryview(chunk)
+                        while view: view = view[os.write(out, view):]
+                        left -= len(chunk)
+                    os.fsync(out)
+                finally: os.close(out)
+                rename_no_replace(folder, temp, folder, name)
+            finally:
+                with transfer_lock: transfer_reserved -= length
+            return self.reply(201, {'path': '/'.join((*TRANSFER_AREA, ident, name)), 'size': length})
+        finally:
+            if folder is not None:
+                try: os.unlink(temp, dir_fd=folder)
+                except FileNotFoundError: pass
+                os.close(folder)
+            os.close(area)
     def upload(self, path):
         fd, name = parent(path); temp = '.caboose-upload-' + secrets.token_hex(16)
         try:

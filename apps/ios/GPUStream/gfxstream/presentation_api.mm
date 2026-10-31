@@ -6,6 +6,9 @@
 #include "presentation_api_draft.h"
 #include "metal_surface_internal.h"
 #include "presentation_copy_internal.h"
+#include "framelab_timing.h"
+#include "presentation_capture_internal.h"
+#include "presentation_capture_state.h"
 #include "presentation_query_internal.h"
 #include "presentation_swapchain_internal.h"
 #ifdef CABOOSE_GPU_INDEXED_WSI
@@ -19,7 +22,9 @@
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -62,6 +67,13 @@ struct caboose_gpu_virtual_swapchain {
     bool acquireBusy = false;
     bool hasQueueFamily = false;
     uint32_t queueFamily = 0;
+    // Guest-owned images (caboose_gpu_virtual_swapchain_map_guest_images): presents name a
+    // source image, and the native image is acquired inside the present. Each source holds
+    // the serial of the present still copying it, or 0. With `mailbox`, a present that finds
+    // no free native image is dropped; otherwise it waits up to kGuestAcquireTimeoutNs.
+    bool guestImages = false;
+    bool mailbox = false;
+    std::vector<uint64_t> sourceSerials;
     std::mutex mutex;
 };
 #endif
@@ -108,10 +120,28 @@ struct Frame {
     bool failureReported = false;
     bool reportedDeviceLoss = false;
     bool resourcesDestroyed = false;
+    // Set under the surface mutex once the frame is finished and publishes capacity.
+    bool done = false;
     uint64_t serial = 0;
     caboose_gpu_present_callback callback = nullptr;
     void* context = nullptr;
+    bool captured = false; // a capture slot was written for this serial
+    // Guest-owned images: the source index this frame copies, and whether the frame was
+    // dropped (mailbox, or no native image in time): it releases its source at once.
+    uint32_t sourceIndex = 0;
+    bool dropped = false;
 };
+// A submitted frame and the worker that observes its fences; oldest first.
+struct InFlightFrame {
+    std::unique_ptr<Frame> frame;
+    std::thread worker;
+};
+// Frames a surface may have in flight: one for the legacy path, two for indexed
+// swapchains, so the next frame's copy can be queued while the previous one presents.
+constexpr size_t kLegacyFramesInFlight = 1;
+constexpr size_t kIndexedFramesInFlight = 2;
+constexpr size_t kGuestFramesInFlight = 8;
+constexpr uint64_t kGuestAcquireTimeoutNs = 1000000000ull;
 }
 struct caboose_gpu_surface {
     std::mutex mutex;
@@ -128,9 +158,14 @@ struct caboose_gpu_surface {
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint64_t boxedDevice = 0, boxedQueue = 0;
     uint32_t queueFamily = 0;
-    std::unique_ptr<Frame> frame;
-    std::thread worker;
-    bool frameDone = false;
+    std::deque<InFlightFrame> frames;
+    // Presented-picture captures for phone-owned scrolling. The ring lives on `device`.
+    std::unique_ptr<PresentationCaptureRing> capture;
+    PresentationCaptureState captureState;
+    caboose_gpu_capture_callback captureCallback = nullptr;
+    void* captureContext = nullptr;
+    bool captureUnsupported = false;
+    bool captureBusyNoted = false;
 #ifdef CABOOSE_GPU_INDEXED_WSI
     uint64_t nextSwapchainId = 1;
     caboose_gpu_virtual_swapchain* indexed = nullptr;
@@ -148,6 +183,136 @@ void destroyFrameResources(caboose_gpu_surface& s, Frame& f) {
     if (f.pool) vk->vkDestroyCommandPool(s.device->device, f.pool, nullptr);
     f.source.reset();
     f.resourcesDestroyed = true;
+}
+// Two frames in flight may each be writing one while the compositor holds the last.
+constexpr uint32_t kCaptureSlots = 3;
+// Caller holds s.operations, after the previous frame's copy has completed. Returns the
+// image this present's copy also writes, or null to present without a capture.
+VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects& source, uint64_t serial) {
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.captureCallback || s.captureUnsupported || !s.device) return VK_NULL_HANDLE;
+        if (s.capture && (s.capture->device != source.device || s.capture->format != source.format ||
+                          s.capture->extent.width != source.extent.width ||
+                          s.capture->extent.height != source.extent.height)) {
+            // A resized or reformatted picture gets a new ring once no copy writes the old one.
+            if (!s.captureState.idle()) return VK_NULL_HANDLE;
+            destroyCaptureRing(*s.capture);
+            s.capture.reset();
+        }
+    }
+    if (!s.capture) {
+        std::unique_ptr<PresentationCaptureRing> ring;
+        VkResult r = createCaptureRing(source.vk, source.instance, source.physicalDevice, source.device, source.format,
+                                       source.extent, kCaptureSlots, &ring);
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (r != VK_SUCCESS) {
+            // Once per surface: phone-owned scrolling of this window keeps the app's path.
+            fprintf(stderr, "caboose-scroll: gpu capture ring unavailable (VkResult %d); presenting without captures\n",
+                    static_cast<int>(r));
+            s.captureUnsupported = true;
+            return VK_NULL_HANDLE;
+        }
+        s.capture = std::move(ring);
+        s.captureState.reset(kCaptureSlots);
+        fprintf(stderr, "caboose-scroll: gpu capture ring ready %ux%u format %d\n",
+                source.extent.width, source.extent.height, static_cast<int>(source.format));
+    }
+    std::lock_guard<std::mutex> lock(s.mutex);
+    const int slot = s.captureState.reserve(serial);
+    if (slot < 0 && !s.captureBusyNoted) {
+        // Once per surface: every slot is written or still lent to the compositor.
+        s.captureBusyNoted = true;
+        fprintf(stderr, "caboose-scroll: gpu capture ring full at serial %llu\n", static_cast<unsigned long long>(serial));
+    }
+    return slot < 0 ? VK_NULL_HANDLE : s.capture->images[static_cast<size_t>(slot)];
+}
+// The copy fence of `f` signaled: lend its capture to the compositor. Never under a lock.
+void deliverCapture(caboose_gpu_surface& s, Frame& f) {
+    if (!f.captured) return;
+    f.captured = false;
+    uint32_t token = 0;
+    void* texture = nullptr;
+    caboose_gpu_capture_callback callback = nullptr;
+    void* context = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.captureState.complete(f.serial, &token) || !s.capture) return;
+        texture = s.capture->textures[token & 0xff];
+        callback = s.captureCallback; context = s.captureContext;
+        if (!callback) { s.captureState.release(token); return; }
+    }
+    callback(context, f.serial, token, texture);
+}
+// The copy's outcome is unknown: its slot is never written again.
+void quarantineCapture(caboose_gpu_surface& s, Frame& f) {
+    if (!f.captured) return;
+    f.captured = false;
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.captureState.quarantine(f.serial);
+}
+// Caller holds s.operations; every frame on the ring's device has retired.
+void destroyCapture(caboose_gpu_surface& s) {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (s.capture) destroyCaptureRing(*s.capture);
+    s.capture.reset();
+    s.captureState.reset(0);
+}
+int advanceFrame(caboose_gpu_surface& s, Frame& f);
+#ifdef CABOOSE_GPU_INDEXED_WSI
+int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame);
+#endif
+// Joins and destroys every finished frame. Caller holds s.operations and is not a frame
+// worker.
+void reapFinishedFrames(caboose_gpu_surface& s) {
+    for (auto it = s.frames.begin(); it != s.frames.end();) {
+        bool done;
+        {
+            std::lock_guard<std::mutex> lock(s.mutex);
+            done = it->frame->done;
+        }
+        if (!done) { ++it; continue; }  // an unfinished frame keeps its slot
+        if (it->worker.joinable()) it->worker.join();
+        destroyFrameResources(s, *it->frame);
+        it = s.frames.erase(it);
+    }
+}
+size_t unfinishedFrames(caboose_gpu_surface& s) {
+    std::lock_guard<std::mutex> lock(s.mutex);
+    size_t count = 0;
+    for (const auto& entry : s.frames) count += entry.frame->done ? 0 : 1;
+    return count;
+}
+// Waits for every frame of `owner` (every frame when null), finishing it on this thread
+// if its worker could not, then destroys it. Caller holds s.operations.
+int drainFrames(caboose_gpu_surface& s, const void* owner) {
+    for (auto it = s.frames.begin(); it != s.frames.end();) {
+        Frame& f = *it->frame;
+#ifdef CABOOSE_GPU_INDEXED_WSI
+        if (owner && f.indexed != owner) { ++it; continue; }
+#else
+        (void)owner;
+#endif
+        if (it->worker.joinable()) {
+            if (it->worker.get_id() == std::this_thread::get_id()) return EDEADLK;
+            it->worker.join();
+        }
+        bool done;
+        {
+            std::lock_guard<std::mutex> lock(s.mutex);
+            done = f.done;
+        }
+        if (!done) {
+            int result = advanceFrame(s, f);
+#ifdef CABOOSE_GPU_INDEXED_WSI
+            if (!result && f.indexed) result = finishIndexedFrame(s, f);
+#endif
+            if (result) return result;
+        }
+        destroyFrameResources(s, f);
+        it = s.frames.erase(it);
+    }
+    return 0;
 }
 VkResult allocateFrame(caboose_gpu_surface& s, Frame& f, PresentationProviderResult* provider) {
     *provider = {};
@@ -177,6 +342,23 @@ VkResult allocateFrame(caboose_gpu_surface& s, Frame& f, PresentationProviderRes
 // Caller is the frame worker or a serialized retire worker. Callbacks are not
 // made while the surface mutex is held. An uncertain frame is never destroyed.
 int advanceFrame(caboose_gpu_surface& s, Frame& f) {
+#ifdef CABOOSE_GPU_INDEXED_WSI
+    if (f.dropped) {
+        // No copy and no native present: the source is free now and the frame is done.
+        if (!f.sourceReleased) {
+            f.sourceReleased = true; f.presentRetired = true;
+            f.source.reset();
+            {
+                std::lock_guard<std::mutex> lock(f.indexed->mutex);
+                auto& serials = f.indexed->sourceSerials;
+                if (f.sourceIndex < serials.size() && serials[f.sourceIndex] == f.serial) serials[f.sourceIndex] = 0;
+            }
+            if (f.callback) f.callback(f.context, f.serial, CABOOSE_GPU_SOURCE_RELEASED,
+                                        driverResult(CABOOSE_GPU_SUBMIT_QUEUED, VK_SUCCESS));
+        }
+        return 0;
+    }
+#endif
     if (f.deviceLost) {
 #ifdef CABOOSE_GPU_INDEXED_WSI
         if (f.indexed) { std::lock_guard<std::mutex> lock(f.indexed->mutex); f.indexed->quarantined = true; }
@@ -207,22 +389,28 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f) {
         if (r == VK_SUCCESS) {
             f.sourceReleased = true;
             f.source.reset();
+            deliverCapture(s, f);
 #ifdef CABOOSE_GPU_INDEXED_WSI
             if (f.indexed) {
                 std::lock_guard<std::mutex> lock(f.indexed->mutex);
-                if (!f.indexed->indices->markSourceReleased(f.serial)) f.indexed->quarantined = true;
+                if (f.indexed->guestImages) {
+                    auto& serials = f.indexed->sourceSerials;
+                    if (f.sourceIndex < serials.size() && serials[f.sourceIndex] == f.serial) serials[f.sourceIndex] = 0;
+                } else if (!f.indexed->indices->markSourceReleased(f.serial)) f.indexed->quarantined = true;
             }
 #endif
             if (f.callback) f.callback(f.context, f.serial, CABOOSE_GPU_SOURCE_RELEASED,
                                         driverResult(CABOOSE_GPU_SUBMIT_QUEUED, r));
         } else if (r == VK_ERROR_DEVICE_LOST) {
             f.deviceLost = true;
+            quarantineCapture(s, f);
 #ifdef CABOOSE_GPU_INDEXED_WSI
             if (f.indexed) { std::lock_guard<std::mutex> lock(f.indexed->mutex); f.indexed->quarantined = true; }
 #endif
             if (f.callback) f.callback(f.context, f.serial, CABOOSE_GPU_DEVICE_LOST,
                                         driverResult(CABOOSE_GPU_SUBMIT_UNCERTAIN, r));
         } else {
+            quarantineCapture(s, f);
             if (!f.failureReported && f.callback) {
                 f.failureReported = true;
                 f.callback(f.context, f.serial, CABOOSE_GPU_FAILED_UNRETIRED,
@@ -237,8 +425,19 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f) {
         VkResult r = waitPresentationFence(*s.device, f.presentFence, kFenceTimeoutNs);
         if (r == VK_SUCCESS) {
             f.presentRetired = true;
+            if (caboose::framelab::enabled() && f.source) {
+                // The swapchain's timings are host-synchronized like its presents.
 #ifdef CABOOSE_GPU_INDEXED_WSI
-            if (f.indexed) {
+                if (f.indexed) {
+                    std::lock_guard<std::mutex> hostLock(*f.indexed->hostMutex);
+                    caboose::framelab::reportPresented(f.source->vk, f.source->device, f.indexed->handle,
+                                                       s.bind.identity.window_id);
+                } else
+#endif
+                caboose::framelab::reportPresented(f.source->vk, f.source->device, s.swapchain, s.bind.identity.window_id);
+            }
+#ifdef CABOOSE_GPU_INDEXED_WSI
+            if (f.indexed && !f.indexed->guestImages) {
                 std::lock_guard<std::mutex> lock(f.indexed->mutex);
                 if (!f.indexed->indices->markPresentRetired(f.serial)) f.indexed->quarantined = true;
             }
@@ -265,7 +464,7 @@ int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame) {
     if (!frame.indexed || frame.deviceLost || !frame.sourceReleased || !frame.presentRetired)
         return EBUSY;
     destroyFrameResources(surface, frame);
-    {
+    if (!frame.indexed->guestImages) {
         std::lock_guard<std::mutex> lock(frame.indexed->mutex);
         if (!frame.indexed->indices->forgetRetired(frame.serial)) {
             frame.indexed->quarantined = true;
@@ -273,10 +472,10 @@ int finishIndexedFrame(caboose_gpu_surface& surface, Frame& frame) {
         }
     }
     // Publish capacity before the final callback. A concurrent present joins
-    // this worker before reusing the frame, so no callback can outlive it.
+    // this worker before destroying the frame, so no callback can outlive it.
     {
         std::lock_guard<std::mutex> lock(surface.mutex);
-        surface.frameDone = true;
+        frame.done = true;
     }
     if (frame.callback) frame.callback(frame.context, frame.serial, CABOOSE_GPU_PRESENT_RETIRED,
                                        driverResult(CABOOSE_GPU_SUBMIT_QUEUED, VK_SUCCESS));
@@ -411,10 +610,9 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
 #ifdef CABOOSE_GPU_INDEXED_WSI
             if (s->indexed || s->extent.enabled()) return rejected(EBUSY);
 #endif
-            if (s->frame && !s->frameDone) return rejected(EBUSY);
         }
-        if (s->worker.joinable()) s->worker.join();
-        if (s->frame) { destroyFrameResources(*s, *s->frame); s->frame.reset(); s->frameDone = false; }
+        reapFinishedFrames(*s);
+        if (unfinishedFrames(*s) >= kLegacyFramesInFlight) return rejected(EBUSY);
         if (s->device && (s->boxedDevice != p->boxed_device || s->boxedQueue != p->boxed_queue ||
                           s->queueFamily != p->queue_family || s->format != static_cast<VkFormat>(p->vk_format)))
             return rejected(ENOTSUP);
@@ -450,22 +648,29 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
         frame->gotImage = true;
         s->lastSerial = p->present_serial;
         if (index < s->images.size()) {
+            VkImage capture = reserveCapture(*s, *frame->source, frame->serial);
             r = submitPresentationCopy(*frame->source, s->images[index], frame->acquired,
-                                       frame->ready, frame->copyFence, frame->command, &provider);
+                                       frame->ready, frame->copyFence, frame->command, &provider, capture);
             frame->submitted = r == VK_SUCCESS;
+            if (capture) {
+                if (frame->submitted) frame->captured = true;
+                else { std::lock_guard<std::mutex> lock(s->mutex); s->captureState.abort(frame->serial); }
+            }
             if (frame->submitted) {
-                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence, &provider);
+                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence, &provider,
+                                      frame->serial);
                 frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             }
         } else { r = VK_ERROR_INITIALIZATION_FAILED; provider = {}; }
         frame->deviceLost = provider.present && provider.value == VK_ERROR_DEVICE_LOST;
         const bool accepted = frame->submitted && frame->presentQueued;
-        s->frame = std::move(frame);
+        Frame* observed = frame.get();
+        s->frames.push_back({std::move(frame), std::thread{}});
         try {
-            s->worker = std::thread([s] {
-                int result = advanceFrame(*s, *s->frame);
+            s->frames.back().worker = std::thread([s, observed] {
+                int result = advanceFrame(*s, *observed);
                 std::lock_guard<std::mutex> lock(s->mutex);
-                s->frameDone = result == 0;
+                observed->done = result == 0;
             });
         } catch (const std::system_error&) {
             return {CABOOSE_GPU_SUBMIT_UNCERTAIN, EAGAIN, provider.present ? 1u : 0u,
@@ -485,24 +690,18 @@ extern "C" int caboose_gpu_surface_retire(caboose_gpu_surface* s) {
 #ifdef CABOOSE_GPU_INDEXED_WSI
     if (s->indexed) return EBUSY;
 #endif
-    if (s->worker.joinable()) {
-        if (s->worker.get_id() == std::this_thread::get_id()) return EDEADLK;
-        s->worker.join();
-    }
-    if (s->frame) {
-        if (!s->frameDone) {
-            int result = advanceFrame(*s, *s->frame);
-            if (result) return result;
-        }
-        destroyFrameResources(*s, *s->frame);
-        s->frame.reset();
-    }
+    if (int result = drainFrames(*s, nullptr)) return result;
     if (s->swapchain) {
         int result = destroyPresentationSwapchain(*s->device, s->swapchain);
         if (result) return result;
         s->swapchain = VK_NULL_HANDLE;
         s->images.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(s->mutex);
+        s->captureCallback = nullptr; s->captureContext = nullptr;
+    }
+    destroyCapture(*s);
     s->device.reset();
     std::lock_guard<std::mutex> lock(s->mutex);
     s->retired = true;
@@ -532,6 +731,23 @@ extern "C" int caboose_gpu_surface_detach(caboose_gpu_surface** ptr) {
     operation.unlock();
     delete s;
     return 0;
+}
+
+extern "C" int caboose_gpu_surface_set_capture(caboose_gpu_surface* s, caboose_gpu_capture_callback callback,
+                                                void* context) {
+    if (!s || (callback == nullptr) != (context == nullptr)) return EINVAL;
+    std::lock_guard<std::mutex> lock(s->mutex);
+    if (callback && (s->revoked || s->retired)) return EBUSY;
+    if (callback && s->captureUnsupported) return ENOTSUP;
+    s->captureCallback = callback;
+    s->captureContext = context;
+    return 0;
+}
+
+extern "C" int caboose_gpu_surface_release_capture(caboose_gpu_surface* s, uint32_t token) {
+    if (!s) return EINVAL;
+    std::lock_guard<std::mutex> lock(s->mutex);
+    return s->captureState.release(token) ? 0 : ESTALE;
 }
 
 #ifdef CABOOSE_GPU_INDEXED_WSI
@@ -607,7 +823,7 @@ extern "C" int caboose_gpu_surface_query_variable_extent(caboose_gpu_surface* su
     if (!surface->attached || surface->revoked || surface->retired || surface->swapchain ||
         surface->physicalBox != physical || surface->extent.quarantined()) return fail(EBUSY);
     auto& view = snapshot->view;
-    const bool idle = !surface->indexed && !surface->frame && !surface->worker.joinable();
+    const bool idle = !surface->indexed && surface->frames.empty();
     if (!surface->extent.enabled() && !idle) return fail(EBUSY);
     // Live queries do not reset the configured extent or its admission state.
     // Refresh configuration limits only at the no-resource boundary.
@@ -628,7 +844,7 @@ extern "C" int caboose_gpu_surface_configure_extent(caboose_gpu_surface* surface
     std::unique_lock<std::mutex> lock(surface->mutex, std::try_to_lock);
     if (!lock.owns_lock()) return EBUSY;
     if (!surface->attached || surface->revoked || surface->retired || !surface->physical ||
-        surface->swapchain || surface->indexed || surface->frame || surface->worker.joinable()) return EBUSY;
+        surface->swapchain || surface->indexed || !surface->frames.empty()) return EBUSY;
     if (!metalSurfaceMatchesLayer(surface->metal, (__bridge void*)layer) ||
         !surface->extent.accepts(width, height)) return EINVAL;
     if (!surface->extent.begin(width, height)) return EINVAL;
@@ -720,9 +936,36 @@ extern "C" int caboose_gpu_virtual_swapchain_map(caboose_gpu_virtual_swapchain* 
         return 0;
     } catch (const std::bad_alloc&) { return ENOMEM; }
 }
+extern "C" int caboose_gpu_virtual_swapchain_map_guest_images(caboose_gpu_virtual_swapchain* swapchain,
+    const uint64_t* boxedImages, uint32_t imageCount, uint32_t flags) {
+    if (!swapchain || !boxedImages || !imageCount || imageCount > 8 || (flags & ~2u)) return EINVAL;
+    std::lock_guard<std::mutex> operation(swapchain->surface->operations);
+    std::lock_guard<std::mutex> lock(swapchain->mutex);
+    if (swapchain->surface->revoked || swapchain->sources || swapchain->retiring) return EBUSY;
+    auto* registry = indexedWsiRegistry();
+    if (!registry) return ENODEV;
+    try {
+        std::vector<uint64_t> copied(boxedImages, boxedImages + imageCount);
+        std::unique_ptr<gfxstream::host::vk::CabooseMappedSources> sources;
+        const auto& info = swapchain->info;
+        VkResult r = acquireMappedSources(registry, info.identity.process_token,
+            swapchain->surface->bind.boxed_instance, info.boxed_device, info.vk_format,
+            info.width, info.height, info.image_usage, imageCount, copied.data(), &sources);
+        if (r != VK_SUCCESS) return errorFor(r);
+        swapchain->boxedImages = std::move(copied);
+        swapchain->sources = std::move(sources);
+        swapchain->guestImages = true;
+        swapchain->mailbox = flags & 2u;
+        swapchain->sourceSerials.assign(imageCount, 0);
+        return 0;
+    } catch (const std::bad_alloc&) { return ENOMEM; }
+}
+static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain* swapchain,
+    const caboose_gpu_mapped_present_info* info, caboose_gpu_present_callback callback, void* context);
 extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
     caboose_gpu_virtual_swapchain* swapchain, const caboose_gpu_mapped_present_info* info,
     caboose_gpu_present_callback callback, void* context) {
+    if (swapchain && swapchain->guestImages) return presentGuestImage(swapchain, info, callback, context);
     if (!swapchain || !info || !callback || !same(swapchain->info.identity, info->identity) ||
         !info->present_serial || !info->boxed_queue || info->image_index >= swapchain->nativeImages.size() ||
         info->vk_image_layout != VK_IMAGE_LAYOUT_GENERAL ||
@@ -742,14 +985,11 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
     try {
         {
             std::lock_guard<std::mutex> lock(surface->mutex);
-            if (surface->revoked || surface->indexed != swapchain || info->present_serial <= surface->lastSerial ||
-                (surface->frame && !surface->frameDone)) return rejected(EBUSY);
+            if (surface->revoked || surface->indexed != swapchain || info->present_serial <= surface->lastSerial)
+                return rejected(EBUSY);
         }
-        if (surface->worker.joinable()) surface->worker.join();
-        if (surface->frame) {
-            destroyFrameResources(*surface, *surface->frame);
-            surface->frame.reset(); surface->frameDone = false;
-        }
+        reapFinishedFrames(*surface);
+        if (unfinishedFrames(*surface) >= kIndexedFramesInFlight) return rejected(EBUSY);
         {
             std::lock_guard<std::mutex> lock(swapchain->mutex);
             if (swapchain->retiring || swapchain->quarantined || !swapchain->sources ||
@@ -772,8 +1012,12 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
         VkResult r = acquirePresentationObjects(registry, surface->bind.boxed_instance, input, &source);
         if (r != VK_SUCCESS) { abortReservation(); return rejected(errorFor(r)); }
         if (surface->device && (surface->boxedDevice != input.boxed_device ||
-            surface->boxedQueue != input.boxed_queue || surface->queueFamily != input.queue_family))
-            surface->device.reset(); // prior frame is fully retired above
+            surface->boxedQueue != input.boxed_queue || surface->queueFamily != input.queue_family)) {
+            // Frames still in flight use the current device and queue.
+            if (!surface->frames.empty()) { abortReservation(); return rejected(EBUSY); }
+            destroyCapture(*surface);
+            surface->device.reset();
+        }
         if (!surface->device) {
             r = acquirePresentationDevice(registry, input.identity.process_token, surface->bind.boxed_instance,
                 input.boxed_device, input.boxed_queue, input.queue_family, &surface->device);
@@ -794,9 +1038,14 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
         if (r != VK_SUCCESS) { destroyFrameResources(*surface, *frame); abortReservation();
             return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         // Real acquire fence was observed before sourceReusable admitted this index.
+        VkImage capture = reserveCapture(*surface, *frame->source, frame->serial);
         r = submitPresentationCopy(*frame->source, swapchain->nativeImages[info->image_index], VK_NULL_HANDLE,
-                                   frame->ready, frame->copyFence, frame->command, &provider);
+                                   frame->ready, frame->copyFence, frame->command, &provider, capture);
         frame->submitted = r == VK_SUCCESS;
+        if (capture) {
+            if (frame->submitted) frame->captured = true;
+            else { std::lock_guard<std::mutex> lock(surface->mutex); surface->captureState.abort(frame->serial); }
+        }
         {
             std::lock_guard<std::mutex> lock(swapchain->mutex);
             if (frame->submitted) swapchain->indices->markCopySubmitted(frame->serial);
@@ -808,7 +1057,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
             {
                 std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
                 r = queuePresentation(*frame->source, swapchain->handle, info->image_index,
-                                      frame->ready, frame->presentFence, &provider);
+                                      frame->ready, frame->presentFence, &provider, frame->serial);
             }
             frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             if (!frame->presentQueued || !swapchain->indices->markPresented(frame->serial)) {
@@ -821,13 +1070,146 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
             std::lock_guard<std::mutex> lock(swapchain->mutex);
             accepted = frame->submitted && frame->presentQueued && !swapchain->quarantined;
         }
-        surface->frame = std::move(frame);
+        Frame* observed = frame.get();
+        surface->frames.push_back({std::move(frame), std::thread{}});
         try {
-            surface->worker = std::thread([surface] {
-                int result = advanceFrame(*surface, *surface->frame);
-                if (!result) result = finishIndexedFrame(*surface, *surface->frame);
+            surface->frames.back().worker = std::thread([surface, observed] {
+                int result = advanceFrame(*surface, *observed);
+                if (!result) result = finishIndexedFrame(*surface, *observed);
                 std::lock_guard<std::mutex> lock(surface->mutex);
-                surface->frameDone = result == 0;
+                observed->done = result == 0;
+            });
+        } catch (const std::system_error&) {
+            return {CABOOSE_GPU_SUBMIT_UNCERTAIN, EAGAIN, provider.present ? 1u : 0u,
+                    provider.present ? static_cast<int32_t>(provider.value) : 0};
+        }
+        return operationResult(accepted ? CABOOSE_GPU_SUBMIT_QUEUED : CABOOSE_GPU_SUBMIT_UNCERTAIN, r, provider);
+    } catch (const std::bad_alloc&) { abortReservation(); return rejected(ENOMEM); }
+}
+// A present naming a guest-owned source image: the native image is acquired here, the
+// source copied into it and presented. In mailbox, or after kGuestAcquireTimeoutNs, a
+// present with no free native image is dropped: it reports QUEUED and releases its source.
+static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain* swapchain,
+    const caboose_gpu_mapped_present_info* info, caboose_gpu_present_callback callback, void* context) {
+    if (!info || !callback || !same(swapchain->info.identity, info->identity) ||
+        !info->present_serial || !info->boxed_queue || info->image_index >= swapchain->boxedImages.size() ||
+        info->vk_image_layout != VK_IMAGE_LAYOUT_GENERAL ||
+        info->wait_semaphore_count > CABOOSE_GPU_PRESENT_MAX_WAIT_SEMAPHORES ||
+        (info->wait_semaphore_count && !info->boxed_wait_semaphores)) return rejected(EINVAL);
+    auto* surface = swapchain->surface;
+    std::lock_guard<std::mutex> surfaceOperation(surface->operations);
+    auto* registry = indexedWsiRegistry();
+    if (!registry) return rejected(ENODEV);
+    bool reserved = false;
+    auto abortReservation = [&] {
+        if (!reserved) return;
+        std::lock_guard<std::mutex> lock(swapchain->mutex);
+        swapchain->sourceSerials[info->image_index] = 0;
+        reserved = false;
+    };
+    try {
+        {
+            std::lock_guard<std::mutex> lock(surface->mutex);
+            if (surface->revoked || surface->indexed != swapchain || info->present_serial <= surface->lastSerial)
+                return rejected(EBUSY);
+        }
+        reapFinishedFrames(*surface);
+        if (unfinishedFrames(*surface) >= kGuestFramesInFlight) return rejected(EBUSY);
+        {
+            std::lock_guard<std::mutex> lock(swapchain->mutex);
+            if (swapchain->retiring || swapchain->quarantined || !swapchain->sources ||
+                (swapchain->hasQueueFamily && swapchain->queueFamily != info->queue_family) ||
+                swapchain->sourceSerials[info->image_index]) return rejected(EBUSY);
+            swapchain->hasQueueFamily = true;
+            swapchain->queueFamily = info->queue_family;
+            swapchain->sourceSerials[info->image_index] = info->present_serial;
+            reserved = true;
+        }
+        surface->lastSerial = info->present_serial;
+        caboose_gpu_present_info input{};
+        input.identity = info->identity; input.present_serial = info->present_serial;
+        input.boxed_device = swapchain->info.boxed_device; input.boxed_queue = info->boxed_queue;
+        input.boxed_image = swapchain->boxedImages[info->image_index];
+        input.vk_format = swapchain->info.vk_format; input.width = swapchain->info.width;
+        input.height = swapchain->info.height; input.vk_image_layout = info->vk_image_layout;
+        input.queue_family = info->queue_family; input.wait_semaphore_count = info->wait_semaphore_count;
+        input.boxed_wait_semaphores = info->boxed_wait_semaphores;
+        std::unique_ptr<CaboosePresentationObjects> source;
+        VkResult r = acquirePresentationObjects(registry, surface->bind.boxed_instance, input, &source);
+        if (r != VK_SUCCESS) { abortReservation(); return rejected(errorFor(r)); }
+        if (surface->device && (surface->boxedDevice != input.boxed_device ||
+            surface->boxedQueue != input.boxed_queue || surface->queueFamily != input.queue_family)) {
+            if (!surface->frames.empty()) { abortReservation(); return rejected(EBUSY); }
+            destroyCapture(*surface);
+            surface->device.reset();
+        }
+        if (!surface->device) {
+            r = acquirePresentationDevice(registry, input.identity.process_token, surface->bind.boxed_instance,
+                input.boxed_device, input.boxed_queue, input.queue_family, &surface->device);
+            if (r != VK_SUCCESS) { abortReservation(); return rejected(errorFor(r)); }
+            surface->boxedDevice = input.boxed_device; surface->boxedQueue = input.boxed_queue;
+            surface->queueFamily = input.queue_family; surface->format = static_cast<VkFormat>(input.vk_format);
+        }
+        if (surface->device->device != swapchain->device->device || source->queue != surface->device->queue) {
+            abortReservation(); return rejected(EINVAL);
+        }
+        PresentationProviderResult provider{};
+        r = validateVirtualPresentQueue(*surface->device, metalSurfaceHandle(surface->metal), &provider);
+        if (r != VK_SUCCESS) { abortReservation(); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
+        auto frame = std::make_unique<Frame>();
+        frame->indexed = swapchain; frame->source = std::move(source); frame->serial = info->present_serial;
+        frame->callback = callback; frame->context = context; frame->sourceIndex = info->image_index;
+        r = allocateFrame(*surface, *frame, &provider);
+        if (r != VK_SUCCESS) { destroyFrameResources(*surface, *frame); abortReservation();
+            return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
+        reserved = false; // the frame now owns the source until it releases it
+        uint32_t nativeIndex = 0;
+        {
+            std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
+            r = acquirePresentationImage(*surface->device, swapchain->handle,
+                swapchain->mailbox ? 0 : kGuestAcquireTimeoutNs, frame->acquired, &nativeIndex, &provider);
+        }
+        if (r == VK_NOT_READY || r == VK_TIMEOUT) {
+            frame->dropped = true;
+            r = VK_SUCCESS; provider = {};
+        } else if ((r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) || nativeIndex >= swapchain->nativeImages.size()) {
+            // No native image: the source was never read.
+            const caboose_gpu_submit_result failure = operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider);
+            { std::lock_guard<std::mutex> lock(swapchain->mutex); swapchain->sourceSerials[info->image_index] = 0; }
+            destroyFrameResources(*surface, *frame);
+            return failure;
+        } else {
+            frame->gotImage = true;
+            VkImage capture = reserveCapture(*surface, *frame->source, frame->serial);
+            r = submitPresentationCopy(*frame->source, swapchain->nativeImages[nativeIndex], frame->acquired,
+                                       frame->ready, frame->copyFence, frame->command, &provider, capture);
+            frame->submitted = r == VK_SUCCESS;
+            if (capture) {
+                if (frame->submitted) frame->captured = true;
+                else { std::lock_guard<std::mutex> lock(surface->mutex); surface->captureState.abort(frame->serial); }
+            }
+            if (frame->submitted) {
+                std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
+                r = queuePresentation(*frame->source, swapchain->handle, nativeIndex,
+                                      frame->ready, frame->presentFence, &provider, frame->serial);
+                frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
+            }
+            if (!frame->submitted || !frame->presentQueued) {
+                // An acquired native image that was not presented stays with this swapchain.
+                std::lock_guard<std::mutex> lock(swapchain->mutex);
+                swapchain->quarantined = true;
+            }
+        }
+        frame->deviceLost = provider.present && provider.value == VK_ERROR_DEVICE_LOST;
+        const bool accepted = frame->dropped || (frame->submitted && frame->presentQueued);
+        Frame* observed = frame.get();
+        surface->frames.push_back({std::move(frame), std::thread{}});
+        try {
+            surface->frames.back().worker = std::thread([surface, observed] {
+                int result = advanceFrame(*surface, *observed);
+                if (!result) result = finishIndexedFrame(*surface, *observed);
+                std::lock_guard<std::mutex> lock(surface->mutex);
+                observed->done = result == 0;
             });
         } catch (const std::system_error&) {
             return {CABOOSE_GPU_SUBMIT_UNCERTAIN, EAGAIN, provider.present ? 1u : 0u,
@@ -856,7 +1238,7 @@ extern "C" int caboose_gpu_acquire_begin(caboose_gpu_virtual_swapchain* swapchai
     std::lock_guard<std::mutex> surfaceOperation(swapchain->surface->operations);
     std::lock_guard<std::mutex> lock(swapchain->mutex);
     if (swapchain->surface->revoked || !swapchain->sources || swapchain->quarantined ||
-        swapchain->retiring || swapchain->acquireBusy || swapchain->requests >= 256)
+        swapchain->retiring || swapchain->acquireBusy || swapchain->requests >= 256 || swapchain->guestImages)
         return fail(EBUSY);
     auto* registry = indexedWsiRegistry();
     if (!registry) return fail(ENODEV);
@@ -985,25 +1367,18 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         std::lock_guard<std::mutex> lock(swapchain->mutex);
         swapchain->retiring = true;
     }
-    if (surface->frame && surface->frame->indexed == swapchain) {
-        if (surface->worker.joinable()) {
-            if (surface->worker.get_id() == std::this_thread::get_id()) return fail(EDEADLK);
-            surface->worker.join();
-        }
-        if (!surface->frameDone) {
-            int result = advanceFrame(*surface, *surface->frame);
-            if (!result) result = finishIndexedFrame(*surface, *surface->frame);
-            if (result) return fail(result);
-        }
-        destroyFrameResources(*surface, *surface->frame);
-        surface->frame.reset(); surface->frameDone = false;
+    if (int result = drainFrames(*surface, swapchain)) return fail(result);
+    // Another swapchain's frames may still use the device.
+    if (surface->frames.empty()) {
+        destroyCapture(*surface);
+        surface->device.reset();
     }
-    surface->device.reset();
     std::unique_lock<std::mutex> lock(swapchain->mutex);
     if (swapchain->requests || swapchain->quarantined) return fail(EBUSY);
     std::vector<uint32_t> acquired;
     try {
-        if (!swapchain->indices->acquiredUnused(&acquired)) return fail(EBUSY);
+        // Guest-owned images acquire native images only inside presents, all drained above.
+        if (!swapchain->guestImages && !swapchain->indices->acquiredUnused(&acquired)) return fail(EBUSY);
     } catch (const std::bad_alloc&) { return fail(ENOMEM); }
     std::shared_ptr<GuestGpuCompletion> completion;
     GuestGpuCompletion::ReleaseGuard proof;
@@ -1044,7 +1419,7 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
             }
         }
     }
-    if (!swapchain->indices->mayRetire()) return fail(EBUSY);
+    if (!swapchain->guestImages && !swapchain->indices->mayRetire()) return fail(EBUSY);
     if (surface->indexed != swapchain || !swapchain->device || !swapchain->device->vk ||
         !swapchain->device->vk->vkDestroySwapchainKHR) return fail(EIO);
     {

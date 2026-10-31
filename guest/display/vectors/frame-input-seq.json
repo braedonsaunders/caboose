@@ -1,0 +1,8 @@
+{
+  "name": "frame-input-seq",
+  "description": "A non-key frame whose picture contains no scroll input after the window's sequence 41.",
+  "messages": [
+    {"direction": "server", "type": "frame", "type_id": 16, "fields": {"id": 7, "crop": [0, 0, 64, 64], "data": {"$bytes": "000000010201d0"}, "rect": [0, 0, 64, 64], "codec": "hevc", "pts_us": 1234600000, "keyframe": false, "input_seq": 41}}
+  ],
+  "hex": "1057000000a8626964076463726f7084000018401840646461746147000000010201d064726563748400001840184065636f6465636468657663667074735f75731a49968040686b65796672616d65f469696e7075745f7365711829"
+}

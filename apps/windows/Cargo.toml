@@ -1,0 +1,24 @@
+[package]
+name = "caboose-windows"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
+qrcode = "0.14"
+tray-icon = "0.20"
+ureq = { version = "2.12", features = ["json"] }
+
+[[bin]]
+name = "caboose-agent"
+path = "src/bin/agent.rs"
+
+[[bin]]
+name = "CabooseSetup"
+path = "src/bin/setup.rs"

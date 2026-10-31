@@ -42,7 +42,7 @@ it('resumes old resources but cold-restarts with saved settings and preserves th
       },
     }
     const network = vi.fn(async () => {})
-    const config = { vmFreePageReporting: true, token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const config = { vmFreePageReporting: true, token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
     const desired = { name: 'My computer', memoryMb: 512, vcpus: 1, idleMs: 60000, defaultAgent: null }
     const dependencies = { backend, network, deviceExists: () => true, parkedFilesEnabled: true, snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} }, settings: () => desired }
     const controller = createController(config, dependencies)
@@ -110,7 +110,7 @@ it('reports a legacy snapshot as having unknown active resources', async () => {
   try {
     await mkdir(join(root, 'overlays', 'owner.snapshot'), { recursive: true })
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000,
-      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false })
+      imageRoot: root, memoryMb: 2048, vcpus: 2, vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] })
     expect(controller.hasSavedState()).toBe(true)
     expect(controller.activeResources()).toBeNull()
   } finally { await rm(root, { recursive: true, force: true }) }
@@ -137,7 +137,7 @@ it('serves the owner display and starts the agent seat on demand', async () => {
       },
     }
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
-      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false },
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] },
     { backend, network: async () => {}, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     const session = await controller.wake()
@@ -185,7 +185,7 @@ it('runs another computer on its own disk and network, and deletes both with it'
     const network = vi.fn(async () => {})
     const removeNetwork = vi.fn(async () => {})
     const controller = createController({ token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1,
-      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false },
+      vmmPath: process.execPath, runtime: 'microvm', containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto', agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] },
     { identity: { id: 'c-0123456789', slot: 2 }, backend, network, removeNetwork, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     expect(controller.displayUrl).toBe('ws://192.0.2.10:14600/')
@@ -216,7 +216,7 @@ it('boots a new computer with the selected immutable system and keeps existing d
       plans.push(plan)
       return { deskId: plan.deskId, async request(command) { return { exitCode: 0, signal: null, stdout: command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false } }, subscribe: () => () => {}, shutdown: async () => {} }
     } }
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
     const dep = { backend, deviceExists: () => true, network: async () => {}, splitImage: split }
     const controller = createController(config, dep)
     await controller.wake()
@@ -248,7 +248,7 @@ it('attaches a host depot read-only and starts its guest mount', async () => {
     for (const name of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, name), '')
     const starts: any[] = [], commands: string[] = []
     const desks = { stats: () => ({}), start: async (options: any) => { starts.push(options); return { exec: async ({ command, args }: any) => { commands.push([command, ...args].join(' ')); return { exitCode: 0, stdout: command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false } }, renewLease: () => {} } }, destroy: async () => {} }
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
     const controller = createController(config, { desks: desks as any, backend: { hypervisor: 'cloud-hypervisor' } as any, deviceExists: () => true, network: async () => {}, removeNetwork: async () => {}, depotPath: depot })
     await controller.wake()
     expect(starts[0].shares).toEqual([{ tag: 'caboose-depot', path: depot, readOnly: true }])
@@ -288,7 +288,7 @@ it('selects vsock for a guest that answers the service probe and closes relays o
       connect: async port => { ports.push(port); return new Duplex({ read() {}, write(_chunk, _encoding, done) { this.push('HTTP/1.1 401 Unauthorized\r\n\r\n'); done() } }) },
       subscribe: () => () => {}, shutdown: async () => {}, park: async () => {},
     } } }
-    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
     const controller = createController(config, { backend, network: async () => {}, deviceExists: () => true,
       snapshotSignature: { cpuSignature: async () => 'test-cpu', readSnapshotSignature: async () => 'test-cpu', writeSnapshotSignature: async () => {} } })
     await controller.wake()

@@ -19,14 +19,16 @@ vi.mock('ws', async () => {
     resume() { this.paused = false }
     send(_data: unknown, _options: unknown, complete: (error?: Error) => void) { this.pending.push(complete) }
     terminate() { if (this.readyState !== 3) { this.readyState = 3; this.emit('close') } }
+    pings = 0
+    ping() { this.pings++ }
   }
   return { WebSocket: Socket }
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuFeatures, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuFeatures, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
 
-type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; peerClose(code: number): void }
+type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
   const client = new WebSocket('ws://test') as ControlledSocket
   const done = relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 'test', computer: 'owner', executor: 'test' })
@@ -45,12 +47,13 @@ it('caps already-parsed messages even when pausing cannot retract queued callbac
   const { client, upstream, done } = pair()
   for (let i = 0; i < GPU_MAX_PENDING / GPU_MAX_MESSAGE; i++) client.emit('message', Buffer.alloc(GPU_MAX_MESSAGE), true)
   expect(client.paused).toBe(true)
-  expect(upstream.pending).toHaveLength(4)
+  const queued = GPU_MAX_PENDING / GPU_MAX_MESSAGE
+  expect(upstream.pending).toHaveLength(queued)
   client.emit('message', Buffer.from([1]), true)
   await done
   expect(client.readyState).toBe(WebSocket.CLOSED)
   expect(upstream.readyState).toBe(WebSocket.CLOSED)
-  expect(upstream.pending).toHaveLength(4)
+  expect(upstream.pending).toHaveLength(queued)
 })
 
 it('keeps reply progress independent from a stalled command direction', async () => {
@@ -124,6 +127,7 @@ it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures(' Guest-Handles , bogus,guest-handles')).toEqual(['guest-handles'])
   expect(gpuFeatures(['x', 'guest-handles'])).toEqual(['guest-handles'])
   expect(gpuFeatures(undefined)).toEqual([])
+  expect(gpuFeatures('completion-feed, guest-handle-arrays,GUEST-HANDLES,ordered-present')).toEqual(['completion-feed', 'guest-handle-arrays', 'guest-handles', 'ordered-present'])
   const client = new WebSocket('ws://test') as ControlledSocket
   void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })
   const withFeatures = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
@@ -131,4 +135,47 @@ it('forwards only known phone GPU features, normalized', () => {
   void relayGPU(new WebSocket('ws://test'), { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e' })
   const without = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
   expect(without.args[2].headers).not.toHaveProperty('x-caboose-gpu-features')
+})
+
+it('ends the relay when the phone stops answering pings, but not while it answers', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream, done } = pair()
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_MS)
+      client.emit('pong')
+    }
+    expect(client.pings).toBeGreaterThanOrEqual(5)
+    expect(client.readyState).toBe(WebSocket.OPEN)
+    // The phone goes silent (suspended, or off the network without a close).
+    await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_TIMEOUT_MS + 2 * GPU_HEARTBEAT_MS)
+    await done
+    expect(client.readyState).toBe(WebSocket.CLOSED)
+    expect(upstream.readyState).toBe(WebSocket.CLOSED)
+  } finally { vi.useRealTimers() }
+})
+
+it('does not count a phone held back by a slow guest as silent', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream } = pair()
+    client.emit('message', Buffer.from([1]), true)  // queued to a guest that is not draining
+    await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_TIMEOUT_MS * 3)
+    expect(client.readyState).toBe(WebSocket.OPEN)
+    upstream.pending.shift()!()
+    client.peerClose(1006)
+  } finally { vi.useRealTimers() }
+})
+
+it('counts pings from the phone as life while it reads nothing', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client } = pair()
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_MS)
+      client.emit('ping')
+    }
+    expect(client.readyState).toBe(WebSocket.OPEN)
+    client.peerClose(1006)
+  } finally { vi.useRealTimers() }
 })
