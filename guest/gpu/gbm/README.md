@@ -13,7 +13,7 @@ tightly stacked planes with rows aligned to 256 bytes.
 | Modifier | The dma-buf's bytes | `gbm_bo_map` |
 | --- | --- | --- |
 | `DRM_FORMAT_MOD_LINEAR` | the pixels, in ordinary shared memory | maps them |
-| `CABOOSE_FORMAT_MOD_REMOTE` (`0xcb00000000000001`) | none: the pixels are phone GPU memory | fails with `EINVAL` |
+| `CABOOSE_FORMAT_MOD_REMOTE` (`0x7e00000000000001`) | none: the pixels are phone GPU memory | fails with `EINVAL` |
 
 A remote buffer's pages are never touched, so it costs no guest memory; its dma-buf still
 has the nominal size, and its inode identifies it to the Caboose Vulkan driver and to
