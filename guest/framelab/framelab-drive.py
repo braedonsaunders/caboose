@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -193,6 +194,8 @@ def main():
     parser.add_argument('--developer-dir', default='/Applications/Xcode.app/Contents/Developer')
     parser.add_argument('--no-phone', action='store_true', help='run the guest side only (no phone records)')
     parser.add_argument('--no-wake', action='store_true', help='the computer is awake; do not ask its host')
+    parser.add_argument('--no-phone-framelab', action='store_true',
+                        help='launch the phone without CABOOSE_FRAMELAB=1 (no display timing or pictures)')
     parser.add_argument('--socket-timeout', default=90, type=int, help='seconds to wait for the GPU socket')
     args = parser.parse_args()
     if not args.no_phone and not args.device:
@@ -242,7 +245,7 @@ def main():
             detail = {k: v for k, v in event.items() if k not in ('t', 'event', 'command')}
             log(f"guest {event['event']}: {json.dumps(detail)[:200]}")
 
-    phone = console = guest = None
+    phone = console = guest = syslog = None
     failed = True
     # However the driver is stopped, the cleanup below runs.
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
@@ -261,7 +264,13 @@ def main():
             host.exec(f'sh -c "cat > {GUEST_DIR}/{name}"', timeout=30, input=(HERE / name).read_bytes())
         if not args.no_phone:
             environment = {'CABOOSE_PRIVATE_GPU_INDEXED': '1', 'CABOOSE_PRIVATE_GPU_MEMORY_AUDIT': '1',
-                           'CABOOSE_FRAMELAB': '1', **json.loads(args.phone_env)}
+                           **({} if args.no_phone_framelab else {'CABOOSE_FRAMELAB': '1'}),
+                           **json.loads(args.phone_env)}
+            if shutil.which('idevicesyslog'):
+                # The app's os_log (Logger) lines, which the console does not carry.
+                syslog = subprocess.Popen(['idevicesyslog', '-u', args.device, '-p', 'Caboose', '--no-colors',
+                                           '-o', str(out / 'phone-syslog.log')],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             phone, console = phone_launch(args, environment, out / 'phone-console.log', phone_line)
             log('waiting for the GPU socket')
             if not host.wait_for(args.gpu_socket, args.socket_timeout):
@@ -290,6 +299,7 @@ def main():
         failed = False
     finally:
         stop_process_group(phone)
+        stop_process_group(syslog)
         if console:
             console.close()
         stop_process_group(guest)
