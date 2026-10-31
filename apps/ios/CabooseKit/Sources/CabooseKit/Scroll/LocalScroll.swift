@@ -20,8 +20,9 @@ public enum ScrollObservation: Equatable, Sendable {
     /// Its relation to earlier frames is unknown: the first frame of a track, a new page,
     /// a jump beyond what measurement searched.
     case unrelated
-    /// Its content moved `shift` pixels forward relative to frame `reference`, within `region`.
-    case moved(shift: Int, region: ScrollRegion, reference: UInt64)
+    /// Its content moved `shift` pixels forward relative to frame `reference`, within `region`;
+    /// `stationary` are fixed overlays inside the region that did not move with it.
+    case moved(shift: Int, region: ScrollRegion, reference: UInt64, stationary: [ScrollRegion] = [])
     /// Nothing moved relative to frame `reference`.
     case still(reference: UInt64)
     /// A toolkit adapter's authoritative report for this exact frame: the scroll layer's
@@ -40,6 +41,8 @@ public struct ScrollComposition: Equatable, Sendable {
         public var shift: Int
         /// The lines it covers once moved, within the region.
         public var lines: Range<Int>
+        /// Its fixed overlays, in its own picture: newer or older content shows there instead.
+        public var holes: [ScrollRegion] = []
     }
     public var axis: ScrollAxis
     /// The newest placed frame, drawn unmoved: everything outside `region` comes from it.
@@ -51,7 +54,7 @@ public struct ScrollComposition: Equatable, Sendable {
     public var blank: Int
     /// The frame and lines whose mean colour fills the blank, the content nearest it.
     public var fillFrom: (frame: UInt64, lines: Range<Int>)?
-    /// Fixed rectangles inside the region, drawn from `base` unmoved over the layers.
+    /// Fixed overlays inside the region, drawn from `base` unmoved over the layers.
     public var stationary: [ScrollRegion] = []
 
     public static func == (a: ScrollComposition, b: ScrollComposition) -> Bool {
@@ -131,6 +134,8 @@ public struct LocalScroll {
         let time: TimeInterval
         var offset: Double?
         var region: ScrollRegion?
+        /// Fixed overlays inside its region.
+        var holes: [ScrollRegion] = []
         var placed: Bool { offset != nil }
     }
 
@@ -176,8 +181,6 @@ public struct LocalScroll {
     private var sent = 0.0
     private var correctionsLeft = 0
     private var reportedBias: Double?
-    /// Fixed rectangles inside the region, from a toolkit adapter.
-    public private(set) var stationary: [ScrollRegion] = []
     public private(set) var interrupted = false
     private var composing = false
     /// The current run of gestures reached an edge.
@@ -318,7 +321,6 @@ public struct LocalScroll {
         travelStart = nil
         gainBaseline = nil
         reportedBias = nil
-        stationary = []
         unansweredSince = nil
         lastAppMotion = -.infinity
         lastTick = nil
@@ -353,6 +355,7 @@ public struct LocalScroll {
         let before = frames[..<index].last(where: \.placed)
         var offset: Double
         var region: ScrollRegion?
+        var holes: [ScrollRegion] = []
         var guessed = false
         switch observation {
         case .unrelated:
@@ -366,8 +369,8 @@ public struct LocalScroll {
                 edges = (nil, nil)
             }
             region = self.region
-        case .moved(let shift, let measured, let reference):
-            stationary = []
+        case .moved(let shift, let measured, let reference, let fixed):
+            holes = fixed
             guard let base = frames.first(where: { $0.id == reference })?.offset ?? before?.offset else {
                 return observe(id, .unrelated)
             }
@@ -379,6 +382,7 @@ public struct LocalScroll {
             }
             offset = base
             region = ref.region ?? self.region
+            holes = ref.holes
         case .reported(let reported, let measured, let bounds, let fixed):
             if reportedBias == nil {
                 reportedBias = (before == nil ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)) - reported
@@ -386,12 +390,13 @@ public struct LocalScroll {
             let bias = reportedBias!
             offset = reported + bias
             region = measured
-            stationary = fixed
+            holes = fixed
             if let bounds { edges = (bounds.lowerBound + bias, bounds.upperBound + bias) }
         }
         guard let i = frames.firstIndex(where: { $0.id == id }) else { return }
         frames[i].offset = offset
         frames[i].region = region
+        frames[i].holes = holes
         if let region { self.region = region }
         noteCadence(frames[i].time)
         if !guessed { learn(from: frames[i], previous: before) } else { lastAppMotion = frame.time }
@@ -818,16 +823,19 @@ public struct LocalScroll {
             let lower = max(region.along.lowerBound, own.along.lowerBound + shift)
             let upper = min(region.along.upperBound, own.along.upperBound + shift)
             guard lower < upper else { continue }
-            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper))
+            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper, holes: frame.holes))
             covered.append(lower..<upper)
         }
-        // Drop layers that newer ones hide entirely.
+        // Drop layers that newer ones hide entirely; a newer layer with holes hides nothing
+        // under its holes.
         var visible: [ScrollComposition.Layer] = []
         var above: [Range<Double>] = []
+        var holed = false
         for layer in layers.reversed() {
             let range = Double(layer.lines.lowerBound)..<Double(layer.lines.upperBound)
-            if Self.uncovered(range, by: above) > 0 { visible.append(layer) }
+            if holed || Self.uncovered(range, by: above) > 0 { visible.append(layer) }
             above.append(range)
+            holed = holed || !layer.holes.isEmpty
         }
         let whole = Double(region.along.lowerBound)..<Double(region.along.upperBound)
         let blank = Int(Self.uncovered(whole, by: covered.map { Double($0.lowerBound)..<Double($0.upperBound) }).rounded())
@@ -840,7 +848,7 @@ public struct LocalScroll {
                                            : own.lowerBound..<min(own.upperBound, own.lowerBound + 16))
         }
         return ScrollComposition(axis: axis, base: base.id, region: region, layers: visible.reversed(),
-                                 blank: blank, fillFrom: fill, stationary: stationary)
+                                 blank: blank, fillFrom: fill, stationary: base.holes)
     }
 
     // MARK: Timeline

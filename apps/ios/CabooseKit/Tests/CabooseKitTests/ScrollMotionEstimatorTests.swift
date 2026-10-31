@@ -61,3 +61,26 @@ struct ScrollMotionEstimatorTests {
         #expect(ScrollMotionEstimator().measure(from: a, to: b, expected: -64...64) == .unexplained)
     }
 }
+
+extension ScrollMotionEstimatorTests {
+    @Test func findsAFixedOverlayInsideTheRegion() {
+        let width = 640, height = 480, shift = 41
+        // A floating button with its own detail, fixed over the scrolling page.
+        func picture(_ offset: Int) -> [UInt8] {
+            var bytes = Self.picture(axis: .vertical, offset: offset, fixed: 48, width: width, height: height)
+            for y in 320..<400 { for x in 480..<600 {
+                let v = UInt8(40 + (x * 13 + y * 7) % 160), p = (y * width + x) * 4
+                bytes[p] = v; bytes[p + 1] = v; bytes[p + 2] = v
+            } }
+            return bytes
+        }
+        let older = Self.signature(picture(0), axis: .vertical, width: width, height: height)
+        let newer = Self.signature(picture(shift), axis: .vertical, width: width, height: height)
+        guard case .moved(let motion) = ScrollMotionEstimator().measure(from: older, to: newer, expected: -64...160) else {
+            Issue.record("no motion found"); return
+        }
+        #expect(motion.shift == shift)
+        let found = motion.stationary.map { (lines: $0.lines, pixels: newer.pixels(of: $0.bands)) }
+        #expect(found.contains { $0.lines.lowerBound >= 304 && $0.lines.upperBound <= 416 && $0.pixels.lowerBound >= 440 && $0.pixels.upperBound <= 640 })
+    }
+}

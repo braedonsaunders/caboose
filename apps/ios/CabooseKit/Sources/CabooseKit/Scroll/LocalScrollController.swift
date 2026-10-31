@@ -219,7 +219,10 @@ public final class LocalScrollController {
                         case .moved(let motion):
                             observation = .moved(shift: motion.shift,
                                                  region: ScrollRegion(along: motion.lines, across: signature.pixels(of: motion.bands)),
-                                                 reference: previous.id)
+                                                 reference: previous.id,
+                                                 stationary: motion.stationary.map {
+                                                     ScrollRegion(along: $0.lines, across: signature.pixels(of: $0.bands))
+                                                 })
                         case .still:
                             observation = .still(reference: previous.id)
                         case .unexplained:
@@ -252,7 +255,7 @@ public final class LocalScrollController {
         var lines = 0..<signature.lines, bands = 0..<signature.bands
         var measured: ScrollRegion?
         switch observation {
-        case .moved(_, let region, _), .reported(_, let region, _, _): measured = region
+        case .moved(_, let region, _, _), .reported(_, let region, _, _): measured = region
         default: break
         }
         if let region = measured {

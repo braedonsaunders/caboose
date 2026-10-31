@@ -484,7 +484,11 @@ uses it differently:
   motion relative to the previous picture. A full search follows only for an unexpected
   jump, and it must be explained by much more of the picture. Cells explained only by
   standing still bound the moving region. Toolbars, sticky headers, status bars, sidebars
-  and gutters are drawn from the newest picture, unmoved. No application identity is used.
+  and gutters are drawn from the newest picture, unmoved. Inside the region, blocks of 16
+  lines by one band whose detail stood still while the content moved are fixed overlays
+  (a floating button, a chat bubble). Up to four per picture are kept, drawn from the
+  newest picture where they are, and left out of every picture's scrolled content, so
+  they leave no copies behind. No application identity is used.
 - **Learning the window.** The measured placements give the app's latency (the 75th
   percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
   rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
@@ -515,6 +519,9 @@ uses it differently:
 The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
 most six of them, chosen for the content they add near the current position. Video layers
 over the picture move with the scrolled content.
+
+One GPU pass draws the region: per pixel, the newest captured picture that covers it
+outside its fixed overlays, else the fill colour.
 
 `CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
 `ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and

@@ -103,3 +103,62 @@ struct LocalScrollRendererTests {
         #expect(Self.read(target) == older)
     }
 }
+
+extension LocalScrollRendererTests {
+    /// A fixed button inside the scrolling region: the scrolled content shows where the
+    /// older picture's button was, and the newest picture's button stays put.
+    @Test func fixedOverlayStaysAndLeavesNoGhost() async throws {
+        let renderer = try #require(LocalScrollRenderer.shared)
+        let width = 200, height = 400, shift = 37
+        let page = Self.picture(width: width, height: height + shift, seed: 5)
+        let button = (x: 120..<180, y: 300..<360)
+        func frame(offset: Int) -> [UInt8] {
+            var bytes = [UInt8](repeating: 0, count: width * height * 4)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let p = (y * width + x) * 4
+                    if button.x.contains(x) && button.y.contains(y) {
+                        bytes[p] = 0; bytes[p + 1] = 0; bytes[p + 2] = 255; bytes[p + 3] = 255
+                    } else {
+                        let q = ((y + offset) * width + x) * 4
+                        for c in 0..<4 { bytes[p + c] = page[q + c] }
+                    }
+                }
+            }
+            return bytes
+        }
+        let olderBytes = frame(offset: 0), newerBytes = frame(offset: shift)
+        let older = Self.texture(olderBytes, width: width, height: height, device: renderer.device)
+        let newer = Self.texture(newerBytes, width: width, height: height, device: renderer.device)
+        let hole = ScrollRegion(along: button.y, across: button.x)
+        // Show the newer picture moved back to the older position; the older picture is
+        // newest-first fallback where the newer one has its button.
+        let region = ScrollRegion(along: 0..<height, across: 0..<width)
+        let composition = ScrollComposition(axis: .vertical, base: 2, region: region,
+            layers: [.init(frame: 1, shift: 0, lines: 0..<height, holes: [hole]),
+                     .init(frame: 2, shift: shift, lines: shift..<height, holes: [hole])],
+            blank: 0, fillFrom: nil, stationary: [hole])
+        let target = Self.texture([UInt8](repeating: 0, count: width * height * 4), width: width, height: height, device: renderer.device)
+        let commands = try #require(renderer.queue.makeCommandBuffer())
+        #expect(renderer.encode(composition, textures: [1: older, 2: newer], fill: SIMD3(1, 1, 1), into: target, commands: commands))
+        await withCheckedContinuation { continuation in
+            commands.addCompletedHandler { _ in continuation.resume() }
+            commands.commit()
+        }
+        let drawn = Self.read(target)
+        var ghost = 0, wrongButton = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let p = (y * width + x) * 4
+                let isButton = drawn[p] == 0 && drawn[p + 1] == 0 && drawn[p + 2] == 255
+                if button.x.contains(x) && button.y.contains(y) { if !isButton { wrongButton += 1 } }
+                else if isButton { ghost += 1 }
+            }
+        }
+        #expect(wrongButton == 0)
+        #expect(ghost == 0)
+        // Away from the button the older position's content is exact.
+        let probe = (10 * width + 10) * 4
+        #expect(Array(drawn[probe..<(probe + 4)]) == Array(olderBytes[probe..<(probe + 4)]))
+    }
+}
