@@ -107,6 +107,9 @@ public final class CabooseDisplaySession: DisplaySession {
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval, display: DisplayInfo?)] = [:]
     /// The overscan last asked for per window on this connection.
     private var requestedOverscan: [Int: CGSize] = [:]
+    /// Each window's last scroll input sequence number this connection (docs/display.md,
+    /// "Input sequencing").
+    private var scrollSeq: [Int: UInt64] = [:]
     /// Authenticated window output assignment; never inferred from the view's screen.
     private var windowDisplays: [Int: Int] = [:]
     private var lastVsync: [Int: UInt64] = [:]
@@ -290,6 +293,8 @@ public final class CabooseDisplaySession: DisplaySession {
         sound = nil
         pendingGeometry.removeAll()
         requestedOverscan.removeAll()
+        scrollSeq.removeAll()
+        for window in windows.values { window.scrollReports.forget() }
         if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
@@ -341,7 +346,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames, devices: devices != nil))
+                    scaledMotion: true, webview: runsGames, devices: devices != nil, scroll: LocalScrollController.enabled))
     }
 
     // MARK: Server messages
@@ -359,6 +364,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .cursorNamed(let name):
                 cursorName = name.lowercased()
                 cursorSerial &+= 1
+            case .scrollTree(let tree):
+                windows[tree.window]?.scrollReports.record(tree)
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
                 if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {
@@ -913,7 +920,21 @@ public final class CabooseDisplaySession: DisplaySession {
         guard dx != 0 || dy != 0 else { return }
         if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size, modifiers: modifiers) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
-                      scroll: (Double(dx), Double(dy), true)))
+                      scroll: (Double(dx), Double(dy), true), scrollSeq: nextScrollSeq(window.id)))
+    }
+
+    private func nextScrollSeq(_ window: Int) -> UInt64 {
+        let seq = scrollSeq[window, default: 0] + 1
+        scrollSeq[window] = seq
+        return seq
+    }
+
+    public func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool {
+        guard state == .ready, window.game == nil, delta != .zero else { return state == .ready }
+        let seq = nextScrollSeq(window.id)
+        window.scrollReports.sent(seq: seq, delta: delta)
+        send(.scrollTarget(window: window.id, scroller: scroller, seq: seq, delta: delta))
+        return true
     }
 
     public func resetScroll() {}

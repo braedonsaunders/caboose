@@ -235,6 +235,14 @@ import Testing
         #expect(id == 7 && !image.isEmpty)
     }
 
+    @Test func scrollTree() throws {
+        guard case .scrollTree(let tree) = try server("scroll-tree").first else { Issue.record("scroll.tree"); return }
+        #expect(tree.window == 7 && tree.tag == 0x03_2A10 && tree.tagRect == CGRect(x: 0, y: 2556, width: 384, height: 12))
+        #expect(tree.applied == 17 && tree.epoch == 2 && tree.scrollers.map(\.id) == [0, 4])
+        #expect(tree.scrollers[0].offset == CGPoint(x: 0, y: 2412.75) && tree.scrollers[0].range == CGPoint(x: 0, y: 18904.5))
+        #expect(tree.scrollers[0].fixed.count == 2 && tree.scrollers[1].fixed.isEmpty)
+    }
+
     @Test func devices() throws {
         guard case .deviceStatus(let states) = try server("device-status").first else { Issue.record("device.status"); return }
         #expect(states == [DeviceState(id: "camera-back", nodes: ["/dev/video4"]),
@@ -366,6 +374,11 @@ import Testing
         "ping": .ping(micros: 98_765_432_100),
         "pointer-left-drag": .pointer(window: 7, x: 10.5, y: 20, buttons: 1, scroll: nil),
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
+        "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
+        "scroll-target": .scrollTarget(window: 7, scroller: 0, seq: 18, delta: CGPoint(x: 0, y: 37.25)),
+        "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], audioDecoders: ["opus"], scroll: true),
         "request-keyframe": .requestKeyframe(window: 7),
         "text-commit": .text(commit: "naïve café 👍"),
         "text-preedit": .text(commit: nil, preedit: "にほん", cursor: (3, 3)),

@@ -39,6 +39,8 @@ pub struct Session {
     pub scaled_motion: bool,
     /// The client offers its hardware and this instance accepts it (docs/devices.md).
     pub devices: bool,
+    /// The client places pictures by toolkit scroll reports, and this instance takes them.
+    pub scroll: bool,
 }
 
 /// Features this server implements (docs/display.md, Handshake).
@@ -67,7 +69,7 @@ pub fn features(xwayland: bool, video: bool, audio: bool, tiles: bool, wasm: boo
 
 /// The process that owns a window and its ancestors: the Wayland client's pid, or an X11
 /// window's _NET_WM_PID.
-fn window_lineage(
+pub(crate) fn window_lineage(
     dh: &smithay::reexports::wayland_server::DisplayHandle,
     surface: &crate::windows::Surface,
 ) -> Vec<u32> {
@@ -158,6 +160,12 @@ impl State {
         self.session = None;
         self.games_session_changed();
         self.generation += 1;
+        // Input sequence numbers are the client's: the next session starts again from 1.
+        for w in self.windows.iter_mut() {
+            w.scroll_seq_delivered = 0;
+            w.scroll_seq_committed = 0;
+        }
+        self.scroll_rebind();
         self.release_input();
         for w in self.windows.iter_mut() {
             w.announced = None;
@@ -224,6 +232,7 @@ impl State {
             Message::Pointer(p) => self.pointer(&p),
             Message::Key(k) => self.key(&k),
             Message::Text(t) => self.text(&t),
+            Message::ScrollTarget(t) => self.scroll_target(&t),
             Message::VideoKeyframe { id } => {
                 let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));
                 if let Some(w) = motion {
@@ -305,6 +314,7 @@ impl State {
         };
         let webview = webview_grant.is_some();
         let devices = hello.devices && self.devices.is_some();
+        let scroll = hello.scroll && self.scroll.socket.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -327,6 +337,9 @@ impl State {
                     }
                     if devices {
                         supported.push("devices".into());
+                    }
+                    if scroll {
+                        supported.push("scroll".into());
                     }
                     supported
                 },
@@ -351,6 +364,7 @@ impl State {
             gpu,
             scaled_motion: hello.scaled_motion,
             devices,
+            scroll,
         });
         self.games_session_changed();
         if audio {
@@ -534,6 +548,7 @@ impl State {
                     settings: self.encoders.settings.clone(),
                     motion: None,
                     ends_motion: None,
+                    input_seq: (w.scroll_seq_committed > 0).then_some(w.scroll_seq_committed),
                 };
                 w.stream.submit(job, &self.done_tx);
                 continue;
@@ -677,6 +692,7 @@ impl State {
                             scaled: m.scaled,
                         }),
                         ends_motion: ending.map(|(id, _)| id),
+                        input_seq: (w.scroll_seq_committed > 0).then_some(w.scroll_seq_committed),
                     };
                     w.stream.submit(job, &self.done_tx);
                 }
@@ -786,6 +802,7 @@ impl State {
                     rect: done.rect,
                     crop: done.crop,
                     data: encoded.data,
+                    input_seq: done.input_seq,
                 });
                 self.net.send(conn, &message);
                 frame_sent = true;

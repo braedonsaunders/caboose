@@ -28,6 +28,7 @@ mod pencil;
 mod render;
 mod remote_buffers;
 mod render_node;
+mod scroll;
 mod session;
 mod state;
 mod stream;
@@ -250,6 +251,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
         env.push(("CABOOSE_DISPLAY_CONTROL".into(), socket.display().to_string()));
+    }
+    if let Some(socket) = &state.scroll.socket {
+        // Toolkit scroll reporters find the compositor here (scroll.rs).
+        env.push(("CABOOSE_SCROLL_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
@@ -525,6 +530,7 @@ fn run(config: Config) -> Result<(), String> {
         videos: Default::default(),
         games: Default::default(),
         control: Default::default(),
+        scroll: Default::default(),
         clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
         audio: None,
         audio_tx,
@@ -617,6 +623,14 @@ fn run(config: Config) -> Result<(), String> {
                 state.ibus = Some(service);
             }
             Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
+        }
+        let path = dir.join("scroll.sock");
+        match scroll::ScrollHub::listen(&path, &handle) {
+            Ok(hub) => {
+                tracing::info!("scroll socket: {}", path.display());
+                state.scroll = hub;
+            }
+            Err(e) => tracing::warn!("no scroll reports: cannot listen on {}: {e}", path.display()),
         }
     }
     let spawned = x_display.and_then(|number| {

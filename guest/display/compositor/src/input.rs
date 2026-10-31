@@ -172,6 +172,9 @@ impl State {
         }
         self.input.pointer_buttons = m.buttons;
         if let Some(scroll) = &m.scroll {
+            if let (Some(seq), Some(w)) = (scroll.seq, self.windows.get_mut(m.id)) {
+                w.scroll_seq_delivered = w.scroll_seq_delivered.max(seq);
+            }
             let display_scale =
                 self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
             let (source, axes) = scroll_axes(scroll, display_scale);
@@ -522,10 +525,10 @@ mod tests {
 
     #[test]
     fn precise_scroll_is_finger_pixels_without_discrete_steps() {
-        let (source, axes) = scroll_axes(&proto::Scroll { dx: 0.0, dy: 60.0, precise: true }, 2.0);
+        let (source, axes) = scroll_axes(&proto::Scroll { dx: 0.0, dy: 60.0, precise: true, seq: None }, 2.0);
         assert_eq!(source, AxisSource::Finger);
         assert_eq!(axes, vec![(Axis::Vertical, 30.0, None)]);
-        let (source, axes) = scroll_axes(&proto::Scroll { dx: -1.0, dy: 2.0, precise: false }, 2.0);
+        let (source, axes) = scroll_axes(&proto::Scroll { dx: -1.0, dy: 2.0, precise: false, seq: None }, 2.0);
         assert_eq!(source, AxisSource::Wheel);
         assert_eq!(axes, vec![(Axis::Horizontal, -15.0, Some(-120)), (Axis::Vertical, 30.0, Some(240))]);
     }

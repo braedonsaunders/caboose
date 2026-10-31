@@ -306,6 +306,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 rect: Rect::new(0, 0, 64, 64),
                 crop: Rect::new(0, 0, 64, 64),
                 data: media.h264_keyframe.clone(),
+                input_seq: None,
             }),
         ),
         one(
@@ -319,6 +320,42 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 rect: Rect::new(0, 0, 124, 120),
                 crop: Rect::new(0, 0, 62, 60),
                 data: media.hevc_keyframe.clone(),
+                input_seq: None,
+            }),
+        ),
+        one(
+            "frame-input-seq",
+            "A non-key frame whose picture contains no scroll input after the window's sequence 41.",
+            Message::Frame(Frame {
+                id: 7,
+                codec: Codec::Hevc,
+                keyframe: false,
+                pts_us: 1_234_600_000,
+                rect: Rect::new(0, 0, 64, 64),
+                crop: Rect::new(0, 0, 64, 64),
+                data: vec![0, 0, 0, 1, 0x02, 0x01, 0xd0],
+                input_seq: Some(41),
+            }),
+        ),
+        one(
+            "scroll-tree",
+            "A Chromium report for the pictures tagged 0x03_2A10: the root scroller under a 180 px toolbar with a stuck 120 px header and the tag in its fixed rects, and an inner list; scroll.target 17 applied, layout epoch 2.",
+            Message::ScrollTree(ScrollTree {
+                id: 7,
+                tag: Some(0x03_2A10),
+                tag_rect: Some(Rect::new(0, 2556, 384, 12)),
+                applied: 17,
+                epoch: 2,
+                scrollers: vec![
+                    Scroller {
+                        id: 0,
+                        rect: Rect::new(0, 180, 1179, 4932),
+                        offset: [0.0, 2412.75],
+                        range: [0.0, 18_904.5],
+                        fixed: vec![Rect::new(0, 180, 1179, 120), Rect::new(0, 2556, 384, 12)],
+                    },
+                    Scroller { id: 4, rect: Rect::new(60, 900, 1059, 600), offset: [0.0, 96.0], range: [0.0, 1404.0], fixed: vec![] },
+                ],
             }),
         ),
         one(
@@ -525,7 +562,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -533,7 +570,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A client accepts half-resolution motion without enabling passthrough video.",
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false, scroll: false,
             }),
         ),
         one(
@@ -550,7 +587,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -567,7 +604,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -584,7 +621,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: true,
                 scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -601,7 +638,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -611,7 +648,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
-                devices: false,
+                devices: false, scroll: false,
             }),
         ),
         one(
@@ -621,7 +658,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, devices: true,
+                scaled_motion: false, devices: true, scroll: false,
+            }),
+        ),
+        one(
+            "client-hello-scroll",
+            "client-hello-audio from a phone that places pictures by toolkit scroll reports.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
+                scaled_motion: false, devices: false, scroll: true,
             }),
         ),
         one(
@@ -842,8 +889,24 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 x: 640.0,
                 y: 480.0,
                 buttons: 0,
-                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true }),
+                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: None }),
             }),
+        ),
+        one(
+            "pointer-scroll-seq",
+            "Pixel scroll carrying the window's input sequence number 42.",
+            Message::Pointer(Pointer {
+                id: 7,
+                x: 640.0,
+                y: 480.0,
+                buttons: 0,
+                scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: Some(42) }),
+            }),
+        ),
+        one(
+            "scroll-target",
+            "Scroll the root scroller of window 7 down by 37.25 content pixels, as the window's input 18.",
+            Message::ScrollTarget(ScrollTarget { id: 7, scroller: 0, seq: 18, delta: [0.0, 37.25] }),
         ),
         one(
             "key-shift-a",

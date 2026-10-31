@@ -86,6 +86,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
 | Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
+| Scroll socket ([Scroll reports](#scroll-reports)) | `…/caboose-display/wayland-caboose-0/scroll.sock` | `…/caboose-display/wayland-caboose-agent/scroll.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
 - **Token.** At each wake the host writes a fresh token to `/run/caboose/display-token`
@@ -96,12 +97,12 @@ The computer runs two instances of caboose-display, one for the owner and one fo
   them. In the container runtime both ports are published on host loopback only.
 - **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
   environment its applications need (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
-  `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `PULSE_SERVER` when it
+  `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `CABOOSE_SCROLL_SOCKET`, `PULSE_SERVER` when it
   plays sound, `CABOOSE_GAME_SOCKET` when it hands games off, the VA-API passthrough
   variables when the driver is installed) to its env file in sh syntax.
 - **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
   Xwayland shim that adds `-auth` (`bin/Xwayland`), its PulseAudio socket
-  (`pulse/native`) and its control socket (`control.sock`) under
+  (`pulse/native`), its control socket (`control.sock`) and its scroll socket (`scroll.sock`) under
   `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, owner-only, so the two never
   share them.
 - **Readiness.** `caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]` exits 0 once the
@@ -276,7 +277,7 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`. A feature is listed only
+`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`, `scroll`. A feature is listed only
 when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
 `text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
 when it can send video streams and the client lists `video_decoders`; `audio` when it
@@ -284,7 +285,8 @@ plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off
 owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
 streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff; and `devices` when
 the owner's display accepts the phone's hardware ([devices.md](devices.md)) and the client's
-hello says `devices: true`.
+hello says `devices: true`; and `scroll` when the instance listens on its scroll socket and
+the client's hello says `scroll: true`.
 
 ### Pacing and flow control
 
@@ -319,7 +321,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size` |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
-| `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
+| `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes`, `input_seq?: uint` ([Input sequencing](#input-sequencing)) |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
 | `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
 | `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
@@ -336,6 +338,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
+| `0x23` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]` ([Scroll reports](#scroll-reports)) |
 | `0x30` | `clipboard` | `mime`, `data: bytes` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
@@ -351,7 +354,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -362,9 +365,10 @@ Client → server (`0x81`–`0xFF`):
 | `0x89` | `video.keyframe` | `id`: the decoder failed; frames are dropped until a keyframe |
 | `0x90` | `touch` | `id`, `points: [{ slot, phase: "down"\|"motion"\|"up"\|"cancel", x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
 | `0x91` | `pencil` | `id`, `phase: "down"\|"motion"\|"up"\|"cancel"\|"hover"\|"leave"`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
-| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool }` (pixels when precise, otherwise wheel clicks) |
+| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool, seq?: uint }` (pixels when precise, otherwise wheel clicks; `seq`: [Input sequencing](#input-sequencing)) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
+| `0x95` | `scroll.target` | `id`, `scroller: uint`, `seq: uint`, `delta: [dx, dy]` ([Scroll reports](#scroll-reports)) |
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
@@ -580,7 +584,84 @@ outside its fixed overlays, else the fill colour.
 `ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
 `LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
 exact scroll offset, region, range and fixed rectangles replaces measurement for that
-picture (`ScrollObservation.reported`).
+picture (`ScrollObservation.reported`); see [Scroll reports](#scroll-reports).
+
+### Scroll reports
+
+An application's own scroll state, bound to the exact pictures that show it, replaces
+pixel measurement wherever a toolkit reporter runs. A picture whose report says the
+content is scrolled by `offset` shows exactly that content, whatever loaded, stuck or
+shifted on the page.
+
+**Reporters.** A reporter runs inside the application, in its toolkit: the Chromium
+extension ([guest/scroll-reporter](../guest/scroll-reporter)). In each frame, after
+layout, it reads its scrollers and sends a report to its display instance's
+`scroll.sock`, whose protocol `guest/display/compositor/src/scroll.rs` describes. The
+compositor binds the reporter to a toplevel of a process in the reporter's own lineage.
+Among several, it takes the one whose title the report names, then the focused one. It
+then sends each report to the client as `scroll.tree`.
+
+**`scroll.tree`** (`0x23`): the window's scrollers as one application frame drew them, in
+window-local display pixels (the space of `frame.rect`, overscan included). The primary
+scroller comes first. `rect` is the scroller's visible area, `offset` its content offset,
+and `range` its largest offset (the smallest is 0). `fixed` are rectangles inside `rect`
+that do not move with the content: fixed elements, stuck sticky elements and the frame
+tag. `applied` is the last `scroll.target` `seq` the application had applied when it drew
+the frame, 0 for none. `epoch` changes when content moved in document coordinates, such
+as an image loading above the viewport or scroll anchoring. Pictures of two epochs are not
+placed against each other by their offsets. `tag` and `tag_rect` are present while the
+frame tag is drawn.
+
+**Frame tag.** The application's pictures reach the phone on their own path (a video
+`frame`, a GPU present), later than and independently of their `scroll.tree`. Only the
+picture can say which report it shows. While the window has bottom overscan of at least
+one block, the reporter draws a tag at the first overscan line, below everything the
+client shows. It draws the tag in the same frame as the state it reports. The tag is 32
+square blocks in a row, each black (0) or white (1):
+
+- the sync pattern `1010`;
+- the 24-bit `tag` value, most significant bit first: the reporter's id (1–255, assigned
+  by the compositor) in the top 8 bits and the frame number in the low 16;
+- the XOR of the value's six 4-bit nibbles.
+
+Blocks are at least 12 display pixels square, so the tag survives video coding and a GPU
+picture smaller than the window. `tag_rect` is where the 32 blocks are. A client samples
+each block's centre luma, thresholds at 128, and accepts the value only with the sync
+pattern and the check. It then places the picture by the `scroll.tree` with that `tag`
+and treats the tag as fixed content. A picture without a decodable tag, or whose tag names
+no report it holds, is placed by measurement. A report's frame number changes only when
+something it reports changes, so a picture drawn for another reason carries a tag whose
+report is still exact. `guest/display/vectors/scroll-tag/scroll-tag.json` pins the blocks of five
+values.
+
+**`scroll.target`** (`0x95`): scroll scroller `scroller` of window `id` by `delta` content
+pixels (display pixels; positive scrolls toward the end). The reporter applies it exactly:
+no gain, no animation, in the application's next frame, before that frame's report. Deltas
+rather than positions keep the application's own adjustments, such as scroll anchoring,
+and need no shared origin. A client that wants the content at offset `X` sends
+`X - (offset + Σ delta of the targets after applied)`. The phone places pictures by
+reports only while it drives the window with `scroll.target`. Scrolling that Chromium
+animates on its compositor thread, as a wheel scroll can, may show an offset before its
+frame's report.
+
+#### Input sequencing
+
+Every scroll input a client sends carries the window's input sequence number. It is per
+window, shared by `pointer.scroll.seq` and `scroll.target.seq`, strictly increasing from 1
+within a display session, and restarts with a new session. Each picture then says how
+much of that input it contains, so a client predicting locally never applies a delta
+twice and never springs back:
+
+- A `scroll.tree`'s `applied` is exact: the picture tagged with it contains every
+  `scroll.target` up to `applied` and none after it. The application's eventual offset is
+  `offset + Σ delta (seq > applied)`.
+- A `frame`'s `input_seq` is the highest `pointer.scroll.seq` the compositor had delivered
+  to the window's client before the commit the picture shows. The picture contains no
+  scroll input after it, and its application may not yet have applied all of it. GPU
+  presents do not pass through the compositor and carry no `input_seq`.
+
+`frame-input-seq`, `pointer-scroll-seq`, `scroll-target`, `scroll-tree` and
+`client-hello-scroll` in `guest/display/vectors/` pin the messages.
 
 ### Audio
 

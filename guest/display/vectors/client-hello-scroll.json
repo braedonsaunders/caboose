@@ -1,0 +1,8 @@
+{
+  "name": "client-hello-scroll",
+  "description": "client-hello-audio from a phone that places pictures by toolkit scroll reports.",
+  "messages": [
+    {"direction": "client", "type": "hello", "type_id": 129, "fields": {"token": "f3a9c1d27e8b4a6f", "scroll": true, "version": 0, "decoders": ["hevc", "h264"], "displays": [{"id": 1, "hdr": true, "scale": {"$float": 3.0}, "width": 1179, "height": 2556, "refresh_hz": {"$float": 120.0}}], "audio_decoders": ["opus"]}}
+  ],
+  "hex": "819c000000a665746f6b656e7066336139633164323765386234613666667363726f6c6cf56776657273696f6e00686465636f64657273826468657663646832363468646973706c61797381a66269640163686472f5657363616c65fb400800000000000065776964746819049b666865696768741909fc6a726566726573685f687afb405e0000000000006e617564696f5f6465636f6465727381646f707573"
+}

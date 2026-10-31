@@ -5,6 +5,8 @@
 //! with its decode time, and reports per-window fps, bitrate, decode time and latency.
 //! With `--server-pid` it also reports the server's CPU time per frame and overall.
 
+mod scroll;
+
 use caboose_display_protocol::{self as proto, Codec, Decoded, Message, StreamDecoder};
 use ffmpeg_next as ff;
 use std::collections::BTreeMap;
@@ -54,6 +56,13 @@ OPTIONS:
                            decline (refuse the game handed to the probe, as a device that
                            cannot run it does),
                            finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
+    --scroll               place pictures by scroll reports (hello scroll: true): check each
+                           picture's frame tag against the scroll.tree it names
+    --scroll-overscan H    once the window shows, ask for H pixels of bottom overscan
+    --scroll-drive DY      once reports carry tags, scroll the primary scroller DY content
+                           pixels per vsync with scroll.target
+    --ruler                check each tagged picture's offset against the ruler drawn by
+                           scripts/pages/scroll-ruler.html
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -82,6 +91,10 @@ struct Args {
     window: Option<u64>,
     check: bool,
     json: bool,
+    scroll: bool,
+    scroll_overscan: Option<i32>,
+    scroll_drive: Option<f64>,
+    ruler: bool,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -122,6 +135,10 @@ fn parse_args() -> Result<Args, String> {
         window: None,
         check: false,
         json: false,
+        scroll: false,
+        scroll_overscan: None,
+        scroll_drive: None,
+        ruler: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -179,6 +196,10 @@ fn parse_args() -> Result<Args, String> {
             "--actions" => a.actions = value()?.split(';').map(str::to_owned).filter(|s| !s.is_empty()).collect(),
             "--window" => a.window = Some(value()?.parse().map_err(|_| "bad --window")?),
             "--check" => a.check = true,
+            "--scroll" => a.scroll = true,
+            "--scroll-overscan" => a.scroll_overscan = Some(value()?.parse().map_err(|_| "bad --scroll-overscan")?),
+            "--scroll-drive" => a.scroll_drive = Some(value()?.parse().map_err(|_| "bad --scroll-drive")?),
+            "--ruler" => a.ruler = true,
             "--json" => a.json = true,
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -514,7 +535,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 x,
                 y,
                 buttons: 0,
-                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true }),
+                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true, seq: None }),
             })]
         }
         _ => return Err(format!("unknown action {verb}")),
@@ -568,6 +589,7 @@ fn run(args: Args) -> Result<bool, String> {
         &mut ws,
         &Message::ClientHello(proto::ClientHello {
             devices: false,
+            scroll: args.scroll,
             version: proto::VERSION,
             token: args.token.clone(),
             decoders: args.decoders.clone(),
@@ -605,6 +627,8 @@ fn run(args: Args) -> Result<bool, String> {
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
     let mut bye: Option<proto::ByeReason> = None;
+    let mut scroll_check = scroll::ScrollCheck::default();
+    let mut overscan_asked = false;
 
     'outer: while start.elapsed() < args.duration {
         if args.stall_after.is_some_and(|s| start.elapsed() >= s) {
@@ -639,6 +663,14 @@ fn run(args: Args) -> Result<bool, String> {
                 send(&mut ws, &Message::Vsync { display: d.id, t_us: monotonic_us() })?;
             }
             next_vsync += vsync_interval;
+            if let (Some(id), Some(dy)) = (target, args.scroll_drive) {
+                // Drive only once the reporter draws tags: the overscan is in place.
+                if scroll_check.latest.get(&id).is_some_and(|t| t.tag.is_some()) {
+                    if let Some(m) = scroll_check.target(id, dy) {
+                        send(&mut ws, &m)?;
+                    }
+                }
+            }
             if next_vsync < now {
                 next_vsync = now + vsync_interval;
             }
@@ -795,6 +827,22 @@ fn run(args: Args) -> Result<bool, String> {
                     {
                         target = Some(f.id);
                     }
+                    if args.scroll && got {
+                        if let Some(frame) = &d.last {
+                            let luma = scroll::Luma {
+                                data: frame.data(0),
+                                stride: frame.stride(0),
+                                width: frame.width() as i32,
+                                height: frame.height() as i32,
+                            };
+                            scroll_check.picture(f.id, &luma, scroll::Mapping::new(f.rect, f.crop), args.ruler);
+                        }
+                    }
+                    if let (Some(h), false, Some(id)) = (args.scroll_overscan, overscan_asked, target) {
+                        overscan_asked = true;
+                        let overscan = Some(proto::Size { w: 0, h });
+                        send(&mut ws, &Message::Configure(proto::Configure { id, overscan, ..Default::default() }))?;
+                    }
                     if !acted && got {
                         acted = true;
                         if let Some((x, y)) = args.click {
@@ -823,6 +871,7 @@ fn run(args: Args) -> Result<bool, String> {
                     text_input_events += 1;
                     text_inputs.push(t);
                 }
+                Message::ScrollTree(t) => scroll_check.tree(t),
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
                     if target.is_none() && args.window.is_none_or(|w| w == g.window) {
@@ -976,6 +1025,10 @@ fn run(args: Args) -> Result<bool, String> {
     ok &= videos.values().all(|v| v.decode_errors == 0);
     ok &= sound.errors == 0;
 
+    if args.scroll {
+        println!("scroll: {}", scroll_check.json());
+        ok &= scroll_check.unmatched == 0 && scroll_check.ruler_bad == 0;
+    }
     if args.json {
         let per: Vec<String> = windows
             .iter()

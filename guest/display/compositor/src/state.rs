@@ -206,6 +206,8 @@ pub struct State {
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
     pub control: crate::control::Control,
+    /// Toolkit scroll reporters (scroll.rs).
+    pub scroll: crate::scroll::ScrollHub,
     pub clipboard: crate::clipboard::Clipboard,
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
@@ -575,6 +577,8 @@ impl State {
             fullscreen: false,
             maximized: false,
             lineage: None,
+            scroll_seq_delivered: 0,
+            scroll_seq_committed: 0,
             overscan: (0, 0).into(),
             overscan_size: None,
             shown: None,
@@ -688,6 +692,7 @@ impl State {
     /// Announces new windows and changes to known ones; retracts unmapped ones.
     pub fn sync_windows(&mut self) {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
+        let mut resized = false;
         for id in self.windows.parent_first() {
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application whose stream the client renders never presents here, so its
@@ -731,6 +736,7 @@ impl State {
                     self.net.send(conn, &proto::Message::WindowCreate(now.clone()));
                     let w = self.windows.get_mut(id).unwrap();
                     w.announced = Some(now);
+                    resized = true;
                     w.stream.need_keyframe = true;
                     w.stream.dirty = true;
                     self.window_announced(id);
@@ -738,11 +744,15 @@ impl State {
                 Some(before) => {
                     let update = crate::windows::diff(before, &now);
                     if !update.is_empty() {
+                        resized |= update.geometry.is_some() || update.overscan.is_some() || update.title.is_some();
                         self.net.send(conn, &proto::Message::WindowUpdate(update));
                         self.windows.get_mut(id).unwrap().announced = Some(now);
                     }
                 }
             }
+        }
+        if resized {
+            self.scroll_rebind();
         }
     }
 
@@ -856,6 +866,10 @@ impl CompositorHandler for State {
             }
         }
         on_commit_buffer_handler::<Self>(surface);
+        // The picture this commit makes can hold every scroll delivered so far, no later one.
+        if let Some(w) = self.windows.by_surface(surface).and_then(|id| self.windows.get_mut(id)) {
+            w.scroll_seq_committed = w.scroll_seq_delivered;
+        }
         if new_buffer {
             self.present_remote_buffer(surface);
         }
