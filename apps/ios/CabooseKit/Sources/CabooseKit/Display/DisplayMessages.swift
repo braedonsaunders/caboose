@@ -137,6 +137,9 @@ public struct WindowFields: Equatable, Sendable {
     public var display: Int?
     public var xwayland: Bool?
     public var alpha: Bool?
+    /// How far the window's pictures extend right of and below `geometry`, while an
+    /// overscan the client asked for applies; `[0, 0]` when it ends.
+    public var overscan: CGSize?
 
     public init(id: Int) { self.id = id }
 
@@ -155,6 +158,7 @@ public struct WindowFields: Equatable, Sendable {
         display = body["display"]?.int
         xwayland = body["xwayland"]?.bool
         alpha = body["alpha"]?.bool
+        overscan = body["overscan"].flatMap(Self.size)
     }
 
     static func rect(_ value: CBOR) -> CGRect? {
@@ -913,7 +917,7 @@ public enum ClientMessage: Sendable {
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
-                   maximized: Bool? = nil, activated: Bool? = nil)
+                   maximized: Bool? = nil, activated: Bool? = nil, overscan: CGSize? = nil)
     case close(window: Int)
     case requestKeyframe(window: Int)
     case displays([DisplayInfo])
@@ -1029,11 +1033,12 @@ public enum ClientMessage: Sendable {
             return DisplayFrame(type: T.ack.rawValue, body: map([
                 ("id", CBOR(window)), ("pts_us", CBOR(pts)), ("decoded_us", CBOR(decoded)),
             ]))
-        case .configure(let window, let geometry, let display, let fullscreen, let maximized, let activated):
+        case .configure(let window, let geometry, let display, let fullscreen, let maximized, let activated, let overscan):
             return DisplayFrame(type: T.configure.rawValue, body: map([
                 ("id", CBOR(window)), ("geometry", geometry.map(rect)), ("display", display.map { CBOR($0) }),
                 ("fullscreen", fullscreen.map { CBOR($0) }), ("maximized", maximized.map { CBOR($0) }),
                 ("activated", activated.map { CBOR($0) }),
+                ("overscan", overscan.map { [CBOR(Int($0.width.rounded())), CBOR(Int($0.height.rounded()))] }),
             ]))
         case .close(let window):
             return DisplayFrame(type: T.close.rawValue, body: map([("id", CBOR(window))]))

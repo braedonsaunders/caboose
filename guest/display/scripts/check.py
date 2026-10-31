@@ -852,6 +852,34 @@ def check_resize_streaming():
     return with_server(CHROMIUM + ["--window-size=1000,700", f"--app={PAGES}/motion.html"], run)
 
 
+def check_overscan(x11=False):
+    # A resizable window asked for 600 pixels of overscan below a 800x500 geometry: the
+    # update announcing it precedes every frame of the taller picture, the picture is the
+    # geometry plus the overscan, and a touch in the overscan reaches the window. Ending
+    # it returns the window to the shown size.
+    actions = "resize:800,500;wait:600;overscan:0,600;wait:900"
+    def run(proc, token):
+        # Chromium can take a while to map its window on a loaded machine.
+        for _ in range(30):
+            if probe(["--token-file", token, "--duration", "1"], check=False)["windows"]:
+                break
+        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", "--actions", actions])
+        w = r["windows"][0]
+        if w["rect_mismatch"] or w["decode_errors"]:
+            raise Failed(f"{w['rect_mismatch']} frames disagreed with the announced overscan, {w['decode_errors']} decode errors")
+        if tuple(w["geometry"][2:]) != (800, 500) or tuple(w["overscan"]) != (0, 600) or tuple(w["rect"]) != (800, 1100):
+            raise Failed(f"geometry {w['geometry']}, overscan {w['overscan']}, picture {w['rect']}")
+        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--actions", "overscan:0,0;wait:900"])
+        w = r["windows"][0]
+        if tuple(w["overscan"]) != (0, 0) or tuple(w["rect"]) != (800, 500) or w["rect_mismatch"]:
+            raise Failed(f"after ending it: overscan {w['overscan']}, picture {w['rect']}, {w['rect_mismatch']} mismatches")
+        return "overscan 0x600 under 800x500: announced before the 800x1100 pictures, and ended back to 800x500"
+    command = CHROMIUM + ["--window-size=800,500", f"--app={PAGES}/motion.html"]
+    if x11:
+        command = [arg for arg in command if not arg.startswith("--ozone-platform")] + ["--ozone-platform=x11"]
+    return with_server(command, run)
+
+
 def check_app_crash():
     # Two animating windows and an xterm; one animation and the xterm are killed with
     # SIGKILL mid-stream. Their windows go, the other keeps streaming, and the server
@@ -1074,6 +1102,8 @@ CHECKS = [
     ("storm", check_storm),
     ("takeover", check_takeover),
     ("resize-streaming", check_resize_streaming),
+    ("overscan", check_overscan),
+    ("overscan-x11", lambda: check_overscan(x11=True)),
     ("app-crash", check_app_crash),
     ("stalled-client", check_stalled_client),
     ("popup", check_popup),

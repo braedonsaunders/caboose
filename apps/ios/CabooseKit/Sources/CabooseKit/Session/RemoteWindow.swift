@@ -15,6 +15,10 @@ public final class RemoteWindow: Identifiable {
     /// The app asked to cover the whole screen (a video player, a game, a slideshow).
     public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
+    /// How far the app lays the window out right of and below `frame`, in the server's
+    /// pixels, while an overscan the phone asked for applies: its pictures cover the
+    /// viewport plus this, and the phone shows the viewport.
+    public internal(set) var overscan: CGSize = .zero
     /// Position and size in the server's pixel space. Position may follow an in-flight
     /// placement request; size remains the size reported by the server.
     public internal(set) var frame: CGRect

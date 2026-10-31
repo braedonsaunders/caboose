@@ -294,6 +294,11 @@ struct WindowStats {
     atlas_fills: u64,
     atlas_refs: u64,
     atlas_tiles: u64,
+    /// The overscan last announced, and the last frame's rect size.
+    overscan: (i32, i32),
+    rect: (i32, i32),
+    /// Frames whose rect was not the announced geometry plus overscan when they came.
+    rect_mismatch: u64,
 }
 
 /// Per-window reconstructed RGBA8888 surface when streaming via `SurfaceBatch`.
@@ -721,6 +726,15 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             activated: Some(true),
             ..Default::default()
         })],
+        // overscan:W,H asks for the window laid out W and H pixels wider and taller than shown.
+        "overscan" => {
+            let (w, h) = point(arg)?;
+            vec![Message::Configure(proto::Configure {
+                id,
+                overscan: Some(proto::Size { w: w as i32, h: h as i32 }),
+                ..Default::default()
+            })]
+        }
         // scroll:X,Y,DY scrolls by DY pixels (precise, as a trackpad or a touch drag) at X,Y.
         // resize:W,H asks for the window at that size (display pixels).
         "resize" => {
@@ -922,6 +936,7 @@ fn run(args: Args) -> Result<bool, String> {
                     let s = windows.entry(c.id).or_default();
                     s.title = if c.title.is_empty() { c.app_id.clone() } else { c.title.clone() };
                     s.geometry = c.geometry;
+                    s.overscan = c.overscan.map_or((0, 0), |o| (o.w, o.h));
                     s.kind = c.kind.as_str();
                     s.parent = c.parent;
                     s.alpha = c.alpha;
@@ -936,6 +951,9 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                     if let Some(a) = u.alpha {
                         s.alpha = a;
+                    }
+                    if let Some(o) = u.overscan {
+                        s.overscan = (o.w, o.h);
                     }
                 }
                 Message::WindowDestroy { id } => {
@@ -1053,6 +1071,10 @@ fn run(args: Args) -> Result<bool, String> {
                     }
                     s.frames += 1;
                     s.keyframes += f.keyframe as u64;
+                    s.rect = (f.rect.w, f.rect.h);
+                    if (f.rect.w, f.rect.h) != (s.geometry.w + s.overscan.0, s.geometry.h + s.overscan.1) {
+                        s.rect_mismatch += 1;
+                    }
                     s.bytes += f.data.len() as u64;
                     if s.last_crop != Some((f.crop.w, f.crop.h)) {
                         s.sizes += 1;
@@ -1350,7 +1372,7 @@ fn run(args: Args) -> Result<bool, String> {
                     .map(|c| c.as_str())
                     .unwrap_or(if w.surface_batches > 0 { "atlas" } else { "" });
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -1382,7 +1404,12 @@ fn run(args: Args) -> Result<bool, String> {
                     w.atlas_copies,
                     w.atlas_fills,
                     w.atlas_refs,
-                    w.atlas_tiles
+                    w.atlas_tiles,
+                    w.overscan.0,
+                    w.overscan.1,
+                    w.rect.0,
+                    w.rect.1,
+                    w.rect_mismatch
                 )
             })
             .collect();

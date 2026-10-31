@@ -49,6 +49,35 @@ pub struct Window {
     pub maximized: bool,
     /// The owning process and its ancestors, once looked up (for video binding).
     pub lineage: Option<Vec<u32>>,
+    /// Overscan the client asked for: how much wider and taller than the geometry it
+    /// shows the window is laid out (logical pixels; zero for none).
+    pub overscan: Size<i32, Logical>,
+    /// The whole size (shown geometry plus overscan) last configured for that overscan.
+    /// The overscan applies while the window has exactly this size.
+    pub overscan_size: Option<Size<i32, Logical>>,
+    /// The size last configured for the client to show, while an overscan is or was
+    /// asked for: an overscan change keeps it, even before the app has committed it.
+    pub shown: Option<Size<i32, Logical>>,
+}
+
+/// The largest picture, per axis, an overscan may make: what the encoders take.
+pub const OVERSCAN_MAX_PICTURE: i32 = 4096;
+
+/// The whole size to lay a window out at for a shown size and a requested overscan, and
+/// the overscan that size carries: the overscan is cut so the whole stays within `limit`
+/// and within the app's maximum size (zero for none) on each axis.
+pub fn overscan_layout(
+    shown: Size<i32, Logical>,
+    overscan: Size<i32, Logical>,
+    max: Size<i32, Logical>,
+    limit: i32,
+) -> (Size<i32, Logical>, Size<i32, Logical>) {
+    let axis = |shown: i32, over: i32, max: i32| {
+        let ceiling = if max > 0 { limit.min(max) } else { limit };
+        over.max(0).min((ceiling - shown).max(0))
+    };
+    let applied: Size<i32, Logical> = (axis(shown.w, overscan.w, max.w), axis(shown.h, overscan.h, max.h)).into();
+    ((shown.w + applied.w, shown.h + applied.h).into(), applied)
 }
 
 /// The xdg window geometry of a surface: where the window is within the surface
@@ -88,6 +117,31 @@ fn size_px(d: &DisplayOutput, s: Size<i32, Logical>) -> Option<proto::Size> {
 }
 
 impl Window {
+    /// The overscan in effect: the requested one while the app has the size laid out for
+    /// it, otherwise none (the app declined it, or has not committed it yet).
+    pub fn applied_overscan(&self) -> Size<i32, Logical> {
+        let size = self.local_geometry().size;
+        match self.overscan_size {
+            Some(full) if full == size && (self.overscan.w > 0 || self.overscan.h > 0) => self.overscan,
+            _ => (0, 0).into(),
+        }
+    }
+
+    /// The size the client shows: the geometry without the overscan in effect.
+    pub fn shown_size(&self) -> Size<i32, Logical> {
+        let (size, over) = (self.local_geometry().size, self.applied_overscan());
+        (size.w - over.w, size.h - over.h).into()
+    }
+
+    /// The app's maximum size, zero on an axis without one.
+    pub fn max_size(&self) -> Size<i32, Logical> {
+        match &self.surface {
+            Surface::Toplevel(t) => min_max(t.wl_surface()).1,
+            Surface::X11(x) => x.max_size().unwrap_or_default(),
+            Surface::Popup(_) => (0, 0).into(),
+        }
+    }
+
     /// The window's geometry in surface-local logical coordinates (for X11 windows the
     /// whole surface).
     pub fn local_geometry(&self) -> Rectangle<i32, Logical> {
@@ -230,8 +284,17 @@ impl Windows {
             Some(p) => origin - self.logical_origin(p, displays),
             None => origin - d.origin,
         };
-        let geometry =
-            Rect::new(to_px(d, relative.x), to_px(d, relative.y), to_px(d, local.size.w), to_px(d, local.size.h));
+        // The overscan lies right of and below the geometry the client shows; the picture
+        // is the whole window.
+        let applied = w.applied_overscan();
+        let overscan = (applied.w > 0 || applied.h > 0).then(|| proto::Size { w: to_px(d, applied.w), h: to_px(d, applied.h) });
+        let (over_w, over_h) = overscan.map_or((0, 0), |o| (o.w, o.h));
+        let geometry = Rect::new(
+            to_px(d, relative.x),
+            to_px(d, relative.y),
+            to_px(d, local.size.w) - over_w,
+            to_px(d, local.size.h) - over_h,
+        );
         let (title, app_id, min, max, fullscreen) = match &w.surface {
             Surface::Toplevel(t) => {
                 let (title, app_id) = title_app_id(t.wl_surface());
@@ -272,6 +335,7 @@ impl Windows {
             // A popup's rounded corners and shadow lie inside its geometry: its picture
             // keeps the alpha, as lossless tiles (docs/display.md, "Video streams").
             alpha: w.kind == WindowKind::Popup,
+            overscan,
         })
     }
 }
@@ -295,6 +359,7 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         display: if before.display != now.display { now.display } else { None },
         xwayland: changed(&before.xwayland, &now.xwayland),
         alpha: changed(&before.alpha, &now.alpha),
+        overscan: if before.overscan != now.overscan { now.overscan.or(Some(proto::Size { w: 0, h: 0 })) } else { None },
     }
 }
 
@@ -317,6 +382,7 @@ mod tests {
             display: Some(1),
             xwayland: false,
             alpha: false,
+            overscan: None,
         }
     }
 
@@ -331,6 +397,27 @@ mod tests {
         assert_eq!(d.title.as_deref(), Some("b"));
         assert_eq!(d.geometry, Some(Rect::new(1, 2, 30, 40)));
         assert_eq!(d.app_id, None);
+    }
+
+    #[test]
+    fn overscan_is_cut_to_the_picture_limit_and_the_app_maximum() {
+        let size = |w, h| Size::<i32, Logical>::from((w, h));
+        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 0), 4096), (size(400, 1600), size(0, 800)));
+        assert_eq!(overscan_layout(size(400, 3000), size(0, 2000), size(0, 0), 4096), (size(400, 4096), size(0, 1096)));
+        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 1000), 4096), (size(400, 1000), size(0, 200)));
+        // Already at the app's maximum: nothing to add.
+        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 700), 4096), (size(400, 800), size(0, 0)));
+    }
+
+    #[test]
+    fn an_ended_overscan_is_sent_as_zero() {
+        let mut a = create();
+        a.overscan = Some(proto::Size { w: 0, h: 600 });
+        let mut b = a.clone();
+        assert_eq!(diff(&a, &b).overscan, None);
+        b.overscan = None;
+        assert_eq!(diff(&a, &b).overscan, Some(proto::Size { w: 0, h: 0 }));
+        assert_eq!(diff(&b, &a).overscan, Some(proto::Size { w: 0, h: 600 }));
     }
 
     #[test]

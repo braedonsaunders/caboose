@@ -186,6 +186,12 @@ impl State {
             w.announced = None;
             w.stream.reset_for_client();
         }
+        // Overscan is the client's: nobody shows a slice of the picture once it is gone.
+        let overscanned: Vec<u64> =
+            self.windows.iter().filter(|w| w.overscan.w > 0 || w.overscan.h > 0).map(|w| w.id).collect();
+        for id in overscanned {
+            self.configure_window(&proto::Configure { id, overscan: Some(proto::Size { w: 0, h: 0 }), ..Default::default() });
+        }
     }
 
     fn is_current(&self, conn: ConnId) -> bool {
@@ -653,7 +659,7 @@ impl State {
             let Some(w) = self.windows.get(id) else { continue };
             if !atlas {
                 if let Some(a) = w.announced.as_ref().filter(|_| w.stream.refine_due(now_us) && !w.stream.need_keyframe) {
-                    let rect = Rect::new(0, 0, a.geometry.w, a.geometry.h);
+                    let rect = picture_rect(a);
                     let w = self.windows.get_mut(id).unwrap();
                     let image = w.stream.image.take().unwrap();
                     let job = Job {
@@ -693,7 +699,7 @@ impl State {
             let scale = if w.surface.is_x11() { 1.0 } else { surface_scale(&root, display_scale) };
             let pic_w = (local.size.w as f64 * scale).round().max(1.0) as i32;
             let pic_h = (local.size.h as f64 * scale).round().max(1.0) as i32;
-            let rect = w.announced.as_ref().map(|a| Rect::new(0, 0, a.geometry.w, a.geometry.h)).unwrap();
+            let rect = w.announced.as_ref().map(picture_rect).unwrap();
             let size = (pic_w, pic_h).into();
             // A popup keeps its alpha (window.create `alpha`): composed over transparent
             // and sent as RGBA tiles, with no motion stream or marker detection.
@@ -1118,12 +1124,19 @@ impl State {
         let ids: Vec<u64> = self.windows.iter().filter(|w| w.stream.motion.is_some()).map(|w| w.id).collect();
         for id in ids {
             let (rect, crop) = match self.windows.get(id) {
-                Some(w) => (w.announced.as_ref().map(|a| a.geometry).unwrap_or_default(), w.stream.crop),
+                Some(w) => (w.stream.rect, w.stream.crop),
                 None => continue,
             };
             self.watch_motion(id, &[], Rect::new(0, 0, rect.w, rect.h), crop, now_ms);
         }
     }
+}
+
+/// Where a window's picture is, window-local: the geometry the client shows and the
+/// overscan right of and below it (docs/display.md).
+fn picture_rect(a: &proto::WindowCreate) -> Rect {
+    let over = a.overscan.unwrap_or(proto::Size { w: 0, h: 0 });
+    Rect::new(0, 0, a.geometry.w + over.w, a.geometry.h + over.h)
 }
 
 /// A motion region (picture pixels) in window coordinates, and its visible part when

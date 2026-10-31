@@ -138,18 +138,24 @@ export function dockerCli(binary = 'docker'): Docker {
   })
 }
 
-/** A DRM device node and the kernel driver behind it. */
+/** A DRM device node and the kernel driver behind it ('vgem' for the vgem device). */
 export interface DrmNode { path: string; driver: string; render: boolean }
 
-/** The host's DRM nodes, from sysfs. */
+/**
+ * The host's DRM nodes, from sysfs. vgem is a platform device with no bound driver, so a
+ * node whose device is the vgem device is named for it.
+ */
 export function drmNodes(): DrmNode[] {
   let names: string[]
   try { names = readdirSync('/sys/class/drm') } catch { return [] }
+  const last = (path: string) => path.split('/').pop() ?? ''
   return names.filter(name => /^(card|renderD)\d+$/.test(name)).flatMap(name => {
-    try {
-      const driver = readlinkSync(`/sys/class/drm/${name}/device/driver`).split('/').pop() ?? ''
-      return [{ path: `/dev/dri/${name}`, driver, render: name.startsWith('renderD') }]
-    } catch { return [] }
+    const base = `/sys/class/drm/${name}/device`
+    let driver = ''
+    try { driver = last(readlinkSync(`${base}/driver`)) } catch {
+      try { if (last(readlinkSync(base)) === 'vgem') driver = 'vgem' } catch { return [] }
+    }
+    return [{ path: `/dev/dri/${name}`, driver, render: name.startsWith('renderD') }]
   })
 }
 
