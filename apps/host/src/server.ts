@@ -1002,9 +1002,23 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     // Pause the sender until the destination flushes, bounding queued data.
     client.pause()
     upstream.on('open', () => client.resume())
+    // CABOOSE_RELAY_TRACE=1: when each client message arrives and is handed to the guest, on
+    // CLOCK_MONOTONIC (the clock caboose-display's input trace uses).
+    const trace = process.env.CABOOSE_RELAY_TRACE === '1'
     function forward(source: WebSocket, destination: WebSocket): void {
       source.on('message', (data, isBinary) => {
         if (!isBinary || destination.readyState !== WebSocket.OPEN) { source.close(1003, 'binary required'); return }
+        if (trace && source === client) {
+          const received = process.hrtime.bigint() / 1000n
+          const bytes = Array.isArray(data) ? data.reduce((n, b) => n + b.length, 0) : (data as Buffer).byteLength
+          destination.send(data, { binary: true }, error => {
+            console.error(`CABOOSE_RELAY_TRACE received_us=${received} sent_us=${process.hrtime.bigint() / 1000n} bytes=${bytes}`)
+            if (error) source.terminate()
+            else if (source.readyState === WebSocket.OPEN) source.resume()
+          })
+          source.pause()
+          return
+        }
         source.pause()
         destination.send(data, { binary: true }, error => {
           if (error) source.terminate()

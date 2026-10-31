@@ -201,6 +201,8 @@ def input_latency(inputs, frames, results=(), glass=()):
     rows = []
     for t in sorted(inputs):
         frame = first_after(frames, t)
+        if frame is not None and frame - t > OWED_MAX_MS * 1_000_000:
+            frame = None  # unanswered: it changed nothing, or the app never drew again
         result = first_after(results, frame) if frame is not None else None
         # The picture reaches the glass before its result reaches the computer.
         shown = first_after(glass, frame) if frame is not None else None
@@ -212,7 +214,7 @@ def input_latency(inputs, frames, results=(), glass=()):
             return None
         return {'n': len(values), 'p50': _r(percentile(values, 0.5)), 'p95': _r(percentile(values, 0.95)), 'max': _r(max(values))}
 
-    return {'inputs': len(rows), 'to_frame_ms': summary(0), 'to_phone_result_ms': summary(1), 'to_glass_ms': summary(2)}
+    return {'inputs': len(rows), 'unanswered': sum(1 for row in rows if row[0] is None), 'to_frame_ms': summary(0), 'to_phone_result_ms': summary(1), 'to_glass_ms': summary(2)}
 
 
 def scorecard(app, run, phone_records=(), offset=None):
@@ -374,6 +376,18 @@ def decode_png(data):
             o = (y * width + x) * 3
             rgb[o:o + 3] = bytes((r, g, b))
     return width, height, bytes(rgb)
+
+
+def drawn(png, minimum=16):
+    """Whether a PNG shows something drawn: an undrawn (uniform) window's decoded rows
+    are almost one byte value. Cheap: no unfiltering, only the distinct bytes."""
+    at, raw = 8, b''
+    while at < len(png):
+        length = int.from_bytes(png[at:at + 4], 'big')
+        if png[at + 4:at + 8] == b'IDAT':
+            raw += png[at + 8:at + 8 + length]
+        at += 12 + length
+    return len(set(zlib.decompress(raw))) >= minimum
 
 
 def luma_grid(width, height, rgb, size):

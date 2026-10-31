@@ -187,9 +187,11 @@ public final class LocalScrollController {
         let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
         if layer.pixelFormat != format { layer.pixelFormat = format }
         // The viewport: the picture less its overscan along the axis.
-        let overscan = composition.overscan
-        let size = composition.axis == .vertical ? CGSize(width: base.width, height: max(1, base.height - overscan))
-                                                 : CGSize(width: max(1, base.width - overscan), height: base.height)
+        // The viewport: the picture less what lies past it, by the picture's own shape too,
+        // so a longer picture is never squashed into the view while the model catches up.
+        let extra = pictureOverscan(base)
+        let size = CGSize(width: max(1, base.width - max(Int(extra.width), composition.axis == .horizontal ? composition.overscan : 0)),
+                          height: max(1, base.height - max(Int(extra.height), composition.axis == .vertical ? composition.overscan : 0)))
         if layer.drawableSize != size { layer.drawableSize = size }
         lastViewport = Int(composition.axis == .vertical ? size.height : size.width)
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),

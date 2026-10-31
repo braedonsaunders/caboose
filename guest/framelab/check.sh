@@ -95,8 +95,9 @@ for app in matrix['apps']:
         print(f"{app['id']}: not in this image ({card['error']})")
     elif not card['ok'] or card['pacing']['frames'] == 0:
         bad.append(f"{app['id']}: {card.get('error') or 'no frames'}")
-    elif app.get('correctness') and not (card.get('correctness') or {}).get('ssim'):
-        bad.append(f"{app['id']}: no picture comparison ({card.get('correctness')})")
+    elif app.get('correctness') and not (card.get('correctness') or {}).get('pass'):
+        # Both pictures are drawn on the computer here, so they must match.
+        bad.append(f"{app['id']}: pictures differ or were not compared ({card.get('correctness')})")
 print('\n'.join(bad))
 sys.exit(1 if bad else 0)
 PY

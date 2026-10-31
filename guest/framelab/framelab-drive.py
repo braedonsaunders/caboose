@@ -182,6 +182,8 @@ def main():
     parser.add_argument('--apps', help='comma-separated app ids (default: the whole matrix)')
     parser.add_argument('--matrix', default=str(HERE / 'matrix.json'))
     parser.add_argument('--offline', action='store_true')
+    parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                        help="add to every app's launch environment in the computer (repeatable)")
     parser.add_argument('--no-reference', action='store_true')
     parser.add_argument('--out', default=None)
     parser.add_argument('--bundle', default='com.braedonsaunders.caboose')
@@ -264,6 +266,8 @@ def main():
         options += ['--apps', ','.join(a['id'] for a in apps)]
         options += ['--offline'] if args.offline else []
         options += ['--no-reference'] if args.no_reference else []
+        for item in args.set:
+            options += ['--set', item]
         command = ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', args.host,
                    f'docker exec -i -u caboose -e XDG_RUNTIME_DIR=/run/user/1000 {host.container} '
                    f'python3 -u {GUEST_DIR}/framelab-guest.py ' + ' '.join(map(shlex.quote, options))]

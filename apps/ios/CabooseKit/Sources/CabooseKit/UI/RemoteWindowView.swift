@@ -459,14 +459,27 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// How many of `picture`'s pixels lie past the viewport, right and below: the window's
     /// overscan once its pictures are of the enlarged window (by their shape), none before.
     func pictureOverscan(_ picture: CGSize) -> CGSize {
-        guard let window = remoteWindow, window.overscan != .zero, picture.width > 0, picture.height > 0,
+        guard croppingOverscan, let window = remoteWindow, picture.width > 0, picture.height > 0,
               window.frame.width > 0, window.frame.height > 0 else { return .zero }
-        let full = CGSize(width: window.frame.width + window.overscan.width, height: window.frame.height + window.overscan.height)
-        let shape = picture.height / picture.width
-        guard abs(shape - full.height / full.width) < abs(shape - window.frame.height / window.frame.width) else { return .zero }
-        return CGSize(width: picture.width * window.overscan.width / full.width,
-                      height: picture.height * window.overscan.height / full.height)
+        // By shape alone: the picture may still be of the enlarged window after the overscan
+        // was announced over, or already before its announcement settles.
+        let tall = picture.height - picture.width * window.frame.height / window.frame.width
+        let wide = picture.width - picture.height * window.frame.width / window.frame.height
+        if tall > 2 { return CGSize(width: 0, height: tall.rounded()) }
+        if wide > 2 { return CGSize(width: wide.rounded(), height: 0) }
+        return .zero
     }
+
+    /// The window was asked for, or still shows, an overscan: pictures longer than the
+    /// viewport's shape are its enlarged pictures and show their viewport, never scaled.
+    var croppingOverscan: Bool {
+        overscanAsked != nil || remoteWindow?.overscan != .zero || CACurrentMediaTime() < overscanLingersUntil
+    }
+    /// Pictures of an ended overscan may still arrive until the app has resized.
+    private var overscanLingersUntil: CFTimeInterval = 0
+    /// When this window's scrolling region was last known, kept so a reset of the scroll
+    /// model (a resize, a lost run) does not flap the overscan off and on.
+    private var regionKnownAt: CFTimeInterval = -.infinity
 
     private func move(to point: CGPoint) {
         guard let window = remoteWindow, let session else { return }
@@ -941,18 +954,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     fileprivate func followOverscanPolicy(at now: CFTimeInterval) {
         guard let localScroll, let session, let window = remoteWindow, isInteractive, self.window != nil,
               !localScroll.isActive else { return }
-        let scrolling = now - lastLocalScroll < 30 && localScroll.model.region != nil && !window.isFullscreen
+        if localScroll.model.region != nil { regionKnownAt = now }
+        let scrolling = now - lastLocalScroll < 30 && now - regionKnownAt < 30 && !window.isFullscreen
         var wanted = CGSize.zero
         if scrolling {
-            // At most one viewport, and the whole picture within 4096 pixels per axis.
-            if localScroll.model.axis == .vertical { wanted.height = max(0, min(window.frame.height, 4096 - window.frame.height)) }
-            else { wanted.width = max(0, min(window.frame.width, 4096 - window.frame.width)) }
+            // About one viewport, in steps of 64 pixels so a viewport a pixel off does not
+            // ask again, and the whole picture within 4096 pixels per axis.
+            func step(_ extent: CGFloat) -> CGFloat { max(0, min((extent / 64).rounded() * 64, 4096 - extent)) }
+            if localScroll.model.axis == .vertical { wanted.height = step(window.frame.height) }
+            else { wanted.width = step(window.frame.width) }
         }
         let key = ObjectIdentifier(window)
         let asked = overscanAsked?.window == key ? overscanAsked!.size : .zero
         guard wanted != asked else { return }
         LocalScrollProfile.note("overscan request window=\(window.id) \(Int(wanted.width))x\(Int(wanted.height))")
         session.requestOverscan(window, wanted)
+        if wanted == .zero, overscanAsked != nil { overscanLingersUntil = now + 3 }
         overscanAsked = wanted == .zero ? nil : (key, wanted)
     }
 
@@ -1091,8 +1108,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let anchor = lastPointer, scale = pixelsPerPoint, geometry = bounds, size = remoteWindow.frame.size
         let epoch = session.epoch, connection = (session as? CabooseDisplaySession)?.connections
         let liveGPU = liveGPUOwners?.presents(in: self) ?? false
-        guard let picture = liveGPU ? localScroll.pictureSize : remoteWindow.presentationSize,
-              picture.width > 0, picture.height > 0 else { return false }
+        guard let whole = liveGPU ? localScroll.pictureSize : remoteWindow.surface.presentation().map({ CGSize(width: $0.texture.width, height: $0.texture.height) }) ?? remoteWindow.presentationSize,
+              whole.width > 0, whole.height > 0 else { return false }
+        // The viewport's share of the picture: an overscan picture is longer than it shows.
+        let extra = pictureOverscan(whole)
+        let picture = CGSize(width: whole.width - extra.width, height: whole.height - extra.height)
         let toPicture = CGSize(width: picture.width / max(1, geometry.width), height: picture.height / max(1, geometry.height))
         let toFrame = CGSize(width: size.width / max(1, picture.width), height: size.height / max(1, picture.height))
         scrollIsLocal = true
