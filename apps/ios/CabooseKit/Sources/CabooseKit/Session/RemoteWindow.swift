@@ -19,6 +19,8 @@ public final class RemoteWindow: Identifiable {
     /// pixels, while an overscan the phone asked for applies: its pictures cover the
     /// viewport plus this, and the phone shows the viewport.
     public internal(set) var overscan: CGSize = .zero
+    /// Its toolkit reporter's scroll reports, while one runs (docs/display.md, "Scroll reports").
+    @ObservationIgnored public let scrollReports = ScrollReports()
     /// Position and size in the server's pixel space. Position may follow an in-flight
     /// placement request; size remains the size reported by the server.
     public internal(set) var frame: CGRect

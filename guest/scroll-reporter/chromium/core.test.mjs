@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 const C = createRequire(import.meta.url)('./core.js')
-const vector = JSON.parse(readFileSync(new URL('../../display/vectors/scroll-tag.json', import.meta.url)))
+const vector = JSON.parse(readFileSync(new URL('../../display/vectors/scroll-tag/scroll-tag.json', import.meta.url)))
 
 test('tag blocks match the golden vector', () => {
   for (const { value, blocks } of vector.tags) {

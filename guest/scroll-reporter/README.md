@@ -43,7 +43,7 @@ launcher loads. `guest/container/Dockerfile` runs it.
 ### Test
 
 - `node --test guest/scroll-reporter/chromium/core.test.mjs`: the pure logic, including the
-  tag against `guest/display/vectors/scroll-tag.json`.
+  tag against `guest/display/vectors/scroll-tag/scroll-tag.json`.
 - `check.py chromium-scroll-reports` (in [guest/display/scripts](../display/scripts)):
   real Chromium on caboose-display with the extension and native host. The probe asks for
   overscan and drives the page with `scroll.target`. For every decoded picture it reads

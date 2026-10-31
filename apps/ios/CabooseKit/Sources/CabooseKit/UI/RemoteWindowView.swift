@@ -77,8 +77,28 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         made?.pictureOverscan = { [weak self] texture in
             self?.pictureOverscan(CGSize(width: texture.width, height: texture.height)) ?? .zero
         }
+        // A toolkit reporter's frame tag names each picture's exact scroll report
+        // (docs/display.md, "Scroll reports"); without one, pictures are measured.
+        made?.tagRect = { [weak self] picture in
+            guard let window = self?.remoteWindow else { return nil }
+            return window.scrollReports.tagRect(picture: picture, shown: window.frame.size)
+        }
+        made?.report = { [weak self] source, luma in
+            guard let self, let window = self.remoteWindow, let localScroll = self.localScroll,
+                  let picture = self.pictureSize(of: source) else { return nil }
+            return window.scrollReports.observation(luma: luma, picture: picture, shown: window.frame.size,
+                                                    axis: localScroll.model.axis)
+        }
         return made
     }()
+
+    private func pictureSize(of source: LocalScrollController.PictureSource) -> CGSize? {
+        switch source {
+        case .present: return localScroll?.pictureSize
+        case .surface(let surface):
+            return surface.presentation().map { CGSize(width: $0.texture.width, height: $0.texture.height) }
+        }
+    }
     /// The current pan scrolls through `localScroll` rather than `scrollDriver`.
     private var scrollIsLocal = false
     /// `localScroll` has been used: refreshes go through it.
@@ -1081,6 +1101,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                   self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
             else { return false }
             let mapped = CGPoint(x: delta.x * toFrame.width, y: delta.y * toFrame.height)
+            // A reporter applies content pixels exactly and acknowledges them per picture.
+            if remoteWindow.scrollReports.drawsTags, let scroller = remoteWindow.scrollReports.latest?.scrollers.first {
+                return session.scrollTarget(in: remoteWindow, scroller: scroller.id, delta: mapped)
+            }
             let precise = DirectScrollCalibration.preciseDelta(mapped, directContent: true)
             session.scroll(in: remoteWindow, dx: precise.x, dy: precise.y, at: anchor)
             return true

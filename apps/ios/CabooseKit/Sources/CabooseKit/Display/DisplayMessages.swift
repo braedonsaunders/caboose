@@ -32,6 +32,8 @@ public enum DisplayProtocol {
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
+        // Toolkit scroll reports (docs/display.md, "Scroll reports").
+        case scrollTree = 0x23
         case clipboard = 0x30
         case notification = 0x31
         case audio = 0x40
@@ -60,6 +62,7 @@ public enum DisplayProtocol {
         case pointer = 0x92
         case key = 0x93
         case text = 0x94
+        case scrollTarget = 0x95
         case gpuAck = 0x96
         case gameDecline = 0x97
         case webviewDecline = 0x98
@@ -410,6 +413,7 @@ public enum ServerMessage: Sendable {
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
+    case scrollTree(ScrollTree)
     case clipboard(mime: String, data: Data)
     case notification(id: Int, app: String, summary: String, body: String)
     case audio(AudioPacket)
@@ -463,6 +467,7 @@ public enum ServerMessage: Sendable {
             let hotspot = body["hotspot"]?.ints.flatMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil } ?? .zero
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
+        case .scrollTree: parsed = ScrollTree(body).map(ServerMessage.scrollTree)
         case .textInput:
             parsed = body["id"]?.int.map {
                 .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
@@ -644,7 +649,7 @@ public enum ClientMessage: Sendable {
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
                audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
-               devices: Bool = false)
+               devices: Bool = false, scroll: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -654,7 +659,12 @@ public enum ClientMessage: Sendable {
     case displays([DisplayInfo])
     case touch(window: Int, points: [TouchPoint])
     case pencil(window: Int, PencilSample)
-    case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?)
+    /// `scrollSeq`: the window's input sequence number for the scroll (docs/display.md,
+    /// "Input sequencing").
+    case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?,
+                 scrollSeq: UInt64? = nil)
+    /// Scroll a reported scroller by `delta` content pixels, exactly, as input `seq`.
+    case scrollTarget(window: Int, scroller: Int, seq: UInt64, delta: CGPoint)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(mime: String, data: Data)
@@ -693,7 +703,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let scroll):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -704,6 +714,7 @@ public enum ClientMessage: Sendable {
                 ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
+                ("scroll", scroll ? CBOR(true) : nil),
             ]))
         case .devices(let devices):
             return DisplayFrame(type: T.devices.rawValue, body: map([("devices", .array(devices.map(\.cbor)))]))
@@ -769,10 +780,17 @@ public enum ClientMessage: Sendable {
                 ("pressure", CBOR(sample.pressure)), ("tilt", [CBOR(sample.tilt.x), CBOR(sample.tilt.y)]),
                 ("azimuth_deg", CBOR(sample.azimuth)),
             ]))
-        case .pointer(let window, let x, let y, let buttons, let scroll):
+        case .pointer(let window, let x, let y, let buttons, let scroll, let seq):
             return DisplayFrame(type: T.pointer.rawValue, body: map([
                 ("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y)), ("buttons", CBOR(buttons)),
-                ("scroll", scroll.map { ["dx": CBOR($0.dx), "dy": CBOR($0.dy), "precise": CBOR($0.precise)] }),
+                ("scroll", scroll.map { s in
+                    map([("dx", CBOR(s.dx)), ("dy", CBOR(s.dy)), ("precise", CBOR(s.precise)), ("seq", seq.map { CBOR($0) })])
+                }),
+            ]))
+        case .scrollTarget(let window, let scroller, let seq, let delta):
+            return DisplayFrame(type: T.scrollTarget.rawValue, body: map([
+                ("id", CBOR(window)), ("scroller", CBOR(scroller)), ("seq", CBOR(seq)),
+                ("delta", [CBOR(Double(delta.x)), CBOR(Double(delta.y))]),
             ]))
         case .key(let keysym, let pressed, let modifiers):
             return DisplayFrame(type: T.key.rawValue, body: map([

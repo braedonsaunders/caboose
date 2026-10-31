@@ -631,7 +631,7 @@ pattern and the check. It then places the picture by the `scroll.tree` with that
 and treats the tag as fixed content. A picture without a decodable tag, or whose tag names
 no report it holds, is placed by measurement. A report's frame number changes only when
 something it reports changes, so a picture drawn for another reason carries a tag whose
-report is still exact. `guest/display/vectors/scroll-tag.json` pins the blocks of five
+report is still exact. `guest/display/vectors/scroll-tag/scroll-tag.json` pins the blocks of five
 values.
 
 **`scroll.target`** (`0x95`): scroll scroller `scroller` of window `id` by `delta` content

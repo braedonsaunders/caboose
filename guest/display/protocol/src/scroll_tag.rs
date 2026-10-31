@@ -49,7 +49,7 @@ pub fn pattern(value: u32) -> String {
     encode(value).iter().map(|&b| if b { '1' } else { '0' }).collect()
 }
 
-/// Values pinned by `vectors/scroll-tag.json`.
+/// Values pinned by `vectors/scroll-tag/scroll-tag.json`.
 pub const VECTOR_VALUES: [u32; 5] = [0, 1, 0x03_2A10, 0x12_3456, 0xFF_FFFF];
 
 /// The golden vector's JSON.
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn matches_the_golden_vector() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/scroll-tag.json");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/scroll-tag/scroll-tag.json");
         assert_eq!(std::fs::read_to_string(path).unwrap(), vector_json());
     }
 }
