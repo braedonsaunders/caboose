@@ -257,14 +257,17 @@ static VkResult allocateImages(DeviceSwapchain& swap, const VkImageCreateInfo& i
         queryInfo.image=image.image;
         encoder->vkGetImageMemoryRequirements2(device->internal_object,&queryInfo,&returned,true);
         auto requirements=returned.memoryRequirements;
-        // A type the guest never maps, when the device has one (lavapipe has none).
-        uint32_t type=memory.memoryTypeCount;
-        for (uint32_t i=memory.memoryTypeCount;i-- > 0;) {
+        // The first compatible type the guest never maps, else the first compatible type
+        // (lavapipe has only mapped ones). Later types may be lazily allocated (patch 0010
+        // advertises the phone's memoryless type as device-local), which a copy cannot read.
+        uint32_t type=memory.memoryTypeCount, mapped=memory.memoryTypeCount;
+        for (uint32_t i=0;i<memory.memoryTypeCount && type==memory.memoryTypeCount;++i) {
             if (!(requirements.memoryTypeBits&(1u<<i))) continue;
-            const bool mapped=memory.memoryTypes[i].propertyFlags&
-                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-            if (type==memory.memoryTypeCount || !mapped) type=i;
+            if (memory.memoryTypes[i].propertyFlags&(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT|VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                if (mapped==memory.memoryTypeCount) mapped=i;
+            } else type=i;
         }
+        if (type==memory.memoryTypeCount) type=mapped;
         if (type==memory.memoryTypeCount) return VK_ERROR_FEATURE_NOT_PRESENT;
         VkMemoryAllocateInfo allocate{}; allocate.sType=VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocate.allocationSize=requirements.size; allocate.memoryTypeIndex=type;
@@ -657,7 +660,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         auto& surface=*swap->surface;
         if (swap->guestImages && !swap->native) {
             VkResult made=VK_NOT_READY;
-            if (!swap->nativeAttempted && tryBind(surface,false)) made=createNative(*swap);
+            if (!swap->nativeAttempted && tryBind(surface,true)) made=createNative(*swap);
             if (made!=VK_SUCCESS) {
                 // No window to show it in yet: the frame is dropped once its waits are
                 // consumed on the queue, and its image is free again at once.

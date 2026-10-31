@@ -74,7 +74,9 @@ mapped. The compositor grants a bind only for an existing window, and the broker
 the connection of a bind it refused; that close is not executor loss (only a bound
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
-tries. A bind the phone answered with a failure (it could not take the window's layer)
+tries. The bind is sent at once and its reply is collected by a later call when it has
+not arrived (a query waits up to 250 ms for it, a present not at all), so neither blocks
+on the phone's own wait for the window's layer. A bind the phone answered with a failure (it could not take the window's layer)
 is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
 four attempts and every 32nd after them print `CABOOSE_GPU_SURFACE_BIND object=…
 space=… attempt=… refused|failed|bound errno=… vk=…` on stderr. Until a bind succeeds, with guest-owned images, queries are answered locally:
@@ -124,8 +126,10 @@ Unknown creation or retirement completion quarantines allocations and prevents
 device destruction. Source images are freed only after real swapchain or surface
 retirement. App-issued idle calls remain unchanged; the native decoder owns the
 observed completion proof for acquired-but-unused images. Source images use
-a compatible memory type that is neither host-visible nor host-coherent where the device
-has one (lavapipe has none, and its first compatible type is used), and do not
+the first compatible memory type that is neither host-visible nor host-coherent where the
+device has one (lavapipe has none, and its first compatible type is used; a later type
+may be the phone's lazily allocated one, which patch 0010 advertises as device-local and
+a copy cannot read), and do not
 alter application memory-property queries. Guest-visible flags are decoder-projected
 properties, not raw Apple provider flags.
 

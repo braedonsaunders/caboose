@@ -187,16 +187,41 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
 void Client::reset() {
     require(!bound_);
     if (fd_>=0) { close(fd_); fd_=-1; }
-    lastRequest_=0;
+    lastRequest_=0; bindPending_=false;
 }
 Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                     Space space) {
-    require(!bound_ && instance && object && bool(width)==bool(height) &&
+    beginBind(instance,object,width,height,deadline,space);
+    Record r;
+    if (!awaitBind(deadline,&r)) fail(ETIMEDOUT);
+    return r;
+}
+void Client::beginBind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
+                       Space space) {
+    require(!bound_ && !bindPending_ && instance && object && bool(width)==bool(height) &&
             (space==WaylandSurface || space==X11Window));
     Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,space);
-    send(16,p,deadline); auto r=await(17,0,deadline);
-    if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
-    return r;
+    send(16,p,deadline); bindPending_=true;
+}
+bool Client::awaitBind(Deadline deadline, Record* out) {
+    require(fd_>=0 && bindPending_);
+    for (;;) {
+        auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,int(std::max<int64_t>(0,std::min<int64_t>(left,INT_MAX))));
+        if (result<0 && errno==EINTR) continue;
+        if (result<0) fail(errno);
+        if (!result) return false;
+        if (!(p.revents & POLLIN)) fail(ECONNRESET);
+        Record r;
+        if (!receiveReady(&r)) continue;
+        if (r.kind==0x7fff) fail(status(r.body,0).nativeError);
+        if (r.kind!=17) fail(EPROTO);
+        bindPending_=false;
+        if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
+        *out=std::move(r);
+        return true;
+    }
 }
 Record Client::query(uint64_t request, uint64_t physical, Deadline deadline) {
     require(bound_ && !retiring_ && !revoked_ && request>lastRequest_ && physical);

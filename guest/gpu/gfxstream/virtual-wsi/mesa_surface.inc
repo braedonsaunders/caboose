@@ -98,11 +98,6 @@ constexpr auto kBindRetry=std::chrono::milliseconds(100);
 // it arrives.
 constexpr auto kCapsReuse=std::chrono::milliseconds(500);
 static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
-// Binds the surface if its window exists now. A transport error before the bind's reply
-// leaves nothing bound: the broker closed the connection, which it does for a refused bind.
-// Queries retry a refused bind at most every kBindRetry; a present always tries, since on
-// Wayland nothing else maps the window (no buffer is ever attached to the wl_surface), so
-// a dropped first frame would leave the application waiting for a frame callback.
 // A bind the phone answered with a failure (it could not take the window's layer) is
 // retried after a delay that doubles up to this, even by presents: each costs the phone's
 // own wait for the layer.
@@ -113,14 +108,27 @@ static void logBind(const Surface& surface, const char* outcome, int error, int 
     std::fprintf(stderr,"CABOOSE_GPU_SURFACE_BIND object=0x%x space=%u attempt=%u %s errno=%d vk=%d\n",
         surface.object,unsigned(surface.space),surface.bindAttempts,outcome,error,vk);
 }
-static bool tryBind(Surface& surface, bool throttled=true) {
+// Binds the surface if its window exists. The bind goes out at once; a query waits up to
+// kQueryBindWait for its reply and a present not at all, and a reply that has not arrived
+// is collected by a later call, so nothing blocks on the phone's own wait for the
+// window's layer. A transport error before the reply leaves nothing bound: the broker
+// closed the connection, which it does for a refused bind. Queries (`present` false) retry a refused bind at most every kBindRetry; a present
+// always does, since on Wayland nothing else maps the window (no buffer is ever attached
+// to the wl_surface), so a dropped first frame would leave the application waiting for a
+// frame callback.
+constexpr auto kQueryBindWait=std::chrono::milliseconds(250);
+static bool tryBind(Surface& surface, bool present=false) {
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
-    if ((throttled && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
-    surface.attempted=true; ++surface.bindAttempts;
     try {
-        surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
-        auto reply=surface.client.bind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
+        if (!surface.client.bindPending()) {
+            if ((!present && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
+            surface.attempted=true; ++surface.bindAttempts;
+            surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
+            surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
+        }
+        Record reply;
+        if (!surface.client.awaitBind(present ? now : now+kQueryBindWait,&reply)) return false;
         const auto answer=status(reply.body,48);
         if (apiStatus(answer)==VK_SUCCESS) {
             surface.bound=true;
@@ -303,6 +311,14 @@ static VkResult VKAPI_CALL createXlib(VkInstance instance, const XlibSurfaceCrea
     });
 }
 static bool retire(Surface& surface) {
+    // An outstanding bind is answered first: a granted one is retired like any other.
+    if (surface.client.bindPending()) {
+        try {
+            Record reply;
+            if (surface.client.awaitBind(deadline(),&reply) && surface.client.bound()) surface.bound=true;
+        } catch (const std::system_error&) {}
+        if (!surface.bound) { surface.client.reset(); surface.attempted=false; }
+    }
     if (!surface.attempted) return true;
     if (!surface.bound) return false; // uncertain bind still retains the instance
     if (surface.client.retired()) return true;

@@ -18,6 +18,12 @@ public:
     enum Space : uint32_t { WaylandSurface = 0, X11Window = 1 };
     Record bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                 Space space = WaylandSurface);
+    // bind() in two halves: beginBind sends the request; awaitBind waits until `deadline`
+    // for its reply, false if it has not arrived yet (the bind stays outstanding).
+    void beginBind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
+                   Space space = WaylandSurface);
+    bool awaitBind(Deadline deadline, Record* reply);
+    bool bindPending() const { return bindPending_; }
     // Closes a connection whose bind did not succeed, so that a later bind can be tried.
     void reset();
     bool bound() const { return bound_; }
@@ -112,6 +118,7 @@ private:
     };
     std::map<uint64_t,Swapchain> swapchains_;
     std::map<uint64_t,Record> acquireReplies_;
+    bool bindPending_ = false;
     uint64_t pendingQuery_ = 0;
     bool queryArrived_ = false;
     Record queryReply_{};
