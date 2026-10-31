@@ -36,7 +36,8 @@ fn committed_vectors_match_the_encoder() {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             if ext == "bin" || ext == "json" {
                 let stem = path.file_stem().unwrap().to_str().unwrap().to_owned();
-                assert!(names.contains(&stem), "stale vector file {}", path.display());
+                // scroll-tag.json pins frame tag pixels, not wire bytes (src/scroll_tag.rs).
+                assert!(names.contains(&stem) || stem == "scroll-tag", "stale vector file {}", path.display());
             }
         }
     }

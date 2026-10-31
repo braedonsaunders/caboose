@@ -1,0 +1,8 @@
+{
+  "name": "scroll-target",
+  "description": "Scroll the root scroller of window 7 down by 37.25 content pixels, as the window's input 18.",
+  "messages": [
+    {"direction": "client", "type": "scroll.target", "type_id": 149, "fields": {"id": 7, "seq": 18, "delta": [{"$float": 0.0}, {"$float": 37.25}], "scroller": 0}}
+  ],
+  "hex": "952d000000a46269640763736571126564656c746182fb0000000000000000fb4042a00000000000687363726f6c6c657200"
+}
