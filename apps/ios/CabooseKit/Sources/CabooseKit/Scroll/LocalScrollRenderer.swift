@@ -13,10 +13,10 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     let device: MTLDevice
     let queue: MTLCommandQueue
     private let signature: MTLComputePipelineState
-    private let textured: MTLRenderPipelineState
-    private let solid: MTLRenderPipelineState
+    private let vertex: MTLFunction, sample: MTLFunction, fill: MTLFunction
     private let lock = NSLock()
     private var pool: [MTLTexture] = []
+    private var pipelines: [MTLPixelFormat: (textured: MTLRenderPipelineState, solid: MTLRenderPipelineState)] = [:]
 
     private init?() {
         let renderer = SurfaceRenderer.shared
@@ -29,15 +29,36 @@ public final class LocalScrollRenderer: @unchecked Sendable {
                   let sample = library.makeFunction(name: "scroll_quad_texture"),
                   let fill = library.makeFunction(name: "scroll_quad_fill") else { return nil }
             signature = try device.makeComputePipelineState(function: kernel)
-            let descriptor = MTLRenderPipelineDescriptor()
-            descriptor.vertexFunction = vertex
-            descriptor.fragmentFunction = sample
-            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-            textured = try device.makeRenderPipelineState(descriptor: descriptor)
-            descriptor.fragmentFunction = fill
-            solid = try device.makeRenderPipelineState(descriptor: descriptor)
+            self.vertex = vertex; self.sample = sample; self.fill = fill
+            guard pipelines(for: .bgra8Unorm) != nil else { return nil }
         } catch {
             return nil
+        }
+    }
+
+    /// The drawing pipelines for a target pixel format, made once.
+    private func pipelines(for format: MTLPixelFormat) -> (textured: MTLRenderPipelineState, solid: MTLRenderPipelineState)? {
+        lock.lock(); defer { lock.unlock() }
+        if let made = pipelines[format] { return made }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = sample
+        descriptor.colorAttachments[0].pixelFormat = format
+        guard let textured = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        descriptor.fragmentFunction = fill
+        guard let solid = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        pipelines[format] = (textured, solid)
+        return (textured, solid)
+    }
+
+    /// The layer format that shows pictures of `format` unchanged: the same encoding, in
+    /// one of the formats a CAMetalLayer accepts.
+    public static func layerFormat(for format: MTLPixelFormat) -> MTLPixelFormat {
+        switch format {
+        case .bgra8Unorm_srgb, .rgba8Unorm_srgb: return .bgra8Unorm_srgb
+        case .rgb10a2Unorm, .bgr10a2Unorm: return .bgr10a2Unorm
+        case .rgba16Float: return .rgba16Float
+        default: return .bgra8Unorm
         }
     }
 
@@ -51,7 +72,7 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         let width = source.width, height = source.height
         let lines = axis == .vertical ? height : width, span = axis == .vertical ? width : height
         let bands = ScrollSignature.bandCount(span: span)
-        guard let copy = texture(width: width, height: height),
+        guard let copy = texture(width: width, height: height, format: source.pixelFormat),
               let output = device.makeBuffer(length: lines * bands * 4 * MemoryLayout<Float>.stride, options: .storageModeShared),
               let commands = queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else {
             completion(nil, nil)
@@ -80,15 +101,31 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         commands.commit()
     }
 
-    private func texture(width: Int, height: Int) -> MTLTexture? {
+    /// Copies `source` into a history texture without measuring it, for the picture a
+    /// gesture starts from. `completion` runs once the copy has landed.
+    public func copy(_ source: MTLTexture, completion: @escaping @Sendable (MTLTexture?) -> Void) {
+        guard let copy = texture(width: source.width, height: source.height, format: source.pixelFormat),
+              let commands = queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else {
+            completion(nil)
+            return
+        }
+        blit.copy(from: source, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+                  sourceSize: MTLSize(width: source.width, height: source.height, depth: 1),
+                  to: copy, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blit.endEncoding()
+        commands.addCompletedHandler { buffer in completion(buffer.status == .completed ? copy : nil) }
+        commands.commit()
+    }
+
+    private func texture(width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
         lock.lock()
-        if let index = pool.firstIndex(where: { $0.width == width && $0.height == height }) {
+        if let index = pool.firstIndex(where: { $0.width == width && $0.height == height && $0.pixelFormat == format }) {
             let reused = pool.remove(at: index)
             lock.unlock()
             return reused
         }
         lock.unlock()
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width, height: height, mipmapped: false)
         descriptor.usage = [.shaderRead]
         descriptor.storageMode = .private
         return device.makeTexture(descriptor: descriptor)
@@ -127,7 +164,8 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     public func encode(_ composition: ScrollComposition, textures: [UInt64: MTLTexture], fill: SIMD3<Float>,
                        into target: MTLTexture, commands: MTLCommandBuffer) -> Bool {
         guard let base = textures[composition.base],
-              composition.layers.allSatisfy({ textures[$0.frame] != nil }) else { return false }
+              composition.layers.allSatisfy({ textures[$0.frame] != nil }),
+              let pipeline = pipelines(for: target.pixelFormat) else { return false }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .dontCare
@@ -141,7 +179,7 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         }
         func draw(_ quad: Quad, texture: MTLTexture?) {
             var q = quad
-            encoder.setRenderPipelineState(texture == nil ? solid : textured)
+            encoder.setRenderPipelineState(texture == nil ? pipeline.solid : pipeline.textured)
             encoder.setVertexBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
             encoder.setFragmentBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
             if let texture { encoder.setFragmentTexture(texture, index: 0) }

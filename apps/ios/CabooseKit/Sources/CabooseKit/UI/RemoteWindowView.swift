@@ -79,6 +79,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var localScrollEngaged = false
     /// The touch that began now stopped a moving scroll, so its tap does not click.
     private var touchStoppedScroll = false
+    /// A live GPU layer here sends its presented pictures for local scrolling.
+    private var liveGPUCaptures = false
+    /// Where local scrolling draws over a live GPU layer, shown only while it composes.
+    private var scrollOverlay: CAMetalLayer?
     private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
@@ -120,6 +124,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             resetTyping()
             cancelTouches()
             localScroll?.cancel()
+            liveGPUCaptures = false
             laidOutVideos = nil
         }
         remoteWindow = window
@@ -291,23 +296,71 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// One display refresh of the window's picture: the phone's own composition while it
     /// owns the scroll, the app's picture otherwise.
     fileprivate func refreshPicture(at targetTime: CFTimeInterval) {
-        if localScrollEngaged, let localScroll, let surface = remoteWindow?.surface {
-            let composed = localScroll.refresh(at: targetTime, surface: surface, layer: metalLayer)
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        if (localScrollEngaged || liveGPU), let localScroll, let window = remoteWindow {
+            // A live GPU layer presents itself; local scrolling draws over it.
+            let target = liveGPU ? overlay() : metalLayer
+            let composed = localScroll.refresh(at: targetTime, surface: liveGPU ? nil : window.surface, layer: target)
             followLocalScroll()
+            showOverlay(liveGPU && composed)
             if composed {
                 // When the app's picture returns it is drawn afresh.
-                presentedGeneration = .max
+                if !liveGPU { presentedGeneration = .max }
                 return
             }
+        } else {
+            showOverlay(false)
         }
         present()
+    }
+
+    private func overlay() -> CAMetalLayer {
+        if let scrollOverlay, scrollOverlay.superlayer === layer {
+            if scrollOverlay.frame != bounds { scrollOverlay.frame = bounds }
+            return scrollOverlay
+        }
+        let made = CAMetalLayer()
+        made.device = SurfaceRenderer.shared.device
+        made.framebufferOnly = true
+        made.isOpaque = true
+        made.contentsGravity = .resize
+        made.presentsWithTransaction = false
+        made.isHidden = true
+        made.frame = bounds
+        // Above the live GPU layer, below the videos laid over the picture.
+        made.zPosition = 0.5
+        layer.addSublayer(made)
+        scrollOverlay = made
+        return made
+    }
+
+    private func showOverlay(_ shown: Bool) {
+        guard let scrollOverlay, scrollOverlay.isHidden == shown else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        scrollOverlay.isHidden = !shown
+        // A hidden overlay keeps no stale composition to show when it next appears.
+        if !shown { scrollOverlay.contents = nil }
+        CATransaction.commit()
+    }
+
+    /// A live GPU layer in this view presented `texture` (its own copy, read only until
+    /// `release`), for local scrolling to start from and measure.
+    func liveGPUPictureCaptured(_ texture: MTLTexture, release: @escaping @Sendable () -> Void) {
+        guard isInteractive, window != nil, let localScroll, liveGPUOwners?.presents(in: self) ?? false else {
+            release()
+            return
+        }
+        liveGPUCaptures = true
+        localScroll.offer(texture, done: release)
     }
 
     /// Video layers over the picture move with the content the phone is scrolling.
     private func followLocalScroll() {
         let shift = localScroll?.contentShift ?? .zero
         guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0 else { return }
-        let picture = window.presentationSize
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        let picture = (liveGPU ? localScroll?.pictureSize : nil) ?? window.presentationSize
         let offset = CGPoint(x: shift.x * bounds.width / max(1, picture.width), y: shift.y * bounds.height / max(1, picture.height))
         let transform = offset == .zero ? CATransform3DIdentity : CATransform3DMakeTranslation(offset.x, offset.y, 0)
         guard hostedVideos.contains(where: { !CATransform3DEqualToTransform($0.transform, transform) }) else { return }
@@ -904,7 +957,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let localScroll, let session, let remoteWindow, canScrollLocally(remoteWindow) else { return false }
         let anchor = lastPointer, scale = pixelsPerPoint, geometry = bounds, size = remoteWindow.frame.size
         let epoch = session.epoch, connection = (session as? CabooseDisplaySession)?.connections
-        let picture = remoteWindow.presentationSize
+        let liveGPU = liveGPUOwners?.presents(in: self) ?? false
+        guard let picture = liveGPU ? localScroll.pictureSize : remoteWindow.presentationSize,
+              picture.width > 0, picture.height > 0 else { return false }
         let toPicture = CGSize(width: picture.width / max(1, geometry.width), height: picture.height / max(1, geometry.height))
         let toFrame = CGSize(width: size.width / max(1, picture.width), height: size.height / max(1, picture.height))
         scrollIsLocal = true
@@ -955,10 +1010,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
     }
 
-    /// Phone-owned scrolling covers windows whose picture this view draws: not games, GPU
-    /// streams or live GPU presentation, which present through their own layers.
+    /// Phone-owned scrolling covers windows whose picture this view draws, and live GPU
+    /// windows whose presented pictures arrive here; not games or GPU streams.
     private func canScrollLocally(_ window: RemoteWindow) -> Bool {
-        window.game == nil && window.gpuStream == nil && !(liveGPUOwners?.presents(in: self) ?? false)
+        window.game == nil && window.gpuStream == nil && (liveGPUCaptures || !(liveGPUOwners?.presents(in: self) ?? false))
     }
 
     // MARK: Keyboard — the software keyboard through UITextInput, hardware keys through presses.

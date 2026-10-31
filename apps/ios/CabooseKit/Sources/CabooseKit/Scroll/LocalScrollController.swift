@@ -80,6 +80,7 @@ public final class LocalScrollController {
         contentShift = .zero
         restartChain()
         releaseTextures(keeping: [])
+        if let standby { renderer.recycle([standby.texture]); self.standby = nil }
     }
 
     private func restartChain() {
@@ -94,12 +95,18 @@ public final class LocalScrollController {
 
     /// One display refresh: captures a changed picture, advances the scroll, forwards it and,
     /// when the phone owns the picture, draws it. Returns true when it presented.
-    public func refresh(at time: CFTimeInterval, surface: WindowSurface, layer: CAMetalLayer) -> Bool {
+    /// `surface` is the window's picture when this view draws it; nil for pictures presented
+    /// on the GPU, which arrive through `offer(_:done:)`.
+    public func refresh(at time: CFTimeInterval, surface: WindowSurface?, layer: CAMetalLayer) -> Bool {
         let now = CACurrentMediaTime()
+        lastRefresh = time
         // Pictures are captured from a gesture until a while after the scroll comes to rest.
         if model.isActive { armedUntil = .infinity } else if armedUntil == .infinity { armedUntil = now + 3 }
         if now < armedUntil {
-            if let picture = surface.presentation() {
+            if let standby, measuringID == nil {
+                self.standby = nil
+                capture(standby.texture, at: standby.time) { [renderer] in renderer.recycle([standby.texture]) }
+            } else if let surface, let picture = surface.presentation() {
                 let key = (ObjectIdentifier(surface), picture.generation)
                 // One picture is measured at a time; while one is, newer ones coalesce into
                 // whichever is current when it lands.
@@ -129,7 +136,11 @@ public final class LocalScrollController {
             return false
         }
         let fill = fillColor(composition)
-        layer.drawableSize = CGSize(width: textures[composition.base]?.width ?? 0, height: textures[composition.base]?.height ?? 0)
+        guard let base = textures[composition.base] else { isComposing = false; return false }
+        let format = LocalScrollRenderer.layerFormat(for: base.pixelFormat)
+        if layer.pixelFormat != format { layer.pixelFormat = format }
+        let size = CGSize(width: base.width, height: base.height)
+        if layer.drawableSize != size { layer.drawableSize = size }
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
               renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {
             isComposing = false
@@ -145,7 +156,34 @@ public final class LocalScrollController {
         return true
     }
 
-    private func capture(_ texture: MTLTexture, at time: CFTimeInterval) {
+    /// A picture presented on the GPU (a live GPU window), captured natively. `done` runs
+    /// once the phone no longer reads `texture`. While no scroll is armed only the newest is
+    /// kept, as the picture the next gesture starts from.
+    public func offer(_ texture: MTLTexture, done: @escaping @Sendable () -> Void) {
+        let time = lastRefresh ?? CACurrentMediaTime()
+        pictureSize = CGSize(width: texture.width, height: texture.height)
+        if CACurrentMediaTime() < armedUntil, measuringID == nil {
+            capture(texture, at: time, done: done)
+            return
+        }
+        renderer.copy(texture) { [weak self] copy in
+            done()
+            guard let copy else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { LocalScrollRenderer.shared?.recycle([copy]); return }
+                    if let old = self.standby { self.renderer.recycle([old.texture]) }
+                    self.standby = (copy, time)
+                }
+            }
+        }
+    }
+
+    /// The size of the newest picture offered on the GPU.
+    public private(set) var pictureSize: CGSize?
+    private var standby: (texture: MTLTexture, time: CFTimeInterval)?
+
+    private func capture(_ texture: MTLTexture, at time: CFTimeInterval, done: (@Sendable () -> Void)? = nil) {
         let id = nextID
         nextID += 1
         measuringID = id
@@ -154,6 +192,7 @@ public final class LocalScrollController {
         let anchor: Int? = nil
         let measuring = measuring
         renderer.capture(texture, axis: axis) { [weak self] copy, signature in
+            done?()
             measuring.async {
                 var observation: ScrollObservation = .unrelated
                 var edges: (top: SIMD3<Float>, bottom: SIMD3<Float>)?
