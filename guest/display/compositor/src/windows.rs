@@ -49,6 +49,10 @@ pub struct Window {
     pub maximized: bool,
     /// The owning process and its ancestors, once looked up (for video binding).
     pub lineage: Option<Vec<u32>>,
+    /// The highest `pointer.scroll.seq` delivered to the window's client, and its value
+    /// at the client's latest commit (the picture's `input_seq`).
+    pub scroll_seq_delivered: u64,
+    pub scroll_seq_committed: u64,
     /// Overscan the client asked for: how much wider and taller than the geometry it
     /// shows the window is laid out (logical pixels; zero for none).
     pub overscan: Size<i32, Logical>,

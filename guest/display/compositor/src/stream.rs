@@ -49,6 +49,8 @@ pub struct Job {
     /// This picture puts the region of the motion stream with this id back into the
     /// window picture (its damage covers the region); the stream ends with it.
     pub ends_motion: Option<u64>,
+    /// The picture's `frame.input_seq`.
+    pub input_seq: Option<u64>,
 }
 
 pub struct MotionJob {
@@ -137,6 +139,7 @@ pub struct Done {
     /// The motion region's picture, when it changed.
     pub motion: Option<(u64, Result<Encoded, String>)>,
     pub ends_motion: Option<u64>,
+    pub input_seq: Option<u64>,
     /// Small changes sent as lossless tiles instead of a window picture.
     pub tiles: Option<TilesDone>,
 }
@@ -255,6 +258,7 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         changed: Vec::new(),
         motion: None,
         ends_motion: job.ends_motion,
+        input_seq: job.input_seq,
         tiles: None,
     };
     if job.refine && !reuse {
@@ -707,6 +711,7 @@ mod tests {
             settings: Settings { threads: 1, refine_after_ms: 0, tile_max_px: 0, ..Settings::default() },
             motion,
             ends_motion: None,
+            input_seq: None,
         };
         let motion = || Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false });
         let first = work(job(CpuImage::new(128, 96), motion(), false), &mut encoders);
@@ -739,6 +744,7 @@ mod tests {
             settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
             motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false }),
             ends_motion: None,
+            input_seq: None,
         };
         let first = work(job(CpuImage::new(128, 96)), &mut encoders);
         assert!(first.result.unwrap().unwrap().keyframe);
@@ -769,6 +775,7 @@ mod tests {
             settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
             motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: true }),
             ends_motion: None,
+            input_seq: None,
         };
         let done = work(job(CpuImage::new(128, 96), None), &mut encoders);
         let picture = done.motion.unwrap().1.unwrap();
