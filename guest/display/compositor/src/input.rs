@@ -51,6 +51,25 @@ pub struct InputState {
     pub popup_grab: Option<u64>,
     /// Apple Pencil, as the seat's tablet pen (pencil.rs).
     pub pencil: crate::pencil::PencilState,
+    /// The timer that ends a finger scroll sequence with axis_stop once samples stop.
+    scroll_stop: Option<smithay::reexports::calloop::RegistrationToken>,
+}
+
+/// A finger scroll sequence ends when no sample has come for this long: the phone sends
+/// one every display refresh while the content moves.
+const SCROLL_STOP_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// One scroll sample as wl_pointer axis events: precise samples are finger scrolling in
+/// logical pixels, with no discrete steps; wheel clicks are 15 logical pixels and 120
+/// value120 units each.
+fn scroll_axes(scroll: &proto::Scroll, display_scale: f64) -> (AxisSource, Vec<(Axis, f64, Option<i32>)>) {
+    let axes = [(Axis::Horizontal, scroll.dx), (Axis::Vertical, scroll.dy)];
+    if scroll.precise {
+        (AxisSource::Finger, axes.into_iter().filter(|(_, v)| *v != 0.0).map(|(a, v)| (a, v / display_scale, None)).collect())
+    } else {
+        (AxisSource::Wheel, axes.into_iter().filter(|(_, v)| *v != 0.0)
+            .map(|(a, v)| (a, v * WHEEL_STEP, Some((v * 120.0).round() as i32))).collect())
+    }
 }
 
 impl InputState {
@@ -153,25 +172,44 @@ impl State {
         if let Some(scroll) = &m.scroll {
             let display_scale =
                 self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
-            let mut frame = AxisFrame::new(time);
-            if scroll.precise {
-                frame = frame.source(AxisSource::Finger);
-                for (axis, v) in [(Axis::Horizontal, scroll.dx), (Axis::Vertical, scroll.dy)] {
-                    if v != 0.0 {
-                        frame = frame.value(axis, v / display_scale);
-                    }
-                }
-            } else {
-                frame = frame.source(AxisSource::Wheel);
-                for (axis, v) in [(Axis::Horizontal, scroll.dx), (Axis::Vertical, scroll.dy)] {
-                    if v != 0.0 {
-                        frame = frame.value(axis, v * WHEEL_STEP).v120(axis, (v * 120.0).round() as i32);
-                    }
+            let (source, axes) = scroll_axes(scroll, display_scale);
+            let mut frame = AxisFrame::new(time).source(source);
+            for (axis, value, v120) in axes {
+                frame = frame.value(axis, value);
+                if let Some(v120) = v120 {
+                    frame = frame.v120(axis, v120);
                 }
             }
             pointer.axis(self, frame);
+            if scroll.precise {
+                self.arm_scroll_stop();
+            }
         }
+        // One sample is one wl_pointer.frame: Xwayland turns each frame into its events.
         pointer.frame(self);
+    }
+
+    /// (Re)starts the wait after which a finger scroll sequence gets its axis_stop, the
+    /// end Wayland clients use to finish a gesture (and start their own fling, if any).
+    fn arm_scroll_stop(&mut self) {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        if let Some(token) = self.input.scroll_stop.take() {
+            self.handle.remove(token);
+        }
+        let inserted = self.handle.insert_source(Timer::from_duration(SCROLL_STOP_AFTER), |_, _, state: &mut State| {
+            state.input.scroll_stop = None;
+            if let Some(pointer) = state.seat.get_pointer() {
+                let time = state.now_ms();
+                let frame = AxisFrame::new(time).source(AxisSource::Finger).stop(Axis::Vertical).stop(Axis::Horizontal);
+                pointer.axis(state, frame);
+                pointer.frame(state);
+                if let Err(e) = state.dh.flush_clients() {
+                    tracing::warn!("flushing Wayland clients: {e}");
+                }
+            }
+            TimeoutAction::Drop
+        });
+        self.input.scroll_stop = inserted.ok();
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
@@ -474,7 +512,18 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::InputState;
+    use super::{scroll_axes, Axis, AxisSource, InputState};
+    use caboose_display_protocol as proto;
+
+    #[test]
+    fn precise_scroll_is_finger_pixels_without_discrete_steps() {
+        let (source, axes) = scroll_axes(&proto::Scroll { dx: 0.0, dy: 60.0, precise: true }, 2.0);
+        assert_eq!(source, AxisSource::Finger);
+        assert_eq!(axes, vec![(Axis::Vertical, 30.0, None)]);
+        let (source, axes) = scroll_axes(&proto::Scroll { dx: -1.0, dy: 2.0, precise: false }, 2.0);
+        assert_eq!(source, AxisSource::Wheel);
+        assert_eq!(axes, vec![(Axis::Horizontal, -15.0, Some(-120)), (Axis::Vertical, 30.0, Some(240))]);
+    }
 
     #[test]
     fn forgetting_a_window_reports_touches_left_on_it() {
