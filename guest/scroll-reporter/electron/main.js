@@ -119,9 +119,23 @@ async function attach(contents) {
       try {
         const message = JSON.parse(params.payload)
         if (message.type === 'report') socket?.write(frame(params.payload))
+        else if (message.type === 'pinch' || message.type === 'pan') viewport(message)
       } catch {}
     }
   })
+  // Zoom and pan the visual viewport the way a trackpad does; a pinch is answered when done.
+  const viewport = message => {
+    const done = message.type === 'pinch'
+      ? dbg.sendCommand('Input.synthesizePinchGesture', {
+          x: message.x, y: message.y, scaleFactor: message.factor, relativeSpeed: 100000, gestureSourceType: 'mouse',
+        })
+      : dbg.sendCommand('Input.dispatchMouseEvent', {
+          type: 'mouseWheel', x: message.x, y: message.y, deltaX: message.dx, deltaY: message.dy,
+        })
+    done.catch(() => {}).finally(() => {
+      if (message.type === 'pinch') toPage(JSON.stringify({ type: 'zoomed', seq: message.seq }))
+    })
+  }
   dbg.on('detach', () => {
     closed = true
     socket?.destroy()

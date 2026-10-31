@@ -207,7 +207,7 @@ def check_chromium_text_input():
 
 
 
-def check_chromium_scroll_reports(x11=False, display="900x800@60x1"):
+def check_chromium_scroll_reports(x11=False, display="900x800@60x1", zoom=None, focus=0.5):
     """The Chromium scroll reporter end to end: every picture's frame tag names a report
     whose offset is the one the picture shows (read from the page's ruler), while
     scroll.target drives the page and its seq is acknowledged."""
@@ -224,20 +224,20 @@ def check_chromium_scroll_reports(x11=False, display="900x800@60x1"):
     pages = subprocess.Popen([sys.executable, "-m", "http.server", "--bind", "127.0.0.1", "18765"],
                              cwd=os.path.join(HERE, "pages"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     command = ["chromium", "--ozone-platform=x11" if x11 else "--ozone-platform=wayland", "--no-sandbox", "--disable-gpu", "--no-first-run",
-               "--password-store=basic", "--disable-features=Translate", f"--user-data-dir={profile}", f"--load-extension={extension}",
+               "--password-store=basic", "--disable-features=Translate", "--silent-debugger-extension-api", f"--user-data-dir={profile}", f"--load-extension={extension}",
                "--window-size=900,800", "--app=http://127.0.0.1:18765/scroll-ruler.html"]
     # An X11 browser draws at scale 1 and the compositor scales it to the display's scale.
     scale = float(display.rsplit("x", 1)[1]) if x11 else 1.0
-    return with_scroll_server(command, pages, display, scale)
+    return with_scroll_server(command, pages, display, scale, zoom, focus)
 
 
-def scroll_report_check(proc, token, display="900x800@60x1", ruler_scale=1.0):
+def scroll_report_check(proc, token, display="900x800@60x1", ruler_scale=1.0, zoom=None, focus=0.5):
     """The probe drives a reporting window with scroll.target and checks every tagged
     picture's report against the ruler the window draws (probe/src/scroll.rs)."""
     time.sleep(8)  # a browser starts slowly on a loaded computer; its page reports once loaded
     r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", display,
                "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler",
-               "--ruler-scale", str(ruler_scale)], json_out=False)
+               "--ruler-scale", str(ruler_scale)] + (["--scroll-zoom", str(zoom), "--scroll-zoom-focus", str(focus)] if zoom else []), json_out=False)
     line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)
     if line is None:
         raise Failed(f"probe gave no scroll report: {r.stdout} {r.stderr}")
@@ -246,17 +246,24 @@ def scroll_report_check(proc, token, display="900x800@60x1", ruler_scale=1.0):
         raise Failed(f"scroll reports: {s}; {r.stderr.strip()[-2000:]}")
     if s["sent_seq"] - s["applied"] > 30:
         raise Failed(f"scroll.target not applied: {s}")
+    if zoom and (s["zoomed_checked"] < 100 or abs(s["max_zoom"] - zoom) > 0.01):
+        raise Failed(f"zoom to {zoom} not reported: {s}; {r.stderr.strip()[-1500:]}")
+    # The first picture that applies the zoom is at its scale, its focus content where it was.
+    if zoom and not (0 <= s["zoom_scale_error"] <= 0.005 and 0 <= s["zoom_focus_error"] <= 2.0):
+        raise Failed(f"zoom to {zoom} landed wrong: {s}; {r.stderr.strip()[-1500:]}")
     # The ruler never moves in its document: a new epoch would drop pictures for nothing.
     if s["epochs"]:
         raise Failed(f"layout shift reported where there is none: {s}")
-    return (f'{s["matched"]} tagged pictures matched their reports, ruler agrees within '
+    zoomed = (f', {s["zoomed_checked"]} of them at zoom {s["max_zoom"]:.2f} (first acked frame: scale off by '
+              f'{100 * s["zoom_scale_error"]:.2f}%, focus content off by {s["zoom_focus_error"]:.2f} px)') if zoom else ''
+    return (f'{s["matched"]}{zoomed} tagged pictures matched their reports, ruler agrees within '
             f'{s["ruler_max_error"]:.2f} px over {s["ruler_checked"]} (the newest report on arrival was wrong for '
             f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')
 
 
-def with_scroll_server(command, helper=None, display="900x800@60x1", ruler_scale=1.0):
+def with_scroll_server(command, helper=None, display="900x800@60x1", ruler_scale=1.0, zoom=None, focus=0.5):
     try:
-        return with_server(command, lambda proc, token: scroll_report_check(proc, token, display, ruler_scale))
+        return with_server(command, lambda proc, token: scroll_report_check(proc, token, display, ruler_scale, zoom, focus))
     finally:
         if helper:
             helper.kill()
@@ -279,7 +286,7 @@ def check_qt_scroll_reports():
     return with_scroll_server(command)
 
 
-def check_electron_scroll_reports():
+def check_electron_scroll_reports(zoom=None):
     """The Electron reporter (guest/scroll-reporter/electron) loaded through NODE_OPTIONS into
     a stock Electron (CABOOSE_SCROLL_ELECTRON names its binary) showing the ruler page."""
     electron = os.environ.get("CABOOSE_SCROLL_ELECTRON")
@@ -288,7 +295,7 @@ def check_electron_scroll_reports():
     reporter = os.path.join(os.path.dirname(ROOT), "scroll-reporter", "electron")
     os.environ["NODE_OPTIONS"] = f"--require={reporter}/main.js"
     try:
-        return with_scroll_server([electron, "--no-sandbox", "--ozone-platform=wayland", f"{reporter}/ruler-app"])
+        return with_scroll_server([electron, "--no-sandbox", "--ozone-platform=wayland", f"{reporter}/ruler-app"], zoom=zoom)
     finally:
         del os.environ["NODE_OPTIONS"]
 
@@ -1182,11 +1189,15 @@ CHECKS = [
     ("chromium-touch-fling", check_chromium_touch_fling),
     ("chromium-scroll-reports", check_chromium_scroll_reports),
     # X11 at a fractional scale: the tag must survive scaling and video coding.
+    ("chromium-zoom-scroll-reports", lambda: check_chromium_scroll_reports(zoom=2.5)),
+    # A pinch that also panned: its focus is below the window.
+    ("chromium-zoom-outside-scroll-reports", lambda: check_chromium_scroll_reports(zoom=1.8, focus=1.4)),
     ("chromium-x11-scroll-reports", lambda: check_chromium_scroll_reports(x11=True, display="1179x1716@60x1.4375")),
     ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
     ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
     ("qt6-scroll-reports", check_qt_scroll_reports),
     ("electron-scroll-reports", check_electron_scroll_reports),
+    ("electron-zoom-scroll-reports", lambda: check_electron_scroll_reports(zoom=2.0)),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("encoder-eviction", check_encoder_eviction),

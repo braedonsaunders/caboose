@@ -76,6 +76,8 @@ OPTIONS:
     --ruler                check each tagged picture's offset against the ruler drawn by
                            scripts/pages/scroll-ruler.html
     --ruler-scale S        window pixels per page pixel of that ruler [default: 1]
+    --scroll-zoom S        after 120 drives, zoom the page to S with scroll.zoom and go on
+    --scroll-zoom-focus F  the zoom's focus F of the scroller's height down [default: 0.5]
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -112,6 +114,8 @@ struct Args {
     scroll_drive: Option<f64>,
     ruler: bool,
     ruler_scale: f64,
+    scroll_zoom: Option<f64>,
+    scroll_zoom_focus: f64,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -172,6 +176,8 @@ fn parse_args() -> Result<Args, String> {
         scroll_drive: None,
         ruler: false,
         ruler_scale: 1.0,
+        scroll_zoom: None,
+        scroll_zoom_focus: 0.5,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -232,6 +238,8 @@ fn parse_args() -> Result<Args, String> {
             "--scroll-overscan" => a.scroll_overscan = Some(value()?.parse().map_err(|_| "bad --scroll-overscan")?),
             "--scroll-drive" => a.scroll_drive = Some(value()?.parse().map_err(|_| "bad --scroll-drive")?),
             "--ruler" => a.ruler = true,
+            "--scroll-zoom-focus" => a.scroll_zoom_focus = value()?.parse().map_err(|_| "bad --scroll-zoom-focus")?,
+            "--scroll-zoom" => a.scroll_zoom = Some(value()?.parse().map_err(|_| "bad --scroll-zoom")?),
             "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
             "-h" | "--help" => {
@@ -927,7 +935,15 @@ fn run(args: Args) -> Result<bool, String> {
             if let (Some(id), Some(dy)) = (target, args.scroll_drive) {
                 // Drive only once the reporter draws tags: the overscan is in place.
                 if scroll_check.latest.get(&id).is_some_and(|t| t.tag.is_some()) {
-                    if let Some(m) = scroll_check.target(id, dy) {
+                    let zoom_due = scroll_check.sent_seq >= 120 && scroll_check.zoom_seq.is_none();
+                    // Driving pauses until the zoom is applied, so its landing can be checked.
+                    let waiting = scroll_check.zoom_seq.is_some_and(|z| scroll_check.applied < z);
+                    let message = match args.scroll_zoom.filter(|_| zoom_due) {
+                        Some(scale) => scroll_check.zoom(id, scale, args.scroll_zoom_focus),
+                        None if waiting => None,
+                        None => scroll_check.target(id, dy),
+                    };
+                    if let Some(m) = message {
                         send(&mut ws, &m)?;
                     }
                 }

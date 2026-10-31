@@ -242,6 +242,9 @@ import Testing
         #expect(tree.applied == 17 && tree.epoch == 2 && tree.scrollers.map(\.id) == [0, 4])
         #expect(tree.scrollers[0].offset == CGPoint(x: 0, y: 2412.75) && tree.scrollers[0].range == CGPoint(x: 0, y: 18904.5))
         #expect(tree.scrollers[0].fixed.count == 2 && tree.scrollers[1].fixed.isEmpty)
+        #expect(tree.zoom == 1 && tree.zoomRange == nil)
+        guard case .scrollTree(let zoomed) = try server("scroll-tree-zoomed").first else { Issue.record("zoomed"); return }
+        #expect(zoomed.zoom == 2.5 && zoomed.zoomRange == 1 ... 5 && zoomed.scrollers[0].offset == CGPoint(x: 1473.75, y: 6031.875))
     }
 
     @Test func devices() throws {
@@ -436,6 +439,7 @@ import Testing
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
         "scroll-target": .scrollTarget(window: 7, scroller: 0, seq: 18, delta: CGPoint(x: 0, y: 37.25)),
+        "scroll-zoom": .scrollZoom(window: 7, seq: 20, scale: 2.5, focus: CGPoint(x: 590, y: 1300)),
         "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], scroll: true),

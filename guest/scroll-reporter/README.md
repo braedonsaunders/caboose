@@ -20,6 +20,14 @@ the socket protocol is described in
   report. It applies `scroll.target` deltas in the next frame, before measuring, and
   reports their sequence as `applied`. A layout shift is noticed from a few sample
   elements' document positions and starts a new `epoch`.
+- It reads the visual viewport too. Under a pinch zoom it reports offsets and ranges in
+  zoomed pixels, maps every rectangle through the zoom, and draws the tag where it lands on
+  its window pixels. `scroll.zoom` is applied in frame order after the scroll before it. The
+  service worker (or the Electron reporter) performs a trackpad pinch through the debugger,
+  anchored inside the window. The page then scrolls, frame after frame, until the content at
+  the zoom's focus is where it belongs, and applies the seq in that frame. While a zoom is
+  settling it draws no tag. Chromium is started with `--silent-debugger-extension-api` (an
+  `/etc/chromium.d` file from `install.sh`), so attaching the debugger shows no banner.
 - `core.js` is its pure logic: the tag's blocks, the tag's place, the sticky test and
   report comparison.
 - `service-worker.js` joins the visible tab to the native host.
@@ -119,6 +127,10 @@ launcher loads. `guest/container/Dockerfile` runs it.
 - `check.py electron-scroll-reports`: a stock Electron (`CABOOSE_SCROLL_ELECTRON` names its
   binary) with the reporter through `NODE_OPTIONS`, showing the ruler page
   (`electron/ruler-app`).
+- `check.py chromium-zoom-scroll-reports`, `chromium-zoom-outside-scroll-reports` and
+  `electron-zoom-scroll-reports`: the same check, with a `scroll.zoom` partway through (focus
+  in or below the window). They also require the first frame that applies it to be at its
+  scale, with the focus content where it was.
 - `check.py chromium-scroll-reports` (in [guest/display/scripts](../display/scripts)):
   real Chromium on caboose-display with the extension and native host. The probe asks for
   overscan and drives the page with `scroll.target`. For every decoded picture it reads

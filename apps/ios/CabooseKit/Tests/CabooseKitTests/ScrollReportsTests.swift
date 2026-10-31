@@ -44,19 +44,29 @@ struct ScrollReportsTests {
         let reports = ScrollReports()
         reports.record(Self.tree(tag: 0x01_0001, offset: 1000))
         reports.record(Self.tree(tag: 0x01_0002, offset: 1037.25, epoch: 1))
+        reports.record(Self.tree(tag: 0x01_0003, offset: 1037.25, epoch: 0))
+        var zoomed = Self.tree(tag: 0x01_0004, offset: 2074.5, epoch: 0)
+        zoomed.zoom = 2
+        reports.record(zoomed)
         // A GPU picture at 0.55 of the window's pixels: 648 x 2808 for 1179 x 2556 shown + 2556 overscan.
         let picture = CGSize(width: 1179 * 0.55, height: 5112 * 0.55), shown = CGSize(width: 1179, height: 2556)
         let rect = try #require(reports.tagRect(picture: picture, shown: shown))
         #expect(abs(rect.minY - 2556 * 0.55) < 0.01 && abs(rect.width - 384 * 0.55) < 0.01)
         let older = try #require(reports.observation(luma: Self.luma(Self.blocks(0x01_0001)), picture: picture, shown: shown, axis: .vertical))
         guard case .reported(let offset, let region, let bounds, let stationary, let epoch) = older else { Issue.record("not reported"); return }
-        #expect(abs(offset - 550) < 0.001 && epoch == 0)
+        #expect(abs(offset - 550) < 0.001)
         #expect(region.along == 99 ..< 2812 && region.across == 0 ..< 648)
         #expect(bounds == 0 ... 9900)
         #expect(stationary.count == 2)
         guard case .reported(let newer, _, _, _, let next)? = reports.observation(
             luma: Self.luma(Self.blocks(0x01_0002)), picture: picture, shown: shown, axis: .vertical) else { Issue.record("newer"); return }
-        #expect(abs(newer - 1037.25 * 0.55) < 0.001 && next == 1)
+        #expect(abs(newer - 1037.25 * 0.55) < 0.001 && next != epoch)
+        // The same report epoch at the same zoom places together; another zoom does not.
+        guard case .reported(_, _, _, _, let same)? = reports.observation(
+            luma: Self.luma(Self.blocks(0x01_0003)), picture: picture, shown: shown, axis: .vertical),
+              case .reported(_, _, _, _, let other)? = reports.observation(
+            luma: Self.luma(Self.blocks(0x01_0004)), picture: picture, shown: shown, axis: .vertical) else { Issue.record("zoomed"); return }
+        #expect(same == epoch && other != epoch)
         #expect(reports.observation(luma: Self.luma(Self.blocks(0x01_0009)), picture: picture, shown: shown, axis: .vertical) == nil)
         #expect(reports.observation(luma: nil, picture: picture, shown: shown, axis: .vertical) == nil)
     }

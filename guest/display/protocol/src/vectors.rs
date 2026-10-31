@@ -368,6 +368,28 @@ pub fn all(media: &Media) -> Vec<Vector> {
                     },
                     Scroller { id: 4, rect: Rect::new(60, 900, 1059, 600), offset: [0.0, 96.0], range: [0.0, 1404.0], fixed: vec![] },
                 ],
+                zoom: None,
+                zoom_range: None,
+            }),
+        ),
+        one(
+            "scroll-tree-zoomed",
+            "The root scroller of a page pinch-zoomed to 2.5 (of 1 to 5): offset and range in zoomed pixels.",
+            Message::ScrollTree(ScrollTree {
+                id: 7,
+                tag: Some(0x03_2A11),
+                tag_rect: Some(Rect::new(0, 2560, 1024, 32)),
+                applied: 19,
+                epoch: 2,
+                scrollers: vec![Scroller {
+                    id: 0,
+                    rect: Rect::new(0, 180, 1179, 4932),
+                    offset: [1473.75, 6031.875],
+                    range: [1768.5, 47_261.25],
+                    fixed: vec![Rect::new(0, 2560, 1024, 32)],
+                }],
+                zoom: Some(2.5),
+                zoom_range: Some([1.0, 5.0]),
             }),
         ),
         one(
@@ -1115,6 +1137,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "scroll-target",
             "Scroll the root scroller of window 7 down by 37.25 content pixels, as the window's input 18.",
             Message::ScrollTarget(ScrollTarget { id: 7, scroller: 0, seq: 18, delta: [0.0, 37.25] }),
+        ),
+        one(
+            "scroll-zoom",
+            "Zoom window 7's page to 2.5 with window point (590, 1300) fixed, as the window's input 20.",
+            Message::ScrollZoom(ScrollZoom { id: 7, seq: 20, scale: 2.5, focus: [590.0, 1300.0] }),
         ),
         one(
             "key-shift-a",

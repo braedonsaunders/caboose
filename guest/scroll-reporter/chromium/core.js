@@ -4,6 +4,8 @@
   const BLOCKS = 32
   const SYNC = [true, false, true, false]
 
+  const round = v => Math.round(v * 100) / 100
+
   /** The 32 blocks of a 24-bit tag value, true for white. */
   function tagBlocks(value) {
     value &= 0xffffff
@@ -25,20 +27,34 @@
     return Math.max(1, Math.ceil(device / dpr - 1e-6))
   }
 
+  /** No pinch zoom: the visual viewport is the layout viewport. */
+  const UNZOOMED = { scale: 1, x: 0, y: 0 }
+
   /**
-   * Where the tag goes, viewport device pixels [x, y, w, h], or null when the bind leaves
-   * no room for it: at the line the bind names, one block tall, in the overscan and inside
-   * a viewport `height` CSS pixels tall.
+   * A layout-viewport CSS rect (DOMRect-like) as the window shows it, device pixels: through
+   * the visual viewport `view` (its scale and offset), which a pinch zoom magnifies.
    */
-  function tagRect(bind, dpr, height) {
-    if (!bind || !bind.active || !(bind.overscan[1] > 0)) return null
-    const side = blockCss(bind.block, dpr)
-    const top = Math.round(bind.tag_top / dpr)
-    if (!(top >= 0) || !(top + side <= height)) return null
-    return { css: [0, top, BLOCKS * side, side], device: [0, top * dpr, BLOCKS * side * dpr, side * dpr] }
+  function viewRect(r, view, dpr) {
+    const k = view.scale * dpr
+    return [round((r.left - view.x) * k), round((r.top - view.y) * k), round(r.width * k), round(r.height * k)]
   }
 
-  const round = v => Math.round(v * 100) / 100
+  /**
+   * Where the tag goes, or null when the bind leaves no room for it: at the line the bind
+   * names, one block tall, in the overscan and inside a viewport `height` CSS pixels tall.
+   * `css` is where to draw it in the layout viewport, so that under a pinch zoom `view` it
+   * still lands on those window pixels; `device` is that rect in viewport device pixels.
+   */
+  function tagRect(bind, dpr, height, view = UNZOOMED) {
+    if (!bind || !bind.active || !(bind.overscan[1] > 0)) return null
+    const k = dpr * view.scale
+    const side = blockCss(bind.block, k)
+    const top = Math.round(bind.tag_top / k)
+    if (!(top >= 0) || !(top + side <= height / view.scale)) return null
+    const css = { left: view.x, top: view.y + top, width: BLOCKS * side, height: side }
+    return { css: [css.left, css.top, css.width, css.height], device: viewRect(css, view, dpr) }
+  }
+
 
   /** A CSS rect (DOMRect-like) in device pixels, rounded to hundredths. */
   function deviceRect(r, dpr) {
@@ -92,7 +108,10 @@
     return false
   }
 
-  const api = { BLOCKS, tagBlocks, tagValue, blockCss, tagRect, deviceRect, stuck, intersects, changed, documentY, coherentShift }
+  /** The scales Chromium's pinch zoom takes on a desktop. */
+  const ZOOM_RANGE = [1, 4]
+
+  const api = { BLOCKS, ZOOM_RANGE, UNZOOMED, tagBlocks, tagValue, blockCss, tagRect, viewRect, deviceRect, stuck, intersects, changed, documentY, coherentShift }
   globalThis.CabooseScrollCore = api
   if (typeof module === 'object' && module.exports) module.exports = api
 })()

@@ -181,14 +181,21 @@
   }
 
   // ---- One frame.
-  function entry(id, rect, offset, range, dpr) {
+  /** A scroller's entry: `rect` in device pixels, offset and range in CSS pixels × `k`. */
+  function entry(id, rect, offset, range, k) {
     return {
       id,
-      rect: C.deviceRect(rect, dpr),
-      offset: [offset[0] * dpr, offset[1] * dpr],
-      range: [Math.max(0, range[0]) * dpr, Math.max(0, range[1]) * dpr],
+      rect,
+      offset: [offset[0] * k, offset[1] * k],
+      range: [Math.max(0, range[0]) * k, Math.max(0, range[1]) * k],
       fixed: [],
     }
+  }
+
+  /** The visual viewport: a pinch zoom's scale and its offset in the layout viewport. */
+  function view() {
+    const v = globalThis.visualViewport
+    return v ? { scale: v.scale || 1, x: v.offsetLeft || 0, y: v.offsetTop || 0 } : C.UNZOOMED
   }
 
   function measure() {
@@ -196,9 +203,14 @@
     const dpr = devicePixelRatio || 1
     const root = document.scrollingElement || document.documentElement
     if (!root) return
+    const v = view()
+    const k = v.scale * dpr
     const rootClip = { left: 0, top: 0, width: root.clientWidth, height: root.clientHeight, right: root.clientWidth, bottom: root.clientHeight }
+    // The root is the whole window however the page is zoomed: its content, magnified, moves
+    // by the layout scroll plus the visual viewport's offset in it.
     const scrollers = [
-      entry(0, rootClip, [scrollX, scrollY], [root.scrollWidth - root.clientWidth, root.scrollHeight - root.clientHeight], dpr),
+      entry(0, C.deviceRect(rootClip, dpr), [scrollX + v.x, scrollY + v.y],
+            [root.scrollWidth - root.clientWidth / v.scale, root.scrollHeight - root.clientHeight / v.scale], k),
     ]
     const clips = [rootClip]
     const el = findInner(now)
@@ -207,7 +219,7 @@
       const clip = { left: r.left + el.clientLeft, top: r.top + el.clientTop, width: el.clientWidth, height: el.clientHeight }
       clip.right = clip.left + clip.width
       clip.bottom = clip.top + clip.height
-      const e = entry(idOf(el), clip, [el.scrollLeft, el.scrollTop], [el.scrollWidth - el.clientWidth, el.scrollHeight - el.clientHeight], dpr)
+      const e = entry(idOf(el), C.viewRect(clip, v, dpr), [el.scrollLeft, el.scrollTop], [el.scrollWidth - el.clientWidth, el.scrollHeight - el.clientHeight], k)
       // The primary scroller first: the root unless only the inner one scrolls.
       if (scrollers[0].range[1] <= 0 && scrollers[0].range[0] <= 0) {
         scrollers.unshift(e)
@@ -225,12 +237,14 @@
       clips.forEach((clip, i) => {
         if (!C.intersects(r, clip)) return
         if (f.sticky && !C.stuck(r, f.insets, clip)) return
-        if (scrollers[i].fixed.length < 32) scrollers[i].fixed.push(C.deviceRect(r, dpr))
+        if (scrollers[i].fixed.length < 32) scrollers[i].fixed.push(C.viewRect(r, v, dpr))
       })
     }
     const primary = scrollers[0].id === 0 ? null : el
     if (shifted(primary, clips[0], primary ? primary.scrollTop : scrollY, dpr)) epoch++
-    const tag = C.tagRect(bind, dpr, innerHeight)
+    // While a zoom settles, the browser's compositor still moves the visual viewport under
+    // what this page last read: those frames carry no tag, so no picture is placed by them.
+    const tag = zooming ? null : C.tagRect(bind, dpr, innerHeight, v)
     if (tag) scrollers[0].fixed.push(tag.device)
     const report = {
       type: 'report',
@@ -242,6 +256,8 @@
       epoch,
       tag: tag ? tag.device : null,
       scrollers,
+      zoom: v.scale,
+      ...(canZoom ? { zoom_range: C.ZOOM_RANGE } : {}),
     }
     // Without a client placing pictures, a report only binds the window: a few a second.
     const live = bind && bind.active
@@ -276,13 +292,30 @@
     if (document.visibilityState !== 'visible') return
     attach()
     const dpr = devicePixelRatio || 1
-    for (const t of targets.splice(0)) {
+    if (zooming) stepZoom()
+    while (!zooming && targets.length) {
+      const t = targets.shift()
+      if (t.type === 'zoom') {
+        zoom(t)
+        continue
+      }
+      const v = view()
       const el = t.scroller === 0 ? null : byId.get(t.scroller)
-      const by = { left: t.delta[0] / dpr, top: t.delta[1] / dpr, behavior: 'instant' }
-      if (t.scroller === 0) scrollBy(by)
-      else if (el && el.isConnected) el.scrollBy(by)
+      // Zoomed content pixels to layout CSS pixels.
+      const dx = t.delta[0] / (dpr * v.scale), dy = t.delta[1] / (dpr * v.scale)
+      const by = { left: dx, top: dy, behavior: 'instant' }
+      if (t.scroller === 0) {
+        const x0 = scrollX, y0 = scrollY
+        scrollBy(by)
+        // What the layout viewport could not take pans the visual viewport inside it.
+        const rx = dx - (scrollX - x0), ry = dy - (scrollY - y0)
+        if (v.scale > 1 && Math.hypot(rx, ry) * dpr * v.scale > 0.5) {
+          post({ type: 'pan', x: innerWidth / 2, y: innerHeight / 2, dx: rx * v.scale, dy: ry * v.scale })
+        }
+      } else if (el && el.isConnected) el.scrollBy(by)
       applied = Math.max(applied, t.seq)
     }
+    if (zooming || targets.length) schedule()
     toggle = !toggle
     probe.style.width = toggle ? '1px' : '0px'
     measuring = true
@@ -313,13 +346,96 @@
     }
   }
 
+  let canZoom = false
+
   function receive(message) {
-    if (message.type === 'bind') bind = message
+    if (message.type === 'zoom' && Array.isArray(message.focus)) targets.push(message)
+    if (message.type === 'zoomed' && zooming?.seq === message.seq) zooming.pinched = true
+    else if (message.type === 'bind') bind = message
     else if (message.type === 'unbind') bind = null
     else if (message.type === 'base') frame = message.frame & 0xffff
     else if (message.type === 'target' && Array.isArray(message.delta)) targets.push(message)
+    else if (message.type !== 'zoom' && message.type !== 'zoomed') return
     lastSent = null
     schedule()
+  }
+
+  /**
+   * scroll.zoom: pinch the page to `scale` (clamped to what Chromium takes, which refuses a
+   * pinch past its range) around the viewport point `focus`. The extension's service worker or
+   * the Electron reporter performs it and answers `zoomed`; only then is its seq applied, so
+   * the frame that says so is at the final scale.
+   */
+  /** The zoom in progress: its seq, target scale and the layout point it must end at. */
+  let zooming = null
+
+  /** Starts a scroll.zoom in frame order, after the scroll input before it. */
+  function zoom(message) {
+    const dpr = devicePixelRatio || 1
+    const v = view()
+    const target = Math.min(C.ZOOM_RANGE[1], Math.max(C.ZOOM_RANGE[0], message.scale))
+    const factor = target / v.scale
+    // The focus (window pixels, possibly outside the window when the pinch also panned) keeps
+    // its content point: in layout CSS pixels the page must end at `content`.
+    const fx = message.focus[0] / dpr, fy = message.focus[1] / dpr
+    const content = { x: scrollX + v.x + fx * (1 / v.scale - 1 / target), y: scrollY + v.y + fy * (1 / v.scale - 1 / target) }
+    zooming = { seq: message.seq, target, from: v.scale, content, frames: 0, age: 0, pinched: false }
+    if (!canZoom || !Number.isFinite(factor) || Math.abs(factor - 1) < 1e-3) {
+      zooming.target = v.scale
+      zooming.pinched = true
+    } else {
+      // A trackpad pinch anchors inside the window, in visual-viewport CSS pixels.
+      const ax = Math.min(Math.max(fx, 0), innerWidth - 1), ay = Math.min(Math.max(fy, 0), innerHeight - 1)
+      post({ type: 'pinch', seq: message.seq, x: ax / v.scale, y: ay / v.scale, factor })
+    }
+  }
+
+  /**
+   * One frame of the zoom in progress. Once the page is at the target scale, it scrolls the
+   * rest of the way to the zoom's content point, frame after frame, since the browser's own
+   * scroll can still land after the pinch; the seq is applied in the frame that is there.
+   */
+  function stepZoom() {
+    const z = zooming
+    // A pinch never answered (its executor went away) gives up after about two seconds.
+    if (++z.age > 120) {
+      applied = Math.max(applied, z.seq)
+      zooming = null
+      return
+    }
+    if (!z.pinched) return
+    const v = view()
+    z.frames++
+    const atScale = Math.abs(v.scale - z.target) / z.target < 0.005
+    // A page that takes no pinch (Electron's default visual zoom limits) stays at its scale:
+    // it stops offering zoom, and the client zooms it some other way.
+    if (!atScale && z.frames > 10 && Math.abs(v.scale - z.from) / z.from < 0.005) {
+      canZoom = false
+      z.target = v.scale
+      return
+    }
+    if (atScale || z.frames > 30) {
+      const off = Math.hypot(z.content.x - (scrollX + v.x), z.content.y - (scrollY + v.y)) * v.scale * (devicePixelRatio || 1)
+      if (off < 0.5 || z.frames > 30) {
+        applied = Math.max(applied, z.seq)
+        zooming = null
+        return
+      }
+      settle(z.content)
+    }
+  }
+
+  /** Scrolls so the zoomed page's visual viewport starts at layout point `content`. */
+  function settle(content) {
+    const v = view()
+    const dx = content.x - (scrollX + v.x), dy = content.y - (scrollY + v.y)
+    if (Math.hypot(dx, dy) * v.scale < 0.25) return
+    const x0 = scrollX, y0 = scrollY
+    scrollBy({ left: dx, top: dy, behavior: 'instant' })
+    const rx = dx - (scrollX - x0), ry = dy - (scrollY - y0)
+    if (v.scale > 1 && Math.hypot(rx, ry) * v.scale > 0.5) {
+      post({ type: 'pan', x: innerWidth / 2, y: innerHeight / 2, dx: rx * v.scale, dy: ry * v.scale })
+    }
   }
 
   function connect() {
@@ -329,6 +445,7 @@
       const send = globalThis.__cabooseScrollPost
       globalThis.__cabooseScrollReceive = receive
       port = { postMessage: message => send(JSON.stringify(message)) }
+      canZoom = true
       return
     }
     try {
@@ -337,6 +454,8 @@
       return
     }
     port.onMessage.addListener(receive)
+    // The service worker zooms through chrome.debugger.
+    canZoom = !!chrome.runtime.getManifest().permissions?.includes('debugger')
     port.onDisconnect.addListener(() => {
       port = null
       bind = null
