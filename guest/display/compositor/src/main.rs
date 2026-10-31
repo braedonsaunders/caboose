@@ -44,6 +44,7 @@ mod x11_focus;
 mod x11sel;
 mod xauth;
 mod xdnd;
+mod x11_scale;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -551,6 +552,8 @@ fn run(config: Config) -> Result<(), String> {
         xwayland_shell,
         seat,
         xwm: None,
+        xwayland_client: None,
+        x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
         ibus: None,
@@ -739,6 +742,8 @@ fn run(config: Config) -> Result<(), String> {
                                     tracing::warn!("XSETTINGS for X11 clients: {error}");
                                 }
                                 state.xwm = Some(wm);
+                                state.xwayland_client = Some(client.clone());
+                                state.apply_x11_scale();
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
                                 }

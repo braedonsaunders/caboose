@@ -69,6 +69,13 @@ impl Displays {
         self.list.first().expect("there is always at least one display")
     }
 
+    /// Tells every client its outputs again, as after a change of the X11 client scale.
+    pub fn refresh_outputs(&self) {
+        for entry in &self.list {
+            configure(&entry.output, &entry.info, entry.origin);
+        }
+    }
+
     /// The display for an id, or the primary one.
     pub fn resolve(&self, id: Option<u32>) -> &DisplayOutput {
         id.and_then(|id| self.get(id)).unwrap_or_else(|| self.primary())

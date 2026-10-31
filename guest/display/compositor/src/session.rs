@@ -549,6 +549,8 @@ impl State {
             session.owner_displays = owner_displays.clone();
         }
         let change = self.displays.replace(&self.dh, displays);
+        // X11 follows the primary display's density (x11_scale.rs).
+        self.apply_x11_scale();
         let revoked: Vec<_> = self.windows.iter().filter_map(|window| {
             let available = owner_displays.contains(&window.display);
             (!available || change.removed.contains(&window.display)).then_some(window.id)
@@ -709,7 +711,7 @@ impl State {
             if local.size.w <= 0 || local.size.h <= 0 {
                 continue;
             }
-            let scale = if w.surface.is_x11() { 1.0 } else { surface_scale(&root, display_scale) };
+            let scale = surface_scale(&root, display_scale);
             let pic_w = (local.size.w as f64 * scale).round().max(1.0) as i32;
             let pic_h = (local.size.h as f64 * scale).round().max(1.0) as i32;
             let rect = w.announced.as_ref().map(picture_rect).unwrap();
