@@ -125,6 +125,7 @@ public final class LocalScrollController {
 
     private func restartChain() {
         generation += 1
+        placing.removeAll()
         measuringID = nil
         let generation = generation, chain = chain
         measuring.async { chain.previous = nil; chain.generation = generation }
@@ -164,6 +165,7 @@ public final class LocalScrollController {
             restartChain()
             releaseTextures(keeping: [])
         }
+        if !placing.isEmpty { place() }
         let wasActive = model.isActive
         let tick = model.tick(at: time)
         if wasActive, !model.isActive {
@@ -288,26 +290,53 @@ public final class LocalScrollController {
                         }
                         if let copy { self.textures[id] = copy }
                         if let edges { self.fills[id] = edges }
-                        // The reporter's word for exactly this picture replaces measurement.
-                        let reported = copy == nil ? nil : self.report?(source, tagLuma)
-                        if LocalScrollProfile.enabled {
-                            if case .reported(let offset, _, _, _, let epoch) = reported, !self.reportNoted {
-                                self.reportNoted = true
-                                LocalScrollProfile.note("picture \(id) reported: offset \(Int(offset)) epoch \(epoch)")
-                            } else if reported == nil, let tagLuma, !self.tagMissNoted {
-                                self.tagMissNoted = true
-                                LocalScrollProfile.note("picture \(id) has a tag rect but no report; tag luma \(tagLuma.map { String(Int($0)) }.joined(separator: ","))")
-                            } else if reported == nil, tagLuma == nil, self.report != nil, !self.tagMissNoted {
-                                self.tagMissNoted = true
-                                LocalScrollProfile.note("picture \(id): no tag rect for its window (no scroll.tree with tag_rect yet)")
-                            }
-                        }
-                        self.model.observe(id, copy == nil ? .unrelated : reported ?? result)
-                        self.profile.measured(result)
-                        self.releaseTextures(keeping: Set(self.model.retainedFrames))
+                        self.placing.append(Placing(id: id, source: source, tagLuma: copy == nil ? nil : tagLuma,
+                                                    measured: copy == nil ? .unrelated : result, deadline: CACurrentMediaTime() + 0.1))
+                        self.place()
                     }
                 }
             }
+        }
+    }
+
+    /// Captured pictures awaiting placement, in capture order: one whose tag names a report
+    /// not yet arrived waits for it up to its deadline, and the pictures after it wait too.
+    private struct Placing {
+        let id: UInt64
+        let source: PictureSource
+        let tagLuma: [Float]?
+        let measured: ScrollObservation
+        let deadline: CFTimeInterval
+    }
+    private var placing: [Placing] = []
+    /// Whether tag luma decodes as a valid frame tag (its report may still be on its way).
+    public var tagIsValid: (([Float]) -> Bool)?
+
+    /// A toolkit reporter's report arrived for this window: pictures waiting for one place now.
+    public func reportsUpdated() { place() }
+
+    private func place() {
+        let now = CACurrentMediaTime()
+        while let next = placing.first {
+            // The reporter's word for exactly this picture replaces measurement.
+            let reported = report?(next.source, next.tagLuma)
+            if reported == nil, let luma = next.tagLuma, tagIsValid?(luma) == true, now < next.deadline { return }
+            placing.removeFirst()
+            if LocalScrollProfile.enabled {
+                if case .reported(let offset, _, _, _, let epoch) = reported, !reportNoted {
+                    reportNoted = true
+                    LocalScrollProfile.note("picture \(next.id) reported: offset \(Int(offset)) epoch \(epoch)")
+                } else if reported == nil, let luma = next.tagLuma, !tagMissNoted {
+                    tagMissNoted = true
+                    LocalScrollProfile.note("picture \(next.id) has a tag rect but no report\(tagIsValid?(luma) == true ? " within 100 ms" : ""); tag luma \(luma.map { String(Int($0)) }.joined(separator: ","))")
+                } else if reported == nil, next.tagLuma == nil, report != nil, !tagMissNoted {
+                    tagMissNoted = true
+                    LocalScrollProfile.note("picture \(next.id): no tag rect for its window (no scroll.tree with tag_rect yet)")
+                }
+            }
+            model.observe(next.id, reported ?? next.measured)
+            profile.measured(reported ?? next.measured)
+            releaseTextures(keeping: Set(model.retainedFrames))
         }
     }
 
