@@ -122,7 +122,7 @@ public final class LiveGPUPresentationOwners {
         // Fitting the view slot scales the dedicated presentation layer without
         // invalidating the bound surface; the guest recreates its swapchain at
         // the new extent via configurePresentationExtent.
-        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: window.frame.size, overscan: window.overscan)
+        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: view.croppingOverscan ? window.frame.size : nil)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
         guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
@@ -232,20 +232,23 @@ private final class LiveGPULayerView: UIView {
     }
     /// The window's viewport and overscan in server pixels: a picture of the enlarged
     /// window (an overscan window) shows its viewport, top-left aligned, the rest clipped.
-    private var viewport: CGSize = .zero, overscan: CGSize = .zero
-    func fit(in target: CGRect, viewport: CGSize = .zero, overscan: CGSize = .zero) {
+    private var viewport: CGSize?
+    /// `viewport`, while the window has an overscan, is the shape the view shows: a longer
+    /// drawable shows its viewport top-left aligned, the rest clipped, never scaled.
+    func fit(in target: CGRect, viewport: CGSize? = nil) {
         frame = target
-        clipsToBounds = overscan != .zero
-        self.viewport = viewport; self.overscan = overscan
+        clipsToBounds = viewport != nil
+        self.viewport = viewport
         applyDrawableExtent()
     }
     /// The part of the drawable the view shows.
     private var shownExtent: CGSize {
-        guard overscan != .zero, viewport.width > 0, viewport.height > 0 else { return pixelExtent }
-        let full = CGSize(width: viewport.width + overscan.width, height: viewport.height + overscan.height)
-        let shape = pixelExtent.height / max(1, pixelExtent.width)
-        guard abs(shape - full.height / full.width) < abs(shape - viewport.height / viewport.width) else { return pixelExtent }
-        return CGSize(width: pixelExtent.width * viewport.width / full.width, height: pixelExtent.height * viewport.height / full.height)
+        guard let viewport, viewport.width > 0, viewport.height > 0, pixelExtent.width > 0, pixelExtent.height > 0 else { return pixelExtent }
+        let tall = pixelExtent.width * viewport.height / viewport.width
+        if pixelExtent.height - tall > 2 { return CGSize(width: pixelExtent.width, height: tall) }
+        let wide = pixelExtent.height * viewport.width / viewport.height
+        if pixelExtent.width - wide > 2 { return CGSize(width: wide, height: pixelExtent.height) }
+        return pixelExtent
     }
     func applyDrawableExtent() {
         guard !configuringExtent, !extentQuarantined else { return }

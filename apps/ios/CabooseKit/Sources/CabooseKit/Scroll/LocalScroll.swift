@@ -148,6 +148,8 @@ public struct LocalScroll {
         var holes: [ScrollRegion] = []
         /// Its lines past the viewport along the axis.
         var overscan = 0
+        /// Captured before anything was sent: it shows the app where the phone is.
+        var atRest = false
         var placed: Bool { offset != nil }
     }
 
@@ -402,7 +404,8 @@ public struct LocalScroll {
     /// `overscan` is how many lines of this picture lie past the viewport along the axis.
     public mutating func captured(_ id: UInt64, at time: TimeInterval, overscan pictureOverscan: Int = 0) -> (range: ClosedRange<Int>, center: Int) {
         let previous = frames.last?.offset ?? position
-        frames.append(Frame(id: id, time: time, offset: nil, region: nil, overscan: max(0, pictureOverscan)))
+        frames.append(Frame(id: id, time: time, offset: nil, region: nil, overscan: max(0, pictureOverscan),
+                            atRest: phase == .idle || (abs(commanded - position) < 0.5 && time >= lastSend + 2 * latency)))
         // The app can be anywhere it was commanded to over the input still in flight.
         var lowest = commanded, highest = commanded
         let since = time - 2 * latency - 0.1
@@ -431,8 +434,7 @@ public struct LocalScroll {
         case .unrelated:
             // The first picture of a gesture, taken before anything was sent, shows the app
             // where the phone is.
-            let atRest = phase == .idle || (before == nil && frames.count == 1 && abs(commanded - position) < 0.5
-                                            && frame.time >= lastSend + 2 * latency)
+            let atRest = phase == .idle || (before == nil && frame.atRest)
             guard atRest else {
                 // A picture that cannot be measured is never placed by a guess. The app's own
                 // picture shows for the rest of this run, scrolled by the finger as it goes.

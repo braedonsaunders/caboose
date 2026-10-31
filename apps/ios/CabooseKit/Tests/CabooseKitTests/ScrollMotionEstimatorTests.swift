@@ -84,3 +84,20 @@ extension ScrollMotionEstimatorTests {
         #expect(found.contains { $0.lines.lowerBound >= 304 && $0.lines.upperBound <= 416 && $0.pixels.lowerBound >= 440 && $0.pixels.upperBound <= 640 })
     }
 }
+
+extension ScrollMotionEstimatorTests {
+    /// An app scrolling in finer pixels than the picture's (a GPU picture smaller than its
+    /// window) draws content half a line off: it still measures, to the nearer line.
+    @Test func measuresAFractionalShift() {
+        let width = 640, height = 480, fixed = 48
+        let a = Self.picture(axis: .vertical, offset: 53, fixed: fixed, width: width, height: height)
+        let b = Self.picture(axis: .vertical, offset: 54, fixed: fixed, width: width, height: height)
+        let half = zip(a, b).map { UInt8((Int($0) + Int($1)) / 2) }
+        let older = Self.signature(Self.picture(axis: .vertical, offset: 0, fixed: fixed, width: width, height: height), axis: .vertical, width: width, height: height)
+        let newer = Self.signature(half, axis: .vertical, width: width, height: height)
+        guard case .moved(let motion) = ScrollMotionEstimator().measure(from: older, to: newer, expected: -64...160) else {
+            Issue.record("no motion found"); return
+        }
+        #expect(motion.shift == 53 || motion.shift == 54)
+    }
+}
