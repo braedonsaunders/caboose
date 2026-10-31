@@ -459,7 +459,9 @@ Failure ends after the 64-byte identity/request/status prefix. Both success and
 failure reject trailing bytes.
 
 PRESENT requires nonzero serial/object handles/format/extents, actual `GENERAL`
-layout (1), and at most 64 distinct nonzero binary waits. Decoder ownership and
+layout (1), and at most 64 distinct nonzero binary waits. An image whose extent
+differs from the bound surface's shows its top-left part that fits, and surface
+pixels it does not cover are black. Decoder ownership and
 synchronization checks remain necessary after structural parsing. Disposition is
 0 rejected, 1 queued, or 2 uncertain. Event is 0 submission, 1 device lost, or 2
 failed-unretired. Device lost requires an actual `VK_ERROR_DEVICE_LOST` (-4);

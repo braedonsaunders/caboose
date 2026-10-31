@@ -14,10 +14,13 @@ namespace caboose::gpuv2 {
 // A success means submission only; it is not an image-release receipt.
 // A non-null `capture` (same format and extent as the source, owned by the caller's capture
 // ring) receives a second copy of the source in the same submission.
+// A non-null `destinationExtent` is the destination's extent when it differs from the
+// source's: the source's top-left part that fits is copied (a window's overscan lies right
+// of and below what it shows), and destination pixels the source does not cover are cleared.
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
     VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider,
-    VkImage capture = VK_NULL_HANDLE);
+    VkImage capture = VK_NULL_HANDLE, const VkExtent2D* destinationExtent = nullptr);
 // A successful return means queued presentation, not displayed-vsync completion.
 // Caller must have queried and enabled swapchain maintenance1 on this actual
 // device. The ready semaphore and swapchain remain alive until presentFence is
