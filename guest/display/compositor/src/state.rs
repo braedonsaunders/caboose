@@ -186,6 +186,9 @@ pub struct State {
     pub xwayland_shell: XWaylandShellState,
     pub seat: Seat<State>,
     pub xwm: Option<X11Wm>,
+    /// Xwayland's own client, whose scale is the primary display's (x11_scale.rs).
+    pub xwayland_client: Option<smithay::reexports::wayland_server::Client>,
+    pub x11_scale: f64,
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
