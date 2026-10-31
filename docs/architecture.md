@@ -72,6 +72,11 @@ computer's disk is a reflink copy-on-write clone of the base: it costs no space 
 and the owner's installs and home persist. A clone is independent of the base once made,
 so a new base image reaches new computers only.
 
+Golden images omit info pages, lintian overrides and package documentation other
+than copyright notices. Persistent dpkg exclusions apply to later installs too; manual
+pages and translations remain available. The generic Debian kernel remains selected
+for phone-device drivers.
+
 New golden images have a 60 GiB sparse disk with a Btrfs root on partition 3, mounted
 with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 computers and
 snapshots keep their filesystem. Compression savings depend on the data; neither
@@ -134,7 +139,7 @@ The image contains:
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
-- **Services.** The file service, the notification monitor and endpoints, phone handoff
+- **Services.** The file service, the notification endpoints, phone handoff
   (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
@@ -171,8 +176,8 @@ to build it or which variable names a published one.
 
 ### Guest components
 
-Caboose's own guest plumbing (the file and terminal services, the notification monitor and
-endpoints, phone handoff, `caboose-game-run` with the game bundles Caboose ships in
+Caboose's own guest plumbing (the file and terminal services, the notification endpoints,
+phone handoff, `caboose-game-run` with the game bundles Caboose ships in
 `/usr/local/share/caboose/games`, the agent runner and the agent app runtime) is a bundle listed in `guest/components/manifest.json` and installed by
 `guest/components/install.sh`. Both image builders run the installer, and the host runs the
 same installer to update computers whose disks predate the host:
@@ -294,6 +299,58 @@ receipts and host-wide retries, including after a computer is deleted. The disk
 overlay stays local. Keep the private snapshot key and storage configuration with
 the host's protected backups.
 
+The portable-computer storage module provides a separate encrypted archive of a
+complete Linux microVM disk, boot assets, keyring secret and selected per-computer
+host state. Its caller must hold the source immutable throughout capture. Versioned,
+authenticated manifests bind the runtime and architecture; restore verifies all bytes
+into a new directory and never replaces a running disk. Upload journals retain object
+identities for interrupted-operation reconciliation. This module does not capture RAM,
+claim execution ownership, boot a restored computer or relocate a phone connection.
+See [portable storage](../apps/host/src/portable-storage/README.md).
+
+Personal installations continue to use local disks and embedded identity storage.
+Portable object storage is explicitly enabled by its caller and
+`CABOOSE_PORTABLE_STORAGE=on`; an unset or `off` setting requires no object-storage
+credentials or service. S3-compatible storage is an archive backend, not a live disk.
+
+### Optional multi-host cold recovery
+
+`CABOOSE_CLUSTER=on` enables shared PostgreSQL ownership and portable S3-compatible
+checkpoints for Linux monolithic Cloud Hypervisor computers on Azure VMs. It requires
+explicit host identities, a shared authentication secret, compatible boot/runtime
+assets and operator-provided HTTPS routing. Personal installations require none of
+these services. Cluster mode refuses container, macOS, split-image, template and depot
+runtimes; ordinary local runtimes retain their existing behavior.
+
+PostgreSQL assigns one execution owner and a monotonically increasing generation to
+each enrolled computer. Lease expiry alone does not authorize takeover. Recovery
+permanently revokes the source host, requests Azure VM deallocation, and verifies
+`PowerState/deallocated` before claiming another generation. An ambiguous fence or
+coordinator outage prevents takeover. Local lease failure disconnects clients and
+requests runtime shutdown; that request is not proof of a provider fence. Fencing
+stops the entire source Azure VM, so cluster hosts must be dedicated to this role.
+
+Operator checkpoint requests park the computer and capture its complete disk,
+keyring and selected host state while holding lifecycle and state-write exclusion.
+Checkpoint refuses active commands and drains result persistence before archiving
+validated command receipts. Recovery reinstalls those receipts without replay, then
+verifies the generation directory before cold boot.
+RAM and running processes are not restored, and changes since the last published
+checkpoint are lost. Checkpoints are explicit; a periodic scan attempts recovery
+of expired owners that already have compatible checkpoints.
+
+Cluster phone tokens and computer assignments use the shared database. Authorized
+location endpoints report the current host and generation; clients and ingress must
+route to that location. Automatic phone URL relocation is not implemented. The
+archived computer record never replaces current tenant authorization. An enrolled
+image root refuses local-mode startup, and a revoked Azure identity cannot rejoin.
+
+The [cluster component](../apps/host/src/cluster/README.md) documents configuration,
+operator endpoints and acceptance scripts. Disposable PostgreSQL and MinIO checks
+exercise ownership races, encrypted restore and activation using synthetic lifecycle
+and provider fixtures. Actual two-host Azure fencing and microVM recovery remain
+unverified.
+
 The macOS bundle includes a signed `appkit-desk-vz` helper and a menu bar app. A per-user
 LaunchAgent runs the host at login; its data lives under `~/Library/Application Support/Caboose`.
 It runs as the login user without root privileges. The helper gives each guest its own
@@ -330,7 +387,7 @@ and 14701 on `127.0.0.1` only. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
-                             # notification monitor and endpoint, and the owner's display
+                             # notification endpoint, and the owner's display
 caboose-session ready        # wait for the owner's display, then its accessibility bus
 caboose-session start-agent  # the agent seat: its bus, endpoint, display and accessibility bus
 caboose-session start-files  # the file service on 14700
@@ -427,11 +484,38 @@ within the existing shared Unix user, not an arbitrary-command security boundary
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_GAME_SOCKET` on the owner's
-display ([game-handoff.md](game-handoff.md)), plus `LIBVA_DRIVER_NAME=caboose` when the
-passthrough driver is installed, and on the owner's display started with the private GPU
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` when opt-in scene interception (`CABOOSE_SCENE=1`) is enabled,
+`CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
+`CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display when explicitly opted in (never on the agent seat), plus
+`LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed, and on the owner's display started with the private GPU
 sockets the variables that route applications to the phone's GPU
-([gpu-live.md](gpu-live.md#applications)). Each keeps its X authority, Xwayland shim, PulseAudio
+([gpu-live.md](gpu-live.md#applications)).
+
+**OS Decomposition ("Zero Server Video") & Headless Liveness Invariant.** When a client
+connects with `atlas: true` in `ClientHello` (including zero-video `decoders: []`),
+`caboose-display` replies with `"atlas"` in `ServerHello.features` (and `"scene"` when
+`scene: true` is also requested) and skips per-window H.264/HEVC video encoding (`0x10` `frame`):
+- **Layer 0 — Surface Atlas (`0x23` `surface.batch`, `0x24` `surface.reset`)**: Damaged regions
+  are decomposed into `CopyRect` vertical scroll copies (`detect_scroll_copy` using `XXH64` row
+  hashes), solid RGBA8888 `fills`, 64×64 `XXH64`-addressed cached tile `refs`, and newly encoded
+  lossless tiles compressed with the adaptive UI micro-codec (`pal2-lz4` for 1–2 colors,
+  `pal16-lz4` for 3–16 colors, `rgba-lz4` for >16 colors, or `png`). `surface.reset` (`0x24`)
+  resets the client's `XXH64` tile cache on a new cache epoch.
+- **Layer 1 — Scene Graph (`0x25` `scene.font`, `0x26` `scene.commit`, `0x9A` `scene.scroll`)**:
+  `guest/scene` (`libcaboose_scene_cairo.so`) intercepts Cairo/GTK/Qt drawing via `RTLD_NEXT`
+  with zero link-time `libcairo` dependency, hashes font faces with `XXH64` (`seed = 0`) so each
+  `(font, index)` is registered once via `0x25` `scene.font`, and emits canonical RFC 8949 CBOR
+  `0x26` `scene.commit` updates (with `group`, `clip`, `rclip`, `scroll`, `rect`, `border`,
+  `shadow`, `glyphs` packed as 10-byte `(u16 glyph_id, f32 x, f32 y)` little-endian records,
+  `path`, and `surface` nodes). Client-predicted 120 Hz scroll offsets return via `0x9A`
+  `scene.scroll`.
+- **Headless Liveness Invariant**: Unattended work on the server computer must never block or
+  fail when the phone disconnects or on the headless agent seat. If `$CABOOSE_SCENE_SOCKET` is
+  unset, missing, refuses connection, or returns `EAGAIN`/`EPIPE`/`ECONNRESET` on write, the
+  `guest/scene` client immediately drops into non-blocking local passthrough mode without
+  stalling or raising `SIGPIPE`. Likewise, `VK_LAYER_CABOOSE_wsi_promote` (`libcaboose_wsi_promote.so`)
+  only promotes 3D/Vulkan/Mesa Zink swapchains when `CABOOSE_WSI_AUTO_PROMOTE=1` on the owner
+  seat and never on `CABOOSE_SEAT=agent` or denylisted 2D desktop/Electron processes. Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The agent launch environment also publishes `HOME`, its four XDG state directories,
 `CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
@@ -460,7 +544,7 @@ also see as their root window's.
 | `scroll X Y DX DY` | Wheel clicks at that position |
 | `key COMBO…` | Key combinations to the keyboard's window (`ctrl+s`, `alt+F4`, `Return`) |
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
-| `settle` | Releases pending frame callbacks, so applications on a seat nobody watches draw now |
+| `settle` | `{ ok: true, released: N }`: number of windows whose pending frame callbacks were released |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
 | `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
@@ -473,12 +557,14 @@ previous one. Its readiness probe is:
 caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]   # default 60 s, port 14600
 ```
 
-It exits 0 once the instance on `PORT` answers a hello made with the current display
-token and has written its launch environment (`/run/caboose/display.env`, or
-`agent-display.env` for port 14601). The host starts the owner's display with
+It exits 0 once the launch environment exists, its control socket answers `windows`
+as the compositor user, and the selected TCP port listens. The socket authenticates the
+local seat through its peer-UID check; readiness does not validate WebSocket token acceptance.
+It sends no `ClientHello`, so repeated readiness checks preserve an attached watcher and
+its display geometry. The host starts the owner's display with
 `systemctl start caboose-display.service && caboose-display-ready 60 14600` (microVM) or
-`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`. A
-interactive wake or promotion fails if the display writes no launch environment.
+`caboose-session start` and `ready` (container), then reads `/run/caboose/display.env`.
+An interactive wake or promotion fails if the display writes no launch environment.
 
 ### Display token
 
@@ -519,13 +605,27 @@ environment, and answers `{ session }` for a client to attach to; the agent runn
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
 
-**Notifications.** `caboose-notifications.service` runs `monitor.py`, which observes
-`org.freedesktop.Notifications.Notify` calls on the owner's session bus and writes each as a
-private record in `/home/caboose/.cache/caboose/notifications/<uuid>.json`:
-`{ id, app, summary, body, created }`, with `app` at most 200 characters, `summary` 500,
-`body` 1000 and `created` in Unix seconds. It keeps the newest 100 records. `daemon.py`
-owns the notification name on each seat's bus. The agent seat has its own bus, so its
-notifications never enter the owner's queue.
+**Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
+owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
+display) supports `actions`, `body` and `inline-reply`, keeps its live notifications in
+memory (at most 256), and writes each as a private record in
+`/home/caboose/.cache/caboose/notifications/<id>.json`:
+`{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }`. `id` is a
+UUID; a notification that replaces a live one keeps its `id`, and its record overwrites one
+not yet read. `app` is at most 200 characters, `summary` 500, `body` 1000; `created` is in
+Unix seconds; `desktopEntry` is the `desktop-entry` hint as a desktop file ID without
+`.desktop` (`[A-Za-z0-9][A-Za-z0-9._+-]{0,254}`) or null; `actions` is at most 4
+`{ key, label }` buttons (keys 1–64 characters without control characters, labels one line of
+1–64), without `default` and `inline-reply`; `defaultAction` is whether the application
+offered `default`; `reply` is `{ label, placeholder }` (at most 64 and 100 characters) when it
+offered `inline-reply`, else null. It keeps the newest 100 records.
+`caboose-notify respond <id> --action=KEY | --reply=TEXT`, run as `caboose`, asks the owner's
+endpoint to emit `ActionInvoked` or `NotificationReplied` (TEXT 1–2000 characters) and then
+`NotificationClosed` (reason 2) unless the notification is `resident`; it prints
+`{"result": "responded" | "unknown-action" | "unknown-notification"}`. Live notifications
+end when the owner's display or endpoint stops. The agent seat has its own bus and an
+endpoint that supports nothing and records nothing, so its notifications never enter the
+owner's queue. See [guest/notifications](../guest/notifications/README.md).
 
 **Phone handoff.** `guest/phone` installs `caboose-open URL` and `caboose-share FILE...`,
 registers `caboose-phone.desktop` as the handler for the `mailto`, `tel`, `sms`, `facetime`,
@@ -540,8 +640,9 @@ pending requests, and both expire after 24 hours. See [Phone handoff](#phone-han
 calls from the phone: the FileChooser and Settings portals (`caboose-portal`, with
 `xdg-desktop-portal-gtk` for the rest and as the fallback without a phone), and
 `caboose-bridge`, the host's commands and the owner seat's daemon for Now Playing and the
-appearance. GeoClue's static source serves a shared location. See
-[native-bridge.md](native-bridge.md).
+appearance. `caboose-scan` asks the phone to scan a document and prints where the scan was
+saved, failing at once without the phone. GeoClue's static source serves a shared
+location. See [native-bridge.md](native-bridge.md).
 
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
@@ -780,6 +881,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
+| `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose forwarding headers are believed: IPv4 or IPv6 addresses or CIDR ranges, separated by commas; loopback always is. From a trusted proxy, `X-Forwarded-For` names the client whose sign-in attempts are counted (the last address no trusted proxy added) and `X-Forwarded-Proto` the scheme of the request's origin; from anyone else both are ignored |
 | `CABOOSE_WEB_ROOT` | `apps/web/dist` | The built web console |
 | `CABOOSE_APNS_KEY_PATH`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC` | unset | APNs provider; all four or none |
 
@@ -788,10 +890,11 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
   `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
-- The owner's computer's `caboose.json` (settings), `push-devices.json` and
-  `activities.json` at the root, where a host from before several computers kept them.
-- Every other computer's own `caboose.json`, `push-devices.json` and `activities.json`
-  in `computers/<id>/`.
+- The owner's computer's `caboose.json` (settings), `push-devices.json`,
+  `activities.json` and `commands/` (one `<id>.json` per command, directory mode 0700) at the
+  root, where a host from before several computers kept them.
+- Every other computer's own `caboose.json`, `push-devices.json`, `activities.json` and
+  `commands/` in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
 - Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
@@ -819,7 +922,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
 | `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
-| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation or Craft job someone started runs on it (the message says which; retry when it finishes) |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
@@ -910,7 +1013,7 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
 - **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
-  tasks, catalog operations, Craft jobs, agent installs and sign-ins, and each `/v1/fs`
+  tasks, catalog operations, Craft jobs, running commands, agent installs and sign-ins, and each `/v1/fs`
   request until its response completes. Control sockets marked `foreground=0` do not hold a
   lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
   `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
@@ -930,6 +1033,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   never deletes the computer's disk.
 
 While running, the microVM's appkit-desk lease is renewed every 20 s.
+
+File transfers, web-app bridge requests and batch file exports wake the microVM
+without starting the owner display. Opening a desktop session or launching an
+application promotes that same running computer to interactive mode without a
+second boot or token rotation.
 
 ### Accounts and tenants
 
@@ -1043,6 +1151,9 @@ A request is from one of three kinds of caller:
   direct LAN HTTP uses host-only HTTP cookies. Both use the same accounts and session
   store, even when `CABOOSE_PUBLIC_URL` advertises HTTPS. Sign-out clears the matching
   transport's cookies.
+  A request that is not a `GET`, `HEAD` or `OPTIONS`, and every
+  WebSocket upgrade, is accepted on a cookie only from the console's own origin
+  ([Security model](#7-security-model)); otherwise it answers 403 `cross-site request refused`.
 - **A phone token**, which reaches only its own computer's routes, without a computer in the
   path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
 
@@ -1057,15 +1168,16 @@ session storage and sends it only as an `Authorization` header.
 ### Conventions
 
 Request and response bodies are JSON unless stated. A JSON body must be an object of at
-most 64 KiB (15 MiB for task start and reply). Errors are `{ error: string }`:
+most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Errors are `{ error: string }`:
 
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
 | 401 | Missing or unknown token or session |
-| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs |
+| 403 | A phone, or an administrator who is not the operator, on a route that is not theirs; or a session cookie sent by a page on another site |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
+| 413 | A JSON body beyond the route's limit |
 | 429 | Too many wrong pairing codes, or sign-in attempts |
 | 502 | The guest or the agent registry failed an operation; the message says why |
 | 503 | Push or Live Activities are not configured |
@@ -1078,11 +1190,11 @@ guest answer 409 while it is not running.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/v1/session` | **Wakes.** → `{ state: "running", display: { path: "/v1/display", token, protocol: "caboose-display" }, computer: { name, image, memoryMb, vcpus } }`. `image` is `"Debian 13"`, or `"Debian 13 · GPU"` for a container with a GPU |
-| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation or Craft job runs |
+| `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
 | `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
-| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events |
+| `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
@@ -1111,15 +1223,15 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `computer.state` | `{ state }` | Every lifecycle transition |
 | `computer.settings` | `{ computer: <management status> }` | Settings or their applied state change |
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
-| `notification` | `{ id, app, summary, body, created }` | A desktop notification on the owner's display |
+| `notification` | `{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }` | A desktop notification on the owner's display (see [Desktop notifications](#desktop-notifications)) |
 | `fs.changed` | `{ anchor }` | The home changed (see [Files](#files)) |
 | `catalog.progress` | `{ id, operation, phase, message?, stage?, value?, downloadedBytes?, totalBytes? }` | A catalog operation is `queued`, `installing`, `finished` or `failed`. Stages are `preparing`, `downloading`, `verifying`, `refreshing`, `installing`, `configuring`, `removing` and `finished`. Only `downloading` has a measured `value` (0–1) and byte counts; other stages have `value: null` |
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
-| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job starts, succeeds or fails |
+| `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job (`kind: "craft"`) or command (`kind: "command"`, see [Commands](#commands)) starts, is still running after 10 s (commands only), or ends |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
 | `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
-| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request, and its withdrawal. Only to sockets opened with `?phone=1` |
+| `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request or `caboose-scan`'s scan, and its withdrawal. Only to sockets opened with `?phone=1`; a scan only to those also opened with `?scan=1` |
 | `now-playing.changed`, `now-playing.stopped` | see [native bridge](native-bridge.md#now-playing-relay) | The computer's media player for Now Playing, while a display client is connected |
 
 ### Management
@@ -1226,6 +1338,8 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
 | `POST` | `/v1/fs/move?path=…` | `{ destination }`: move or rename |
 | `DELETE` | `/v1/fs/item?path=…` | Move an item to the freedesktop home Trash |
 | `GET` | `/v1/fs/changes?anchor=…` | The change journal since `anchor` |
+| `PUT` | `/v1/fs/transfer?id=…&name=…` | Stream a file into the transfer area, `.cache/caboose/transfers/<id>/<name>` (known length, at most 512 MiB) → 201 `{ path, size }` |
+| `DELETE` | `/v1/fs/transfer?id=…` | Remove a transfer |
 | `POST` | `/v1/fs/open` | **Wakes.** `{ path, app? }` → `{ opened: true }`: open a home-relative item on the owner's display, with its default handler or with the desktop entry `app` (`*.desktop`) |
 | `POST` | `/v1/files` | **Wakes.** `{ name, data (base64), open? }` → `{ path }`: save into `~/Downloads` under a unique name (`name (2).ext`, …) and optionally open it |
 
@@ -1259,7 +1373,15 @@ headers and the `Content-Type`, `Content-Length`, `Content-Range`, `Accept-Range
   journal through the private Files event receiver and broadcasts `fs.changed { anchor }` when something changed. It
   keeps the last anchor through a resident freeze and resumes from it on thaw; park,
   restart or the last control socket closing resets the host's event anchor.
-- `POST /v1/files` holds the whole body in memory; new clients use `PUT /v1/fs/content`.
+- The transfer area holds files the phone hands to Linux applications through the
+  clipboard ([display.md § Clipboard](display.md#clipboard)). `id` is 32 lowercase hex
+  digits chosen by the client and `name` one path component. The levels below `.cache`
+  must belong to `caboose`, the area and each transfer are private, an existing name is
+  never replaced (409), a transfer holds at most 64 files (409), the area at most 2 GiB
+  (507), and transfers are removed a day after their last upload. The display server
+  offers applications only files that are in the area.
+- `POST /v1/files` holds the whole body in memory, so it accepts at most 16 MiB and answers
+  413 beyond that; new clients use `PUT /v1/fs/content`.
   `POST /v1/fs/open` checks the path through the file service (its status is returned on
   failure) before opening it.
 
@@ -1415,6 +1537,81 @@ one phone) already has 8 terminals open. Session ids are 32 hex characters.
   than filling a buffer; payloads are at most 1 MiB. With no client, a session's output is
   kept only in its 256 KiB replay.
 
+### Commands
+
+A command is a Bash script that runs in the computer as `caboose`, detached from the request
+that starts it: it keeps running when the phone, the request or the host goes away, and its
+result stays with the host. Commands are for the same callers as `/v1/terminal`, which already
+gives them a shell as `caboose`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/commands` | **Wakes** (headless). `{ script, id?, stdin?, inputs?, cwd?, timeout?, wait? }` → 201 `Command` once it ends or after `wait` seconds, whichever is first. 400 when an input or `cwd` is missing in the computer (no command is kept); 409 when the id exists or 4 commands already run on the computer |
+| `GET` | `/v1/commands` | `{ commands: [{ id, title, status, exitCode, createdAt, finishedAt }] }`, newest first. Never wakes |
+| `GET` | `/v1/commands/:id?wait=` | `Command`, now or once it ends within `wait` seconds (0–60). Never wakes; 404 for an unknown id |
+| `POST` | `/v1/commands/:id/cancel` | **Wakes** (headless). Stops a running command → `Command` once it has ended, or after 10 s; 409 when it has already ended |
+
+The request body may be 4 MiB; unknown fields answer 400.
+
+- `script`: not blank, at most 64 KiB of UTF-8, without NUL.
+- `id`: 32 lowercase hex digits, chosen by the client so it can stage inputs first; the host
+  makes one when absent.
+- `stdin`: text of at most 1 MiB, the script's standard input; otherwise it reads `/dev/null`.
+- `inputs`: at most 100 distinct file names the client uploaded to `.caboose-jobs/cmd-<id>/in/`
+  through `/v1/fs` before starting (requires `id`); each must be a regular file there. A name
+  is one path component of 1–255 bytes without control characters, not `.` or `..`, and not
+  beginning `.caboose-upload-`.
+- `cwd`: an existing home-relative directory (`""` is the home); the job directory when absent.
+- `timeout`: seconds, 1–86400, default 3600. `wait`: seconds, 0–60, default 0.
+
+```ts
+type Command = {
+  id: string,
+  title: string,              // the script's first line that is not a #! line, at most 100 characters
+  script: string, cwd: string | null, inputs: string[], timeout: number,
+  status: 'running' | 'succeeded' | 'failed' | 'timed-out' | 'cancelled',
+  exitCode: number | null,    // null when a signal or the host ended it
+  signal: string | null,      // the signal that ended the shell, e.g. "SIGTERM"
+  error: string | null,       // why the host ended it, e.g. "Stopped when the computer restarted."
+  stdout: string, stderr: string,              // UTF-8; invalid bytes are replaced
+  truncated: { stdout: boolean, stderr: boolean },
+  outputs: string[],          // file names in the job's out/
+  createdAt: string, finishedAt: string | null,  // ISO 8601
+  directory: string,          // ".caboose-jobs/cmd-<id>", home-relative
+}
+```
+
+- **Running.** The host creates `~/.caboose-jobs/cmd-<id>/` with `in/` and `out/`, opening
+  each directory without following symlinks, and writes the script to `command.sh` and the
+  input to `stdin` through the file service, so neither passes on a command line. A supervisor
+  started as `caboose` through `runuser` (entering `caboose-workloads.slice` where the guest
+  has it) runs `bash --login command.sh` in its own session and process group, in `cwd`, with
+  `HOME`, `USER`, `LANG=C.UTF-8`, `XDG_RUNTIME_DIR`, the session bus when it runs,
+  `CABOOSE_COMMAND_ID`, `CABOOSE_JOB` (the job directory), `CABOOSE_IN` and `CABOOSE_OUT`; the
+  login shell sets `PATH` from the owner's profile.
+- **Bounds.** `stdout` keeps its first 1 MiB and `stderr` its last 1 MiB; `truncated` says
+  which lost bytes. At `timeout`, or on cancel, the supervisor sends SIGTERM to the script's
+  process group and SIGKILL 5 s later. When the script ends, what it left in its process group
+  is killed; a process that started its own session keeps running. The time limit counts
+  while the computer runs. `outputs` lists the regular files directly in `out/` (not
+  symlinks or directories) by name, at most 100. At most 4 commands run at once on a computer.
+- **Results.** The supervisor writes `result.json`, `stdout` and `stderr` in the job
+  directory. The host polls once a second while a command runs, checks the result field by
+  field and keeps it in `commands/` in the host state: every running command, and the 50 most
+  recent finished ones for 7 days. The job directory stays in the home until a client removes
+  it. A host that starts with commands still running wakes the computer headless, holds their
+  leases again and collects them.
+- **Lifecycle.** A running command holds a lease, so the computer neither freezes nor parks
+  for idleness under it, and an explicit park answers 409. A restart or deleting the computer
+  fails running commands with "Stopped when the computer restarted."; a supervisor gone
+  without a result fails its command with "The command stopped without a result.".
+  A lost start acknowledgment retains the command ID and lease while the host checks the
+  supervisor; it does not replay the script or forget a possibly running command.
+- **Progress.** Control sockets get `job.progress` (`kind: "command"`) when a command starts,
+  after 10 s, and when it ends. After 10 s the command is published to Live Activities with
+  its title and detail `Running`, and its end updates and ends the activity. When it ends with
+  no request waiting for it, it sends a `task` push (§ Push notifications).
+
 ### MCP Library routes
 
 Per computer, authorized like the catalog's; none wakes the computer (§ MCP Library).
@@ -1486,7 +1683,7 @@ without pixels:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls, at most 200; `note` says why the list is empty |
+| `GET` | `/v1/screen/elements` | `{ window: { title, app }, elements: [{ id, role, name, value?, states, bounds: { x, y, width, height } }], note? }`: the focused window's visible controls, at most 200; `note` says why the list is empty |
 | `POST` | `/v1/screen/act` | `{ element, action: "press" \| "focus" \| "set-text", text? }` → `{ ok: true }`; 404 when the element is gone. `text` is at most 10000 characters |
 | `POST` | `/v1/screen/type` | `{ text }` (1–10000 characters) → `{ ok: true }`: type into the focused window |
 | `POST` | `/v1/screen/keys` | `{ keys }` → `{ ok: true }`: up to 10 space-separated combinations such as `ctrl+s` or `ctrl+shift+t Return`; common names (`enter`, `esc`, `cmd`, `pageup`, …) map to keysym names |
@@ -1592,9 +1789,9 @@ from `position`, then `POST …/control { action: "pause" }`; when the phone sto
 
 ### Native bridge
 
-File requests from the computer's portal, the phone's appearance and location, and the
-computer's Now Playing, relayed with the routes `/v1/bridge/*` and `/v1/now-playing*` and
-the control events above. The contract is [native-bridge.md](native-bridge.md#host).
+File and scan requests from the computer's portal and `caboose-scan`, the phone's
+appearance and location, and the computer's Now Playing, relayed with the routes
+`/v1/bridge/*` and `/v1/now-playing*` and the control events above. The contract is [native-bridge.md](native-bridge.md#host).
 
 ### Desktop notifications
 
@@ -1602,8 +1799,26 @@ While the computer runs, Files reads the owner's notification queue as `caboose`
 32 KiB per record. It removes each record only after the host accepts it. Records with
 a malformed field, or created more than 120 seconds from the host's clock, are discarded.
 Each valid record is broadcast as `notification` and, when APNs is configured, pushed as a
-`desktop` alert. Linux notifications carry no reliable window identifier, so tapping one
-opens the app.
+`desktop` alert. The event carries the record's fields ([Guest services](#guest-services)):
+`id` (a UUID that stays the same when the application replaces the notification),
+`desktopEntry` (a desktop file ID without `.desktop`, or null), `actions` (at most 4
+`{ key, label }`), `defaultAction` (boolean) and `reply` (`{ label, placeholder }` or null).
+Records from guests without these fields arrive with null, `[]` and `false`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/notifications/:id/respond` | **Wakes** (headless). `{ action }` or `{ reply }`, exactly one → `{ responded: true }`. `action` is one of the notification's action keys, or `default` when `defaultAction` is true (1–64 characters, no control characters); `reply` is 1–2000 characters of text without NUL, for a notification with `reply`. 400 for an invalid id or body; 404 when the notification is closed, answered or gone, or does not offer that answer |
+
+The host runs `caboose-notify respond` as `caboose` with the id and the answer as arguments;
+the owner's endpoint delivers it to the application and closes the notification. A parked
+computer resumes with its memory, so its applications and their notifications are still
+there; the route wakes it without starting the owner's display, which a memory restore keeps
+if it was running. A notification lives only as long as the owner's endpoint: after a
+restart, a cold boot or a guest component update, or when the owner's display is not
+running, its id answers 404. Linux notifications name their application, not a window: the
+phone opens the application `desktopEntry` names, showing its existing window, and answers
+`default` so the application shows what the notification is about ([iOS
+notifications](#notifications)).
 
 ### Push notifications
 
@@ -1627,10 +1842,14 @@ background; other control clients do not suppress alerts.
 | --- | --- | --- | --- |
 | `approval` | `agent.task.approval` | "Approval requested", the request summary; category `AGENT_APPROVAL` | `taskId`, `approvalId` |
 | `task` | `agent.task.finished` with `succeeded` or `failed` | "Task finished" or "Task failed", the summary | `taskId` |
-| `desktop` | a desktop notification | its summary (or app), its body | none |
+| `task` | A command ends, other than by cancelling, while no request waits for it | "Command finished", "Command failed" or "Command timed out", its title and how it ended | `commandId` |
+| `desktop` | a desktop notification | its summary (or app), its body; category `DESKTOP_REPLY` when it has `reply` | `notificationId`, `desktopEntry` when present, `defaultAction` when true |
 
-Alert bodies are at most 700 characters. Alerts for a task share the thread
-`task-<id>`. An APNs 410 `Unregistered` response removes the registration unless it was
+Alert bodies are at most 700 characters. Task alerts share `task-<id>` and command alerts
+share `command-<id>`. The phone registers notification categories before a push arrives,
+so desktop pushes offer Reply when supported, while application-specific buttons appear
+in the foreground app. A tap opens the application. An APNs 410 `Unregistered` response
+removes the registration unless it was
 registered again while the request was in flight. Provider tokens are refreshed after 50
 minutes, and each request times out after 15 s. Delivery is best effort.
 
@@ -1656,8 +1875,9 @@ The activity's attributes are `JobAttributes { jobID, kind, title }` and its con
 dismissal date one hour later and removes the registration once delivered. A `start`
 event goes to every push-to-start token when a job starts while no foreground control
 socket is connected. Agent tasks publish themselves (`kind: "agent"`) as they start, reply,
-pause, resume and finish; Craft jobs publish with `kind: "craft"`. The registrations and
-the latest 200 job states are stored in `activities.json`.
+pause, resume and finish; Craft jobs publish with `kind: "craft"`. A command publishes with
+`kind: "command"` once it has run for 10 s, and again when it ends ([Commands](#commands)).
+The registrations and the latest 200 job states are stored in `activities.json`.
 
 ## 4. Display
 
@@ -1665,10 +1885,15 @@ Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compos
 Xwayland. It composites nothing: each toplevel and popup is its own stream, and the phone
 or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
 with lossless PNG tiles for small changes and a sharpening pass once content is still),
-paces frames on the client's vsync, carries clipboard text, named cursors, touch,
+paces frames on the client's vsync, carries the clipboard (text, images and files), named cursors, touch,
 text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
 composition; marker-based passthrough is fenced because it cannot preserve arbitrary
 foreground alpha and occlusion.
+
+Popups advertise alpha and use lossless RGBA PNG tiles over a transparent canvas,
+including the first picture and keyframe requests. They have no codec frames,
+sharpening or motion stream. The app keeps their layer and newly resized backing
+pixels transparent, preserving rounded corners and shadows over underlying windows.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
   little-endian length and one canonical CBOR map), the hello and display token, pacing and
@@ -1763,6 +1988,35 @@ Profile edits apply to new conversations; existing conversations retain their ad
 snapshot. An archived profile cannot start a conversation; restoring it retains its memories
 and workspace. Raw task requests cannot supply arbitrary instructions or workspace paths.
 Stable task-ID retries compare the profile snapshot as well as the original prompt/files.
+
+**Default identities.** An ordinary chat (`POST /v1/agent/tasks` without `profileId`) uses
+its agent's default identity: a profile the host creates on first use with `defaultFor:
+<registry id>`, named after the agent, with approvals `ask` and instructions to use the
+memory and routine tools. There is at most one per agent on each computer; concurrent first
+chats get the same record. It is listed and edited like any profile, but its `agent` cannot
+change, and no request can set `defaultFor`. The chat keeps its own approvals and works in
+its own task directory, as ordinary chats always have. It gets the identity's memories and
+the `caboose-agent-tools` server, bound to that profile in the host journal before admission.
+Routines it creates run as tasks of that profile. An archived default identity is never
+replaced or restored implicitly: ordinary chats with that agent fail with 409 until the owner
+restores it. When tools cannot be attached (the tool journal is unavailable or full, or the
+profile limit is reached) the chat is not started and the 409 says why.
+
+A chat from before default identities, with no profile, receives one before its next turn.
+The host persists the binding first. Then one guest command for that task checks whether its
+runner is alive. If so, the runner is retired only when provably idle: the current turn has a
+completion receipt and no prompt waits. The command then writes `profile-instructions.txt`,
+adds only `profileId` and `agentTools` to `task.json`, and writes `profile-id` last. A reply
+to an idle chat does this before admission: if it fails, nothing is admitted and the reply
+gets a 409 with the reason, such as a runner still finishing (retried for five seconds, 20
+for Send Now). Replies queued during a turn are kept when it fails at the turn's end; the task
+is reported failed with the reason, and a reply or Send Now retries. Every crash point repeats
+the same steps, keeping a committed instructions snapshot. A host binding to another profile,
+or a `profile-id` that differs from the binding, fails closed; a guest marker never grants
+tools. The next runner reopens the same session (`session/resume` or `session/load`) with the
+same cwd, model and approvals, and the transcript, queue and delivery journal are unchanged.
+An agent that can do neither starts a new session with a recap, as after any runner restart.
+A profile task from before the tool journal has no binding and continues without tools.
 
 ### The runner
 
@@ -2067,11 +2321,12 @@ video passthrough variables.
 
 | Tool | Does |
 | --- | --- |
-| `elements` | The focused window's controls (role, name, states, bounds) from the AT-SPI tree |
+| `elements` | The focused window's controls (role, name, optional value, states, bounds) from the AT-SPI tree |
 | `find` | Elements whose name contains a query, optionally of one role |
 | `click_element`, `set_text` | Press an element, or replace an editable element's text, by id |
+| `batch` | 1–20 sequential actions; stops on the first failure and returns completed/total, error when present, and updated elements by default |
 | `read_text` | The focused window's readable text, page text included |
-| `screenshot` | PNG of the seat or one window |
+| `screenshot` | PNG of the seat or one window; `annotate: true` adds numbered bounds and an element legend |
 | `list_windows`, `focus` | Windows with kind, title, application, geometry and focus; give one the keyboard |
 | `click`, `drag`, `type`, `key`, `scroll` | Pointer and keyboard by coordinates |
 | `launch` | Start an application on the seat with accessibility enabled |
@@ -2082,6 +2337,27 @@ the seat, so an agent cannot list, read or press the owner's windows. The coordi
 and `screenshot` use the seat's control socket through `seat.py`, so they reach Wayland and
 X11 applications alike and work while nobody watches the seat; coordinates are the seat's
 logical pixels, the same as the screenshot's and the elements' bounds.
+
+The server caches a successful seat environment, checking its control socket before reuse,
+and starts the privileged helper only when the existing seat cannot be reached. It keeps
+Python workers warm and serializes calls, including whole batches. Control connections
+persist; a lost response fails the action without replaying it, and the next call reconnects.
+`settle` stops immediately when no callbacks were released, otherwise waits up to three
+50 ms rounds. This is a bounded rendering opportunity, not an application-idle guarantee.
+
+Mutating tools accept `observe: true` to append updated focused-window elements; its
+single-tool default is false. `batch` defaults to observation, permits coordinate actions,
+`click_element`, `set_text`, `focus_element`, `focus`, and `wait` (10–5000 ms), and returns
+`{ completed, total, error?, state?, observationError? }`. An observation failure preserves
+the action outcome. Element batch steps reject a changed focused window as well as stale
+IDs. Observation reports the current state without guaranteeing navigation has completed.
+
+Elements include a bounded optional string `value` for editable fields, selections and
+numeric controls. Password and sensitive fields omit it. Values do not enter element ID
+fingerprints. Annotated screenshots number the focused window's accessible controls that
+intersect the capture; a window-specific capture excludes other windows. The legend keeps
+seat-coordinate bounds and centers, while badges are translated to the captured image.
+Unannotated screenshots retain their single-image response.
 
 When `/opt/caboose/apps/apps-mcp.mjs` is installed, the runner also passes `caboose-apps`
 with the same environment: `app_guide`, `app_publish`, `app_list`, `app_open` (on the
@@ -2167,17 +2443,24 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 
 **CabooseKit** (a Swift package without UI dependencies) implements one display client,
 `CabooseDisplaySession`, behind the `DisplaySession` window model the app works against.
-It speaks the Caboose Display Protocol: canonical CBOR, per-window video with
-acknowledgements and keyframe recovery, video streams layered into windows, Opus sound on
-the server timeline, and vsync pacing. Audio uses an explicit server/host clock anchor,
-cleared on interruption. Placement samples host time once against the requested anchor;
-renderer timebase updates never drive backlog recovery. Live
+It speaks the Caboose Display Protocol: canonical CBOR, `atlas` and `scene` capability
+negotiation (supporting zero-video `decoders: []` when `atlas: true` is advertised),
+byte-perfect `surface.batch` (`0x23`) and `surface.reset` (`0x24`) Surface Atlas updates
+(`CopyRect` scroll blits, solid RGBA fills, `XXH64` 64×64 tile cache refs, and lossless
+`pal2-lz4` / `pal16-lz4` / `rgba-lz4` tiles), retained vector and glyph scene graphs
+(`0x25` `scene.font`, `0x26` `scene.commit`, and 120 Hz client-predicted `0x9A` `scene.scroll`
+feedback), legacy per-window video with acknowledgements and keyframe recovery, video streams
+layered into windows, Opus sound on the server timeline, and vsync pacing. Audio uses an
+explicit server/host clock anchor, cleared on interruption. Placement samples host time once
+against the requested anchor; renderer timebase updates never drive backlog recovery. Live
 window and motion pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
-Metal `WindowSurface`. Decoding uses `VTDecompressionSession` for H.264, HEVC and, where the
-device has a hardware decoder, AV1, and ImageIO for PNG and WebP tiles. Every write to a
-window's texture is a blit on one shared Metal queue, which runs command buffers in commit
-order, so no draw waits for the GPU before the next frame is decoded and acknowledged.
+Metal `WindowSurface`. Decoding uses the Surface Atlas LZ4 micro-codec and `XXH64` tile cache
+for `surface.batch`, CoreText and Metal for `scene.commit` vector/glyph trees,
+`VTDecompressionSession` for H.264, HEVC and, where the device has a hardware decoder, AV1,
+and ImageIO for PNG and WebP tiles. Every write to a window's texture is a blit on one shared
+Metal queue, which runs command buffers in commit order, so no draw waits for the GPU before
+the next frame or batch is decoded and acknowledged.
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
 The iOS app omits `video_decoders`. The compositor also requests local decode for
@@ -2402,7 +2685,7 @@ the app card, and a detached view releases its layers.
   retained monitor; the complete picture fits while
   the app redraws. A long press on the title or the options button opens the tile's menu
   (full screen, width, ask an agent, redraw, close). Holding a dock icon opens Open, Pin/Unpin and per-window Close
-  actions (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
+  actions, and on iPad Open in New Window or Move to Desktop for each window (`DockMenu`), as a menu with the tap as its primary action, so the hold itself
   presents it; tapping it focuses its existing desktop window or opens the app. An app asking for full screen covers the workspace
   above the dock. Desktop keeps its dock and shell navigation through rotation, folding,
   reconnecting and returning from another tab. A pull down from the small tab at its top
@@ -2430,6 +2713,41 @@ the app card, and a detached view releases its layers.
   an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
+- **Windows of their own.** On iPad, a Linux window can have an iPadOS window of its own: a
+  scene of a second window group whose value is a `LinuxWindowRef` (`CabooseKit/Shell/WindowScenes`),
+  naming the paired computer, the server's `epoch` and the window id. Open in New Window (the
+  tile's menu, the app card's Window Options, the dock app menu and Home's tile menu) opens it,
+  or brings its window forward when it already has one, as does dragging a window's Home tile
+  out of the app, which carries the reference in an `NSUserActivity` so iPadOS opens the window
+  where it is dropped. The Linux window fills the scene below a bar with its title, Keyboard
+  and Window Options (Move to Desktop, Exit App Full Screen, Redraw, Close Window), with an app
+  card's touch, pointer, keyboard, text and Pencil input, and its menus and dialogs inside it.
+  The scene's content size is the window's geometry, at the display origin, sent at most about
+  eight times a second while the scene is resized, the last picture stretched until the new
+  one arrives. The window's minimum and maximum sizes, plus the bar, become the scene's
+  `sizeRestrictions` (a side of zero is no limit; `SceneSizeLimits`), and the scene's title
+  follows the Linux title in App Exposé and the window menu. The scene becoming active or its
+  window key focuses the Linux window, and with a hardware keyboard makes it the first
+  responder, so keys reach it. An app's own full screen takes the computer's display; its
+  picture is fitted to the scene. While a scene shows a window (`DetachedWindows`, one scene per
+  window), the in-app desktop, its tiles, app cards and Quick Switch leave out that window and
+  the menus and dialogs whose transient parents lead to it, so only the scene configures it;
+  Home still lists it, and a tap there or on its dock app brings its scene forward. Move to
+  Desktop closes the scene and brings the shell forward on Desktop with the window focused.
+  Closing the iPadOS window also returns the Linux window to the desktop, still open, where it
+  takes its place again; closing an iPadOS window never closes its Linux window. When the
+  Linux window closes (the session is ready and has announced its windows without it, or has
+  another epoch), its scene closes; signing out or switching computers closes every such scene
+  (one iPadOS has disconnected closes when it next connects). A scene restored after
+  a relaunch shows its window again once the session announces it, or says the window is no
+  longer open and offers Close. Every such window carries Caboose's icon in Stage Manager and
+  the Dock: iPadOS has no per-window app icon.
+- **Lifecycle.** The display socket closes when the app goes to the background: when every
+  one of its scenes is in the background (SwiftUI's App-level scene phase is all of them
+  together), so a Linux window in a window of its own keeps the display while the shell's
+  window is away. The computer parks on idle and resumes on the next foreground. The last
+  frame of every window is cached with the server's `epoch`, and shown on reopening only
+  when the new hello has the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
 - **Lifecycle.** The display socket closes when the app goes to the background, unless the
   computer is playing sound: then the connection stays open for it (the app's `audio`
   background mode), pictures are acknowledged without being decoded so windows run at the
@@ -2522,8 +2840,8 @@ changes to that window geometry still revoke the owner lease. GPU retirement and
 finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
 Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
-The app's default session creation does not activate this private executor.
-Debug-only `CABOOSE_PRIVATE_GPU_INDEXED=1` connects the owner AppModel to the
+Release builds never activate this private executor.
+Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, connect the owner AppModel to the
 authenticated host GPU endpoint. Backgrounding, computer switch and display
 takeover drain it; ordinary display reconnects preserve it. A normal broker close
 after the native REVOKED receipt and successful cleanup is required before the
@@ -2656,7 +2974,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task and `caboose://airplay` runs Home's AirPlay action.
+`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
 The phone reads the system clipboard only for an explicit paste, not when entering the
@@ -2664,8 +2983,9 @@ foreground. Desktop Full Screen opens a borderless window card with a return han
 The desktop app launcher accepts horizontal swipes as well as its page arrows.
 
 The name on Home opens a menu of explicitly paired computers, with the active computer
-checked. Desktop controls and the tab toolbar also offer this menu, including when a desktop file request fails. The same switcher remains available while connecting, parked, reconnecting or
-out of reach, without signing out or discarding a pairing. Add Computer uses the existing pairing flow and retains the other pairings.
+checked. Home is the only screen that offers computer selection; Desktop, connection
+recovery, and all other screens follow that shared selection without their own switcher.
+Add Computer uses the existing pairing flow and retains the other pairings.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing
 migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;
@@ -2792,8 +3112,20 @@ and restores its dock.
   key. A tap opens the keyboard from text-input-v3 or a named text cursor. An Xwayland
   bitmap cursor reported as the compositor's generic arrow has unknown editing state and
   does not open the keyboard automatically; the explicit keyboard control remains available. Tap focus checks preserve an already-open
-  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, its content purpose
-  turns autocorrect off for terminals and passwords, and marked text is a preedit. Return commits any marked
+  keyboard; its dismiss control remains authoritative. Where an app has text-input-v3, the keyboard follows its state and marked text is a
+  preedit. The field's content purpose picks the keyboard, iOS AutoFill and secure entry
+  (`CabooseKit/Input/TextPurposeTraits.swift`), and changes them as focus moves between
+  fields: a password field is secure entry offering saved passwords; an email field is the
+  email keyboard offering them as a username, since an email field is almost always a
+  login's account name; PIN and digits fields are the number pad offering one-time codes
+  from Messages and Mail (Firefox reports a web page's `inputmode="numeric"` code field as
+  digits; Chromium reports it as plain text); phone, URL and name fields offer the person's
+  number, URLs and name on the phone pad, URL keyboard (Return labelled Go) and word
+  capitals; number and date/time fields use numbers and punctuation. Autocorrect is off for
+  terminals and every purpose but normal, alpha and name. A filled password or code
+  replaces what was typed into the field. AutoFill sees one field at a time and never the
+  remote site, so it fills one field per pick and does not pre-suggest the site's login;
+  its suggestions are on the iOS keyboard, not Laptop's own. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
   unmodified software Return dismisses the keyboard except in terminals and code editors;
   pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
@@ -2830,8 +3162,8 @@ and restores its dock.
 
 ### Terminal
 
-The Terminal tab is a native terminal on a real shell in the computer, built on
-[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 1.99.1 (MIT): xterm-256color with
+The Terminal tab is a native terminal on a real shell in the computer, built directly on
+`libghostty` (`GhosttyKit`, MIT): xterm-256color with
 truecolor, 256 colours, bold and italic, the alternate screen, mouse reporting, bracketed
 paste and OSC 8 links. CabooseKit holds the protocol (`Terminal/`: messages, closes, keys,
 and `TerminalConnection`, which tracks the output offset); the app holds the view.
@@ -2940,8 +3272,22 @@ The control socket's `notification` events become local notifications while the 
 When the host has APNs configured, Computer settings offers per-device switches for
 approvals, task results and desktop notifications. Enabling them requests permission and
 registers the device's APNs token (`POST /v1/devices/push`). Approval notifications carry
-actions that call the approval route; task notifications open the task. Signing out
+actions that call the approval route; task notifications open the task, and command
+notifications the command. Signing out
 unregisters the device.
+
+A notification's buttons come from a category iOS must already have when it is shown. For
+a Linux notification it posts itself, the app registers a category for the notification's
+own buttons (`ACTION:<key>`) and reply (a text input titled with the application's label,
+else Reply, with its placeholder), named by a digest of them, before posting; it keeps the
+32 most recently used, with `AGENT_APPROVAL` and `DESKTOP_REPLY`, across launches. A push
+arrives without the app running, so it uses the fixed `DESKTOP_REPLY` (Reply) and shows no
+application buttons. A button or a reply calls `POST /v1/notifications/:id/respond` in the
+background; if that fails, a notification says why and repeats the reply's text. Opening a
+Linux notification answers `default` when the application offered it, and opens the
+application whose desktop ID matches `desktopEntry` (ignoring case and `.desktop`) like
+opening it from Home: its existing window is shown, else it is launched. Without a match the
+app opens as it is.
 
 ### Live Activities and widgets
 
@@ -2949,7 +3295,7 @@ The app starts a Live Activity for each running agent task and registers its upd
 with `POST /v1/activities`, and registers the device's push-to-start token with
 `POST /v1/activities/start-token`. It also updates or ends an activity while in the
 foreground, and unregisters both on sign-out. The widget extension renders the Lock Screen
-and Dynamic Island presentations and opens the agent task on tap.
+and Dynamic Island presentations and opens the agent task or command on tap.
 
 The WidgetKit extension reads the pairing from the shared Keychain access group and fetches
 the computer's state and running agent count without waking it; WidgetKit schedules its
@@ -2961,14 +3307,36 @@ that wakes or parks the computer.
 
 App Intents wake or park the computer, open a Linux app or run one of its desktop actions
 (New Private Window, a new document), open a URL on the computer, ask a computer agent (an approval-gated task, returning a task link), open, get or save computer
-files, and run the four Craft operations. App shortcuts offer phrases to Siri and
-Shortcuts. App and file entities use the authenticated host API. File paths are relative to
+files, run the four Craft operations, and run a command on the computer. App shortcuts offer
+phrases to Siri and Shortcuts. App and file entities use the authenticated host API. File paths are relative to
 the home; saving creates new files and refuses to overwrite.
+
+Computer settings > Shortcuts opens Caboose’s page in Apple Shortcuts or a new shortcut
+editor, including while the host is unavailable. Users choose actions and configure their
+parameters in Apple Shortcuts. The advertised actions include Export Files and Combine
+PDFs. Export Files takes an app (PhotoCraft, LightCraft or FilmCraft), files, and a format;
+the format options follow the selected app. It validates format and input count before
+staging files. The selected app must be installed on the computer. The three individual
+export intents remain executable for saved shortcuts but are hidden from action discovery.
 
 Craft intents stage their inputs under `.caboose-jobs/<job>` through `/v1/fs`, call
 `POST /v1/catalog/:id/run`, download the outputs, and move the job directory to Trash after
 success. A failed or interrupted job's directory is kept for inspection. CLI warnings are
 returned to the shortcut.
+
+Run Command on Computer takes a script, optional input text (standard input, at most 1 MiB)
+and input files, whether to wait for the result and for how long (default 25 s), and a time
+limit in minutes (default 60). It uploads the files to `.caboose-jobs/cmd-<id>/in/` under their
+own names (made plain and distinct: `photo.jpg`, `photo (2).jpg`), calls `POST /v1/commands`,
+then long-polls `GET /v1/commands/:id` until the command ends or the wait is over. It returns a
+Command Result with the output, errors, status, whether it finished, exit code, a
+`caboose://command/<id>` link and the files from `out/`, downloaded. A succeeded command's job
+directory then moves to Trash; a failed one's stays. A non-zero exit is a result, not an
+error, so a shortcut can branch on it. A command still running when the wait ends keeps
+running: the shortcut gets its link, and the Live Activity and notification report its end.
+The link opens the command in the app, which follows it until it ends, shows its output and
+errors, cancels it, and saves its files to `~/Downloads` (moving them, then the job directory
+to Trash).
 
 File search lists the home recursively through `/v1/fs`, skipping unreadable or removed
 directories and the top-level `.caboose-jobs` directory, and sorts by modification time.
@@ -3061,12 +3429,31 @@ app group and a Keychain access group.
 - **Share extension.** `CabooseShare` takes pages, text, photos and files from the iOS
   share sheet: `POST /v1/open` for a page, an upload into Downloads (optionally opened on
   the computer), or a new agent task with them attached.
-- **Drop.** Text dropped on an owner window focuses it, clicks at the drop point and types
-  the text through the display session. A dropped file or image (at most 50 MiB) is saved
-  to `~/Downloads` with `POST /v1/files` and opened with Linux's default handler, which is
-  not necessarily the window it was dropped on. Transfer failures are shown on the phone.
-  Dropping a file into a specific Linux application, and dragging out of Linux, are not
-  supported.
+- **Drop.** Text, an image or files dragged over a window are dragged over the Linux
+  application under the finger too ([display.md § Drag and drop](display.md#drag-and-drop)):
+  iOS shows the drop as allowed unless that application refuses it (X11 applications
+  answer as the drag hovers; Wayland applications only once they have the content, on
+  the drop). On drop the app uploads
+  the files (an image also as its file) to the transfer area, at most 512 MB each and 1 GB
+  together, showing progress with Cancel, and then releases the drag on the application,
+  which receives text, a PNG or JPEG, and the files as `file://` URIs. A refused,
+  unfinished or failed drop is shown in an alert.
+- **Drag out.** While a Wayland application on the computer drags text, an image or files,
+  the app shows a drop target at the bottom of the screen; lifting the finger over it brings
+  the drag to the phone instead of dropping it on the computer. iOS cannot hand a drag in
+  progress to another app, so the items land on a shelf, from which they can be dragged on
+  into any app, shared or copied; files under the computer's home (at most 256 MB together)
+  are downloaded first. Drags started by X11 applications stay on the computer.
+- **Clipboard.** The app's hello asks for images and files as well as text. A copy on the
+  computer replaces the pasteboard with its text and image; files it names under the
+  computer's home (at most 256 MB together) are downloaded through `/v1/fs` first and put
+  on the pasteboard as files with their names, and files outside the home are reported,
+  not copied. The app reads the phone's pasteboard only for an explicit Paste. Text is
+  typed into the window; otherwise it sends the image (PNG or JPEG as copied, otherwise
+  converted to JPEG) and the files, which it uploads to the transfer area first (at most
+  512 MB each and 1 GB together; an image too large for the clipboard goes as a file), as
+  the computer's clipboard and presses Control-V in the window. Failures are shown in an
+  alert.
 - **Phone handoff.** The app opens its foreground control socket with `?phone=1`. It
   prompts before opening a URL, sharing or printing, never acts silently, and defers
   prompts while inactive. After the owner agrees it downloads a staged file with
@@ -3076,12 +3463,38 @@ app group and a Keychain access group.
 
 ### Native bridge on the phone
 
-Linux file dialogs open the iOS document picker (Open) or a native sheet browsing the
-computer (Save, Choose Folder); a picked file outside the computer is copied to it and kept
-in sync like [an opened document](#open-in-place). The computer follows the phone's
-appearance, its media appears in Now Playing, and, when the owner turns it on, it gets the
-phone's location while Caboose is open. Computer settings has the switches. See
+Linux file dialogs open from Files (the iOS document picker), Photos, the camera or the
+document scanner, as the application's filters accept them (Open), or a native sheet
+browsing the computer (Save, Choose Folder); a picked file outside the computer is copied
+to it and kept in sync like [an opened document](#open-in-place), and photos, captures and
+scans become new files in `Caboose Documents`, converted to a format the application takes
+when needed. `caboose-scan` opens the scanner from the computer. The computer follows the
+phone's appearance, its media appears in Now Playing, and, when the owner turns it on, it
+gets the phone's location while Caboose is open. Computer settings has the switches. See
 [native-bridge.md](native-bridge.md#app).
+
+The Windows x64 installer embeds its Rust supervisor and installation scripts. It
+checksums the same release's Linux host bundle and dedicated Debian WSL root filesystem,
+imports a `Caboose` distribution with systemd and Docker, and selects the container runtime
+with WSL GPU support. It reuses the transactional mirrored-networking configuration,
+registers a per-user S4U startup task and a login tray app, and preserves the distribution
+on uninstall unless purge is explicitly selected. Its pairing window reads the local
+owner credential through WSL and sends it only as an HTTP bearer header. Unattended
+startup requires the documented real Windows cold-boot acceptance check.
+
+The macOS disk image carries a self-installing `Caboose.app`. Its embedded runtime
+archive contains the host and a bare menu app, without a recursive payload. On first
+launch or version change it runs the bundled per-user installer and preserves settings
+and computer disks. The native pairing window opens account setup in the browser when
+needed, then uses the local owner-token file only as an HTTP bearer header to mint
+phone codes. Closing the window cancels its status polling. The login menu runs from
+the installed version; a first GUI installation starts that menu at the next login.
+
+After initial web setup creates the operator account and household, the console shows
+phone pairing before opening the dashboard. Pairing uses the owner's computer and its
+single-use ten-minute code, with reachable addresses from the host and console origin.
+The page observes new phone sign-ins and image download status without waking the computer;
+it can enable Tailscale HTTPS and can continue to the console without pairing.
 
 ## 7. Security model
 
@@ -3094,8 +3507,16 @@ phone's location while Caboose is open. Computer settings has the switches. See
   sessions are signed with `CABOOSE_AUTH_SECRET` or the generated `auth-secret`). Sign-up
   is closed: the first account comes from setting the host up with its one-time code, the
   rest from single-use invitation links. The host allows twenty sign-in, setup or
-  invitation attempts per client in ten minutes, then answers 429. An administrator
-  sees only their tenants' computers; only the operator sees the host itself.
+  invitation attempts per client in ten minutes, then answers 429; behind a reverse proxy,
+  the client is the address the proxy forwarded only when the proxy is in
+  `CABOOSE_TRUSTED_PROXIES` or on loopback. A session cookie proves who the browser is,
+  not which page sent the request, so a state-changing request or a WebSocket upgrade
+  carrying one is refused (403, before the route runs) unless the browser vouches for the
+  page: `Sec-Fetch-Site` of `same-origin` or `none`, or an `Origin` equal to the host's own
+  origin (the `Host` header, over HTTPS when a trusted proxy says so) or to
+  `CABOOSE_PUBLIC_URL`'s. Bearer tokens need no such check: another site cannot attach
+  them. An administrator sees only their tenants' computers; only the operator sees the
+  host itself.
 - **Phone tokens.** A phone signs in to one computer with its own token, obtained once for a
   single-use, ten-minute pairing code, so no token is ever shown in a link, a QR code or the
   console. The host stores only SHA-256 digests; signing a phone out closes its sockets and
@@ -3122,7 +3543,11 @@ phone's location while Caboose is open. Computer settings has the switches. See
   validated and bounded, and the host never relays a guest-supplied file path.
 - **Guest commands.** The host passes arguments, never shell strings built from client
   input; Craft jobs and catalog operations run fixed argument vectors, and catalog MCP
-  commands are restricted to plain words.
+  commands are restricted to plain words. `/v1/commands` runs a client's script as
+  `caboose`, which adds no authority: the same owner, administrator and phone tokens already
+  open a shell as `caboose` through `/v1/terminal`. The script and its input reach the
+  computer as files through the file service, never as arguments, and the supervisor's result
+  is checked field by field before it is stored or returned.
 - **Privileged host container.** The Compose deployment (`deploy/compose.yaml`) runs the
   host in a privileged container for KVM, loop mounts and TAP networking. Its TAP,
   forwarding and NAT rules live in the container's network namespace, and the guest can
@@ -3263,6 +3688,7 @@ Docker logical layer sizes separately; shared/reflink bytes are never attributed
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.
 
+Surface Atlas phone acceptance is explicitly enabled with `CABOOSE_SURFACE_ATLAS=1` at app launch. The normal display-session constructor leaves atlas and scene negotiation off and omits video passthrough decoders. The acceptance mode logs bounded numeric counts of received atlas batches, window video frames and passthrough frames; these counts do not establish pixel correctness.
 The private GPU owner layer uses the authenticated display window’s server pixel
 size for its actual Metal drawable. UIKit fitting and phone screen scale do not
 change that Vulkan extent. A server pixel-size change revokes the generation and

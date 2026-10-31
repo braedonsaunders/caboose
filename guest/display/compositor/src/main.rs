@@ -1,5 +1,6 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
+mod atlas;
 mod audio;
 mod devices;
 mod clipboard;
@@ -7,6 +8,7 @@ mod config;
 mod control;
 mod dbus;
 mod displays;
+mod dnd;
 mod encode;
 mod frame_trace;
 mod game;
@@ -25,7 +27,9 @@ mod keymap;
 mod motion;
 mod net;
 mod pencil;
+mod pipes;
 mod render;
+mod scene;
 mod remote_buffers;
 mod render_node;
 mod scroll;
@@ -33,10 +37,13 @@ mod session;
 mod state;
 mod stream;
 mod text_input;
+mod transfers;
 mod video;
 mod windows;
 mod x11_focus;
+mod x11sel;
 mod xauth;
+mod xdnd;
 mod xwm;
 
 use config::{Config, Parsed, RendererChoice};
@@ -81,6 +88,8 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
     ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
+    ("OZONE_PLATFORM", "wayland"),
+    ("CHROMIUM_USER_FLAGS", "--ozone-platform-hint=auto"),
 ];
 
 fn main() {
@@ -135,6 +144,7 @@ fn launch_env(
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
     }
+    let is_agent = std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") || !config.games;
     // Agent application state and IPC must follow its private home on every launch.
     // The owner keeps the existing environment contract.
     if std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") {
@@ -157,6 +167,9 @@ fn launch_env(
             }
         }
         env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
+    }
+    if !is_agent && std::env::var("CABOOSE_WSI_AUTO_PROMOTE").as_deref() == Ok("1") {
+        env.push(("CABOOSE_WSI_AUTO_PROMOTE".into(), "1".into()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the
@@ -240,6 +253,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.games.socket {
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
+    }
+    if let Some(socket) = &state.scene.socket {
+        // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
+        env.push(("CABOOSE_SCENE_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(ibus) = &state.ibus {
         // Applications without text-input-v3 reach the phone's keyboard through IBus:
@@ -437,11 +454,27 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let (clip_tx, clip_rx) = channel::<Vec<u8>>();
+    let (clip_tx, clip_rx) = channel::<clipboard::Read>();
     handle
         .insert_source(clip_rx, |event, _, state: &mut State| {
-            if let ChannelEvent::Msg(data) = event {
-                state.clipboard_read(data);
+            if let ChannelEvent::Msg(read) = event {
+                state.clipboard_read(read);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (xdnd_tx, xdnd_rx) = channel::<(u64, xdnd::Report)>();
+    handle
+        .insert_source(xdnd_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg((serial, report)) = event {
+                state.on_xdnd_report(serial, report);
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    let (drag_tx, drag_rx) = channel::<clipboard::Read>();
+    handle
+        .insert_source(drag_rx, |event, _, state: &mut State| {
+            if let ChannelEvent::Msg(read) = event {
+                state.on_drag_read(read);
             }
         })
         .map_err(|e| e.to_string())?;
@@ -529,9 +562,12 @@ fn run(config: Config) -> Result<(), String> {
         focus_history: Vec::new(),
         videos: Default::default(),
         games: Default::default(),
+        scene: Default::default(),
         control: Default::default(),
         scroll: Default::default(),
-        clipboard: clipboard::Clipboard { done: clip_tx, last_sent: None },
+        clipboard: clipboard::Clipboard::new(clip_tx),
+        x11: None,
+        dnd: dnd::Dnd::new(xdnd_tx, drag_tx),
         audio: None,
         audio_tx,
         devices: None,
@@ -594,6 +630,17 @@ fn run(config: Config) -> Result<(), String> {
             Err(e) => tracing::warn!("no game handoff: cannot listen on {}: {e}", path.display()),
         },
         None => tracing::info!("no game handoff"),
+    }
+    let is_owner_seat = state.config.games && std::env::var("CABOOSE_SEAT").as_deref() != Ok("agent");
+    match scene::socket_path().filter(|_| is_owner_seat) {
+        Some(path) => match scene::SceneServer::listen(&path, &handle) {
+            Ok(s) => {
+                tracing::info!("scene socket: {}", path.display());
+                state.scene = s;
+            }
+            Err(e) => tracing::warn!("no scene socket: cannot listen on {}: {e}", path.display()),
+        },
+        None => tracing::info!("no scene socket"),
     }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
     if let Some(dir) = &instance_dir {
@@ -687,6 +734,7 @@ fn run(config: Config) -> Result<(), String> {
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
                                 }
+                                state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 if state.gpu_grants.is_some() {
                                     match gpu_x11::X11Windows::connect(display_number, &cookie) {
                                         Ok(windows) => state.gpu_x11 = Some(windows),
@@ -738,13 +786,16 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
+        assert_eq!(get(&env, "OZONE_PLATFORM"), Some("wayland"));
+        assert_eq!(get(&env, "CHROMIUM_USER_FLAGS"), Some("--ozone-platform-hint=auto"));
+        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     #[test]
     fn each_instance_names_its_own_sockets() {
         let auth = std::path::Path::new("/run/user/1000/caboose-display/wayland-caboose-agent/Xauthority");
         let env = launch_env(
-            &config(&["--socket", "wayland-caboose-agent", "--x-display", "101"]),
+            &config(&["--socket", "wayland-caboose-agent", "--x-display", "101", "--no-games"]),
             Some(101),
             Some(auth),
             None,
@@ -752,6 +803,7 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-agent"));
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
+        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     const GPU_ARGS: &[&str] = &[

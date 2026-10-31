@@ -34,11 +34,12 @@ pub fn entry(number: u32, cookie: &[u8; 16]) -> Vec<u8> {
 
 /// What the Xwayland launch needs.
 pub struct Prepared {
-    pub cookie: [u8; 16],
     /// Environment for the Xwayland process.
     pub env: Vec<(OsString, OsString)>,
     /// The Xauthority file applications use.
     pub authority: PathBuf,
+    /// The cookie in it, for the compositor's own X connections.
+    pub cookie: [u8; 16],
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {

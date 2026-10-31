@@ -1,0 +1,38 @@
+<!doctype html>
+<!-- Drag and drop: the left half takes drops and reports them, the top right refuses
+     them, and the bottom right is something to drag out. The title carries what
+     happened (`drop:<types>:<files or text>`), so a headless check can read it from
+     window.update. -->
+<meta charset="utf-8">
+<title>Caboose dnd</title>
+<style>
+  html, body { margin: 0; height: 100%; font: 24px system-ui, sans-serif; }
+  #zone { position: absolute; left: 0; top: 0; width: 50%; height: 100%; background: #dfe; }
+  #refuse { position: absolute; right: 0; top: 0; width: 50%; height: 50%; background: #fdd; }
+  #source { position: absolute; right: 0; bottom: 0; width: 50%; height: 50%; background: #ddf;
+            display: flex; align-items: center; justify-content: center; }
+</style>
+<div id="zone">drop here</div>
+<div id="refuse">not here</div>
+<div id="source" draggable="true">dragged from Linux</div>
+<script>
+  const zone = document.getElementById('zone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  zone.addEventListener('drop', async e => {
+    e.preventDefault();
+    const types = [...e.dataTransfer.types].sort().join(',');
+    const files = [...e.dataTransfer.files];
+    let detail;
+    if (files.length) {
+      const sizes = await Promise.all(files.map(f => f.arrayBuffer().then(b => `${f.name}=${b.byteLength}`)));
+      detail = sizes.join(',');
+    } else {
+      detail = e.dataTransfer.getData('text/plain');
+    }
+    document.title = `drop:${types}:${detail}`;
+  });
+  document.getElementById('source').addEventListener('dragstart', e => {
+    e.dataTransfer.setData('text/plain', 'dragged from Linux');
+    e.dataTransfer.effectAllowed = 'copy';
+  });
+</script>

@@ -34,6 +34,7 @@ struct DesktopScreen: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: portraitDesktop && !laptopActive ? [.top, .bottom] : [])
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .background { ShellBackground() }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
@@ -222,9 +223,18 @@ private struct DesktopStage: View {
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
+    private var keyboard = SoftwareKeyboard.shared
 
     var body: some View {
         GeometryReader { proxy in
+            // The keyboard never resizes the computer's windows: the stage keeps its size and
+            // slides up just enough to keep where typing began above the keyboard.
+            let stage = proxy.frame(in: .global)
+            let caret = RemoteTextInputView.lastCaret.flatMap { Date().timeIntervalSince($0.at) < 60 ? $0.point.y : nil }
+            let pan = keyboard.visible
+                ? DesktopGeometry.keyboardPan(caretY: caret, stageMinY: stage.minY, stageMaxY: stage.maxY,
+                                              keyboardTopY: (keyboard.window?.bounds.height ?? stage.maxY) - keyboard.height)
+                : 0
             Group {
                 if model.deviceDesktopStyle == .tiled {
                     SwitchyardView(yard: model.yard)
@@ -245,7 +255,11 @@ private struct DesktopStage: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            .offset(y: -pan)
+            .animation(.smooth(duration: 0.3), value: pan)
             .clipped()
+            .onChange(of: pan, initial: true) { _, value in RemoteTextInputView.currentKeyboardPan = value }
+            .onDisappear { RemoteTextInputView.currentKeyboardPan = 0 }
             .onAppear { model.desktopStageResized(to: proxy.size) }
             .onChange(of: proxy.size) { _, size in model.desktopStageResized(to: size) }
             .onChange(of: barEdge) { _, _ in model.desktopStageResized(to: proxy.size) }
@@ -253,6 +267,7 @@ private struct DesktopStage: View {
                 if tab == .desktop { model.desktopStageResized(to: proxy.size) }
             }
         }
+        .ignoresSafeArea(.keyboard)
     }
 
 
@@ -285,6 +300,8 @@ struct DesktopTouchArea: UIViewRepresentable {
     func updateUIView(_ view: DesktopTouchSurface, context: Context) {
         view.desktop = desktop
         view.model = model
+        // Observing the purpose alone; the focused window is read only when it changes.
+        if model.session?.textPurpose != view.fieldPurpose { view.followFocusedField() }
         if keyboardVisible && !model.windowCardOwnsGeometry && !laptopInputOwned, !view.isFirstResponder { DispatchQueue.main.async { view.becomeFirstResponder() } }
         if (!keyboardVisible || model.windowCardOwnsGeometry || laptopInputOwned), view.isFirstResponder { DispatchQueue.main.async { view.resignFirstResponder() } }
     }
@@ -569,7 +586,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             lastTap = (now, desktop.cursor)
         }
         resetTyping()
-        prefersProse = autocorrectChoice ?? !RemoteWindowView.isCodeApp(focusedWindow)
+        followFocusedField()
         haptics.impactOccurred()
     }
 
@@ -611,6 +628,11 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private var focusedWindow: RemoteWindow? {
         guard let session, let desktop else { return nil }
         return desktop.stacking.reversed().compactMap { session.windows[$0] }.first { !$0.isAuxiliary && desktop.isVisible($0.id) }
+    }
+
+    /// The keyboard follows the focused field's purpose, live while it is up.
+    func followFocusedField() {
+        followField(purpose: session?.textPurpose, isCode: RemoteWindowView.isCodeApp(focusedWindow))
     }
 
     override func insertText(_ text: String) {

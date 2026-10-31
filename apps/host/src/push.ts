@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { DesktopNotification } from './desktop-notifications.js'
 import type { AgentEvent } from './agents.js'
+import { commandJob, type CommandRecord } from './commands.js'
 import { APNsSender, type APNsEnvironment, type APNsMessage, type APNsResult } from './apns.js'
 import { readJsonFile, SettingsInputError, writePrivateJson } from './settings.js'
 
@@ -83,6 +84,30 @@ export function notificationFor(event: AgentEvent): { kind: Kind; payload: objec
   }
   return undefined
 }
+/** A finished command's alert, a `task` kind; a cancelled command has none (someone stopped it). */
+export function commandNotification(record: CommandRecord): { kind: Kind; payload: object; collapseId: string } | undefined {
+  if (record.status === 'running' || record.status === 'cancelled') return undefined
+  const title = record.status === 'succeeded' ? 'Command finished' : record.status === 'timed-out' ? 'Command timed out' : 'Command failed'
+  return {
+    kind: 'task', collapseId: `command-${record.id}`,
+    payload: { aps: { alert: { title, body: bounded(`${record.title} · ${commandJob(record).detail}`) }, 'thread-id': `command-${record.id}`, sound: 'default' }, commandId: record.id },
+  }
+}
+/**
+ * A desktop notification as an alert. Categories are registered on the phone before a push
+ * arrives, so a push cannot carry the application's own buttons: `DESKTOP_REPLY` offers a
+ * reply when the application accepts one. The custom keys let the phone answer it and open
+ * its application.
+ */
+export function desktopNotificationFor(event: DesktopNotification): { kind: Kind; payload: object; collapseId: string } {
+  return {
+    kind: 'desktop', collapseId: `desktop-${event.id}`,
+    payload: {
+      aps: { alert: { title: bounded(event.summary || event.app || 'Desktop notification'), body: bounded(event.body) }, 'thread-id': `desktop-${bounded(event.app).slice(0, 40)}`, sound: 'default', ...(event.reply ? { category: 'DESKTOP_REPLY' } : {}) },
+      notificationId: event.id, ...(event.desktopEntry ? { desktopEntry: event.desktopEntry } : {}), ...(event.defaultAction ? { defaultAction: true } : {}),
+    },
+  }
+}
 export class PushService {
   constructor(readonly devices: PushDevices, private sender: Pick<APNsSender, 'send'>) {}
   async event(event: AgentEvent, foreground: boolean): Promise<void> {
@@ -90,9 +115,14 @@ export class PushService {
     if (!notification || foreground) return
     await this.deliver(notification)
   }
+  async command(record: CommandRecord, foreground: boolean): Promise<void> {
+    const notification = commandNotification(record)
+    if (!notification || foreground) return
+    await this.deliver(notification)
+  }
   async desktop(event: DesktopNotification, foreground: boolean): Promise<void> {
     if (foreground) return
-    await this.deliver({ kind: 'desktop', collapseId: `desktop-${event.id}`, payload: { aps: { alert: { title: bounded(event.summary || event.app || 'Desktop notification'), body: bounded(event.body) }, 'thread-id': `desktop-${bounded(event.app).slice(0, 40)}`, sound: 'default' } } })
+    await this.deliver(desktopNotificationFor(event))
   }
   private async deliver(notification: { kind: Kind; payload: object; collapseId: string }): Promise<void> {
     await Promise.all(this.devices.list().filter(device => device.kinds.includes(notification.kind)).map(async device => {

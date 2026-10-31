@@ -187,8 +187,8 @@ Other checks for this image:
   commands and printer; it consumes pending handoffs.
 - `docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh` checks game
   handoff against a private display instance.
-- `guest/notifications/check-container.sh` checks the notification monitor and separate
-  session buses in a disposable container.
+- `guest/notifications/check-container.sh` checks the owner's notification endpoint, its
+  actions and replies, and the separate session buses in a disposable container.
 - `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
   accessibility helper in Docker.
 

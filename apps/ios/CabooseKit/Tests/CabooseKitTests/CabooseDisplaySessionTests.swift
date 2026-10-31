@@ -90,10 +90,11 @@ final class FakeDecoder: PictureDecoder {
         return session
     }
 
-    func window(_ id: Int, kind: String = "toplevel", parent: Int? = nil, geometry: [Int], xwayland: Bool = false) -> CBOR {
+    func window(_ id: Int, kind: String = "toplevel", parent: Int? = nil, geometry: [Int], xwayland: Bool = false, alpha: Bool? = nil) -> CBOR {
         var pairs: [(CBOR, CBOR)] = [("id", CBOR(id)), ("kind", CBOR(kind)), ("title", "t"), ("app_id", "app"),
                                      ("geometry", .array(geometry.map { CBOR($0) })), ("fullscreen", false), ("xwayland", CBOR(xwayland))]
         if let parent { pairs.append(("parent", CBOR(parent))) }
+        if let alpha { pairs.append(("alpha", CBOR(alpha))) }
         return .map(pairs)
     }
 
@@ -147,6 +148,20 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.first?.body["decoders"]?.array?.compactMap(\.string) == ["hevc", "h264"])
         #expect(sent.first?.body["displays"]?.array?.first?["width"]?.int == 2000)
         #expect(sent.first?.body["displays"]?.array?.first?["refresh_hz"] == .double(120))
+    }
+
+    @Test func helloCarriesAtlasAndSceneWhenEnabled() async throws {
+        let session = makeSession()
+        session.rendersSurfaceAtlas = true
+        session.rendersSceneGraph = true
+        defer { session.disconnect() }
+        session.connect()
+        stream.deliver(.opened)
+        try await until("hello") { session.state == .authenticating }
+        let sent = try #require(stream.take().first)
+        #expect(sent.type == DisplayProtocol.ClientType.hello.rawValue)
+        #expect(sent.body["atlas"] == .bool(true))
+        #expect(sent.body["scene"] == .bool(true))
     }
 
     @Test func unselectedBootstrapAndResumePaceRetainedIDsAndDecodePictures() async throws {
@@ -335,6 +350,17 @@ final class FakeDecoder: PictureDecoder {
         #expect(remote.frame.size == CGSize(width: 1800, height: 1600))
     }
 
+    @Test func aPopupSentWithAlphaIsMarkedAndAnUpdateCanClearIt() async throws {
+        let session = try await ready()
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])),
+                       (.windowCreate, window(9, kind: "popup", parent: 7, geometry: [10, 10, 40, 30], alpha: true))])
+        try await until("windows") { session.windows.count == 2 }
+        let popup = try #require(session.windows[9])
+        #expect(popup.hasAlpha && session.windows[7]?.hasAlpha == false)
+        stream.server([(.windowUpdate, ["id": 9, "alpha": false])])
+        try await until("opaque") { popup.hasAlpha == false }
+    }
+
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])),
@@ -370,6 +396,95 @@ final class FakeDecoder: PictureDecoder {
         #expect(session.windows[7]?.surface.generation ?? 0 > 0)
     }
 
+    @Test func surfaceBatchPaintsTheSurfaceRecordsStatsAndAcks() async throws {
+        let session = try await ready(features: ["vsync", "ack", "surface-atlas"])
+        defer { session.disconnect() }
+        let beforeCount = DrawStatistics.shared.snapshot.applied["atlas", default: 0]
+        let batch: CBOR = [
+            "id": 7,
+            "seq": 1,
+            "pts_us": 1000,
+            "size": [8, 8],
+            "rect": [0, 0, 8, 8],
+            "keyframe": true,
+            "fills": [[0, 0, 8, 8, CBOR(UInt64(0x2040_80FF))]],
+        ]
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.surfaceBatch, batch)])
+        var ack: DisplayFrame?
+        try await until("surfaceBatch ack") {
+            ack = stream.take().first { $0.type == DisplayProtocol.ClientType.ack.rawValue }
+            return ack != nil
+        }
+        #expect((ack?.body["decoded_us"]?.int ?? -1) >= 0)
+        try await until("window") { session.windows[7] != nil }
+        #expect(session.windows[7]?.surface.generation ?? 0 > 0)
+        #expect(DrawStatistics.shared.snapshot.applied["atlas", default: 0] == beforeCount + 1)
+    }
+
+    @Test func surfaceBatchWithUnknownTileRefAcksFailedAndRequestsKeyframe() async throws {
+        let session = try await ready(features: ["vsync", "ack", "surface-atlas"])
+        defer { session.disconnect() }
+        let beforeFailed = DrawStatistics.shared.snapshot.failed["atlas", default: 0]
+        let batch: CBOR = [
+            "id": 7,
+            "seq": 1,
+            "pts_us": 2000,
+            "size": [64, 64],
+            "rect": [0, 0, 64, 64],
+            "keyframe": true,
+            "refs": [[0, 0, CBOR(UInt64(0xDEAD_BEEF_CAFE_BABE))]],
+        ]
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 64, 64])), (.surfaceBatch, batch)])
+        var sent: [DisplayFrame] = []
+        try await until("failed ack and keyframe request") {
+            sent += stream.take()
+            return sent.contains { $0.type == DisplayProtocol.ClientType.ack.rawValue }
+                && sent.contains { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue }
+        }
+        let ack = try #require(sent.first { $0.type == DisplayProtocol.ClientType.ack.rawValue })
+        #expect(ack.body["id"]?.int == 7)
+        #expect(ack.body["decoded_us"]?.int == -1)
+        let kf = try #require(sent.first { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue })
+        #expect(kf.body["id"]?.int == 7)
+        #expect(DrawStatistics.shared.snapshot.failed["atlas", default: 0] == beforeFailed + 1)
+    }
+
+    @Test func sceneFontAndCommitPaintTheSurfaceAndScrollSceneNodeSendsSceneScroll() async throws {
+        let session = try await ready(features: ["vsync", "ack", "scene-graph"])
+        defer { session.disconnect() }
+        let font: CBOR = [
+            "font": CBOR(UInt64(99)),
+            "index": 0,
+            "family": "Helvetica",
+            "data": .bytes(Data([0, 1, 0, 0])),
+        ]
+        let commit: CBOR = [
+            "id": 7,
+            "seq": 1,
+            "pts_us": 3000,
+            "root": 1,
+            "reset": true,
+            "nodes": [
+                ["id": 1, "kind": "scroll", "rect": [0, 0, 64, 64], "scroll": [0, 0, 64, 200], "children": [2]],
+                ["id": 2, "kind": "rect", "rect": [0, 0, 64, 64], "color": CBOR(UInt64(0x2040_80FF))],
+            ],
+        ]
+        stream.server([
+            (.windowCreate, window(7, geometry: [0, 0, 64, 64])),
+            (.sceneFont, font),
+            (.sceneCommit, commit),
+        ])
+        try await until("scene painted") { (session.windows[7]?.surface.generation ?? 0) > 0 }
+        let remote = try #require(session.windows[7])
+        session.scrollSceneNode(1, in: remote, offset: CGPoint(x: 0, y: 120.5))
+        let sent = try #require(stream.take().first { $0.type == DisplayProtocol.ClientType.sceneScroll.rawValue })
+        #expect(sent.type == 0x9A)
+        #expect(sent.body["id"]?.int == 7)
+        #expect(sent.body["node"]?.int == 1)
+        #expect(sent.body["sx"]?.double == 0)
+        #expect(sent.body["sy"]?.double == 120.5)
+    }
+
     @Test func resizeMetadataKeepsTheDisplayedPictureCoordinateSpaceUntilReplacement() throws {
         let pipeline = FramePipeline(windowID: 7, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
         defer { pipeline.close() }
@@ -387,6 +502,20 @@ final class FakeDecoder: PictureDecoder {
             Issue.record("replacement"); return
         }
         pipeline.frame(replacement)
+        pipeline.flush()
+        #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
+    }
+
+    @Test func aWindowShownOnlyAsTilesFollowsAResizeAtOnce() throws {
+        // A popup (alpha) never gets a frame; after a resize its next picture is a whole tile at
+        // the new size, so the surface must already be that size when the tile lands.
+        let pipeline = FramePipeline(windowID: 9, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
+        defer { pipeline.close() }
+        let png = try TileTests.png(width: 8, height: 8, red: 1, green: 2, blue: 3)
+        let body: CBOR = ["id": 9, "rect": [0, 0, 8, 8], "format": "png", "data": .bytes(png)]
+        pipeline.tile(try #require(LosslessTile(body)))
+        pipeline.flush()
+        pipeline.resize(width: 16, height: 20)
         pipeline.flush()
         #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
     }
@@ -631,7 +760,7 @@ final class FakeDecoder: PictureDecoder {
     @Test func clipboardBothWaysWithoutEcho() async throws {
         let session = try await ready()
         var received: [String] = []
-        session.onClipboardText = { received.append($0) }
+        session.onClipboard = { received.append($0.text ?? "") }
         stream.server([(.clipboard, ["mime": "text/plain;charset=utf-8", "data": .bytes(Data("from linux".utf8))])])
         try await until("clipboard") { received == ["from linux"] }
         session.offerClipboard("from linux") // what the computer just sent: not echoed back
@@ -639,6 +768,72 @@ final class FakeDecoder: PictureDecoder {
         let sent = stream.take()
         #expect(sent.count == 1)
         #expect(sent.first?.body["data"]?.data == Data("from the phone".utf8))
+    }
+
+    static let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1])
+    static let captionedImage = ClipboardContent([ClipboardEntry(mime: ClipboardPolicy.text, data: Data("caption".utf8)),
+                                                  ClipboardEntry(mime: ClipboardPolicy.png, data: png)])!
+
+    @Test func aServerWithoutClipboardTypesGetsTextAlone() async throws {
+        let session = try await ready()
+        session.offerClipboard(Self.captionedImage)
+        let sent = stream.take()
+        #expect(sent.count == 1 && sent.first?.body["alternatives"] == nil)
+        #expect(sent.first?.body["mime"]?.string == ClipboardPolicy.text)
+    }
+
+    @Test func imagesGoBothWaysWithTheServersClipboardTypes() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types"])
+        #expect(stream.take().isEmpty)
+        var received: [ClipboardContent] = []
+        session.onClipboard = { received.append($0) }
+        stream.server([(.clipboard, ["mime": "image/png", "data": .bytes(Self.png),
+                                     "alternatives": [["mime": "image/bmp", "data": .bytes(Data([1]))]]])])
+        try await until("image") { received.count == 1 }
+        #expect(received.first?.entries.map(\.mime) == [ClipboardPolicy.png])
+        session.offerClipboard(ClipboardContent([ClipboardEntry(mime: ClipboardPolicy.png, data: Self.png)])!) // its own: no echo
+        session.offerClipboard(Self.captionedImage)
+        let sent = stream.take()
+        #expect(sent.count == 1)
+        #expect(sent.first?.body["alternatives"]?.array?.first?["mime"]?.string == ClipboardPolicy.png)
+    }
+
+    @Test func dropsFollowTheComputersAnswer() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types", "drop", "drag"])
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100]))])
+        try await until("window") { session.windows[7] != nil }
+        let target = try #require(session.windows[7])
+        _ = stream.take()
+        session.dropEnter(target, at: CGPoint(x: 10, y: 20), types: [ClipboardPolicy.uriList])
+        session.dropMove(target, at: CGPoint(x: 12, y: 22))
+        #expect(stream.take().map(\.type) == [0xA1, 0xA2])
+        #expect(session.dropAccepted == nil)
+        stream.server([(.dropStatus, ["accepted": false])])
+        try await until("status") { session.dropAccepted == false }
+        var results: [Bool] = []
+        session.onDropResult = { ok, _ in results.append(ok) }
+        stream.server([(.dropResult, ["ok": false, "reason": "rejected"])])
+        try await until("result") { results == [false] }
+        #expect(session.dropAccepted == nil)
+    }
+
+    @Test func aComputerDragIsTakenOnlyOverThePhonesTarget() async throws {
+        let session = try await ready(features: ["vsync", "ack", "clipboard", "clipboard-types", "drop", "drag"])
+        session.dragOutFrame = CGRect(x: 0, y: 500, width: 300, height: 80)
+        #expect(!session.takeDragIfOver(CGPoint(x: 10, y: 520)))
+        stream.server([(.dragStart, ["mimes": [CBOR(ClipboardPolicy.text)]])])
+        try await until("drag") { session.computerDrag == [ClipboardPolicy.text] }
+        session.trackDragOut(at: CGPoint(x: 10, y: 520))
+        #expect(session.dragOutHovering)
+        #expect(!session.takeDragIfOver(CGPoint(x: 10, y: 100)))
+        #expect(stream.take().isEmpty)
+        #expect(session.takeDragIfOver(CGPoint(x: 10, y: 520)))
+        #expect(stream.take().map(\.type) == [0xA5])
+        var taken: [String?] = []
+        session.onDragData = { taken.append($0.text) }
+        stream.server([(.dragData, ["mime": "text/plain;charset=utf-8", "data": .bytes(Data("dragged".utf8))]), (.dragEnd, ["taken": true])])
+        try await until("end") { session.computerDrag == nil }
+        #expect(taken == ["dragged"])
     }
 
     @Test func pongMeasuresTheRoundTrip() async throws {

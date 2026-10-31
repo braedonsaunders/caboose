@@ -6,6 +6,7 @@ COPY apps/host/package.json apps/host/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY guest/agentd/package.json guest/agentd/package.json
 RUN pnpm install --frozen-lockfile
+COPY packages/capacity packages/capacity
 
 FROM build-deps AS host-build
 COPY apps/host/tsconfig.json apps/host/tsconfig.json

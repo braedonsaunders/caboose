@@ -118,8 +118,12 @@ impl Detector {
         }
         let x = (c0 * MB) as i32;
         let y = (r0 * MB) as i32;
-        let w = ((c1 * MB).min(self.width as usize) - c0 * MB) as i32;
-        let h = ((r1 * MB).min(self.height as usize) - r0 * MB) as i32;
+        // Encoders take even sizes, and a half-size stream halves them again.
+        let w = (((c1 * MB).min(self.width as usize) - c0 * MB) & !3) as i32;
+        let h = (((r1 * MB).min(self.height as usize) - r0 * MB) & !3) as i32;
+        if w <= 0 || h <= 0 {
+            return None;
+        }
         Some(Rect::new(x, y, w, h))
     }
 }
@@ -318,6 +322,16 @@ mod tests {
             }
         }
         assert!(stopped.is_some_and(|s| s <= 2500 + 2 * STOP_MS), "{stopped:?}");
+    }
+
+    #[test]
+    fn a_region_at_an_odd_window_edge_keeps_sizes_a_half_stream_can_encode() {
+        let mut d = Detector::new(765, 449);
+        for i in 0..20u64 {
+            d.picture(&[Rect::new(0, 0, 765, 449)], i * 33);
+        }
+        let r = d.region(20 * 33).expect("should detect region");
+        assert_eq!(r, Rect::new(0, 0, 764, 448));
     }
 
     #[test]

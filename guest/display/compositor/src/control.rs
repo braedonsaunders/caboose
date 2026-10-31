@@ -262,6 +262,15 @@ impl State {
         };
         let result = match op {
             "windows" => Ok(self.control_windows()),
+            "stats" => {
+                let s = &self.stats;
+                Ok(format!(
+                    "{{\"frames\":{},\"bytes\":{},\"renders\":{},\"direct\":{},\"unchanged_renders\":{},\"render_us\":{},\"encode_cpu_us\":{},\"damaged_px\":{},\"picture_px\":{},\"motion_frames\":{},\"tile_pictures\":{},\"tiles\":{}}}\n",
+                    s.frames, s.bytes, s.renders, s.direct, s.unchanged_renders, s.render_us, s.encode_cpu_us,
+                    s.damaged_px, s.picture_px, s.motion_frames, s.tile_pictures, s.tiles
+                )
+                .into_bytes())
+            }
             "focus" => args
                 .first()
                 .and_then(|a| a.parse::<u64>().ok())
@@ -332,10 +341,11 @@ impl State {
                     .filter(|w| w.stream.callbacks_pending && w.stream.can_release_callbacks())
                     .map(|w| w.id)
                     .collect();
+                let released = ids.len();
                 for id in ids {
                     self.release_frame_callbacks(id);
                 }
-                Ok(b"{\"ok\":true}\n".to_vec())
+                Ok(format!("{{\"ok\":true,\"released\":{released}}}\n").into_bytes())
             }
             "screenshot" => match args.first() {
                 Some(a) => match a.parse::<u64>().ok().filter(|id| self.windows.get(*id).is_some()) {
@@ -542,7 +552,7 @@ impl State {
             let local = win.local_geometry();
             let size = (listed.rect.size.w, listed.rect.size.h).into();
             let mut image = CpuImage::new(listed.rect.size.w as u32, listed.rect.size.h as u32);
-            let mut canvas = Canvas::new(size, 1.0);
+            let mut canvas = Canvas::new(size, 1.0, false);
             if let Err(e) = canvas.render(&mut self.renderer, &root, local.loc, &mut image, 0) {
                 tracing::debug!("control: window {}: {e}", listed.id);
                 continue;
@@ -567,7 +577,7 @@ impl State {
                 }
             }
         }
-        let png = crate::stream::png(w as u32, h as u32, &rgb)?;
+        let png = crate::stream::png(w as u32, h as u32, &rgb, false)?;
         let mut out =
             format!("{{\"ok\":true,\"png\":{},\"rect\":[{},{},{},{}]}}\n", png.len(), area.loc.x, area.loc.y, w, h)
                 .into_bytes();

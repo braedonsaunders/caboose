@@ -1,9 +1,17 @@
+import { Coordinator } from './cluster/coordinator.js'
+import { AzureFence, azureResource } from './cluster/azure.js'
+import { Recovery } from './cluster/recovery.js'
+import { ClusterRuntime } from './cluster/runtime.js'
+import { openPortableStorage } from './portable-storage/config.js'
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { vmPaths } from './vm-paths.js'
 import { usesSystemImage, validateDepotRestoreOptions } from './system-image.js'
 import { prepareKeyring } from './keyring.js'
 import { AgentToolJournal } from './agent-tools-journal.js'
 import { AgentRoutines } from './agent-routines.js'
 import { ActivityService, ActivityStore } from './activities.js'
+import { CommandStore } from './commands.js'
 import { APNsSender, apnsFromEnvironment } from './apns.js'
 import { PushDevices, PushService } from './push.js'
 import { config } from './config.js'
@@ -27,7 +35,7 @@ import { ComputerConflictError } from './lifecycle.js'
 import { ownerToken, secretFile } from './owner-token.js'
 import { openIdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
-import { lstat, mkdir, readdir, readFile } from 'node:fs/promises'
+import { lstat, mkdir, readdir, readFile, open as openFile } from 'node:fs/promises'
 import { containerImage, describeImage, microvmImage, type ImageProvisioner } from './provision.js'
 import { openSettings, type ComputerSettings } from './settings.js'
 import { hostId, machineName, ReachService } from './reach.js'
@@ -37,6 +45,10 @@ import { spawn, spawnSync } from 'node:child_process'
 import { fstatSync, statSync } from 'node:fs'
 
 const deployment = config(process.env)
+const clustered = process.env.CABOOSE_CLUSTER === 'on'
+if (!clustered && existsSync(join(deployment.imageRoot, '.cluster-enrolled'))) throw new Error('This image root is cluster enrolled; local execution is refused')
+if (process.env.CABOOSE_CLUSTER && !['on','off'].includes(process.env.CABOOSE_CLUSTER)) throw new Error('CABOOSE_CLUSTER must be on or off')
+if (clustered && (!deployment.databaseUrl || !process.env.CABOOSE_AUTH_SECRET || !deployment.publicUrl || process.platform !== 'linux' || deployment.runtime !== 'microvm' || deployment.vmTemplate || process.env.CABOOSE_SPLIT_IMAGE || process.env.CABOOSE_VM_DEPOT)) throw new Error('Cluster requires external PostgreSQL, shared AUTH_SECRET, PUBLIC_URL and Linux monolithic microVMs without templates/depot')
 if (process.platform === 'linux' && deployment.runtime === 'microvm') {
   if (!process.env.CABOOSE_HOST_LOCK_FD) {
     const helper = fileURLToPath(new URL('./host-lock.py', import.meta.url))
@@ -77,7 +89,7 @@ const image = deployment.runtime === 'container'
   ? containerImage({ image: deployment.containerImage })
   : microvmImage({ imageRoot: deployment.imageRoot, reference: deployment.baseImage })
 // Accounts and tenants: Postgres when CABOOSE_DATABASE_URL names one, otherwise embedded.
-const identityDatabase = await openIdentityDatabase({ url: deployment.databaseUrl, dataDir: join(deployment.imageRoot, 'identity') })
+const identityDatabase = await openIdentityDatabase({ url: deployment.databaseUrl, ...(clustered ? { queryTimeoutMs: 5000 } : {}), dataDir: join(deployment.imageRoot, 'identity') })
 const identity = Identity.create({
   database: identityDatabase,
   baseURL: deployment.publicUrl ?? `http://127.0.0.1:${deployment.port}`,
@@ -87,7 +99,24 @@ const identity = Identity.create({
 const apns = await apnsFromEnvironment(process.env)
 const sender = apns ? new APNsSender(apns) : undefined
 const computers = await ComputerRegistry.open(deployment.imageRoot, identityDatabase)
-const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'))
+const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'), clustered ? identityDatabase.pool : undefined)
+const portable = clustered ? await openPortableStorage(process.env, deployment.runtime) : undefined
+let cluster: ClusterRuntime | undefined
+if (clustered) {
+  if (!portable || !process.env.CABOOSE_CLUSTER_HOST_ID || !process.env.CABOOSE_CLUSTER_AZURE_RESOURCE) throw new Error('Cluster requires portable storage and explicit Azure host identity')
+  const runtimeVersion = createHash('sha256')
+  for (const path of [deployment.vmmPath, join(deployment.imageRoot, 'vmlinux'), join(deployment.imageRoot, 'initrd')]) runtimeVersion.update(await readFile(path))
+  const compatibility = { runtime: 'linux-microvm' as const, architecture: process.arch as 'x64' | 'arm64', runtimeVersion: runtimeVersion.digest('hex') }
+  const coordinator = new Coordinator(identityDatabase.pool, { id: process.env.CABOOSE_CLUSTER_HOST_ID, resource: azureResource(process.env.CABOOSE_CLUSTER_AZURE_RESOURCE), compatibility: JSON.stringify(compatibility), endpoint: deployment.publicUrl! })
+  const metadataResponse = await fetch('http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01', { headers: { Metadata: 'true' }, signal: AbortSignal.timeout(5000), redirect: 'error' })
+  if (!metadataResponse.ok) throw new Error('Azure host identity verification unavailable')
+  const metadata = await metadataResponse.json() as { resourceId?: string }
+  if (!metadata.resourceId || azureResource(metadata.resourceId) !== coordinator.host.resource) throw new Error('Configured cluster resource does not match this Azure VM')
+  await coordinator.initialize()
+  await import('./settings.js').then(m => m.writePrivateJson(join(deployment.imageRoot, '.cluster-enrolled'), { hostId: coordinator.host.id, resource: coordinator.host.resource }))
+  for (const path of [join(deployment.imageRoot, '.cluster-enrolled'), deployment.imageRoot]) { const file = await openFile(path, 'r'); try { await file.sync() } finally { await file.close() } }
+  cluster = new ClusterRuntime(coordinator, new Recovery(coordinator, portable.archives, compatibility, deployment.imageRoot, new AzureFence()), deployment.imageRoot)
+}
 // Every microVM computer shares one appkit-desk host, and with it its capacity.
 const desks = deployment.runtime === 'microvm' ? createDeskPool(deployment) : undefined
 const splitImage = process.env.CABOOSE_SPLIT_IMAGE || undefined
@@ -102,7 +131,13 @@ const storage = await openStorage(deployment, process.env)
 
 /** A computer's settings, runtime and notifications, from its own directory. */
 async function open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces> {
-  const dir = computers.dataDir(record.id)
+  const runtimeRoot = cluster?.roots.get(record.id) ?? deployment.imageRoot
+  const dir = runtimeRoot !== deployment.imageRoot ? runtimeRoot : computers.dataDir(record.id)
+  const runtimeConfig = { ...deployment, imageRoot: runtimeRoot }
+  if (runtimeRoot !== deployment.imageRoot) {
+    const saved = JSON.parse(await readFile(join(dir, 'computer.json'), 'utf8'))
+    if (!existsSync(join(dir, 'caboose.json'))) initial = saved.settings
+  }
   const settings = await openSettings(join(dir, 'caboose.json'), initial ?? { name: record.id === OWNER_COMPUTER ? 'Caboose' : 'Computer', defaultAgent: null, ...defaults })
   // A new computer's choices are saved at once, so a host restart keeps them.
   if (initial) await settings.update({ name: initial.name, memoryMb: initial.memoryMb, vcpus: initial.vcpus, idleMs: initial.idleMs })
@@ -111,12 +146,13 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
-    : createController(deployment, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(runtimeConfig, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
-  const paths = vmPaths(deployment.imageRoot, record.id, deployment.vmTemplate)
+  const commands = await CommandStore.open(join(dir, 'commands'))
+  const paths = vmPaths(runtimeRoot, record.id, deployment.vmTemplate)
   const snapshotPath = paths.snapshot
-  const computerStorage = storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
-  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  const computerStorage = cluster ? undefined : storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
@@ -159,8 +195,13 @@ const app = createCabooseServer({
   usageHistoryFile: join(deployment.imageRoot, 'usage-history.json'),
   machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
   fleet: { computers, phones, defaults, open, existing, maxRunning: deployment.runtime === 'microvm' ? deployment.maxRunning : null, diskBytes },
-  identity,
+  cluster, identity, trustedProxies: deployment.trustedProxies, publicUrl: deployment.publicUrl,
 })
+let recoveryWork: Promise<void> | undefined
+const recoveryTimer = cluster ? setInterval(() => {
+  recoveryWork ??= app.recoverExpired().catch(error => console.error('Cluster recovery:', error.message)).finally(() => { recoveryWork = undefined })
+}, 15_000) : undefined
+recoveryTimer?.unref()
 app.server.listen(deployment.port, deployment.host, () => {
   console.log(`caboose-host listening on ${deployment.host}:${deployment.port}`)
   void reach.start().catch(error => console.error('Advertising on the LAN (mDNS) failed:', error instanceof Error ? error.message : error))
@@ -175,7 +216,8 @@ app.server.listen(deployment.port, deployment.host, () => {
 void image.ensure().then(() => console.log(describeImage(image.status())), error => console.error(error instanceof Error ? error.message : error))
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
-    void reach.stop().catch(() => undefined).then(() => app.shutdown()).then(() => storage.close()).then(() => snapshotGc?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
+    clearInterval(recoveryTimer)
+    void (cluster?.close() ?? Promise.resolve()).then(() => reach.stop()).catch(() => undefined).then(() => app.shutdown()).then(() => storage.close()).then(() => snapshotGc?.close()).then(() => portable?.close()).then(() => identityDatabase.close()).then(() => process.exit(0), error => { console.error('Shutdown failed:', error); process.exit(1) })
   })
 }
 

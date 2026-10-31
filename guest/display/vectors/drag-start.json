@@ -1,0 +1,8 @@
+{
+  "name": "drag-start",
+  "description": "A file manager started dragging a file, offered as a list of files and its path as text.",
+  "messages": [
+    {"direction": "server", "type": "drag.start", "type_id": 52, "fields": {"mimes": ["text/plain;charset=utf-8", "text/uri-list"]}}
+  ],
+  "hex": "3430000000a1656d696d6573827818746578742f706c61696e3b636861727365743d7574662d386d746578742f7572692d6c697374"
+}

@@ -144,6 +144,19 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         attach(window)
     }
 
+    /// Whether the view shows through where the window's picture is transparent (a popup's
+    /// rounded corners and shadow); an opaque window sits on black.
+    public private(set) var showsThrough = false
+
+    /// Matches the layer and background to the window's alpha, which `window.update` can change.
+    private func followAlpha() {
+        let alpha = remoteWindow?.hasAlpha ?? false
+        guard alpha != showsThrough || metalLayer.isOpaque == alpha else { return }
+        showsThrough = alpha
+        metalLayer.isOpaque = !alpha
+        backgroundColor = alpha ? .clear : .black
+    }
+
     @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     public func attach(_ window: RemoteWindow?) {
@@ -161,9 +174,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             laidOutVideos = nil
         }
         remoteWindow = window
-        prefersProse = autocorrectChoice ?? !Self.isCodeApp(window)
+        followField(purpose: session?.textPurpose, isCode: Self.isCodeApp(window))
         presentedGeneration = .max
-        metalLayer.isOpaque = !(window?.hasAlpha ?? false)
+        followAlpha()
         layoutGame()
         layoutLiveGPU()
     }
@@ -412,6 +425,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     fileprivate func present() {
+        followAlpha()
         guard let picture = remoteWindow?.surface.presentation() else { return }
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
@@ -566,7 +580,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         contextTouchGesture = longPress
         longPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
-        longPress.minimumPressDuration = 0.5
+        longPress.minimumPressDuration = 0.65
         longPress.allowableMovement = 10
         longPress.delegate = self
         addGestureRecognizer(longPress)
@@ -642,7 +656,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     private func tapped() {
-        prefersProse = autocorrectChoice ?? !Self.isCodeApp(remoteWindow)
+        followField(purpose: session?.textPurpose, isCode: Self.isCodeApp(remoteWindow))
         guard onKeyboardWanted != nil, let session else {
             if !isFirstResponder { becomeFirstResponder() }
             return
@@ -657,13 +671,17 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let check = focusCheck, let session, let onKeyboardWanted else { return }
         guard let isText = check.keyboardWanted(at: CACurrentMediaTime(), serial: session.cursorSerial,
                                                isText: session.cursorIsText, keyboardVisible: isFirstResponder) else { return }
-        // The app says what the field takes: no autocorrect in a terminal or a password.
-        if isText, autocorrectChoice == nil, let purpose = session.textPurpose {
-            prefersProse = !["terminal", "password", "pin", "url", "email", "number", "digits", "phone", "date", "time", "datetime"]
-                .contains(purpose)
-        }
+        // The app says what the field takes: its keyboard, AutoFill and whether it is prose.
+        if isText { followField(purpose: session.textPurpose, isCode: Self.isCodeApp(remoteWindow)) }
         onKeyboardWanted(isText)
         focusCheck = nil
+    }
+
+    /// Focus moving between fields with the keyboard up (Tab from a username to its
+    /// password) changes the keyboard with it.
+    fileprivate func followFieldPurpose() {
+        guard isFirstResponder, let session, session.textPurpose != fieldPurpose else { return }
+        followField(purpose: session.textPurpose, isCode: Self.isCodeApp(remoteWindow))
     }
 
     private var adoptedSurrounding = 0
@@ -700,21 +718,42 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                   isInteractive, self.window != nil, session.state == .ready,
                   session.windows[window.id] === window else { return }
             let drag = holdUsesPointerDrag
-            cancelTouches()
-            stopMomentum()
             if drag {
+                cancelTouches()
+                stopMomentum()
                 holdingDirectDrag = true
                 focusCheck = nil
                 session.focus(window)
                 sendDirectDrag(directDrag.begin(at: point, translation: .zero))
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } else {
-                click(at: point, button: 3)
+                // Defer secondary click by one run-loop turn so a queued touch-up from a quick tap
+                // during a main-thread stall drains before the long-press timer can cancel it.
+                let hadNativeTouch = !activeTouches.isEmpty || pencilPoint != nil
+                DispatchQueue.main.async { [weak self, weak gesture, weak window, weak session] in
+                    guard let self, let gesture, let window, let session,
+                          gesture.state == .began || gesture.state == .changed,
+                          self.remoteWindow === window, self.session === session,
+                          self.isInteractive, self.window != nil, session.state == .ready,
+                          session.windows[window.id] === window,
+                          !hadNativeTouch || !self.activeTouches.isEmpty || self.pencilPoint != nil
+                    else { return }
+                    self.cancelTouches()
+                    self.stopMomentum()
+                    self.click(at: point, button: 3)
+                }
             }
         case .changed:
-            if holdingDirectDrag { sendDirectDrag(directDrag.move(to: point)) }
+            if holdingDirectDrag {
+                sendDirectDrag(directDrag.move(to: point))
+                session?.trackDragOut(at: convert(point, to: nil))
+            }
         case .ended:
-            if holdingDirectDrag { sendDirectDrag(directDrag.end(at: point)) }
+            // A computer drag released on the phone's own target is the phone's.
+            if holdingDirectDrag {
+                session?.takeDragIfOver(convert(point, to: nil))
+                sendDirectDrag(directDrag.end(at: point))
+            }
             holdingDirectDrag = false
         case .cancelled, .failed:
             if holdingDirectDrag { sendDirectDrag(directDrag.cancel()) }
@@ -764,7 +803,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             session.pointerButton(in: window, button: 1, pressed: true, at: lastPointer)
         case .changed:
             move(to: point)
+            session.trackDragOut(at: convert(point, to: nil))
         default:
+            if gesture.state == .ended { session.takeDragIfOver(convert(point, to: nil)) }
             session.pointerButton(in: window, button: 1, pressed: false, at: pixelPoint(point))
         }
     }
@@ -891,6 +932,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             } else {
                 activeTouches[key] = (slot, point)
             }
+        }
+        // A computer drag follows the finger to the phone's own target; lifted there, it is
+        // the phone's, taken before the lift reaches the computer.
+        if session.computerDrag != nil, let finger = touches.first(where: { $0.type != .pencil }) {
+            let location = convert(finger.location(in: self), to: nil)
+            if phase == .motion { session.trackDragOut(at: location) }
+            if phase == .up { session.takeDragIfOver(location) }
         }
         if !points.isEmpty { session.touch(points, in: window) }
     }
@@ -1196,6 +1244,17 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         super.dismissKeyboard()
     }
 
+    /// The session puts the images and files on the computer's clipboard, then Control-V
+    /// pastes them into this window, if it is still the one shown.
+    public override func pasteItems() -> Bool {
+        guard let session, let window = remoteWindow, let take = session.onPasteItems else { return false }
+        return take { [weak self, weak session, weak window] in
+            guard let self, let session, let window, self.session === session, self.remoteWindow === window,
+                  let stroke = Keysyms.stroke(for: "v") else { return }
+            self.sendKey(stroke, modifiers: ["control"])
+        }
+    }
+
     public override func sendKey(_ stroke: KeyStroke, modifiers: [String]) {
         guard !holdsGameInput else { return }
         localScroll?.interrupt()
@@ -1275,6 +1334,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.followFieldPurpose()
         view.adoptSurroundingText()
         view.layoutGame()
         view.layoutGPUStream()

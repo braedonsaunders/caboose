@@ -122,10 +122,10 @@ final class TerminalModel {
         self.connection = connection
         let view = view
         connection.start { [weak self, weak connection] event in
-            // Output is fed in order on the connection's queue; SwiftTerm parses off the main thread.
+            // Output is fed in order on the connection's queue; libghostty parses off the main thread.
             switch event {
             case .connected(let hello):
-                if hello.reset { view.feed(byteArray: hello.preamble[...]) }
+                if hello.reset { view.replay(byteArray: hello.preamble[...]) }
             case .output(let data):
                 view.feed(byteArray: [UInt8](data)[...])
             case .ended:

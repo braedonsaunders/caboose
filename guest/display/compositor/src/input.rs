@@ -35,7 +35,7 @@ const BUTTONS: [(u32, u32); 5] = [
 const WHEEL_STEP: f64 = 15.0;
 
 /// A surface and its origin in the logical space.
-type Focus = (WlSurface, Point<f64, Logical>);
+pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
 
 #[derive(Default)]
 pub struct InputState {

@@ -67,6 +67,7 @@ enum YardStyle {
 /// track.
 struct YardTitleBar: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     let window: RemoteWindow
     let yard: YardModel
     let focused: Bool
@@ -160,6 +161,9 @@ struct YardTitleBar: View {
                 }
             }
             Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right", action: openCard)
+            if let ref = model.windowRef(for: window) {
+                Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(value: ref) }
+            }
             Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
                 yard.exitAppFullscreen(window.id)
             }

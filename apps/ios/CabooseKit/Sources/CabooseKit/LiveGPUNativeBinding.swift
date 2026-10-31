@@ -87,11 +87,22 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
 /// Descriptors remain owned until both workers have joined. shutdown is safe against
 /// concurrent IO; close is deliberately deferred so descriptor reuse cannot race a run.
 private final class LiveGPUDuplex: @unchecked Sendable {
+    private static let installWakeSignal: Void = {
+        var action = sigaction()
+        action.__sigaction_u.__sa_handler = { _ in }
+        sigemptyset(&action.sa_mask)
+        action.sa_flags = SA_RESTART
+        _ = sigaction(SIGUSR1, &action, nil)
+    }()
     let bridge: Int32
     let native: Int32
     let workers = DispatchGroup()
     var inboundFinished = false // guarded by owning LiveGPUProcess.lock
+    private let stateLock = NSLock()
+    private var nativeReaderThread: pthread_t?
+    private var bridgeWriteClosed = false
     init() throws {
+        _ = Self.installWakeSignal
         var descriptors: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
             throw LiveGPUBindingError.system(operation: "socketpair", code: errno)
@@ -110,8 +121,54 @@ private final class LiveGPUDuplex: @unchecked Sendable {
             }
         }
     }
-    func cancel() { shutdown(bridge, SHUT_RDWR); shutdown(native, SHUT_RDWR) }
-    func closeAfterJoin() { workers.wait(); Darwin.close(bridge); Darwin.close(native) }
+    func beginNativeRun() {
+        stateLock.withLock { nativeReaderThread = pthread_self() }
+    }
+    func endNativeRun() {
+        stateLock.withLock { nativeReaderThread = nil }
+    }
+    func halfCloseBridgeWrite() throws {
+        try stateLock.withLock {
+            guard shutdown(bridge, SHUT_WR) == 0 else {
+                throw LiveGPUBindingError.system(operation: "half-close", code: errno)
+            }
+            bridgeWriteClosed = true
+        }
+    }
+    /// On XNU AF_UNIX SOCK_STREAM, shutdown(bridge, SHUT_WR) calls socantrcvmore(native)
+    /// without holding native's socket mutex. If native's reader enters sbwait in that
+    /// window, sowakeup clears SB_WAIT before msleep joins the waitqueue. A thread-directed
+    /// SA_RESTART signal wakes msleep so soreceive re-checks SS_CANTRCVMORE and returns EOF.
+    func nudgeNativeReaderIfDisconnected() {
+        stateLock.withLock {
+            guard bridgeWriteClosed, let thread = nativeReaderThread else { return }
+            var pfd = pollfd(fd: native, events: Int16(POLLIN), revents: 0)
+            if Darwin.poll(&pfd, 1, 0) > 0 && (pfd.revents & Int16(POLLHUP)) != 0 {
+                _ = pthread_kill(thread, SIGUSR1)
+            }
+        }
+    }
+    func cancel() {
+        stateLock.withLock {
+            bridgeWriteClosed = true
+            // Shut down each direction separately: on XNU AF_UNIX SOCK_STREAM,
+            // shutdown(fd, SHUT_RDWR) returns ENOTCONN before shutting down SHUT_WR
+            // whenever SS_CANTRCVMORE is already set on fd.
+            _ = shutdown(bridge, SHUT_RD)
+            _ = shutdown(bridge, SHUT_WR)
+            _ = shutdown(native, SHUT_RD)
+            _ = shutdown(native, SHUT_WR)
+            if let thread = nativeReaderThread {
+                _ = pthread_kill(thread, SIGUSR1)
+            }
+        }
+    }
+    func waitForWorkers() {
+        while workers.wait(timeout: .now() + .milliseconds(2)) == .timedOut {
+            nudgeNativeReaderIfDisconnected()
+        }
+    }
+    func closeAfterJoin() { waitForWorkers(); Darwin.close(bridge); Darwin.close(native) }
     func write(_ bytes: Data) throws {
         try bytes.withUnsafeBytes { buffer in
             var offset = 0
@@ -330,7 +387,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             }
             if frame.kind == .data { try stream.write(frame.payload) }
             else {
-                guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
+                try stream.halfCloseBridgeWrite()
             }
         case .surfaceBind, .surfaceQuery, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent, .swapchainPresentOrdered:
             guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
@@ -386,7 +443,9 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         Thread.detachNewThread { [self] in
             defer { stream.workers.leave() }
             gate.wait()
+            stream.beginNativeRun()
             let result = backend.run(process.token, fd: stream.native, maxPacket: maxPacket, maxReply: maxReply)
+            stream.endNativeRun()
             // Native does not own the fd. Its write half ends only after run returns.
             shutdown(stream.native, SHUT_WR)
             let expectedStreamEnd = process.lock.withLock {
@@ -402,6 +461,20 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             gate.wait()
             var buffer = [UInt8](repeating: 0, count: 16 * 1024)
             while true {
+                // Poll before read so bridge never enters XNU sbwait on an empty buffer
+                // while native is concurrently calling shutdown(native, SHUT_WR).
+                var pfd = pollfd(fd: stream.bridge, events: Int16(POLLIN), revents: 0)
+                let ready = Darwin.poll(&pfd, 1, 2)
+                if ready < 0 {
+                    if errno == EINTR { continue }
+                    if process.lock.withLock({ process.stopped }) { return }
+                    fail(LiveGPUBindingError.system(operation: "poll", code: errno)); return
+                }
+                if ready == 0 {
+                    if process.lock.withLock({ process.stopped }) { return }
+                    stream.nudgeNativeReaderIfDisconnected()
+                    continue
+                }
                 let count = Darwin.read(stream.bridge, &buffer, buffer.count)
                 if count < 0 && errno == EINTR { continue }
                 if process.lock.withLock({ process.stopped }) { return }
@@ -421,7 +494,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private func retire(_ id: UInt64, _ process: LiveGPUProcess) throws {
         process.stop(backend)
         let streams = process.lock.withLock { Array(process.streams.values) }
-        for stream in streams { stream.workers.wait() }
+        for stream in streams { stream.waitForWorkers() }
         process.lock.withLock {
             for stream in process.streams.values { stream.closeAfterJoin() }
             process.streams.removeAll()

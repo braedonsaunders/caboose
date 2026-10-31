@@ -7,6 +7,7 @@ import SwiftUI
 struct WindowScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.openWindow) private var openWindow
     @State private var chromeVisible = true
     @State private var laptopActive = false
     @State private var verticalEdge: HorizontalEdge?
@@ -20,6 +21,7 @@ struct WindowScreen: View {
     /// How far the card has been swiped sideways, and the picture of the app it reveals.
     @State private var swipe: CGFloat = 0
     @State private var neighbour: (id: Int, picture: CGImage?)?
+    private var keyboard = SoftwareKeyboard.shared
 
     var body: some View {
         NavigationStack {
@@ -36,7 +38,20 @@ struct WindowScreen: View {
                                 model.show(windowID: id)
                             }
                         }) { _ in
-                            GeometryReader { proxy in surface(for: window, size: proxy.size) }
+                            GeometryReader { proxy in
+                                let stage = proxy.frame(in: .global)
+                                let caret = RemoteTextInputView.lastCaret.flatMap { Date().timeIntervalSince($0.at) < 60 ? $0.point.y : nil }
+                                let pan = keyboard.visible
+                                    ? DesktopGeometry.keyboardPan(caretY: caret, stageMinY: stage.minY, stageMaxY: stage.maxY,
+                                                                  keyboardTopY: (keyboard.window?.bounds.height ?? stage.maxY) - keyboard.height)
+                                    : 0
+                                surface(for: window, size: proxy.size)
+                                    .offset(y: -pan)
+                                    .animation(.smooth(duration: 0.3), value: pan)
+                                    .onChange(of: pan, initial: true) { _, value in RemoteTextInputView.currentKeyboardPan = value }
+                                    .onDisappear { RemoteTextInputView.currentKeyboardPan = 0 }
+                            }
+                            .ignoresSafeArea(.keyboard)
                         }
                     }
                     if !chromeVisible && !laptopActive { exitFullScreenHandle }
@@ -93,11 +108,6 @@ struct WindowScreen: View {
             withAnimation(.snappy) { chromeVisible = false }
         }
         .tint(Brand.amber)
-        .fullScreenCover(item: Binding(
-            get: { model.media.handedOff },
-            set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
-            MediaPlayerScreen(media: media).environment(model)
-        }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
@@ -170,7 +180,7 @@ struct WindowScreen: View {
     // MARK: Swiping between apps
 
     /// The open apps' windows in the order they opened, so swiping is predictable.
-    private var cardOrder: [RemoteWindow] { model.appWindows.sorted { $0.id < $1.id } }
+    private var cardOrder: [RemoteWindow] { model.workspaceWindows.sorted { $0.id < $1.id } }
 
     /// The app the card swipes towards: the next one for a swipe to the left.
     private func neighbour(of window: RemoteWindow, leftward: Bool) -> RemoteWindow? {
@@ -338,15 +348,16 @@ struct WindowScreen: View {
     /// The presenting toolbar button anchors these system actions beside the controls.
     @ViewBuilder private func windowActions(for window: RemoteWindow) -> some View {
         Button("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right") { chromeVisible = false }
+        // The card closes once the window's own iPadOS window takes it.
+        if let ref = model.windowRef(for: window) {
+            Button("Open in New Window", systemImage: "macwindow.badge.plus") { openWindow(value: ref) }
+        }
         Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
             model.session?.exitFullscreen(window, frame: window.frame)
             withAnimation(.snappy) { chromeVisible = true }
         }
         if model.agents.available {
             Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
-        }
-        if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
-            Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
         }
         Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
         Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.closeDiagnosed(window) }
@@ -435,19 +446,31 @@ struct RemoteWindowCanvas: UIViewRepresentable {
     @Environment(\.laptopInputOwned) private var laptopInputOwned
     let window: RemoteWindow
     let keyboardVisible: Bool
+    /// Stretches the last picture over the view while a new size is on its way.
+    var stretch = false
+    /// Where a tap's answer to whether the keyboard is wanted goes: the shell's keyboard
+    /// unless a window of its own keeps its own.
+    var keyboardWanted: ((Bool) -> Void)?
 
     func makeUIView(context: Context) -> YardSurfaceView {
         let view = YardSurfaceView(content: RemoteWindowView(session: model.session, window: window))
         view.content.pixelsPerPoint = model.pixelsPerPoint
+        view.content.onKeyboardWanted = keyboardHandler
+        return view
+    }
+
+    private var keyboardHandler: (Bool) -> Void {
+        if let keyboardWanted { return keyboardWanted }
         let model = model
-        view.content.onKeyboardWanted = { wanted in
+        return { wanted in
             if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
         }
-        return view
     }
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.session
+        view.content.onKeyboardWanted = keyboardHandler
+        view.stretch = stretch
         view.locallyRendered = window.game != nil
         view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint

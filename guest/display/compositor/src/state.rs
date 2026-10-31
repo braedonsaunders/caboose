@@ -21,6 +21,8 @@ use smithay::reexports::calloop::channel::Sender;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_seat, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Clock, IsAlive, Monotonic, Serial, SERIAL_COUNTER};
@@ -205,10 +207,14 @@ pub struct State {
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
+    pub scene: crate::scene::SceneServer,
     pub control: crate::control::Control,
     /// Toolkit scroll reporters (scroll.rs).
     pub scroll: crate::scroll::ScrollHub,
     pub clipboard: crate::clipboard::Clipboard,
+    /// How the compositor reaches its Xwayland as a client, once it runs.
+    pub x11: Option<crate::x11sel::Access>,
+    pub dnd: crate::dnd::Dnd,
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
@@ -630,6 +636,7 @@ impl State {
         }
         self.video_window_gone(id);
         self.game_window_gone(id);
+        self.scene_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;
@@ -1200,8 +1207,21 @@ impl SelectionHandler for State {
         owner: &crate::clipboard::Owner,
     ) {
         match owner {
-            crate::clipboard::Owner::Phone(data) => crate::clipboard::write_to(fd, data.clone()),
+            crate::clipboard::Owner::Phone(offer) => offer.send(&mime_type, fd),
             crate::clipboard::Owner::X11 => {
+                // Smithay's window manager transfers text; other types are read directly.
+                if ty == SelectionTarget::Clipboard && !crate::x11sel::smithay_transfers(&mime_type) {
+                    if let Some(access) = self.x11.clone() {
+                        crate::x11sel::copy_into(
+                            access,
+                            mime_type,
+                            fd,
+                            crate::clipboard::X11_LIMIT,
+                            crate::clipboard::X11_TIMEOUT,
+                        );
+                    }
+                    return;
+                }
                 let handle = self.handle.clone();
                 if let Some(xwm) = self.xwm.as_mut() {
                     if let Err(e) = xwm.send_selection(ty, mime_type, fd, handle) {
@@ -1219,8 +1239,38 @@ impl DataDeviceHandler for State {
     }
 }
 
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
+impl ClientDndGrabHandler for State {
+    fn started(&mut self, source: Option<WlDataSource>, _icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.drag_started(source);
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.drag_ended();
+    }
+}
+
+/// The compositor's own drag, which carries a drop from the phone (see `dnd.rs`).
+impl ServerDndGrabHandler for State {
+    fn accept(&mut self, mime_type: Option<String>, _seat: Seat<Self>) {
+        self.drop_accepted(mime_type);
+    }
+
+    fn action(&mut self, action: DndAction, _seat: Seat<Self>) {
+        self.drop_action(action);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.drop_cancelled();
+    }
+
+    fn send(&mut self, mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
+        self.drop_send(mime_type, fd);
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.drop_finished();
+    }
+}
 
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&self) -> &PrimarySelectionState {

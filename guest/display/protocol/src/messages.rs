@@ -69,10 +69,43 @@ string_enum!(
     VideoSource { Passthrough => "passthrough", Surface => "surface", Motion => "motion" }
 );
 string_enum!(TileFormat { Png => "png", WebpLossless => "webp-lossless" });
+string_enum!(
+    /// Lossless micro-codec formats for `surface.batch` tiles.
+    AtlasTileFormat {
+        Pal2Lz4 => "pal2-lz4",
+        Pal16Lz4 => "pal16-lz4",
+        RgbaLz4 => "rgba-lz4",
+        Png => "png",
+    }
+);
+string_enum!(
+    /// Node kinds in a retained vector/glyph `scene.commit` tree.
+    SceneNodeKind {
+        Group => "group",
+        Clip => "clip",
+        RClip => "rclip",
+        Scroll => "scroll",
+        Rect => "rect",
+        Border => "border",
+        Shadow => "shadow",
+        Glyphs => "glyphs",
+        Path => "path",
+        Surface => "surface",
+    }
+);
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
 });
+string_enum!(
+    /// Why a drop from the client did not complete (`drop.result`).
+    DropFailure {
+        Rejected => "rejected",
+        Cancelled => "cancelled",
+        Timeout => "timeout",
+        Invalid => "invalid",
+    }
+);
 string_enum!(ByeReason {
     Auth => "auth",
     Version => "version",
@@ -256,11 +289,287 @@ pub struct Surrounding {
     pub anchor: u64,
 }
 
-/// `clipboard` (0x30 server → client, 0xA0 client → server).
+/// Self-copy (`CopyRect`) within the window's retained texture before fills and tiles.
+/// Encoded in CBOR as `[dx, dy, rect.x, rect.y, rect.w, rect.h]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceCopy {
+    pub dx: i32,
+    pub dy: i32,
+    pub rect: Rect,
+}
+
+impl SurfaceCopy {
+    fn to_value(self) -> Value {
+        Value::Array(vec![
+            self.dx.into(),
+            self.dy.into(),
+            self.rect.x.into(),
+            self.rect.y.into(),
+            self.rect.w.into(),
+            self.rect.h.into(),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [dx, dy, x, y, w, h] => Some(Self {
+                dx: fields::as_i32(dx)?,
+                dy: fields::as_i32(dy)?,
+                rect: Rect {
+                    x: fields::as_i32(x)?,
+                    y: fields::as_i32(y)?,
+                    w: fields::as_i32(w)?,
+                    h: fields::as_i32(h)?,
+                },
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Solid RGBA8888 fill within a `surface.batch`.
+/// Encoded in CBOR as `[rect.x, rect.y, rect.w, rect.h, rgba]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceFill {
+    pub rect: Rect,
+    /// 0xRRGGBBAA
+    pub rgba: u32,
+}
+
+impl SurfaceFill {
+    fn to_value(self) -> Value {
+        Value::Array(vec![
+            self.rect.x.into(),
+            self.rect.y.into(),
+            self.rect.w.into(),
+            self.rect.h.into(),
+            self.rgba.into(),
+        ])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [x, y, w, h, rgba] => Some(Self {
+                rect: Rect {
+                    x: fields::as_i32(x)?,
+                    y: fields::as_i32(y)?,
+                    w: fields::as_i32(w)?,
+                    h: fields::as_i32(h)?,
+                },
+                rgba: fields::as_u32(rgba)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Reference to a previously cached 64×64 tile by its `XXH64` content hash.
+/// Encoded in CBOR as `[x, y, hash]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceTileRef {
+    pub x: i32,
+    pub y: i32,
+    pub hash: u64,
+}
+
+impl SurfaceTileRef {
+    fn to_value(self) -> Value {
+        Value::Array(vec![self.x.into(), self.y.into(), self.hash.into()])
+    }
+
+    fn from_value(v: &Value) -> Option<Self> {
+        match fields::as_array(v)? {
+            [x, y, hash] => Some(Self {
+                x: fields::as_i32(x)?,
+                y: fields::as_i32(y)?,
+                hash: fields::as_u64(hash)?,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// A newly encoded lossless UI tile in `surface.batch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceTile {
+    pub rect: Rect,
+    pub hash: Option<u64>,
+    pub format: AtlasTileFormat,
+    pub data: Vec<u8>,
+}
+
+impl SurfaceTile {
+    fn to_value(&self) -> Value {
+        MapBuilder::new()
+            .put("x", self.rect.x)
+            .put("y", self.rect.y)
+            .put("w", self.rect.w)
+            .put("h", self.rect.h)
+            .put("fmt", self.format)
+            .opt("hash", self.hash)
+            .put("data", self.data.clone())
+            .build()
+    }
+
+    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
+        let f = Fields::new("surface.batch.tiles", v)?;
+        Ok(Self {
+            rect: Rect {
+                x: f.req("x", fields::as_i32)?,
+                y: f.req("y", fields::as_i32)?,
+                w: f.req("w", fields::as_i32)?,
+                h: f.req("h", fields::as_i32)?,
+            },
+            hash: f.opt_u64("hash")?,
+            format: enum_field(&f, "fmt", AtlasTileFormat::parse)?,
+            data: f.bytes("data")?,
+        })
+    }
+}
+
+/// `surface.batch` (0x23): atomic byte-perfect surface damage batch (Layer 0).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceBatch {
+    pub id: u64,
+    pub seq: u64,
+    pub pts_us: u64,
+    pub size: Size,
+    pub rect: Rect,
+    pub keyframe: bool,
+    pub copies: Vec<SurfaceCopy>,
+    pub fills: Vec<SurfaceFill>,
+    pub refs: Vec<SurfaceTileRef>,
+    pub tiles: Vec<SurfaceTile>,
+}
+
+/// `scene.font` (0x25): outline font face registration for `scene.commit` glyph runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneFont {
+    pub font: u64,
+    pub index: u32,
+    pub family: Option<String>,
+    pub data: Vec<u8>,
+}
+
+/// A retained node in a `scene.commit` vector/glyph scene graph (Layer 1).
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneNode {
+    pub id: u64,
+    pub kind: SceneNodeKind,
+    pub rect: Option<Rect>,
+    pub radius: Option<[u32; 4]>,
+    pub color: Option<u32>,
+    pub scroll: Option<Rect>,
+    pub children: Option<Vec<u64>>,
+    pub font: Option<u64>,
+    pub size: Option<f64>,
+    pub glyphs: Option<Vec<u8>>,
+    pub path: Option<Vec<u8>>,
+    pub surface: Option<u64>,
+}
+
+impl SceneNode {
+    fn to_value(&self) -> Value {
+        MapBuilder::new()
+            .put("id", self.id)
+            .put("kind", self.kind)
+            .opt("rect", self.rect)
+            .opt(
+                "radius",
+                self.radius.map(|r| Value::Array(vec![r[0].into(), r[1].into(), r[2].into(), r[3].into()])),
+            )
+            .opt("color", self.color)
+            .opt("scroll", self.scroll)
+            .opt(
+                "children",
+                self.children.as_ref().map(|c| Value::Array(c.iter().map(|&id| Value::from(id)).collect())),
+            )
+            .opt("font", self.font)
+            .opt("size", self.size)
+            .opt("glyphs", self.glyphs.clone())
+            .opt("path", self.path.clone())
+            .opt("surface", self.surface)
+            .build()
+    }
+
+    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
+        let f = Fields::new("scene.commit.nodes", v)?;
+        Ok(Self {
+            id: f.u64("id")?,
+            kind: enum_field(&f, "kind", SceneNodeKind::parse)?,
+            rect: f.opt_rect("rect")?,
+            radius: f.opt("radius", fields::as_u32_quad)?,
+            color: f.opt_u32("color")?,
+            scroll: f.opt_rect("scroll")?,
+            children: f.opt("children", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?,
+            font: f.opt_u64("font")?,
+            size: f.opt_f64("size")?,
+            glyphs: f.opt_bytes("glyphs")?,
+            path: f.opt_bytes("path")?,
+            surface: f.opt_u64("surface")?,
+        })
+    }
+}
+
+/// `scene.commit` (0x26): retained vector/glyph scene-graph update (Layer 1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneCommit {
+    pub id: u64,
+    pub seq: u64,
+    pub pts_us: u64,
+    pub root: u64,
+    pub reset: bool,
+    pub nodes: Vec<SceneNode>,
+    pub remove: Vec<u64>,
+}
+
+/// `scene.scroll` (0x9A): client-predicted scroll offset synced back to the guest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneScroll {
+    pub id: u64,
+    pub node: u64,
+    pub sx: f64,
+    pub sy: f64,
+}
+
+/// One representation of a copy: its MIME type and its bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClipboardEntry {
+    pub mime: String,
+    pub data: Vec<u8>,
+}
+
+/// `clipboard` (0x30 server → client, 0xA0 client → server): one copy, in its first
+/// representation (`mime`, `data`) and the same content in other types
+/// (`alternatives`, absent when there are none).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Clipboard {
     pub mime: String,
     pub data: Vec<u8>,
+    pub alternatives: Vec<ClipboardEntry>,
+}
+
+impl Clipboard {
+    /// Every representation, the first one first.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &[u8])> {
+        std::iter::once((self.mime.as_str(), self.data.as_slice()))
+            .chain(self.alternatives.iter().map(|e| (e.mime.as_str(), e.data.as_slice())))
+    }
+
+    /// The bytes of every representation together.
+    pub fn total_len(&self) -> usize {
+        self.entries().map(|(_, d)| d.len()).sum()
+    }
+}
+
+/// `drop.enter` (0xA1): the client drags something over window `id`, at a window-local
+/// position, offering it in `mimes` (clipboard types).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropEnter {
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub mimes: Vec<String>,
 }
 
 /// `notification` (0x31).
@@ -306,6 +615,13 @@ pub struct ClientHello {
     pub devices: bool,
     /// The client places pictures by toolkit scroll reports (`scroll.tree`). Sent only when true.
     pub scroll: bool,
+    /// MIME types the client takes from the computer's clipboard besides text; absent
+    /// means text only.
+    pub clipboard_types: Option<Vec<String>>,
+    /// The client renders byte-perfect `surface.batch` and `surface.reset` messages. Sent only when true.
+    pub atlas: bool,
+    /// The client renders retained vector and glyph `scene.font` and `scene.commit` messages. Sent only when true.
+    pub scene: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -562,6 +878,12 @@ pub enum Message {
     },
     TextInput(TextInputState),
     ScrollTree(ScrollTree),
+    SurfaceBatch(SurfaceBatch),
+    SurfaceReset {
+        epoch: u64,
+    },
+    SceneFont(SceneFont),
+    SceneCommit(SceneCommit),
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
@@ -615,6 +937,26 @@ pub enum Message {
         id: u64,
         reason: Option<String>,
     },
+    /// Whether the application under a drop from the client accepts it; absent when it
+    /// answers only once it has the content, on the drop.
+    DropStatus {
+        accepted: Option<bool>,
+    },
+    /// A drop from the client finished: the application took it, or why not.
+    DropResult {
+        ok: bool,
+        reason: Option<DropFailure>,
+    },
+    /// An application started dragging something the client could take.
+    DragStart {
+        mimes: Vec<String>,
+    },
+    /// The application's drag ended; `taken` if the client took it.
+    DragEnd {
+        taken: bool,
+    },
+    /// What the client took from an application's drag.
+    DragData(Clipboard),
     Pong {
         t_us: u64,
     },
@@ -648,6 +990,7 @@ pub enum Message {
     Key(Key),
     Text(Text),
     ScrollTarget(ScrollTarget),
+    SceneScroll(SceneScroll),
     ClientClipboard(Clipboard),
     /// The complete set of devices the phone offers now.
     Devices {
@@ -669,6 +1012,18 @@ pub enum Message {
         device: String,
         reason: String,
     },
+    DropEnter(DropEnter),
+    DropMotion {
+        id: u64,
+        x: f64,
+        y: f64,
+    },
+    /// The client's drag left the computer's windows, or was cancelled.
+    DropLeave,
+    /// The client dropped: the content, as a clipboard copy carries it.
+    DropPerform(Clipboard),
+    /// The client takes the application's drag in progress.
+    DragTake,
     /// The client has the video frame `seq` queued for display.
     VideoAck {
         id: u64,
@@ -720,9 +1075,18 @@ pub mod type_id {
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
-    pub const SCROLL_TREE: u8 = 0x23;
+    pub const SCROLL_TREE: u8 = 0x27;
+    pub const SURFACE_BATCH: u8 = 0x23;
+    pub const SURFACE_RESET: u8 = 0x24;
+    pub const SCENE_FONT: u8 = 0x25;
+    pub const SCENE_COMMIT: u8 = 0x26;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
+    pub const DROP_STATUS: u8 = 0x32;
+    pub const DROP_RESULT: u8 = 0x33;
+    pub const DRAG_START: u8 = 0x34;
+    pub const DRAG_END: u8 = 0x35;
+    pub const DRAG_DATA: u8 = 0x36;
     pub const AUDIO: u8 = 0x40;
     pub const DEVICE_STATUS: u8 = 0x60;
     pub const DEVICE_OPEN: u8 = 0x61;
@@ -749,6 +1113,7 @@ pub mod type_id {
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
+    pub const SCENE_SCROLL: u8 = 0x9A;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const DEVICES: u8 = 0xB0;
     pub const DEVICE_CAMERA: u8 = 0xB1;
@@ -759,6 +1124,11 @@ pub mod type_id {
     pub const DEVICE_BUTTON: u8 = 0xB6;
     pub const DEVICE_BATTERY: u8 = 0xB7;
     pub const DEVICE_ERROR: u8 = 0xB8;
+    pub const DROP_ENTER: u8 = 0xA1;
+    pub const DROP_MOTION: u8 = 0xA2;
+    pub const DROP_LEAVE: u8 = 0xA3;
+    pub const DROP_PERFORM: u8 = 0xA4;
+    pub const DRAG_TAKE: u8 = 0xA5;
     pub const PING: u8 = 0xFE;
 }
 
@@ -788,11 +1158,29 @@ fn codecs_from(f: &Fields<'_>, key: &'static str) -> Result<Vec<Codec>, Protocol
 }
 
 fn clipboard_value(c: &Clipboard) -> Value {
-    MapBuilder::new().put("mime", c.mime.as_str()).put("data", c.data.clone()).build()
+    let entry = |e: &ClipboardEntry| MapBuilder::new().put("mime", e.mime.as_str()).put("data", e.data.clone()).build();
+    MapBuilder::new()
+        .put("mime", c.mime.as_str())
+        .put("data", c.data.clone())
+        .opt(
+            "alternatives",
+            (!c.alternatives.is_empty()).then(|| Value::Array(c.alternatives.iter().map(entry).collect())),
+        )
+        .build()
 }
 
 fn clipboard_from(f: &Fields<'_>) -> Result<Clipboard, ProtocolError> {
-    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")? })
+    let alternatives = match f.opt("alternatives", fields::as_array)? {
+        None => Vec::new(),
+        Some(entries) => entries
+            .iter()
+            .map(|e| {
+                let e = Fields::new("clipboard.alternatives", e)?;
+                Ok(ClipboardEntry { mime: e.string("mime")?, data: e.bytes("data")? })
+            })
+            .collect::<Result<_, ProtocolError>>()?,
+    };
+    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")?, alternatives })
 }
 
 impl Message {
@@ -809,8 +1197,17 @@ impl Message {
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
             Message::ScrollTree(_) => SCROLL_TREE,
+            Message::SurfaceBatch(_) => SURFACE_BATCH,
+            Message::SurfaceReset { .. } => SURFACE_RESET,
+            Message::SceneFont(_) => SCENE_FONT,
+            Message::SceneCommit(_) => SCENE_COMMIT,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
+            Message::DropStatus { .. } => DROP_STATUS,
+            Message::DropResult { .. } => DROP_RESULT,
+            Message::DragStart { .. } => DRAG_START,
+            Message::DragEnd { .. } => DRAG_END,
+            Message::DragData(_) => DRAG_DATA,
             Message::Audio(_) => AUDIO,
             Message::DeviceStatus { .. } => DEVICE_STATUS,
             Message::DeviceOpen { .. } => DEVICE_OPEN,
@@ -854,7 +1251,13 @@ impl Message {
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
             Message::ScrollTarget(_) => SCROLL_TARGET,
+            Message::SceneScroll(_) => SCENE_SCROLL,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
+            Message::DropEnter(_) => DROP_ENTER,
+            Message::DropMotion { .. } => DROP_MOTION,
+            Message::DropLeave => DROP_LEAVE,
+            Message::DropPerform(_) => DROP_PERFORM,
+            Message::DragTake => DRAG_TAKE,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
             Message::GpuAck { .. } => GPU_ACK,
@@ -1042,7 +1445,77 @@ impl Message {
                 .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
                 .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
                 .build(),
-            Message::ServerClipboard(c) | Message::ClientClipboard(c) => clipboard_value(c),
+            Message::SurfaceBatch(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("pts_us", m.pts_us)
+                .put("size", m.size)
+                .put("rect", m.rect)
+                .opt("keyframe", m.keyframe.then_some(true))
+                .opt(
+                    "copies",
+                    (!m.copies.is_empty())
+                        .then(|| Value::Array(m.copies.iter().map(|c| c.to_value()).collect())),
+                )
+                .opt(
+                    "fills",
+                    (!m.fills.is_empty())
+                        .then(|| Value::Array(m.fills.iter().map(|f| f.to_value()).collect())),
+                )
+                .opt(
+                    "refs",
+                    (!m.refs.is_empty())
+                        .then(|| Value::Array(m.refs.iter().map(|r| r.to_value()).collect())),
+                )
+                .opt(
+                    "tiles",
+                    (!m.tiles.is_empty())
+                        .then(|| Value::Array(m.tiles.iter().map(SurfaceTile::to_value).collect())),
+                )
+                .build(),
+            Message::SurfaceReset { epoch } => MapBuilder::new().put("epoch", *epoch).build(),
+            Message::SceneFont(m) => MapBuilder::new()
+                .put("font", m.font)
+                .put("index", m.index)
+                .opt("family", m.family.clone())
+                .put("data", m.data.clone())
+                .build(),
+            Message::SceneCommit(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("seq", m.seq)
+                .put("pts_us", m.pts_us)
+                .put("root", m.root)
+                .opt("reset", m.reset.then_some(true))
+                .opt(
+                    "nodes",
+                    (!m.nodes.is_empty())
+                        .then(|| Value::Array(m.nodes.iter().map(SceneNode::to_value).collect())),
+                )
+                .opt(
+                    "remove",
+                    (!m.remove.is_empty())
+                        .then(|| Value::Array(m.remove.iter().map(|&id| Value::from(id)).collect())),
+                )
+                .build(),
+            Message::SceneScroll(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("node", m.node)
+                .put("sx", m.sx)
+                .put("sy", m.sy)
+                .build(),
+            Message::ServerClipboard(c)
+            | Message::ClientClipboard(c)
+            | Message::DragData(c)
+            | Message::DropPerform(c) => clipboard_value(c),
+            Message::DropStatus { accepted } => MapBuilder::new().opt("accepted", *accepted).build(),
+            Message::DropResult { ok, reason } => MapBuilder::new().put("ok", *ok).opt("reason", *reason).build(),
+            Message::DragStart { mimes } => MapBuilder::new().put("mimes", mimes.clone()).build(),
+            Message::DragEnd { taken } => MapBuilder::new().put("taken", *taken).build(),
+            Message::DropEnter(m) => {
+                MapBuilder::new().put("id", m.id).put("x", m.x).put("y", m.y).put("mimes", m.mimes.clone()).build()
+            }
+            Message::DropMotion { id, x, y } => MapBuilder::new().put("id", *id).put("x", *x).put("y", *y).build(),
+            Message::DropLeave | Message::DragTake => MapBuilder::new().build(),
             Message::Notification(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("app", m.app.as_str())
@@ -1089,6 +1562,9 @@ impl Message {
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
                 .opt("scroll", m.scroll.then_some(true))
+                .opt("clipboard_types", m.clipboard_types.clone())
+                .opt("atlas", m.atlas.then_some(true))
+                .opt("scene", m.scene.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1255,7 +1731,66 @@ impl Message {
                     }
                 },
             }),
+            SURFACE_BATCH => Message::SurfaceBatch(SurfaceBatch {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                pts_us: f.u64("pts_us")?,
+                size: f.size("size")?,
+                rect: f.rect("rect")?,
+                keyframe: f.opt_bool("keyframe")?.unwrap_or(false),
+                copies: f
+                    .opt("copies", |v| fields::as_array(v)?.iter().map(SurfaceCopy::from_value).collect())?
+                    .unwrap_or_default(),
+                fills: f
+                    .opt("fills", |v| fields::as_array(v)?.iter().map(SurfaceFill::from_value).collect())?
+                    .unwrap_or_default(),
+                refs: f
+                    .opt("refs", |v| fields::as_array(v)?.iter().map(SurfaceTileRef::from_value).collect())?
+                    .unwrap_or_default(),
+                tiles: match f.opt("tiles", fields::as_array)? {
+                    None => Vec::new(),
+                    Some(tiles) => tiles.iter().map(SurfaceTile::from_value).collect::<Result<_, ProtocolError>>()?,
+                },
+            }),
+            SURFACE_RESET => Message::SurfaceReset { epoch: f.u64("epoch")? },
+            SCENE_FONT => Message::SceneFont(SceneFont {
+                font: f.u64("font")?,
+                index: f.u32("index")?,
+                family: f.opt_string("family")?,
+                data: f.bytes("data")?,
+            }),
+            SCENE_COMMIT => Message::SceneCommit(SceneCommit {
+                id: f.u64("id")?,
+                seq: f.u64("seq")?,
+                pts_us: f.u64("pts_us")?,
+                root: f.u64("root")?,
+                reset: f.opt_bool("reset")?.unwrap_or(false),
+                nodes: match f.opt("nodes", fields::as_array)? {
+                    None => Vec::new(),
+                    Some(nodes) => nodes.iter().map(SceneNode::from_value).collect::<Result<_, ProtocolError>>()?,
+                },
+                remove: f
+                    .opt("remove", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?
+                    .unwrap_or_default(),
+            }),
+            SCENE_SCROLL => Message::SceneScroll(SceneScroll {
+                id: f.u64("id")?,
+                node: f.u64("node")?,
+                sx: f.f64("sx")?,
+                sy: f.f64("sy")?,
+            }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
+            DROP_STATUS => Message::DropStatus { accepted: f.opt_bool("accepted")? },
+            DROP_RESULT => Message::DropResult {
+                ok: f.bool("ok")?,
+                reason: f.opt("reason", |v| match v {
+                    Value::Text(s) => DropFailure::parse(s),
+                    _ => None,
+                })?,
+            },
+            DRAG_START => Message::DragStart { mimes: f.strings("mimes")? },
+            DRAG_END => Message::DragEnd { taken: f.bool("taken")? },
+            DRAG_DATA => Message::DragData(clipboard_from(&f)?),
             NOTIFICATION => Message::Notification(Notification {
                 id: f.u64("id")?,
                 app: f.string("app")?,
@@ -1366,6 +1901,12 @@ impl Message {
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
                 scroll: f.opt_bool("scroll")?.unwrap_or(false),
+                clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
+                    None => None,
+                    Some(_) => Some(f.strings("clipboard_types")?),
+                },
+                atlas: f.opt_bool("atlas")?.unwrap_or(false),
+                scene: f.opt_bool("scene")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1438,6 +1979,16 @@ impl Message {
                 delete_after: f.opt_u32("delete_after")?,
             }),
             CLIENT_CLIPBOARD => Message::ClientClipboard(clipboard_from(&f)?),
+            DROP_ENTER => Message::DropEnter(DropEnter {
+                id: f.u64("id")?,
+                x: f.f64("x")?,
+                y: f.f64("y")?,
+                mimes: f.strings("mimes")?,
+            }),
+            DROP_MOTION => Message::DropMotion { id: f.u64("id")?, x: f.f64("x")?, y: f.f64("y")? },
+            DROP_LEAVE => Message::DropLeave,
+            DROP_PERFORM => Message::DropPerform(clipboard_from(&f)?),
+            DRAG_TAKE => Message::DragTake,
             PING => Message::Ping { t_us: f.u64("t_us")? },
             DEVICE_STATUS => Message::DeviceStatus { devices: devices::status_from(&f)? },
             DEVICE_OPEN => Message::DeviceOpen { device: f.string("device")?, rate_hz: f.opt_f64("rate_hz")? },
@@ -1493,8 +2044,23 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
         SCROLL_TREE => "scroll.tree",
+        SURFACE_BATCH => "surface.batch",
+        SURFACE_RESET => "surface.reset",
+        SCENE_FONT => "scene.font",
+        SCENE_COMMIT => "scene.commit",
+        SCENE_SCROLL => "scene.scroll",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",
+        DROP_STATUS => "drop.status",
+        DROP_RESULT => "drop.result",
+        DRAG_START => "drag.start",
+        DRAG_END => "drag.end",
+        DRAG_DATA => "drag.data",
+        DROP_ENTER => "drop.enter",
+        DROP_MOTION => "drop.motion",
+        DROP_LEAVE => "drop.leave",
+        DROP_PERFORM => "drop.perform",
+        DRAG_TAKE => "drag.take",
         AUDIO => "audio",
         PONG => "pong",
         BYE => "bye",

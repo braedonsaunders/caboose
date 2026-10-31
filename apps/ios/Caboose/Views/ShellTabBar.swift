@@ -28,13 +28,15 @@ struct ShellTabChrome: ViewModifier {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.trailing, sidebar && !immersive ? 76 : 0)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if cluster && !hidden {
+                    if cluster && (tab == .desktop ? !immersive : !hidden) {
                         HStack(alignment: .bottom, spacing: 10) {
                             if tab == .home { HomeAskField().frame(maxWidth: .infinity) }
                             else { Spacer(minLength: 0) }
                             ShellTabButtons(axis: .horizontal)
                         }
                         .padding(.horizontal, 16).padding(.bottom, 6)
+                        .opacity(hidden ? 0 : 1)
+                        .allowsHitTesting(!hidden)
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
@@ -76,6 +78,7 @@ struct ShellTabChrome: ViewModifier {
                 .background { if sidebar { ShellBackground() } }
                 .toolbarVisibility(panel || placement != .system || immersive ? .hidden : .visible, for: .tabBar)
         }
+        .ignoresSafeArea(.keyboard, edges: tab == .desktop ? .bottom : [])
     }
 
     /// The keyboard and Laptop's own navigation replace the bottom cluster.
@@ -179,6 +182,8 @@ private struct ClusterGlass: ViewModifier {
 final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
     private(set) var visible = false
+    /// How much of the shell's window the software keyboard covers, in points; 0 when hidden.
+    private(set) var height: CGFloat = 0
     @ObservationIgnored weak var window: UIWindow?
 
     private init() {
@@ -190,7 +195,9 @@ final class SoftwareKeyboard {
                 let screen = note.object as? UIScreen
                 MainActor.assumeIsolated {
                     let keyboard = SoftwareKeyboard.shared
-                    keyboard.visible = !hiding && keyboard.covered(by: frame, on: screen) > 120
+                    let covered = hiding ? 0 : keyboard.covered(by: frame, on: screen)
+                    keyboard.visible = covered > 120
+                    keyboard.height = keyboard.visible ? covered : 0
                 }
             }
         }

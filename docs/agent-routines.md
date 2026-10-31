@@ -167,7 +167,10 @@ owner's request to a schedule. It asks for missing timezone information. These t
 cannot change a profile's provider, approvals, or unrelated capabilities.
 
 The host enables the tools only for a task with a host-owned, durable task/profile
-binding and a configured dispatcher. The guest stdio server writes bounded UUID
+binding and a configured dispatcher. Ordinary chats have one through their agent's default
+identity ([architecture](architecture.md#persistent-agent-profiles)). A scheduled run's result
+reaches the owner as that task's `agent.task.finished` event and its "Task finished" or "Task
+failed" push notification. The guest stdio server writes bounded UUID
 requests to the task's mailbox; the host polls tracked running tasks independently of
 turn delivery, verifies the current task and turn, and supplies the bound profile to
 its dispatcher. It writes the result to the mailbox over the guest command channel.
