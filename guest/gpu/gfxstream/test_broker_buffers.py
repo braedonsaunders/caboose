@@ -103,7 +103,7 @@ class BrokerBufferTests(unittest.IsolatedAsyncioTestCase):
             bind, = h.sent()
             self.assertEqual((bind.kind, bind.process), (Kind.SURFACE_BIND, 3))
             identity = bind.payload[:40]
-            self.assertEqual(struct.unpack_from('<QQII', bind.payload, 40), (9, IMAGE.instance, 640, 480))
+            self.assertEqual(struct.unpack_from("<QQII", bind.payload, 40), (9, IMAGE.instance, 0, 0))
             await h.deliver(Kind.SURFACE_BOUND, identity + struct.pack('<iIiI', 0, 1, 0, 0))
             await settle()
             present, = h.sent()

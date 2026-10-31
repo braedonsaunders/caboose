@@ -12,7 +12,7 @@ namespace caboose::gpuv2 {
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
     VkFence copyFence, VkCommandBuffer commandBuffer, PresentationProviderResult* provider,
-    VkImage capture) {
+    VkImage capture, const VkExtent2D* destinationExtent) {
     if (provider) *provider = {};
     auto* vk = objects.vk;
     if (!vk || !objects.device || !objects.queue || !objects.image || !objects.queueMutex ||
@@ -63,8 +63,23 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         region.srcSubresource.layerCount = 1;
         region.dstSubresource = region.srcSubresource;
         region.extent = objects.extent;
+        VkImageCopy shown = region;
+        if (destinationExtent) {
+            shown.extent.width = std::min(objects.extent.width, destinationExtent->width);
+            shown.extent.height = std::min(objects.extent.height, destinationExtent->height);
+            if (shown.extent.width < destinationExtent->width || shown.extent.height < destinationExtent->height) {
+                if (!vk->vkCmdClearColorImage) return VK_ERROR_INITIALIZATION_FAILED;
+                const VkClearColorValue black{};
+                vk->vkCmdClearColorImage(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                         &black, 1, &range);
+                VkMemoryBarrier cleared{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+                vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &cleared, 0, nullptr, 0, nullptr);
+            }
+        }
         vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &shown);
         if (capture) {
             vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 capture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);

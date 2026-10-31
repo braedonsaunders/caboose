@@ -85,7 +85,9 @@ it asks the compositor for a grant with a bind in the `BUFFER_WINDOW` namespace 
 whose object is the window ID. The compositor grants only a toplevel it has an
 unreleased buffer present for, to a live process of its own user. The broker then
 presents the registered image through the GPU stream's ordinary `SURFACE_BIND` and plain
-`PRESENT` (no waits, `GENERAL` layout), one frame in flight per window. A commit that
+`PRESENT` (no waits, `GENERAL` layout), one frame in flight per window. The bind names no
+extent, so the phone binds the window at its view's size; a buffer of another size, such
+as one laid out with overscan, shows its top-left part. A commit that
 arrives while a frame is in flight waits; a newer one replaces it, and the replaced buffer
 is released unshown. The phone's source release releases the shown buffer. A present the
 phone refuses because the window's previous frame is still on screen (`EBUSY`) is offered

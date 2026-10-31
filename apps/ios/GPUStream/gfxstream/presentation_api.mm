@@ -600,8 +600,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
     caboose_gpu_surface* s, const caboose_gpu_present_info* p,
     caboose_gpu_present_callback callback, void* context) {
     if (!s || !p || !callback || !same(s->bind.identity, p->identity) || !p->present_serial ||
-        !p->boxed_device || !p->boxed_queue || !p->boxed_image ||
-        p->width != s->bind.width || p->height != s->bind.height ||
+        !p->boxed_device || !p->boxed_queue || !p->boxed_image || !p->width || !p->height ||
         p->vk_image_layout != VK_IMAGE_LAYOUT_GENERAL ||
         p->wait_semaphore_count > CABOOSE_GPU_PRESENT_MAX_WAIT_SEMAPHORES ||
         (p->wait_semaphore_count && !p->boxed_wait_semaphores)) return rejected(EINVAL);
@@ -655,8 +654,10 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
         s->lastSerial = p->present_serial;
         if (index < s->images.size()) {
             VkImage capture = reserveCapture(*s, *frame->source, frame->serial);
+            // A source of another size (a compositor buffer with overscan) shows its top-left part.
+            const VkExtent2D shown{s->bind.width, s->bind.height};
             r = submitPresentationCopy(*frame->source, s->images[index], frame->acquired,
-                                       frame->ready, frame->copyFence, frame->command, &provider, capture);
+                                       frame->ready, frame->copyFence, frame->command, &provider, capture, &shown);
             frame->submitted = r == VK_SUCCESS;
             if (capture) {
                 if (frame->submitted) frame->captured = true;
