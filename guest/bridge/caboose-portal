@@ -77,7 +77,7 @@ class Portal:
         return {
             'org.freedesktop.appearance': core.appearance_settings(self.look),
             'org.gnome.desktop.interface': core.interface_settings(self.look, available),
-            'org.gnome.desktop.wm.preferences': {'button-layout': ('s', 'close,minimize,maximize:')},
+            'org.gnome.desktop.wm.preferences': {'button-layout': ('s', core.BUTTON_LAYOUT)},
         }
 
     def appearance_changed(self):

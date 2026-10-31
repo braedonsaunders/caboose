@@ -83,7 +83,7 @@ gtk-theme-name=WhiteSur-Dark
 gtk-icon-theme-name=WhiteSur-dark
 gtk-cursor-theme-name=WhiteSur-cursors
 gtk-font-name=Inter 10
-gtk-decoration-layout=close,minimize,maximize:
+gtk-decoration-layout=:
 gtk-application-prefer-dark-theme=1
 GTK
 done

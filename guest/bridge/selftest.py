@@ -226,6 +226,7 @@ class Appearance(unittest.TestCase):
         self.assertIn('gtk-font-name=Inter 10\n', updated)
         self.assertIn('gtk-application-prefer-dark-theme=0\n', updated)
         self.assertIn('gtk-enable-animations=0\n', updated)
+        self.assertIn('gtk-decoration-layout=:\n', updated)
         self.assertEqual(updated.count('[Settings]'), 1)
         self.assertIn('gtk-theme-name=', core.settings_ini(None, core.check_appearance(self.look), set()))
 

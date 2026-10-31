@@ -380,10 +380,17 @@ def appearance_settings(look):
     }
 
 
+# Caboose draws every window's controls, so toolkits draw none: GTK 3 and 4 headerbars,
+# libadwaita, and Chromium's and Electron's own caption buttons (window controls overlay)
+# follow this layout. ":" is no buttons on either side.
+BUTTON_LAYOUT = ':'
+
+
 def settings_ini(existing, look, available):
-    """A GTK settings.ini with the theme keys for `look`, other keys kept."""
+    """A GTK settings.ini with the theme keys for `look` and no window buttons, other keys kept."""
     t = themes(look, available)
     wanted = {
+        'gtk-decoration-layout': BUTTON_LAYOUT,
         'gtk-theme-name': t['gtk'],
         'gtk-icon-theme-name': t['icons'],
         'gtk-application-prefer-dark-theme': '1' if look['colorScheme'] == 'dark' else '0',

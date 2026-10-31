@@ -1908,7 +1908,10 @@ the stream and never decodes it.
 The display advertises both xdg-decoration and the legacy KDE server-decoration
 protocol used by GTK 3, with server-side decorations preferred. Ordinary GTK windows
 therefore omit their automatic titlebars. `GTK_CSD=0` applies the same default to
-GTK on X11; explicit application headerbars and menus remain application content.
+GTK on X11; explicit application headerbars and menus remain application content. The
+window-button layout is empty in the portal, GSettings and GTK settings, so headerbars,
+libadwaita, Firefox and Chromium/Electron caption buttons draw no window controls
+(display.md, "Hosts and encoders").
 
 ## 5. Agents
 
