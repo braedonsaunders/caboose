@@ -315,13 +315,13 @@ struct OnScreenGamepadTests {
         jump[.south] = 1
         jump[.up] = 1
         jump[.leftX] = -0.9
-        #expect(Pad.keys(for: jump, settings: settings) == ["space", "Up", "Left"])
+        #expect(Pad.keys(for: jump, settings: settings) == ["space+Return", "Up", "Left"])
         let pressed = Pad.keyChanges(from: GameGamepadState(), to: jump, settings: settings)
         #expect(pressed.allSatisfy { $0.pressed } && pressed.count == 3)
         var next = jump
         next[.south] = 0
         let changes = Pad.keyChanges(from: jump, to: next, settings: settings)
-        #expect(changes.map { $0.name } == ["space"] && changes.map { $0.pressed } == [false])
+        #expect(changes.map { $0.name } == ["space+Return"] && changes.map { $0.pressed } == [false])
         let released = Pad.keyChanges(from: next, to: GameGamepadState(), settings: settings)
         #expect(Set(released.map { $0.name }) == ["Up", "Left"] && released.allSatisfy { !$0.pressed })
         // The right stick is W A S D by default; None presses nothing.
@@ -345,11 +345,15 @@ struct OnScreenGamepadTests {
 
     @Test func everyKeyChoiceIsAKeystroke() {
         for choice in Pad.keyChoices where !choice.name.isEmpty {
-            #expect(Pad.stroke(for: choice.name) != nil, "\(choice.name)")
+            #expect(!Pad.strokes(for: choice.name).isEmpty, "\(choice.name)")
         }
-        for key in Pad.defaultKeys.values { #expect(Pad.stroke(for: key) != nil, "\(key)") }
+        for key in Pad.defaultKeys.values { #expect(!Pad.strokes(for: key).isEmpty, "\(key)") }
         #expect(Pad.stroke(for: "space")?.keyval == 0x20)
         #expect(Pad.stroke(for: "nonsense") == nil)
+        // A jumps and confirms: space, then Return, pressed together.
+        #expect(Pad.strokes(for: "space+Return").map(\.keyval) == [0x20, 0xFF0D])
+        #expect(Pad.strokes(for: "Return+nonsense").isEmpty)
+        #expect(Pad.strokes(for: "Return+").isEmpty)
     }
 
     // MARK: Settings
