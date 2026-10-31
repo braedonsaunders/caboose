@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Testing
 @testable import CabooseKit
 
@@ -42,7 +43,35 @@ import Testing
         }
     }
 
-    enum Method: String, CaseIterable { case finger, nearest, aim, magnify }
+    enum Method: String, CaseIterable { case finger, nearest, aim, magnify, picture }
+
+    /// A fixture's picture as RGBA rows, for aiming without an accessibility tree.
+    struct Picture {
+        var bytes: [UInt8]
+        var width: Int, height: Int
+        func targets(around point: CGPoint, radius: Int) -> [TouchTarget] {
+            bytes.withUnsafeBytes {
+                PictureTargets.find(in: $0, width: width, height: height, bytesPerRow: width * 4, around: point, radius: radius)
+            }
+        }
+    }
+
+    static func picture(_ app: String) -> Picture? {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("Fixtures/touch-targets/\(app).png")
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let (w, h) = (image.width, image.height)
+        var bytes = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return drawn ? Picture(bytes: bytes, width: w, height: h) : nil
+    }
 
     /// How much an ambiguous tap's second look magnifies.
     static let magnification = 3.0
@@ -78,7 +107,7 @@ import Testing
         switch method {
         case .finger: return touch
         case .nearest: return nearest(touch, spread: spread, among: targets)
-        case .aim, .magnify: return TouchAim.choose(touch, spread: spread, among: targets, backgroundSpan: background)?.point ?? touch
+        case .aim, .magnify, .picture: return TouchAim.choose(touch, spread: spread, among: targets, backgroundSpan: background)?.point ?? touch
         }
     }
 
@@ -90,6 +119,7 @@ import Testing
     /// at the middle of a small control), the landing error Gaussian with `fingerMM`.
     static func run(_ fixture: Fixture, method: Method, pointsPerPixel: Double, fingerMM: Double,
                     modelMM: Double = 1.2, background: CGFloat = TouchAim.backgroundSpan, confidence: Double = 0.75, taps: Int = 60,
+                    picture: Picture? = nil,
                     record: ((Truth, CGPoint) -> Void)? = nil) -> Score {
         let targets = fixture.provided.compactMap(TouchTarget.init(wire:))
         let sigma = fingerMM * pointsPerMM / pointsPerPixel
@@ -103,6 +133,10 @@ import Testing
                                   y: rect.midY + random.gaussian() * rect.height * 0.12)
                 let touch = CGPoint(x: aim.x + random.gaussian() * sigma, y: aim.y + random.gaussian() * sigma)
                 var pressed = press(method, touch, spread: spread, targets, background: background)
+                if method == .picture {
+                    let seen = picture?.targets(around: touch, radius: Int(3 * spread) + 4) ?? []
+                    pressed = TouchAim.choose(touch, spread: spread, among: seen, backgroundSpan: background)?.point ?? touch
+                }
                 if method == .magnify,
                    TouchAim.read(touch, spread: spread, among: targets, backgroundSpan: background).isAmbiguous(below: confidence) {
                     // The region shows magnified and the finger taps again, the same finger
@@ -149,7 +183,8 @@ import Testing
         for fixture in fixtures {
             for scale in [0.5, 0.75, 1.0] {
                 for finger in [1.0, 1.5, 2.0] {
-                    let scores = Method.allCases.map { Self.run(fixture, method: $0, pointsPerPixel: scale, fingerMM: finger) }
+                    let picture = Self.picture(fixture.app)
+                    let scores = Method.allCases.map { Self.run(fixture, method: $0, pointsPerPixel: scale, fingerMM: finger, picture: picture) }
                     let cells = scores.map { String(format: "%5.1f%% %4.2fmm   ", $0.rate * 100, $0.error / Double($0.taps)) }
                         + [String(format: "(%.0f%% twice)", Double(scores[3].second) / Double(scores[3].taps) * 100)]
                     lines.append(fixture.app.padding(toLength: 18, withPad: " ", startingAt: 0)

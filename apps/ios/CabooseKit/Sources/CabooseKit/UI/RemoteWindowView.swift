@@ -561,13 +561,38 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// Where a finger at view `point` meant to press, in window pixels: the control it most
     /// likely meant among the window's targets, or the point itself. Content moving under
-    /// the finger (a local scroll) has no current targets.
-    func aimedPixel(_ point: CGPoint) -> CGPoint {
+    /// the finger (a local scroll) has no current targets. With `picture`, a window whose
+    /// tree lists none is aimed among the shapes in its picture; a touch that may start a
+    /// stroke (native touch) is not.
+    func aimedPixel(_ point: CGPoint, picture: Bool = true) -> CGPoint {
         let pixel = pixelPoint(point)
-        guard let window = remoteWindow, !window.touchTargets.isEmpty, bounds.width > 0,
-              !(localScroll?.isMoving ?? false) else { return pixel }
+        guard let window = remoteWindow, bounds.width > 0, !(localScroll?.isMoving ?? false) else { return pixel }
         let spread = Self.fingerSpread * Self.pointsPerMillimetre * window.frame.width / bounds.width
-        return TouchAim.choose(pixel, spread: spread, among: window.touchTargets)?.point ?? pixel
+        let targets = window.touchTargets.isEmpty && picture ? pictureTargets(around: pixel, spread: spread) : window.touchTargets
+        return TouchAim.choose(pixel, spread: spread, among: targets)?.point ?? pixel
+    }
+
+    /// For a window whose accessibility tree lists nothing: the shapes in its picture
+    /// around `pixel` (`PictureTargets`), in window pixels. None for a picture this view does
+    /// not hold (one the phone's GPU draws).
+    private func pictureTargets(around pixel: CGPoint, spread: CGFloat) -> [TouchTarget] {
+        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0,
+              let texture = window.surface.texture, !liveGPUCaptures else { return [] }
+        let sx = CGFloat(texture.width) / window.frame.width, sy = CGFloat(texture.height) / window.frame.height
+        let radius = Int((3 * spread + 4) * max(sx, sy))
+        let center = CGPoint(x: pixel.x * sx, y: pixel.y * sy)
+        guard let region = window.surface.pixels(x: Int(center.x) - radius, y: Int(center.y) - radius,
+                                                 width: 2 * radius, height: 2 * radius) else { return [] }
+        let found = region.bytes.withUnsafeBytes {
+            PictureTargets.find(in: $0, width: region.width, height: region.height, bytesPerRow: region.width * 4,
+                                around: CGPoint(x: center.x - CGFloat(region.x), y: center.y - CGFloat(region.y)), radius: radius)
+        }
+        return found.map { target in
+            var target = target
+            let r = target.rect.offsetBy(dx: CGFloat(region.x), dy: CGFloat(region.y))
+            target.rect = CGRect(x: r.minX / sx, y: r.minY / sy, width: r.width / sx, height: r.height / sy)
+            return target
+        }
     }
 
     private func click(at point: CGPoint, button: Int = 1, aimed: Bool = false) {
@@ -1206,7 +1231,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             if phase == .down {
                 touchAim = nil
                 if touches.count == 1, activeTouches.isEmpty {
-                    let aimed = aimedPixel(touch.location(in: self))
+                    let aimed = aimedPixel(touch.location(in: self), picture: false)
                     if aimed != point { touchAim = (key, CGPoint(x: aimed.x - point.x, y: aimed.y - point.y)) }
                 }
             }

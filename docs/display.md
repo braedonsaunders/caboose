@@ -1012,7 +1012,10 @@ twenty spreads wide. A tap on a pointer window presses the likeliest control: wh
 finger is when it is on it, else the nearest point well inside it; a disabled control keeps
 its touches without taking them. A native touch window's lone finger is aimed at its
 touch-down, and the rest of its contact keeps the same offset. A list can therefore move a
-press by at most a few spreads, no further than an unaided finger misses by.
+press by at most a few spreads, no further than an unaided finger misses by. A tap on a
+pointer window whose tree lists nothing is aimed among the shapes that stand out from the
+background of its picture around the finger (`PictureTargets.swift`), read back from the
+phone's copy of the picture.
 
 `targets`, `targets-empty` and `client-hello-targets` in `guest/display/vectors/` pin the
 messages. [guest/touch-targets](../guest/touch-targets) is the target-acquisition benchmark.

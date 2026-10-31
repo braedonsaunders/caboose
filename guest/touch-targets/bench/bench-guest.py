@@ -24,6 +24,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEBUG_MENU = False
+OUT = "."
 
 APPS = {
     "gtk3-x11": {"kind": "gtk", "env": {"GDK_BACKEND": "x11"}},
@@ -216,6 +217,12 @@ def run_app(name, config, port, reports, scratch, clicks, repeat, targets_log=No
             item["rect"] = [item["rect"][0] - shift[0], item["rect"][1] - shift[1]] + item["rect"][2:]
         result.update(window=window["rect"], surface=window["surface"], x11=bool(window.get("x11")),
                       truth=truth["truth"], truth_shift=shift, truth_size=truth.get("size"))
+        # The window's picture, for aiming without an accessibility tree.
+        answer, png = seat.screenshot(window["id"])
+        if png:
+            with open(os.path.join(OUT, f"{name}.png"), "wb") as handle:
+                handle.write(png)
+            result["shot_rect"] = answer.get("rect")
         timings = {}
         reader = targets.Reader(os.environ.get("DISPLAY", ""))
         wx, wy = window["rect"][0], window["rect"][1]
@@ -347,8 +354,9 @@ def main():
     parser.add_argument("--survey", help="real applications to read, comma-separated (" + ",".join(SURVEY) + ")")
     parser.add_argument("--debug-menu", action="store_true", help="record the seat and a reading with the first menu open")
     args = parser.parse_args()
-    global DEBUG_MENU
+    global DEBUG_MENU, OUT
     DEBUG_MENU = args.debug_menu
+    OUT = args.out
     load_env(args.env)
     sys.path.insert(0, "/opt/caboose")
     os.makedirs(args.out, exist_ok=True)
