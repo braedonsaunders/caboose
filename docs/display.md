@@ -488,9 +488,21 @@ uses it differently:
 - **Learning the window.** The measured placements give the app's latency (the 75th
   percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
   rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
-  finger one to one. If the app stops moving while it is still being driven for twice its
-  latency plus 120 ms, its content has ended there. The phone then resists past that edge as
-  UIScrollView does, and momentum that reaches it springs back.
+  finger one to one. A run in which three pictures in a row stood still while the forwarded
+  scroll kept moving one way was clamped at an end, so its gain is not learned.
+- **Ends of content.** The app may stop moving while it is still being driven, for twice
+  its latency plus 120 ms (or 1.5 times its longest recent stall). If it kept showing
+  pictures, its content has ended there. If it showed nothing at all, the phone sends a
+  24-pixel step back behind its own picture. An app held at its end answers by moving
+  back. A stalled app does not, and it moves on once it recovers. An app silent for a
+  second is taken to end where it stopped. Past a known end, the phone resists as
+  UIScrollView does, and momentum that reaches it springs back. Ends stay known while the
+  captured pictures stay related.
+- **Stalls.** Consecutive pictures must overlap to be measured. The app is therefore
+  driven at most 0.6 of the region per picture interval. Its input is held while it has
+  shown nothing for one and a half picture intervals, so the picture after a stall still
+  overlaps the last one. A picture that cannot be related to earlier ones is placed where
+  the forwarded scroll had taken the app, and the earlier pictures are dropped.
 - **Bounded reveal.** Content no captured picture covers shows in the colour of the
   nearest captured edge. It may fill at most a quarter of the region. Past that, the shown
   position resists and catches up as pictures arrive, never slower than the gesture.
