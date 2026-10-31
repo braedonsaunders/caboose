@@ -483,8 +483,13 @@ public struct LocalScroll {
             holes = ref.holes
         case .reported(let reported, let measured, let bounds, let fixed, let epoch):
             if let last = reportedEpoch, last != epoch {
-                // Content moved in the document: earlier pictures no longer line up by offset.
+                // Content moved in the document (a relayout, scroll anchoring): earlier
+                // pictures no longer line up by offset, and offsets have a new origin. The
+                // content on screen did not move, so the new origin is anchored where the app
+                // was driven to, as for the first report.
                 frames.removeSubrange(..<index)
+                note?("picture \(id): reporter epoch \(last) -> \(epoch), offset \(Int(reported)); re-anchored")
+                reportedBias = nil
             }
             reportedEpoch = epoch
             // A reporter applies scroll exactly, in content pixels.

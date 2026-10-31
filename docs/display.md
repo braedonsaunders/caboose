@@ -863,7 +863,9 @@ that do not move with the content: fixed elements, stuck sticky elements and the
 tag. `applied` is the last `scroll.target` `seq` the application had applied when it drew
 the frame, 0 for none. `epoch` changes when content moved in document coordinates, such
 as an image loading above the viewport or scroll anchoring. Pictures of two epochs are not
-placed against each other by their offsets. `tag` and `tag_rect` are present while the
+placed against each other by their offsets. The phone anchors a new epoch's first picture
+where it had driven the application to, as it does the first report, because the content
+on screen did not move. `tag` and `tag_rect` are present while the
 frame tag is drawn.
 
 **Frame tag.** The application's pictures reach the phone on their own path (a video
