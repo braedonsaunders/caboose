@@ -60,6 +60,9 @@ struct WindowScreen: View {
                 }
                 ConnectionBanner()
             }
+            // The keyboard never resizes the card: its window would be configured to the
+            // shrunken size and back as the keyboard animates. The stage slides instead.
+            .ignoresSafeArea(.keyboard)
             .navigationTitle(model.window(model.presentedWindowID).map(model.windowTitle) ?? "Window")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(removing: .title)

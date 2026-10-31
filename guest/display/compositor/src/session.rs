@@ -43,6 +43,8 @@ pub struct Session {
     pub devices: bool,
     /// The client places pictures by toolkit scroll reports, and this instance takes them.
     pub scroll: bool,
+    /// The client aims touches at `targets`, and this instance has their provider.
+    pub targets: bool,
     /// What the client takes from the clipboard besides text.
     pub clipboard_types: Vec<String>,
     /// The client accepts lossless `surface.batch` and `surface.reset` updates.
@@ -182,6 +184,7 @@ impl State {
         self.scene.reset_session();
         self.session = None;
         self.games_session_changed();
+        self.targets_session_changed();
         self.generation += 1;
         // Input sequence numbers are the client's: the next session starts again from 1.
         for w in self.windows.iter_mut() {
@@ -368,9 +371,22 @@ impl State {
     /// drop from the phone.
     pub fn apply_input(&mut self, message: Message) {
         match message {
-            Message::Touch(t) => self.touch(&t),
-            Message::Pointer(p) if !self.dnd.drops() => self.pointer(&p),
-            Message::Key(k) => self.key(&k),
+            Message::Touch(t) => {
+                self.targets_input(t.id);
+                self.touch(&t)
+            }
+            Message::Pointer(p) if !self.dnd.drops() => {
+                if p.buttons != self.input.pointer_buttons || p.scroll.is_some() {
+                    self.targets_input(p.id);
+                }
+                self.pointer(&p)
+            }
+            Message::Key(k) => {
+                if let Some(&id) = self.focus_history.last() {
+                    self.targets_input(id);
+                }
+                self.key(&k)
+            }
             _ => {}
         }
     }
@@ -436,6 +452,7 @@ impl State {
         let webview = webview_grant.is_some();
         let devices = hello.devices && self.devices.is_some();
         let scroll = hello.scroll && self.scroll.socket.is_some();
+        let targets = hello.targets && std::path::Path::new(crate::targets::PROVIDER).is_file();
         let atlas = hello.atlas;
         let scene = hello.scene;
         self.net.send(
@@ -463,6 +480,9 @@ impl State {
                     }
                     if scroll {
                         supported.push("scroll".into());
+                    }
+                    if targets {
+                        supported.push("targets".into());
                     }
                     if atlas {
                         supported.push("atlas".into());
@@ -502,12 +522,14 @@ impl State {
             scaled_motion: hello.scaled_motion,
             devices,
             scroll,
+            targets,
             clipboard_types,
             atlas,
             scene,
             atlas_cache: Arc::new(Mutex::new(AtlasCacheTracker::new())),
         });
         self.games_session_changed();
+        self.targets_session_changed();
         if audio {
             let (tx, bitrate) = (self.audio_tx.clone(), self.config.audio_bitrate);
             if let Some(a) = self.audio.as_mut() {

@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Caboose targets web</title>
+<style>
+  body { font: 13px/1.35 sans-serif; margin: 8px; color: #222; background: #fff; }
+  .bar { display: flex; gap: 2px; margin: 4px 0; }
+  .bar button { width: 24px; height: 24px; padding: 0; border: 1px solid #bbb; background: #f4f4f4; font-size: 11px; }
+  .flat { display: flex; gap: 4px; margin: 4px 0; }
+  .flat span { width: 16px; height: 16px; background: #678; border-radius: 3px; cursor: pointer; display: inline-block; }
+  .checks label { display: inline-block; width: 70px; }
+  p { max-width: 640px; margin: 6px 0; }
+  table { border-collapse: collapse; margin: 4px 0; }
+  td { border-bottom: 1px solid #eee; padding: 1px 6px; }
+  td button { font-size: 10px; padding: 0 3px; }
+  .pages a { margin: 0 3px; }
+  .tabs span { margin-right: 12px; }
+  .tabs button { border: none; background: none; padding: 0 2px; font-size: 11px; cursor: pointer; }
+</style>
+<div class="bar" id="bar"></div>
+<div class="flat" id="flat"></div>
+<div class="checks" id="checks"></div>
+<div id="radios"></div>
+<p>Inline links in prose are the commonest web target: see <a href="#" data-t="l-intro">the intro</a>, the
+<a href="#" data-t="l-guide">guide</a>, <a href="#" data-t="l-api">API</a> and <a href="#" data-t="l-faq">FAQ</a>, or
+read <a href="#" data-t="l-a">a</a>, <a href="#" data-t="l-b">b</a>, <a href="#" data-t="l-c">c</a> and the
+<a href="#" data-t="l-changelog">changelog</a> before filing <a href="#" data-t="l-issue">an issue</a>.</p>
+<div>
+  <select data-t="select"><option>alpha</option><option>beta</option></select>
+  <input type="number" data-t="number" value="3" style="width: 50px">
+  <input type="text" data-t="text" size="12">
+  <input type="range" data-t="range" style="width: 140px">
+</div>
+<table id="table"></table>
+<div class="pages" id="pages"></div>
+<div class="tabs" id="tabs"></div>
+<script>
+  const make = (parent, tag, name, props = {}) => {
+    const el = document.createElement(tag);
+    Object.assign(el, props);
+    el.dataset.t = name;
+    document.getElementById(parent).appendChild(el);
+    return el;
+  };
+  for (let i = 0; i < 16; i++) make('bar', 'button', `bar-${i}`, { textContent: String.fromCharCode(65 + i), title: `tool ${i}` });
+  for (let i = 0; i < 16; i++) make('flat', 'span', `flat-${i}`, { title: `flat ${i}`, role: 'button' }).setAttribute('role', 'button');
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 8; c++) {
+    const label = document.createElement('label');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.dataset.t = `check-${r}${c}`;
+    label.append(box, ` o${r}${c}`);
+    document.getElementById('checks').appendChild(label);
+  }
+  for (let i = 0; i < 8; i++) {
+    const label = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'r'; radio.dataset.t = `radio-${i}`;
+    label.append(radio, ` r${i} `);
+    document.getElementById('radios').appendChild(label);
+  }
+  const table = document.getElementById('table');
+  for (let i = 0; i < 6; i++) {
+    const row = table.insertRow();
+    const box = document.createElement('input');
+    box.type = 'checkbox'; box.dataset.t = `row-${i}-check`;
+    row.insertCell().appendChild(box);
+    row.insertCell().textContent = `file-${i}.txt`;
+    for (const action of ['edit', 'del']) {
+      const b = document.createElement('button');
+      b.textContent = action; b.dataset.t = `row-${i}-${action}`;
+      row.insertCell().appendChild(b);
+    }
+  }
+  for (let i = 1; i <= 12; i++) make('pages', 'a', `page-${i}`, { textContent: String(i), href: '#' });
+  for (let i = 0; i < 8; i++) {
+    const tab = document.createElement('span');
+    tab.textContent = `tab ${i}`;
+    const close = document.createElement('button');
+    close.textContent = '×'; close.title = `close ${i}`; close.dataset.t = `close-${i}`;
+    tab.appendChild(close);
+    document.getElementById('tabs').appendChild(tab);
+  }
+  const kindOf = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (el.type === 'checkbox' || el.type === 'radio') return 'toggle';
+    if (el.type === 'range') return 'slider';
+    if (tag === 'input') return 'field';
+    return 'button';
+  };
+  document.addEventListener('click', (e) => { if (e.target.closest('a')) e.preventDefault(); }, true);
+  const post = (body) => fetch('/report', { method: 'POST', body: JSON.stringify(body) });
+  // Window-local logical pixels: the viewport's place in the window is the browser's
+  // own chrome above it (none in --app mode without decorations).
+  const origin = () => [(outerWidth - innerWidth) / 2, outerHeight - innerHeight];
+  addEventListener('pointerdown', (e) => {
+    const hit = e.target.closest('[data-t]');
+    const [ox, oy] = origin();
+    post({ press: hit ? hit.dataset.t : null, at: [e.clientX + ox, e.clientY + oy] });
+  }, true);
+  const report = () => {
+    const [ox, oy] = origin();
+    const truth = [...document.querySelectorAll('[data-t]')].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { name: el.dataset.t, kind: kindOf(el), rect: [r.x + ox, r.y + oy, r.width, r.height] };
+    });
+    post({ truth, size: [outerWidth, outerHeight], dpr: devicePixelRatio, origin: [ox, oy] });
+  };
+  addEventListener('load', () => setTimeout(report, 1200));
+</script>

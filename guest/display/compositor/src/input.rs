@@ -10,7 +10,8 @@ use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::WindowSurfaceType;
 use smithay::input::keyboard::{FilterResult, Keycode};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent};
+use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
@@ -40,7 +41,7 @@ pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
 #[derive(Default)]
 pub struct InputState {
     pub keysyms: Keysyms,
-    pointer_buttons: u32,
+    pub(crate) pointer_buttons: u32,
     /// Touch slots that are down, with the window they started on.
     touches: HashMap<u32, u64>,
     /// Keycodes the client holds down.
@@ -88,6 +89,20 @@ impl InputState {
         }
         self.touches.len() != touched
     }
+}
+
+/// Whether the pointer is locked on `surface` (pointer-constraints-v1).
+fn locked(surface: &WlSurface, pointer: &PointerHandle<State>) -> bool {
+    with_pointer_constraint(surface, pointer, |c| c.is_some_and(|c| c.is_active() && matches!(&*c, PointerConstraint::Locked(_))))
+}
+
+/// Puts a constraint the client asked for on `surface` into effect, once the pointer is on it.
+pub(crate) fn activate_constraint(surface: &WlSurface, pointer: &PointerHandle<State>) {
+    with_pointer_constraint(surface, pointer, |c| {
+        if let Some(c) = c.filter(|c| !c.is_active()) {
+            c.activate();
+        }
+    });
 }
 
 impl State {
@@ -147,8 +162,21 @@ impl State {
         let utime = self.now_us();
         let time = (utime / 1000) as u32;
         let serial = self.next_serial();
-        let delta = location - pointer.current_location();
-        pointer.motion(self, under.clone(), &MotionEvent { location, serial, time });
+        // Relative motion the client sent on its own (a stick looking around) leaves the
+        // pointer where it is; a locked pointer (a game's mouse look) never moves.
+        let display_scale =
+            self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
+        let delta = match m.relative {
+            Some([dx, dy]) => Point::from((dx / display_scale, dy / display_scale)),
+            None => location - pointer.current_location(),
+        };
+        let locked = pointer.current_focus().is_some_and(|s| locked(&s, &pointer));
+        if !locked {
+            pointer.motion(self, under.clone(), &MotionEvent { location, serial, time });
+            if let Some(focus) = pointer.current_focus() {
+                activate_constraint(&focus, &pointer);
+            }
+        }
         // Pair the virtual pointer's absolute position with relative motion in the
         // same frame. Xwayland otherwise alternates its absolute and relative X
         // devices for motion and axes, resetting XI2 clients' scroll baselines.
@@ -175,8 +203,6 @@ impl State {
             if let (Some(seq), Some(w)) = (scroll.seq, self.windows.get_mut(m.id)) {
                 w.scroll_seq_delivered = w.scroll_seq_delivered.max(seq);
             }
-            let display_scale =
-                self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
             let (source, axes) = scroll_axes(scroll, display_scale);
             let mut frame = AxisFrame::new(time).source(source);
             for (axis, value, v120) in axes {

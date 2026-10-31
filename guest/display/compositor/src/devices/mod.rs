@@ -137,12 +137,22 @@ const EVDEV_MOTION_HZ: f64 = 100.0;
 enum Linux {
     /// Not created: `Entry::error` says why.
     None,
-    Gamepad(uinput::Device),
+    Gamepad(Pad),
     Buttons(uinput::Device),
     Motion(Motion),
     Battery(uhid::Device),
     Camera(Camera),
     Microphone(Microphone),
+}
+
+/// A gamepad and whether an application holds its node open: the on-screen controller
+/// drives a game that reads it as a controller and presses keys in anything else.
+struct Pad {
+    device: uinput::Device,
+    /// inotify watch on the evdev node.
+    watch: Option<i32>,
+    open: bool,
+    recheck: Option<Instant>,
 }
 
 struct Motion {
@@ -215,6 +225,16 @@ fn kernel_error(what: &str, path: &str, e: &io::Error) -> String {
         Some(libc::EACCES) | Some(libc::EPERM) => format!("No permission to use {path}"),
         _ => format!("{path}: {e}"),
     }
+}
+
+/// An inotify watch for opens and closes of a device's evdev node, once it exists.
+fn watch_node(inotify: Option<&OwnedFd>, device: &mut uinput::Device) -> Option<i32> {
+    let node = device.node()?;
+    let path = std::ffi::CString::new(node.as_os_str().as_encoded_bytes()).ok()?;
+    let mask = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
+    // SAFETY: a valid inotify descriptor and NUL-terminated path.
+    let wd = unsafe { libc::inotify_add_watch(inotify?.as_raw_fd(), path.as_ptr(), mask) };
+    (wd >= 0).then_some(wd)
 }
 
 /// Whether any process has `node` open (by its `/proc/*/fd` links).
@@ -351,7 +371,7 @@ impl State {
         }
         for (i, e) in self.entries.iter().enumerate() {
             match &e.linux {
-                Linux::Gamepad(d) => add(d.raw_fd(), libc::POLLIN, Owner::Uinput(i)),
+                Linux::Gamepad(p) => add(p.device.raw_fd(), libc::POLLIN, Owner::Uinput(i)),
                 Linux::Battery(d) => add(d.raw_fd(), libc::POLLIN, Owner::Uhid(i)),
                 Linux::Motion(m) => {
                     if let Some((d, _)) = &m.sensors {
@@ -379,8 +399,8 @@ impl State {
             }
             Owner::Inotify => self.inotify_ready(),
             Owner::Uinput(i) => {
-                let Some(Entry { linux: Linux::Gamepad(d), device, .. }) = self.entries.get_mut(i) else { return };
-                match d.service() {
+                let Some(Entry { linux: Linux::Gamepad(p), device, .. }) = self.entries.get_mut(i) else { return };
+                match p.device.service() {
                     Ok(Some(r)) => {
                         let message = Message::DeviceRumble(DeviceRumble {
                             device: device.id.clone(),
@@ -479,7 +499,11 @@ impl State {
         let d = entry.device.clone();
         let made = match d.kind {
             DeviceKind::Gamepad => uinput::Device::create(&uinput::Spec::gamepad(&d.name, d.rumble == Some(true)))
-                .map(Linux::Gamepad)
+                .map(|device| {
+                    let mut pad = Pad { device, watch: None, open: false, recheck: None };
+                    pad.watch = watch_node(self.inotify.as_ref(), &mut pad.device);
+                    Linux::Gamepad(pad)
+                })
                 .map_err(|e| kernel_error("uinput", uinput::UINPUT, &e)),
             DeviceKind::Buttons => {
                 let keys = d.keys.clone().unwrap_or_default();
@@ -544,17 +568,11 @@ impl State {
     }
 
     fn watch_motion(&self, motion: &mut Motion) {
-        let (Some(inotify), Some(evdev)) = (&self.inotify, motion.evdev.as_mut()) else { return };
         if motion.watch.is_some() {
             return;
         }
-        let Some(node) = evdev.node() else { return };
-        let Ok(path) = std::ffi::CString::new(node.as_os_str().as_encoded_bytes()) else { return };
-        let mask = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
-        // SAFETY: a valid inotify descriptor and NUL-terminated path.
-        let wd = unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), path.as_ptr(), mask) };
-        if wd >= 0 {
-            motion.watch = Some(wd);
+        if let Some(evdev) = motion.evdev.as_mut() {
+            motion.watch = watch_node(self.inotify.as_ref(), evdev);
         }
     }
 
@@ -610,7 +628,7 @@ impl State {
     }
 
     fn destroy(&mut self, entry: Entry) {
-        if let Linux::Motion(Motion { watch: Some(wd), .. }) = &entry.linux {
+        if let Linux::Motion(Motion { watch: Some(wd), .. }) | Linux::Gamepad(Pad { watch: Some(wd), .. }) = &entry.linux {
             if let Some(i) = &self.inotify {
                 // SAFETY: removing a watch this descriptor added.
                 unsafe { libc::inotify_rm_watch(i.as_raw_fd(), *wd) };
@@ -685,8 +703,8 @@ impl State {
                 }
             }
             Message::DeviceGamepad(m) => {
-                if let Some(Entry { linux: Linux::Gamepad(d), .. }) = self.entry(&m.device).map(|i| &self.entries[i]) {
-                    if let Err(e) = d.emit(&uinput::gamepad_events(m.buttons, &m.axes)) {
+                if let Some(Entry { linux: Linux::Gamepad(p), .. }) = self.entry(&m.device).map(|i| &self.entries[i]) {
+                    if let Err(e) = p.device.emit(&uinput::gamepad_events(m.buttons, &m.axes)) {
                         tracing::debug!("gamepad {}: {e}", m.device);
                     }
                 }
@@ -790,10 +808,10 @@ impl State {
         }
         let due = Instant::now() + RECHECK;
         for e in &mut self.entries {
-            if let Linux::Motion(m) = &mut e.linux {
-                if m.watch.is_some_and(|w| touched.contains(&w)) {
-                    m.recheck = Some(due);
-                }
+            match &mut e.linux {
+                Linux::Motion(m) if m.watch.is_some_and(|w| touched.contains(&w)) => m.recheck = Some(due),
+                Linux::Gamepad(p) if p.watch.is_some_and(|w| touched.contains(&w)) => p.recheck = Some(due),
+                _ => {}
             }
         }
     }
@@ -823,6 +841,7 @@ impl State {
         let want = match &entry.linux {
             Linux::Camera(c) => c.streaming.then_some(None),
             Linux::Microphone(m) => m.recording.then_some(None),
+            Linux::Gamepad(p) => p.open.then_some(None),
             Linux::Motion(m) => {
                 let sensors = m.sensors.as_ref().and_then(|(_, hub)| hub.demand_hz());
                 let evdev = m.evdev_open.then_some(EVDEV_MOTION_HZ);
@@ -849,6 +868,26 @@ impl State {
 
     fn housekeeping(&mut self) {
         let now = Instant::now();
+        // Gamepad readers, the same way: a game opening the on-screen controller's
+        // gamepad is what turns its keys into a controller (docs/devices.md).
+        for i in 0..self.entries.len() {
+            let inotify = self.inotify.as_ref();
+            let Linux::Gamepad(p) = &mut self.entries[i].linux else { continue };
+            if p.watch.is_none() {
+                // The node may have appeared after creation.
+                p.watch = watch_node(inotify, &mut p.device);
+            }
+            let due = p.recheck.is_some_and(|t| t <= now) || (p.open && p.recheck.is_none());
+            if !due {
+                continue;
+            }
+            p.recheck = None;
+            let open = p.device.node().is_some_and(|n| node_open(&n));
+            if open != p.open {
+                p.open = open;
+                self.usage_changed(i);
+            }
+        }
         // Motion readers: rechecked after inotify saw an open or close, and every few
         // seconds while open (closes by exiting processes are seen this way too).
         for i in 0..self.entries.len() {
@@ -894,7 +933,7 @@ impl State {
         let uniq = uniq(&entry.device);
         match &mut entry.linux {
             Linux::None => vec![],
-            Linux::Gamepad(d) | Linux::Buttons(d) => d.node().map(|n| n.display().to_string()).into_iter().collect(),
+            Linux::Gamepad(Pad { device: d, .. }) | Linux::Buttons(d) => d.node().map(|n| n.display().to_string()).into_iter().collect(),
             Linux::Motion(m) => {
                 let mut nodes: Vec<String> =
                     m.evdev.as_mut().and_then(|d| d.node()).map(|n| n.display().to_string()).into_iter().collect();

@@ -24,6 +24,7 @@ mod ibus;
 mod ibus_portal;
 mod input;
 mod keymap;
+mod launch;
 mod motion;
 mod net;
 mod pencil;
@@ -36,6 +37,7 @@ mod scroll;
 mod session;
 mod state;
 mod stream;
+mod targets;
 mod text_input;
 mod transfers;
 mod video;
@@ -301,6 +303,8 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         state.config.socket,
         x_display.map(|n| format!(" DISPLAY=:{n}")).unwrap_or_default()
     );
+    // The touch-target provider runs with the same environment, while a client wants it.
+    state.targets.env = env.clone();
     if let Some((program, args)) = state.config.command.split_first() {
         let mut command = std::process::Command::new(program);
         command.args(args).envs(env);
@@ -429,6 +433,8 @@ fn run(config: Config) -> Result<(), String> {
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
     smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
+    // Games lock the pointer and read relative motion for mouse look (input.rs).
+    smithay::wayland::pointer_constraints::PointerConstraintsState::new::<State>(&dh);
     let mut seat_state = smithay::input::SeatState::new();
     let mut seat = seat_state.new_wl_seat(&dh, "seat0");
     seat.add_keyboard(XkbConfig::default(), 400, 30).map_err(|e| format!("keyboard: {e}"))?;
@@ -581,6 +587,7 @@ fn run(config: Config) -> Result<(), String> {
         scene: Default::default(),
         control: Default::default(),
         scroll: Default::default(),
+        targets: Default::default(),
         clipboard: clipboard::Clipboard::new(clip_tx),
         x11: None,
         dnd: dnd::Dnd::new(xdnd_tx, drag_tx),

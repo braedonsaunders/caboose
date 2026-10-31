@@ -17,24 +17,21 @@ struct DesktopFilesView: View {
         let center = model.desktopFiles
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Menu {
-                    Button("New Folder", systemImage: "folder.badge.plus") {
-                        editing = nil; makingFolder = true; name = ""; editPresented = true
+                Group {
+                    // The desktop draws its menus in the scene, where its pointer reaches them.
+                    if let desktop {
+                        Button { desktop.showDesktopMenu() } label: { desktopLabel }
+                    } else {
+                        Menu {
+                            ForEach(Array(backgroundMenu.enumerated()), id: \.offset) { _, item in
+                                Button(item.title, systemImage: item.systemImage, action: item.perform)
+                            }
+                        } label: { desktopLabel }
                     }
-                    Button("Import File", systemImage: "square.and.arrow.down") { importing = true }
-                    Button("Open Desktop in Files", systemImage: "folder") { Task { await model.openFile("Desktop") } }
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await center.refresh(model: model) } }
-                } label: { Label("Desktop", systemImage: "folder").font(.caption.weight(.semibold)).padding(8) }
+                }
+                .buttonStyle(.plain)
                 .background(.ultraThinMaterial, in: Capsule())
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop?.desktopMenuFrame = $0 }
-                .popover(isPresented: Binding(get: { desktop?.desktopMenuOpen ?? false }, set: { desktop?.desktopMenuOpen = $0 })) {
-                    VStack(spacing: 16) {
-                        Button("Import File") { desktop?.desktopMenuOpen = false; importing = true }
-                        Button("New Folder") { desktop?.desktopMenuOpen = false; editing = nil; makingFolder = true; name = ""; editPresented = true }
-                        Button("Open Desktop in Files") { desktop?.desktopMenuOpen = false; Task { await model.openFile("Desktop") } }
-                        Button("Refresh") { desktop?.desktopMenuOpen = false; Task { await center.refresh(model: model) } }
-                    }.padding().presentationCompactAdaptation(.popover)
-                }
                 if center.busy { ProgressView().tint(.white) }
                 Spacer()
             }
@@ -67,11 +64,9 @@ struct DesktopFilesView: View {
                         }
                         .buttonStyle(.plain)
                         .onDisappear { desktop?.desktopItemFrames[item.id] = nil }
-                        .contextMenu { actions(item) }
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in desktop?.showItemMenu(item.id) })
+                        .contextMenu { if desktop == nil { actions(item) } }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop?.desktopItemFrames[item.id] = $0 }
-                        .popover(isPresented: Binding(get: { desktop?.desktopContextItem == item.id }, set: { if !$0 { desktop?.desktopContextItem = nil } })) {
-                            VStack(alignment: .leading, spacing: 16) { actions(item) }.padding().presentationCompactAdaptation(.popover)
-                        }
                     }
                 }
             }
@@ -83,10 +78,13 @@ struct DesktopFilesView: View {
             desktop?.openDesktopItem = { id in
                 if let item = center.items.first(where: { $0.id == id }) { Task { await center.open(item, model: model) } }
             }
+            desktop?.desktopItemMenu = { id in center.items.first(where: { $0.id == id }).map(itemMenu) ?? [] }
+            desktop?.desktopBackgroundMenu = { backgroundMenu }
             await center.refresh(model: model)
         }
         .onDisappear {
             desktop?.desktopItemFrames.removeAll(); desktop?.openDesktopItem = nil; desktop?.desktopMenuFrame = .zero
+            desktop?.desktopItemMenu = nil; desktop?.desktopBackgroundMenu = nil
         }
         .dropDestination(for: URL.self) { urls, _ in
             let files = urls.filter(\.isFileURL)
@@ -115,18 +113,41 @@ struct DesktopFilesView: View {
         }
     }
 
+    private var desktopLabel: some View {
+        Label("Desktop", systemImage: "folder").font(.caption.weight(.semibold)).padding(8)
+    }
+
     @ViewBuilder private func actions(_ item: DesktopFilesCenter.Item) -> some View {
-        Button("Open", systemImage: "arrow.up.forward.app") {
-            desktop?.desktopContextItem = nil
-            Task { await model.desktopFiles.open(item, model: model) }
+        ForEach(Array(itemMenu(item).enumerated()), id: \.offset) { _, row in
+            Button(row.title, systemImage: row.systemImage, role: row.destructive ? .destructive : nil, action: row.perform)
         }
-        Button("Move or Rename", systemImage: "pencil") {
-            desktop?.desktopContextItem = nil
-            editing = item; name = item.name; folder = "Desktop"; makingFolder = false; editPresented = true
-        }
-        Button("Move to Trash", systemImage: "trash", role: .destructive) {
-            desktop?.desktopContextItem = nil
-            Task { await model.desktopFiles.trash(item, model: model) }
-        }
+    }
+
+    /// An item's actions: its context menu, held or pointed at.
+    private func itemMenu(_ item: DesktopFilesCenter.Item) -> [DesktopModel.MenuItem] {
+        [
+            .init(title: "Open", systemImage: "arrow.up.forward.app") {
+                Task { await model.desktopFiles.open(item, model: model) }
+            },
+            .init(title: "Move or Rename", systemImage: "pencil") {
+                editing = item; name = item.name; folder = "Desktop"; makingFolder = false; editPresented = true
+            },
+            .init(title: "Move to Trash", systemImage: "trash", destructive: true) {
+                Task { await model.desktopFiles.trash(item, model: model) }
+            },
+        ]
+    }
+
+    /// The Desktop menu's actions.
+    private var backgroundMenu: [DesktopModel.MenuItem] {
+        let center = model.desktopFiles
+        return [
+            .init(title: "New Folder", systemImage: "folder.badge.plus") {
+                editing = nil; makingFolder = true; name = ""; editPresented = true
+            },
+            .init(title: "Import File", systemImage: "square.and.arrow.down") { importing = true },
+            .init(title: "Open Desktop in Files", systemImage: "folder") { Task { await model.openFile("Desktop") } },
+            .init(title: "Refresh", systemImage: "arrow.clockwise") { Task { await center.refresh(model: model) } },
+        ]
     }
 }

@@ -11,6 +11,10 @@ import SwiftUI
 /// popup an app opens lands over its tile and nothing overlaps on screen.
 @MainActor @Observable
 final class YardModel {
+    /// The dock's context menus, drawn in the yard (`SceneMenu`), and where each dock icon is
+    /// in the yard's space.
+    let menu = SceneMenu()
+    @ObservationIgnored var dockFrames: [String: CGRect] = [:]
     private(set) var memory = YardMemory()
     var layout: YardLayout { memory.layout }
     private(set) var metrics = YardMetrics(size: CGSize(width: 390, height: 700))

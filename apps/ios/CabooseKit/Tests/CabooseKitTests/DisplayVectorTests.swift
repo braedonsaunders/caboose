@@ -193,6 +193,9 @@ import Testing
         #expect(popup.geometry == CGRect(x: 24, y: -310, width: 480, height: 300))
         #expect(popup.xwayland == false && popup.alpha == false && popup.display == 1)
 
+        guard case .windowCreate(let launched) = try server("window-create-launched").first else { Issue.record("launched"); return }
+        #expect(launched.desktopID == "org.example.Game.desktop" && launched.appID == "game-engine")
+
         guard case .windowCreate(let xterm) = try server("window-create-xwayland").first else { Issue.record("xterm"); return }
         #expect(xterm.xwayland == true && xterm.fullscreen == true && xterm.title == "xterm")
         #expect(xterm.minimumSize == CGSize(width: 10, height: 17) && xterm.maximumSize == CGSize(width: 32767, height: 32767))
@@ -245,6 +248,16 @@ import Testing
         #expect(tree.zoom == 1 && tree.zoomRange == nil)
         guard case .scrollTree(let zoomed) = try server("scroll-tree-zoomed").first else { Issue.record("zoomed"); return }
         #expect(zoomed.zoom == 2.5 && zoomed.zoomRange == 1 ... 5 && zoomed.scrollers[0].offset == CGPoint(x: 1473.75, y: 6031.875))
+    }
+
+    @Test func targets() throws {
+        guard case .targets(let window, let serial, let targets) = try server("targets").first else { Issue.record("targets"); return }
+        #expect(window == 7 && serial == 12 && targets.count == 5)
+        #expect(targets[0] == TouchTarget(rect: CGRect(x: 6, y: 43, width: 36, height: 34), kind: .button))
+        #expect(targets[2].kind == .button && !targets[2].enabled)
+        #expect(targets[4] == TouchTarget(rect: CGRect(x: -4, y: 120, width: 1179, height: 49), kind: .field))
+        guard case .targets(7, 13, let none) = try server("targets-empty").first else { Issue.record("targets-empty"); return }
+        #expect(none.isEmpty)
     }
 
     @Test func devices() throws {
@@ -438,11 +451,15 @@ import Testing
         "pointer-left-drag": .pointer(window: 7, x: 10.5, y: 20, buttons: 1, scroll: nil),
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
+        "pointer-relative": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: nil, relative: CGPoint(x: 12.5, y: -3.25)),
         "scroll-target": .scrollTarget(window: 7, scroller: 0, seq: 18, delta: CGPoint(x: 0, y: 37.25)),
         "scroll-zoom": .scrollZoom(window: 7, seq: 20, scale: 2.5, focus: CGPoint(x: 590, y: 1300)),
         "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], scroll: true),
+        "client-hello-targets": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], audioDecoders: ["opus"], targets: true),
         "request-keyframe": .requestKeyframe(window: 7),
         "text-commit": .text(commit: "naïve café 👍"),
         "text-preedit": .text(commit: nil, preedit: "にほん", cursor: (3, 3)),

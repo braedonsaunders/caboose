@@ -1603,9 +1603,8 @@ final class AppModel {
     }
 
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
-        guard let appClass = window.appClass else { return false }
-        return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass,
-                                         instance: appClass.instance, name: appClass.name)
+        AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass, launchedFrom: window.desktopID,
+                                  instance: window.appClass?.instance, name: window.appClass?.name)
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {
@@ -1613,7 +1612,8 @@ final class AppModel {
         // (Thunar's window is Thunar, not Thunar's Bulk Rename).
         let names = [window.appClass?.instance, window.appClass?.name].compactMap { $0?.lowercased() }
         let exact = apps.first { names.contains($0.id.replacingOccurrences(of: ".desktop", with: "").lowercased()) }
-        if let app = exact ?? apps.first(where: { matches(window, $0) }), let image = appIcons[app.id] { return image }
+        let launched = window.desktopID.flatMap { id in apps.first { $0.id.lowercased() == id.lowercased() } }
+        if let app = launched ?? exact ?? apps.first(where: { matches(window, $0) }), let image = appIcons[app.id] { return image }
         return window.icon.map { UIImage(cgImage: $0) }
     }
 

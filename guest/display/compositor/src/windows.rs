@@ -49,6 +49,8 @@ pub struct Window {
     pub maximized: bool,
     /// The owning process and its ancestors, once looked up (for video binding).
     pub lineage: Option<Vec<u32>>,
+    /// The desktop entry a toplevel's process was launched from, once looked up (launch.rs).
+    pub desktop_id: Option<Option<String>>,
     /// The highest `pointer.scroll.seq` delivered to the window's client, and its value
     /// at the client's latest commit (the picture's `input_seq`).
     pub scroll_seq_delivered: u64,
@@ -346,6 +348,7 @@ impl Windows {
             // keeps the alpha, as lossless tiles (docs/display.md, "Video streams").
             alpha: w.kind == WindowKind::Popup,
             overscan,
+            desktop_id: w.desktop_id.clone().flatten(),
         })
     }
 }
@@ -370,6 +373,7 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         xwayland: changed(&before.xwayland, &now.xwayland),
         alpha: changed(&before.alpha, &now.alpha),
         overscan: if before.overscan != now.overscan { now.overscan.or(Some(proto::Size { w: 0, h: 0 })) } else { None },
+        desktop_id: if before.desktop_id != now.desktop_id { now.desktop_id.clone() } else { None },
     }
 }
 
@@ -393,6 +397,7 @@ mod tests {
             xwayland: false,
             alpha: false,
             overscan: None,
+            desktop_id: None,
         }
     }
 

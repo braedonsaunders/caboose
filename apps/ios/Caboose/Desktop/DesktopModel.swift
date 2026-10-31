@@ -29,7 +29,12 @@ final class DesktopModel {
         /// A window in the open Quick Switch strip, and its Stay Here.
         case switchItem(Int)
         case switchStay
+        /// A row of the open pointer menu, and the rest of the menu.
+        case menuItem(Int)
+        case menuStay
     }
+
+    typealias MenuItem = SceneMenuItem
 
     /// Quick Switch, whose strip this desktop hit-tests while it is open: the touch area and
     /// a TV's trackpad route every touch and click through here.
@@ -146,12 +151,16 @@ final class DesktopModel {
     /// scenes lay them out, so this desktop neither draws, hit-tests nor places them.
     var detached = Set<Int>()
     var dockFrames: [String: CGRect] = [:]
-    var contextDockID: String?
+    /// The context menu of the dock, a desktop item or the Desktop menu, drawn in the space
+    /// the cursor moves in and hit-tested here like the dock (`SceneMenu`).
+    let menu = SceneMenu()
+    /// The rows of each menu, from the views that own their actions.
+    @ObservationIgnored var dockMenu: (@MainActor (String) -> [MenuItem])?
+    @ObservationIgnored var desktopItemMenu: (@MainActor (String) -> [MenuItem])?
+    @ObservationIgnored var desktopBackgroundMenu: (@MainActor () -> [MenuItem])?
     /// Launchpad: every app, in a grid over the desktop.
     var desktopItemFrames: [String: CGRect] = [:]
     var desktopMenuFrame: CGRect = .zero
-    var desktopMenuOpen = false
-    var desktopContextItem: String?
     var openDesktopItem: ((String) -> Void)?
     var launchpadOpen = false
     var launchpadButtonFrame: CGRect = .null
@@ -354,6 +363,7 @@ final class DesktopModel {
     }
 
     func hitTest(_ point: CGPoint, windows: [Int: RemoteWindow]) -> Hit {
+        if let row = menu.hit(point) { return row >= 0 ? .menuItem(row) : .menuStay }
         if quickSwitch?.owner == .desktop {
             if let item = quickSwitch?.item(at: point) { return .switchItem(item) }
             if quickSwitch?.staysAt(point) == true { return .switchStay }
@@ -403,14 +413,52 @@ final class DesktopModel {
             return
         }
         hovered = hitTest(cursor, windows: session.windows)
+        if case .menuItem(let row) = hovered { menu.hovered = row } else { menu.hovered = nil }
         if case .content(let id, let local) = hovered, let window = session.windows[id] {
             session.pointerMove(in: window, to: local)
         }
     }
 
+    /// Opens the context menu at the cursor; false when there is nothing to show.
+    private func openPointerMenu(_ items: [MenuItem]?) -> Bool {
+        menu.show(items ?? [], at: cursor)
+    }
+
+    func closePointerMenu() {
+        menu.close()
+        if case .menuItem = hovered { hovered = .none }
+    }
+
+    /// A dock app's menu, above its icon: what holding it with a finger opens.
+    func showDockMenu(_ id: String) {
+        guard let frame = dockFrames[id], let items = dockMenu?(id) else { return }
+        menu.show(items, at: CGPoint(x: frame.minX, y: frame.minY), above: true)
+    }
+
+    /// A desktop item's menu, over it.
+    func showItemMenu(_ id: String) {
+        guard let frame = desktopItemFrames[id], let items = desktopItemMenu?(id) else { return }
+        menu.show(items, at: CGPoint(x: frame.midX, y: frame.midY))
+    }
+
+    /// The Desktop menu, below its button.
+    func showDesktopMenu() {
+        guard let items = desktopBackgroundMenu?() else { return }
+        menu.show(items, at: CGPoint(x: desktopMenuFrame.minX, y: desktopMenuFrame.maxY + 4))
+    }
+
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
+        // An open menu takes the click: a row chooses, anywhere else closes it, as on a Mac.
+        if menu.isOpen {
+            switch hit {
+            case .menuItem(let index): menu.choose(index)
+            case .menuStay: break
+            default: closePointerMenu()
+            }
+            return
+        }
         switch hit {
         case .switchItem(let id):
             quickSwitch?.choose(id)
@@ -442,19 +490,19 @@ final class DesktopModel {
             return
         }
         switch hit {
-        case .desktopMenu: desktopMenuOpen = true
+        case .desktopMenu: _ = openPointerMenu(desktopBackgroundMenu?())
         case .desktopItem(let id):
-            if button == 3 { desktopContextItem = id } else { openDesktopItem?(id) }
+            if button == 3 { _ = openPointerMenu(desktopItemMenu?(id)) } else { openDesktopItem?(id) }
         case .launchpadButton: launchpadOpen.toggle()
         case .launcher(let id): open(id)
         case .launcherPage: break
         case .dock(let id):
-            if button == 3 { contextDockID = id } else { contextDockID = nil; open(id) }
+            if button == 3 { _ = openPointerMenu(dockMenu?(id)) } else { open(id) }
         case .close(let id): if let window = session.windows[id] { session.closeDiagnosed(window, context: .init(cursor: cursor)) }
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
-        case .switchItem, .switchStay:
+        case .switchItem, .switchStay, .menuItem, .menuStay:
             break
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
@@ -469,6 +517,7 @@ final class DesktopModel {
 
     func beginDrag(session: (any DisplaySession)?) {
         pointerClicks.cancel()
+        closePointerMenu()
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         switch hit {

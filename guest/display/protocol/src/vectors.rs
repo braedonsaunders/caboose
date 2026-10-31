@@ -179,6 +179,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: false,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -195,6 +196,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: false,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -211,6 +213,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         xwayland: true,
         alpha: false,
         overscan: None,
+        desktop_id: None,
     };
 
     vec![
@@ -266,7 +269,18 @@ pub fn all(media: &Media) -> Vec<Vector> {
         ),
         one("window-create-toplevel", "A native Wayland toplevel with an icon and a minimum size.", Message::WindowCreate(terminal.clone())),
         one("window-create-popup", "A popup above its parent; geometry is relative to the parent and may be negative.", Message::WindowCreate(menu)),
-        one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm)),
+        one("window-create-xwayland", "A fullscreen X11 window through Xwayland on the TV display.", Message::WindowCreate(xterm.clone())),
+        one(
+            "window-create-launched",
+            "An X11 window whose process a launch of org.example.Game.desktop started, through a wrapper script that set its own class.",
+            Message::WindowCreate(WindowCreate {
+                id: 13,
+                title: "Game".into(),
+                app_id: "game-engine".into(),
+                desktop_id: Some("org.example.Game.desktop".into()),
+                ..xterm
+            }),
+        ),
         one(
             "window-create-overscan",
             "A window laid out 2556 pixels taller than the 1179x2556 the client shows: its pictures are 1179x5112.",
@@ -277,6 +291,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 icon: None,
                 min: None,
                 overscan: Some(Size { w: 0, h: 2556 }),
+                desktop_id: None,
                 ..terminal.clone()
             }),
         ),
@@ -392,6 +407,22 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 zoom_range: Some([1.0, 5.0]),
             }),
         ),
+        one(
+            "targets",
+            "A GTK window's controls near its toolbar: two 36x34 buttons, a disabled one, a check box and a text field.",
+            Message::Targets(Targets {
+                id: 7,
+                serial: 12,
+                targets: vec![
+                    Target { rect: Rect::new(6, 43, 36, 34), kind: 1 },
+                    Target { rect: Rect::new(44, 43, 36, 34), kind: 1 },
+                    Target { rect: Rect::new(82, 43, 36, 34), kind: 0x81 },
+                    Target { rect: Rect::new(6, 83, 71, 25), kind: 2 },
+                    Target { rect: Rect::new(-4, 120, 1179, 49), kind: 6 },
+                ],
+            }),
+        ),
+        one("targets-empty", "Window 7 has no controls to aim at any more.", Message::Targets(Targets { id: 7, serial: 13, targets: vec![] })),
         one(
             "tile-png",
             "A lossless tile.",
@@ -737,7 +768,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
                 scene: false,
@@ -749,7 +780,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             "A client accepts half-resolution motion without enabling passthrough video.",
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, devices: false,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, targets: false, devices: false,
                 atlas: false, scene: false, clipboard_types: None, scroll: false,
             }),
         ),
@@ -766,7 +797,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
                 scene: false,
@@ -786,7 +817,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false, clipboard_types: None, atlas: false, scene: false, scroll: false,
             }),
         ),
@@ -803,7 +834,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
                 atlas: false,
@@ -824,7 +855,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: true,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
                 scene: false,
@@ -844,7 +875,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: true,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
                 scene: false,
@@ -857,7 +888,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
-                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false,
+                video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false, targets: false,
                 devices: false, atlas: false, scene: false, clipboard_types: None, scroll: false,
             }),
         ),
@@ -868,7 +899,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, devices: true, atlas: false, scene: false, clipboard_types: None, scroll: false,
+                scaled_motion: false, targets: false, devices: true, atlas: false, scene: false, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -878,7 +909,17 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, devices: false, scroll: true, atlas: false, scene: false, clipboard_types: None,
+                scaled_motion: false, targets: false, devices: false, scroll: true, atlas: false, scene: false, clipboard_types: None,
+            }),
+        ),
+        one(
+            "client-hello-targets",
+            "client-hello-audio from a phone that aims touches at the controls `targets` lists.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(),
+                decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
+                video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
+                scaled_motion: false, targets: true, devices: false, scroll: false, atlas: false, scene: false, clipboard_types: None,
             }),
         ),
         one(
@@ -894,7 +935,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 wasm: false,
                 webview: false,
                 gpu: false,
-                scaled_motion: false,
+                scaled_motion: false, targets: false,
                 devices: false,
                 atlas: true,
                 scene: true,
@@ -1109,7 +1150,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "pointer-left-drag",
             "",
-            Message::Pointer(Pointer { id: 7, x: 10.5, y: 20.0, buttons: buttons::LEFT, scroll: None }),
+            Message::Pointer(Pointer { id: 7, x: 10.5, y: 20.0, buttons: buttons::LEFT, scroll: None, relative: None }),
         ),
         one(
             "pointer-scroll-precise",
@@ -1120,6 +1161,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 y: 480.0,
                 buttons: 0,
                 scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: None }),
+                relative: None,
             }),
         ),
         one(
@@ -1131,7 +1173,13 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 y: 480.0,
                 buttons: 0,
                 scroll: Some(Scroll { dx: 0.0, dy: -42.5, precise: true, seq: Some(42) }),
+                relative: None,
             }),
+        ),
+        one(
+            "pointer-relative",
+            "A stick looking right and a little up in a game: relative motion with the pointer left where it is.",
+            Message::Pointer(Pointer { id: 7, x: 640.0, y: 480.0, buttons: 0, scroll: None, relative: Some([12.5, -3.25]) }),
         ),
         one(
             "scroll-target",

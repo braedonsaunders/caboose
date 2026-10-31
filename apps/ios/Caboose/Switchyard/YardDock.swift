@@ -7,6 +7,7 @@ import SwiftUI
 struct YardDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
+    @Environment(\.openWindow) private var openWindow
     let yard: YardModel
     let width: CGFloat
 
@@ -23,32 +24,33 @@ struct YardDock: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(apps) { app in
-                        // A tap goes to the app; holding it offers Open, Pin and Close. A menu with a
-                        // primary action shows on the hold itself, so neither the dock's swipe nor the
-                        // system's bottom edge can take the press from it.
-                        Menu { DockAppActions(app: app) } label: {
-                            VStack(spacing: 3) {
-                                Group {
-                                    if let image = model.appIcons[app.id] {
-                                        Image(uiImage: image).resizable().scaledToFit()
-                                    } else {
-                                        Image(systemName: "app.dashed").font(.title2)
-                                    }
+                        // A tap goes to the app; holding it opens its menu above it, in the yard.
+                        VStack(spacing: 3) {
+                            Group {
+                                if let image = model.appIcons[app.id] {
+                                    Image(uiImage: image).resizable().scaledToFit()
+                                } else {
+                                    Image(systemName: "app.dashed").font(.title2)
                                 }
-                                .frame(width: icon, height: icon)
-                                .modifier(DockLaunchFeedback(appID: app.id))
-                                Circle()
-                                    .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
-                                    .frame(width: 4, height: 4)
                             }
-                            .contentShape(Rectangle())
-                        } primaryAction: {
-                            model.openOnDesktop(app)
+                            .frame(width: icon, height: icon)
+                            .modifier(DockLaunchFeedback(appID: app.id))
+                            Circle()
+                                .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
+                                .frame(width: 4, height: 4)
                         }
-                        .menuIndicator(.hidden)
-                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SwitchyardView.space)) } action: {
+                            yard.dockFrames[app.id] = $0
+                        }
+                        .onTapGesture { model.openOnDesktop(app) }
+                        .onLongPressGesture(minimumDuration: 0.4) { showMenu(app) }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isButton)
                         .accessibilityLabel(app.name)
                         .accessibilityHint("Hold for Open, Pin and Close.")
+                        .accessibilityAction { model.openOnDesktop(app) }
+                        .accessibilityAction(named: "Actions") { showMenu(app) }
                     }
                 }
                 // Extend only the vertical viewport. Horizontal scroll clipping still
@@ -78,6 +80,14 @@ struct YardDock: View {
             }
         )
         .animation(.smooth(duration: 0.3), value: columns.map(\.id))
+    }
+
+    /// The app's actions, above its icon.
+    private func showMenu(_ app: HostClient.App) {
+        guard let frame = yard.dockFrames[app.id] else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        yard.menu.show(DockAppActions.items(app, model: model, openWindow: openWindow),
+                       at: CGPoint(x: frame.minX, y: frame.minY - 6), above: true)
     }
 
     private func isRunning(_ app: HostClient.App) -> Bool {
@@ -164,33 +174,41 @@ struct DockAppActions: View {
     var done: () -> Void = {}
 
     var body: some View {
+        ForEach(Array(Self.items(app, model: model, openWindow: openWindow).enumerated()), id: \.offset) { _, item in
+            Button(item.title, systemImage: item.systemImage, role: item.destructive ? .destructive : nil) {
+                item.perform(); done()
+            }
+        }
+    }
+
+    /// The rows, for this menu and for the desktop's pointer menu.
+    static func items(_ app: HostClient.App, model: AppModel, openWindow: OpenWindowAction) -> [DesktopModel.MenuItem] {
         let windows = model.appWindows.filter { model.matches($0, app) }
         let detached = model.detachedWindowIDs
         let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
                                        windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title, detached: detached.contains($0.id)) },
                                        windowScenes: model.supportsWindowScenes)
-        Button("Add Shortcut to Desktop", systemImage: "plus.square") {
-            Task { await model.desktopFiles.addShortcut(app, model: model) }; done()
-        }
-        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+        var items = [DesktopModel.MenuItem(title: "Add Shortcut to Desktop", systemImage: "plus.square") {
+            Task { await model.desktopFiles.addShortcut(app, model: model) }
+        }]
+        for action in actions {
             switch action {
             case .open:
-                Button(action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app); done() }
+                items.append(.init(title: action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app) })
             case .pin, .unpin:
-                Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
+                items.append(.init(title: action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app) })
             case .openInNewWindow(let id, _):
-                Button(action.title, systemImage: "macwindow.badge.plus") {
+                items.append(.init(title: action.title, systemImage: "macwindow.badge.plus") {
                     if let window = model.window(id), let ref = model.windowRef(for: window) { openWindow(value: ref) }
-                    done()
-                }
+                })
             case .moveToDesktop(let id, _):
-                Button(action.title, systemImage: "rectangle.on.rectangle") { model.moveToDesktop(id); done() }
+                items.append(.init(title: action.title, systemImage: "rectangle.on.rectangle") { model.moveToDesktop(id) })
             case .close(let id, _):
-                Button(action.title, systemImage: "xmark", role: .destructive) {
+                items.append(.init(title: action.title, systemImage: "xmark", destructive: true) {
                     if let window = model.session?.windows[id] { model.session?.closeDiagnosed(window) }
-                    done()
-                }
+                })
             }
         }
+        return items
     }
 }

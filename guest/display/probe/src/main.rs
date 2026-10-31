@@ -64,7 +64,8 @@ OPTIONS:
                            drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
                            the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
+                           scroll:X,Y,DY (precise, DY pixels), look:X,Y,DX,DY (relative
+                           motion, the pointer left at X,Y), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
                            cannot run it does),
                            finger-down:X,Y, finger-move:X,Y, finger-up:X,Y (16 ms apart)
@@ -78,6 +79,8 @@ OPTIONS:
     --ruler-scale S        window pixels per page pixel of that ruler [default: 1]
     --scroll-zoom S        after 120 drives, zoom the page to S with scroll.zoom and go on
     --scroll-zoom-focus F  the zoom's focus F of the scroller's height down [default: 0.5]
+    --targets FILE         aim touches (hello targets: true): append every `targets` message
+                           to FILE as a JSON line (t_us, id, serial, targets)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -116,6 +119,7 @@ struct Args {
     ruler_scale: f64,
     scroll_zoom: Option<f64>,
     scroll_zoom_focus: f64,
+    targets: Option<PathBuf>,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -174,6 +178,7 @@ fn parse_args() -> Result<Args, String> {
         scroll: false,
         scroll_overscan: None,
         scroll_drive: None,
+        targets: None,
         ruler: false,
         ruler_scale: 1.0,
         scroll_zoom: None,
@@ -240,6 +245,7 @@ fn parse_args() -> Result<Args, String> {
             "--ruler" => a.ruler = true,
             "--scroll-zoom-focus" => a.scroll_zoom_focus = value()?.parse().map_err(|_| "bad --scroll-zoom-focus")?,
             "--scroll-zoom" => a.scroll_zoom = Some(value()?.parse().map_err(|_| "bad --scroll-zoom")?),
+            "--targets" => a.targets = Some(PathBuf::from(value()?)),
             "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
             "-h" | "--help" => {
@@ -708,7 +714,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "press" | "move" | "release" => {
             let (x, y) = point(arg)?;
             let buttons = if verb == "release" { 0 } else { proto::buttons::LEFT };
-            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None })]
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None, relative: None })]
         }
         // drop-enter:TYPES@X,Y starts a drop from the phone offering TYPES (`|`-separated;
         // `text` stands for text/plain;charset=utf-8, whose `;` would end the action).
@@ -747,7 +753,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
-                .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None }))
+                .map(|buttons| Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None, relative: None }))
                 .to_vec()
         }
         "close" => vec![Message::Close { id }],
@@ -789,7 +795,16 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 y,
                 buttons: 0,
                 scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true, seq: None }),
+                relative: None,
             })]
+        }
+        // look:X,Y,DX,DY moves the pointer DX, DY relative to where it is, leaving it at X,Y
+        // (a stick's mouse look).
+        "look" => {
+            let mut parts = arg.splitn(4, ',');
+            let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad look {arg}"));
+            let (x, y, dx, dy) = (next()?, next()?, next()?, next()?);
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons: 0, scroll: None, relative: Some([dx, dy]) })]
         }
         _ => return Err(format!("unknown action {verb}")),
     })
@@ -843,6 +858,7 @@ fn run(args: Args) -> Result<bool, String> {
         &Message::ClientHello(proto::ClientHello {
             devices: false,
             scroll: args.scroll,
+            targets: args.targets.is_some(),
             version: proto::VERSION,
             token: args.token.clone(),
             decoders: args.decoders.clone(),
@@ -1093,7 +1109,7 @@ fn run(args: Args) -> Result<bool, String> {
                             for buttons in [proto::buttons::LEFT, 0] {
                                 send(
                                     &mut ws,
-                                    &Message::Pointer(proto::Pointer { id: b.id, x, y, buttons, scroll: None }),
+                                    &Message::Pointer(proto::Pointer { id: b.id, x, y, buttons, scroll: None, relative: None }),
                                 )?;
                             }
                         }
@@ -1224,7 +1240,7 @@ fn run(args: Args) -> Result<bool, String> {
                             for buttons in [proto::buttons::LEFT, 0] {
                                 send(
                                     &mut ws,
-                                    &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None }),
+                                    &Message::Pointer(proto::Pointer { id: f.id, x, y, buttons, scroll: None, relative: None }),
                                 )?;
                             }
                         }
@@ -1247,6 +1263,30 @@ fn run(args: Args) -> Result<bool, String> {
                     text_inputs.push(t);
                 }
                 Message::ScrollTree(t) => scroll_check.tree(t),
+                Message::Targets(t) => {
+                    if let Some(path) = &args.targets {
+                        let list: Vec<String> = t
+                            .targets
+                            .iter()
+                            .map(|g| format!("[{},{},{},{},{}]", g.rect.x, g.rect.y, g.rect.w, g.rect.h, g.kind))
+                            .collect();
+                        let line = format!(
+                            "{{\"t_us\":{},\"id\":{},\"serial\":{},\"targets\":[{}]}}\n",
+                            monotonic_us(),
+                            t.id,
+                            t.serial,
+                            list.join(",")
+                        );
+                        let written = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut f| f.write_all(line.as_bytes()));
+                        if let Err(e) = written {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                }
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
                     if target.is_none() && args.window.is_none_or(|w| w == g.window) {

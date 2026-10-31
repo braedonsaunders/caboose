@@ -214,6 +214,8 @@ pub struct State {
     pub control: crate::control::Control,
     /// Toolkit scroll reporters (scroll.rs).
     pub scroll: crate::scroll::ScrollHub,
+    /// The focused window's controls for a client that aims touches (targets.rs).
+    pub targets: crate::targets::Targets,
     pub clipboard: crate::clipboard::Clipboard,
     /// How the compositor reaches its Xwayland as a client, once it runs.
     pub x11: Option<crate::x11sel::Access>,
@@ -673,6 +675,7 @@ impl State {
             fullscreen: false,
             maximized: false,
             lineage: None,
+            desktop_id: None,
             scroll_seq_delivered: 0,
             scroll_seq_committed: 0,
             overscan: (0, 0).into(),
@@ -727,6 +730,7 @@ impl State {
         self.video_window_gone(id);
         self.game_window_gone(id);
         self.scene_window_gone(id);
+        self.targets_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;
@@ -787,10 +791,45 @@ impl State {
     }
 
     /// Announces new windows and changes to known ones; retracts unmapped ones.
+    /// Looks up, once, the desktop entry a toplevel's process was launched from. Other
+    /// windows' processes bound it: one under a launched terminal's shell is not the terminal.
+    fn find_desktop_id(&mut self, id: u64) {
+        let toplevel = self.windows.get(id).is_some_and(|w| w.parent.is_none() && w.desktop_id.is_none());
+        if !toplevel {
+            return;
+        }
+        let dh = self.dh.clone();
+        let mut windowed = std::collections::HashSet::new();
+        for other in self.windows.ids() {
+            if other == id {
+                continue;
+            }
+            if let Some(w) = self.windows.get_mut(other) {
+                let lineage = w.lineage.get_or_insert_with(|| crate::session::window_lineage(&dh, &w.surface));
+                windowed.extend(lineage.first().copied());
+            }
+        }
+        let Some(w) = self.windows.get_mut(id) else { return };
+        // An X11 window may not name its process yet: look again at the next sync.
+        if w.lineage.as_ref().is_none_or(|l| l.is_empty()) {
+            w.lineage = Some(crate::session::window_lineage(&dh, &w.surface));
+        }
+        let lineage = w.lineage.clone().unwrap_or_default();
+        if lineage.is_empty() {
+            return;
+        }
+        let found = crate::launch::desktop_id(&lineage, &windowed, crate::launch::read_environ);
+        if let Some(desktop) = &found {
+            tracing::info!("window {id}: launched from {desktop}");
+        }
+        w.desktop_id = Some(found);
+    }
+
     pub fn sync_windows(&mut self) {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         let mut resized = false;
         for id in self.windows.parent_first() {
+            self.find_desktop_id(id);
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application whose stream the client renders never presents here, so its
             // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
@@ -1392,6 +1431,26 @@ smithay::delegate_xdg_decoration!(State);
 smithay::delegate_kde_decoration!(State);
 smithay::delegate_seat!(State);
 smithay::delegate_relative_pointer!(State);
+smithay::delegate_pointer_constraints!(State);
+
+impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for State {
+    /// A constraint on the surface the pointer is over takes effect at once; one on
+    /// another surface when the pointer enters it (input.rs).
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &smithay::input::pointer::PointerHandle<Self>) {
+        if pointer.current_focus().as_ref() == Some(surface) {
+            crate::input::activate_constraint(surface, pointer);
+        }
+    }
+
+    /// The client's cursor position while locked: the phone draws no cursor for it.
+    fn cursor_position_hint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &smithay::input::pointer::PointerHandle<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+    }
+}
 smithay::delegate_data_device!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_output!(State);

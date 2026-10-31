@@ -80,6 +80,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public private(set) var cursorSerial = 0
     /// The focused app's text-input-v3 state, where the server reports it.
     public private(set) var textInput: (window: Int, enabled: Bool, purpose: String?)?
+    public private(set) var textFieldLeft: (window: Int, at: TimeInterval)?
     /// The focused field's text around the caret, as its app last reported it, bumped on each report.
     public private(set) var surroundingText: (window: Int, serial: Int, text: SurroundingText)?
 
@@ -373,7 +374,8 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
                     scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
-                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled))
+                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled,
+                    targets: true))
     }
 
     // MARK: Server messages
@@ -393,8 +395,17 @@ public final class CabooseDisplaySession: DisplaySession {
                 cursorSerial &+= 1
             case .scrollTree(let tree):
                 windows[tree.window]?.scrollReports.record(tree)
+            case .targets(let window, _, let targets):
+                windows[window]?.touchTargets = targets
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
+                // Focus leaving a field (Return in a search box, a tap elsewhere) turns its
+                // text input off; moving to the next field turns it on again at once.
+                if enabled {
+                    textFieldLeft = nil
+                } else if textInput?.enabled == true {
+                    textFieldLeft = (window, ProcessInfo.processInfo.systemUptime)
+                }
                 if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {
                     textInput = (window, enabled, purpose)
                     cursorSerial &+= 1
@@ -757,6 +768,7 @@ public final class CabooseDisplaySession: DisplaySession {
         if let display = fields.display { windowDisplays[window.id] = display }
         if let title = fields.title { window.title = title }
         if let app = fields.appID { window.appClass = (app, app) }
+        if let desktop = fields.desktopID { window.desktopID = desktop }
         if let place = placement[fields.id] {
             window.transientFor = place.parent
             window.isOverrideRedirect = place.kind == .popup
@@ -990,7 +1002,19 @@ public final class CabooseDisplaySession: DisplaySession {
 
     public func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String] = []) {
         if let game = window.game { return game.pointerMove(to: point, in: window.frame.size, modifiers: modifiers) }
+        lastPointer = (window.id, point)
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
+    }
+
+    /// Where the pointer was last put in each window, so relative motion leaves it there.
+    private var lastPointer: (window: Int, point: CGPoint)?
+
+    public func pointerLook(in window: RemoteWindow, by delta: CGPoint) {
+        guard window.game == nil, delta != .zero else { return }
+        let point = lastPointer.flatMap { $0.window == window.id ? $0.point : nil }
+            ?? CGPoint(x: window.frame.width / 2, y: window.frame.height / 2)
+        lastPointer = (window.id, point)
+        send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil, relative: delta))
     }
 
     public func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String] = []) {
@@ -1002,6 +1026,7 @@ public final class CabooseDisplaySession: DisplaySession {
         guard bit != 0 else { return }
         if pressed { inputLeftGames(for: window) }
         if pressed { buttons |= bit } else { buttons &= ~bit }
+        lastPointer = (window.id, point)
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 

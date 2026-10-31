@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import GameController
 import Metal
 import QuartzCore
 import UIKit
@@ -66,7 +67,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
-    private var holdingDirectDrag = false
     private let pointerClicks = PointerClickDriver()
     private let scrollDriver = ScrollDriver()
     private var scrollUsesDirectTouch = false
@@ -122,6 +122,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private weak var scrollTouchGesture: UIPanGestureRecognizer?
     private weak var pinchGesture: UIPinchGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
+    private weak var tapGesture: UITapGestureRecognizer?
+    /// The tap being recognized is a finger's, which is aimed; a Pencil's is exact.
+    private var tapIsFinger = false
     private var holdUsesPointerDrag = false
     private weak var holdWindow: RemoteWindow?
     private weak var holdSession: (any DisplaySession)?
@@ -552,12 +555,57 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         session.pointerMove(in: window, to: lastPointer)
     }
 
-    private func click(at point: CGPoint, button: Int = 1) {
+    /// A finger's landing error, in millimetres (`TouchAim`), and points per millimetre.
+    private static let fingerSpread: CGFloat = 1.2
+    private static let pointsPerMillimetre: CGFloat = 160 / 25.4
+
+    /// Where a finger at view `point` meant to press, in window pixels: the control it most
+    /// likely meant among the window's targets, or the point itself. Content moving under
+    /// the finger (a local scroll) has no current targets. With `picture`, a window whose
+    /// tree lists none is aimed among the shapes in its picture; a touch that may start a
+    /// stroke (native touch) is not.
+    func aimedPixel(_ point: CGPoint, picture: Bool = true) -> CGPoint {
+        let pixel = pixelPoint(point)
+        guard let window = remoteWindow, bounds.width > 0, !(localScroll?.isMoving ?? false) else { return pixel }
+        let spread = Self.fingerSpread * Self.pointsPerMillimetre * window.frame.width / bounds.width
+        let targets = window.touchTargets.isEmpty && picture ? pictureTargets(around: pixel, spread: spread) : window.touchTargets
+        return TouchAim.choose(pixel, spread: spread, among: targets)?.point ?? pixel
+    }
+
+    /// For a window whose accessibility tree lists nothing: the shapes in its picture
+    /// around `pixel` (`PictureTargets`), in window pixels. None for a picture this view does
+    /// not hold (one the phone's GPU draws).
+    private func pictureTargets(around pixel: CGPoint, spread: CGFloat) -> [TouchTarget] {
+        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0,
+              let texture = window.surface.texture, !liveGPUCaptures else { return [] }
+        let sx = CGFloat(texture.width) / window.frame.width, sy = CGFloat(texture.height) / window.frame.height
+        let radius = Int((3 * spread + 4) * max(sx, sy))
+        let center = CGPoint(x: pixel.x * sx, y: pixel.y * sy)
+        guard let region = window.surface.pixels(x: Int(center.x) - radius, y: Int(center.y) - radius,
+                                                 width: 2 * radius, height: 2 * radius) else { return [] }
+        let found = region.bytes.withUnsafeBytes {
+            PictureTargets.find(in: $0, width: region.width, height: region.height, bytesPerRow: region.width * 4,
+                                around: CGPoint(x: center.x - CGFloat(region.x), y: center.y - CGFloat(region.y)), radius: radius)
+        }
+        return found.map { target in
+            var target = target
+            let r = target.rect.offsetBy(dx: CGFloat(region.x), dy: CGFloat(region.y))
+            target.rect = CGRect(x: r.minX / sx, y: r.minY / sy, width: r.width / sx, height: r.height / sy)
+            return target
+        }
+    }
+
+    private func click(at point: CGPoint, button: Int = 1, aimed: Bool = false) {
         guard let window = remoteWindow, let session else { return }
         // A click can move focus or the caret, so iOS must not edit text from before it.
         resetTyping()
         caretAnchor = point
-        move(to: point)
+        if aimed {
+            lastPointer = aimedPixel(point)
+            session.pointerMove(in: window, to: lastPointer)
+        } else {
+            move(to: point)
+        }
         session.focus(window)
         pointerClicks.click(in: window, session: session, at: lastPointer, button: button)
         if button == 3 { showSecondaryClick(at: point) }
@@ -599,6 +647,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private func installGestures() {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        tapGesture = tap
         addGestureRecognizer(tap)
 
         let pointerClick = UITapGestureRecognizer(target: self, action: #selector(handlePointerClick(_:)))
@@ -625,7 +674,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         contextTouchGesture = longPress
         longPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
-        longPress.minimumPressDuration = 0.65
+        longPress.minimumPressDuration = Self.contextHold
         longPress.allowableMovement = 10
         longPress.delegate = self
         addGestureRecognizer(longPress)
@@ -684,11 +733,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public func gestureRecognizer(_ gesture: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        if gesture === contextTouchGesture {
+        if gesture === contextTouchGesture, let hold = gesture as? UILongPressGestureRecognizer {
             holdUsesPointerDrag = touch.type == .direct && remoteWindow?.acceptsTouch == false
+            // A finger on a mouse-only window aims after a short hold; elsewhere a hold is a
+            // context press.
+            hold.minimumPressDuration = holdUsesPointerDrag ? Self.aimHold : Self.contextHold
             holdWindow = remoteWindow
             holdSession = session
         }
+        if gesture === tapGesture { tapIsFinger = touch.type == .direct }
         if gesture === scrollTouchGesture, defersToPan(touch) { return true }
         return gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
@@ -705,7 +758,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if touchStoppedScroll { touchStoppedScroll = false; return }
         stopMomentum()
         localScroll?.interrupt()
-        click(at: gesture.location(in: self))
+        click(at: gesture.location(in: self), aimed: tapIsFinger)
         tapped()
     }
 
@@ -737,6 +790,24 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         focusCheck = nil
     }
 
+    /// When this view last hid the keyboard for a field its window left.
+    private var fieldLeftHandled: TimeInterval = 0
+    /// How long a left field may stay left before the keyboard goes: focus moving to the next
+    /// field turns text input off and on again within it.
+    private static let fieldExitGrace: TimeInterval = 0.3
+
+    /// The keyboard goes when the window's field loses focus for good, as iOS's does: after
+    /// Return in a search box or an address bar, or a click that leaves the field. A
+    /// hardware keyboard keeps the view first responder: it shows no keyboard to hide.
+    fileprivate func followFieldExit() {
+        guard isFirstResponder, GCKeyboard.coalesced == nil, let window = remoteWindow, let left = session?.textFieldLeft,
+              left.window == window.id, left.at != fieldLeftHandled,
+              ProcessInfo.processInfo.systemUptime - left.at >= Self.fieldExitGrace else { return }
+        fieldLeftHandled = left.at
+        focusCheck = nil
+        if let onKeyboardWanted { onKeyboardWanted(false) } else { _ = resignFirstResponder() }
+    }
+
     /// Focus moving between fields with the keyboard up (Tab from a username to its
     /// password) changes the keyboard with it.
     fileprivate func followFieldPurpose() {
@@ -759,7 +830,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
         stopMomentum()
         if gesture === secondaryTouchGesture { cancelTouches() }
-        click(at: gesture.location(in: self), button: 3)
+        click(at: gesture.location(in: self), button: 3, aimed: gesture === secondaryTouchGesture)
     }
 
     public override func resignFirstResponder() -> Bool {
@@ -767,59 +838,186 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return super.resignFirstResponder()
     }
 
-    /// Native touch and Pencil retain context holds. A mouse-only finger hold grabs
-    /// content instead; two-finger tap still opens its context menu.
+    private static let contextHold: TimeInterval = 0.65
+    private static let aimHold: TimeInterval = 0.3
+
+    /// Native touch and Pencil retain context holds. A mouse-only finger hold aims the
+    /// pointer (`PointerAim`); two-finger tap still opens its context menu.
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         let point = gesture.location(in: self)
-        switch gesture.state {
-        case .began:
-            guard let window = holdWindow, let session = holdSession,
-                  remoteWindow === window, self.session === session,
-                  isInteractive, self.window != nil, session.state == .ready,
-                  session.windows[window.id] === window else { return }
-            let drag = holdUsesPointerDrag
-            if drag {
-                cancelTouches()
-                stopMomentum()
-                holdingDirectDrag = true
-                focusCheck = nil
-                session.focus(window)
-                sendDirectDrag(directDrag.begin(at: point, translation: .zero))
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            } else {
-                // Defer secondary click by one run-loop turn so a queued touch-up from a quick tap
-                // during a main-thread stall drains before the long-press timer can cancel it.
-                let hadNativeTouch = !activeTouches.isEmpty || pencilPoint != nil
-                DispatchQueue.main.async { [weak self, weak gesture, weak window, weak session] in
-                    guard let self, let gesture, let window, let session,
-                          gesture.state == .began || gesture.state == .changed,
-                          self.remoteWindow === window, self.session === session,
-                          self.isInteractive, self.window != nil, session.state == .ready,
-                          session.windows[window.id] === window,
-                          !hadNativeTouch || !self.activeTouches.isEmpty || self.pencilPoint != nil
-                    else { return }
-                    self.cancelTouches()
-                    self.stopMomentum()
-                    self.click(at: point, button: 3)
-                }
-            }
-        case .changed:
-            if holdingDirectDrag {
-                sendDirectDrag(directDrag.move(to: point))
-                session?.trackDragOut(at: convert(point, to: nil))
-            }
-        case .ended:
-            // A computer drag released on the phone's own target is the phone's.
-            if holdingDirectDrag {
-                session?.takeDragIfOver(convert(point, to: nil))
-                sendDirectDrag(directDrag.end(at: point))
-            }
-            holdingDirectDrag = false
-        case .cancelled, .failed:
-            if holdingDirectDrag { sendDirectDrag(directDrag.cancel()) }
-            holdingDirectDrag = false
-        default: break
+        if aim.phase != .idle || (gesture.state == .began && holdUsesPointerDrag) {
+            return followAim(gesture.state, at: point)
         }
+        guard gesture.state == .began, let window = holdWindow, let session = holdSession,
+              remoteWindow === window, self.session === session,
+              isInteractive, self.window != nil, session.state == .ready,
+              session.windows[window.id] === window else { return }
+        // Defer secondary click by one run-loop turn so a queued touch-up from a quick tap
+        // during a main-thread stall drains before the long-press timer can cancel it.
+        let hadNativeTouch = !activeTouches.isEmpty || pencilPoint != nil
+        DispatchQueue.main.async { [weak self, weak gesture, weak window, weak session] in
+            guard let self, let gesture, let window, let session,
+                  gesture.state == .began || gesture.state == .changed,
+                  self.remoteWindow === window, self.session === session,
+                  self.isInteractive, self.window != nil, session.state == .ready,
+                  session.windows[window.id] === window,
+                  !hadNativeTouch || !self.activeTouches.isEmpty || self.pencilPoint != nil
+            else { return }
+            self.cancelTouches()
+            self.stopMomentum()
+            self.click(at: point, button: 3)
+        }
+    }
+
+    // MARK: Aiming
+
+    private var aim = PointerAim()
+    private var aimLoupe: UITextLoupeSession?
+    private var aimMark: CAShapeLayer?
+    /// The target the aim is on, by index into the window's targets, for its tick.
+    private var aimTarget: Int?
+    /// Where the press went down, against where the finger aimed then, while dragging.
+    private var aimDragOffset = CGPoint.zero
+    private var aimTimer: DispatchWorkItem?
+    private let aimTick = UISelectionFeedbackGenerator()
+
+    private func followAim(_ state: UIGestureRecognizer.State, at point: CGPoint) {
+        let now = CACurrentMediaTime()
+        switch state {
+        case .began:
+            guard let window = holdWindow, let session = holdSession, remoteWindow === window, self.session === session,
+                  isInteractive, self.window != nil, session.state == .ready, session.windows[window.id] === window else { return }
+            cancelTouches()
+            stopMomentum()
+            focusCheck = nil
+            session.focus(window)
+            aim.begin(at: point, time: now)
+            aimTarget = nil
+            aimLoupe = UITextLoupeSession.begin(at: point, fromSelectionWidgetView: nil, in: self)
+            aimTick.prepare()
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showAim()
+            scheduleAimPress()
+        case .changed:
+            aim.move(to: point, time: now)
+            showAim()
+            if aim.phase == .aiming { scheduleAimPress() }
+            if aim.phase == .dragging { session?.trackDragOut(at: convert(point, to: nil)) }
+        case .ended:
+            let (pixel, _) = aimedPoint()
+            switch aim.end() {
+            case .aiming:
+                if let window = remoteWindow, let session {
+                    resetTyping()
+                    caretAnchor = viewPoint(pixel)
+                    lastPointer = pixel
+                    session.pointerMove(in: window, to: pixel)
+                    pointerClicks.click(in: window, session: session, at: pixel, button: 1)
+                    tapped()
+                }
+            case .dragging:
+                session?.takeDragIfOver(convert(point, to: nil))
+                if let window = remoteWindow { session?.pointerButton(in: window, button: 1, pressed: false, at: pixel) }
+            case .idle: break
+            }
+            endAim()
+        default:
+            if aim.end() == .dragging, let window = remoteWindow {
+                session?.pointerButton(in: window, button: 1, pressed: false, at: aimedPoint().pixel)
+            }
+            endAim()
+        }
+    }
+
+    /// Where the aim presses, in window pixels, and the target it snapped to: while aiming,
+    /// the target nearest the pointer by a third of a finger's spread (the owner sees exactly
+    /// where it is); while dragging, the finger's path from where the press went down.
+    private func aimedPoint() -> (pixel: CGPoint, target: (index: Int, rect: CGRect)?) {
+        let pixel = pixelPoint(aim.point)
+        if aim.phase == .dragging {
+            return (CGPoint(x: pixel.x + aimDragOffset.x, y: pixel.y + aimDragOffset.y), nil)
+        }
+        guard let window = remoteWindow, !window.touchTargets.isEmpty, bounds.width > 0 else { return (pixel, nil) }
+        let spread = Self.fingerSpread / 3 * Self.pointsPerMillimetre * window.frame.width / bounds.width
+        guard let choice = TouchAim.choose(pixel, spread: spread, among: window.touchTargets) else { return (pixel, nil) }
+        return (choice.point, (choice.index, window.touchTargets[choice.index].rect))
+    }
+
+    /// A window pixel in this view's points, before any overscan anchoring.
+    private func viewPoint(_ pixel: CGPoint) -> CGPoint {
+        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0 else { return pixel }
+        return CGPoint(x: pixel.x * bounds.width / window.frame.width, y: pixel.y * bounds.height / window.frame.height)
+    }
+
+    private func viewRect(_ pixels: CGRect) -> CGRect {
+        let origin = viewPoint(pixels.origin), end = viewPoint(CGPoint(x: pixels.maxX, y: pixels.maxY))
+        return CGRect(x: origin.x, y: origin.y, width: end.x - origin.x, height: end.y - origin.y)
+    }
+
+    /// Hovers the pointer where it aims, outlines the target it would press, moves the loupe,
+    /// and ticks when the target changes.
+    private func showAim() {
+        guard let window = remoteWindow, let session else { return }
+        let (pixel, target) = aimedPoint()
+        lastPointer = pixel
+        session.pointerMove(in: window, to: pixel)
+        if target?.index != aimTarget {
+            aimTarget = target?.index
+            if target != nil { aimTick.selectionChanged() }
+        }
+        let point = viewPoint(pixel)
+        let mark = aimMark ?? {
+            let layer = CAShapeLayer()
+            layer.fillColor = UIColor.clear.cgColor
+            layer.strokeColor = UIColor(red: 0.96, green: 0.65, blue: 0.14, alpha: 0.95).cgColor
+            layer.lineWidth = 2
+            layer.zPosition = 10
+            self.layer.addSublayer(layer)
+            aimMark = layer
+            return layer
+        }()
+        let path = UIBezierPath(ovalIn: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
+        if let rect = target?.rect {
+            path.append(UIBezierPath(roundedRect: viewRect(rect).insetBy(dx: -2, dy: -2), cornerRadius: 4))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        mark.path = path.cgPath
+        CATransaction.commit()
+        let caret = target.map { viewRect($0.rect) } ?? CGRect(x: point.x - 1, y: point.y - 8, width: 2, height: 16)
+        aimLoupe?.move(to: point, withCaretRect: caret, trackingCaret: false)
+    }
+
+    /// Presses the button once the finger has held still long enough while aiming.
+    private func scheduleAimPress() {
+        aimTimer?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.aimPressIfDue() }
+        aimTimer = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, aim.dragTime - CACurrentMediaTime()), execute: item)
+    }
+
+    private func aimPressIfDue() {
+        guard aim.phase == .aiming else { return }
+        guard aim.dragDue(at: CACurrentMediaTime()) else { return scheduleAimPress() }
+        guard let window = remoteWindow, let session, session.state == .ready else { return }
+        let (pixel, _) = aimedPoint()
+        let raw = pixelPoint(aim.point)
+        aimDragOffset = CGPoint(x: pixel.x - raw.x, y: pixel.y - raw.y)
+        aim.startDrag()
+        session.pointerMove(in: window, to: pixel)
+        session.pointerButton(in: window, button: 1, pressed: true, at: pixel)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        showAim()
+    }
+
+    private func endAim() {
+        aimTimer?.cancel()
+        aimTimer = nil
+        aimLoupe?.invalidate()
+        aimLoupe = nil
+        aimMark?.removeFromSuperlayer()
+        aimMark = nil
+        aimTarget = nil
     }
 
     @objc private func handleTouchDrag(_ gesture: UIPanGestureRecognizer) {
@@ -891,6 +1089,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// view that goes away mid-touch can cancel them.
     private var touchSlots = TouchSlots<ObjectIdentifier>()
     private var activeTouches: [ObjectIdentifier: (slot: Int, point: CGPoint)] = [:]
+    /// How far a lone finger's touch-down was aimed (`aimedPixel`), in window pixels; the
+    /// rest of its contact keeps the same offset, so a drag from it is unchanged.
+    private var touchAim: (finger: ObjectIdentifier, offset: CGPoint)?
     /// The first finger of a native touch sequence, to tell a tap (which may focus a text
     /// field, so the keyboard question is asked) from a drag.
     private var tapCandidate: (finger: ObjectIdentifier, at: CFTimeInterval, location: CGPoint)?
@@ -1026,13 +1227,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             }
             let key = ObjectIdentifier(touch)
             let slot = touchSlots.slot(for: key)
-            let point = pixelPoint(touch.location(in: self))
+            var point = pixelPoint(touch.location(in: self))
+            if phase == .down {
+                touchAim = nil
+                if touches.count == 1, activeTouches.isEmpty {
+                    let aimed = aimedPixel(touch.location(in: self), picture: false)
+                    if aimed != point { touchAim = (key, CGPoint(x: aimed.x - point.x, y: aimed.y - point.y)) }
+                }
+            }
+            if let aim = touchAim, aim.finger == key { point.x += aim.offset.x; point.y += aim.offset.y }
             let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
             points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
                                      radius: Double(touch.majorRadius * window.frame.width / max(1, bounds.width))))
             if phase == .up || phase == .cancel {
                 touchSlots.release(key)
                 activeTouches[key] = nil
+                if touchAim?.finger == key { touchAim = nil }
             } else {
                 activeTouches[key] = (slot, point)
             }
@@ -1121,7 +1331,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         pointerClicks.cancel()
         stopMomentum()
         sendDirectDrag(directDrag.cancel())
-        holdingDirectDrag = false
+        if aim.phase != .idle {
+            if aim.end() == .dragging, let window = remoteWindow {
+                session?.pointerButton(in: window, button: 1, pressed: false, at: lastPointer)
+            }
+            endAim()
+        }
         if let window = remoteWindow, let session {
             if !activeTouches.isEmpty {
                 session.touch(activeTouches.values.map { TouchPoint(slot: $0.slot, phase: .cancel, x: Double($0.point.x), y: Double($0.point.y)) },
@@ -1499,6 +1714,7 @@ private final class DisplayLinkTarget: NSObject {
             pacer.displayWillRefresh(view.displayID, targetTimestamp: link.targetTimestamp)
         }
         view.checkFocus()
+        view.followFieldExit()
         view.followFieldPurpose()
         view.adoptSurroundingText()
         view.layoutGame()

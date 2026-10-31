@@ -34,7 +34,7 @@ open class RemoteTextInputView: UIView, UITextInput {
     /// Prose gets autocorrect, capitals and spell checking; code and terminals get none.
     public var prefersProse = false {
         didSet {
-            keyBar.show(autocorrect: prefersProse)
+            for bar in bars { bar.show(autocorrect: prefersProse) }
             if prefersProse != oldValue, isFirstResponder { reloadInputViews() }
         }
     }
@@ -61,14 +61,23 @@ open class RemoteTextInputView: UIView, UITextInput {
     private var stickyModifiers = Set<String>()
     public var hasStickyModifiers: Bool { !stickyModifiers.isEmpty }
     public private(set) var autocorrectChoice: Bool?
-    private lazy var keyBar: KeyBar = {
+    private lazy var keyBar = makeKeyBar()
+    /// Laptop's inline header: the same bar and actions, but its own view. UIKit keeps an
+    /// input accessory in a view controller of its own, so a view that has been one must
+    /// never also be laid out elsewhere: re-adding it raises "child view controller already
+    /// has a parent".
+    private lazy var inlineKeyBar = makeKeyBar()
+    private var bars: [KeyBar] { [keyBar, inlineKeyBar] }
+
+    private func makeKeyBar() -> KeyBar {
         let bar = KeyBar()
         bar.onAction = { [weak self] action in self?.keyBarAction(action) }
+        bar.show(autocorrect: prefersProse)
         return bar
-    }()
+    }
 
-    /// Inline Laptop controls use the exact same header and action pipeline.
-    public var keyboardControls: KeyBar { keyBar }
+    /// Inline Laptop controls use the same header and action pipeline.
+    public var keyboardControls: KeyBar { inlineKeyBar }
     public var inlineKeyboardControls = false {
         didSet { if inlineKeyboardControls != oldValue, isFirstResponder { reloadInputViews() } }
     }
@@ -102,7 +111,7 @@ open class RemoteTextInputView: UIView, UITextInput {
         switch action {
         case .modifier(let name):
             if stickyModifiers.contains(name) { stickyModifiers.remove(name) } else { stickyModifiers.insert(name) }
-            keyBar.show(activeModifiers: stickyModifiers)
+            for bar in bars { bar.show(activeModifiers: stickyModifiers) }
         case .autocorrect:
             autocorrectChoice = !prefersProse
             prefersProse.toggle()
@@ -140,7 +149,7 @@ open class RemoteTextInputView: UIView, UITextInput {
 
     private func releaseSticky() {
         stickyModifiers.removeAll()
-        keyBar.show(activeModifiers: stickyModifiers)
+        for bar in bars { bar.show(activeModifiers: stickyModifiers) }
     }
 
     /// Delivers the keystrokes that make the remote text match the buffer.

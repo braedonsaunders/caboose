@@ -384,6 +384,31 @@ public final class WindowSurface: @unchecked Sendable {
         commands.commit()
     }
 
+    /// A small part of the current picture (`PictureTargets` reads around a touch):
+    /// the pixels of the region `x, y, width, height`, clamped to the picture, in its own
+    /// pixels, as BGRA rows, with where the region starts. Waits for the GPU; for a region
+    /// a few hundred pixels across, on a tap.
+    public func pixels(x: Int, y: Int, width: Int, height: Int) -> (bytes: [UInt8], x: Int, y: Int, width: Int, height: Int)? {
+        guard let texture, let region = clamp(x: x, y: y, width: width, height: height, in: texture),
+              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: texture.pixelFormat, width: region.size.width,
+                                                                  height: region.size.height, mipmapped: false)
+        descriptor.storageMode = .shared
+        guard let copy = renderer.device.makeTexture(descriptor: descriptor) else {
+            blit.endEncoding()
+            return nil
+        }
+        blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: region.origin, sourceSize: region.size,
+                  to: copy, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commands.commit()
+        commands.waitUntilCompleted()
+        let rowBytes = region.size.width * 4
+        var bytes = [UInt8](repeating: 0, count: rowBytes * region.size.height)
+        copy.getBytes(&bytes, bytesPerRow: rowBytes, from: MTLRegionMake2D(0, 0, region.size.width, region.size.height), mipmapLevel: 0)
+        return (bytes, region.origin.x, region.origin.y, region.size.width, region.size.height)
+    }
+
     /// `snapshot(longEdgeAtMost:completion:)` awaited.
     public func snapshot(longEdgeAtMost longEdge: Int) async -> CGImage? {
         await withCheckedContinuation { continuation in

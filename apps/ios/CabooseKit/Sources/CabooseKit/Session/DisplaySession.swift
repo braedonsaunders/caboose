@@ -97,6 +97,8 @@ public protocol DisplaySession: AnyObject {
     func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String])
     /// Deltas in pixels, positive down/right.
     func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String])
+    /// Relative motion in pixels that leaves the pointer where it is: mouse look in a game.
+    func pointerLook(in window: RemoteWindow, by delta: CGPoint)
     func resetScroll()
     func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?, extraModifiers: [String])
     func type(_ text: String, in window: RemoteWindow?)
@@ -131,12 +133,17 @@ public protocol DisplaySession: AnyObject {
     /// The focused field's text around the caret, where its app reports it, with a serial
     /// bumped on every report.
     var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { get }
+    /// The focused window's text field was left (its app turned text input off), and when,
+    /// on the system uptime clock; nil while a field has focus or none was left.
+    var textFieldLeft: (window: Int, at: TimeInterval)? { get }
     /// The display closed because another device took it over. Reconnecting on its own would
     /// take it back, so the app waits for the person to ask.
     var isReplaced: Bool { get }
 }
 
 public extension DisplaySession {
+    var textFieldLeft: (window: Int, at: TimeInterval)? { nil }
+    func pointerLook(in window: RemoteWindow, by delta: CGPoint) {}
     func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {}
     func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool { false }
     func scrollZoom(in window: RemoteWindow, scale: Double, focus: CGPoint) -> UInt64? { nil }
