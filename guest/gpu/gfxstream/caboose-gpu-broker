@@ -280,9 +280,29 @@ class Session:
         self.progress_count = 0
         self.frame_timing = FrameTiming(self.progress_enabled)
 
+    def present_rate(self, direction, kind):
+        # Every 2 s while frames flow: presents sent, results and source releases returned.
+        now = time.monotonic_ns()
+        rate = getattr(self, '_present_rate', None)
+        if rate is None:
+            rate = self._present_rate = {'start': now, 'presented': 0, 'results': 0, 'released': 0, 'gap_max': 0, 'last': None}
+        if direction == 'received_from_guest' and kind == Kind.SWAPCHAIN_PRESENT:
+            rate['presented'] += 1
+            if rate['last'] is not None: rate['gap_max'] = max(rate['gap_max'], now - rate['last'])
+            rate['last'] = now
+        elif direction == 'received_from_phone' and kind == Kind.PRESENT_RESULT: rate['results'] += 1
+        elif direction == 'received_from_phone' and kind == Kind.SOURCE_RELEASED: rate['released'] += 1
+        if now - rate['start'] >= 2_000_000_000:
+            with contextlib.suppress(OSError):
+                print(f"CABOOSE_GPU_PRESENT_RATE elapsed_ms={(now - rate['start']) // 1_000_000} presented={rate['presented']} "
+                      f"results={rate['results']} released={rate['released']} gap_max_ms={rate['gap_max'] // 1_000_000}",
+                      file=sys.stderr, flush=True)
+            rate.update(start=now, presented=0, results=0, released=0, gap_max=0)
+
     def surface_progress(self, direction, kind, extent=None):
         # Diagnostic metadata only: no payloads, handles, identities or credentials.
         if not self.progress_enabled or not 16 <= int(kind) <= 36: return
+        self.present_rate(direction, int(kind))
         ordinal = self.progress_count
         if ordinal > 128: return
         self.progress_count += 1
