@@ -36,8 +36,13 @@ public final class LocalScrollController {
         case present(serial: UInt64)
     }
     /// A toolkit adapter's report for exactly the captured picture, when it has one; the
-    /// report replaces measurement for that picture.
-    public var report: ((PictureSource) -> ScrollObservation?)?
+    /// report replaces measurement for that picture. It is asked on main once the picture
+    /// has been copied, with the luma at the centre of each block of the frame tag the
+    /// reporter drew (`tagRect`), when there is one.
+    public var report: ((PictureSource, [Float]?) -> ScrollObservation?)?
+    /// Where a toolkit reporter draws its frame tag in a picture of this size, in picture
+    /// pixels, asked for each capture.
+    public var tagRect: ((CGSize) -> CGRect?)?
     /// How many of a captured picture's pixels lie past the viewport, right and below (an
     /// overscan window); none by default.
     public var pictureOverscan: (MTLTexture) -> CGSize = { _ in .zero }
@@ -236,19 +241,17 @@ public final class LocalScrollController {
         nextID += 1
         measuringID = id
         let hint = model.captured(id, at: time, overscan: overscan)
-        let reported = report?(source)
+        let tagRect = self.tagRect?(CGSize(width: texture.width, height: texture.height))
         let axis = model.axis, generation = generation, chain = chain, estimator = estimator
         let anchor: Int? = nil
         let measuring = measuring
-        renderer.capture(texture, axis: axis) { [weak self] copy, signature in
+        renderer.capture(texture, axis: axis, tagRect: tagRect) { [weak self] copy, signature, tagLuma in
             done?()
             measuring.async {
                 var observation: ScrollObservation = .unrelated
                 var edges: (top: SIMD3<Float>, bottom: SIMD3<Float>)?
                 if let signature, chain.generation == generation {
-                    if let reported {
-                        observation = reported
-                    } else if let previous = chain.previous, previous.signature.lines != signature.lines || previous.signature.bands != signature.bands {
+                    if let previous = chain.previous, previous.signature.lines != signature.lines || previous.signature.bands != signature.bands {
                         LocalScrollProfile.note("picture \(id) is \(signature.span)x\(signature.lines), the previous \(previous.signature.span)x\(previous.signature.lines): unrelated")
                     } else if let previous = chain.previous {
                         switch estimator.measure(from: previous.signature, to: signature, expected: hint.range,
@@ -280,7 +283,9 @@ public final class LocalScrollController {
                         }
                         if let copy { self.textures[id] = copy }
                         if let edges { self.fills[id] = edges }
-                        self.model.observe(id, copy == nil ? .unrelated : result)
+                        // The reporter's word for exactly this picture replaces measurement.
+                        let reported = copy == nil ? nil : self.report?(source, tagLuma)
+                        self.model.observe(id, copy == nil ? .unrelated : reported ?? result)
                         self.profile.measured(result)
                         self.releaseTextures(keeping: Set(self.model.retainedFrames))
                     }
@@ -293,7 +298,7 @@ public final class LocalScrollController {
         var lines = 0..<signature.lines, bands = 0..<signature.bands
         var measured: ScrollRegion?
         switch observation {
-        case .moved(_, let region, _, _), .reported(_, let region, _, _): measured = region
+        case .moved(_, let region, _, _), .reported(_, let region, _, _, _): measured = region
         default: break
         }
         if let region = measured {

@@ -41,7 +41,7 @@ struct LocalScrollRendererTests {
         let bytes = Self.picture(width: width, height: height, seed: 3)
         let source = Self.texture(bytes, width: width, height: height, device: renderer.device)
         let gpu: ScrollSignature = try await withCheckedThrowingContinuation { continuation in
-            renderer.capture(source, axis: axis) { copy, signature in
+            renderer.capture(source, axis: axis) { copy, signature, _ in
                 if let signature, copy != nil { continuation.resume(returning: signature) }
                 else { continuation.resume(throwing: CancellationError()) }
             }
@@ -75,7 +75,7 @@ struct LocalScrollRendererTests {
         func signature(_ bytes: [UInt8]) async throws -> (MTLTexture, ScrollSignature) {
             let source = Self.texture(bytes, width: width, height: height, device: renderer.device)
             return try await withCheckedThrowingContinuation { continuation in
-                renderer.capture(source, axis: .vertical) { copy, signature in
+                renderer.capture(source, axis: .vertical) { copy, signature, _ in
                     if let copy, let signature { continuation.resume(returning: (copy, signature)) }
                     else { continuation.resume(throwing: CancellationError()) }
                 }
