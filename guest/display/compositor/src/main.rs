@@ -178,15 +178,12 @@ fn launch_env(
 const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 
 /// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
-/// "Applications"). `LIBGL_KOPPER_DRI2` lets Mesa's GLX and X11 EGL try Zink (OpenGL on
-/// Vulkan) on Xwayland, which has no DRI3: Zink then presents through the Vulkan driver's
-/// own X11 surfaces. Mesa tries Zink before its CPU renderer only while no
-/// `GALLIUM_DRIVER` is selected, and falls back to the CPU renderer when Zink finds no
-/// GPU. GTK 4 draws with Vulkan, not with OpenGL, which on Wayland has no Zink without a
-/// DRM render node; Electron runs as an X11 client, whose ANGLE draws with OpenGL, so
-/// Zink, where as a Wayland client its GPU process would find no render node.
-const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] =
-    &[("LIBGL_KOPPER_DRI2", "1"), ("GSK_RENDERER", "vulkan"), ("ELECTRON_OZONE_PLATFORM_HINT", "x11")];
+/// "Applications"). GTK 4 draws with Vulkan, not with OpenGL, which on Wayland would stay
+/// on the CPU without a DRM render node; Electron runs as an X11 client, where its input
+/// methods and windows behave as Chromium's do. OpenGL stays on the computer's renderer:
+/// Zink on the phone's GPU offers only OpenGL ES 2.0 (the phone has no logic operations),
+/// so desktop OpenGL contexts would fail.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("GSK_RENDERER", "vulkan"), ("ELECTRON_OZONE_PLATFORM_HINT", "x11")];
 
 /// On the seat that renders on the phone's GPU: every application's Vulkan loader also
 /// loads the phone's driver, which reaches the phone through the broker's sockets; they
@@ -201,9 +198,8 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
         tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
         return;
     }
-    // A selected Gallium driver stops Mesa trying Zink; the toolkit settings replace the
-    // seat's defaults.
-    env.retain(|(k, _)| k != "GALLIUM_DRIVER" && !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k));
+    // The toolkit settings replace the seat's defaults.
+    env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k));
     env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
@@ -737,7 +733,7 @@ mod tests {
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
-        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
+        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), None);
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
         assert_eq!(get(&env, "CABOOSE_GPU_ROUTING"), Some("1"));
@@ -745,7 +741,7 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
-        assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("d3d12"), "OpenGL keeps the computer's renderer");
         std::fs::remove_file(&icd).unwrap();
     }
 

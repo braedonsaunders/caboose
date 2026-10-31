@@ -99,8 +99,8 @@ unsupported features are not enabled or counted as passes.
 
 [docs/gpu-live.md, "Applications"](../../docs/gpu-live.md#applications) describes how the
 owner's display routes every toolkit to the phone's GPU. `check-apps.sh` checks it without
-a phone, in a disposable container of a computer image with `vulkan-tools`, `mesa-utils`,
-`gtk-4-examples` and `qml-qt6` added:
+a phone, in a disposable container of a computer image with `vulkan-tools`, `mesa-utils`
+and `gtk-4-examples` added:
 
 ```sh
 guest/display/scripts/dev.sh cargo build --release -p caboose-display -p caboose-display-probe
@@ -111,10 +111,9 @@ It installs the driver with `install-live.py --driver`, starts a private caboose
 the owner's seat with the private GPU sockets, watched by caboose-display-probe, and checks
 its launch environment. `socket-recorder.py` then stands in for the broker on its two
 sockets: it records which process opens one and closes the connection, as happens when no
-phone is attached. For Vulkan on Wayland and X11 (`vkcube`), GLX (`glxgears`, `glxinfo`),
-EGL on X11 (`eglinfo`), GTK 4 (`gtk4-widget-factory`), Qt Quick (`qml6`), Chromium and
-Electron (Visual Studio Code) it checks that the Vulkan loader loaded the driver, that the
-application's own process (Chromium's and Electron's GPU process) opened the broker's
+phone is attached. For Vulkan on Wayland and X11 (`vkcube`), GTK 4 (`gtk4-widget-factory`)
+and Chromium it checks that the Vulkan loader loaded the driver, that the
+application's own process (Chromium's GPU process) opened the broker's
 socket, and that the application went on to draw on the computer: a window with a picture,
 read through the display's control socket, or a clean exit. Logs, the socket record and the
 windows' pictures stay in OUT (default `guest/gpu/out/apps`). `CABOOSE_CHECK_CPUS` and

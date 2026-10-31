@@ -520,15 +520,13 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | Applications | Path to the phone's GPU |
 | --- | --- |
 | Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the routing layer (`guest/gpu/routing-layer`, enabled by `CABOOSE_GPU_ROUTING=1` in place of Mesa's device-select layer) lists the phone's GPU first and CPU renderers such as lavapipe last. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
-| OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
 | GTK 4 | `GSK_RENDERER=vulkan`. |
-| Qt 6 Quick | OpenGL through Xwayland, so Zink. |
-| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client whose ANGLE draws with OpenGL, so Zink. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. |
 | Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 The broker listens on its local socket only while a phone's executor is ready. With no
 phone the driver fails its Vulkan instance and the loader continues with the computer's
-drivers; Zink finds no GPU and Mesa uses llvmpipe; GTK and Chromium draw with lavapipe.
+drivers; GTK and Chromium draw with lavapipe.
 Those applications draw on the computer and reach the phone as pictures, like every
 application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
 environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
@@ -540,10 +538,11 @@ When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`
 The launch environment sets `auto`, which the routing layer resolves per process:
 `restart` for Chromium-family GPU processes (Chromium, Electron), which restart, and for
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
-recover from device loss (Zink, GTK 4, Vulkan applications and games).
+recover from device loss (GTK 4, Vulkan applications and games).
 
-Some applications draw on the computer even with a phone attached: OpenGL clients on
-Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and
+Some applications draw on the computer even with a phone attached: OpenGL
+applications, Qt Quick and Electron among them, because Zink (OpenGL on Vulkan) on the
+phone's GPU offers only OpenGL ES 2.0, the phone having no logic operations; Wine and
 Proton games, because the driver's surfaces are Wayland and XCB, not Xlib.
 
 Flatpak applications take the same paths inside their sandbox. `install-live.py
