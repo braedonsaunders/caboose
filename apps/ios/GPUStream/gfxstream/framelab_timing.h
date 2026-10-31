@@ -1,15 +1,14 @@
 #pragma once
 // Frame lab (guest/framelab) on the phone: when each live GPU present reached the display.
 //
-// With CABOOSE_FRAMELAB=1 the decoder enables VK_GOOGLE_display_timing on the device
-// (the gfxstream fork's "Caboose: enable VK_GOOGLE_display_timing for frame lab"), every native present carries its present serial as the present ID, and
-// after a frame's present fence completes the presentation engine's past timings are
-// printed to standard error:
+// With CABOOSE_FRAMELAB=1 the decoder enables VK_GOOGLE_display_timing on the device (the
+// gfxstream fork's commit "Caboose: enable VK_GOOGLE_display_timing for frame lab"), every
+// native present carries its present serial as the present ID, and after a frame's present
+// fence completes the presentation engine's past timings are printed to standard error:
 //   caboose-framelab: present window=W seq=S presented_ns=P now_ns=N
 // P is when the image was shown and N when the line was written, both in nanoseconds of
-// MoltenVK's presentation clock (mach_absolute_time, as CACurrentMediaTime); frame lab's
-// driver uses N - P to place P on its own clock. Without the variable, or a device without the extension,
-// nothing is chained or printed.
+// MoltenVK's presentation clock (mach_absolute_time, as CACurrentMediaTime). Without the
+// variable, or on a device without the extension, nothing is chained or printed.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
