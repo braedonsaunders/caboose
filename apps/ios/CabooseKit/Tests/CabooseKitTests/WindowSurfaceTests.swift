@@ -119,4 +119,83 @@ import Testing
         #expect(pixel(image, 2, 1) == [0, 0, 0, 0], "a transparent tile pixel stays transparent")
         #expect(pixel(image, 0, 0) == [0, 0, 0, 0])
     }
+
+    @Test func atlasGpuCopyRectPreservesChromeAndUploadsExposedPixels() throws {
+        let cache = TileAtlasCache(capacity: 16)
+        let renderer = SurfaceAtlasRenderer()
+        let surface = WindowSurface()
+
+        // Batch 1: 128x128 keyframe with top chrome (y: 0..<32 = red) and content viewport (y: 32..<128 = blue)
+        let batch1 = SurfaceBatch(
+            window: 9,
+            seq: 1,
+            ptsMicros: 1000,
+            size: CGSize(width: 128, height: 128),
+            rect: CGRect(x: 0, y: 0, width: 128, height: 128),
+            keyframe: true,
+            fills: [
+                SurfaceFill(rect: CGRect(x: 0, y: 0, width: 128, height: 32), rgba: 0xFF00_00FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 32, width: 128, height: 64), rgba: 0x00FF_00FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 96, width: 128, height: 32), rgba: 0x0000_FFFF),
+            ]
+        )
+        #expect(renderer.applyAndUpload(batch1, cache: cache, to: surface))
+
+        // Batch 2: scroll content viewport (y: 32..<128) up by 16 px (dy = -16), update a top-right scrollbar thumb
+        // at (x: 120..<128, y: 32..<48), and fill exposed bottom strip (y: 112..<128)
+        let batch2 = SurfaceBatch(
+            window: 9,
+            seq: 2,
+            ptsMicros: 2000,
+            size: CGSize(width: 128, height: 128),
+            rect: CGRect(x: 0, y: 0, width: 128, height: 128),
+            keyframe: false,
+            copies: [SurfaceCopy(dx: 0, dy: -16, rect: CGRect(x: 0, y: 32, width: 128, height: 96))],
+            fills: [
+                SurfaceFill(rect: CGRect(x: 120, y: 32, width: 8, height: 16), rgba: 0x8080_80FF),
+                SurfaceFill(rect: CGRect(x: 0, y: 112, width: 128, height: 16), rgba: 0xFFFF_00FF),
+            ]
+        )
+        #expect(renderer.applyAndUpload(batch2, cache: cache, to: surface))
+        let img = try #require(surface.snapshot())
+        // Top header chrome (y=10) stayed red (BGRA: [0, 0, 255, 255])
+        #expect(pixel(img, 10, 10) == [0, 0, 255, 255])
+        // Top-right scrollbar thumb at (124, 40) is gray (BGRA: [128, 128, 128, 255])
+        #expect(pixel(img, 124, 40) == [128, 128, 128, 255])
+        // Shifted blue band moved from y=96..<128 to y=80..<112 (BGRA: [255, 0, 0, 255] at y=88)
+        #expect(pixel(img, 10, 88) == [255, 0, 0, 255])
+        // Newly exposed bottom strip y=112..<128 is yellow (RGBA 0xFFFF00FF -> BGRA [0, 255, 255, 255])
+        #expect(pixel(img, 10, 120) == [0, 255, 255, 255])
+    }
+    @Test func atlasAllocationFailureRejectsWholeBatchWithoutAdvancingPixelsOrHistory() throws {
+        for resource in [WindowSurface.AtlasResource.scratch, .staging, .commandBuffer, .blitEncoder, .backing] {
+            var denied: WindowSurface.AtlasResource?
+            let surface = WindowSurface(allowsResource: { $0 != denied })
+            let cache = TileAtlasCache(capacity: 16)
+            let renderer = SurfaceAtlasRenderer()
+            let initial = SurfaceBatch(window: 1, seq: 1, ptsMicros: 1,
+                size: CGSize(width: 16, height: 16), rect: CGRect(x: 0, y: 0, width: 16, height: 16),
+                keyframe: true, fills: [SurfaceFill(rect: CGRect(x: 0, y: 0, width: 16, height: 16), rgba: 0xFF00_00FF)])
+            #expect(renderer.applyAndUpload(initial, cache: cache, to: surface))
+            let oldGeneration = surface.generation
+            let oldBytes = renderer.rgbaBytes(forWindow: 1)
+            denied = resource
+            let side = resource == .backing ? 32 : 16
+            let delta = SurfaceBatch(window: 1, seq: 2, ptsMicros: 2,
+                size: CGSize(width: side, height: side), rect: CGRect(x: 0, y: 0, width: side, height: side),
+                keyframe: resource == .backing,
+                copies: [SurfaceCopy(dx: 0, dy: -4, rect: CGRect(x: 0, y: 0, width: 16, height: 12))],
+                fills: [SurfaceFill(rect: CGRect(x: 0, y: 12, width: 16, height: 4), rgba: 0x0000_FFFF)])
+            #expect(!renderer.applyAndUpload(delta, cache: cache, to: surface))
+            #expect(surface.generation == oldGeneration)
+            #expect(renderer.rgbaBytes(forWindow: 1) == oldBytes)
+            let image = try #require(surface.snapshot())
+            #expect(pixel(image, 4, 14) == [0, 0, 255, 255])
+            denied = nil
+            #expect(renderer.applyAndUpload(delta, cache: cache, to: surface))
+            let recovered = try #require(surface.snapshot())
+            #expect(pixel(recovered, 4, 14) == [255, 0, 0, 255])
+        }
+    }
+
 }

@@ -1,0 +1,8 @@
+{
+  "name": "surface-reset",
+  "description": "Resets the client's XXH64 tile cache on a new epoch.",
+  "messages": [
+    {"direction": "server", "type": "surface.reset", "type_id": 36, "fields": {"epoch": 2}}
+  ],
+  "hex": "2408000000a16565706f636802"
+}

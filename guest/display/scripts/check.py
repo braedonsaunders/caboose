@@ -73,7 +73,7 @@ def probe(args, check=True, json_out=True, timeout=120):
     if json_out:
         cmd.append("--json")
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if not json_out:
+    if not json_out:\
         return r
     try:
         report = json.loads(r.stdout.strip().splitlines()[-1])
@@ -967,6 +967,95 @@ def check_idle():
     return with_server(["weston-terminal"], run)
 
 
+def check_atlas_exact():
+    # Zero-video Surface Atlas streaming (--zero-video): a static page streamed directly
+    # from its shm buffer and via Pixman composition must reconstruct bit-for-bit
+    # identical PNGs, with 0 video frames and 0 decode errors.
+    pictures = []
+    reports = []
+    for extra in ((), ("--always-compose",)):
+        out = tempfile.mkdtemp(prefix="atlas-exact-")
+        profile = tempfile.mkdtemp(prefix="chromium-atlas-exact-")
+        def run(proc, token, out=out):
+            time.sleep(6)
+            r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video", "--save", out])
+            return r, open(os.path.join(out, "window-1.png"), "rb").read()
+        r, png_bytes = with_server(
+            CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,400", f"--app={PAGES}/popup.html"],
+            run, extra=extra)
+        reports.append(r)
+        pictures.append(png_bytes)
+    r0 = reports[0]
+    w0 = r0["windows"][0]
+    if r0["surface_batches"] < 1 or w0["codec"] != "atlas" or w0["decode_errors"]:
+        raise Failed(f"expected atlas batches with 0 decode errors, got {r0}")
+    if pictures[0] != pictures[1]:
+        raise Failed("atlas reconstructed picture differs between direct shm and composed paths")
+    return (f"zero-video surface.batch reconstructed bit-exact ({len(pictures[0])} byte PNG, "
+            f"{r0['atlas_fills']} fills, {r0['atlas_tiles']} tiles)")
+
+
+def check_atlas_scroll_copyrect():
+    # Scrolling a page under --zero-video must detect the translation vector and emit
+    # SurfaceCopy (CopyRect) commands, encoding only the newly exposed strip.
+    profile = tempfile.mkdtemp(prefix="chromium-atlas-scroll-")
+    actions = "wait:500;scroll:400,400,64;wait:400;scroll:400,400,64;wait:500"
+    def run(proc, token):
+        time.sleep(5)
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
+                   "--display", "900x800@60x1", "--actions", actions])
+        w = r["windows"][0]
+        if r["surface_batches"] < 2 or r["atlas_copies"] < 1 or w["decode_errors"]:
+            raise Failed(f"expected SurfaceCopy on scroll, got batches={r['surface_batches']} copies={r['atlas_copies']} window={w}")
+        return (f"scroll emitted {r['atlas_copies']} CopyRect command(s) across {r['surface_batches']} batches "
+                f"({r['atlas_tiles']} exposed tiles, {r['atlas_fills']} fills)")
+    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
+
+
+def check_atlas_tab_switch_dedup():
+    # Switching from View A to View B and back to View A under --zero-video must hit the
+    # session-wide 64x64 tile hash cache and emit SurfaceTileRef (0 pixel bytes) for
+    # revisited tiles.
+    page_dir = tempfile.mkdtemp(prefix="atlas-tabs-")
+    profile = tempfile.mkdtemp(prefix="chromium-atlas-tabs-")
+    page_path = os.path.join(page_dir, "tabs.html")
+    with open(page_path, "w", encoding="utf-8") as f:
+        f.write("""<!doctype html>
+<meta charset="utf-8">
+<title>Atlas tabs</title>
+<style>
+  html, body { margin: 0; font: 22px monospace; background: #101820; color: #f0f4f8; }
+  #view { padding: 24px; line-height: 1.5; }
+</style>
+<div id="view"></div>
+<script>
+  const views = [
+    Array.from({length: 18}, (_, i) => `View Alpha line ${i}: 0123456789abcdef`).join('<br>'),
+    Array.from({length: 18}, (_, i) => `View Bravo row ${i}: fedcba9876543210`).join('<br>')
+  ];
+  let idx = 0;
+  const el = document.getElementById('view');
+  el.innerHTML = views[0];
+  addEventListener('pointerdown', () => {
+    idx = (idx + 1) % 2;
+    el.innerHTML = views[idx];
+    document.title = 'tab:' + idx;
+  });
+</script>
+""")
+    actions = "wait:500;click:300,300;wait:600;click:300,300;wait:600"
+    def run(proc, token):
+        time.sleep(5)
+        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
+                   "--display", "900x600@60x1", "--actions", actions])
+        w = r["windows"][0]
+        if r["surface_batches"] < 3 or r["atlas_refs"] < 1 or w["decode_errors"]:
+            raise Failed(f"expected SurfaceTileRef cache hits on tab switch back, got refs={r['atlas_refs']} report={r}")
+        return (f"tab switch A -> B -> A emitted {r['atlas_refs']} cached tile ref(s) (0 pixel bytes) "
+                f"across {r['surface_batches']} batches")
+    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,600", f"--app=file://{page_path}"], run)
+
+
 CHECKS = [
     ("auth", check_auth),
     ("wayland-terminal", check_wayland_terminal),
@@ -1007,6 +1096,9 @@ CHECKS = [
     ("motion", check_motion),
     ("tiles", check_tiles),
     ("idle", check_idle),
+    ("atlas_exact", check_atlas_exact),
+    ("atlas_scroll_copyrect", check_atlas_scroll_copyrect),
+    ("atlas_tab_switch_dedup", check_atlas_tab_switch_dedup),
 ]
 
 

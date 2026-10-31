@@ -179,6 +179,8 @@ private struct ClusterGlass: ViewModifier {
 final class SoftwareKeyboard {
     static let shared = SoftwareKeyboard()
     private(set) var visible = false
+    /// How much of the shell's window the software keyboard covers, in points; 0 when hidden.
+    private(set) var height: CGFloat = 0
     @ObservationIgnored weak var window: UIWindow?
 
     private init() {
@@ -190,7 +192,9 @@ final class SoftwareKeyboard {
                 let screen = note.object as? UIScreen
                 MainActor.assumeIsolated {
                     let keyboard = SoftwareKeyboard.shared
-                    keyboard.visible = !hiding && keyboard.covered(by: frame, on: screen) > 120
+                    let covered = hiding ? 0 : keyboard.covered(by: frame, on: screen)
+                    keyboard.visible = covered > 120
+                    keyboard.height = keyboard.visible ? covered : 0
                 }
             }
         }

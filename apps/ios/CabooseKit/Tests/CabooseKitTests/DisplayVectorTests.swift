@@ -68,6 +68,7 @@ import Testing
             return .text(string)
         case let number as NSNumber:
             if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
+            if String(cString: number.objCType) == "Q" { return .unsigned(number.uint64Value) }
             return CBOR(number.intValue)
         default:
             return .null
@@ -308,6 +309,42 @@ import Testing
         guard case .gpuDestroy(1, "spool-limit") = try server("gpu-destroy-spool-limit").first else { Issue.record("reason"); return }
     }
 
+    @Test func surfaceAtlasAndSceneVectors() throws {
+        guard case .hello(let hello) = try server("server-hello-atlas").first else { Issue.record("server-hello-atlas"); return }
+        #expect(hello.encoders.isEmpty)
+        #expect(hello.features.contains("atlas") && hello.features.contains("scene"))
+        #expect(hello.epoch == "5f3a9c01d2e4b678")
+
+        guard case .surfaceBatch(let batch) = try server("surface-batch").first else { Issue.record("surface-batch"); return }
+        #expect(batch.window == 7 && batch.seq == 1 && batch.ptsMicros == 1_234_567_890)
+        #expect(batch.size == CGSize(width: 1179, height: 2556))
+        #expect(batch.rect == CGRect(x: 0, y: 0, width: 1179, height: 2556))
+        #expect(batch.keyframe)
+        #expect(batch.copies == [SurfaceCopy(dx: 0, dy: -64, rect: CGRect(x: 0, y: 0, width: 1179, height: 1920))])
+        #expect(batch.fills == [SurfaceFill(rect: CGRect(x: 0, y: 1920, width: 1179, height: 636), rgba: 0x1E1E_2EFF)])
+        #expect(batch.refs == [SurfaceTileRef(x: 0, y: 0, hash: 0x9E37_79B1_85EB_CA87)])
+        #expect(batch.tiles.count == 1)
+        #expect(batch.tiles[0].rect == CGRect(x: 64, y: 0, width: 64, height: 64))
+        #expect(batch.tiles[0].hash == 0xC2B2_AE3D_27D4_EB4F)
+        #expect(batch.tiles[0].format == .pal2Lz4)
+
+        guard case .surfaceReset(let epoch) = try server("surface-reset").first else { Issue.record("surface-reset"); return }
+        #expect(epoch == 2)
+
+        guard case .sceneFont(let font) = try server("scene-font").first else { Issue.record("scene-font"); return }
+        #expect(font.font == 0x85EB_CA77_C2B2_AE63 && font.index == 0 && font.family == "Inter")
+        #expect(font.data == Data([0x00, 0x01, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x80, 0x00, 0x03, 0x00, 0x40]))
+
+        guard case .sceneCommit(let commit) = try server("scene-commit").first else { Issue.record("scene-commit"); return }
+        #expect(commit.window == 7 && commit.seq == 1 && commit.ptsMicros == 1_234_567_890)
+        #expect(commit.root == 1 && commit.reset)
+        #expect(commit.nodes.count == 3)
+        #expect(commit.nodes[0].id == 1 && commit.nodes[0].kind == .group && commit.nodes[0].children == [2, 3])
+        #expect(commit.nodes[1].id == 2 && commit.nodes[1].kind == .scroll && commit.nodes[1].scroll == CGRect(x: 0, y: 120, width: 1179, height: 7200))
+        #expect(commit.nodes[2].id == 3 && commit.nodes[2].kind == .glyphs && commit.nodes[2].font == 0x85EB_CA77_C2B2_AE63 && commit.nodes[2].size == 16)
+        #expect(commit.remove.isEmpty)
+    }
+
     /// A stream's bytes arrive in order once; a repeat from the start (a resent stream) and
     /// anything out of order are dropped, and what arrives before the replay starts is held.
     @Test func aGPUStreamFeedKeepsOrder() {
@@ -419,6 +456,10 @@ import Testing
         "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], devices: true),
+        "client-hello-atlas": .hello(token: "f3a9c1d27e8b4a6f", decoders: [], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], atlas: true, scene: true),
+        "scene-scroll": .sceneScroll(window: 7, node: 2, sx: 0, sy: 240.5),
         "devices": .devices([
             DeviceDescriptor(id: "camera-back", kind: .camera, name: "iPhone Back Camera", position: .back, size: (1280, 720), fps: 30),
             DeviceDescriptor(id: "depth", kind: .depth, name: "iPhone Depth", position: .back, size: (256, 192), fps: 15),

@@ -203,6 +203,7 @@ pub struct State {
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
+    pub scene: crate::scene::SceneServer,
     pub control: crate::control::Control,
     pub clipboard: crate::clipboard::Clipboard,
     /// How the compositor reaches its Xwayland as a client, once it runs.
@@ -511,6 +512,7 @@ impl State {
         }
         self.video_window_gone(id);
         self.game_window_gone(id);
+        self.scene_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;

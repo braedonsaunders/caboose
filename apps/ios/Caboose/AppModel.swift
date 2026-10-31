@@ -36,8 +36,6 @@ final class AppModel {
     var desktopFiles = DesktopFilesCenter()
     var dockLaunches = DockLaunchState()
     private var dockLaunchTimeouts: [String: Task<Void, Never>] = [:]
-    /// Videos playing on the computer that can move to the phone.
-    private(set) var media = MediaHandoff()
     let phone = PhoneHandoff()
     /// Linux portals, appearance, media controls and opt-in location for this computer.
     let bridge = NativeBridge()
@@ -192,7 +190,6 @@ final class AppModel {
         }
         agents.onEvent = { [weak self] type, event in
             guard let self, self.connectionRevision == revision else { return }
-            self.media.handle(type, event)
             self.catalog.handle(type, event)
             self.mcp.handle(type, event)
             self.phone.handle(type, event)
@@ -209,7 +206,6 @@ final class AppModel {
             guard let self, self.connectionRevision == revision else { return }
             await self.refreshApps()
         }
-        media.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
         phone.attach(host: { [weak self] in self?.connectionRevision == revision ? self?.host : nil })
         bridge.attach(computer: { [weak self] in
             guard let self, self.connectionRevision == revision,
@@ -217,14 +213,10 @@ final class AppModel {
             return NativeBridge.Computer(host: host, id: credentials.fileDomainIdentifier, documents: self.documents)
         }, window: { SoftwareKeyboard.shared.window })
         bridge.setActive(sceneActive)
-        bridge.nowPlayingSuspended = media.handedOff != nil
+        bridge.nowPlayingSuspended = false
         agents.onControlClosed = { [weak self] in
             guard let self, self.connectionRevision == revision else { return }
             self.bridge.controlClosed()
-        }
-        media.onHandoffChanged = { [weak self] handedOff in
-            guard let self, self.connectionRevision == revision else { return }
-            self.bridge.nowPlayingSuspended = handedOff
         }
     }
 
@@ -332,14 +324,12 @@ final class AppModel {
         mcp.reset()
         documents.reset()
         desktopFiles.reset()
-        media.reset()
         phone.reset()
         bridge.reset()
         agents = AgentCenter()
         catalog = CatalogCenter()
         mcp = McpCenter()
         documents = OpenDocumentCenter()
-        media = MediaHandoff()
         bindConnectionCenters()
         computer = nil
         computerStatus = nil
@@ -472,7 +462,6 @@ final class AppModel {
             documents.requestSync(model: self)
             Task { await desktopFiles.refresh(model: self) }
             agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
-            Task { await media.refresh() }
             Task { await refreshApps() }
             refreshFileSearch()
             Task { try? await refreshComputer() }
@@ -974,8 +963,7 @@ final class AppModel {
 
     /// The big screen's desktop renders at 2560x1440 by default and the TV scales it to its
     /// own resolution: sharp from a couch, and under half the pixels of 4K for every scroll,
-    /// animation and window move. "4K" renders at the screen's full pixels instead. Video
-    /// never rides the desktop stream either way; it plays natively through media handoff.
+    /// animation and window move. "4K" renders at the screen's full pixels instead.
     private(set) var desktopFull4K = UserDefaults.standard.bool(forKey: "desktopFull4K")
 
     private func tvPixelsPerPoint(width: CGFloat, scale: CGFloat) -> CGFloat {

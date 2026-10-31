@@ -257,6 +257,15 @@ impl State {
         };
         let result = match op {
             "windows" => Ok(self.control_windows()),
+            "stats" => {
+                let s = &self.stats;
+                Ok(format!(
+                    "{{\"frames\":{},\"bytes\":{},\"renders\":{},\"direct\":{},\"unchanged_renders\":{},\"render_us\":{},\"encode_cpu_us\":{},\"damaged_px\":{},\"picture_px\":{},\"motion_frames\":{},\"tile_pictures\":{},\"tiles\":{}}}\n",
+                    s.frames, s.bytes, s.renders, s.direct, s.unchanged_renders, s.render_us, s.encode_cpu_us,
+                    s.damaged_px, s.picture_px, s.motion_frames, s.tile_pictures, s.tiles
+                )
+                .into_bytes())
+            }
             "focus" => args
                 .first()
                 .and_then(|a| a.parse::<u64>().ok())

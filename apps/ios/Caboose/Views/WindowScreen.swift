@@ -94,11 +94,6 @@ struct WindowScreen: View {
             withAnimation(.snappy) { chromeVisible = false }
         }
         .tint(Brand.amber)
-        .fullScreenCover(item: Binding(
-            get: { model.media.handedOff },
-            set: { if $0 == nil, model.media.handedOff != nil { Task { await model.media.finished(at: nil) } } })) { media in
-            MediaPlayerScreen(media: media).environment(model)
-        }
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
@@ -349,9 +344,6 @@ struct WindowScreen: View {
         }
         if model.agents.available {
             Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
-        }
-        if let video = model.media.available, window.appClass?.name.lowercased().contains("chromium") == true {
-            Button("Play on iPhone or Apple TV", systemImage: "play.tv") { Task { await model.media.playHere(video) } }
         }
         Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
         Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.closeDiagnosed(window) }
