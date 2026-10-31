@@ -285,7 +285,8 @@ public enum OnScreenGamepad {
     ]
 
     public static let defaultKeys: [String: String] = [
-        "south": "space", "east": "Escape", "west": "z", "north": "x",
+        // A jumps in a game and confirms in its menus; B backs out.
+        "south": "space+Return", "east": "Escape", "west": "z", "north": "x",
         "leftShoulder": "q", "rightShoulder": "e", "leftTrigger": "Shift_L", "rightTrigger": "Control_L",
         "select": "Tab", "start": "Return",
     ]
@@ -294,6 +295,7 @@ public enum OnScreenGamepad {
     public static let keyChoices: [(name: String, title: String)] = {
         var choices: [(name: String, title: String)] = [
             ("", "None"), ("space", "Space"), ("Return", "Return"), ("Escape", "Escape"), ("Tab", "Tab"),
+            ("space+Return", "Space + Return"), ("Return+y", "Return + Y (yes)"), ("Escape+n", "Escape + N (no)"),
             ("BackSpace", "Delete"), ("Shift_L", "Shift"), ("Control_L", "Control"), ("Alt_L", "Option"),
             ("Up", "↑"), ("Down", "↓"), ("Left", "←"), ("Right", "→"),
         ]
@@ -301,6 +303,14 @@ public enum OnScreenGamepad {
         choices += (1 ... 12).map { (name: "F\($0)", title: "F\($0)") }
         return choices
     }()
+
+    /// The keystrokes a key name presses together, in order: one key, or several joined
+    /// by `+` (`space+Return`); empty when any of them is unknown.
+    public static func strokes(for name: String) -> [KeyStroke] {
+        let parts = name.split(separator: "+", omittingEmptySubsequences: false).map(String.init)
+        let strokes = parts.compactMap(stroke(for:))
+        return strokes.count == parts.count ? strokes : []
+    }
 
     /// The keystroke a key name presses: a special key, `space`, or one character.
     public static func stroke(for name: String) -> KeyStroke? {

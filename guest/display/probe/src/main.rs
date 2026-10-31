@@ -78,6 +78,8 @@ OPTIONS:
     --ruler-scale S        window pixels per page pixel of that ruler [default: 1]
     --scroll-zoom S        after 120 drives, zoom the page to S with scroll.zoom and go on
     --scroll-zoom-focus F  the zoom's focus F of the scroller's height down [default: 0.5]
+    --targets FILE         aim touches (hello targets: true): append every `targets` message
+                           to FILE as a JSON line (t_us, id, serial, targets)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -116,6 +118,7 @@ struct Args {
     ruler_scale: f64,
     scroll_zoom: Option<f64>,
     scroll_zoom_focus: f64,
+    targets: Option<PathBuf>,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -174,6 +177,7 @@ fn parse_args() -> Result<Args, String> {
         scroll: false,
         scroll_overscan: None,
         scroll_drive: None,
+        targets: None,
         ruler: false,
         ruler_scale: 1.0,
         scroll_zoom: None,
@@ -240,6 +244,7 @@ fn parse_args() -> Result<Args, String> {
             "--ruler" => a.ruler = true,
             "--scroll-zoom-focus" => a.scroll_zoom_focus = value()?.parse().map_err(|_| "bad --scroll-zoom-focus")?,
             "--scroll-zoom" => a.scroll_zoom = Some(value()?.parse().map_err(|_| "bad --scroll-zoom")?),
+            "--targets" => a.targets = Some(PathBuf::from(value()?)),
             "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
             "-h" | "--help" => {
@@ -843,6 +848,7 @@ fn run(args: Args) -> Result<bool, String> {
         &Message::ClientHello(proto::ClientHello {
             devices: false,
             scroll: args.scroll,
+            targets: args.targets.is_some(),
             version: proto::VERSION,
             token: args.token.clone(),
             decoders: args.decoders.clone(),
@@ -1247,6 +1253,30 @@ fn run(args: Args) -> Result<bool, String> {
                     text_inputs.push(t);
                 }
                 Message::ScrollTree(t) => scroll_check.tree(t),
+                Message::Targets(t) => {
+                    if let Some(path) = &args.targets {
+                        let list: Vec<String> = t
+                            .targets
+                            .iter()
+                            .map(|g| format!("[{},{},{},{},{}]", g.rect.x, g.rect.y, g.rect.w, g.rect.h, g.kind))
+                            .collect();
+                        let line = format!(
+                            "{{\"t_us\":{},\"id\":{},\"serial\":{},\"targets\":[{}]}}\n",
+                            monotonic_us(),
+                            t.id,
+                            t.serial,
+                            list.join(",")
+                        );
+                        let written = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut f| f.write_all(line.as_bytes()));
+                        if let Err(e) = written {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                }
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
                     if target.is_none() && args.window.is_none_or(|w| w == g.window) {

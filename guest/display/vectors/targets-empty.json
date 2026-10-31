@@ -1,0 +1,8 @@
+{
+  "name": "targets-empty",
+  "description": "Window 7 has no controls to aim at any more.",
+  "messages": [
+    {"direction": "server", "type": "targets", "type_id": 40, "fields": {"id": 7, "serial": 13, "targets": []}}
+  ],
+  "hex": "2816000000a3626964076673657269616c0d677461726765747380"
+}

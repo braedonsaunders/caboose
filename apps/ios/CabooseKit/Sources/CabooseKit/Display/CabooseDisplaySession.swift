@@ -373,7 +373,8 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
                     scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
-                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled))
+                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled,
+                    targets: true))
     }
 
     // MARK: Server messages
@@ -393,6 +394,8 @@ public final class CabooseDisplaySession: DisplaySession {
                 cursorSerial &+= 1
             case .scrollTree(let tree):
                 windows[tree.window]?.scrollReports.record(tree)
+            case .targets(let window, _, let targets):
+                windows[window]?.touchTargets = targets
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
                 if textInput?.window != window || textInput?.enabled != enabled || textInput?.purpose != purpose {

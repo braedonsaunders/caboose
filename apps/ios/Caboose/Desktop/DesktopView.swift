@@ -6,6 +6,7 @@ import SwiftUI
 struct DesktopView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     let desktop: DesktopModel
     /// A TV's desktop covers the whole screen; the phone's stays inside the bars.
     var fillsScreen = true
@@ -58,6 +59,9 @@ struct DesktopView: View {
                 // Its rows are hit-tested by the desktop, in this space, like the dock.
                 QuickSwitchStrip(owner: .desktop, height: desktop.workArea.height, space: .named("desktop"), tappable: false)
                     .frame(width: desktop.size.width, height: desktop.workArea.height)
+                if !desktop.detachedChrome {
+                    PointerMenuView(desktop: desktop, space: "desktop", bounds: proxy.size)
+                }
                 if desktop.showsCursor && !desktop.detachedChrome {
                     Cursor(hit: desktop.hovered, ui: desktop.ui)
                         .position(desktop.cursor)
@@ -66,7 +70,12 @@ struct DesktopView: View {
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: desktop.snapPalette != nil)
             .coordinateSpace(name: "desktop")
-            .task(id: ObjectIdentifier(desktop)) { desktop.quickSwitch = model.quickSwitch }
+            .task(id: ObjectIdentifier(desktop)) {
+                desktop.quickSwitch = model.quickSwitch
+                desktop.dockMenu = { [model, openWindow] id in
+                    model.dockApps.first { $0.id == id }.map { DockAppActions.items($0, model: model, openWindow: openWindow) } ?? []
+                }
+            }
             .onAppear {
                 if !model.windowCardOwnsGeometry { desktop.size = proxy.size }
                 if fillsScreen {

@@ -1101,8 +1101,13 @@ their own haptic, and the pad defers the screen-edge system gestures.
 A game running on this device ([game handoff](../../docs/game-handoff.md)) gets it as a
 standard controller through the page's Gamepad API; every other window, and a game when
 Customize says so, gets keys, each held for as long as its control is (by default the d-pad and
-left stick are the arrow keys, the right stick W A S D, A Space, B Escape, Start Return). A key
-belongs to a button's place on the controller, so it carries across types. With **Other
+left stick are the arrow keys, the right stick W A S D, A Space and Return together, so it
+jumps in play and confirms in menus, B Escape, Start Return). A key belongs to a button's
+place on the controller, so it carries across types; a button can also press Return and Y, or
+Escape and N, together for a game's yes/no questions. The keyboard button in the pad's strip
+swaps its title for quick keys (Escape, Return, Y, N, Tab and the console's `` ` ``), each
+pressed and released at a tap, and a Type key that raises the system keyboard, whose
+characters, Return and Delete reach the window as key presses. With **Other
 windows get: A Linux controller** in Customize, the pad is instead a gamepad on the computer
 (`gamepad-screen` in [phone hardware](../../docs/devices.md)), which Steam and SDL games use,
 and a rumble the computer plays shakes the phone; without Controllers on in the computer's

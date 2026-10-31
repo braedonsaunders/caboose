@@ -76,9 +76,15 @@ struct LaptopContainer<Content: View>: View {
             }
             .coordinateSpace(name: "laptop")
             .overlay(alignment: .topLeading) {
-                if active && !isCard && !model.externalDisplayActive && model.desktop.showsCursor {
-                    Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
-                        .position(model.desktop.cursor).allowsHitTesting(false)
+                if active && !isCard && !model.externalDisplayActive {
+                    // Below the hinge too: the taskbar's menus open from there.
+                    ZStack(alignment: .topLeading) {
+                        PointerMenuView(desktop: model.desktop, space: "laptop", bounds: proxy.size)
+                        if model.desktop.showsCursor {
+                            Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
+                                .position(model.desktop.cursor).allowsHitTesting(false)
+                        }
+                    }
                 }
             }
             .onChange(of: physicalPanel, initial: true) { _, _ in

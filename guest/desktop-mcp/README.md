@@ -2,12 +2,18 @@
 
 An MCP server (stdio, newline-delimited JSON-RPC 2.0) that lets an agent see and drive GUI
 apps on the agent seat without touching the owner's display. The agent seat is its own
-Caboose Display instance. Beside the server are two helpers that caboose-host's `/v1/screen`
-routes use on the owner's display too:
+Caboose Display instance. Beside the server are helpers that caboose-host's `/v1/screen`
+routes and caboose-display use on the owner's display too:
 
 - `a11y.py` reads and acts on a seat's focused window through its accessibility tree;
 - `seat.py` is the client of a seat's control socket (`CABOOSE_DISPLAY_CONTROL`): the
-  window list, the seat's own pointer and keyboard, and pictures.
+  window list, the seat's own pointer and keyboard, and pictures;
+- `caboose-targets.py` is the touch target provider caboose-display runs while a phone aims
+  touches ([docs/display.md, "Touch targets"](../../docs/display.md#touch-targets)):
+  `serve` prints the focused window's controls whenever they change, `snapshot [--method
+  walk|collection] [--repeat N]` prints one reading with how long it took. It reads through
+  `a11y.py`, by one AT-SPI Collection call where the application implements it (the ATK
+  bridge does, in the application's process) and by walking the tree where not.
 
 Wayland and X11 (Xwayland) applications are read and driven alike: windows, focus and
 processes come from the compositor, contents from AT-SPI, and input goes through the
