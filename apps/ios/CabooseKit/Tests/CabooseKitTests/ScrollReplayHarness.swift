@@ -283,8 +283,15 @@ struct ScrollReplay {
             // the phone's own while it composes, the gesture's when the app's picture shows.
             let composing = result.composition != nil
             if measuring, model.isActive || wasActive, let previous = lastShown, let last = lastPosition {
-                let expected = composing && lastComposing ? model.position - last : reference - lastReference
+                // While the phone composes, or hands back, its own position is what shows. Taking
+                // over starts the composition from the app's picture as shown.
+                let expected = lastComposing ? model.position - last
+                    : composing ? shown - previous : reference - lastReference
                 report.handoffJump = max(report.handoffJump, abs((shown - previous) - expected))
+                if trace, abs((shown - previous) - expected) > 2 {
+                    print(String(format: "  JUMP t=%.3f shown %.1f -> %.1f expected %.1f composing %d/%d phase %@", t, previous, shown, expected,
+                                 lastComposing ? 1 : 0, composing ? 1 : 0, "\(model.phase)"))
+                }
             }
             lastComposing = composing
             lastReference = reference

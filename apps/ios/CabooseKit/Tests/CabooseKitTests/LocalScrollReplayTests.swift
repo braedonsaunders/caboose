@@ -72,7 +72,8 @@ struct LocalScrollReplayTrace {
         guard ProcessInfo.processInfo.environment["CABOOSE_SCROLL_TRACE"] == "1" else { return }
         var app = ScrollReplay.App()
         app.inputDelay = 0.032; app.outputDelay = 0.048 - 0.5 / app.fps
-        let (report, _) = ScrollReplay(app: app, gestures: LocalScrollReplayTests.warm(LocalScrollReplayTests.mediumFlick), duration: 3.5).run(name: "trace", measureFrom: 1.45, trace: true)
+        app.hitch = (every: 1.6, duration: 0.55)
+        let (report, _) = ScrollReplay(app: app, gestures: LocalScrollReplayTests.warm(LocalScrollReplayTests.fastFlick + [ScrollReplay.Gesture.flick(at: 3.5, peak: 2500, duration: 0.12)]), duration: 9).run(name: "trace", measureFrom: 1.45, trace: true)
         print(report.line)
     }
 }
@@ -91,5 +92,83 @@ struct LocalScrollEstimatorProbe {
         }
         let c = replay.signature(offset: 4000 + 2651, seed: 16)
         print("probe 16", ScrollMotionEstimator().measure(from: b, to: c, expected: -300...600, center: 40))
+    }
+}
+
+/// Apps that are not the reference: other gains, stalls, short pages, fixed footers and
+/// sidebars. The phone must stay native through all of them.
+struct LocalScrollRobustnessTests {
+    typealias T = LocalScrollReplayTests
+    static func app(latency: Double = 0.08) -> ScrollReplay.App {
+        var app = ScrollReplay.App()
+        app.inputDelay = latency * 0.4
+        app.outputDelay = latency * 0.6 - 0.5 / app.fps
+        return app
+    }
+
+    @Test(arguments: [0.5, 2.0])
+    func otherToolkitGains(_ gain: Double) {
+        var app = Self.app()
+        app.gain = gain
+        // The second flick runs at the gain learned from the first.
+        let gestures = [ScrollReplay.Gesture.flick(at: 0.2, peak: 1500, duration: 0.13),
+                        ScrollReplay.Gesture.flick(at: 4.5, peak: 2500, duration: 0.12)]
+        let report = T.run("gain \(gain)", app, gestures, duration: 12)
+        #expect(abs(report.learnedGain - gain) / gain < 0.05)
+        #expect(report.misplacement <= 1)
+        #expect(report.finalError <= 1)
+        #expect(report.handoffJump <= 2)
+    }
+
+    @Test(arguments: [0.2, 0.55])
+    func appStalls(_ stall: Double) {
+        var app = Self.app()
+        // A stall during the warm-up, one during the fast flick's first frames and others later.
+        app.hitch = (every: 1.6, duration: stall)
+        let report = T.run("stall \(Int(stall * 1000))ms", app, T.fastFlick + [ScrollReplay.Gesture.flick(at: 3.5, peak: 2500, duration: 0.12)], duration: 12)
+        // A stall is not the end of the content.
+        #expect(!report.edgeFound)
+        #expect(report.misplacement <= 1)
+        #expect(report.finalError <= 1)
+        #expect(report.handoffJump <= 2)
+        // Nothing new exists during a stall: the shown position resists at the reveal limit.
+        #expect((report.blank.max() ?? 0) <= LocalScroll.Configuration().revealLimit + 0.12)
+    }
+
+    @Test func endOfContentBouncesBack() {
+        var app = Self.app()
+        app.pageLines = 7000 // the start is 4000: a hard flick runs off the end
+        let report = T.run("end of page", app, T.fastFlick, duration: 8)
+        #expect(report.edgeFound)
+        #expect(report.bounced)
+        #expect(report.finalError <= 1)
+        #expect(report.misplacement <= 1)
+    }
+
+    @Test func fixedFooterAndSidebar() {
+        var app = Self.app()
+        app.footer = 160
+        app.sidebar = 240
+        let report = T.run("footer + sidebar", app, T.mediumFlick + [ScrollReplay.Gesture.flick(at: 4, peak: 3000, duration: 0.11)], duration: 10)
+        #expect(report.misplacement <= 1)
+        #expect(report.finalError <= 1)
+        #expect(report.handoffJump <= 2)
+    }
+}
+
+/// Cost of one measurement at phone resolution (`CABOOSE_SCROLL_BENCH=1`, run with
+/// `swift test -c release -Xswiftc -enable-testing --filter LocalScrollEstimatorBenchmark`).
+struct LocalScrollEstimatorBenchmark {
+    @Test func measurementCost() {
+        guard ProcessInfo.processInfo.environment["CABOOSE_SCROLL_BENCH"] == "1" else { return }
+        let replay = ScrollReplay(app: ScrollReplay.App(), gestures: [])
+        let a = replay.signature(offset: 4000, seed: 1), b = replay.signature(offset: 4300, seed: 2)
+        let estimator = ScrollMotionEstimator()
+        for (name, range) in [("typical ±300", -64...700), ("wide ±1300", -1300...1300), ("full", -2540...2540)] {
+            let start = Date()
+            var result: ScrollMeasurement = .still
+            for _ in 0..<20 { result = estimator.measure(from: a, to: b, expected: range, center: 300) }
+            print(String(format: "bench %@: %.2f ms per measurement", name, Date().timeIntervalSince(start) / 20 * 1000), result == .unexplained ? "unexplained" : "ok")
+        }
     }
 }

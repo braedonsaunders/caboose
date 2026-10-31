@@ -54,6 +54,12 @@ public final class LiveGPUPresentationOwners {
         leases.values.contains { $0.isValid && $0.view === view }
     }
 
+    /// For diagnosis: where `window`'s live GPU layer presents, if anywhere.
+    func presenter(of window: RemoteWindow) -> (view: RemoteWindowView?, valid: Bool)? {
+        guard window.id > 0, let lease = leases[UInt64(window.id)] else { return nil }
+        return (lease.view, lease.isValid)
+    }
+
     func observe(_ view: RemoteWindowView) {
         views = views.filter { $0.value.view != nil }
         views[ObjectIdentifier(view)] = ViewRef(view)

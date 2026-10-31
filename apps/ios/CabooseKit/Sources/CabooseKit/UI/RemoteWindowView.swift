@@ -81,6 +81,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private var touchStoppedScroll = false
     /// A live GPU layer here sends its presented pictures for local scrolling.
     private var liveGPUCaptures = false
+    private var liveGPUCaptureDropNoted = false
     /// Where local scrolling draws over a live GPU layer, shown only while it composes.
     private var scrollOverlay: CAMetalLayer?
     private var scrollOwnership = ScrollGestureOwnership<ObjectIdentifier>()
@@ -108,6 +109,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         isMultipleTouchEnabled = true
         NotificationCenter.default.addObserver(self, selector: #selector(resignActive),
             name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(releaseScrollMemory),
+            name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
         installGestures()
         attach(window)
     }
@@ -359,13 +362,20 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// A live GPU layer in this view presented `texture` (its own copy, read only until
     /// `release`), for local scrolling to start from and measure.
-    func liveGPUPictureCaptured(_ texture: MTLTexture, release: @escaping @Sendable () -> Void) {
+    func liveGPUPictureCaptured(_ texture: MTLTexture, serial: UInt64, release: @escaping @Sendable () -> Void) {
         guard isInteractive, window != nil, let localScroll, liveGPUOwners?.presents(in: self) ?? false else {
+            if !liveGPUCaptureDropNoted {
+                liveGPUCaptureDropNoted = true
+                LocalScrollProfile.note("gpu capture dropped window=\(remoteWindow?.id ?? 0) interactive=\(isInteractive) onScreen=\(window != nil) renderer=\(localScroll != nil) presentsHere=\(liveGPUOwners?.presents(in: self) ?? false)")
+            }
             release()
             return
         }
+        if !liveGPUCaptures {
+            LocalScrollProfile.note("gpu captures arriving window=\(remoteWindow?.id ?? 0) \(texture.width)x\(texture.height) format=\(texture.pixelFormat.rawValue)")
+        }
         liveGPUCaptures = true
-        localScroll.offer(texture, done: release)
+        localScroll.offer(texture, serial: serial, done: release)
     }
 
     /// Video layers over the picture move with the content the phone is scrolling.
@@ -888,6 +898,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         localScroll?.cancel()
     }
 
+    /// Captured pictures are the scroll's largest memory: under pressure they go, and the
+    /// next gesture starts from a fresh picture.
+    @objc private func releaseScrollMemory() {
+        guard !(localScroll?.isActive ?? false) else { return }
+        localScroll?.cancel()
+        LocalScrollRenderer.shared?.drain()
+    }
+
     /// Lifts every finger the app still thinks is down, e.g. when the view leaves the screen.
     @objc private func cancelTouches() {
         pointerClicks.cancel()
@@ -943,6 +961,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                 appendScroll(gesture, at: now)
                 return
             }
+            if directContent { LocalScrollProfile.note("pan window=\(remoteWindow.id) local=no \(localScrollState(remoteWindow))") }
             scrollIsLocal = false
             scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
                 guard let self, let session, let remoteWindow, self.isInteractive,
@@ -1012,6 +1031,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let toFrame = CGSize(width: size.width / max(1, picture.width), height: size.height / max(1, picture.height))
         scrollIsLocal = true
         localScrollEngaged = true
+        LocalScrollProfile.note("pan window=\(remoteWindow.id) local=yes path=\(liveGPU ? "gpu" : "video") picture=\(Int(picture.width))x\(Int(picture.height)) \(localScrollState(remoteWindow))")
         localScroll.begin(at: time, delta: CGPoint(x: -translation.x, y: -translation.y),
                           anchor: CGPoint(x: location.x * toPicture.width, y: location.y * toPicture.height), scale: toPicture) {
             [weak self, weak session, weak remoteWindow] delta, _ in
@@ -1056,6 +1076,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                 localScroll?.release(at: at, velocity: velocity, coast: true)
             }
         }
+    }
+
+    /// For diagnosis: what decides whether this window scrolls locally.
+    private func localScrollState(_ window: RemoteWindow) -> String {
+        let presenter = liveGPUOwners?.presenter(of: window)
+        let lease = presenter.map { ($0.view === self ? "here" : $0.view == nil ? "gone" : "other-view") + ($0.valid ? "" : "-invalid") } ?? "none"
+        return "renderer=\(localScroll != nil) game=\(window.game != nil) gpuStream=\(window.gpuStream != nil) owners=\(liveGPUOwners != nil) gpuLease=\(lease) gpuCaptures=\(liveGPUCaptures) interactive=\(isInteractive)"
     }
 
     /// Phone-owned scrolling covers windows whose picture this view draws, and live GPU

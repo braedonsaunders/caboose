@@ -29,6 +29,16 @@ public final class LocalScrollController {
     private var send: ((CGPoint, Double?) -> Bool)?
     public let profile = LocalScrollProfile()
 
+    /// Which picture a capture is: the window's surface as it stood (its newest commit), or
+    /// a live GPU present by serial.
+    public enum PictureSource: Sendable {
+        case surface(WindowSurface)
+        case present(serial: UInt64)
+    }
+    /// A toolkit adapter's report for exactly the captured picture, when it has one; the
+    /// report replaces measurement for that picture.
+    public var report: ((PictureSource) -> ScrollObservation?)?
+
     public init?() {
         guard let renderer = LocalScrollRenderer.shared else { return nil }
         self.renderer = renderer
@@ -105,7 +115,9 @@ public final class LocalScrollController {
         if now < armedUntil {
             if let standby, measuringID == nil {
                 self.standby = nil
-                capture(standby.texture, at: standby.time) { [renderer] in renderer.recycle([standby.texture]) }
+                capture(standby.texture, at: standby.time, source: .present(serial: standby.serial)) { [renderer] in
+                    renderer.recycle([standby.texture])
+                }
             } else if let surface, let picture = surface.presentation() {
                 let key = (ObjectIdentifier(surface), picture.generation)
                 // One picture is measured at a time; while one is, newer ones coalesce into
@@ -113,7 +125,7 @@ public final class LocalScrollController {
                 if measuringID == nil, captured.map({ $0.surface != key.0 || $0.generation != key.1 }) ?? true {
                     captured = key
                     // Pictures and refreshes share the refresh timeline.
-                    capture(picture.texture, at: time)
+                    capture(picture.texture, at: time, source: .surface(surface))
                 }
             }
         } else if !textures.isEmpty {
@@ -159,11 +171,11 @@ public final class LocalScrollController {
     /// A picture presented on the GPU (a live GPU window), captured natively. `done` runs
     /// once the phone no longer reads `texture`. While no scroll is armed only the newest is
     /// kept, as the picture the next gesture starts from.
-    public func offer(_ texture: MTLTexture, done: @escaping @Sendable () -> Void) {
+    public func offer(_ texture: MTLTexture, serial: UInt64, done: @escaping @Sendable () -> Void) {
         let time = lastRefresh ?? CACurrentMediaTime()
         pictureSize = CGSize(width: texture.width, height: texture.height)
         if CACurrentMediaTime() < armedUntil, measuringID == nil {
-            capture(texture, at: time, done: done)
+            capture(texture, at: time, source: .present(serial: serial), done: done)
             return
         }
         renderer.copy(texture) { [weak self] copy in
@@ -173,7 +185,7 @@ public final class LocalScrollController {
                 MainActor.assumeIsolated {
                     guard let self else { LocalScrollRenderer.shared?.recycle([copy]); return }
                     if let old = self.standby { self.renderer.recycle([old.texture]) }
-                    self.standby = (copy, time)
+                    self.standby = (copy, time, serial)
                 }
             }
         }
@@ -181,13 +193,15 @@ public final class LocalScrollController {
 
     /// The size of the newest picture offered on the GPU.
     public private(set) var pictureSize: CGSize?
-    private var standby: (texture: MTLTexture, time: CFTimeInterval)?
+    private var standby: (texture: MTLTexture, time: CFTimeInterval, serial: UInt64)?
 
-    private func capture(_ texture: MTLTexture, at time: CFTimeInterval, done: (@Sendable () -> Void)? = nil) {
+    private func capture(_ texture: MTLTexture, at time: CFTimeInterval, source: PictureSource,
+                         done: (@Sendable () -> Void)? = nil) {
         let id = nextID
         nextID += 1
         measuringID = id
         let hint = model.captured(id, at: time)
+        let reported = report?(source)
         let axis = model.axis, generation = generation, chain = chain, estimator = estimator
         let anchor: Int? = nil
         let measuring = measuring
@@ -197,13 +211,18 @@ public final class LocalScrollController {
                 var observation: ScrollObservation = .unrelated
                 var edges: (top: SIMD3<Float>, bottom: SIMD3<Float>)?
                 if let signature, chain.generation == generation {
-                    if let previous = chain.previous, previous.signature.lines == signature.lines, previous.signature.bands == signature.bands {
+                    if let reported {
+                        observation = reported
+                    } else if let previous = chain.previous, previous.signature.lines == signature.lines, previous.signature.bands == signature.bands {
                         switch estimator.measure(from: previous.signature, to: signature, expected: hint.range,
                                                  center: hint.center, anchor: anchor) {
                         case .moved(let motion):
                             observation = .moved(shift: motion.shift,
                                                  region: ScrollRegion(along: motion.lines, across: signature.pixels(of: motion.bands)),
-                                                 reference: previous.id)
+                                                 reference: previous.id,
+                                                 stationary: motion.stationary.map {
+                                                     ScrollRegion(along: $0.lines, across: signature.pixels(of: $0.bands))
+                                                 })
                         case .still:
                             observation = .still(reference: previous.id)
                         case .unexplained:
@@ -234,7 +253,12 @@ public final class LocalScrollController {
 
     private nonisolated static func edgeColors(_ signature: ScrollSignature, observation: ScrollObservation) -> (SIMD3<Float>, SIMD3<Float>) {
         var lines = 0..<signature.lines, bands = 0..<signature.bands
-        if case .moved(_, let region, _) = observation {
+        var measured: ScrollRegion?
+        switch observation {
+        case .moved(_, let region, _, _), .reported(_, let region, _, _): measured = region
+        default: break
+        }
+        if let region = measured {
             lines = region.along
             bands = signature.band(at: region.across.lowerBound)..<(signature.band(at: max(region.across.lowerBound, region.across.upperBound - 1)) + 1)
         }

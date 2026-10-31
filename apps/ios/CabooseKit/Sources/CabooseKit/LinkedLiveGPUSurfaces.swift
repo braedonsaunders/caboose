@@ -119,17 +119,34 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     /// "Phone-owned scrolling"). A device that cannot share them presents without captures.
     func startCapture() {
         guard let pointer else { return }
-        captureLock.withLock {
-            capturing = caboose_gpu_surface_set_capture(pointer, { context, _, token, texture in
+        let code: Int32 = captureLock.withLock {
+            let code = caboose_gpu_surface_set_capture(pointer, { context, serial, token, texture in
                 guard let context, let texture else { return }
                 Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
-                    .captured(token: token, texture: texture)
-            }, Unmanaged.passUnretained(self).toOpaque()) == 0
+                    .captured(serial: serial, token: token, texture: texture)
+            }, Unmanaged.passUnretained(self).toOpaque())
+            capturing = code == 0
+            return code
         }
+        LocalScrollProfile.note("gpu capture start window=\(bind.identity.window_id) code=\(code)")
+    }
+
+    /// For diagnosis: presents so far and captures delivered, reported once if presents keep
+    /// arriving without captures.
+    private var presentsSeen = 0, capturesSeen = 0, silenceNoted = false
+    fileprivate func notePresent() {
+        guard LocalScrollProfile.enabled else { return }
+        let (presents, captures) = captureLock.withLock { presentsSeen += 1; return (presentsSeen, capturesSeen) }
+        guard presents == 30, captures == 0, !silenceNoted else { return }
+        silenceNoted = true
+        let enabled = captureLock.withLock { capturing }
+        // The native presenter writes why its capture ring could not be made to stderr.
+        LocalScrollProfile.note("gpu captures MISSING window=\(bind.identity.window_id) after 30 presents: capturing=\(enabled)")
     }
 
     /// Frame worker: the picture is lent until `releaseCapture(token)`.
-    private func captured(token: UInt32, texture: UnsafeMutableRawPointer) {
+    private func captured(serial: UInt64, token: UInt32, texture: UnsafeMutableRawPointer) {
+        captureLock.withLock { capturesSeen += 1 }
         guard let metal = Unmanaged<AnyObject>.fromOpaque(texture).takeUnretainedValue() as? MTLTexture else {
             releaseCapture(token)
             return
@@ -139,7 +156,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
                 guard let self else { return }
                 let release: @Sendable () -> Void = { [weak self] in self?.releaseCapture(token) }
                 guard self.lease.isValid, let view = self.lease.view else { release(); return }
-                view.liveGPUPictureCaptured(metal, release: release)
+                view.liveGPUPictureCaptured(metal, serial: serial, release: release)
             }
         }
     }
@@ -244,6 +261,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         guard lease.isValid, let pointer else {
             return .init(status: .init(nativeErrno: ECANCELED, vkResult: nil), disposition: .rejected)
         }
+        notePresent()
         var info = caboose_gpu_present_info()
         info.identity = bind.identity
         info.present_serial = request.serial; info.boxed_device = request.device
@@ -342,6 +360,7 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
     func present(_ request: LiveGPUIndexedPresent,
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
         guard let pointer else { return .init(status: .init(nativeErrno: ESTALE, vkResult: nil), disposition: .rejected) }
+        parent.notePresent()
         var info = caboose_gpu_mapped_present_info()
         info.identity = identity; info.present_serial = request.serial; info.boxed_queue = request.queue
         info.queue_family = request.family; info.image_index = request.index; info.vk_image_layout = request.layout

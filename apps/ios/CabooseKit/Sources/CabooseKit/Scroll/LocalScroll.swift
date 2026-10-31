@@ -20,8 +20,9 @@ public enum ScrollObservation: Equatable, Sendable {
     /// Its relation to earlier frames is unknown: the first frame of a track, a new page,
     /// a jump beyond what measurement searched.
     case unrelated
-    /// Its content moved `shift` pixels forward relative to frame `reference`, within `region`.
-    case moved(shift: Int, region: ScrollRegion, reference: UInt64)
+    /// Its content moved `shift` pixels forward relative to frame `reference`, within `region`;
+    /// `stationary` are fixed overlays inside the region that did not move with it.
+    case moved(shift: Int, region: ScrollRegion, reference: UInt64, stationary: [ScrollRegion] = [])
     /// Nothing moved relative to frame `reference`.
     case still(reference: UInt64)
     /// A toolkit adapter's authoritative report for this exact frame: the scroll layer's
@@ -40,6 +41,8 @@ public struct ScrollComposition: Equatable, Sendable {
         public var shift: Int
         /// The lines it covers once moved, within the region.
         public var lines: Range<Int>
+        /// Its fixed overlays, in its own picture: newer or older content shows there instead.
+        public var holes: [ScrollRegion] = []
     }
     public var axis: ScrollAxis
     /// The newest placed frame, drawn unmoved: everything outside `region` comes from it.
@@ -51,7 +54,7 @@ public struct ScrollComposition: Equatable, Sendable {
     public var blank: Int
     /// The frame and lines whose mean colour fills the blank, the content nearest it.
     public var fillFrom: (frame: UInt64, lines: Range<Int>)?
-    /// Fixed rectangles inside the region, drawn from `base` unmoved over the layers.
+    /// Fixed overlays inside the region, drawn from `base` unmoved over the layers.
     public var stationary: [ScrollRegion] = []
 
     public static func == (a: ScrollComposition, b: ScrollComposition) -> Bool {
@@ -103,6 +106,9 @@ public struct LocalScroll {
         public var revealLimit = 0.25
         /// How long the app may stop answering motion before its content is taken to end.
         public var edgeGrace: TimeInterval = 0.12
+        /// How long an app that answers nothing at all, not even a probe, is waited for before
+        /// its content is taken to end where it stopped.
+        public var edgeSilence: TimeInterval = 1.0
         /// Correction rounds before the phone eases onto the app's own position.
         public var corrections = 3
         /// How long the app keeps its lead after a finger stops the content.
@@ -128,6 +134,8 @@ public struct LocalScroll {
         let time: TimeInterval
         var offset: Double?
         var region: ScrollRegion?
+        /// Fixed overlays inside its region.
+        var holes: [ScrollRegion] = []
         var placed: Bool { offset != nil }
     }
 
@@ -159,6 +167,11 @@ public struct LocalScroll {
     public private(set) var latency: TimeInterval
     private var latencySamples: [TimeInterval] = []
     private var lastAppMotion: TimeInterval = -.infinity
+    /// Typical interval between the app's pictures while it scrolls, and the longest recent
+    /// gap: the app's own stalls, which must not be taken for the end of its content.
+    private var frameInterval: TimeInterval = 1.0 / 30
+    private var longestGap: TimeInterval = 0
+    private var lastPicture: TimeInterval?
     private var unansweredSince: TimeInterval?
     /// Where the content was when the current run of gestures began, for the prefetch direction.
     private var travelStart: Double?
@@ -168,13 +181,18 @@ public struct LocalScroll {
     private var sent = 0.0
     private var correctionsLeft = 0
     private var reportedBias: Double?
-    /// Fixed rectangles inside the region, from a toolkit adapter.
-    public private(set) var stationary: [ScrollRegion] = []
     public private(set) var interrupted = false
     private var composing = false
+    /// The current run of gestures reached an edge.
+    private var edgeMet = false
+    private var stillRun: (count: Int, direction: Double) = (0, 0)
     /// After a finger stops the content, the app keeps its lead this long in case the finger
     /// flicks on in the same direction.
     private var holdUntil: TimeInterval = -.infinity
+    /// A step back sent to an app that went silent while driven, to tell its end of content
+    /// from a stall: `resume` is where the app is expected if it was only stalled.
+    private struct Probe { var candidate: Double; var direction: Double; var sentAt: TimeInterval; var resume: Double }
+    private var probe: Probe?
     private struct Prefetch {
         var pinned: UInt64
         var origin: Double
@@ -219,6 +237,7 @@ public struct LocalScroll {
     /// `anchor` the picture pixel under it, `scale` picture pixels per point.
     public mutating func begin(at time: TimeInterval, axis requestedAxis: ScrollAxis, anchor point: CGPoint, scale: CGSize) {
         let fromRest = phase == .idle
+        if fromRest { edgeMet = false }
         if fromRest || phase == .prefetching { travelStart = prefetch?.origin ?? placedOffset ?? position }
         // Only a start from rest knows what the app had applied of everything sent.
         gainBaseline = fromRest && !frames.contains(where: { !$0.placed }) ? (sent, placedOffset ?? position) : nil
@@ -293,6 +312,7 @@ public struct LocalScroll {
         spring = nil
         frames.removeAll()
         prefetch = nil
+        probe = nil
         prefetchAt = nil
         region = nil
         edges = (nil, nil)
@@ -301,7 +321,6 @@ public struct LocalScroll {
         travelStart = nil
         gainBaseline = nil
         reportedBias = nil
-        stationary = []
         unansweredSince = nil
         lastAppMotion = -.infinity
         lastTick = nil
@@ -336,8 +355,11 @@ public struct LocalScroll {
         let before = frames[..<index].last(where: \.placed)
         var offset: Double
         var region: ScrollRegion?
+        var holes: [ScrollRegion] = []
+        var guessed = false
         switch observation {
         case .unrelated:
+            guessed = true
             if before == nil {
                 offset = phase == .idle ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)
             } else {
@@ -347,8 +369,8 @@ public struct LocalScroll {
                 edges = (nil, nil)
             }
             region = self.region
-        case .moved(let shift, let measured, let reference):
-            stationary = []
+        case .moved(let shift, let measured, let reference, let fixed):
+            holes = fixed
             guard let base = frames.first(where: { $0.id == reference })?.offset ?? before?.offset else {
                 return observe(id, .unrelated)
             }
@@ -360,6 +382,7 @@ public struct LocalScroll {
             }
             offset = base
             region = ref.region ?? self.region
+            holes = ref.holes
         case .reported(let reported, let measured, let bounds, let fixed):
             if reportedBias == nil {
                 reportedBias = (before == nil ? position : (value(at: frame.time - latency, in: commandedHistory) ?? commanded)) - reported
@@ -367,14 +390,16 @@ public struct LocalScroll {
             let bias = reportedBias!
             offset = reported + bias
             region = measured
-            stationary = fixed
+            holes = fixed
             if let bounds { edges = (bounds.lowerBound + bias, bounds.upperBound + bias) }
         }
         guard let i = frames.firstIndex(where: { $0.id == id }) else { return }
         frames[i].offset = offset
         frames[i].region = region
+        frames[i].holes = holes
         if let region { self.region = region }
-        learn(from: frames[i], previous: before)
+        noteCadence(frames[i].time)
+        if !guessed { learn(from: frames[i], previous: before) } else { lastAppMotion = frame.time }
         if phase == .idle {
             // At rest the app's picture is shown as it is: the phone is where the app is.
             position = offset; requested = offset; wanted = offset; commanded = offset
@@ -382,16 +407,48 @@ public struct LocalScroll {
         prune()
     }
 
+    private mutating func noteCadence(_ time: TimeInterval) {
+        defer { lastPicture = time }
+        guard let last = lastPicture, phase != .idle else { return }
+        let gap = time - last
+        guard gap > 0, gap < 2 else { return }
+        if gap < 3 * frameInterval { frameInterval += (gap - frameInterval) * 0.2 }
+        longestGap = max(longestGap * 0.98, gap)
+    }
+
+    /// The app has shown nothing for over one and a half picture intervals while being driven:
+    /// it is stalled (or at its end). Its input is held so its next picture still overlaps
+    /// the last one and can be measured.
+    private func stalled(at time: TimeInterval) -> Bool {
+        guard let last = lastPicture, phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
+        return time - last > max(0.05, 1.6 * frameInterval) && abs(commanded - (placedOffset ?? commanded)) > 0.25 * regionLength
+    }
+
     private mutating func learn(from frame: Frame, previous: Frame?) {
         guard let offset = frame.offset else { return }
         guard let previousOffset = previous?.offset else { lastAppMotion = frame.time; return }
+        // Three pictures in a row stood still although what the app had been sent by then
+        // kept moving one way: it was clamped at an end, so this run says nothing reliable
+        // about its gain.
+        if abs(offset - previousOffset) < 1, let previousTime = previous?.time,
+           let then = value(at: frame.time - latency, in: commandedHistory),
+           let before = value(at: previousTime - latency, in: commandedHistory), abs(then - before) > 16,
+           stillRun.direction == 0 || (then - before) * stillRun.direction > 0 {
+            stillRun = (stillRun.count + 1, then > before ? 1 : -1)
+            if stillRun.count >= 3 { edgeMet = true }
+        } else {
+            stillRun = (0, 0)
+        }
         if abs(offset - previousOffset) >= 1 {
             lastAppMotion = frame.time
             unansweredSince = nil
             // Latency: when was the app expected where this picture shows it?
             if phase != .idle, let sentAt = time(when: offset, movingFrom: previousOffset) {
                 let sample = frame.time - sentAt
-                if configuration.latencyRange.contains(sample) {
+                // A picture just after a stall or at a clamp lags what was sent; one such
+                // sample must not move the estimate.
+                let median = latencySamples.sorted().dropFirst(latencySamples.count / 2).first
+                if configuration.latencyRange.contains(sample), sample < 2.5 * (median ?? latency) + 0.02 {
                     latencySamples.append(sample)
                     if latencySamples.count > 9 { latencySamples.removeFirst() }
                     let sorted = latencySamples.sorted()
@@ -507,8 +564,16 @@ public struct LocalScroll {
         case .prefetching:
             target = clampToEdges(prefetch.map { $0.returning ? $0.origin : $0.target } ?? position)
         default:
+            // Where the phone is going: the shown position may still be catching up to it.
             target = time < holdUntil && phase == .settling ? commanded
-                : clampToEdges(phase == .bouncing ? springTarget : position)
+                : clampToEdges(phase == .bouncing ? springTarget : wanted)
+        }
+        if stalled(at: time) || probe != nil { target = commanded }
+        // Consecutive pictures must overlap to be measured: the app may be driven at most
+        // 0.6 of the region per picture interval, which only binds after a stall or a jump.
+        if regionLength > 0 {
+            let step = 0.6 * regionLength * max(elapsed, 1.0 / 240) / max(frameInterval, 1.0 / 120)
+            target = commanded + min(step, max(-step, target - commanded))
         }
         var send = CGPoint.zero
         let change = target - commanded
@@ -527,7 +592,13 @@ public struct LocalScroll {
         }
 
         // 3. The app stopped answering: its content ends where it stopped.
-        detectEdge(at: time)
+        let probeStep = detectEdge(at: time)
+        if probeStep != 0 {
+            let wire = probeStep / gain
+            sent += wire
+            lastSend = time
+            if axis == .vertical { send.y += CGFloat(wire) } else { send.x += CGFloat(wire) }
+        }
 
         // 4. At rest, bring the app here, then hand the picture back to it.
         if phase == .settling { settle(at: time) }
@@ -538,23 +609,54 @@ public struct LocalScroll {
                           composition: composition, isActive: phase != .idle)
     }
 
-    private mutating func detectEdge(at time: TimeInterval) {
+    /// Returns scroll to send now for a probe, in picture pixels along the axis.
+    private mutating func detectEdge(at time: TimeInterval) -> Double {
         // A picture still being measured may show the app moving.
-        guard let app = placedOffset, let since = unansweredSince, phase != .idle,
-              !frames.contains(where: { !$0.placed }) else { return }
+        guard let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
+        if let p = probe {
+            if (lastPicture ?? -.infinity) > p.sentAt {
+                // The app answered the probe by moving back: it was held at its end. Moving
+                // on instead, it was only stalled.
+                if (app - p.candidate) * p.direction < -8 { confirmEdge(at: p.candidate, direction: p.direction, app: app) }
+                else if (app - p.candidate) * p.direction > 1 { probe = nil; commanded = p.resume; unansweredSince = nil }
+            } else if time - p.sentAt > configuration.edgeSilence {
+                // Silent for good: take the end to be where it stopped.
+                confirmEdge(at: p.candidate, direction: p.direction, app: app)
+            }
+            return 0
+        }
+        guard let since = unansweredSince else { return 0 }
         let ahead = commanded - app
-        guard abs(ahead) > 24 else { return }
-        let grace = 2 * latency + configuration.edgeGrace
-        guard time - max(since, lastAppMotion) > grace else { return }
-        if ahead > 0 { edges.upper = app } else { edges.lower = app }
+        guard abs(ahead) > 24 else { return 0 }
+        let grace = max(2 * latency + configuration.edgeGrace, 1.5 * longestGap + 0.05)
+        guard time - max(since, lastAppMotion) > grace else { return 0 }
+        let direction: Double = ahead > 0 ? 1 : -1
+        if (lastPicture ?? -.infinity) > since {
+            // It kept showing pictures that did not move: its content ends there.
+            confirmEdge(at: app, direction: direction, app: app)
+            return 0
+        }
+        // No picture at all: an app at its end draws nothing new, and neither does a stalled
+        // one. A small step back tells them apart, behind the phone's own picture.
+        let step = 24 * direction
+        probe = Probe(candidate: app, direction: direction, sentAt: time, resume: commanded - step)
+        commanded = app - step
+        return -step
+    }
+
+    private mutating func confirmEdge(at edge: Double, direction: Double, app: Double) {
+        probe = nil
+        if direction > 0 { edges.upper = edge } else { edges.lower = edge }
+        edgeMet = true
         commanded = app
         unansweredSince = nil
         switch phase {
         case .coasting:
-            startSpring(from: position, to: app, velocity: axisVelocity)
+            startSpring(from: position, to: edge, velocity: axisVelocity)
         case .settling:
-            if abs(position - app) > 0.5 { startSpring(from: position, to: app, velocity: 0) }
+            if abs(position - edge) > 0.5 { startSpring(from: position, to: edge, velocity: 0) }
         default:
+            // A finger past the end now feels its resistance.
             break
         }
     }
@@ -576,6 +678,9 @@ public struct LocalScroll {
             }
             return
         }
+        // The app keeps its lead while a next flick may come, and the return to the phone's
+        // position is sent before anything is judged.
+        guard time >= holdUntil, abs(commanded - wanted) < 0.5, abs(position - wanted) < 0.5 else { return }
         // Wait for what was sent to land before judging the app's position.
         guard time - lastSend > 2 * latency + 0.05, time - (frames.last?.time ?? -.infinity) > 0.05 || !pending else { return }
         learnGain(app: app)
@@ -631,7 +736,8 @@ public struct LocalScroll {
     private mutating func learnGain(app: Double) {
         guard let start = gainBaseline else { return }
         let wire = sent - start.sent, moved = app - start.offset
-        guard abs(wire) >= 96, abs(moved) >= 48, moved * wire > 0, edges == (nil, nil) || abs(moved) > abs(wire) * 0.25 else { return }
+        // Motion clamped at an edge says nothing about the app's response.
+        guard abs(wire) >= 96, abs(moved) >= 48, moved * wire > 0, !edgeMet else { return }
         gain = min(4, max(0.25, moved / wire))
         gainBaseline = (sent, app)
     }
@@ -717,16 +823,19 @@ public struct LocalScroll {
             let lower = max(region.along.lowerBound, own.along.lowerBound + shift)
             let upper = min(region.along.upperBound, own.along.upperBound + shift)
             guard lower < upper else { continue }
-            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper))
+            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper, holes: frame.holes))
             covered.append(lower..<upper)
         }
-        // Drop layers that newer ones hide entirely.
+        // Drop layers that newer ones hide entirely; a newer layer with holes hides nothing
+        // under its holes.
         var visible: [ScrollComposition.Layer] = []
         var above: [Range<Double>] = []
+        var holed = false
         for layer in layers.reversed() {
             let range = Double(layer.lines.lowerBound)..<Double(layer.lines.upperBound)
-            if Self.uncovered(range, by: above) > 0 { visible.append(layer) }
+            if holed || Self.uncovered(range, by: above) > 0 { visible.append(layer) }
             above.append(range)
+            holed = holed || !layer.holes.isEmpty
         }
         let whole = Double(region.along.lowerBound)..<Double(region.along.upperBound)
         let blank = Int(Self.uncovered(whole, by: covered.map { Double($0.lowerBound)..<Double($0.upperBound) }).rounded())
@@ -739,7 +848,7 @@ public struct LocalScroll {
                                            : own.lowerBound..<min(own.upperBound, own.lowerBound + 16))
         }
         return ScrollComposition(axis: axis, base: base.id, region: region, layers: visible.reversed(),
-                                 blank: blank, fillFrom: fill, stationary: stationary)
+                                 blank: blank, fillFrom: fill, stationary: base.holes)
     }
 
     // MARK: Timeline

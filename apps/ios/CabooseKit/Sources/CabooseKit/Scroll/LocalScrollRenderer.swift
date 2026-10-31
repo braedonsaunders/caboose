@@ -13,10 +13,13 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     let device: MTLDevice
     let queue: MTLCommandQueue
     private let signature: MTLComputePipelineState
-    private let vertex: MTLFunction, sample: MTLFunction, fill: MTLFunction
+    private let vertex: MTLFunction, sample: MTLFunction, resolve: MTLFunction
     private let lock = NSLock()
     private var pool: [MTLTexture] = []
-    private var pipelines: [MTLPixelFormat: (textured: MTLRenderPipelineState, solid: MTLRenderPipelineState)] = [:]
+    private var pipelines: [MTLPixelFormat: (textured: MTLRenderPipelineState, resolve: MTLRenderPipelineState)] = [:]
+    /// Layers one resolve pass draws, and fixed overlays per layer: the history kept, the
+    /// pinned picture of a prefetch, and the estimator's four overlays.
+    static let maximumLayers = 8, maximumHoles = 4
 
     private init?() {
         let renderer = SurfaceRenderer.shared
@@ -27,9 +30,9 @@ public final class LocalScrollRenderer: @unchecked Sendable {
             guard let kernel = library.makeFunction(name: "scroll_signature"),
                   let vertex = library.makeFunction(name: "scroll_quad_vertex"),
                   let sample = library.makeFunction(name: "scroll_quad_texture"),
-                  let fill = library.makeFunction(name: "scroll_quad_fill") else { return nil }
+                  let resolve = library.makeFunction(name: "scroll_resolve") else { return nil }
             signature = try device.makeComputePipelineState(function: kernel)
-            self.vertex = vertex; self.sample = sample; self.fill = fill
+            self.vertex = vertex; self.sample = sample; self.resolve = resolve
             guard pipelines(for: .bgra8Unorm) != nil else { return nil }
         } catch {
             return nil
@@ -37,7 +40,7 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     }
 
     /// The drawing pipelines for a target pixel format, made once.
-    private func pipelines(for format: MTLPixelFormat) -> (textured: MTLRenderPipelineState, solid: MTLRenderPipelineState)? {
+    private func pipelines(for format: MTLPixelFormat) -> (textured: MTLRenderPipelineState, resolve: MTLRenderPipelineState)? {
         lock.lock(); defer { lock.unlock() }
         if let made = pipelines[format] { return made }
         let descriptor = MTLRenderPipelineDescriptor()
@@ -45,10 +48,10 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         descriptor.fragmentFunction = sample
         descriptor.colorAttachments[0].pixelFormat = format
         guard let textured = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
-        descriptor.fragmentFunction = fill
-        guard let solid = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
-        pipelines[format] = (textured, solid)
-        return (textured, solid)
+        descriptor.fragmentFunction = resolve
+        guard let resolved = try? device.makeRenderPipelineState(descriptor: descriptor) else { return nil }
+        pipelines[format] = (textured, resolved)
+        return (textured, resolved)
     }
 
     /// The layer format that shows pictures of `format` unchanged: the same encoding, in
@@ -158,6 +161,28 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         var color: SIMD4<Float>
     }
 
+    /// One resolve pass over the region: per pixel, the newest layer that covers it outside
+    /// its holes, else the fill colour.
+    private struct Resolve {
+        var quad: Quad
+        var count: UInt32 = 0
+        var vertical: UInt32 = 1
+        var padding = SIMD2<UInt32>(0, 0)
+        // x shift, y first line, z end line, w hole count
+        var layers = [SIMD4<Int32>](repeating: .zero, count: LocalScrollRenderer.maximumLayers)
+        // along lower, along upper, across lower, across upper, in the layer's picture
+        var holes = [SIMD4<Int32>](repeating: .zero, count: LocalScrollRenderer.maximumLayers * LocalScrollRenderer.maximumHoles)
+
+        func bytes() -> [UInt8] {
+            var out = [UInt8]()
+            withUnsafeBytes(of: quad) { out += $0 }
+            withUnsafeBytes(of: (count, vertical, padding)) { out += $0 }
+            layers.withUnsafeBytes { out += $0 }
+            holes.withUnsafeBytes { out += $0 }
+            return out
+        }
+    }
+
     /// Draws `composition` into `target`, a picture-sized texture. `textures` holds the frames
     /// it names; `fill` is the colour of content not yet captured. Returns false, drawing
     /// nothing, when a frame it names has no texture.
@@ -177,27 +202,42 @@ public final class LocalScrollRenderer: @unchecked Sendable {
             vertical ? SIMD4(Float(across.lowerBound), Float(along.lowerBound), Float(across.count), Float(along.count))
                      : SIMD4(Float(along.lowerBound), Float(across.lowerBound), Float(along.count), Float(across.count))
         }
-        func draw(_ quad: Quad, texture: MTLTexture?) {
+        let none = SIMD4<Float>(0, 0, 0, 0)
+        func draw(_ quad: Quad, texture: MTLTexture) {
             var q = quad
-            encoder.setRenderPipelineState(texture == nil ? pipeline.solid : pipeline.textured)
+            encoder.setRenderPipelineState(pipeline.textured)
             encoder.setVertexBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
             encoder.setFragmentBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
-            if let texture { encoder.setFragmentTexture(texture, index: 0) }
+            encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        let none = SIMD4<Float>(0, 0, 0, 0)
+        // Everything outside the region comes from the newest picture, unmoved.
         draw(Quad(rect: SIMD4(0, 0, size.x, size.y), offset: .zero, target: size, color: none), texture: base)
         let region = composition.region
-        if composition.blank > 0 {
-            draw(Quad(rect: rect(along: region.along, across: region.across), offset: .zero, target: size,
-                      color: SIMD4(fill.x, fill.y, fill.z, 1)), texture: nil)
+        // The newest layers win, so the oldest beyond the pass's capacity are left out.
+        let layers = Array(composition.layers.suffix(Self.maximumLayers))
+        var resolve = Resolve(quad: Quad(rect: rect(along: region.along, across: region.across), offset: .zero,
+                                         target: size, color: SIMD4(fill.x, fill.y, fill.z, 1)))
+        resolve.count = UInt32(layers.count)
+        resolve.vertical = vertical ? 1 : 0
+        for (i, layer) in layers.enumerated() {
+            let holes = layer.holes.prefix(Self.maximumHoles)
+            resolve.layers[i] = SIMD4(Int32(layer.shift), Int32(layer.lines.lowerBound), Int32(layer.lines.upperBound), Int32(holes.count))
+            for (h, hole) in holes.enumerated() {
+                resolve.holes[i * Self.maximumHoles + h] = SIMD4(Int32(hole.along.lowerBound), Int32(hole.along.upperBound),
+                                                                 Int32(hole.across.lowerBound), Int32(hole.across.upperBound))
+            }
         }
-        for layer in composition.layers {
-            let shift = Float(layer.shift)
-            draw(Quad(rect: rect(along: layer.lines, across: region.across),
-                      offset: vertical ? SIMD2(0, shift) : SIMD2(shift, 0), target: size, color: none),
-                 texture: textures[layer.frame])
+        let bytes = resolve.bytes()
+        var quad = resolve.quad
+        encoder.setRenderPipelineState(pipeline.resolve)
+        encoder.setVertexBytes(&quad, length: MemoryLayout<Quad>.stride, index: 0)
+        bytes.withUnsafeBytes { encoder.setFragmentBytes($0.baseAddress!, length: $0.count, index: 0) }
+        for slot in 0..<Self.maximumLayers {
+            encoder.setFragmentTexture(slot < layers.count ? textures[layers[slot].frame] : base, index: slot)
         }
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        // Fixed overlays stay where the newest picture shows them.
         for fixed in composition.stationary {
             draw(Quad(rect: rect(along: fixed.along, across: fixed.across), offset: .zero, target: size, color: none), texture: base)
         }
@@ -251,8 +291,36 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         return picture.read(uint2(clamp(source, int2(0), limit)));
     }
 
-    fragment half4 scroll_quad_fill(Fragment in [[stage_in]], constant Quad &q [[buffer(0)]]) {
-        return half4(q.color);
+    struct Resolve {
+        Quad quad;
+        uint count, vertical;
+        uint2 padding;
+        int4 layers[8];
+        int4 holes[32];
+    };
+
+    // Per pixel of the region, the newest layer covering it outside its holes; else fill.
+    fragment half4 scroll_resolve(Fragment in [[stage_in]], constant Resolve &r [[buffer(0)]],
+                                  array<texture2d<half, access::read>, 8> layers [[texture(0)]]) {
+        int2 p = int2(floor(in.position.xy));
+        bool vertical = r.vertical != 0;
+        int along = vertical ? p.y : p.x, across = vertical ? p.x : p.y;
+        for (int i = int(r.count) - 1; i >= 0; i--) {
+            int4 layer = r.layers[i];
+            if (along < layer.y || along >= layer.z) continue;
+            int source = along - layer.x;
+            bool hole = false;
+            for (int h = 0; h < layer.w; h++) {
+                int4 b = r.holes[i * 4 + h];
+                if (source >= b.x && source < b.y && across >= b.z && across < b.w) { hole = true; break; }
+            }
+            if (hole) continue;
+            texture2d<half, access::read> picture = layers[i];
+            int2 coord = vertical ? int2(p.x, source) : int2(source, p.y);
+            int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
+            return picture.read(uint2(clamp(coord, int2(0), limit)));
+        }
+        return half4(r.quad.color);
     }
     """
 }

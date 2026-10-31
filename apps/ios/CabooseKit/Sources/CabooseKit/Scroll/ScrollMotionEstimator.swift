@@ -13,9 +13,19 @@ public struct ScrollMotion: Equatable, Sendable {
     public var bands: Range<Int>
     /// The fraction of sampled detail that this motion explains, 0–1.
     public var support: Double
+    /// Fixed overlays inside the moving region (a floating button, a chat bubble): blocks
+    /// whose detail stayed while the content around them moved, at most four.
+    public var stationary: [(lines: Range<Int>, bands: Range<Int>)]
 
-    public init(shift: Int, lines: Range<Int>, bands: Range<Int>, support: Double) {
+    public init(shift: Int, lines: Range<Int>, bands: Range<Int>, support: Double,
+                stationary: [(lines: Range<Int>, bands: Range<Int>)] = []) {
         self.shift = shift; self.lines = lines; self.bands = bands; self.support = support
+        self.stationary = stationary
+    }
+
+    public static func == (a: ScrollMotion, b: ScrollMotion) -> Bool {
+        a.shift == b.shift && a.lines == b.lines && a.bands == b.bands && a.support == b.support
+            && a.stationary.map(\.lines) == b.stationary.map(\.lines) && a.stationary.map(\.bands) == b.stationary.map(\.bands)
     }
 }
 
@@ -134,20 +144,33 @@ public struct ScrollMotionEstimator: Sendable {
             atZero[i] = true
             zeroScore += 1
         }
+        // A quarter of the samples ranks every shift; the leading candidates are then
+        // scored with all of them, which is what decides.
+        func score(_ shift: Int, stride step: Int, in cells: UnsafeBufferPointer<Int32>) -> Int {
+            let offset = shift * bands
+            var moved = 0
+            var i = 0
+            while i < count {
+                let a = Int(cells[i]), b = a + offset
+                if b >= 0, b < total, !atZero[i], matches(nl, nd, a, ol, od, b) { moved += 1 }
+                i += step
+            }
+            return moved
+        }
         var scores: [(shift: Int, moved: Int)] = []
         if low <= high {
-            scores.reserveCapacity(high - low + 1)
             samples.withUnsafeBufferPointer { cells in
-                for shift in low...high where shift != 0 {
-                    let offset = shift * bands
-                    var moved = 0
-                    for i in 0..<count {
-                        let a = Int(cells[i]), b = a + offset
-                        guard b >= 0, b < total, !atZero[i] else { continue }
-                        if matches(nl, nd, a, ol, od, b) { moved += 1 }
-                    }
-                    scores.append((shift, moved))
-                }
+                let step = count >= 1024 ? 4 : 1
+                var ranked: [(shift: Int, moved: Int)] = []
+                ranked.reserveCapacity(high - low + 1)
+                for shift in low...high where shift != 0 { ranked.append((shift, score(shift, stride: step, in: cells))) }
+                if step == 1 { scores = ranked; return }
+                ranked.sort { $0.moved > $1.moved }
+                let leading = ranked.prefix(12).map(\.shift)
+                // Neighbours of the leaders too, for periodic content's nearest match.
+                var candidates = Set<Int>()
+                for shift in leading { for d in -2...2 where shift + d != 0 && (low...high).contains(shift + d) { candidates.insert(shift + d) } }
+                scores = candidates.map { ($0, score($0, stride: 1, in: cells)) }
             }
         }
         let best = scores.max { $0.moved < $1.moved }?.moved ?? 0
@@ -231,6 +254,51 @@ public struct ScrollMotionEstimator: Sendable {
             if sum > strongest { strongest = sum; bottom = line }
         }
         guard top < bottom else { return .still }
-        return .moved(ScrollMotion(shift: shift, lines: top..<bottom, bands: run, support: support))
+        let stationary = Self.stationaryBlocks(label: label, bands: bands, lines: top..<bottom, run: run)
+        return .moved(ScrollMotion(shift: shift, lines: top..<bottom, bands: run, support: support, stationary: stationary))
+    }
+
+    /// Blocks of 16 lines by one band inside the region whose detail stood still while the
+    /// content moved, joined into rectangles of at least two blocks; the four largest.
+    static func stationaryBlocks(label: [Int8], bands: Int, lines: Range<Int>, run: Range<Int>) -> [(lines: Range<Int>, bands: Range<Int>)] {
+        let height = 16
+        let rows = lines.count / height, columns = run.count
+        guard rows > 0, columns > 0 else { return [] }
+        var still = [Bool](repeating: false, count: rows * columns)
+        for row in 0..<rows {
+            for column in 0..<columns {
+                var fixed = 0, moved = 0
+                for line in (lines.lowerBound + row * height)..<(lines.lowerBound + (row + 1) * height) {
+                    switch label[line * bands + run.lowerBound + column] {
+                    case -1: fixed += 1
+                    case 1: moved += 1
+                    default: break
+                    }
+                }
+                still[row * columns + column] = fixed >= 6 && fixed >= 3 * (moved + 1)
+            }
+        }
+        var seen = [Bool](repeating: false, count: still.count)
+        var found: [(lines: Range<Int>, bands: Range<Int>, size: Int)] = []
+        for start in still.indices where still[start] && !seen[start] {
+            var stack = [start], size = 0
+            var top = rows, bottom = 0, left = columns, right = 0
+            seen[start] = true
+            while let cell = stack.popLast() {
+                size += 1
+                let row = cell / columns, column = cell % columns
+                top = min(top, row); bottom = max(bottom, row + 1); left = min(left, column); right = max(right, column + 1)
+                for (dr, dc) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let r = row + dr, c = column + dc
+                    guard r >= 0, r < rows, c >= 0, c < columns else { continue }
+                    let next = r * columns + c
+                    if still[next] && !seen[next] { seen[next] = true; stack.append(next) }
+                }
+            }
+            guard size >= 2 else { continue }
+            found.append(((lines.lowerBound + top * height)..<(lines.lowerBound + bottom * height),
+                          (run.lowerBound + left)..<(run.lowerBound + right), size))
+        }
+        return found.sorted { $0.size > $1.size }.prefix(4).map { ($0.lines, $0.bands) }
     }
 }

@@ -21,6 +21,7 @@
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -179,7 +180,13 @@ VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects&
         VkResult r = createCaptureRing(source.vk, source.physicalDevice, source.device, source.format,
                                        source.extent, kCaptureSlots, &ring);
         std::lock_guard<std::mutex> lock(s.mutex);
-        if (r != VK_SUCCESS) { s.captureUnsupported = true; return VK_NULL_HANDLE; }
+        if (r != VK_SUCCESS) {
+            // Once per surface: phone-owned scrolling of this window keeps the app's path.
+            fprintf(stderr, "caboose-scroll: gpu capture ring unavailable (VkResult %d); presenting without captures\n",
+                    static_cast<int>(r));
+            s.captureUnsupported = true;
+            return VK_NULL_HANDLE;
+        }
         s.capture = std::move(ring);
         s.captureState.reset(kCaptureSlots);
     }
