@@ -174,6 +174,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private var started = false
     private var ended = false
     private var ready = false
+    /// Pings the host every second from its own queue, so the relay sees this phone alive
+    /// even while delivery to a busy decoder holds back receiving (and so pong replies).
+    private let pingQueue = DispatchQueue(label: "caboose.gpu.ping")
+    private var pinger: DispatchSourceTimer?
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
@@ -281,6 +285,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     private func finish(_ error: Error?) {
         guard !ended else { return }
         ended = true; ready = false; budget.revoke()
+        pinger?.cancel(); pinger = nil
         outbound.discardPending()
         task?.cancel(with: error == nil ? .normalClosure : .policyViolation, reason: nil)
         session?.invalidateAndCancel()
@@ -295,6 +300,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
             let response = webSocketTask.response as? HTTPURLResponse
             try Self.validateUpgrade(selected: selected, extensions: response?.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
             ready = true; event?(.opened); receive()
+            let timer = DispatchSource.makeTimerSource(queue: pingQueue)
+            timer.schedule(deadline: .now() + 1, repeating: 1)
+            timer.setEventHandler { [weak webSocketTask] in webSocketTask?.sendPing { _ in } }
+            timer.resume(); pinger = timer
         } catch { finish(error) }
     }
 
