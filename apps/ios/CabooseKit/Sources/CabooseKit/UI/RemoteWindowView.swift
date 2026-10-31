@@ -1092,13 +1092,16 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private var replay: LocalScrollReplay?
 
-    /// `CABOOSE_SCROLL_REPLAY=1`: once this interactive window has been on screen for three
-    /// seconds, the standard flick script plays through the same local scroll path as a
-    /// finger, for `LocalScrollProfile` to measure on the device.
+    /// `CABOOSE_SCROLL_AUTOPAN=1`: once this interactive window scrolls locally and the
+    /// delay has passed, the standard gesture script plays through the same local scroll path
+    /// as a finger, for `LocalScrollProfile` to measure on the device.
     fileprivate func driveReplay(at time: CFTimeInterval) {
         guard LocalScrollReplay.enabled, isInteractive, window != nil, let session, session.state == .ready,
               let remoteWindow, canScrollLocally(remoteWindow) else { replay = nil; return }
-        if replay == nil { replay = LocalScrollReplay(start: time + 3) }
+        if replay == nil {
+            replay = LocalScrollReplay(start: time + LocalScrollReplay.delay)
+            LocalScrollProfile.note("autopan starts in \(Int(LocalScrollReplay.delay)) s on window \(remoteWindow.id)")
+        }
         guard let events = replay?.events(until: time), !events.isEmpty else { return }
         let location = CGPoint(x: bounds.midX, y: bounds.midY)
         for event in events {

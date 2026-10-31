@@ -463,8 +463,8 @@ scrolls as forwarded scroll arrives. On a device, `CABOOSE_SCROLL_PROFILE=1` wri
 decision (local on the video or GPU path, or the flags that kept it on the app's path),
 live GPU capture start, arrival and absence, and each gesture's summary (touch-to-glass
 latency, frame intervals, late frames, blank area, picture placement, the app's latency
-and gain), which is also appended to `Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_REPLAY=1` plays the standard flick script
-through the same path three seconds after an interactive window appears. See
+and gain), which is also appended to `Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_AUTOPAN=1` plays the standard gesture script (`CABOOSE_SCROLL_AUTOPAN_DELAY` seconds, default 20, after a locally scrolling window appears)
+through the same path. See
 `scripts/check-scroll.sh`.
 
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic

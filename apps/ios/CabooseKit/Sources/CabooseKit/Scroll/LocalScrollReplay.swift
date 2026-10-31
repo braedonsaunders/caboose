@@ -43,21 +43,32 @@ public struct LocalScrollGesture: Sendable {
     }
 
     /// The standard script: real finger speeds, from a slow read to a hard flick, both ways.
-    public static let script: [(start: TimeInterval, gesture: LocalScrollGesture)] = [
-        (0, .drag("slow drag", speed: 400, duration: 0.6)),
-        (3, .flick("medium flick", peak: 1500, duration: 0.13)),
-        (8, .flick("fast flick", peak: 3500, duration: 0.11)),
-        (14, .flick("fast flick back", peak: -3500, duration: 0.11)),
-        (20, .flick("repeated flick 1", peak: 3000, duration: 0.1)),
-        (20.35, .flick("repeated flick 2", peak: 3500, duration: 0.1)),
-        (20.7, .flick("repeated flick 3", peak: 4000, duration: 0.1)),
-    ]
+    public static let script: [(start: TimeInterval, gesture: LocalScrollGesture)] = {
+        var steps: [(TimeInterval, LocalScrollGesture)] = []
+        var t: TimeInterval = 0
+        func add(_ gesture: LocalScrollGesture, then rest: TimeInterval) {
+            steps.append((t, gesture))
+            t += (gesture.samples.last?.time ?? 0) + rest
+        }
+        for round in 1...2 {
+            for i in 1...5 { add(.drag("r\(round) slow drag \(i)", speed: 400, duration: 0.6), then: 2) }
+            for i in 1...5 { add(.flick("r\(round) fast flick \(i)", peak: 3500, duration: 0.11), then: 4) }
+            // Hard flicks back, the last past the top of the page.
+            for i in 1...4 { add(.flick("r\(round) flick to top \(i)", peak: -6000, duration: 0.12), then: 0.35) }
+            t += 4
+            for i in 1...3 { add(.drag("r\(round) drag hold release \(i)", speed: 600, duration: 0.4, hold: 0.6), then: 2) }
+        }
+        return steps
+    }()
 }
 
 /// Plays `LocalScrollGesture.script` against the display clock, for on-device measurement
-/// with `CABOOSE_SCROLL_REPLAY=1`.
+/// with `CABOOSE_SCROLL_AUTOPAN=1`: 5 slow drags, 5 fast flicks, hard flicks back past the
+/// top and 3 drag-hold-release sequences, twice. It starts `CABOOSE_SCROLL_AUTOPAN_DELAY`
+/// seconds (20 by default) after the first window that scrolls locally is on screen.
 public struct LocalScrollReplay {
-    public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_SCROLL_REPLAY"] == "1"
+    public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_SCROLL_AUTOPAN"] == "1"
+    public static let delay = ProcessInfo.processInfo.environment["CABOOSE_SCROLL_AUTOPAN_DELAY"].flatMap(TimeInterval.init) ?? 20
 
     public enum Event: Equatable {
         case begin(label: String, at: TimeInterval, delta: CGPoint)
