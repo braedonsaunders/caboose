@@ -58,12 +58,29 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
     const VkAllocationCallbacks*, VkSwapchainKHR* out) {
     return guarded([&]() -> VkResult {
         if (!indexed() || !info || !out) return VK_ERROR_INITIALIZATION_FAILED;
-        if (info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR || info->pNext)
+        if (info->sType!=VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR)
             return VK_ERROR_EXTENSION_NOT_PRESENT;
+        for (auto* ext=static_cast<const VkBaseInStructure*>(info->pNext); ext; ext=ext->pNext) {
+            if (ext->sType!=VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO)
+                return VK_ERROR_EXTENSION_NOT_PRESENT;
+        }
         auto surface=lookup(info->surface); if (!surface) return VK_ERROR_SURFACE_LOST_KHR;
         std::lock_guard<std::recursive_mutex> operation(surface->operationMutex);
         if (surface->client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface->client.failed()) return apiStatus(surface->client.failure());
+        if (info->oldSwapchain) {
+            auto previous=lookupSwapchain(info->oldSwapchain);
+            if (!previous || previous->surface!=surface || previous->device!=handle || previous->retired)
+                return VK_ERROR_INITIALIZATION_FAILED;
+            if (!previous->nativeRetired && !surface->client.retired()) {
+                if (!previous->native) return VK_ERROR_INITIALIZATION_FAILED;
+                surface->client.waitPresentationIdle(deadline());
+                auto retired=surface->client.retireSwapchain(previous->native,deadline());
+                auto retiredResult=apiStatus(status(retired.body,48));
+                if (retiredResult!=VK_SUCCESS) return retiredResult;
+                previous->nativeRetired=true;
+            }
+        }
         VK_FROM_HANDLE(gfxstream_vk_device, device, handle);
         auto physical=gfxstream_vk_physical_device_to_handle(device->physical_device);
         Bytes raw; auto result=query(physical,info->surface,raw); if (result!=VK_SUCCESS) return result;
@@ -76,12 +93,6 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
             if (device->queue_families[i]==swap->family) queueExists=true;
         if (!queueExists) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t old=0;
-        if (info->oldSwapchain) {
-            auto previous=lookupSwapchain(info->oldSwapchain);
-            if (!previous || previous->surface!=surface || previous->device!=handle || previous->retired)
-                return VK_ERROR_INITIALIZATION_FAILED;
-            old=previous->native;
-        }
         // Native receives every base creation field and rejects unsupported values.
         if (surface->query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes request; put64(request,++surface->query);
