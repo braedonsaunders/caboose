@@ -1232,11 +1232,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     // MARK: Phone-owned zoom
 
     /// The window's reported page, when the phone can zoom it: its scale now and the scales
-    /// it allows.
+    /// it allows. A reporter that applies `scroll.zoom` reports `zoom_range`.
     private func zoomablePage() -> (scale: Double, range: ClosedRange<Double>)? {
         guard isInteractive, localScroll != nil, let window = remoteWindow, canScrollLocally(window),
-              let tree = window.scrollReports.latest, !tree.scrollers.isEmpty, tree.zoom > 0 else { return nil }
-        return (tree.zoom, tree.zoomRange ?? 1 ... 5)
+              let tree = window.scrollReports.latest, !tree.scrollers.isEmpty, tree.zoom > 0,
+              let range = tree.zoomRange else { return nil }
+        return (tree.zoom, range)
     }
 
     /// The window's shown picture in its own pixels, and picture pixels per point.

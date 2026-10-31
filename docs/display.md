@@ -834,10 +834,10 @@ over the picture move with the scrolled content.
 One GPU pass draws the region: per pixel, the newest captured picture that covers it
 outside its fixed overlays, else the fill colour.
 
-- **Zoom.** Two fingers pinching a window whose reporter names a scroller zoom it on the
-  phone, as UIScrollView zooms. The picture on screen scales with the fingers at display
+- **Zoom.** Two fingers pinching a window whose reporter names a scroller and reports
+  `zoom_range` zoom it on the phone, as UIScrollView zooms. The picture on screen scales with the fingers at display
   rate, with the content first under them staying under them. Past the page's
-  `zoom_range` (1 to 5 when it reports none) the scale rubber-bands. On lift it settles in
+  `zoom_range` the scale rubber-bands. On lift it settles in
   0.3 s within the range about the fingers, with no edge of the content pulled inside the
   viewport. The phone then sends `scroll.zoom` with the settled scale and the point a pure
   scale to it keeps still, and keeps showing its composition until a picture whose report
@@ -914,7 +914,8 @@ frame's report.
 
 **Zoom.** A report's `zoom` is the page's visual scale (1 when absent). While it is not 1,
 the primary scroller's `offset` and `range` are in pixels of the zoomed content; fixed
-rectangles stay in window pixels. `zoom_range` is the scales the page allows. A report at
+rectangles stay in window pixels. `zoom_range` is the scales the page allows; a reporter sends it when it applies
+`scroll.zoom`. A report at
 another zoom starts a new placement epoch on the phone, as `epoch` does.
 
 **`scroll.zoom`** (`0x99`): zoom window `id`'s page to the absolute `scale` about `focus`,
