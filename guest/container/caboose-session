@@ -53,6 +53,8 @@ then :; else
   [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
   dbus-daemon --system --fork
 fi
+chown caboose:caboose "$CABOOSE_HOME"
+install -d -o caboose -g caboose -m 0755 "$CABOOSE_HOME/Desktop"
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
 
 # Each seat has its own session bus, so the agents' notifications never reach the owner.
