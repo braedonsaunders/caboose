@@ -92,6 +92,26 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             timing.event(pending, 'retire')
             self.assertEqual(timing.records, 1)
 
+    def test_present_rate_counts_ordered_presents_and_result_gaps(self):
+        with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_PROGRESS': '1'}, clear=True):
+            session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        clock = iter([0, 10, 20, 400_000_000, 410_000_000, 2_000_000_000])
+        with mock.patch.object(broker.time, 'monotonic_ns', side_effect=lambda: next(clock)), \
+                mock.patch('builtins.print') as output:
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)   # 0
+            session.present_rate('received_from_phone', Kind.PRESENT_RESULT)              # 10
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT)           # 20
+            session.present_rate('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)   # 400 ms
+            session.present_rate('received_from_phone', Kind.PRESENT_RESULT)              # 410 ms
+            session.present_rate('received_from_phone', Kind.SOURCE_RELEASED)             # 2 s
+        line = output.call_args.args[0]
+        self.assertIn('presented=3 ordered=2 results=2 released=1', line)
+        self.assertIn('gap_max_ms=399 result_gap_max_ms=409', line)
+        # Ordered presents reach the progress hook like every other surface control.
+        with mock.patch.object(session, 'present_rate') as rate, mock.patch('builtins.print'):
+            session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
+            rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
+
     def test_surface_progress_is_opt_in_bounded_and_metadata_only(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             session = broker.Session(None, b'a' * 16, 1, None, Writer())
