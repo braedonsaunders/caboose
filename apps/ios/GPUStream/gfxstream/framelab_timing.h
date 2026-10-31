@@ -2,7 +2,7 @@
 // Frame lab (guest/framelab) on the phone: when each live GPU present reached the display.
 //
 // With CABOOSE_FRAMELAB=1 the decoder enables VK_GOOGLE_display_timing on the device
-// (patch 0042), every native present carries its present serial as the present ID, and
+// (the gfxstream fork's "Caboose: enable VK_GOOGLE_display_timing for frame lab"), every native present carries its present serial as the present ID, and
 // after a frame's present fence completes the presentation engine's past timings are
 // printed to standard error:
 //   caboose-framelab: present window=W seq=S presented_ns=P now_ns=N

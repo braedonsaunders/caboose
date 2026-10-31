@@ -127,7 +127,7 @@ describes these boundaries.
 
 ## Display times for frame lab
 
-With `CABOOSE_FRAMELAB=1` in the app's environment, patch 0042 enables
+With `CABOOSE_FRAMELAB=1` in the app's environment, the gfxstream fork's commit "Caboose: enable VK_GOOGLE_display_timing for frame lab" enables
 `VK_GOOGLE_display_timing` on the decoder's device when the device offers it, every
 native present carries its present serial as the present ID, and once a frame's present
 fence completes the swapchain's past presentation timings are written to standard error
