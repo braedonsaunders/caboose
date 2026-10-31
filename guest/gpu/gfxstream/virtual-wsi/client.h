@@ -28,6 +28,8 @@ public:
     void waitPresentationRoom(size_t frames, Deadline deadline);
     Record retire(Deadline deadline);
     bool retired() const { return retired_; }
+    // Called when the peer closes the connection (the executor left), before the failure.
+    static void (*peerGone)();
     bool revoked() const { return revoked_; }
     bool failed() const { return failed_; }
     Status failure() const { return failure_; }

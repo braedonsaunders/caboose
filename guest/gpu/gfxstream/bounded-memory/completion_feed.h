@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -206,6 +207,26 @@ public:
         }
         changed_.notify_all();
     }
+    // The executor is gone: every device of this process is lost.
+    void loseAll() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lost_ = true;
+        closed_ = true;
+        changed_.notify_all();
+    }
+    // A new executor connection after a loss: objects of the lost devices are asked about
+    // on their own (ended) streams, which report device loss; new objects are tracked.
+    void revive() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [handle, state] : fences_)
+            if (state.state == Fence::Pending) { state.state = Fence::Untracked; state.serial = 0; }
+        for (auto& [handle, state] : semaphores_) state.tracked = false;
+        watches_.clear();
+        lost_ = false;
+        lostDevices_.clear();
+        closed_ = false;
+        changed_.notify_all();
+    }
     // The feed ended: nothing pending will be reported any more.
     void feedClosed() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -307,6 +328,19 @@ inline std::atomic<bool> feedActive{false};
 inline Tracker& tracker() {
     static Tracker* instance = new Tracker;
     return *instance;
+}
+// Set once the phone executor this process's Vulkan objects live on is gone (its
+// streams ended). Never cleared: every device is lost and the application recreates
+// its instance, which then finds whichever executor exists.
+inline std::atomic<bool> executorLost{false};
+// A device stream connected to a (new) executor.
+inline void executorConnected() {
+    if (executorLost.exchange(false, std::memory_order_acq_rel)) tracker().revive();
+}
+inline void markExecutorLost() {
+    if (executorLost.exchange(true, std::memory_order_acq_rel)) return;
+    std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
+    tracker().loseAll();
 }
 
 }  // namespace caboose::completion

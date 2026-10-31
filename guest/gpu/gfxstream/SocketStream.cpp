@@ -14,6 +14,7 @@
 #include <thread>
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
+#include "caboose-bounded-memory/deferred_replies.h"
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
 // echoes this after verifying its actual immutable features and source pins.
@@ -165,14 +166,30 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
             std::memcpy(&status, record + 8, sizeof(status));
             caboose::completion::tracker().complete(serial, status);
         }
+        // The broker ends a feed only when its executor leaves.
+        caboose::completion::markExecutorLost();
         caboose::completion::feedActive.store(false, std::memory_order_release);
         caboose::completion::tracker().feedClosed();
         close(fd);
+        feedStarted.store(false);  // a later executor connection runs its own feed
     }).detach();
 }
 #endif
 }  // namespace
 
+// Set on the thread running a connection's hello.
+static thread_local bool handshaking = false;
+// The process's first connected stream: the shared encoder writes to it.
+static std::atomic<CabooseSocketStream*> firstStream{nullptr};
+static std::string firstPath;
+// The executor is gone. A null read aborts the process in the encoder, so the reply reads
+// as VK_ERROR_DEVICE_LOST in every 32-bit word instead: a call's VkResult says the device
+// is lost and its other outputs go unused.
+static const unsigned char* lostReply(unsigned char* data, size_t len) {
+    const int32_t lost = -4;
+    for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
+    return data;
+}
 CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
 CabooseSocketStream::~CabooseSocketStream() {
     // Do not flush during teardown: an interrupted session must not send stale work.
@@ -182,6 +199,8 @@ CabooseSocketStream::~CabooseSocketStream() {
 void CabooseSocketStream::invalidate() {
     indexedReady_.store(false, std::memory_order_release);
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
+    // A connected device stream ends only when its executor does.
+    if (fd_ >= 0 && !handshaking) caboose::completion::markExecutorLost();
 }
 int CabooseSocketStream::connect(const char* path) {
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
@@ -196,6 +215,9 @@ int CabooseSocketStream::connect(const char* path) {
     return connectWith(path, kHello, false);
 }
 int CabooseSocketStream::connectWith(const char* path, const unsigned char* offer, bool guestHandles) {
+    // A refused offer ends the connection during the hello: that is no executor loss.
+    handshaking = true;
+    struct Done { ~Done() { handshaking = false; } } done;
     const uint32_t nativeOne = 1;
     if (*reinterpret_cast<const unsigned char*>(&nativeOne) != 1) { errno = ENOTSUP; return -1; }
     if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
@@ -225,10 +247,35 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     indexedReady_.store(true, std::memory_order_release);
 #endif
     caboose_gfxstream_device_fd = caboose_gfxstream_device_fd == -1 ? fd_ : -2;
+    CabooseSocketStream* none = nullptr;
+    if (firstStream.compare_exchange_strong(none, this)) firstPath = path;
+    caboose::completion::executorConnected();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     if (features & kCompletionFeed) startCompletionFeed(path, reply);
 #endif
     return 0;
+}
+// Connects the process's first stream (the one its shared encoder writes) again after its
+// executor left: 0 when it is connected, else -1 with errno.
+extern "C" int caboose_gfxstream_reconnect_ended(void);
+extern "C" int caboose_gfxstream_reconnect_ended(void) { return CabooseSocketStream::reconnectEnded(); }
+int CabooseSocketStream::reconnectEnded() {
+    CabooseSocketStream* stream = firstStream.load();
+    if (!stream) { errno = ENOTCONN; return -1; }
+    if (stream->indexedHandshakeReady()) return 0;
+    // The encoder and its handles stay; the bytes it buffered for the old connection and the
+    // replies that connection owed are dropped.
+    if (stream->fd_ >= 0) {
+        if (caboose_gfxstream_device_fd == stream->fd_) caboose_gfxstream_device_fd = -1;
+        close(stream->fd_);
+        stream->fd_ = -1;
+    }
+    stream->rewind();
+    caboose::memory::deferredReplies.forgetAll();
+    if (stream->connect(firstPath.c_str()) != 0) return -1;
+    // The connection manager's first word on a new connection: the client flags (none).
+    const uint32_t clientFlags = 0;
+    return stream->writeFully(&clientFlags, sizeof(clientFlags));
 }
 void* CabooseSocketStream::allocBuffer(size_t size) {
     try { buffer_.resize(size); } catch (const std::exception&) { return nullptr; }
@@ -254,13 +301,20 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
     while (len) {
         ssize_t n = recv(fd_, p, len, 0);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) { invalidate(); return nullptr; }
+        if (n <= 0) {
+            invalidate();
+            if (handshaking) return nullptr;
+            return lostReply(start, static_cast<size_t>(p - start) + len);
+        }
         p += n; len -= static_cast<size_t>(n);
     }
     return start;
 }
 const unsigned char* CabooseSocketStream::commitBufferAndReadFully(size_t size, void* data, size_t len) {
-    if (commitBuffer(size) != 0) return nullptr;
+    if (commitBuffer(size) != 0) {
+        if (handshaking) return nullptr;
+        return lostReply(static_cast<unsigned char*>(data), len);
+    }
     return readFully(data, len);
 }
 const unsigned char* CabooseSocketStream::read(void* data, size_t* len) {

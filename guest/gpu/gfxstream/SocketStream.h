@@ -20,8 +20,10 @@ public:
     const unsigned char* read(void* buf, size_t* len) override;
     int writeFully(const void* buf, size_t len) override;
     bool indexedHandshakeReady() const { return indexedReady_.load(std::memory_order_acquire); }
+    // caboose_gfxstream_reconnect_ended (SocketStream.cpp).
+    static int reconnectEnded();
 private:
-    // Connects and exchanges one hello offer; EPROTO when the broker refuses it.
+    // A non-virtual helper: the class layout shared with the retained archive is unchanged.
     int connectWith(const char* path, const unsigned char* offer, bool guestHandles);
     std::atomic<bool> indexedReady_{false};
     int fd_ = -1;

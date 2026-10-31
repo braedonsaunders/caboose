@@ -11,8 +11,11 @@
 
 namespace caboose::wsi {
 Client::~Client() { if (fd_>=0) close(fd_); }
+void (*Client::peerGone)()=nullptr;
 [[noreturn]] void Client::fail(int error) {
     if (fd_>=0) { close(fd_); fd_=-1; }
+    // The broker closes surface connections only when their executor leaves.
+    if ((error==ECONNRESET || error==EPIPE) && peerGone) peerGone();
     throw std::system_error(error, std::generic_category(), "Caboose surface transport");
 }
 void Client::ready(short events, Deadline deadline) {

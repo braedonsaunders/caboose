@@ -128,3 +128,9 @@ The indexed fixture checks 130 frames, cancellation racing actual acquisition,
 foreign-platform timeout provenance, owner revocation during acquire, and an index
 outside the provider's actual count. Additional frozen vector paths are explicit
 arguments to `check_vectors.py`.
+
+After a revocation the phone owes no further retirements, releases or acquire replies:
+waits for them end at once, and present and acquire report `VK_ERROR_OUT_OF_DATE_KHR`.
+Once the process's executor is lost (see `../bounded-memory/README.md`), present and
+acquire report `VK_ERROR_DEVICE_LOST`. A surface connection the broker closes marks the
+executor lost.

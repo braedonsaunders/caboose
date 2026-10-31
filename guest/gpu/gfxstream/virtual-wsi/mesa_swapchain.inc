@@ -337,9 +337,16 @@ static VkResult VKAPI_CALL getImages(VkDevice device, VkSwapchainKHR handle, uin
     *count=copied; return copied<total?VK_INCOMPLETE:VK_SUCCESS;
     });
 }
+// Once the executor is gone, a failed acquire or present is device loss: the application
+// recreates its instance and finds whichever executor exists, as after any lost device.
+static VkResult executorResult(VkResult result) {
+    return result<0 && caboose::completion::executorLost.load(std::memory_order_acquire) ? VK_ERROR_DEVICE_LOST
+                                                                                         : result;
+}
 static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, uint64_t timeout,
     VkSemaphore semaphore, VkFence fence, uint32_t* index) {
-    return guarded([&]() -> VkResult {
+    if (caboose::completion::executorLost.load(std::memory_order_acquire)) return VK_ERROR_DEVICE_LOST;
+    return executorResult(guarded([&]() -> VkResult {
         auto swap=lookupSwapchain(handle);
         if (!swap || swap->device!=device || !index || (!semaphore && !fence)) return VK_ERROR_INITIALIZATION_FAILED;
         auto& surface=*swap->surface;
@@ -438,7 +445,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             *index=acquired;
         }
         return result;
-    });
+    }));
 }
 static VkResult VKAPI_CALL acquireImage2(VkDevice device, const VkAcquireNextImageInfoKHR* info, uint32_t* index) {
     if (!info || info->sType!=VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR || info->pNext || info->deviceMask!=1)
@@ -446,6 +453,10 @@ static VkResult VKAPI_CALL acquireImage2(VkDevice device, const VkAcquireNextIma
     return acquireImage(device,info->swapchain,info->timeout,info->semaphore,info->fence,index);
 }
 static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info) {
+    if (caboose::completion::executorLost.load(std::memory_order_acquire)) {
+        if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=VK_ERROR_DEVICE_LOST;
+        return VK_ERROR_DEVICE_LOST;
+    }
     auto overall=guarded([&]() -> VkResult {
         // Shared waits across multiple swapchains require an atomic native transaction.
         if (!info || info->sType!=VK_STRUCTURE_TYPE_PRESENT_INFO_KHR || info->pNext ||
@@ -506,6 +517,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         if (info->pResults) info->pResults[0]=result;
         return result;
     });
+    overall=executorResult(overall);
     if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=overall;
     return overall;
 }

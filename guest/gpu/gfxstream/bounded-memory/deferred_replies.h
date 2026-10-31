@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "completion_feed.h"
 
 namespace caboose::memory {
 inline thread_local uint32_t lastOpcode = 0;
@@ -20,6 +21,8 @@ inline thread_local uint32_t lastOpcode = 0;
 // replies are consumed in stream order and only one round-trip is paid.
 // A non-success deferred result cannot be returned to its caller any more; it
 // is reported once on stderr. A transport failure invalidates the stream.
+// After the executor is gone every reply reads as device loss: nothing to report.
+inline bool lostQuietly() { return caboose::completion::executorLost.load(std::memory_order_relaxed); }
 template<class Stream>
 bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     while (pending) {
@@ -30,7 +33,7 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
             return false;
         }
         --pending;
-        if (result != 0) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
+        if (result != 0 && !lostQuietly()) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
     }
     return true;
 }
@@ -50,7 +53,8 @@ inline thread_local bool sendingPrefetchedFenceWait = false;
 // Told how long each drain that had replies to read blocked, in microseconds.
 inline void (*drainObserver)(uint64_t us) = nullptr;
 
-// Pending replies and their commands' bytes per encoder. Callers
+// Pending replies and their commands' bytes per encoder, kept outside the
+// encoder so its layout, which other objects allocate, never changes. Callers
 // hold the encoder lock. A prefetched fence wait that succeeds records its
 // fence as signaled until the fence is reset, destroyed or imported; the
 // fence's generation discards prefetches that complete after such a change.
@@ -148,16 +152,15 @@ public:
             }
             total_.fetch_sub(replies.size(), std::memory_order_relaxed);
         }
+        const auto started = std::chrono::steady_clock::now();
         struct Observe {
-            void (*observer)(uint64_t);
             std::chrono::steady_clock::time_point started;
             ~Observe() {
-                if (observer)
-                    observer(std::chrono::duration_cast<std::chrono::microseconds>(
+                if (drainObserver)
+                    drainObserver(std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - started).count());
             }
-        } observe{drainObserver, drainObserver ? std::chrono::steady_clock::now()
-                                               : std::chrono::steady_clock::time_point{}};
+        } observe{started};
         for (const Reply& reply : replies)
             if (!readReply(reply, stream)) return false;
         return true;
@@ -246,6 +249,14 @@ public:
 
     uint64_t pending() const { return total_.load(std::memory_order_relaxed); }
 
+    // The connection these replies were owed on ended: none of them will ever arrive, and
+    // a new connection must not wait for them.
+    void forgetAll() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_.clear();
+        total_.store(0, std::memory_order_relaxed);
+    }
+
 private:
     struct Reply;
     static size_t wireSize(const Reply& reply) {
@@ -261,7 +272,7 @@ private:
                     return false;
                 }
                 if (created != reply.handle + i) {
-                    std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
+                    if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
                                  reply.handle + i, created);
                     stream->invalidate();
                     return false;
@@ -275,7 +286,7 @@ private:
             if (createResult != 0) {
                 // The guest already handed these handles out; a device that refused or
                 // renamed them has diverged from the application's view: device loss.
-                std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
+                if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
                              reply.handle, reply.count, createResult);
                 stream->invalidate();
                 return false;
@@ -288,7 +299,7 @@ private:
             return false;
         }
         if (!reply.fence) {
-            if (result != 0) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
+            if (result != 0 && !lostQuietly()) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
             if (result != 0 && reply.checked) {
                 stream->invalidate();
                 return false;

@@ -65,6 +65,19 @@ an unwatched queue) makes that object untracked until a reset, and it is asked a
 the device stream. Device loss reaches every waiter; a closed feed hands waits back to
 the device.
 
+## Executor loss
+
+The phone executor's streams end only when it leaves (the app goes to the background or
+closes, or the phone drops off the network). The first sign of that, whether an ended
+feed, an ended device stream or a failed write, marks the process's executor lost
+(`markExecutorLost`). From then on every device is lost: waits and status queries
+answer `VK_ERROR_DEVICE_LOST` from the tracker, and a reply read on the ended stream
+reads as `VK_ERROR_DEVICE_LOST` instead of failing. Nothing waits for the phone and
+nothing aborts. Deferred replies the old connection owed are dropped. A later
+`vkCreateInstance` connects the process's stream again (patch 0025, and
+`caboose_gfxstream_reconnect_ended` in `SocketStream.cpp`). Tracking then starts afresh,
+and objects of the lost devices are asked about on the ended stream, which reports loss.
+
 ## Tests
 
 `../driver/test.sh` builds and runs every `test_*.cpp` here on Linux with the driver's

@@ -60,6 +60,7 @@ static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
     auto found=surfaces.find(handle);
     return found==surfaces.end() ? nullptr : found->second;
 }
+static const bool peerGoneHook=[] { Client::peerGone=caboose::completion::markExecutorLost; return true; }();
 static Client::Deadline deadline() { return std::chrono::steady_clock::now()+std::chrono::seconds(10); }
 // Native errno is not a fictional provider VkResult. This is the local WSI API's
 // surface-loss result; the control client retains the original native status.

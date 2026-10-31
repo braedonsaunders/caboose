@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 25/25] Connect a new instance again after the executor left
+
+When the process's phone executor leaves, its connection ends and every device
+is lost (caboose-bounded-memory/completion_feed.h). A later vkCreateInstance in
+the same process connects the shared encoder's stream again, to whichever
+executor exists then, or fails so the loader offers another implementation.
+---
+ src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index 06ef709..cd4d693 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -99,11 +99,20 @@ static bool isGuestEmulatedInstanceExtension(const char* name) {
+     return false;
+ }
+ 
++extern "C" int caboose_gfxstream_reconnect_ended(void);
+ static VkResult SetupInstanceForProcess(void) {
+ #ifndef CABOOSE_GFXSTREAM_PRIVATE_ICD
+     if (std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return VK_ERROR_INCOMPATIBLE_DRIVER;
+ #endif
+     auto mgr = getConnectionManager();
++#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
++    // The process's connection ended with its executor: a new instance connects it again,
++    // to whichever executor exists now, or finds none.
++    if (mgr && std::getenv("CABOOSE_GFXSTREAM_SOCKET") &&
++        caboose::completion::executorLost.load(std::memory_order_acquire) &&
++        caboose_gfxstream_reconnect_ended() != 0)
++        return VK_ERROR_INITIALIZATION_FAILED;
++#endif
+     if (!mgr) {
+         mesa_logd("vulkan: Failed to get host connection\n");
+         return VK_ERROR_INITIALIZATION_FAILED;
+-- 
+2.52.0
+

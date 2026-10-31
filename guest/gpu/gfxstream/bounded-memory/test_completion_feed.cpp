@@ -129,6 +129,31 @@ int main() {
         assert(Tracker::Clock::now() - start < std::chrono::seconds(2));
         untrack.join();
     }
+    {
+        // Losing the executor wakes every waiter with device loss at once; a new
+        // executor connection revives tracking, and the lost device's pending fences are
+        // asked about on their own (ended) streams instead of hanging.
+        Tracker t;
+        const uint64_t f = 0xF6, sem = 0x56, ten = 10;
+        t.fenceCreated(f, false);
+        t.timelineCreated(sem, 0);
+        t.submitted(f, {{sem, 10}});
+        std::thread lose([&] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); t.loseAll(); });
+        const auto start = Tracker::Clock::now();
+        assert(t.waitFences(&f, 1, true, start + std::chrono::seconds(5)) == Answer::DeviceLost);
+        assert(Tracker::Clock::now() - start < std::chrono::seconds(2));
+        lose.join();
+        assert(t.waitTimelines(&sem, &ten, 1, true, Tracker::Clock::now()) == Answer::DeviceLost);
+        t.revive();
+        assert(!t.deviceLost());
+        assert(t.fencesSignaled(&f, 1, true) == Answer::AskDevice);
+        assert(t.waitTimelines(&sem, &ten, 1, true, Tracker::Clock::now()) == Answer::AskDevice);
+        const uint64_t g = 0xF7;
+        t.fenceCreated(g, false);
+        const uint64_t s = t.submitted(g, {});
+        t.complete(s, kCompleted);
+        assert(t.fencesSignaled(&g, 1, true) == Answer::Satisfied);
+    }
     uint8_t watch[kWatchPacketSize], feed[kFeedPacketSize];
     encodeWatch(watch, 0x1122334455667788ull, 7);
     encodeFeed(feed);
