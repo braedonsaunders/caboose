@@ -4,23 +4,27 @@ import OSLog
 
 /// The app creates this explicitly for its owner computer. It is never created
 /// by CabooseDisplaySession, so agent, thumbnail and auxiliary connections cannot
-/// accidentally become a GPU executor. One instance is one nonrestartable lease.
+/// accidentally become a GPU executor. One instance is one executor; a new one replaces it once it ends.
 @MainActor
 public final class LiveGPUOwnerSession {
     private static let log = Logger(subsystem: "org.caboose", category: "LiveGPUOwner")
     public enum State: Equatable { case idle, connecting, connected, draining, ended(cleanupFailed: Bool) }
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
-    /// A new executor may follow once local native cleanup succeeded. A transport loss never
-    /// brings the remote retirement receipt, but the host relay ends only after both of its
-    /// sides close and the broker revokes the old lease, so the server fences the old one.
+    /// A new executor may follow once this one has ended. A transport loss never brings the
+    /// remote retirement receipt, but the host relay ends only after both of its sides close
+    /// and the broker revokes the old lease, so the server fences the old one. Native cleanup
+    /// that failed (as after a lost device) does not hold the phone's GPU: the failed
+    /// executor is kept alive with whatever native state it still holds, and a new one,
+    /// with new processes and a new device, takes over.
     public var canReplace: Bool {
-        if case .ended(cleanupFailed: false) = state { return true }
+        if case .ended = state { return true }
         return false
     }
-    // Failed native retirement must survive UI/session ARC. This reservation is
-    // released only after local native cleanup succeeds, never on view dismissal.
+    // The running executor survives UI/session ARC until it ends, never released on view
+    // dismissal; one whose native cleanup failed is kept for the life of the app.
     private static var retainedExecutor: LiveGPUOwnerSession?
+    private static var failedExecutors: [LiveGPUOwnerSession] = []
     private let executor: LiveGPUSession
     private let onEnd: @MainActor (Error?, Error?) -> Void
     private final class Reference { weak var owner: LiveGPUOwnerSession? }
@@ -53,8 +57,16 @@ public final class LiveGPUOwnerSession {
                 case .ended(let cause, let cleanupError):
                     self.presentationOwners.revoke()
                     self.state = .ended(cleanupFailed: cleanupError != nil)
-                    if cleanupError == nil, Self.retainedExecutor === self { Self.retainedExecutor = nil }
+                    if Self.retainedExecutor === self {
+                        Self.retainedExecutor = nil
+                        if cleanupError != nil { Self.failedExecutors.append(self) }
+                    }
                     Self.log.info("Owner executor ended: cause=\(cause != nil, privacy: .public) cleanupFailed=\(cleanupError != nil, privacy: .public) retirementConfirmed=\(self.executor.remoteRetirementCompleted, privacy: .public)")
+                    // Also on standard output, which device consoles capture when the log is not.
+                    print("CABOOSE_GPU_OWNER_ENDED cause=\(cause.map { String(describing: $0) } ?? "none") " +
+                          "cleanup=\(cleanupError.map { String(describing: $0) } ?? "ok") " +
+                          "retirement_confirmed=\(self.executor.remoteRetirementCompleted ? 1 : 0)")
+                    fflush(stdout)
                     self.onEnd(cause, cleanupError)
                 }
             }

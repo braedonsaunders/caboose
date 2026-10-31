@@ -68,11 +68,17 @@ struct caboose_gpu_virtual_swapchain {
     uint32_t queueFamily = 0;
     // Guest-owned images (caboose_gpu_virtual_swapchain_map_guest_images): presents name a
     // source image, and the native image is acquired inside the present. Each source holds
-    // the serial of the present still copying it, or 0. With `mailbox`, a present that finds
-    // no free native image is dropped; otherwise it waits up to kGuestAcquireTimeoutNs.
+    // the serial of the present still copying it, or 0. A present that finds no free native
+    // image (none signaled by its fence at once with `mailbox`, else within
+    // kGuestAcquireWaitNs) is dropped, and the image acquired for it is owed to a later
+    // present, which takes it once its fence has signaled (takeNativeImage).
     bool guestImages = false;
     bool mailbox = false;
     std::vector<uint64_t> sourceSerials;
+    VkFence acquireFence = VK_NULL_HANDLE;
+    bool owed = false, owedSuboptimal = false;
+    uint32_t owedIndex = 0;
+    VkSemaphore owedSemaphore = VK_NULL_HANDLE;
     std::mutex mutex;
 };
 #endif
@@ -140,7 +146,7 @@ struct InFlightFrame {
 constexpr size_t kLegacyFramesInFlight = 1;
 constexpr size_t kIndexedFramesInFlight = 2;
 constexpr size_t kGuestFramesInFlight = 8;
-constexpr uint64_t kGuestAcquireTimeoutNs = 1000000000ull;
+constexpr uint64_t kGuestAcquireWaitNs = 50000000ull;
 }
 struct caboose_gpu_surface {
     std::mutex mutex;
@@ -1073,9 +1079,49 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
         return operationResult(accepted ? CABOOSE_GPU_SUBMIT_QUEUED : CABOOSE_GPU_SUBMIT_UNCERTAIN, r, provider);
     } catch (const std::bad_alloc&) { abortReservation(); return rejected(ENOMEM); }
 }
-// A present naming a guest-owned source image: the native image is acquired here, the
-// source copied into it and presented. In mailbox, or after kGuestAcquireTimeoutNs, a
-// present with no free native image is dropped: it reports QUEUED and releases its source.
+// MoltenVK's acquire never blocks: with no image free it names one anyway and signals the
+// acquire later, when the presentation engine returns that image, which for a layer that
+// is not on screen may be never. A copy waiting on that signal would stall the GPU until
+// Metal times its command buffer out and loses the device. So the acquire also signals a
+// fence, the present waits for it on the CPU (not at all in mailbox, else at most
+// kGuestAcquireWaitNs), and an image not signaled by then is owed to a later present.
+// VK_NOT_READY: drop this present. Caller holds the swapchain's host mutex.
+static VkResult takeNativeImage(gfxstream::host::vk::CaboosePresentationDevice& device,
+    caboose_gpu_virtual_swapchain& swapchain, Frame& frame, uint32_t* index, PresentationProviderResult* provider) {
+    auto* vk = device.vk;
+    if (!vk || !vk->vkCreateFence || !vk->vkResetFences || !vk->vkWaitForFences || !vk->vkAcquireNextImageKHR)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    if (!swapchain.acquireFence) {
+        VkFenceCreateInfo fi{}; fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkResult r = vk->vkCreateFence(device.device, &fi, nullptr, &swapchain.acquireFence);
+        if (r != VK_SUCCESS) return provider->record(r);
+    }
+    if (!swapchain.owed) {
+        VkResult r = vk->vkResetFences(device.device, 1, &swapchain.acquireFence);
+        if (r != VK_SUCCESS) return provider->record(r);
+        uint32_t acquired = 0;
+        r = provider->record(vk->vkAcquireNextImageKHR(device.device, swapchain.handle, 0, frame.acquired,
+                                                        swapchain.acquireFence, &acquired));
+        if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return r;
+        if (acquired >= swapchain.nativeImages.size()) return VK_ERROR_UNKNOWN;
+        swapchain.owed = true; swapchain.owedSuboptimal = r == VK_SUBOPTIMAL_KHR;
+        swapchain.owedIndex = acquired; swapchain.owedSemaphore = frame.acquired;
+        frame.acquired = VK_NULL_HANDLE;
+    }
+    VkResult waited = vk->vkWaitForFences(device.device, 1, &swapchain.acquireFence, VK_TRUE,
+                                          swapchain.mailbox ? 0 : kGuestAcquireWaitNs);
+    if (waited == VK_TIMEOUT) return VK_NOT_READY;
+    if (waited != VK_SUCCESS) return provider->record(waited);
+    // Signaled: the copy may wait on the owed semaphore. The frame's own was never used.
+    if (frame.acquired) vk->vkDestroySemaphore(device.device, frame.acquired, nullptr);
+    frame.acquired = swapchain.owedSemaphore;
+    swapchain.owedSemaphore = VK_NULL_HANDLE; swapchain.owed = false;
+    *index = swapchain.owedIndex;
+    return swapchain.owedSuboptimal ? VK_SUBOPTIMAL_KHR : VK_SUCCESS;
+}
+// A present naming a guest-owned source image: the native image is taken here, the source
+// copied into it and presented. A present with no free native image (takeNativeImage) is
+// dropped: it reports QUEUED and releases its source; it never waits on the GPU.
 static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain* swapchain,
     const caboose_gpu_mapped_present_info* info, caboose_gpu_present_callback callback, void* context) {
     if (!info || !callback || !same(swapchain->info.identity, info->identity) ||
@@ -1153,8 +1199,7 @@ static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain
         uint32_t nativeIndex = 0;
         {
             std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
-            r = acquirePresentationImage(*surface->device, swapchain->handle,
-                swapchain->mailbox ? 0 : kGuestAcquireTimeoutNs, frame->acquired, &nativeIndex, &provider);
+            r = takeNativeImage(*surface->device, *swapchain, *frame, &nativeIndex, &provider);
         }
         if (r == VK_NOT_READY || r == VK_TIMEOUT) {
             frame->dropped = true;
@@ -1411,7 +1456,12 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         !swapchain->device->vk->vkDestroySwapchainKHR) return fail(EIO);
     {
         std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
-        swapchain->device->vk->vkDestroySwapchainKHR(swapchain->device->device, swapchain->handle, nullptr);
+        auto* vk = swapchain->device->vk;
+        vk->vkDestroySwapchainKHR(swapchain->device->device, swapchain->handle, nullptr);
+        // An owed image goes with its swapchain; MoltenVK keeps its own reference to the
+        // semaphore and fence it may still signal.
+        if (swapchain->owedSemaphore) vk->vkDestroySemaphore(swapchain->device->device, swapchain->owedSemaphore, nullptr);
+        if (swapchain->acquireFence) vk->vkDestroyFence(swapchain->device->device, swapchain->acquireFence, nullptr);
     }
     surface->indexed = nullptr;
     *ptr = nullptr;

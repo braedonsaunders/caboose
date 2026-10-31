@@ -72,7 +72,6 @@ final class AppModel {
     private var liveGPUOwner: LiveGPUOwnerSession?
     private var liveGPUIdentity: String?
     private var liveGPUGeneration = UUID()
-    private var liveGPUFailedIdentity: String?
     /// A GPU executor that ends (a lost transport, a stopped session) is started again while
     /// the app is in the foreground, after 1 s doubling to 30 s; one that ran a minute resets it.
     private var liveGPURetryDelay: TimeInterval = 1
@@ -1097,16 +1096,14 @@ final class AppModel {
                 return
             }
         }
-        guard liveGPUFailedIdentity != identity else { return }
         let generation = UUID()
         do {
             let owner = try LiveGPUOwnerSession(hostURL: activeHostURL ?? credentials.hostURL,
                 phoneToken: credentials.token) { [weak self] _, _ in
                     guard let self, self.liveGPUGeneration == generation else { return }
                     self.endLiveGPUBackgroundTime()
-                    // Failed native cleanup keeps its reservation and is never retried.
+                    // Even after failed native cleanup (a lost device) the GPU comes back.
                     if self.liveGPUOwner?.canReplace == true { self.retryLiveGPU() }
-                    else { self.liveGPUFailedIdentity = identity }
                 }
             try owner.start()
             liveGPUGeneration = generation; liveGPUIdentity = identity; liveGPUOwner = owner

@@ -515,12 +515,23 @@ executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its
 on the returned phone. Its devices cannot be resumed as they were, because their
 objects lived on the executor that left. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
-app releases its process-wide owner reservation once local native cleanup succeeds; the
+app releases its process-wide owner reservation once the executor has ended; the
 server fences the old executor (the host relay ends only after both of its sides close,
 and the broker revokes the old lease). While the app is in the foreground, an executor
 that ends, including after a lost transport, is started again after 1 s, doubling to
-30 s, reset by one that ran a minute. Failed native cleanup keeps the reservation and is
-never retried. The host relay logs why it ended any relay early (phone silence, a full
+30 s, reset by one that ran a minute. That includes an executor whose native cleanup
+failed, as after a lost device: the app keeps it, with whatever native state it still
+holds, for its lifetime, and a new executor with new processes and devices takes over.
+Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
+retirement_confirmed=0|1`.
+
+A present the phone cannot show is dropped, never waited for on the GPU: MoltenVK's
+acquire names an image even when none is free and signals it only when the presentation
+engine returns one, which for a layer that is not on screen may be never, and a copy
+waiting on that signal would stall until Metal times it out and loses the device. The
+phone waits for the acquire's fence on the CPU instead (not at all in mailbox, at most
+50 ms in FIFO), reports a present whose image has not arrived as queued and released, and
+gives the acquired image to the next present once it has. The host relay logs why it ended any relay early (phone silence, a full
 queue, a socket error or an abnormal close), and each side may queue up to 2048 messages
 or 8 MiB before a peer that keeps sending past that is ended.
 
