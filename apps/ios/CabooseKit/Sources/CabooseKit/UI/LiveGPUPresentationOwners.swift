@@ -106,7 +106,7 @@ public final class LiveGPUPresentationOwners {
                 server: window.frame.size, visible: view.bounds.size,
                 pending: pending)
             #endif
-            lease.extent = currentExtent
+            lease.updateExtent(currentExtent)
         }
         // Fitting the view slot scales the dedicated presentation layer without
         // invalidating the bound surface; the guest recreates its swapchain at
@@ -245,7 +245,8 @@ final class LiveGPULayerLease: @unchecked Sendable {
     let identity: LiveGPUSurfaceIdentity
     let windowID: UInt64
     let windowIdentity: ObjectIdentifier
-    @MainActor var extent: CGSize
+    /// Display placement; read off the main actor by the native bind path.
+    var extent: CGSize { lock.withLock { currentExtent } }
     @MainActor weak var view: RemoteWindowView?
     @MainActor var content: UIView?
     @MainActor var layer: CAMetalLayer? {
@@ -263,12 +264,14 @@ final class LiveGPULayerLease: @unchecked Sendable {
     }
     private let lock = NSLock()
     private var valid = true
+    private var currentExtent: CGSize
+    func updateExtent(_ newExtent: CGSize) { lock.withLock { currentExtent = newExtent } }
     var isValid: Bool { lock.withLock { valid } }
     @discardableResult func invalidate() -> Bool { lock.withLock { let old = valid; valid = false; return old } }
     @MainActor init(identity: LiveGPUSurfaceIdentity, windowID: UInt64, windowIdentity: ObjectIdentifier,
                     extent: CGSize, view: RemoteWindowView, content: UIView) {
         self.identity = identity; self.windowID = windowID; self.windowIdentity = windowIdentity
-        self.extent = extent; self.view = view; self.content = content
+        self.currentExtent = extent; self.view = view; self.content = content
     }
 }
 #endif
