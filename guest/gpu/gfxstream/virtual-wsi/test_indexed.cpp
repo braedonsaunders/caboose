@@ -100,7 +100,108 @@ static void exercise(int scenario) {
     int result; assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
     assert(unlink(path.c_str())==0); assert(rmdir(dir)==0);
 }
+// Ordered presents (kind 39): the client never waits for PRESENT_RESULT. Results arrive
+// while it waits for something else, or are pumped; a refusal ends the swapchain and is
+// reported by presentFailed, a rejected frame's image counts as released, and an
+// uncertain frame never holds up presentation idle.
+// scenario 0: queued, 1: rejected, 2: uncertain, 3: result for a frame never presented.
+static void exerciseOrdered(int scenario) {
+    char dir[]="/tmp/caboose-ordered-test-XXXXXX"; assert(mkdtemp(dir));
+    std::string path=std::string(dir)+"/surface";
+    int listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0); assert(listener>=0);
+    sockaddr_un address{}; address.sun_family=AF_UNIX; strcpy(address.sun_path,path.c_str());
+    assert(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0);
+    assert(listen(listener,1)==0);
+    pid_t child=fork(); assert(child>=0);
+    if (!child) {
+        int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
+        receive(fd,16); Bytes bound; put64(bound,9); auto ident=identityBytes();
+        bound.insert(bound.end(),ident.begin(),ident.end()); statusBytes(bound); transmit(fd,17,bound);
+        receive(fd,25);
+        auto created=identityBytes(); put64(created,1); put64(created,111); statusBytes(created);
+        put32(created,2); put32(created,0); transmit(fd,26,created);
+        receive(fd,27); auto mapped=identityBytes(); put64(mapped,111); statusBytes(mapped); transmit(fd,28,mapped);
+        auto sendAcquired=[&](uint64_t request, uint32_t index) {
+            auto acquired=identityBytes(); put64(acquired,111); put64(acquired,request); statusBytes(acquired);
+            put32(acquired,1); put32(acquired,index); put32(acquired,0); put32(acquired,0); transmit(fd,30,acquired);
+        };
+        receive(fd,29); sendAcquired(2,0);
+        auto present=receive(fd,39);
+        assert(present.size()==80 && u64(present,16)==111 && u64(present,24)==1 && u64(present,32)==13);
+        assert(u64(present,40)==77 && u32(present,48)==0 && u32(present,56)==1 && u32(present,60)==2);
+        if (scenario==3) {
+            auto stray=identityBytes(); put64(stray,5); statusBytes(stray); put32(stray,1); put32(stray,0);
+            transmit(fd,21,stray); receive(fd,29); close(fd); _exit(0);
+        }
+        // The result arrives only after the client moved on to its next acquire.
+        receive(fd,29);
+        auto result=identityBytes(); put64(result,1);
+        if (scenario==1) statusBytes(result,ESTALE,0,0); else statusBytes(result,0,1,0);
+        put32(result,scenario==0 ? 1 : scenario==1 ? 0 : 2); put32(result,0); transmit(fd,21,result);
+        if (scenario==0) {
+            auto released=identityBytes(); put64(released,1); transmit(fd,22,released);
+            auto final=identityBytes(); put64(final,111); put64(final,1); transmit(fd,36,final);
+        }
+        sendAcquired(3,1);
+        if (scenario==0) {
+            receive(fd,39);
+            auto second=identityBytes(); put64(second,2); statusBytes(second); put32(second,1); put32(second,0);
+            transmit(fd,21,second);
+            auto released=identityBytes(); put64(released,2); transmit(fd,22,released);
+            auto final=identityBytes(); put64(final,111); put64(final,2); transmit(fd,36,final);
+            receive(fd,32); auto retiredSwap=identityBytes(); put64(retiredSwap,111); statusBytes(retiredSwap);
+            transmit(fd,33,retiredSwap);
+        }
+        receive(fd,23); auto retired=identityBytes(); statusBytes(retired); transmit(fd,24,retired);
+        close(fd); _exit(0);
+    }
+    close(listener); auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    Client client; client.connect(path.c_str(),deadline); client.bind(7,13,0,0,deadline);
+    Bytes create; put64(create,1); put64(create,11); put64(create,0);
+    for (uint32_t word:{0,2,44,0,640,480,1,18,1,1,2,1,0,0}) put32(create,word);
+    client.createSwapchain(create,deadline);
+    client.mapSwapchain(111,{101,103},deadline);
+    client.beginAcquire(111,2,17,0,12345,deadline);
+    assert(u32(client.finishAcquire(111,2,deadline).body,76)==0);
+    client.presentOrdered(111,1,13,77,0,0,{19,23},deadline);
+    Status failure{};
+    assert(!client.presentFailed(111,&failure));
+    if (scenario==3) {
+        bool rejected=false;
+        try { client.beginAcquire(111,3,17,0,12345,deadline); client.pump();
+              client.finishAcquire(111,3,deadline); }
+        catch (const std::system_error& error) { rejected=error.code().value()==EPROTO; }
+        assert(rejected);
+    } else {
+        client.beginAcquire(111,3,17,0,12345,deadline);
+        assert(u32(client.finishAcquire(111,3,deadline).body,76)==1);
+        if (scenario==0) {
+            assert(!client.presentFailed(111,&failure));
+            client.waitReleased(1,deadline); client.consumeRelease(1);
+            client.waitPresentationIdle(deadline);
+            client.presentOrdered(111,2,13,78,1,0,{19,23},deadline);
+            client.waitPresentationIdle(deadline);
+            client.pump();
+            assert(!client.presentFailed(111,&failure));
+            client.retireSwapchain(111,deadline);
+        } else {
+            assert(client.presentFailed(111,&failure));
+            assert(scenario==1 ? failure.nativeError==ESTALE : failure.nativeError==EIO);
+            // An uncertain frame never retires, so idle must not wait for it.
+            client.waitPresentationIdle(deadline);
+            if (scenario==1) { assert(client.released(1)); client.consumeRelease(1); assert(!client.released(1)); }
+            bool refused=false;
+            try { client.presentOrdered(111,2,13,78,1,0,{19,23},deadline); }
+            catch (const ProtocolError&) { refused=true; }
+            assert(refused);
+        }
+        client.retire(deadline); assert(client.retired());
+    }
+    int result; assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
+    assert(unlink(path.c_str())==0); assert(rmdir(dir)==0);
+}
 int main() {
     for (int scenario=0;scenario<5;++scenario) exercise(scenario);
-    std::cout<<"5 indexed scenarios passed, including 130 frames with final retirement\n";
+    for (int scenario=0;scenario<4;++scenario) exerciseOrdered(scenario);
+    std::cout<<"5 indexed and 4 ordered-present scenarios passed, including 130 frames with final retirement\n";
 }

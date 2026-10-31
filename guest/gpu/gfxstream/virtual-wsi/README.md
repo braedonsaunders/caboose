@@ -81,6 +81,13 @@ for actual kind 36. The phone makes capacity available before its final callback
 observable. Source release alone does not
 open presentation admission or signal an acquire semaphore.
 
+With hello bit `0x400`, PRESENT sends a device-stream order mark and an ordered present
+(kind 39) and returns without waiting for PRESENT_RESULT; `presentOrdered` records the
+frame and `pump` (or any later wait) consumes its result when it arrives. A frame that
+was not queued ends its swapchain: the next present or acquire returns
+`VK_ERROR_OUT_OF_DATE_KHR` (or `VK_ERROR_DEVICE_LOST`), a rejected frame's image counts
+as released, and an uncertain frame never retires and is not waited for.
+
 Unknown creation or retirement completion quarantines allocations and prevents
 device destruction. Source images are freed only after real swapchain or surface
 retirement. App-issued idle calls remain unchanged; the native decoder owns the

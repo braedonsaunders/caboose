@@ -38,11 +38,22 @@ public:
     Record finishAcquire(uint64_t swapchain, uint64_t request, Deadline deadline);
     Record presentIndexed(uint64_t swapchain, uint64_t serial, uint64_t queue,
                           uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline);
+    // Sends a present ordered behind device-stream ORDER mark `order` (kind 39) and returns
+    // without waiting for its result, which is recorded when it arrives.
+    void presentOrdered(uint64_t swapchain, uint64_t serial, uint64_t queue, uint64_t order,
+                        uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline);
+    // Processes every record that has already arrived, without blocking.
+    void pump();
+    // True, with its status, once an ordered present of `swapchain` was not queued.
+    bool presentFailed(uint64_t swapchain, Status* status) const;
     Record retireSwapchain(uint64_t swapchain, Deadline deadline);
 private:
     void send(uint16_t kind, const Bytes& body, Deadline deadline);
     Record receive(Deadline deadline);
     Record await(uint16_t kind, uint64_t serial, Deadline deadline);
+    // Applies one received record; true when it is the awaited `kind`/`serial` (kind 0
+    // awaits nothing: every record must be unsolicited).
+    bool absorb(Record& r, uint16_t kind, uint64_t serial);
     void ready(short events, Deadline deadline);
     [[noreturn]] void fail(int error);
     int fd_ = -1;
@@ -53,9 +64,13 @@ private:
     Identity identity_{};
     struct Source {
         bool released=false, result=false, event=false, consumed=false;
+        // Ordered presents' results arrive later; a failed one never retires.
+        bool ordered=false, failed=false;
         uint64_t swapchain=0;
         uint32_t index=0;
     };
+    // Rejected ordered presents: their image was never read, so it counts as released.
+    std::vector<uint64_t> rejected_;
     bool failed_=false;
     Status failure_{};
     std::map<uint64_t, Source> sources_;
@@ -64,6 +79,8 @@ private:
         uint32_t count;
         bool mapped=false, retiring=false, retired=false;
         uint64_t acquire=0, completedAcquire=0;
+        bool presentFailed=false;
+        Status presentFailure{};
         std::vector<bool> acquired;
         std::vector<uint64_t> releasedSerial;
     };

@@ -23,9 +23,13 @@ namespace caboose::completion {
 // (opcode, total packet size); neither has a reply on its own stream.
 inline constexpr uint32_t kFeedOpcode = 0x4342FE01;   // payload: version u32 = 1, reserved u32 = 0
 inline constexpr uint32_t kWatchOpcode = 0x4342FE02;  // payload: boxed queue u64, serial u64
+// With hello feature 0x400: everything sent on this device stream before the mark must be
+// decoded before the ordered present naming the mark's serial runs.
+inline constexpr uint32_t kOrderOpcode = 0x4342FE03;  // payload: serial u64
 inline constexpr uint32_t kFeedVersion = 1;
 inline constexpr uint32_t kFeedPacketSize = 16;
 inline constexpr uint32_t kWatchPacketSize = 24;
+inline constexpr uint32_t kOrderPacketSize = 16;
 // A feed record: serial u64, status i32, reserved u32 = 0.
 inline constexpr size_t kRecordSize = 16;
 // Record status: the work completed; the device was lost; or the phone cannot watch
@@ -40,6 +44,12 @@ inline void encodeWatch(uint8_t out[kWatchPacketSize], uint64_t boxedQueue, uint
     std::memcpy(out + 4, &size, 4);
     std::memcpy(out + 8, &boxedQueue, 8);
     std::memcpy(out + 16, &serial, 8);
+}
+inline void encodeOrder(uint8_t out[kOrderPacketSize], uint64_t serial) {
+    const uint32_t opcode = kOrderOpcode, size = kOrderPacketSize;
+    std::memcpy(out, &opcode, 4);
+    std::memcpy(out + 4, &size, 4);
+    std::memcpy(out + 8, &serial, 8);
 }
 inline void encodeFeed(uint8_t out[kFeedPacketSize]) {
     const uint32_t opcode = kFeedOpcode, size = kFeedPacketSize, version = kFeedVersion, reserved = 0;

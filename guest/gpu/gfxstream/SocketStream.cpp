@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <string>
 #include <thread>
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
@@ -40,11 +41,14 @@ static constexpr unsigned char kHello[48] = {
 // Optional features offered above the required mask, in the hello's 32-bit mask field:
 // 0x80 this process assigns its own handles for single-object creates and pipelines;
 // 0x100 also for descriptor sets and command buffers; 0x200 it runs a completion feed
-// (caboose-bounded-memory/completion_feed.h). The broker replies with the features both
+// (caboose-bounded-memory/completion_feed.h); 0x400 its presents are ordered behind
+// device-stream ORDER marks instead of a drain. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
-static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200;
-static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed, kGuestHandles};
+static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
+                          kOrderedPresent = 0x400;
+static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent,
+                                   kGuestHandles};
 static std::array<unsigned char, sizeof(kHello)> helloWith(uint32_t features) {
     std::array<unsigned char, sizeof(kHello)> hello{};
     std::memcpy(hello.data(), kHello, sizeof(kHello));
@@ -65,6 +69,9 @@ int caboose_gfxstream_device_fd = -1;
 // 1 when it also registers guest-assigned descriptor sets and command buffers.
 extern "C" int caboose_gfxstream_guest_handle_arrays;
 int caboose_gfxstream_guest_handle_arrays = 0;
+// 1 when presents are ordered behind device-stream ORDER marks (SWAPCHAIN_PRESENT_ORDERED).
+extern "C" int caboose_gfxstream_ordered_present;
+int caboose_gfxstream_ordered_present = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -120,32 +127,36 @@ bool recvAll(int fd, void* data, size_t size) {
 }
 
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-// Opens this process's completion feed stream once, with the hello the device stream
-// was granted, and reads its records until the stream ends.
+// Opens this process's completion feed stream once, in the background with the hello the
+// device stream was granted, and reads its records until the stream ends. Until it is
+// running, submissions do not rely on it, so a slow or absent feed never delays a connect.
 std::atomic<bool> feedStarted{false};
-void startCompletionFeed(const char* path, const unsigned char* offer) {
+void startCompletionFeed(const char* path, const unsigned char* granted) {
     if (feedStarted.exchange(true)) return;
-    int fd = connectSocket(path);
-    unsigned char reply[sizeof(kHello)];
-    uint32_t features = 0;
-    uint8_t command[caboose::completion::kFeedPacketSize];
-    caboose::completion::encodeFeed(command);
-    const uint32_t clientFlags = 0;
-    if (fd < 0 || !sendAll(fd, offer, sizeof(kHello)) || !recvAll(fd, reply, sizeof(reply)) ||
-        !acceptedFeatures(offer, reply, true, &features) || !(features & kCompletionFeed) ||
-        !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
-        if (fd >= 0) close(fd);
-        std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
-        return;
-    }
     // A child created by fork shares no feed with its parent.
     static const bool atfork = [] {
         pthread_atfork(nullptr, nullptr, [] { caboose::completion::feedActive.store(false); });
         return true;
     }();
     (void)atfork;
-    caboose::completion::feedActive.store(true, std::memory_order_release);
-    std::thread([fd] {
+    std::string socketPath(path);
+    std::array<unsigned char, sizeof(kHello)> offer{};
+    std::memcpy(offer.data(), granted, sizeof(kHello));
+    std::thread([socketPath, offer] {
+        int fd = connectSocket(socketPath.c_str());
+        unsigned char reply[sizeof(kHello)];
+        uint32_t features = 0;
+        uint8_t command[caboose::completion::kFeedPacketSize];
+        caboose::completion::encodeFeed(command);
+        const uint32_t clientFlags = 0;
+        if (fd < 0 || !sendAll(fd, offer.data(), offer.size()) || !recvAll(fd, reply, sizeof(reply)) ||
+            !acceptedFeatures(offer.data(), reply, true, &features) || !(features & kCompletionFeed) ||
+            !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
+            std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
+            if (fd >= 0) close(fd);
+            return;
+        }
+        caboose::completion::feedActive.store(true, std::memory_order_release);
         unsigned char record[caboose::completion::kRecordSize];
         while (recvAll(fd, record, sizeof(record))) {
             uint64_t serial;
@@ -206,6 +217,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_guest_handles = (features & kGuestHandles) ? 1 : 0;
     caboose_gfxstream_guest_handle_arrays =
         (features & kGuestHandles) && (features & kGuestHandleArrays) ? 1 : 0;
+    caboose_gfxstream_ordered_present = (features & kOrderedPresent) ? 1 : 0;
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

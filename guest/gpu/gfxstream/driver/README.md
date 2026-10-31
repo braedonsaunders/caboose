@@ -81,6 +81,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0019 fewer-reply-waits | Commands without a reply, deferred binds and resets no longer drain; descriptor frees and pool resets are deferred; fence status never waits for the GPU |
 | 0020 requirements-cache | Memory requirements are answered from an earlier object with identical creation parameters |
 | 0021 completion-feed | With `0x200`, fence and timeline status and waits resolve from the completion feed |
+| 0022 ordered-present | With `0x400`, presents are ordered behind a device-stream mark and their results are not waited for |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -90,15 +91,15 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3F0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x7F0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
-supports. A broker that predates bits 8 and 9 closes the connection, and the driver
+supports. A broker that predates bits 8 to 10 closes the connection, and the driver
 reconnects offering `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
-take effect only with bit 7; descriptor set and command buffer handles need bit 8, and
-patch 0021 bit 9. When bit 9 is agreed, the driver opens a second stream with the same
+take effect only with bit 7; descriptor set and command buffer handles need bit 8,
+patch 0021 bit 9 and patch 0022 bit 10. When bit 9 is agreed, the driver opens a second stream with the same
 hello for the completion feed. The rest of the series requires the `0x70` contract.
 
 | Bit | Meaning |
@@ -109,6 +110,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 7 (`0x80`) | The device registers objects under guest-assigned handles |
 | 8 (`0x100`) | Also descriptor sets and command buffers (requires bit 7) |
 | 9 (`0x200`) | The device serves the completion feed |
+| 10 (`0x400`) | Presents are ordered behind device-stream marks (`SWAPCHAIN_PRESENT_ORDERED`) |
 
 ## Runtime switches
 

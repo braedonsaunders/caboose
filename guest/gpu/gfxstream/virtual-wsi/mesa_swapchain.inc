@@ -15,6 +15,22 @@ struct DeviceSwapchain {
     std::vector<Image> images;
 };
 static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
+// 1 when presents are ordered behind device-stream ORDER marks and not waited for
+// (hello feature 0x400, SocketStream.cpp).
+extern "C" int caboose_gfxstream_ordered_present;
+// The result an application sees once an earlier ordered present was not queued: as on
+// any WSI, the next present or acquire reports it and the swapchain must be recreated.
+static VkResult presentFailureResult(Status s) {
+    return s.hasVk && VkResult(s.vk)==VK_ERROR_DEVICE_LOST ? VK_ERROR_DEVICE_LOST : VK_ERROR_OUT_OF_DATE_KHR;
+}
+static bool orderedPresentFailed(DeviceSwapchain& swap, VkResult* result) {
+    if (caboose_gfxstream_ordered_present!=1) return false;
+    swap.surface->client.pump();
+    Status failure{};
+    if (!swap.surface->client.presentFailed(swap.native,&failure)) return false;
+    swap.poisoned=true; *result=presentFailureResult(failure);
+    return true;
+}
 static std::shared_ptr<DeviceSwapchain> lookupSwapchain(VkSwapchainKHR handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto it=swapchains.find(handle); return it==swapchains.end()?nullptr:it->second;
@@ -225,6 +241,8 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
         if (!swap || swap->device!=device || !index || (!semaphore && !fence)) return VK_ERROR_INITIALIZATION_FAILED;
         auto& surface=*swap->surface;
         std::lock_guard<std::recursive_mutex> operation(surface.operationMutex);
+        VkResult late=VK_SUCCESS;
+        if (orderedPresentFailed(*swap,&late)) return late;
         if (swap->retired || swap->poisoned || surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         uint64_t boxedSemaphore=0, boxedFence=0;
@@ -281,6 +299,8 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         auto swap=lookupSwapchain(info->pSwapchains[0]);
         if (!swap || swap->device!=gfxstream_vk_device_to_handle(queue->device)) return VK_ERROR_INITIALIZATION_FAILED;
         std::lock_guard<std::recursive_mutex> operation(swap->surface->operationMutex);
+        VkResult late=VK_SUCCESS;
+        if (orderedPresentFailed(*swap,&late)) return late;
         if (swap->poisoned || swap->retired || swap->surface->client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (swap->surface->client.failed()) return apiStatus(swap->surface->client.failure());
         if (queue->vk.queue_family_index!=swap->family) return VK_ERROR_INITIALIZATION_FAILED;
@@ -302,6 +322,19 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         if (surface.presentSerial==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t serial=++surface.presentSerial;
+        if (caboose_gfxstream_ordered_present==1) {
+            // The phone runs this present only after decoding everything the device stream
+            // sent before the mark: no round trip, and its result is checked later.
+            auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+            const uint64_t order=encoder->cabooseSendOrderMark(true);
+            if (order) {
+                surface.client.presentOrdered(swap->native,serial,get_host_u64_VkQueue(queue->internal_object),
+                    order,index,swap->family,waits,deadline());
+                swap->images[index].serial=serial;
+                if (info->pResults) info->pResults[0]=VK_SUCCESS;
+                return VK_SUCCESS;
+            }
+        }
         // The phone presents on the queue after the work, and waits for the semaphores,
         // the device stream submitted.
         if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
