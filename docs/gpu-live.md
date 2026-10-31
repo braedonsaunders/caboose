@@ -241,6 +241,12 @@ serial order. That wait is for decoding only, never for GPU work, and it overlap
 acquisition; stopping the process cancels it and the present is rejected with
 `ECANCELED`.
 
+Native presentation keeps up to two indexed frames in flight per surface, each observed
+by its own worker, so a frame's copy is queued while the previous one presents; the
+legacy present path keeps one. A frame that does not finish keeps its slot, and a device
+or queue change waits until no frame is in flight. A process using ordered presents
+sends its next present once fewer than two of its frames are unretired.
+
 The process does not wait for PRESENT_RESULT: it is consumed whenever it arrives. A
 present that was not queued ends its swapchain, and the next present or acquire on it
 returns `VK_ERROR_OUT_OF_DATE_KHR`, or `VK_ERROR_DEVICE_LOST` for actual device loss; a
