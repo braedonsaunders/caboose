@@ -13,11 +13,16 @@ provider is `guest/desktop-mcp/caboose-targets.py`; the aiming is
 | `check.sh` | Runs `bench-guest.py` in a disposable container of a computer image, with a probe as the client asking for targets |
 
 Fixtures go to `apps/ios/CabooseKit/Tests/CabooseKitTests/Fixtures/touch-targets/` (the
-`app`, `window`, `truth`, `provided` and `timings` keys of each app's output).
+`app`, `window`, `truth`, `provided` and `timings` keys of each app's output, and its
+picture, `<app>.png`).
 `TouchTargetingBenchmarkTests` simulates fingers on them: each tap aims near a control's
 middle and lands with a Gaussian error of 1.0, 1.5 or 2.0 mm, at 0.5, 0.75 and 1 phone
 points per window pixel, and is scored for the bare finger, the nearest control within two
-spreads, `TouchAim`, and `TouchAim` with a magnified second look at ambiguous taps.
+spreads, `TouchAim`, `TouchAim` with a magnified second look at ambiguous taps, and
+`TouchAim` over the shapes `PictureTargets` finds in the window's picture around the touch,
+for windows without an accessibility tree. `bench-guest.py --survey` reads the image's own
+applications (a terminal, an editor, a file manager, Firefox, Chromium, LibreOffice) and
+reports how many targets each yields and how long reading took.
 
 ```sh
 # On a machine with Docker and a computer image; BIN is a release build of guest/display.
