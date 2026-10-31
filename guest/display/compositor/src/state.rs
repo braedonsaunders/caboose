@@ -330,8 +330,36 @@ impl State {
         if !crate::remote_buffers::is_remote(dmabuf) { return }
         let (Some(identity), size) = (crate::remote_buffers::identity(dmabuf), smithay::backend::allocator::Buffer::size(dmabuf)) else { return };
         let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else { return };
+        let fence = crate::remote_buffers::pending_fence(dmabuf);
         let request = self.remote_presents.begin(id, buffer);
-        let sent = crate::gpu_control::buffer_present(request, id, identity, width, height)
+        let Some(fence) = fence else {
+            self.send_remote_present(request, id, identity, width, height);
+            return;
+        };
+        // A client relying on implicit synchronization: show the buffer once its rendering
+        // finished. A newer commit replaces a present still waiting.
+        use smithay::reexports::calloop::generic::Generic;
+        use smithay::reexports::calloop::{Interest, Mode, PostAction};
+        let inserted = self.handle.insert_source(Generic::new(fence, Interest::READ, Mode::OneShot),
+            move |_, _, state: &mut State| {
+                if state.remote_presents.fence_signaled(id, request) {
+                    state.send_remote_present(request, id, identity, width, height);
+                }
+                Ok(PostAction::Remove)
+            });
+        match inserted {
+            Ok(token) => {
+                if let Some((replaced, old)) = self.remote_presents.fence(id, request, token) {
+                    self.handle.remove(old);
+                    self.remote_presents.released(replaced);
+                }
+            }
+            Err(_) => { self.remote_presents.released(request); }
+        }
+    }
+
+    fn send_remote_present(&mut self, request: u64, window: u64, identity: (u64, u64), width: u32, height: u32) {
+        let sent = crate::gpu_control::buffer_present(request, window, identity, width, height)
             .and_then(|bytes| self.net.queue_gpu_control(bytes, None));
         if sent.is_err() {
             self.remote_presents.released(request);
@@ -339,9 +367,15 @@ impl State {
         }
     }
 
+    fn release_remote_presents(&mut self) {
+        for token in self.remote_presents.release_all() {
+            self.handle.remove(token);
+        }
+    }
+
     pub(crate) fn gpu_control_failed(&mut self) {
         // Without the broker no release will come: return every held buffer.
-        self.remote_presents.release_all();
+        self.release_remote_presents();
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
@@ -428,7 +462,7 @@ impl State {
                 if status != 0 { tracing::debug!("remote buffer present {request} not shown: errno {status}"); }
             }
             Record::Lifecycle { kind, executor, generation } => {
-                if kind == 5 { self.remote_presents.release_all(); }
+                if kind == 5 { self.release_remote_presents(); }
                 let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
                 match kind {
                     4 => {

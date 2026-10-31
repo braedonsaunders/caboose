@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Exit 0 pass, 1 failure, 77 without a vgem device.
 #include "dmabuf.h"
+#include "sync_file.h"
 
 #include <cstdio>
+#include <poll.h>
 #include <sys/mman.h>
+#include <thread>
+#include <vector>
 
 using namespace caboose::dmabuf;
 
@@ -49,6 +53,26 @@ int main() {
     CHECK(!shared.release(*identity));
     CHECK(shared.count() == 0);
     CHECK(fcntl(copy, F_GETFD) == -1 && errno == EBADF);  // Its descriptor was closed.
+
+    // A sync file signals only when its token is signalled, and many can be pending.
+    std::vector<std::pair<int, uint32_t>> pending;
+    for (int i = 0; i < 64; ++i) {
+        uint32_t token = 0;
+        const int sync = createSyncFile(&token);
+        CHECK(sync >= 0);
+        if (sync >= 0) pending.emplace_back(sync, token);
+    }
+    for (auto& [sync, token] : pending) {
+        pollfd p{sync, POLLIN, 0};
+        CHECK(poll(&p, 1, 0) == 0);
+    }
+    std::thread signaller([&] { for (auto& entry : pending) signalSyncFile(entry.second); });
+    for (auto& [sync, token] : pending) {
+        pollfd p{sync, POLLIN, 0};
+        CHECK(poll(&p, 1, 2000) == 1);
+        close(sync);
+    }
+    signaller.join();
 
     close(fd);
     close(other);

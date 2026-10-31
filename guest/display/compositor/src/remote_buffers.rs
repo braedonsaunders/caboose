@@ -10,7 +10,7 @@ use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Format, Fourcc, Modifier};
 use smithay::backend::renderer::utils::Buffer;
 use std::collections::HashMap;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 
 /// `CABOOSE_FORMAT_MOD_REMOTE` (guest/gpu/gbm/include/caboose_drm_formats.h).
@@ -43,11 +43,34 @@ pub fn identity(dmabuf: &Dmabuf) -> Option<(u64, u64)> {
     planes.all(|plane| plane == Some(first)).then_some(first)
 }
 
+/// The buffer's implicit write fences as a sync file, when they have not all signaled:
+/// a client relying on implicit synchronization commits before its rendering finished.
+pub fn pending_fence(dmabuf: &Dmabuf) -> Option<OwnedFd> {
+    #[repr(C)]
+    struct ExportSyncFile { flags: u32, fd: i32 }
+    // DMA_BUF_IOCTL_EXPORT_SYNC_FILE, _IOWR('b', 2, struct dma_buf_export_sync_file)
+    const EXPORT_SYNC_FILE: libc::c_ulong = 0xc008_6202;
+    const SYNC_READ: u32 = 1;  // the fences a reader waits for: the writes
+    let plane = dmabuf.handles().next()?;
+    let mut export = ExportSyncFile { flags: SYNC_READ, fd: -1 };
+    // SAFETY: the descriptor is a live dma-buf and the argument matches the ioctl's layout.
+    if unsafe { libc::ioctl(plane.as_raw_fd(), EXPORT_SYNC_FILE as _, &mut export) } != 0 || export.fd < 0 {
+        return None;
+    }
+    // SAFETY: the kernel returned a new descriptor that nothing else owns.
+    let fence = unsafe { OwnedFd::from_raw_fd(export.fd) };
+    let mut ready = libc::pollfd { fd: fence.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd and a zero timeout.
+    (unsafe { libc::poll(&mut ready, 1, 0) } == 0).then_some(fence)
+}
+
 /// Remote buffers the broker has been asked to show, kept until it releases them.
 #[derive(Default)]
 pub struct Presents {
     next: u64,
     outstanding: HashMap<u64, (u64, Buffer)>,
+    /// Per window, the one present waiting for its buffer's rendering to finish.
+    fenced: HashMap<u64, (u64, smithay::reexports::calloop::RegistrationToken)>,
 }
 
 impl Presents {
@@ -70,9 +93,26 @@ impl Presents {
         self.outstanding.values().any(|(w, _)| *w == window)
     }
 
-    /// Releases every held buffer, when the broker can no longer report releases.
-    pub fn release_all(&mut self) {
+    /// Records the window's present waiting for its fence, returning the one it replaces.
+    pub fn fence(&mut self, window: u64, request: u64, token: smithay::reexports::calloop::RegistrationToken)
+        -> Option<(u64, smithay::reexports::calloop::RegistrationToken)> {
+        self.fenced.insert(window, (request, token))
+    }
+
+    /// The present's fence signaled: it is no longer waiting. False if it was replaced.
+    pub fn fence_signaled(&mut self, window: u64, request: u64) -> bool {
+        if self.fenced.get(&window).is_some_and(|(r, _)| *r == request) {
+            self.fenced.remove(&window);
+            return true;
+        }
+        false
+    }
+
+    /// Releases every held buffer, when the broker can no longer report releases, and
+    /// returns the fence waits to cancel.
+    pub fn release_all(&mut self) -> Vec<smithay::reexports::calloop::RegistrationToken> {
         self.outstanding.clear();
+        self.fenced.drain().map(|(_, (_, token))| token).collect()
     }
 }
 
@@ -85,8 +125,9 @@ mod tests {
         let mut presents = Presents::default();
         assert!(!presents.presenting(7));
         assert!(!presents.released(1));
-        presents.release_all();
+        assert!(presents.release_all().is_empty());
         assert!(!presents.presenting(7));
+        assert!(!presents.fence_signaled(7, 1));
     }
 
     #[test]

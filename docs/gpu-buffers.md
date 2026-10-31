@@ -44,6 +44,19 @@ allocates the host memory; later imports of the same buffer get their own guest 
 for the same host allocation, which is freed with the last of them. The driver keeps one
 descriptor of each such buffer, so `vkGetMemoryFdKHR` returns the same buffer.
 
+## Sync files
+
+A sync file the driver exports from a fence or semaphore (`VK_KHR_external_fence_fd`,
+`VK_KHR_external_semaphore_fd`, `SYNC_FD`) signals when the phone has finished the work,
+as the driver observes it (`dmabuf/sync_file.h`). Exporting submits, on the queue of the
+fence's or semaphore's last signaling submission, an empty batch that waits the semaphore
+(the export's wait operation) and signals an internal fence; the sync file carries a vgem
+fence attached to a one-page vgem object, and one waiter thread per process waits the
+internal fences in order and signals each vgem fence. A fence or semaphore never
+submitted exports `-1`, the signaled payload. vgem signals a fence nobody signals after
+ten seconds. Without a render node the export waits for completion itself and returns
+`-1`. Imported sync files are waited on the CPU before the submission that waits them.
+
 ## Presenting a buffer in a window
 
 When remote memory is allocated for a dedicated image, the driver registers the buffer
@@ -60,7 +73,10 @@ remote format. It accepts a remote dma-buf without mapping it. When a toplevel c
 `BUFFER_PRESENT` (CGB1 kind 9, 56 bytes: request, window, the dma-buf's device and inode,
 width and height) and holds the client's `wl_buffer` until the broker answers with
 `BUFFER_RELEASED` (kind 10, 32 bytes: request and status, 0 when the buffer was shown or
-an errno). If the broker is lost, every held buffer is released.
+an errno). A buffer whose implicit write fences have not all signaled (a client relying on
+implicit synchronization committed it before its rendering finished) is sent once they
+have; a newer commit to the window replaces one still waiting, which is released unshown.
+If the broker is lost, every held buffer is released.
 
 The broker looks the buffer up and binds the window to the process that registered it:
 it asks the compositor for a grant with a bind in the `BUFFER_WINDOW` namespace (2),
