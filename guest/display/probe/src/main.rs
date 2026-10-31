@@ -76,6 +76,8 @@ OPTIONS:
     --ruler                check each tagged picture's offset against the ruler drawn by
                            scripts/pages/scroll-ruler.html
     --ruler-scale S        window pixels per page pixel of that ruler [default: 1]
+    --targets FILE         aim touches (hello targets: true): append every `targets` message
+                           to FILE as a JSON line (t_us, id, serial, targets)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -112,6 +114,7 @@ struct Args {
     scroll_drive: Option<f64>,
     ruler: bool,
     ruler_scale: f64,
+    targets: Option<PathBuf>,
 }
 
 fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
@@ -170,6 +173,7 @@ fn parse_args() -> Result<Args, String> {
         scroll: false,
         scroll_overscan: None,
         scroll_drive: None,
+        targets: None,
         ruler: false,
         ruler_scale: 1.0,
     };
@@ -232,6 +236,7 @@ fn parse_args() -> Result<Args, String> {
             "--scroll-overscan" => a.scroll_overscan = Some(value()?.parse().map_err(|_| "bad --scroll-overscan")?),
             "--scroll-drive" => a.scroll_drive = Some(value()?.parse().map_err(|_| "bad --scroll-drive")?),
             "--ruler" => a.ruler = true,
+            "--targets" => a.targets = Some(PathBuf::from(value()?)),
             "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
             "-h" | "--help" => {
@@ -835,6 +840,7 @@ fn run(args: Args) -> Result<bool, String> {
         &Message::ClientHello(proto::ClientHello {
             devices: false,
             scroll: args.scroll,
+            targets: args.targets.is_some(),
             version: proto::VERSION,
             token: args.token.clone(),
             decoders: args.decoders.clone(),
@@ -1231,6 +1237,30 @@ fn run(args: Args) -> Result<bool, String> {
                     text_inputs.push(t);
                 }
                 Message::ScrollTree(t) => scroll_check.tree(t),
+                Message::Targets(t) => {
+                    if let Some(path) = &args.targets {
+                        let list: Vec<String> = t
+                            .targets
+                            .iter()
+                            .map(|g| format!("[{},{},{},{},{}]", g.rect.x, g.rect.y, g.rect.w, g.rect.h, g.kind))
+                            .collect();
+                        let line = format!(
+                            "{{\"t_us\":{},\"id\":{},\"serial\":{},\"targets\":[{}]}}\n",
+                            monotonic_us(),
+                            t.id,
+                            t.serial,
+                            list.join(",")
+                        );
+                        let written = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut f| f.write_all(line.as_bytes()));
+                        if let Err(e) = written {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                }
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
                     if target.is_none() && args.window.is_none_or(|w| w == g.window) {

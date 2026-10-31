@@ -305,7 +305,7 @@ order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
 `clipboard-types`, `drop`, `drag`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`,
-`devices`, `atlas`, `scene`, `scroll`. A feature is listed only when the server implements it.
+`devices`, `atlas`, `scene`, `scroll`, `targets`. A feature is listed only when the server implements it.
 caboose-display always lists `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`,
 `cursor-named`, `clipboard`, `clipboard-types`, `drop` and `drag`; `xwayland` when Xwayland runs; `video` when it can send video streams and the
 client lists `video_decoders`; `audio` when it plays sound; `tiles` unless tiles are turned
@@ -314,8 +314,9 @@ client's hello says `wasm: true`; `gpu` when it relays GPU streams (the owner's 
 the client's hello says `gpu: true`; `webview` when the owner display and client support
 agent-app handoff; `devices` when the owner's display accepts the phone's hardware
 ([devices.md](devices.md)) and the client's hello says `devices: true`; `atlas` when the
-client's hello says `atlas: true`; `scene` when the client's hello says `scene: true`; and `scroll` when the instance listens
-on its scroll socket and the client's hello says `scroll: true`.
+client's hello says `atlas: true`; `scene` when the client's hello says `scene: true`; `scroll` when the instance listens
+on its scroll socket and the client's hello says `scroll: true`; and `targets` when the touch
+target provider is installed and the client's hello says `targets: true`.
 
 ### Pacing and flow control
 
@@ -378,6 +379,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x25` | `scene.font` | `font: uint` (`XXH64`), `index: uint`, `family?: text`, `data: bytes` (TTF/OTF) |
 | `0x26` | `scene.commit` | `id`, `seq`, `pts_us`, `root: uint`, `reset?: bool`, `nodes?: [{ id, kind: "group"\|"clip"\|"rclip"\|"scroll"\|"rect"\|"border"\|"shadow"\|"glyphs"\|"path"\|"surface", rect?, radius?: [u32 × 4], color?: uint, scroll?: rect, children?: [uint], font?: uint, size?: float, glyphs?: bytes, path?: bytes, surface?: uint }]`, `remove?: [uint]` |
 | `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]` ([Scroll reports](#scroll-reports)) |
+| `0x28` | `targets` | `id`, `serial: uint`, `targets: [[x, y, w, h, kind]]` ([Touch targets](#touch-targets)) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
@@ -398,7 +400,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `atlas?: bool`, `scene?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -917,6 +919,46 @@ twice and never springs back:
 
 `frame-input-seq`, `pointer-scroll-seq`, `scroll-target`, `scroll-tree` and
 `client-hello-scroll` in `guest/display/vectors/` pin the messages.
+
+### Touch targets
+
+Desktop controls are drawn for a mouse; a finger lands a couple of millimetres from where
+it aimed, often on a neighbour. The computer reads the focused window's controls from its
+accessibility tree and sends them, so the phone can aim a finger's press at the control it
+most likely meant, at once and without a round trip.
+
+While a client whose hello says `targets: true` is connected, caboose-display runs
+`/opt/caboose/caboose-targets.py serve` ([guest/desktop-mcp](../guest/desktop-mcp)) with
+the seat's launch environment; nothing runs without such a client. It reads the focused
+window and its open menus through the seat's AT-SPI bus, the way `a11y.py` does: buttons,
+toggles, links, menu items, tabs, text fields, list, tree and table items, and adjustable
+controls, showing and on the window. It reads again after accessibility events (a window
+activated or created, something shown, children changed), 120 ms and 450 ms after the
+client's input to the window, and every 2 s; readings are at least 150 ms apart, and twice
+as far apart as the last one took. GTK and Chromium windows read in about 50–70 ms.
+
+**`targets`** (`0x28`): window `id`'s controls, replacing its previous list; an empty list
+clears it. Each is `[x, y, w, h, kind]` in window-local display pixels. `kind` is 1 button,
+2 toggle (check box, radio, switch), 3 link, 4 menu item, 5 tab, 6 text field, 7 item
+(list, tree or table cell), 8 adjustable (slider, spin button, scroll bar) or 0 other, with
+`0x80` set for a disabled control. A control belongs to the topmost window of the focused
+window's family (its popups, newest first, then itself) that holds its centre. `serial`
+increases with every list in a session. A list is sent only when it changed; it describes
+the window as of a reading, so a client treats it as a hint that may lag the picture by a
+reading.
+
+The phone (`CabooseKit/Input/TouchTargeting.swift`) scores each control within three
+spreads of a finger by how likely a finger aiming somewhere on it lands there: uniform aim
+over the control, Gaussian landing error of 1.2 mm, a difference of normal CDFs per axis
+(Bayesian touch). Touching nothing in particular is a hypothesis too, spread over a patch
+twenty spreads wide. A tap on a pointer window presses the likeliest control: where the
+finger is when it is on it, else the nearest point well inside it; a disabled control keeps
+its touches without taking them. A native touch window's lone finger is aimed at its
+touch-down, and the rest of its contact keeps the same offset. A list can therefore move a
+press by at most a few spreads, no further than an unaided finger misses by.
+
+`targets`, `targets-empty` and `client-hello-targets` in `guest/display/vectors/` pin the
+messages. [guest/touch-targets](../guest/touch-targets) is the target-acquisition benchmark.
 
 ### Audio
 

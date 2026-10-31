@@ -214,6 +214,8 @@ pub struct State {
     pub control: crate::control::Control,
     /// Toolkit scroll reporters (scroll.rs).
     pub scroll: crate::scroll::ScrollHub,
+    /// The focused window's controls for a client that aims touches (targets.rs).
+    pub targets: crate::targets::Targets,
     pub clipboard: crate::clipboard::Clipboard,
     /// How the compositor reaches its Xwayland as a client, once it runs.
     pub x11: Option<crate::x11sel::Access>,
@@ -727,6 +729,7 @@ impl State {
         self.video_window_gone(id);
         self.game_window_gone(id);
         self.scene_window_gone(id);
+        self.targets_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;

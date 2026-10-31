@@ -244,6 +244,16 @@ import Testing
         #expect(tree.scrollers[0].fixed.count == 2 && tree.scrollers[1].fixed.isEmpty)
     }
 
+    @Test func targets() throws {
+        guard case .targets(let window, let serial, let targets) = try server("targets").first else { Issue.record("targets"); return }
+        #expect(window == 7 && serial == 12 && targets.count == 5)
+        #expect(targets[0] == TouchTarget(rect: CGRect(x: 6, y: 43, width: 36, height: 34), kind: .button))
+        #expect(targets[2].kind == .button && !targets[2].enabled)
+        #expect(targets[4] == TouchTarget(rect: CGRect(x: -4, y: 120, width: 1179, height: 49), kind: .field))
+        guard case .targets(7, 13, let none) = try server("targets-empty").first else { Issue.record("targets-empty"); return }
+        #expect(none.isEmpty)
+    }
+
     @Test func devices() throws {
         guard case .deviceStatus(let states) = try server("device-status").first else { Issue.record("device.status"); return }
         #expect(states == [DeviceState(id: "camera-back", nodes: ["/dev/video4"]),
@@ -439,6 +449,9 @@ import Testing
         "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], scroll: true),
+        "client-hello-targets": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], audioDecoders: ["opus"], targets: true),
         "request-keyframe": .requestKeyframe(window: 7),
         "text-commit": .text(commit: "naïve café 👍"),
         "text-preedit": .text(commit: nil, preedit: "にほん", cursor: (3, 3)),

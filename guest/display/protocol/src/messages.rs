@@ -615,6 +615,8 @@ pub struct ClientHello {
     pub devices: bool,
     /// The client places pictures by toolkit scroll reports (`scroll.tree`). Sent only when true.
     pub scroll: bool,
+    /// The client aims touches at the controls `targets` lists. Sent only when true.
+    pub targets: bool,
     /// MIME types the client takes from the computer's clipboard besides text; absent
     /// means text only.
     pub clipboard_types: Option<Vec<String>>,
@@ -830,6 +832,25 @@ pub struct ScrollTree {
     pub scrollers: Vec<Scroller>,
 }
 
+/// One control a finger may mean, in a `targets` message: window-local display pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Target {
+    pub rect: Rect,
+    /// The role class (1 button, 2 toggle, 3 link, 4 menu item, 5 tab, 6 text field,
+    /// 7 item, 8 adjustable, 0 other), with 0x80 set for a disabled control.
+    pub kind: u8,
+}
+
+/// `targets` (0x28): the controls of window `id` a finger may mean, as its
+/// accessibility tree reads them. Replaces the window's previous list; empty clears it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Targets {
+    pub id: u64,
+    /// Increases with every list the server sends in a session.
+    pub serial: u64,
+    pub targets: Vec<Target>,
+}
+
 /// `scroll.target` (0x95): scroll a reported scroller by `delta` content pixels, exactly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScrollTarget {
@@ -878,6 +899,7 @@ pub enum Message {
     },
     TextInput(TextInputState),
     ScrollTree(ScrollTree),
+    Targets(Targets),
     SurfaceBatch(SurfaceBatch),
     SurfaceReset {
         epoch: u64,
@@ -1076,6 +1098,7 @@ pub mod type_id {
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
     pub const SCROLL_TREE: u8 = 0x27;
+    pub const TARGETS: u8 = 0x28;
     pub const SURFACE_BATCH: u8 = 0x23;
     pub const SURFACE_RESET: u8 = 0x24;
     pub const SCENE_FONT: u8 = 0x25;
@@ -1197,6 +1220,7 @@ impl Message {
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
             Message::ScrollTree(_) => SCROLL_TREE,
+            Message::Targets(_) => TARGETS,
             Message::SurfaceBatch(_) => SURFACE_BATCH,
             Message::SurfaceReset { .. } => SURFACE_RESET,
             Message::SceneFont(_) => SCENE_FONT,
@@ -1419,6 +1443,11 @@ impl Message {
                 .put("epoch", m.epoch)
                 .put("scrollers", Value::Array(m.scrollers.iter().map(scroller_value).collect()))
                 .build(),
+            Message::Targets(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("serial", m.serial)
+                .put("targets", Value::Array(m.targets.iter().map(target_value).collect()))
+                .build(),
             Message::ScrollTarget(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("scroller", m.scroller)
@@ -1562,6 +1591,7 @@ impl Message {
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
                 .opt("scroll", m.scroll.then_some(true))
+                .opt("targets", m.targets.then_some(true))
                 .opt("clipboard_types", m.clipboard_types.clone())
                 .opt("atlas", m.atlas.then_some(true))
                 .opt("scene", m.scene.then_some(true))
@@ -1705,6 +1735,11 @@ impl Message {
                 applied: f.u64("applied")?,
                 epoch: f.u64("epoch")?,
                 scrollers: f.array("scrollers")?.iter().map(scroller_from).collect::<Result<_, _>>()?,
+            }),
+            TARGETS => Message::Targets(Targets {
+                id: f.u64("id")?,
+                serial: f.u64("serial")?,
+                targets: f.array("targets")?.iter().map(target_from).collect::<Result<_, _>>()?,
             }),
             TILE => Message::Tile(Tile {
                 id: f.u64("id")?,
@@ -1901,6 +1936,7 @@ impl Message {
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
                 scroll: f.opt_bool("scroll")?.unwrap_or(false),
+                targets: f.opt_bool("targets")?.unwrap_or(false),
                 clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
                     None => None,
                     Some(_) => Some(f.strings("clipboard_types")?),
@@ -2044,6 +2080,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
         SCROLL_TREE => "scroll.tree",
+        TARGETS => "targets",
         SURFACE_BATCH => "surface.batch",
         SURFACE_RESET => "surface.reset",
         SCENE_FONT => "scene.font",
@@ -2093,6 +2130,26 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         DEVICE_ERROR => "device.error",
         _ => return None,
     })
+}
+
+/// `[x, y, w, h, kind]`.
+fn target_value(t: &Target) -> Value {
+    Value::Array(vec![t.rect.x.into(), t.rect.y.into(), t.rect.w.into(), t.rect.h.into(), (t.kind as u64).into()])
+}
+
+fn target_from(v: &Value) -> Result<Target, ProtocolError> {
+    let bad = ProtocolError::Field { message: "targets", field: "targets", problem: "not [x, y, w, h, kind]" };
+    let Value::Array(items) = v else { return Err(bad) };
+    if items.len() != 5 {
+        return Err(bad);
+    }
+    let int = |v: &Value| fields::as_i32(v);
+    match (int(&items[0]), int(&items[1]), int(&items[2]), int(&items[3]), int(&items[4])) {
+        (Some(x), Some(y), Some(w), Some(h), Some(kind)) if w >= 0 && h >= 0 && (0..=255).contains(&kind) => {
+            Ok(Target { rect: Rect::new(x, y, w, h), kind: kind as u8 })
+        }
+        _ => Err(bad),
+    }
 }
 
 fn scroller_value(s: &Scroller) -> Value {

@@ -1,0 +1,8 @@
+{
+  "name": "targets",
+  "description": "A GTK window's controls near its toolbar: two 36x34 buttons, a disabled one, a check box and a text field.",
+  "messages": [
+    {"direction": "server", "type": "targets", "type_id": 40, "fields": {"id": 7, "serial": 12, "targets": [[6, 43, 36, 34, 1], [44, 43, 36, 34, 1], [82, 43, 36, 34, 129], [6, 83, 71, 25, 2], [-4, 120, 1179, 49, 6]]}}
+  ],
+  "hex": "2847000000a3626964076673657269616c0c6774617267657473858506182b182418220185182c182b1824182201851852182b1824182218818506185318471819028523187819049b183106"
+}

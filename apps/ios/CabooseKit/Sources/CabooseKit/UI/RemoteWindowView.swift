@@ -119,6 +119,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private weak var secondaryTouchGesture: UITapGestureRecognizer?
     private weak var scrollTouchGesture: UIPanGestureRecognizer?
     private weak var contextTouchGesture: UILongPressGestureRecognizer?
+    private weak var tapGesture: UITapGestureRecognizer?
+    /// The tap being recognized is a finger's, which is aimed; a Pencil's is exact.
+    private var tapIsFinger = false
     private var holdUsesPointerDrag = false
     private weak var holdWindow: RemoteWindow?
     private weak var holdSession: (any DisplaySession)?
@@ -516,12 +519,32 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         session.pointerMove(in: window, to: lastPointer)
     }
 
-    private func click(at point: CGPoint, button: Int = 1) {
+    /// A finger's landing error, in millimetres (`TouchAim`), and points per millimetre.
+    private static let fingerSpread: CGFloat = 1.2
+    private static let pointsPerMillimetre: CGFloat = 160 / 25.4
+
+    /// Where a finger at view `point` meant to press, in window pixels: the control it most
+    /// likely meant among the window's targets, or the point itself. Content moving under
+    /// the finger (a local scroll) has no current targets.
+    func aimedPixel(_ point: CGPoint) -> CGPoint {
+        let pixel = pixelPoint(point)
+        guard let window = remoteWindow, !window.touchTargets.isEmpty, bounds.width > 0,
+              !(localScroll?.isMoving ?? false) else { return pixel }
+        let spread = Self.fingerSpread * Self.pointsPerMillimetre * window.frame.width / bounds.width
+        return TouchAim.choose(pixel, spread: spread, among: window.touchTargets)?.point ?? pixel
+    }
+
+    private func click(at point: CGPoint, button: Int = 1, aimed: Bool = false) {
         guard let window = remoteWindow, let session else { return }
         // A click can move focus or the caret, so iOS must not edit text from before it.
         resetTyping()
         caretAnchor = point
-        move(to: point)
+        if aimed {
+            lastPointer = aimedPixel(point)
+            session.pointerMove(in: window, to: lastPointer)
+        } else {
+            move(to: point)
+        }
         session.focus(window)
         pointerClicks.click(in: window, session: session, at: lastPointer, button: button)
         if button == 3 { showSecondaryClick(at: point) }
@@ -563,6 +586,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private func installGestures() {
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         tap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
+        tapGesture = tap
         addGestureRecognizer(tap)
 
         let pointerClick = UITapGestureRecognizer(target: self, action: #selector(handlePointerClick(_:)))
@@ -647,6 +671,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             holdWindow = remoteWindow
             holdSession = session
         }
+        if gesture === tapGesture { tapIsFinger = touch.type == .direct }
         if gesture === scrollTouchGesture, defersToPan(touch) { return true }
         return gesture === secondaryTouchGesture || gesture === contextTouchGesture || !routesNatively(touch)
     }
@@ -662,7 +687,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if touchStoppedScroll { touchStoppedScroll = false; return }
         stopMomentum()
         localScroll?.interrupt()
-        click(at: gesture.location(in: self))
+        click(at: gesture.location(in: self), aimed: tapIsFinger)
         tapped()
     }
 
@@ -716,7 +741,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     @objc private func handleSecondaryClick(_ gesture: UITapGestureRecognizer) {
         stopMomentum()
         if gesture === secondaryTouchGesture { cancelTouches() }
-        click(at: gesture.location(in: self), button: 3)
+        click(at: gesture.location(in: self), button: 3, aimed: gesture === secondaryTouchGesture)
     }
 
     public override func resignFirstResponder() -> Bool {
@@ -848,6 +873,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// view that goes away mid-touch can cancel them.
     private var touchSlots = TouchSlots<ObjectIdentifier>()
     private var activeTouches: [ObjectIdentifier: (slot: Int, point: CGPoint)] = [:]
+    /// How far a lone finger's touch-down was aimed (`aimedPixel`), in window pixels; the
+    /// rest of its contact keeps the same offset, so a drag from it is unchanged.
+    private var touchAim: (finger: ObjectIdentifier, offset: CGPoint)?
     /// The first finger of a native touch sequence, to tell a tap (which may focus a text
     /// field, so the keyboard question is asked) from a drag.
     private var tapCandidate: (finger: ObjectIdentifier, at: CFTimeInterval, location: CGPoint)?
@@ -983,13 +1011,22 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             }
             let key = ObjectIdentifier(touch)
             let slot = touchSlots.slot(for: key)
-            let point = pixelPoint(touch.location(in: self))
+            var point = pixelPoint(touch.location(in: self))
+            if phase == .down {
+                touchAim = nil
+                if touches.count == 1, activeTouches.isEmpty {
+                    let aimed = aimedPixel(touch.location(in: self))
+                    if aimed != point { touchAim = (key, CGPoint(x: aimed.x - point.x, y: aimed.y - point.y)) }
+                }
+            }
+            if let aim = touchAim, aim.finger == key { point.x += aim.offset.x; point.y += aim.offset.y }
             let force = touch.maximumPossibleForce > 0 ? Double(touch.force / touch.maximumPossibleForce) : nil
             points.append(TouchPoint(slot: slot, phase: phase, x: Double(point.x), y: Double(point.y), force: force,
                                      radius: Double(touch.majorRadius * window.frame.width / max(1, bounds.width))))
             if phase == .up || phase == .cancel {
                 touchSlots.release(key)
                 activeTouches[key] = nil
+                if touchAim?.finger == key { touchAim = nil }
             } else {
                 activeTouches[key] = (slot, point)
             }

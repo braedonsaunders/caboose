@@ -40,7 +40,7 @@ pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
 #[derive(Default)]
 pub struct InputState {
     pub keysyms: Keysyms,
-    pointer_buttons: u32,
+    pub(crate) pointer_buttons: u32,
     /// Touch slots that are down, with the window they started on.
     touches: HashMap<u32, u64>,
     /// Keycodes the client holds down.
