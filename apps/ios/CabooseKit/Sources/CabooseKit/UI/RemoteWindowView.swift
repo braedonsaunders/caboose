@@ -83,6 +83,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             guard let window = self?.remoteWindow else { return nil }
             return window.scrollReports.tagRect(picture: picture, shown: window.frame.size)
         }
+        // A valid tag whose report has not arrived yet: the picture waits for it.
+        made?.tagIsValid = { ScrollTag.decode($0) != nil }
         made?.report = { [weak self] source, luma in
             guard let self, let window = self.remoteWindow, let localScroll = self.localScroll,
                   let picture = self.pictureSize(of: source) else { return nil }
@@ -173,7 +175,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             liveGPUCaptures = false
             laidOutVideos = nil
         }
+        remoteWindow?.scrollReports.stopObserving(self)
         remoteWindow = window
+        window?.scrollReports.observe(self) { [weak self] in
+            // Only a view that scrolls locally has pictures waiting; others never make a controller.
+            guard let self, self.isInteractive else { return }
+            self.localScroll?.reportsUpdated()
+        }
         followField(purpose: session?.textPurpose, isCode: Self.isCodeApp(window))
         presentedGeneration = .max
         followAlpha()

@@ -163,8 +163,8 @@
     }
   }
 
-  function shifted(scrollerEl, clip, scrollTop) {
-    let moved = false
+  function shifted(scrollerEl, clip, scrollTop, dpr) {
+    const moves = []
     let lost = probes.length === 0
     for (const p of probes) {
       if (!p.el.isConnected) {
@@ -172,9 +172,10 @@
         continue
       }
       const r = p.el.getBoundingClientRect()
-      if (Math.abs(C.documentY(r, clip.top, scrollTop) - p.y) > 0.5) moved = true
+      moves.push(C.documentY(r, clip.top, scrollTop) - p.y)
       if (r.bottom < clip.top || r.top > clip.bottom) lost = true
     }
+    const moved = C.coherentShift(moves, 1.5 / dpr)
     if (moved || lost) pickProbes(scrollerEl, clip, scrollTop)
     return moved
   }
@@ -228,7 +229,7 @@
       })
     }
     const primary = scrollers[0].id === 0 ? null : el
-    if (shifted(primary, clips[0], primary ? primary.scrollTop : scrollY)) epoch++
+    if (shifted(primary, clips[0], primary ? primary.scrollTop : scrollY, dpr)) epoch++
     const tag = C.tagRect(bind, dpr)
     if (tag) scrollers[0].fixed.push(tag.device)
     const report = {

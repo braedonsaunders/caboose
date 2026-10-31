@@ -243,6 +243,9 @@ def scroll_report_check(proc, token):
         raise Failed(f"scroll reports: {s}; {r.stderr.strip()[-2000:]}")
     if s["sent_seq"] - s["applied"] > 30:
         raise Failed(f"scroll.target not applied: {s}")
+    # The ruler never moves in its document: a new epoch would drop pictures for nothing.
+    if s["epochs"]:
+        raise Failed(f"layout shift reported where there is none: {s}")
     return (f'{s["matched"]} tagged pictures matched their reports, ruler agrees within '
             f'{s["ruler_max_error"]:.2f} px over {s["ruler_checked"]} (the newest report on arrival was wrong for '
             f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')

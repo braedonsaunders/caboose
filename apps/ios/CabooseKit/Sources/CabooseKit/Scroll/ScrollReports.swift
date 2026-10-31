@@ -82,9 +82,22 @@ public final class ScrollReports {
     /// `scroll.target`s sent and not yet applied in the latest report: seq and delta.
     private(set) var pending: [(seq: UInt64, delta: CGPoint)] = []
 
+    /// Views waiting on reports for their pictures, called after every report.
+    private var observers: [(owner: () -> AnyObject?, updated: () -> Void)] = []
+
     public init() {}
 
+    /// Calls `updated` after every report while `owner` lives (a picture whose tag is valid
+    /// may wait for the report it names).
+    public func observe(_ owner: AnyObject, _ updated: @escaping () -> Void) {
+        observers.removeAll { $0.owner() == nil || $0.owner() === owner }
+        observers.append(({ [weak owner] in owner }, updated))
+    }
+
+    public func stopObserving(_ owner: AnyObject) { observers.removeAll { $0.owner() == nil || $0.owner() === owner } }
+
     public func record(_ tree: ScrollTree) {
+        defer { for o in observers where o.owner() != nil { o.updated() } }
         latest = tree
         pending.removeAll { $0.seq <= tree.applied }
         guard tree.tag != nil else { return }

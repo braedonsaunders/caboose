@@ -74,3 +74,19 @@ struct ScrollReportsTests {
         #expect(reports.eventualOffset == CGPoint(x: 0, y: 522.5) && reports.pending.isEmpty)
     }
 }
+
+struct ScrollReportsObserverTests {
+    @Test func observersHearEveryReportUntilTheyGo() {
+        let reports = ScrollReports()
+        final class Owner {}
+        var owner: Owner? = Owner()
+        var heard = 0
+        reports.observe(owner!) { heard += 1 }
+        reports.record(ScrollReportsTests.tree(tag: 1, offset: 0))
+        reports.observe(owner!) { heard += 10 } // replaces, never doubles
+        reports.record(ScrollReportsTests.tree(tag: 2, offset: 1))
+        owner = nil
+        reports.record(ScrollReportsTests.tree(tag: 3, offset: 2))
+        #expect(heard == 11)
+    }
+}
