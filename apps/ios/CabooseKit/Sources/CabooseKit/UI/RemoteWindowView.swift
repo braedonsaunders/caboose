@@ -910,7 +910,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             scrollOwnership.begin(owner, contacts: gesture.numberOfTouches)
             if directContent, beginLocalScroll(at: now - 1.0 / 120, location: gesture.location(in: self),
                                                  translation: gesture.translation(in: self)) {
-                appendScroll(gesture, at: now)
+                // As in UIScrollView, the content starts with the finger from here: the
+                // recognizer's slop before it began is not a jump.
+                gesture.setTranslation(.zero, in: self)
                 return
             }
             if directContent { LocalScrollProfile.note("pan window=\(remoteWindow.id) local=no \(localScrollState(remoteWindow))") }
