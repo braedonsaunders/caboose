@@ -70,6 +70,13 @@ class ParseTests(unittest.TestCase):
         self.assertIsNone(fl.phone_picture(records, 1, 14, offset=None))
 
 
+class PhoneClockTests(unittest.TestCase):
+    def test_phone_uptime(self):
+        self.assertEqual(fl.phone_uptime('CABOOSE_GPU_MEMORY_AUDIT {"kind":"x","uptimeSeconds":12.5}'), 12_500_000_000)
+        self.assertEqual(fl.phone_uptime('caboose-scroll: rtt sent=3.25 pong=3.3 rtt_ms=5'), 3_250_000_000)
+        self.assertIsNone(fl.phone_uptime('CABOOSE_GPU_DECODE_TIMING stream=1'))
+
+
 class MathTests(unittest.TestCase):
     def test_percentile_nearest_rank(self):
         self.assertEqual(fl.percentile([5, 1, 3, 2, 4], 0.5), 3)

@@ -206,6 +206,15 @@ class Run:
         self.proc = None
         self.log = None
         self.no_timeline = False
+        self.display_log = None
+
+    def keep_display(self, line, received):
+        """A line of the display's log (the broker's stderr included): kept whole in
+        <app>.display.log with its receive time, every diagnostic parsed."""
+        if self.display_log is None:
+            self.display_log = open(self.out / f"{self.app['id']}.display.log", 'w')
+        self.display_log.write(f'{received} {line}\n')
+        self.keep(line, received)
 
     def keep(self, line, received):
         record = framelab.parse_line(line, received)
@@ -360,7 +369,7 @@ class Run:
             self.before = {w['id'] for w in self.control.ask('windows')[0]['windows']}
             self.start(tmp, materials, offline)
             if self.broker_log_path and not self.reference:
-                tail = Tail(self.broker_log_path, self.keep)
+                tail = Tail(self.broker_log_path, self.keep_display)
                 tail.start()
             deadline = time.monotonic() + app.get('ready_s', 30)
             window = None
@@ -431,6 +440,9 @@ class Run:
             record['end_ns'] = now()
             if tail:
                 tail.stop()
+                tail.join(timeout=1)
+            if self.display_log:
+                self.display_log.close()
             self.stop()
         with self.lock:
             record.update(records=list(self.records), inputs=self.inputs, cpu=self.cpu, windows=self.windows,

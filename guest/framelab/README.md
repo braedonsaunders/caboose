@@ -99,6 +99,16 @@ All guest times are the computer's CLOCK_MONOTONIC.
   (`CabooseKit/GPU/FrameLabPictures.swift`); the driver copies the directory out and
   compares the one nearest the guest's own picture in place of the compositor's.
 
+The broker writes to the display's log, and the whole of that log during each app's run
+is kept as `<app>.display.log`, each line prefixed with its receive time.
+
+The phone's console can arrive many seconds late, in a steady delay the driver cannot see
+from arrival times alone. Lines that carry the phone's own clock (`uptimeSeconds` in the
+memory audit, `caboose-scroll: rtt sent=`) give the delay's variation, reported at the end
+of `summary.md`, and `caboose-framelab: present` times are placed by that clock. Lines
+without one, such as `CABOOSE_GPU_DECODE_TIMING`, are placed by arrival, so a steady console
+delay shifts them; compare phone events with each other by their own clock first.
+
 Phone lines have no clock in common with the computer. The driver stamps each one when it
 arrives, and stamps every guest event the same way; the smallest difference between a
 guest event's arrival and its own time is the offset between the two clocks (an
