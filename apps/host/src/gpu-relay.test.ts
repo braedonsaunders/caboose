@@ -47,12 +47,13 @@ it('caps already-parsed messages even when pausing cannot retract queued callbac
   const { client, upstream, done } = pair()
   for (let i = 0; i < GPU_MAX_PENDING / GPU_MAX_MESSAGE; i++) client.emit('message', Buffer.alloc(GPU_MAX_MESSAGE), true)
   expect(client.paused).toBe(true)
-  expect(upstream.pending).toHaveLength(4)
+  const queued = GPU_MAX_PENDING / GPU_MAX_MESSAGE
+  expect(upstream.pending).toHaveLength(queued)
   client.emit('message', Buffer.from([1]), true)
   await done
   expect(client.readyState).toBe(WebSocket.CLOSED)
   expect(upstream.readyState).toBe(WebSocket.CLOSED)
-  expect(upstream.pending).toHaveLength(4)
+  expect(upstream.pending).toHaveLength(queued)
 })
 
 it('keeps reply progress independent from a stalled command direction', async () => {

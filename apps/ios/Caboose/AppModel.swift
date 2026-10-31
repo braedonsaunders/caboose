@@ -73,6 +73,11 @@ final class AppModel {
     private var liveGPUIdentity: String?
     private var liveGPUGeneration = UUID()
     private var liveGPUFailedIdentity: String?
+    /// A GPU executor that ends (a lost transport, a stopped session) is started again while
+    /// the app is in the foreground, after 1 s doubling to 30 s; one that ran a minute resets it.
+    private var liveGPURetryDelay: TimeInterval = 1
+    private var liveGPUStartedAt = Date.distantPast
+    private var liveGPURetryPending = false
     private var liveGPUBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     private(set) var computer: HostClient.Session.Computer?
@@ -1099,16 +1104,31 @@ final class AppModel {
                 phoneToken: credentials.token) { [weak self] _, _ in
                     guard let self, self.liveGPUGeneration == generation else { return }
                     self.endLiveGPUBackgroundTime()
-                    if self.liveGPUOwner?.canReplace == true { self.syncLiveGPU() }
+                    // Failed native cleanup keeps its reservation and is never retried.
+                    if self.liveGPUOwner?.canReplace == true { self.retryLiveGPU() }
                     else { self.liveGPUFailedIdentity = identity }
                 }
             try owner.start()
             liveGPUGeneration = generation; liveGPUIdentity = identity; liveGPUOwner = owner
+            liveGPUStartedAt = Date()
             owner.update(display: display)
         } catch {
-            // An unavailable endpoint or quarantined native owner is not retried
-            // by ordinary display observation or its reconnect loop.
-            liveGPUFailedIdentity = identity
+            // The endpoint may be unavailable for a while (a broker restarting): try again.
+            retryLiveGPU()
+        }
+    }
+
+    private func retryLiveGPU() {
+        guard !liveGPURetryPending else { return }
+        if Date().timeIntervalSince(liveGPUStartedAt) >= 60 { liveGPURetryDelay = 1 }
+        let delay = liveGPURetryDelay
+        liveGPURetryDelay = min(delay * 2, 30)
+        liveGPURetryPending = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self else { return }
+            self.liveGPURetryPending = false
+            if self.sceneActive { self.syncLiveGPU() }
         }
     }
 

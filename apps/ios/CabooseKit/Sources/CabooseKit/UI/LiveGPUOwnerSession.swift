@@ -11,8 +11,11 @@ public final class LiveGPUOwnerSession {
     public enum State: Equatable { case idle, connecting, connected, draining, ended(cleanupFailed: Bool) }
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
+    /// A new executor may follow once local native cleanup succeeded. A transport loss never
+    /// brings the remote retirement receipt, but the host relay ends only after both of its
+    /// sides close and the broker revokes the old lease, so the server fences the old one.
     public var canReplace: Bool {
-        if case .ended(cleanupFailed: false) = state { return executor.remoteRetirementCompleted }
+        if case .ended(cleanupFailed: false) = state { return true }
         return false
     }
     // Failed native retirement must survive UI/session ARC. This reservation is
@@ -50,8 +53,7 @@ public final class LiveGPUOwnerSession {
                 case .ended(let cause, let cleanupError):
                     self.presentationOwners.revoke()
                     self.state = .ended(cleanupFailed: cleanupError != nil)
-                    if cleanupError == nil, self.executor.remoteRetirementCompleted,
-                       Self.retainedExecutor === self { Self.retainedExecutor = nil }
+                    if cleanupError == nil, Self.retainedExecutor === self { Self.retainedExecutor = nil }
                     Self.log.info("Owner executor ended: cause=\(cause != nil, privacy: .public) cleanupFailed=\(cleanupError != nil, privacy: .public) retirementConfirmed=\(self.executor.remoteRetirementCompleted, privacy: .public)")
                     self.onEnd(cause, cleanupError)
                 }

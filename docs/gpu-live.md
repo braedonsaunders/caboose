@@ -512,9 +512,14 @@ executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its
 on the returned phone. Its devices cannot be resumed as they were, because their
 objects lived on the executor that left. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
-app releases its process-wide owner reservation only after native cleanup, its
-REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss
-or failed cleanup retains the reservation and never triggers automatic retry.
+app releases its process-wide owner reservation once local native cleanup succeeds; the
+server fences the old executor (the host relay ends only after both of its sides close,
+and the broker revokes the old lease). While the app is in the foreground, an executor
+that ends, including after a lost transport, is started again after 1 s, doubling to
+30 s, reset by one that ran a minute. Failed native cleanup keeps the reservation and is
+never retried. The host relay logs why it ended any relay early (phone silence, a full
+queue, a socket error or an abnormal close), and each side may queue up to 2048 messages
+or 8 MiB before a peer that keeps sending past that is ended.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never
