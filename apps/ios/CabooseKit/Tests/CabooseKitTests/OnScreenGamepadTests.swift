@@ -316,13 +316,13 @@ struct OnScreenGamepadTests {
         jump[.up] = 1
         jump[.leftX] = -0.9
         // The d-pad is the arrow keys and the left stick W A S D by default.
-        #expect(Pad.keys(for: jump, settings: settings) == ["space+Return", "Up", "a"])
+        #expect(Pad.keys(for: jump, settings: settings) == ["space", "Up", "a"])
         let pressed = Pad.keyChanges(from: GameGamepadState(), to: jump, settings: settings)
         #expect(pressed.allSatisfy { $0.pressed } && pressed.count == 3)
         var next = jump
         next[.south] = 0
         let changes = Pad.keyChanges(from: jump, to: next, settings: settings)
-        #expect(changes.map { $0.name } == ["space+Return"] && changes.map { $0.pressed } == [false])
+        #expect(changes.map { $0.name } == ["space"] && changes.map { $0.pressed } == [false])
         let released = Pad.keyChanges(from: next, to: GameGamepadState(), settings: settings)
         #expect(Set(released.map { $0.name }) == ["Up", "a"] && released.allSatisfy { !$0.pressed })
         // The right stick looks with the mouse by default, pressing no keys; with keys
@@ -373,12 +373,15 @@ struct OnScreenGamepadTests {
         state[.rightX] = 1
         state[.rightY] = 0
         let full = Pad.look(for: state, settings: settings, seconds: 0.5)
-        #expect(abs(full.x - Pad.lookSpeed / 2) < 0.001 && full.y == 0)
+        #expect(abs(full.x - Pad.lookSpeed * settings.lookSpeed / 2) < 0.001 && full.y == 0)
+        var slow = settings
+        slow.lookSpeed = 0.5
+        #expect(abs(Pad.look(for: state, settings: slow, seconds: 1).x - Pad.lookSpeed * 0.5) < 0.001)
         // Half way is a quarter of the speed past the dead zone: fine aim near the centre.
         state[.rightX] = 0
         state[.rightY] = -0.55
         let up = Pad.look(for: state, settings: settings, seconds: 1)
-        #expect(up.x == 0 && abs(up.y + Pad.lookSpeed * 0.25) < 0.001)
+        #expect(up.x == 0 && abs(up.y + Pad.lookSpeed * settings.lookSpeed * 0.25) < 0.001)
         // The left stick moves with keys, so it makes no motion.
         var walk = GameGamepadState()
         walk[.leftX] = 1
@@ -388,6 +391,8 @@ struct OnScreenGamepadTests {
     @Test func settingsSavedWithTheFirstStickDefaultsTakeTheTwinStickOnes() {
         let old = Pad.Settings.decode(Data(#"{"leftStickKeys":"arrows","rightStickKeys":"wasd"}"#.utf8))
         #expect(old.leftStickKeys == .wasd && old.rightStickKeys == .mouse)
+        let chord = Pad.Settings.decode(Data(#"{"keys":{"south":"space+Return"},"stickDefaults":2,"lookSpeed":99}"#.utf8))
+        #expect(chord.keys["south"] == "space" && chord.lookSpeed == 4)
         let chosen = Pad.Settings.decode(Data(#"{"leftStickKeys":"arrows","rightStickKeys":"none"}"#.utf8))
         #expect(chosen.leftStickKeys == .arrows && chosen.rightStickKeys == .none)
         var kept = Pad.Settings()

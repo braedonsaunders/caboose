@@ -71,6 +71,11 @@ struct GamepadCustomizer: View {
                     if style.hasSticks {
                         stickPicker("Left stick", selection: $settings.leftStickKeys)
                         stickPicker("Right stick", selection: $settings.rightStickKeys)
+                        if settings.leftStickKeys == .mouse || settings.rightStickKeys == .mouse {
+                            LabeledContent("Look speed") {
+                                Slider(value: $settings.lookSpeed, in: OnScreenGamepad.Settings.lookSpeedRange)
+                            }
+                        }
                     }
                     ForEach(style.buttons, id: \.self) { button in
                         Picker(title(button), selection: keyBinding(button)) {

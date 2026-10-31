@@ -213,7 +213,8 @@ public enum OnScreenGamepad {
         }
     }
 
-    /// The fastest mouse look, in window pixels per second at full deflection.
+    /// The fastest mouse look, in window pixels per second at full deflection, at a look
+    /// speed (`Settings.lookSpeed`) of 1.
     public static let lookSpeed: Double = 1400
 
     /// The mouse motion `state`'s sticks set to `.mouse` make over `seconds`: none in the
@@ -225,7 +226,7 @@ public enum OnScreenGamepad {
             let dx = state[x], dy = state[y]
             let r = (dx * dx + dy * dy).squareRoot()
             guard r > 0.1 else { continue }
-            let speed = lookSpeed * pow(min(1, (r - 0.1) / 0.9), 2) / r
+            let speed = lookSpeed * settings.lookSpeed * pow(min(1, (r - 0.1) / 0.9), 2) / r
             // A stick's up is negative, as screen y is.
             motion.x += dx * speed * seconds
             motion.y += dy * speed * seconds
@@ -252,8 +253,11 @@ public enum OnScreenGamepad {
         /// The twin-stick layout games share: the left stick moves, the right stick looks.
         public var leftStickKeys: StickKeys = .wasd
         public var rightStickKeys: StickKeys = .mouse
-        /// The generation of the stick defaults the settings were saved under.
-        var stickDefaults = 2
+        /// How fast a Mouse stick looks around, 0.25 to 4 times `OnScreenGamepad.lookSpeed`.
+        public var lookSpeed = 1.5
+        public static let lookSpeedRange: ClosedRange<Double> = 0.25 ... 4
+        /// The generation of the defaults the settings were saved under.
+        var stickDefaults = 3
 
         public static let scaleRange: ClosedRange<Double> = 0.8 ... 1.2
 
@@ -303,9 +307,13 @@ public enum OnScreenGamepad {
             rightStickKeys = value(.rightStickKeys, defaults.rightStickKeys)
             // Settings saved with the first defaults (left stick arrows, right stick W A S D)
             // take the twin-stick ones; a choice the owner made stays.
-            if value(.stickDefaults, 1) < 2, leftStickKeys == .arrows, rightStickKeys == .wasd {
+            let generation = value(.stickDefaults, 1)
+            if generation < 2, leftStickKeys == .arrows, rightStickKeys == .wasd {
                 (leftStickKeys, rightStickKeys) = (defaults.leftStickKeys, defaults.rightStickKeys)
             }
+            // A briefly pressed Return along with Space, which opened menus in play.
+            if generation < 3, keys["south"] == "space+Return" { keys["south"] = "space" }
+            lookSpeed = min(Self.lookSpeedRange.upperBound, max(Self.lookSpeedRange.lowerBound, value(.lookSpeed, defaults.lookSpeed)))
         }
     }
 
@@ -320,8 +328,8 @@ public enum OnScreenGamepad {
     ]
 
     public static let defaultKeys: [String: String] = [
-        // A jumps in a game and confirms in its menus; B backs out.
-        "south": "space+Return", "east": "Escape", "west": "z", "north": "x",
+        // A jumps; Return, which opens some games' menus in play, is a quick key.
+        "south": "space", "east": "Escape", "west": "z", "north": "x",
         "leftShoulder": "q", "rightShoulder": "e", "leftTrigger": "Shift_L", "rightTrigger": "Control_L",
         "select": "Tab", "start": "Return",
     ]

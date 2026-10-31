@@ -1109,10 +1109,10 @@ A game running on this device ([game handoff](../../docs/game-handoff.md)) gets 
 standard controller through the page's Gamepad API; every other window, and a game when
 Customize says so, gets keys, each held for as long as its control is (by default the d-pad is
 the arrow keys and the left stick W A S D; the right stick is the mouse, looking around as a
-game's mouse look does, faster the further it is pushed; A Space and Return together, so it
-jumps in play and confirms in menus, B Escape, Start Return). A key belongs to a button's
-place on the controller, so it carries across types; a button can also press Return and Y, or
-Escape and N, together for a game's yes/no questions. The keyboard button in the pad's strip
+game's mouse look does, faster the further it is pushed, at the Look speed Customize sets;
+A Space, B Escape, Start Return). A key belongs to a button's place on the controller, so it
+carries across types; a button can also press keys together (Space and Return, Return and Y,
+Escape and N) for a game's menus and yes/no questions. The keyboard button in the pad's strip
 swaps its title for quick keys (Escape, Return, Y, N, Tab and the console's `` ` ``), each
 pressed and released at a tap, and a Type key that raises the system keyboard, whose
 characters, Return and Delete reach the window as key presses. With **Other
