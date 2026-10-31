@@ -7,7 +7,7 @@ from pathlib import Path
 
 PIN = 'f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be'
 PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a56a7'
-PATCHED_DECODER = '69e9b7b1d4ec218ed54891f12d928351a64699269ef2ff55a87d658010ad209c'
+PATCHED_DECODER = '54822d004a31aa0d85679e93f19a0f7d1955339fbd642ca74a4a433fcf4b2b3f'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
     'host/vulkan/vk_decoder_global_state.cpp': 'fee1354b16b19b3fb24171a003db511b03347d49daf7061e32347ee7f0677ded',
@@ -21,6 +21,10 @@ AUDIT_INPUTS = {
     'host/vulkan/vk_decoder_global_state.h': '68e18dee40d495306db22ead715079f8fc96505d682dbe6cb909249b58893740',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
+}
+RESOURCE_CACHE_INPUTS = {
+    'host/vulkan/vk_decoder_global_state.cpp': 'c39f0257b0faa6dbafe98450dcce994bb6f77cebaa3dafe6dded496a81979a1f',
+    'host/vulkan/caboose_pipeline_cache.h': '55c33c7a126fdd693a3c0cb4b11eca7bfb062200eb93286288a89ce068ea3fe2',
 }
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
               'vkQueueBindSparse', 'vkQueueWaitIdle'}
@@ -39,7 +43,9 @@ def main():
     header_path = args.gfxstream / 'host/vulkan/cereal/common/goldfish_vk_marshaling.h'
     decoder_bytes = decoder_path.read_bytes()
     header_bytes = header_path.read_bytes()
-    if hashlib.sha256(decoder_bytes).hexdigest() != (PATCHED_DECODER if args.patched else PRISTINE_DECODER):
+    decoder_hash = hashlib.sha256(decoder_bytes).hexdigest()
+    valid_decoder_hashes = {PATCHED_DECODER} if args.patched else {PRISTINE_DECODER}
+    if decoder_hash not in valid_decoder_hashes:
         raise SystemExit('decoder SHA-256 does not match the pinned source/patch')
     if hashlib.sha256(header_bytes).hexdigest() != MARSHALING:
         raise SystemExit('marshaling header SHA-256 does not match the pinned source')
@@ -47,6 +53,8 @@ def main():
         expected_inputs = dict(PATCHED_INPUTS)
         if args.memory_audit or (args.gfxstream / 'host/vulkan/caboose_memory_audit.h').exists():
             expected_inputs.update(AUDIT_INPUTS)
+        if (args.gfxstream / 'host/vulkan/caboose_pipeline_cache.h').exists():
+            expected_inputs.update(RESOURCE_CACHE_INPUTS)
         for relative, expected in expected_inputs.items():
             if hashlib.sha256((args.gfxstream / relative).read_bytes()).hexdigest() != expected:
                 raise SystemExit(f'patched input SHA-256 mismatch: {relative}')
