@@ -603,9 +603,11 @@ lays out from its top-left, so content above or left comes from its own scroll p
 The server configures Wayland toplevels and X11 windows at the shown size plus the
 overscan, cut so the whole picture stays within 4096 pixels per axis and within the
 application's maximum size. Fullscreen and maximized windows have a fixed size and get
-none. While the window has exactly the enlarged size, `window.create`/`window.update`
-carry `overscan`, the part actually applied; an update carries `[0, 0]` when it ends or
-the application leaves that size. Such an update precedes every frame of the new picture
+none. While the window is larger than the shown size it was configured for,
+`window.create`/`window.update` carry `overscan`, the part actually applied: on each axis
+the window's size beyond the shown size, up to the overscan laid out. An application that
+sizes itself in steps, such as a terminal in character cells, gets part of it. An update
+carries `[0, 0]` when the overscan ends or the window no longer exceeds the shown size. Such an update precedes every frame of the new picture
 size, as a size change precedes its keyframe. The picture is then the whole window:
 `frame.rect` is `[0, 0, w + ow, h + oh]`, tiles, video and motion rectangles map through
 it as usual, and window-local input positions with `x >= w` or `y >= h` address the
