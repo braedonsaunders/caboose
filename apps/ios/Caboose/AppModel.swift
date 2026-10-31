@@ -1347,8 +1347,14 @@ final class AppModel {
             yard.focus(latest.id)
             return
         }
-        if !yardActive, desktop.reveal(windows.map(\.id), session: session) { return }
+        if !yardActive, desktop.reveal(windows.map(\.id), session: session) {
+            desktop.launchpadOpen = false
+            return
+        }
         launch(app)
+        // An app that has to start keeps Launchpad up, its icon turning, until its window
+        // shows or the launch fails (Launchpad closes itself then).
+        if launching?.id != app.id { desktop.launchpadOpen = false }
     }
 
     // MARK: Switchyard
