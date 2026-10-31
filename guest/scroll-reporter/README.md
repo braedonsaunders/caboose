@@ -33,6 +33,22 @@ other means than `scroll.target` (pointer scroll animated on Chromium's composit
 thread), a picture can show an offset its tag's report does not have yet. The phone
 therefore places pictures by reports only while it drives the page with `scroll.target`.
 
+## Electron
+
+`electron/main.js` is the Chromium reporter for Electron applications, which do not load
+Chromium extensions. caboose-display puts `NODE_OPTIONS=--require=/opt/caboose/scroll-reporter/electron/main.js`
+in its launch environment (the Flatpak override passes it too). Electron loads it into an
+application's main process; in plain Node and other Electron processes it returns at once.
+Once the application's main script has run, it attaches Electron's debugger to each window's
+web contents. It runs `chromium/core.js` and `content.js` in an isolated world of every
+document, and joins each window to `scroll.sock` with a connection of its own. The page's
+reports reach it through a binding; bind, unbind and target messages go back in by
+evaluation. Every step is guarded, so a reporter fault never takes the application down.
+
+Limitations: applications that turn off Electron's `EnableNodeOptionsEnvironmentVariable`
+fuse (Obsidian, among others) ignore `NODE_OPTIONS` and are not reported. A window whose
+DevTools hold the debugger is not reported.
+
 ## GTK 3 and GTK 4
 
 `gtk/caboose-scroll-gtk.c` builds into the preload libraries `libcaboose-scroll-gtk4.so` and
@@ -53,8 +69,7 @@ so it links to neither GLib nor GTK and does nothing in other processes:
   its shadow.
 
 Limitations: applications that load GTK at run time (Python through GObject introspection)
-are not reported, because the reporter looks for GTK as the process starts. Flatpak
-applications do not see the computer's preload libraries.
+are not reported, because the reporter looks for GTK as the process starts.
 
 ## Qt Quick
 
@@ -71,6 +86,21 @@ updated in that same step. `scroll.target` moves `contentX`/`contentY`.
 `/opt/caboose/scroll-reporter/lib` into the applications it launches, through its launch
 environment.
 
+## Flatpak
+
+Flatpak applications see neither `/opt` nor the host's `LD_PRELOAD`. `install.sh` adds a
+system-wide override giving every Flatpak application the libraries read-only, the display
+instances' sockets (`xdg-run/caboose-display`) and the preload. In a sandbox the reporters
+find their scroll socket from `WAYLAND_DISPLAY` when `CABOOSE_SCROLL_SOCKET` is not passed
+in, at the same path as on the host. Binding by process lineage works across the sandbox's
+process namespace, since the compositor sees host process ids. The libraries need glibc
+2.34 and link nothing else, so they run in the Freedesktop, GNOME and KDE runtimes. The Qt
+part links the host's Qt 6.8 and loads into KDE runtimes from 6.8 on (6.10 and 6.11 are the
+ones Flathub publishes). Qt 5 Quick applications are not reported.
+
+`CABOOSE_SCROLL_DEBUG=1` makes the Qt reporter say on stderr which windows it hooked,
+whether it connected and which windows have no Flickable.
+
 ### Install
 
 `install.sh` (as root, in the image build, after Chromium and Node) installs the GTK and Qt
@@ -86,6 +116,9 @@ launcher loads. `guest/container/Dockerfile` runs it.
 - `check.py gtk4-scroll-reports`, `gtk3-scroll-reports` and `qt6-scroll-reports`: the same
   check on the toolkits' ruler applications (`gtk/ruler-app.c`, `qt/ruler-app.cpp`, built by
   `build.sh --check`; `CABOOSE_SCROLL_GTK`/`CABOOSE_SCROLL_QT` name the build directories).
+- `check.py electron-scroll-reports`: a stock Electron (`CABOOSE_SCROLL_ELECTRON` names its
+  binary) with the reporter through `NODE_OPTIONS`, showing the ruler page
+  (`electron/ruler-app`).
 - `check.py chromium-scroll-reports` (in [guest/display/scripts](../display/scripts)):
   real Chromium on caboose-display with the extension and native host. The probe asks for
   overscan and drives the page with `scroll.target`. For every decoded picture it reads

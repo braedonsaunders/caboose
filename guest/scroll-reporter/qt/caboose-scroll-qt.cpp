@@ -22,6 +22,7 @@
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/QSGSimpleRectNode>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sys/socket.h>
@@ -31,6 +32,9 @@
 namespace {
 
 constexpr int Blocks = 32;
+
+/** CABOOSE_SCROLL_DEBUG=1: say what the reporter finds, on stderr. */
+const bool Debug = qEnvironmentVariableIntValue("CABOOSE_SCROLL_DEBUG") == 1;
 
 bool tagBit(quint32 value, int i) {
     if (i < 4) return i % 2 == 0;
@@ -90,6 +94,7 @@ private:
         quint64 epoch = 0;
         double lastExtent = 0;
         QByteArray last;
+        bool warned = false;
     };
 
     int m_sock = -1;
@@ -102,19 +107,29 @@ private:
     QHash<QObject *, int> m_ids;
     int m_nextId = 1;
 
-    void connectSocket() {
+    /** The display instance's scroll socket: $CABOOSE_SCROLL_SOCKET, or where caboose-display
+     *  puts it for this Wayland display (the same path inside a Flatpak sandbox). */
+    static bool socketPath(char *out, size_t size) {
         const char *path = getenv("CABOOSE_SCROLL_SOCKET");
-        if (!path || !*path) return;
-        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (path && *path) return snprintf(out, size, "%s", path) < int(size);
+        const char *runtime = getenv("XDG_RUNTIME_DIR"), *wayland = getenv("WAYLAND_DISPLAY");
+        if (!runtime || !*runtime || !wayland || !*wayland || strchr(wayland, '/')) return false;
+        return snprintf(out, size, "%s/caboose-display/%s/scroll.sock", runtime, wayland) < int(size);
+    }
+
+    void connectSocket() {
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
-        if (fd < 0 || strlen(path) >= sizeof addr.sun_path) return;
-        strcpy(addr.sun_path, path);
+        if (!socketPath(addr.sun_path, sizeof addr.sun_path)) return;
+        int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return;
         if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) < 0) {
+            if (Debug) qWarning("caboose-scroll: cannot connect to %s: %s", addr.sun_path, strerror(errno));
             close(fd);
             return;
         }
         m_sock = fd;
+        if (Debug) qWarning("caboose-scroll: connected to %s", addr.sun_path);
         m_in.clear();
         m_notifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
         connect(m_notifier, &QSocketNotifier::activated, this, &Reporter::readSocket);
@@ -229,6 +244,7 @@ private:
             w->tag->setZ(1e9);
             w->tag->setVisible(false);
             m_wins.append(w);
+            if (Debug) qWarning("caboose-scroll: hooked window \"%s\"", qPrintable(quick->title()));
             connect(quick, &QQuickWindow::afterAnimating, this, [this, w] { frame(w); });
             quick->update();
         }
@@ -245,7 +261,11 @@ private:
         QQuickWindow *window = w->window;
         const double dpr = window->effectiveDevicePixelRatio();
         const QList<Found> found = scrollers(w);
-        if (found.isEmpty()) return;
+        if (found.isEmpty()) {
+            if (Debug && !w->warned) qWarning("caboose-scroll: \"%s\" has no Flickable", qPrintable(window->title()));
+            w->warned = true;
+            return;
+        }
         const QSizeF size = window->contentItem()->size();
         bool tagged = false;
         double side = 0, top = 0;

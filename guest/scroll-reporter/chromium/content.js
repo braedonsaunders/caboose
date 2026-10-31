@@ -313,20 +313,30 @@
     }
   }
 
+  function receive(message) {
+    if (message.type === 'bind') bind = message
+    else if (message.type === 'unbind') bind = null
+    else if (message.type === 'base') frame = message.frame & 0xffff
+    else if (message.type === 'target' && Array.isArray(message.delta)) targets.push(message)
+    lastSent = null
+    schedule()
+  }
+
   function connect() {
+    // In an Electron application (guest/scroll-reporter/electron) the main process binds a
+    // function into this world, and answers by calling __cabooseScrollReceive.
+    if (typeof globalThis.__cabooseScrollPost === 'function') {
+      const send = globalThis.__cabooseScrollPost
+      globalThis.__cabooseScrollReceive = receive
+      port = { postMessage: message => send(JSON.stringify(message)) }
+      return
+    }
     try {
       port = chrome.runtime.connect({ name: 'scroll' })
     } catch {
       return
     }
-    port.onMessage.addListener(message => {
-      if (message.type === 'bind') bind = message
-      else if (message.type === 'unbind') bind = null
-      else if (message.type === 'base') frame = message.frame & 0xffff
-      else if (message.type === 'target' && Array.isArray(message.delta)) targets.push(message)
-      lastSent = null
-      schedule()
-    })
+    port.onMessage.addListener(receive)
     port.onDisconnect.addListener(() => {
       port = null
       bind = null

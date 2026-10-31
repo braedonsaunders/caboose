@@ -846,8 +846,9 @@ content is scrolled by `offset` shows exactly that content, whatever loaded, stu
 shifted on the page.
 
 **Reporters.** A reporter runs inside the application, in its toolkit: the Chromium
-extension, and preload libraries for GTK 3, GTK 4 and Qt Quick, which caboose-display
-preloads into the applications it launches ([guest/scroll-reporter](../guest/scroll-reporter)). In each frame, after
+extension (and the same script in Electron applications, loaded through `NODE_OPTIONS`), and
+preload libraries for GTK 3, GTK 4 and Qt Quick, which caboose-display preloads into the
+applications it launches ([guest/scroll-reporter](../guest/scroll-reporter)). In each frame, after
 layout, it reads its scrollers and sends a report to its display instance's
 `scroll.sock`, whose protocol `guest/display/compositor/src/scroll.rs` describes. The
 compositor binds the reporter to a toplevel of a process in the reporter's own lineage.

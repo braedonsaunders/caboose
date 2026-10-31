@@ -279,6 +279,20 @@ def check_qt_scroll_reports():
     return with_scroll_server(command)
 
 
+def check_electron_scroll_reports():
+    """The Electron reporter (guest/scroll-reporter/electron) loaded through NODE_OPTIONS into
+    a stock Electron (CABOOSE_SCROLL_ELECTRON names its binary) showing the ruler page."""
+    electron = os.environ.get("CABOOSE_SCROLL_ELECTRON")
+    if not electron:
+        raise Failed("CABOOSE_SCROLL_ELECTRON is not set")
+    reporter = os.path.join(os.path.dirname(ROOT), "scroll-reporter", "electron")
+    os.environ["NODE_OPTIONS"] = f"--require={reporter}/main.js"
+    try:
+        return with_scroll_server([electron, "--no-sandbox", "--ozone-platform=wayland", f"{reporter}/ruler-app"])
+    finally:
+        del os.environ["NODE_OPTIONS"]
+
+
 def check_chromium_touch_fling():
     def run(proc, token):
         time.sleep(2)
@@ -1172,6 +1186,7 @@ CHECKS = [
     ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
     ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
     ("qt6-scroll-reports", check_qt_scroll_reports),
+    ("electron-scroll-reports", check_electron_scroll_reports),
     ("reconnect", check_reconnect),
     ("reconnect-idle", check_reconnect_idle),
     ("encoder-eviction", check_encoder_eviction),

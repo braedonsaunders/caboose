@@ -30,7 +30,18 @@ grep -qs /usr/share/chromium/extensions /etc/chromium.d/extensions || {
     echo 'Debian Chromium (with /etc/chromium.d/extensions) must be installed first' >&2; exit 1; }
 install -d -m 0755 /usr/share/chromium/extensions
 ln -sfn "$dest/chromium" /usr/share/chromium/extensions/caboose-scroll-reporter
-install -d -m 0755 "$dest/lib"
+install -d -m 0755 "$dest/lib" "$dest/electron"
+install -m 0644 "$src/electron/main.js" "$dest/electron/main.js"
 for lib in "$src"/gtk/out/libcaboose-scroll-*.so "$src"/qt/out/libcaboose-scroll-*.so; do
     if [ -f "$lib" ]; then install -m 0644 "$lib" "$dest/lib/"; fi
 done
+# Flatpak applications see neither /opt nor the host's LD_PRELOAD: a system-wide override
+# gives every one of them the libraries, read-only, and the display instances' sockets, where
+# the reporters find their scroll socket from WAYLAND_DISPLAY.
+if command -v flatpak >/dev/null 2>&1; then
+    preload=$(ls "$dest"/lib/libcaboose-scroll-*.so 2>/dev/null | grep -v -- '-quick' | paste -sd: -)
+    if [ -n "$preload" ]; then
+        flatpak override --system --filesystem="$dest:ro" --filesystem=xdg-run/caboose-display \
+            --env=LD_PRELOAD="$preload" --env=NODE_OPTIONS="--require=$dest/electron/main.js"
+    fi
+fi
