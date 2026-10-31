@@ -207,8 +207,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         displayLink = link
     }
 
+    private var laidOutSize: CGSize?
+
     public override func layoutSubviews() {
         super.layoutSubviews()
+        if bounds.size != laidOutSize, isInteractive {
+            // A keyboard or shell change that resizes the view, not just moves it, shows here.
+            LocalScrollProfile.note("view window=\(remoteWindow?.id ?? 0) \(laidOutSize.map { "\(Int($0.width))x\(Int($0.height))" } ?? "-") -> \(Int(bounds.width))x\(Int(bounds.height)) pt")
+            laidOutSize = bounds.size
+        }
         laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
