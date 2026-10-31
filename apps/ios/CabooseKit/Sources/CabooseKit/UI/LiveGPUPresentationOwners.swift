@@ -345,6 +345,9 @@ final class LiveGPULayerLease: @unchecked Sendable {
     @MainActor func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
         guard isValid, let content = content as? LiveGPULayerView else { return ECANCELED }
         guard LiveGPUDrawableGeometry.extent(serverPixels: size, visibleBounds: content.bounds.size) != nil else { return EINVAL }
+        // The layer shows its last picture scaled to the new extent until the app presents at
+        // it: the view holds the picture on screen over it meanwhile.
+        if content.pixelExtent != size { view?.liveGPUExtentWillChange(from: content.pixelExtent, to: size) }
         return content.configurePresentationExtent(size, configure: configure)
     }
     private let lock = NSLock()

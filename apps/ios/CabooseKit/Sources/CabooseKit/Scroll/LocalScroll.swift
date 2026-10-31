@@ -435,8 +435,9 @@ public struct LocalScroll {
         return (low...high, max(low, min(high, center)))
     }
 
-    /// Places a captured frame. Frames are placed in capture order.
-    public mutating func observe(_ id: UInt64, _ observation: ScrollObservation) {
+    /// Places a captured frame. Frames are placed in capture order. `measured` is the frame's
+    /// own measurement when a report places it, which anchors a new report epoch.
+    public mutating func observe(_ id: UInt64, _ observation: ScrollObservation, measured measurement: ScrollObservation? = nil) {
         guard let index = frames.firstIndex(where: { $0.id == id }) else { return }
         let frame = frames[index]
         let before = frames[..<index].last(where: \.placed)
@@ -484,13 +485,21 @@ public struct LocalScroll {
             holes = ref.holes
         case .reported(let reported, let measured, let bounds, let fixed, let epoch):
             if let last = reportedEpoch, last != epoch {
-                // Content moved in the document (a relayout, scroll anchoring): earlier
-                // pictures no longer line up by offset, and offsets have a new origin. The
-                // content on screen did not move, so the new origin is anchored where the app
-                // was driven to, as for the first report.
+                // Content moved in the document (a relayout, scroll anchoring, a zoom):
+                // earlier pictures no longer line up by offset, and offsets have a new origin.
+                // Where the picture's content is on screen is what its measurement against
+                // the previous picture says; without one, where the app was driven to, as
+                // for the first report.
+                var anchored: Double?
+                if case .moved(let shift, _, let reference, _)? = measurement,
+                   let base = frames.first(where: { $0.id == reference })?.offset {
+                    anchored = base + Double(shift)
+                } else if case .still(let reference)? = measurement, let base = frames.first(where: { $0.id == reference })?.offset {
+                    anchored = base
+                }
                 frames.removeSubrange(..<index)
-                note?("picture \(id): reporter epoch \(last) -> \(epoch), offset \(Int(reported)); re-anchored")
-                reportedBias = nil
+                note?("picture \(id): reporter epoch \(last) -> \(epoch), offset \(Int(reported)); re-anchored \(anchored == nil ? "where driven" : "by measurement")")
+                reportedBias = anchored.map { $0 - reported }
             }
             reportedEpoch = epoch
             // A reporter applies scroll exactly, in content pixels.
@@ -912,6 +921,7 @@ public struct LocalScroll {
     }
 
     private mutating func startSpring(from: Double, to edge: Double, velocity: Double, stiffness: Double = 10) {
+        note?("bounce: from \(Int(from)) to the \(reportedBias == nil ? "inferred" : "reported") edge \(Int(edge)) (edges \(edges.lower.map { String(Int($0)) } ?? "-")…\(edges.upper.map { String(Int($0)) } ?? "-"), phase \(phase))")
         physics.cancel()
         spring = ScrollSpring(offset: from - edge, velocity: velocity, stiffness: stiffness)
         springTarget = edge
