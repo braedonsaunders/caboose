@@ -6,6 +6,7 @@
 #include "presentation_api_draft.h"
 #include "metal_surface_internal.h"
 #include "presentation_copy_internal.h"
+#include "framelab_timing.h"
 #include "presentation_capture_internal.h"
 #include "presentation_capture_state.h"
 #include "presentation_query_internal.h"
@@ -424,6 +425,17 @@ int advanceFrame(caboose_gpu_surface& s, Frame& f) {
         VkResult r = waitPresentationFence(*s.device, f.presentFence, kFenceTimeoutNs);
         if (r == VK_SUCCESS) {
             f.presentRetired = true;
+            if (caboose::framelab::enabled() && f.source) {
+                // The swapchain's timings are host-synchronized like its presents.
+#ifdef CABOOSE_GPU_INDEXED_WSI
+                if (f.indexed) {
+                    std::lock_guard<std::mutex> hostLock(*f.indexed->hostMutex);
+                    caboose::framelab::reportPresented(f.source->vk, f.source->device, f.indexed->handle,
+                                                       s.bind.identity.window_id);
+                } else
+#endif
+                caboose::framelab::reportPresented(f.source->vk, f.source->device, s.swapchain, s.bind.identity.window_id);
+            }
 #ifdef CABOOSE_GPU_INDEXED_WSI
             if (f.indexed && !f.indexed->guestImages) {
                 std::lock_guard<std::mutex> lock(f.indexed->mutex);
@@ -645,7 +657,8 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
                 else { std::lock_guard<std::mutex> lock(s->mutex); s->captureState.abort(frame->serial); }
             }
             if (frame->submitted) {
-                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence, &provider);
+                r = queuePresentation(*frame->source, s->swapchain, index, frame->ready, frame->presentFence, &provider,
+                                      frame->serial);
                 frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             }
         } else { r = VK_ERROR_INITIALIZATION_FAILED; provider = {}; }
@@ -1044,7 +1057,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
             {
                 std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
                 r = queuePresentation(*frame->source, swapchain->handle, info->image_index,
-                                      frame->ready, frame->presentFence, &provider);
+                                      frame->ready, frame->presentFence, &provider, frame->serial);
             }
             frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             if (!frame->presentQueued || !swapchain->indices->markPresented(frame->serial)) {
@@ -1178,7 +1191,7 @@ static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain
             if (frame->submitted) {
                 std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
                 r = queuePresentation(*frame->source, swapchain->handle, nativeIndex,
-                                      frame->ready, frame->presentFence, &provider);
+                                      frame->ready, frame->presentFence, &provider, frame->serial);
                 frame->presentQueued = r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR;
             }
             if (!frame->submitted || !frame->presentQueued) {

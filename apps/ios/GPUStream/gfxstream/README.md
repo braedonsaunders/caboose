@@ -125,6 +125,16 @@ includes the real framebuffer, Vulkan decoder and stock MoltenVK; native surface
 and GL readback remain unsupported. The [source audit](patches/apple-source-audit.md)
 describes these boundaries.
 
+## Display times for frame lab
+
+With `CABOOSE_FRAMELAB=1` in the app's environment, patch 0041 enables
+`VK_GOOGLE_display_timing` on the decoder's device when the device offers it, every
+native present carries its present serial as the present ID, and once a frame's present
+fence completes the swapchain's past presentation timings are written to standard error
+as `caboose-framelab: present window=W seq=S presented_ns=P now_ns=N`
+(`framelab_timing.h`). [Frame lab](../../../../guest/framelab/README.md) turns these into
+input-to-glass latency. Without the variable, device creation and presents are unchanged.
+
 ## Memory and proof boundary
 
 The decoder's non-direct flush/invalidate path carries actual mapped memory bytes.

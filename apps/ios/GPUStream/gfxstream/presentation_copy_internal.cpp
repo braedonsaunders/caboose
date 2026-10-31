@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_copy_internal.h"
+#include "framelab_timing.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <memory>
@@ -99,7 +100,7 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
 }
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence,
-    PresentationProviderResult* provider) {
+    PresentationProviderResult* provider, uint64_t presentId) {
     if (provider) *provider = {};
     if (!objects.vk || !objects.vk->vkQueuePresentKHR || !objects.queue ||
         !objects.queueMutex || !swapchain || !ready || !presentFence) return VK_ERROR_INITIALIZATION_FAILED;
@@ -111,6 +112,12 @@ VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& obje
     info.pNext = &fenceInfo;
     info.waitSemaphoreCount = 1; info.pWaitSemaphores = &ready;
     info.swapchainCount = 1; info.pSwapchains = &swapchain; info.pImageIndices = &imageIndex;
+    VkPresentTimeGOOGLE time{static_cast<uint32_t>(presentId), 0};
+    VkPresentTimesInfoGOOGLE times{VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, nullptr, 1, &time};
+    if (presentId && caboose::framelab::pastTiming(objects.vk, objects.device)) {
+        times.pNext = info.pNext;
+        info.pNext = &times;
+    }
     std::lock_guard<std::mutex> lock(*objects.queueMutex);
     VkResult result = objects.vk->vkQueuePresentKHR(objects.queue, &info);
     return provider ? provider->record(result) : result;

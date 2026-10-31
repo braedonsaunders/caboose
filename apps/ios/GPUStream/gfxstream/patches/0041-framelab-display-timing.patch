@@ -1,0 +1,12 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -3131,0 +3132,9 @@
++            // Frame lab (guest/framelab) reads when each present was displayed, only
++            // when the app was started with CABOOSE_FRAMELAB=1.
++            const char* framelab = getenv("CABOOSE_FRAMELAB");
++            if (framelab && strcmp(framelab, "1") == 0 &&
++                hasDeviceExtension(hostDeviceExtensions, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) &&
++                std::none_of(updatedDeviceExtensions.begin(), updatedDeviceExtensions.end(), [](const char* name) {
++                    return name && strcmp(name, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME) == 0;
++                }))
++                updatedDeviceExtensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);

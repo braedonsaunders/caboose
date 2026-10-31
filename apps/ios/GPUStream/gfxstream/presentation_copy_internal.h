@@ -22,7 +22,9 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
 // Caller must have queried and enabled swapchain maintenance1 on this actual
 // device. The ready semaphore and swapchain remain alive until presentFence is
 // actually signaled; timeout is not completion.
+// A nonzero presentId is chained as the VK_GOOGLE_display_timing present ID while frame
+// lab measures (framelab_timing.h).
 VkResult queuePresentation(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkSwapchainKHR swapchain, uint32_t imageIndex, VkSemaphore ready, VkFence presentFence,
-    PresentationProviderResult* provider);
+    PresentationProviderResult* provider, uint64_t presentId = 0);
 }
