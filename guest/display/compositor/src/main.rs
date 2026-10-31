@@ -5,6 +5,7 @@ mod devices;
 mod clipboard;
 mod config;
 mod control;
+mod dbus;
 mod displays;
 mod encode;
 mod game;
@@ -16,6 +17,7 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod ibus;
 mod input;
 mod keymap;
 mod motion;
@@ -216,6 +218,13 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.games.socket {
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
+    }
+    if let Some(ibus) = &state.ibus {
+        // Applications without text-input-v3 reach the phone's keyboard through IBus:
+        // Qt by its module setting, GTK on X11 by the window manager's XSETTINGS, SDL by itself.
+        env.push(("IBUS_ADDRESS".into(), ibus.address()));
+        env.push(("IBUS_ADDRESS_FILE".into(), ibus.address_file().display().to_string()));
+        env.push(("QT_IM_MODULE".into(), "ibus".into()));
     }
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
@@ -460,6 +469,8 @@ fn run(config: Config) -> Result<(), String> {
         xwm: None,
         x11_foreground: None,
         gpu_x11: None,
+        ibus: None,
+        ibus_shown: None,
         text_inputs,
         windows: Default::default(),
         displays,
@@ -551,6 +562,11 @@ fn run(config: Config) -> Result<(), String> {
             }
             Err(e) => tracing::warn!("no control socket: cannot listen on {}: {e}", path.display()),
         }
+        let path = dir.join("ibus");
+        match ibus::Ibus::listen(&path, &handle) {
+            Ok(service) => state.ibus = Some(service),
+            Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
+        }
     }
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
@@ -593,7 +609,15 @@ fn run(config: Config) -> Result<(), String> {
                 .insert_source(xwayland, move |event, _, state: &mut State| match event {
                     XWaylandEvent::Ready { x11_socket, display_number } => {
                         match X11Wm::start_wm(state.handle.clone(), x11_socket, client.clone()) {
-                            Ok(wm) => {
+                            Ok(mut wm) => {
+                                // GTK on X11 (and Chromium and Electron, which use its input
+                                // methods) selects its input-method module from XSETTINGS,
+                                // which Wayland clients do not read: X11 clients reach the
+                                // IBus service (ibus.rs), Wayland clients keep text-input-v3.
+                                let settings = [("Gtk/IMModule".to_owned(), "ibus".to_owned().into())];
+                                if let Err(error) = wm.set_xsettings(settings.into_iter()) {
+                                    tracing::warn!("XSETTINGS for X11 clients: {error}");
+                                }
                                 state.xwm = Some(wm);
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");

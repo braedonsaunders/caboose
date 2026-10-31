@@ -187,6 +187,10 @@ pub struct State {
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
+    /// The input-method service for applications without text-input-v3 (ibus.rs).
+    pub ibus: Option<crate::ibus::Ibus>,
+    /// The IBus field the phone's keyboard was last shown for, and its window's surface.
+    pub ibus_shown: Option<(WlSurface, crate::ibus::Field)>,
     pub text_inputs: TextInputs,
 
     pub windows: Windows,
@@ -989,6 +993,7 @@ impl SeatHandler for State {
         for toggle in self.text_inputs.set_focus(surface.as_ref()) {
             self.on_text_input_toggle(toggle);
         }
+        self.sync_ibus_focus_to(surface);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {

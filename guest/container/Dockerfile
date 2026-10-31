@@ -45,6 +45,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
       libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libpixman-1-0 libxkbcommon0 \
+      ibus ibus-gtk3 ibus-gtk4 \
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose

@@ -581,6 +581,8 @@ fn run(args: Args) -> Result<bool, String> {
     let vsync_interval = Duration::from_secs_f64(1.0 / args.displays[0].refresh_hz.max(1.0));
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
+    // The phone keyboard's state as the display announced it, in order.
+    let mut text_inputs: Vec<proto::TextInputState> = Vec::new();
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut games: BTreeMap<u64, GameStats> = BTreeMap::new();
     let mut gpus: BTreeMap<u64, GpuStats> = BTreeMap::new();
@@ -795,7 +797,10 @@ fn run(args: Args) -> Result<bool, String> {
                         }
                     }
                 }
-                Message::TextInput(_) => text_input_events += 1,
+                Message::TextInput(t) => {
+                    text_input_events += 1;
+                    text_inputs.push(t);
+                }
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
                     if target.is_none() && args.window.is_none_or(|w| w == g.window) {
@@ -989,7 +994,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
                     "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
@@ -1051,6 +1056,16 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.map(|c| format!("{:.1}", c / elapsed / 10.0)).unwrap_or("null".into()),
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
+            text_inputs
+                .iter()
+                .map(|t| format!(
+                    "{{\"window\":{},\"enabled\":{},\"purpose\":{}}}",
+                    t.id,
+                    t.enabled,
+                    t.purpose.as_ref().map(|p| format!("{p:?}")).unwrap_or("null".into())
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
             sound.packets,
             sound.bytes,

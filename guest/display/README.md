@@ -270,7 +270,14 @@ installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 sockets and with the phone's driver installed, it routes applications to the phone's GPU
 instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
 `CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `LIBGL_KOPPER_DRI2=1` and `GSK_RENDERER=vulkan`,
-without `GALLIUM_DRIVER` ([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It then runs `COMMAND` with that
+without `GALLIUM_DRIVER` ([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It also serves an input method,
+`IBUS_ADDRESS` and `IBUS_ADDRESS_FILE` (with `QT_IM_MODULE=ibus`): applications without
+text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS
+`Gtk/IMModule`; Qt; SDL) tell it when an editable field gains or loses focus, which shows
+and hides the phone's keyboard, and receive its commits and pre-edit text as IBus signals
+(`compositor/src/ibus.rs`, D-Bus wire format in `compositor/src/dbus.rs`). No IBus daemon
+runs; the image carries IBus's GTK modules and `ibus-daemon`, whose presence Qt requires.
+It then runs `COMMAND` with that
 environment and exits when it does. SIGTERM stops it cleanly and logs a per-stage CPU
 summary.
 
