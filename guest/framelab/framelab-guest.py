@@ -226,15 +226,17 @@ class Run:
                 return w
         return None
 
-    def stable_picture(self, window, seconds=20):
-        """The window's picture once it stops changing (two in a row, a second apart, the
-        same), or the last one after `seconds`: a page still loading is not the scene."""
-        previous, deadline = None, time.monotonic() + seconds
+    def stable_picture(self, window, seconds=30):
+        """The window's picture once it is drawn and stops changing (three in a row, a
+        second apart, the same), or the last one after `seconds`: a page still loading
+        is not the scene."""
+        previous, same, deadline = None, 0, time.monotonic() + seconds
         while True:
             self.control.ask('settle')
             time.sleep(0.25)
             png = self.control.ask(f'screenshot {window}')[1]
-            if png == previous:
+            same = same + 1 if png == previous else 0
+            if same >= 2 and framelab.drawn(png):
                 return png, True
             if time.monotonic() >= deadline:
                 return png, False

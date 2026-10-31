@@ -131,6 +131,12 @@ class StallTests(unittest.TestCase):
         self.assertEqual(fl.attribute_stall((S // 2, S), [], [], [(0, 0.0), (2 * S, 0.1)])['cause'], 'app_idle')
 
 
+class DrawnTests(unittest.TestCase):
+    def test_uniform_is_not_drawn(self):
+        self.assertFalse(fl.drawn(png(64, 64, lambda x, y: (30, 30, 30))))
+        self.assertTrue(fl.drawn(png(64, 64, lambda x, y: (x * 4, y * 4, 0))))
+
+
 class LatencyTests(unittest.TestCase):
     def test_input_to_frame_result_and_glass(self):
         got = fl.input_latency([1 * S, 2 * S], [1 * S + 30 * MS, 2 * S + 50 * MS],
@@ -138,6 +144,9 @@ class LatencyTests(unittest.TestCase):
         self.assertEqual(got['to_frame_ms'], {'n': 2, 'p50': 30.0, 'p95': 50.0, 'max': 50.0})
         self.assertEqual(got['to_phone_result_ms']['max'], 90.0)
         self.assertEqual(got['to_glass_ms'], {'n': 1, 'p50': 70.0, 'p95': 70.0, 'max': 70.0})
+        # An input answered only after OWED_MAX_MS is unanswered, not a latency.
+        late = fl.input_latency([1 * S], [4 * S])
+        self.assertEqual((late['unanswered'], late['to_frame_ms']), (1, None))
 
 
 class ScorecardTests(unittest.TestCase):
