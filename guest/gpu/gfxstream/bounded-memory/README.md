@@ -13,6 +13,8 @@ transfer and reply handling, so it can be tested without Mesa.
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
 | `deferred_replies.h` | Replies the caller does not wait for, drained in order; prefetched fence waits; guest-assigned handle checks |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
+| `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query |
+| `completion_feed.h` | The completion feed's wire format and the tracker of every fence and timeline semaphore the process follows |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
 ## Mapped memory
@@ -44,10 +46,23 @@ second encoder turns deferral off for the process. Before the WSI surface socket
 objects or work from the stream, `drainObjects` reads replies through the last pending
 create or submit and leaves later fence waits and plain results pending.
 
-A submit that signals a fence is followed by a bounded (250 ms) wait for that fence.
-When the wait's reply reports success, the fence is known signaled until it is reset,
-destroyed or imported; a generation counter discards prefetches that complete after
-such a change.
+Without the completion feed, a submit that signals a fence is followed by a bounded
+(250 ms) wait for that fence. When the wait's reply reports success, the fence is known
+signaled until it is reset, destroyed or imported; a generation counter discards
+prefetches that complete after such a change. `drainAvailable` reads only replies that
+have fully arrived, so a fence status query never waits for one.
+
+## Completion feed
+
+With the completion feed ([docs/gpu-live.md](../../../../docs/gpu-live.md#completion-feed)),
+the tracker in `completion_feed.h` follows each fence from creation (signaled or not)
+through resets and watched submissions to the feed record of its serial, and each
+timeline semaphore from its initial value through host signals and watched submissions.
+Status queries and waits are answered from it. A signal operation the guest cannot
+follow (an imported or exportable payload, a presentation-engine acquire, sparse binding,
+an unwatched queue) makes that object untracked until a reset, and it is asked about on
+the device stream. Device loss reaches every waiter; a closed feed hands waits back to
+the device.
 
 ## Tests
 
@@ -62,5 +77,9 @@ The tests cover 32 MiB transfers, failure without publication, overlapping range
 partial maps, allocation tails, atom limits, budget pressure from concurrent callers,
 command buffer staging, changed-block shadows, packet limits, deferred replies, fence
 prefetch generations, guest-assigned handle checks (single and arrays), deferred submit
-results, the object drain, the allocation budget and single-encoder ownership. They
-exercise the headers, not the generated encoder or a device.
+results, the object drain, non-blocking drains, the allocation budget, single-encoder
+ownership, the requirements cache keys and lookups, and the completion tracker's fences,
+timelines, stale serials, untracked objects, device loss and feed closure. They exercise
+the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
+Vulkan's headers on the include path (`test.sh` uses Mesa's, or
+`CABOOSE_VULKAN_INCLUDE`).

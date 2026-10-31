@@ -28,8 +28,9 @@ OWNED = {
     'virtual-wsi/mesa_surface.inc': 'src/gfxstream/guest/vulkan/caboose-wsi/mesa_surface.inc',
     'virtual-wsi/mesa_swapchain.inc': 'src/gfxstream/guest/vulkan/caboose-wsi/mesa_swapchain.inc',
     **{f'bounded-memory/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/{name}'
-       for name in ('async_allocation.h', 'cb_staging.h', 'deferred_replies.h', 'flush_packet.h',
-                    'flush_shadow.h', 'flush_timing.h', 'ranges.h', 'rpc_timing.h')},
+       for name in ('async_allocation.h', 'cb_staging.h', 'completion_feed.h', 'deferred_replies.h',
+                    'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
+                    'requirements_cache.h', 'rpc_timing.h')},
 }
 
 

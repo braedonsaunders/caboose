@@ -239,6 +239,8 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             if (value->vk.base.device!=&gfxstream_vk_device_from_handle(device)->vk || value->vk.temporary)
                 return VK_ERROR_INITIALIZATION_FAILED;
             boxedFence=get_host_u64_VkFence(value->internal_object);
+            // The presentation engine signals this fence: the guest asks the device about it.
+            caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(value->internal_object)));
         }
         if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t request=++surface.query;

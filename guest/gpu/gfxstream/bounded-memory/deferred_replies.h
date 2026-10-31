@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cinttypes>
@@ -157,58 +158,49 @@ public:
             }
         } observe{drainObserver, drainObserver ? std::chrono::steady_clock::now()
                                                : std::chrono::steady_clock::time_point{}};
-        for (const Reply& reply : replies) {
-            if (reply.handle) {
-                for (uint32_t i = 0; i < reply.count; ++i) {
-                    uint64_t created = 0;
-                    if (!stream->tryRead(&created, sizeof(created))) {
-                        stream->invalidate();
-                        return false;
-                    }
-                    if (created != reply.handle + i) {
-                        std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
-                                     reply.handle + i, created);
-                        stream->invalidate();
-                        return false;
-                    }
-                }
-                int32_t createResult = 0;
-                if (!stream->tryRead(&createResult, sizeof(createResult))) {
-                    stream->invalidate();
-                    return false;
-                }
-                if (createResult != 0) {
-                    // The guest already handed these handles out; a device that refused or
-                    // renamed them has diverged from the application's view: device loss.
-                    std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
-                                 reply.handle, reply.count, createResult);
-                    stream->invalidate();
-                    return false;
-                }
-                continue;
-            }
-            int32_t result = 0;
-            if (!stream->tryRead(&result, sizeof(result))) {
-                stream->invalidate();
-                return false;
-            }
-            if (!reply.fence) {
-                if (result != 0) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
-                if (result != 0 && reply.checked) {
-                    stream->invalidate();
-                    return false;
-                }
-                continue;
-            }
-            if (result != 0) continue;
-            std::lock_guard<std::mutex> lock(mutex_);
-            auto generation = generations_.find(reply.fence);
-            if (generation != generations_.end() && generation->second == reply.generation) {
-                signaled_.insert(reply.fence);
-                signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
-            }
-        }
+        for (const Reply& reply : replies)
+            if (!readReply(reply, stream)) return false;
         return true;
+    }
+
+    // Reads, without blocking, the leading replies whose bytes have fully arrived;
+    // `available()` returns the reply bytes the transport holds unread. Replies stay in
+    // order: the first one that has not fully arrived ends the drain.
+    template<class Stream, class Available>
+    bool drainAvailable(const void* encoder, Stream* stream, Available available) {
+        if (!total_.load(std::memory_order_relaxed)) return true;
+        size_t ready = available();
+        for (;;) {
+            Reply reply;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                auto found = pending_.find(encoder);
+                if (found == pending_.end()) return true;
+                auto& queued = found->second.replies;
+                const size_t size = wireSize(queued.front());
+                if (size > ready) return true;
+                ready -= size;
+                reply = queued.front();
+                queued.erase(queued.begin());
+                found->second.bytes -= std::min(found->second.bytes, reply.bytes);
+                if (queued.empty()) pending_.erase(found);
+                total_.fetch_sub(1, std::memory_order_relaxed);
+            }
+            if (!readReply(reply, stream)) return false;
+        }
+    }
+
+    // True when a prefetched wait for the fence's current generation is still in flight.
+    bool prefetchPending(const void* encoder, uint64_t fence) {
+        if (!fence || !total_.load(std::memory_order_relaxed)) return false;
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto found = pending_.find(encoder);
+        if (found == pending_.end()) return false;
+        auto generation = generations_.find(fence);
+        const uint64_t current = generation == generations_.end() ? 0 : generation->second;
+        for (const Reply& reply : found->second.replies)
+            if (reply.fence == fence && reply.generation == current) return true;
+        return false;
     }
 
     // True when the fences are known signaled: all of them, or any if !waitAll.
@@ -255,6 +247,63 @@ public:
     uint64_t pending() const { return total_.load(std::memory_order_relaxed); }
 
 private:
+    struct Reply;
+    static size_t wireSize(const Reply& reply) {
+        return reply.handle ? size_t(reply.count) * sizeof(uint64_t) + sizeof(int32_t) : sizeof(int32_t);
+    }
+    template<class Stream>
+    bool readReply(const Reply& reply, Stream* stream) {
+        if (reply.handle) {
+            for (uint32_t i = 0; i < reply.count; ++i) {
+                uint64_t created = 0;
+                if (!stream->tryRead(&created, sizeof(created))) {
+                    stream->invalidate();
+                    return false;
+                }
+                if (created != reply.handle + i) {
+                    std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
+                                 reply.handle + i, created);
+                    stream->invalidate();
+                    return false;
+                }
+            }
+            int32_t createResult = 0;
+            if (!stream->tryRead(&createResult, sizeof(createResult))) {
+                stream->invalidate();
+                return false;
+            }
+            if (createResult != 0) {
+                // The guest already handed these handles out; a device that refused or
+                // renamed them has diverged from the application's view: device loss.
+                std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
+                             reply.handle, reply.count, createResult);
+                stream->invalidate();
+                return false;
+            }
+            return true;
+        }
+        int32_t result = 0;
+        if (!stream->tryRead(&result, sizeof(result))) {
+            stream->invalidate();
+            return false;
+        }
+        if (!reply.fence) {
+            if (result != 0) std::fprintf(stderr, "CABOOSE_GPU_DEFERRED_REPLY result=%" PRId32 "\n", result);
+            if (result != 0 && reply.checked) {
+                stream->invalidate();
+                return false;
+            }
+            return true;
+        }
+        if (result != 0) return true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto generation = generations_.find(reply.fence);
+        if (generation != generations_.end() && generation->second == reply.generation) {
+            signaled_.insert(reply.fence);
+            signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
+        }
+        return true;
+    }
     struct Reply { uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; uint32_t count = 1; uint64_t bytes = 0; };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0; };
     std::mutex mutex_;

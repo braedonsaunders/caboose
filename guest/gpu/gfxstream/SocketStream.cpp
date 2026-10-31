@@ -3,11 +3,16 @@
 #include <cerrno>
 #include <cstdlib>
 #include <array>
+#include <atomic>
 #include <cstring>
+#include <cstdio>
 #include <exception>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <thread>
 #include <unistd.h>
+#include "caboose-bounded-memory/completion_feed.h"
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
 // echoes this after verifying its actual immutable features and source pins.
@@ -32,44 +37,51 @@ static constexpr unsigned char kHello[48] = {
 };
 
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-// The same hello with feature bit 0x80: this process assigns its own Vulkan handles.
-// The broker echoes it only when the connected phone registers guest-assigned handles,
-// and echoes the plain hello otherwise; a broker that predates the bit closes instead.
-static const auto kHelloGuestHandles = [] {
+// Optional features offered above the required mask, in the hello's 32-bit mask field:
+// 0x80 this process assigns its own handles for single-object creates and pipelines;
+// 0x100 also for descriptor sets and command buffers; 0x200 it runs a completion feed
+// (caboose-bounded-memory/completion_feed.h). The broker replies with the features both
+// the process and the connected phone support. A broker that predates a feature closes
+// the connection instead, so the offer falls back to fewer features.
+static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200;
+static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed, kGuestHandles};
+static std::array<unsigned char, sizeof(kHello)> helloWith(uint32_t features) {
     std::array<unsigned char, sizeof(kHello)> hello{};
     std::memcpy(hello.data(), kHello, sizeof(kHello));
-    hello[12] |= 0x80;
+    uint32_t mask;
+    std::memcpy(&mask, hello.data() + 12, sizeof(mask));
+    mask |= features;
+    std::memcpy(hello.data() + 12, &mask, sizeof(mask));
     return hello;
-}();
+}
 #endif
 // 1 when this process's device stream registers guest-assigned handles.
 extern "C" int caboose_gfxstream_guest_handles;
 int caboose_gfxstream_guest_handles = 0;
+// The descriptor of this process's only device stream; -1 before one connects and -2
+// once a second one exists, when no single descriptor carries every reply.
+extern "C" int caboose_gfxstream_device_fd;
+int caboose_gfxstream_device_fd = -1;
+// 1 when it also registers guest-assigned descriptor sets and command buffers.
+extern "C" int caboose_gfxstream_guest_handle_arrays;
+int caboose_gfxstream_guest_handle_arrays = 0;
 
-CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
-CabooseSocketStream::~CabooseSocketStream() {
-    // Do not flush during teardown: an interrupted session must not send stale work.
-    if (fd_ >= 0) close(fd_);
+namespace {
+// The reply is the required hello with a subset of the offered features; returns them.
+bool acceptedFeatures(const unsigned char* offer, const unsigned char* reply, bool optional,
+                      uint32_t* features) {
+    uint32_t required = 0, offered = 0, accepted = 0;
+    std::memcpy(&required, kHello + 12, sizeof(required));
+    std::memcpy(&offered, offer + 12, sizeof(offered));
+    std::memcpy(&accepted, reply + 12, sizeof(accepted));
+    const bool shape = !std::memcmp(reply, kHello, 12) &&
+                       !std::memcmp(reply + 16, kHello + 16, sizeof(kHello) - 16);
+    *features = accepted & ~required;
+    return shape && (accepted & required) == required && !(*features & ~offered) &&
+           (optional || !*features);
 }
-void CabooseSocketStream::invalidate() {
-    indexedReady_.store(false, std::memory_order_release);
-    if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
-}
-int CabooseSocketStream::connect(const char* path) {
-#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-    const char* optOut = std::getenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
-    if (!(optOut && std::strcmp(optOut, "0") == 0)) {
-        int result = connectWith(path, kHelloGuestHandles.data(), true);
-        if (result == 0 || errno != EPROTO) return result;
-    }
-#endif
-    return connectWith(path, kHello, false);
-}
-int CabooseSocketStream::connectWith(const char* path, const unsigned char* offer, bool guestHandles) {
-    const uint32_t nativeOne = 1;
-    if (*reinterpret_cast<const unsigned char*>(&nativeOne) != 1) { errno = ENOTSUP; return -1; }
-    if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
-    if (!path || !*path || fd_ >= 0) { errno = EINVAL; return -1; }
+
+int connectSocket(const char* path) {
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     if (std::strlen(path) >= sizeof(addr.sun_path)) { errno = ENAMETOOLONG; return -1; }
@@ -82,20 +94,127 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
         errno = error;
         return -1;
     }
+    return fd;
+}
+
+bool sendAll(int fd, const void* data, size_t size) {
+    auto p = static_cast<const unsigned char*>(data);
+    while (size) {
+        ssize_t n = send(fd, p, size, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        p += n; size -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool recvAll(int fd, void* data, size_t size) {
+    auto p = static_cast<unsigned char*>(data);
+    while (size) {
+        ssize_t n = recv(fd, p, size, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        p += n; size -= static_cast<size_t>(n);
+    }
+    return true;
+}
+
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+// Opens this process's completion feed stream once, with the hello the device stream
+// was granted, and reads its records until the stream ends.
+std::atomic<bool> feedStarted{false};
+void startCompletionFeed(const char* path, const unsigned char* offer) {
+    if (feedStarted.exchange(true)) return;
+    int fd = connectSocket(path);
+    unsigned char reply[sizeof(kHello)];
+    uint32_t features = 0;
+    uint8_t command[caboose::completion::kFeedPacketSize];
+    caboose::completion::encodeFeed(command);
+    const uint32_t clientFlags = 0;
+    if (fd < 0 || !sendAll(fd, offer, sizeof(kHello)) || !recvAll(fd, reply, sizeof(reply)) ||
+        !acceptedFeatures(offer, reply, true, &features) || !(features & kCompletionFeed) ||
+        !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
+        if (fd >= 0) close(fd);
+        std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
+        return;
+    }
+    // A child created by fork shares no feed with its parent.
+    static const bool atfork = [] {
+        pthread_atfork(nullptr, nullptr, [] { caboose::completion::feedActive.store(false); });
+        return true;
+    }();
+    (void)atfork;
+    caboose::completion::feedActive.store(true, std::memory_order_release);
+    std::thread([fd] {
+        unsigned char record[caboose::completion::kRecordSize];
+        while (recvAll(fd, record, sizeof(record))) {
+            uint64_t serial;
+            int32_t status;
+            std::memcpy(&serial, record, sizeof(serial));
+            std::memcpy(&status, record + 8, sizeof(status));
+            caboose::completion::tracker().complete(serial, status);
+        }
+        caboose::completion::feedActive.store(false, std::memory_order_release);
+        caboose::completion::tracker().feedClosed();
+        close(fd);
+    }).detach();
+}
+#endif
+}  // namespace
+
+CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
+CabooseSocketStream::~CabooseSocketStream() {
+    // Do not flush during teardown: an interrupted session must not send stale work.
+    if (fd_ >= 0 && caboose_gfxstream_device_fd == fd_) caboose_gfxstream_device_fd = -2;
+    if (fd_ >= 0) close(fd_);
+}
+void CabooseSocketStream::invalidate() {
+    indexedReady_.store(false, std::memory_order_release);
+    if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
+}
+int CabooseSocketStream::connect(const char* path) {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    const char* optOut = std::getenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
+    if (!(optOut && std::strcmp(optOut, "0") == 0)) {
+        for (uint32_t offer : kOffers) {
+            int result = connectWith(path, helloWith(offer).data(), true);
+            if (result == 0 || errno != EPROTO) return result;
+        }
+    }
+#endif
+    return connectWith(path, kHello, false);
+}
+int CabooseSocketStream::connectWith(const char* path, const unsigned char* offer, bool guestHandles) {
+    const uint32_t nativeOne = 1;
+    if (*reinterpret_cast<const unsigned char*>(&nativeOne) != 1) { errno = ENOTSUP; return -1; }
+    if (!path) path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
+    if (!path || !*path || fd_ >= 0) { errno = EINVAL; return -1; }
+    int fd = connectSocket(path);
+    if (fd < 0) return -1;
     fd_ = fd;
     unsigned char reply[sizeof(kHello)];
     const bool exchanged = writeFully(offer, sizeof(kHello)) == 0 && readFully(reply, sizeof(reply));
-    const bool assigned = exchanged && guestHandles && !std::memcmp(reply, offer, sizeof(kHello));
-    if (!exchanged || (!assigned && std::memcmp(reply, kHello, sizeof(kHello)))) {
+    uint32_t features = 0;
+    if (!exchanged || !acceptedFeatures(offer, reply, guestHandles, &features)) {
         invalidate();
         close(fd_);
         fd_ = -1;
         errno = EPROTO;
         return -1;
     }
-    caboose_gfxstream_guest_handles = assigned ? 1 : 0;
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    caboose_gfxstream_guest_handles = (features & kGuestHandles) ? 1 : 0;
+    caboose_gfxstream_guest_handle_arrays =
+        (features & kGuestHandles) && (features & kGuestHandleArrays) ? 1 : 0;
+#else
+    caboose_gfxstream_guest_handles = 0;
+#endif
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     indexedReady_.store(true, std::memory_order_release);
+#endif
+    caboose_gfxstream_device_fd = caboose_gfxstream_device_fd == -1 ? fd_ : -2;
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    if (features & kCompletionFeed) startCompletionFeed(path, reply);
 #endif
     return 0;
 }

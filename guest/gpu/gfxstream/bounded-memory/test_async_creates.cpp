@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Deferred replies of guest-assigned creates, deferred submits and the async allocation budget.
-#include "async_allocation.h"
 #include "deferred_replies.h"
+#include "async_allocation.h"
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -118,6 +118,28 @@ int main() {
         assert(table.drainObjects(&encoder, &s) && s.next == objectsEnd);
         assert(table.drain(&encoder, &s) && s.next == s.bytes.size() && !table.pending());
         assert(table.signaled(std::array<uint64_t, 1>{0x77}.data(), 1, true));
+    }
+
+    // A non-blocking drain reads only replies whose bytes have fully arrived, in order.
+    {
+        DeferredReplies table;
+        Stream s;
+        s.push<uint64_t>(0xCA00000100000060ull); s.push<int32_t>(0); // create: 12 bytes
+        s.push<int32_t>(0);                                         // prefetched wait on 0x88
+        table.addHandleCreate(&encoder, 0xCA00000100000060ull, 40);
+        table.addFenceWait(&encoder, 0x88, 50);
+        assert(table.prefetchPending(&encoder, 0x88) && !table.prefetchPending(&encoder, 0x89));
+        assert(table.drainAvailable(&encoder, &s, [] { return size_t(11); }) && s.next == 0);
+        assert(table.drainAvailable(&encoder, &s, [] { return size_t(15); }) && s.next == 12);
+        assert(table.pending() == 1 && table.prefetchPending(&encoder, 0x88));
+        assert(!table.signaled(std::array<uint64_t, 1>{0x88}.data(), 1, true));
+        assert(table.drainAvailable(&encoder, &s, [] { return size_t(4); }) && s.next == 16);
+        assert(!table.pending() && !table.prefetchPending(&encoder, 0x88));
+        assert(table.signaled(std::array<uint64_t, 1>{0x88}.data(), 1, true));
+        // A reset fence's in-flight prefetch no longer counts.
+        table.addFenceWait(&encoder, 0x88, 50);
+        table.forgetFence(0x88);
+        assert(!table.prefetchPending(&encoder, 0x88));
     }
 
     // Allocations skip the round trip only while their heap stays at most half used.

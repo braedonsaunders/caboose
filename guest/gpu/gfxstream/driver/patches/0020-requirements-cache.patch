@@ -1,0 +1,193 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 20/21] Answer memory requirements from earlier identical
+ objects
+
+Image and buffer memory requirements, including the dedicated-allocation
+answer, are cached by the exact creation parameters on each device
+(caboose-bounded-memory/requirements_cache.h), so an object made like an
+earlier one learns them without a round trip. Objects with external memory,
+DRM modifiers, swapchain or unknown extension structures are not cached.
+---
+ .../guest/vulkan_enc/ResourceTracker.cpp      | 87 ++++++++++++++++++-
+ .../guest/vulkan_enc/ResourceTracker.h        |  2 +
+ 2 files changed, 85 insertions(+), 4 deletions(-)
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index e547d91..7867c9a 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2785,6 +2785,7 @@ void ResourceTracker::on_vkDestroyDevice_pre(void* context, VkDevice device,
+     auto it = info_VkDevice.find(device);
+     if (it == info_VkDevice.end()) return;
+     caboose::memory::asyncAllocationBudget.deviceDestroyed(uint64_t(uintptr_t(device)));
++    caboose::memory::requirementsCache.deviceDestroyed(uint64_t(uintptr_t(device)));
+ 
+     for (auto itr = info_VkDeviceMemory.cbegin(); itr != info_VkDeviceMemory.cend();) {
+         auto& memInfo = itr->second;
+@@ -5186,6 +5187,11 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
+     }
+ 
+     if (res != VK_SUCCESS) return res;
++    {
++        std::string key;
++        if (caboose::memory::RequirementsCache::imageKey(uint64_t(uintptr_t(device)), &localCreateInfo, &key))
++            caboose::memory::requirementsCache.created(uint64_t(uintptr_t(*pImage)), std::move(key));
++    }
+ 
+     std::lock_guard<std::recursive_mutex> lock(mLock);
+ 
+@@ -6077,6 +6083,7 @@ void ResourceTracker::on_vkUpdateDescriptorSets(void* context, VkDevice device,
+ 
+ void ResourceTracker::on_vkDestroyImage(void* context, VkDevice device, VkImage image,
+                                         const VkAllocationCallbacks* pAllocator) {
++    caboose::memory::requirementsCache.destroyed(uint64_t(uintptr_t(image)));
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+     {
+         std::lock_guard<std::recursive_mutex> lock(mLock);  // do not guard encoder may cause
+@@ -6110,6 +6117,46 @@ void ResourceTracker::on_vkDestroyImage(void* context, VkDevice device, VkImage
+     enc->vkDestroyImage(device, image, pAllocator, true /* do lock */);
+ }
+ 
++// Answers a memory requirements query from caboose::memory::requirementsCache when an
++// object with the same creation parameters was queried before, otherwise asks the device
++// once and remembers the answer. `query` performs the device call.
++template <class Query>
++static void cabooseCachedRequirements(uint64_t object, const void* infoNext,
++                                      VkMemoryRequirements2* out, Query query) {
++    VkMemoryDedicatedRequirements* dedicated = nullptr;
++    bool cacheable = !infoNext;
++    for (auto* next = static_cast<VkBaseOutStructure*>(out->pNext); next; next = next->pNext) {
++        if (next->sType == VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS)
++            dedicated = reinterpret_cast<VkMemoryDedicatedRequirements*>(next);
++        else
++            cacheable = false;
++    }
++    caboose::memory::RequirementsCache::Value value;
++    if (cacheable && caboose::memory::requirementsCache.lookup(object, &value)) {
++        out->memoryRequirements = value.requirements;
++        if (dedicated) {
++            dedicated->prefersDedicatedAllocation = value.prefersDedicated;
++            dedicated->requiresDedicatedAllocation = value.requiresDedicated;
++        }
++        return;
++    }
++    // Ask for the dedicated requirements too, so any later query can be answered.
++    VkMemoryDedicatedRequirements own{};
++    own.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
++    if (cacheable && !dedicated) {
++        own.pNext = out->pNext;
++        out->pNext = &own;
++    }
++    query();
++    if (!cacheable) return;
++    const VkMemoryDedicatedRequirements& answered = dedicated ? *dedicated : own;
++    if (!dedicated) out->pNext = own.pNext;
++    value.requirements = out->memoryRequirements;
++    value.prefersDedicated = answered.prefersDedicatedAllocation;
++    value.requiresDedicated = answered.requiresDedicatedAllocation;
++    caboose::memory::requirementsCache.store(object, value);
++}
++
+ void ResourceTracker::on_vkGetImageMemoryRequirements(void* context, VkDevice device, VkImage image,
+                                                       VkMemoryRequirements* pMemoryRequirements) {
+     std::unique_lock<std::recursive_mutex> lock(mLock);
+@@ -6128,7 +6175,18 @@ void ResourceTracker::on_vkGetImageMemoryRequirements(void* context, VkDevice de
+ 
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+-    enc->vkGetImageMemoryRequirements(device, image, pMemoryRequirements, true /* do lock */);
++    caboose::memory::RequirementsCache::Value cached;
++    if (caboose::memory::requirementsCache.lookup(uint64_t(uintptr_t(image)), &cached)) {
++        *pMemoryRequirements = cached.requirements;
++    } else {
++        VkImageMemoryRequirementsInfo2 queryInfo{VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, nullptr, image};
++        VkMemoryRequirements2 queried{};
++        queried.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
++        cabooseCachedRequirements(uint64_t(uintptr_t(image)), nullptr, &queried, [&] {
++            enc->vkGetImageMemoryRequirements2(device, &queryInfo, &queried, true /* do lock */);
++        });
++        *pMemoryRequirements = queried.memoryRequirements;
++    }
+ 
+     lock.lock();
+ 
+@@ -6142,7 +6200,9 @@ void ResourceTracker::on_vkGetImageMemoryRequirements2(void* context, VkDevice d
+                                                        const VkImageMemoryRequirementsInfo2* pInfo,
+                                                        VkMemoryRequirements2* pMemoryRequirements) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    enc->vkGetImageMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
++    cabooseCachedRequirements(uint64_t(uintptr_t(pInfo->image)), pInfo->pNext, pMemoryRequirements, [&] {
++        enc->vkGetImageMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
++    });
+     transformImageMemoryRequirements2ForGuest(pInfo->image, pMemoryRequirements);
+ }
+ 
+@@ -6302,6 +6362,11 @@ VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice de
+     }
+ 
+     if (res != VK_SUCCESS) return res;
++    {
++        std::string key;
++        if (caboose::memory::RequirementsCache::bufferKey(uint64_t(uintptr_t(device)), &localCreateInfo, &key))
++            caboose::memory::requirementsCache.created(uint64_t(uintptr_t(*pBuffer)), std::move(key));
++    }
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     if (mCaps.vulkanCapset.colorBufferMemoryIndex == 0xFFFFFFFF) {
+@@ -6346,6 +6411,7 @@ VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice de
+ 
+ void ResourceTracker::on_vkDestroyBuffer(void* context, VkDevice device, VkBuffer buffer,
+                                          const VkAllocationCallbacks* pAllocator) {
++    caboose::memory::requirementsCache.destroyed(uint64_t(uintptr_t(buffer)));
+     VkEncoder* enc = (VkEncoder*)context;
+     enc->vkDestroyBuffer(device, buffer, pAllocator, true /* do lock */);
+ }
+@@ -6368,7 +6434,18 @@ void ResourceTracker::on_vkGetBufferMemoryRequirements(void* context, VkDevice d
+     lock.unlock();
+ 
+     VkEncoder* enc = (VkEncoder*)context;
+-    enc->vkGetBufferMemoryRequirements(device, buffer, pMemoryRequirements, true /* do lock */);
++    caboose::memory::RequirementsCache::Value cached;
++    if (caboose::memory::requirementsCache.lookup(uint64_t(uintptr_t(buffer)), &cached)) {
++        *pMemoryRequirements = cached.requirements;
++    } else {
++        VkBufferMemoryRequirementsInfo2 queryInfo{VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, nullptr, buffer};
++        VkMemoryRequirements2 queried{};
++        queried.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
++        cabooseCachedRequirements(uint64_t(uintptr_t(buffer)), nullptr, &queried, [&] {
++            enc->vkGetBufferMemoryRequirements2(device, &queryInfo, &queried, true /* do lock */);
++        });
++        *pMemoryRequirements = queried.memoryRequirements;
++    }
+ 
+     lock.lock();
+ 
+@@ -6380,7 +6457,9 @@ void ResourceTracker::on_vkGetBufferMemoryRequirements2(
+     void* context, VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo,
+     VkMemoryRequirements2* pMemoryRequirements) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    enc->vkGetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
++    cabooseCachedRequirements(uint64_t(uintptr_t(pInfo->buffer)), pInfo->pNext, pMemoryRequirements, [&] {
++        enc->vkGetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
++    });
+     transformBufferMemoryRequirements2ForGuest(pInfo->buffer, pMemoryRequirements);
+ }
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+index 9a94557..4276e11 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -4,6 +4,8 @@
+ #include "caboose-bounded-memory/rpc_timing.h"
+ #include "caboose-bounded-memory/flush_shadow.h"
+ #include "caboose-bounded-memory/async_allocation.h"
++#include "caboose-bounded-memory/requirements_cache.h"
++#include "caboose-bounded-memory/completion_feed.h"
+ /*
+  * Copyright 2018 Google
+  * SPDX-License-Identifier: MIT
+-- 
+2.52.0
+
