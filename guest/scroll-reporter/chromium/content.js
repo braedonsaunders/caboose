@@ -230,7 +230,7 @@
     }
     const primary = scrollers[0].id === 0 ? null : el
     if (shifted(primary, clips[0], primary ? primary.scrollTop : scrollY, dpr)) epoch++
-    const tag = C.tagRect(bind, dpr)
+    const tag = C.tagRect(bind, dpr, innerHeight)
     if (tag) scrollers[0].fixed.push(tag.device)
     const report = {
       type: 'report',

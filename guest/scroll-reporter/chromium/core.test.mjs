@@ -13,13 +13,15 @@ test('tag blocks match the golden vector', () => {
   }
 })
 
-test('the tag goes at the first overscan line, a whole number of CSS pixels per block', () => {
-  const bind = { active: true, overscan: [0, 600], tag_top: 2196, block: 12 }
-  assert.deepEqual(C.tagRect(bind, 1), { css: [0, 2196, 384, 12], device: [0, 2196, 384, 12] })
-  // At 2.625 a block is 5 CSS pixels, 13.125 device pixels: never smaller than asked.
-  assert.deepEqual(C.tagRect(bind, 2.625).css, [0, 837, 160, 5])
-  assert.equal(C.tagRect({ ...bind, overscan: [0, 8] }, 1), null)
-  assert.equal(C.tagRect({ ...bind, active: false }, 1), null)
+test('the tag goes at the line the bind names, a whole number of CSS pixels per block', () => {
+  const bind = { active: true, overscan: [0, 600], tag_top: 2204, block: 32 }
+  assert.deepEqual(C.tagRect(bind, 1, 2976), { css: [0, 2204, 1024, 32], device: [0, 2204, 1024, 32] })
+  // At 2.625 a block is 13 CSS pixels, 34.125 device pixels: never smaller than asked.
+  assert.deepEqual(C.tagRect(bind, 2.625, 1134).css, [0, 840, 416, 13])
+  // No room below the line, or no overscan at all.
+  assert.equal(C.tagRect(bind, 1, 2220), null)
+  assert.equal(C.tagRect({ ...bind, overscan: [0, 0] }, 1, 2976), null)
+  assert.equal(C.tagRect({ ...bind, active: false }, 1, 2976), null)
 })
 
 test('a sticky element counts as fixed only while stuck', () => {

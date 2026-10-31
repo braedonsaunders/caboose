@@ -6,8 +6,23 @@
 
 /// Blocks in a tag.
 pub const BLOCKS: usize = 32;
-/// The smallest block side, in display pixels.
-pub const MIN_BLOCK: i32 = 12;
+/// The smallest and largest block side, in display pixels.
+pub const MIN_BLOCK: i32 = 16;
+pub const MAX_BLOCK: i32 = 32;
+/// The tag starts on a line of this grid, window-local: the video coder's macroblocks, so a
+/// block's centre is never blended with its neighbours.
+pub const GRID: i32 = 16;
+
+/// The block side for a window `width` display pixels wide: the largest multiple of 8 up to
+/// `MAX_BLOCK` whose 32 blocks fit, never under `MIN_BLOCK`.
+pub fn block_for_width(width: i32) -> i32 {
+    (width / BLOCKS as i32 / 8 * 8).clamp(MIN_BLOCK, MAX_BLOCK)
+}
+
+/// The first tag line at or after the window's first overscan line `shown`.
+pub fn first_line(shown: i32) -> i32 {
+    (shown + GRID - 1).div_euclid(GRID) * GRID
+}
 
 const SYNC: [bool; 4] = [true, false, true, false];
 
@@ -86,6 +101,16 @@ mod tests {
         assert_eq!(decode(&l), None);
         assert_eq!(decode(&[255.0; BLOCKS]), None);
         assert_eq!(decode(&[0.0; BLOCKS]), None);
+    }
+
+    #[test]
+    fn sizes_and_places_blocks_on_the_coding_grid() {
+        assert_eq!(block_for_width(1179), 32);
+        assert_eq!(block_for_width(900), 24);
+        assert_eq!(block_for_width(300), 16);
+        assert_eq!(first_line(2556), 2560);
+        assert_eq!(first_line(2560), 2560);
+        assert_eq!(first_line(1716), 1728);
     }
 
     #[test]

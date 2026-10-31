@@ -252,7 +252,7 @@ private:
         if (m_bind.bound && m_bind.active && (m_reporting == w || !m_reporting)) {
             side = std::ceil(m_bind.block / dpr - 1e-6);
             top = std::round(m_bind.tagTop / dpr);
-            tagged = side > 0 && m_bind.overscanH >= side * dpr && top >= 0 && top + side <= size.height();
+            tagged = side > 0 && m_bind.overscanH > 0 && top >= 0 && top + side <= size.height();
         }
         const double extent = found[0].item->property("contentHeight").toDouble();
         // Content that grows or shrinks around the offset moves in document coordinates.

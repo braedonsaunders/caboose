@@ -374,7 +374,7 @@ static void on_layout(GdkFrameClock *clock, gpointer data) {
     if (bind_state.bound && bind_state.active && reporting == w) {
         side = ceil(bind_state.block / scale - 1e-6);
         top = round(bind_state.tag_top / scale);
-        tagged = side > 0 && bind_state.overscan_h >= side * scale && top >= 0 && top + side <= height;
+        tagged = side > 0 && bind_state.overscan_h > 0 && top >= 0 && top + side <= height;
     }
     char report[8192];
     size_t len = 0;
