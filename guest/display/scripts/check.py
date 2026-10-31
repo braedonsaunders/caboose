@@ -232,7 +232,7 @@ def check_chromium_scroll_reports():
 def scroll_report_check(proc, token):
     """The probe drives a reporting window with scroll.target and checks every tagged
     picture's report against the ruler the window draws (probe/src/scroll.rs)."""
-    time.sleep(4)
+    time.sleep(8)  # a browser starts slowly on a loaded computer; its page reports once loaded
     r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", "900x800@60x1",
                "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler"], json_out=False)
     line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)

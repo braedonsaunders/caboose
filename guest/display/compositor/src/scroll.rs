@@ -269,6 +269,8 @@ struct Peer {
     window: Option<u64>,
     bind: Option<Bind>,
     report: Option<Report>,
+    /// A report that matched no window was logged.
+    unmatched_logged: bool,
 }
 
 #[derive(Default)]
@@ -387,6 +389,7 @@ impl State {
                 window: None,
                 bind: None,
                 report: None,
+                unmatched_logged: false,
             },
         );
         let inserted =
@@ -489,6 +492,18 @@ impl State {
             _ => None,
         };
         let peer = self.scroll.peers.get_mut(&conn).unwrap();
+        if window.is_none() && !peer.unmatched_logged {
+            peer.unmatched_logged = true;
+            let owners: Vec<(u64, Option<u32>, &str)> =
+                candidates.iter().map(|(id, lineage, title, _)| (*id, lineage.first().copied(), title.as_str())).collect();
+            tracing::info!(
+                "scroll reporter {}: report for {:?} matches no window (its lineage {:?}; toplevels by owner {:?})",
+                peer.reporter,
+                report.title,
+                peer.lineage,
+                owners
+            );
+        }
         if peer.window != window || peer.bind != bind {
             if peer.window != window {
                 tracing::info!(
