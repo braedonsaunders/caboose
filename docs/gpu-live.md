@@ -519,7 +519,7 @@ application is configured individually; each toolkit's own GPU path reaches the 
 
 | Applications | Path to the phone's GPU |
 | --- | --- |
-| Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the loader orders GPUs before CPU renderers such as lavapipe. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
+| Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the routing layer (`guest/gpu/routing-layer`, enabled by `CABOOSE_GPU_ROUTING=1` in place of Mesa's device-select layer) lists the phone's GPU first and CPU renderers such as lavapipe last. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
 | OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | OpenGL through Xwayland, so Zink. |
@@ -535,11 +535,16 @@ environment, the executor-switch layer (`install-live.py --executor-switch`) mak
 lavapipe device lose itself once a phone's executor is ready, and an application that
 recreates lost devices, as Chromium does, moves to the phone.
 
+When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
+`restart` reports device loss, `pause` holds the application until the phone returns.
+The launch environment sets `auto`, which the routing layer resolves per process:
+`restart` for Chromium-family GPU processes (Chromium, Electron), which restart, and for
+Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
+recover from device loss (Zink, GTK 4, Vulkan applications and games).
+
 Some applications draw on the computer even with a phone attached: OpenGL clients on
 Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and
-Proton games, because the driver's surfaces are Wayland and XCB, not Xlib. An
-application rendering on the phone's GPU loses its Vulkan device when the phone
-detaches.
+Proton games, because the driver's surfaces are Wayland and XCB, not Xlib.
 
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`

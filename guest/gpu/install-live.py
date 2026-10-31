@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Stage the supervised broker, and with --driver the phone's Vulkan driver (with
---executor-switch its implicit layer); starts nothing.
+--executor-switch and --routing-layer its implicit layers); starts nothing.
 
 The driver goes to /usr/local/lib/caboose-gpu-live with its loader manifest, icd.json,
 which no loader finds by itself: caboose-display names it to the applications of the
@@ -101,30 +101,42 @@ def install_driver(library: Path, destination: Path, machine: str = os.uname().m
     write_atomically(override, with_filesystem(current, SOCKET_FILESYSTEM).encode(), 0o644)
 
 
-SWITCH_LAYER = "libVkLayer_caboose_executor_switch.so"
-SWITCH_MANIFEST = Path("usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json")
+# The implicit layers the seat's launch environment enables, by name: their library, their
+# manifest's file name, what they do and their switches.
+LAYERS = {
+    "executor-switch": ("VK_LAYER_CABOOSE_executor_switch", "libVkLayer_caboose_executor_switch.so",
+                        "caboose_executor_switch.json",
+                        "Loses CPU-implementation devices once a phone GPU executor is available",
+                        "CABOOSE_GPU_EXECUTOR_SWITCH"),
+    "routing": ("VK_LAYER_CABOOSE_gpu_routing", "libVkLayer_caboose_gpu_routing.so", "caboose_gpu_routing.json",
+                "Lists the phone's GPU first and settles the process's device-loss policy",
+                "CABOOSE_GPU_ROUTING"),
+}
+LAYER_MANIFESTS = Path("usr/local/share/vulkan/implicit_layer.d")
 
 
-def switch_manifest(library: Path) -> bytes:
-    """The implicit layer that moves CPU devices back to the phone (guest/gpu/executor-switch)."""
+def layer_manifest(layer: str, library: Path) -> bytes:
+    name, _, _, description, switch = LAYERS[layer]
     return (json.dumps({"file_format_version": "1.2.0", "layer": {
-        "name": "VK_LAYER_CABOOSE_executor_switch",
+        "name": name,
         "type": "GLOBAL",
         "library_path": str(library),
         "api_version": "1.3.275",
         "implementation_version": "1",
-        "description": "Loses CPU-implementation devices once a phone GPU executor is available",
-        "enable_environment": {"CABOOSE_GPU_EXECUTOR_SWITCH": "1"},
-        "disable_environment": {"CABOOSE_GPU_EXECUTOR_SWITCH_DISABLE": "1"},
+        "description": description,
+        "enable_environment": {switch: "1"},
+        "disable_environment": {switch + "_DISABLE": "1"},
     }}, indent=4) + "\n").encode()
 
 
-def install_switch_layer(library: Path, destination: Path, machine: str = os.uname().machine):
+def install_layer(layer: str, library: Path, destination: Path, machine: str = os.uname().machine):
+    """Installs a built layer for the computer and for Flatpak applications."""
+    _, file_name, manifest_name, _, _ = LAYERS[layer]
     data = library.read_bytes()
     if data[:4] != b"\x7fELF":
         raise ValueError(f"{library} is not a shared library")
     directory = destination / DRIVER_DIR
-    manifests = destination / SWITCH_MANIFEST.parent
+    manifests = destination / LAYER_MANIFESTS
     extension, sandbox = flatpak_extension(machine)
     extension = destination / extension
     for d in (directory, manifests, extension):
@@ -132,13 +144,13 @@ def install_switch_layer(library: Path, destination: Path, machine: str = os.una
             raise ValueError("layer install directories must not be symlinks")
     directory.mkdir(mode=0o755, parents=True, exist_ok=True)
     manifests.mkdir(mode=0o755, parents=True, exist_ok=True)
-    write_atomically(directory / SWITCH_LAYER, data, 0o644)
-    write_atomically(destination / SWITCH_MANIFEST, switch_manifest(Path("/") / DRIVER_DIR / SWITCH_LAYER), 0o644)
+    write_atomically(directory / file_name, data, 0o644)
+    write_atomically(manifests / manifest_name, layer_manifest(layer, Path("/") / DRIVER_DIR / file_name), 0o644)
     (extension / "lib").mkdir(mode=0o755, parents=True, exist_ok=True)
     (extension / "vulkan/implicit_layer.d").mkdir(mode=0o755, parents=True, exist_ok=True)
-    write_atomically(extension / "lib" / SWITCH_LAYER, data, 0o644)
-    write_atomically(extension / "vulkan/implicit_layer.d" / SWITCH_MANIFEST.name,
-                     switch_manifest(sandbox / "lib" / SWITCH_LAYER), 0o644)
+    write_atomically(extension / "lib" / file_name, data, 0o644)
+    write_atomically(extension / "vulkan/implicit_layer.d" / manifest_name,
+                     layer_manifest(layer, sandbox / "lib" / file_name), 0o644)
 
 
 def install(source: Path, destination: Path):
@@ -166,9 +178,13 @@ if __name__ == "__main__":
     parser.add_argument("--driver", type=Path, help="a built libvulkan_gfxstream.so to install")
     parser.add_argument("--executor-switch", type=Path,
                         help="a built libVkLayer_caboose_executor_switch.so to install as an implicit layer")
+    parser.add_argument("--routing-layer", type=Path,
+                        help="a built libVkLayer_caboose_gpu_routing.so to install as an implicit layer")
     args = parser.parse_args()
     install(args.source_root, args.destdir)
     if args.driver:
         install_driver(args.driver, args.destdir)
     if args.executor_switch:
-        install_switch_layer(args.executor_switch, args.destdir)
+        install_layer("executor-switch", args.executor_switch, args.destdir)
+    if args.routing_layer:
+        install_layer("routing", args.routing_layer, args.destdir)

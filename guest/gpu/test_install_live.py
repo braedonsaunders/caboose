@@ -97,7 +97,7 @@ class InstalledDriverTests(unittest.TestCase):
             base = Path(temporary)
             layer = base / "libVkLayer_caboose_executor_switch.so"
             layer.write_bytes(b"\x7fELF" + bytes(60))
-            installer.install_switch_layer(layer, base / "root", machine="aarch64")
+            installer.install_layer("executor-switch", layer, base / "root", machine="aarch64")
             sandboxed = json.loads((base / "root/var/lib/flatpak/extension/org.freedesktop.Platform.GL.host/aarch64/1.4"
                                     "/vulkan/implicit_layer.d/caboose_executor_switch.json").read_text())
             self.assertEqual(sandboxed["layer"]["library_path"],
@@ -107,6 +107,17 @@ class InstalledDriverTests(unittest.TestCase):
             manifest = json.loads((base / "root/usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json").read_text())
             self.assertEqual(manifest["layer"]["library_path"], "/" + str(installed.relative_to(base / "root")))
             self.assertEqual(manifest["layer"]["enable_environment"], {"CABOOSE_GPU_EXECUTOR_SWITCH": "1"})
+
+    def test_routing_layer_is_implicit_and_opt_in(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-layer-") as temporary:
+            base = Path(temporary)
+            layer = base / "libVkLayer_caboose_gpu_routing.so"
+            layer.write_bytes(b"\x7fELF" + bytes(60))
+            installer.install_layer("routing", layer, base / "root", machine="x86_64")
+            manifest = json.loads((base / "root/usr/local/share/vulkan/implicit_layer.d/caboose_gpu_routing.json").read_text())
+            self.assertEqual(manifest["layer"]["name"], "VK_LAYER_CABOOSE_gpu_routing")
+            self.assertEqual(manifest["layer"]["library_path"], "/usr/local/lib/caboose-gpu-live/libVkLayer_caboose_gpu_routing.so")
+            self.assertEqual(manifest["layer"]["enable_environment"], {"CABOOSE_GPU_ROUTING": "1"})
 
     def test_refuses_what_is_not_a_library(self):
         with tempfile.TemporaryDirectory(prefix="caboose-gpu-driver-") as temporary:

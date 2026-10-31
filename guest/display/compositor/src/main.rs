@@ -214,6 +214,13 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     // The executor-switch layer (guest/gpu/executor-switch): devices made on the computer's
     // CPU while no phone was attached are lost once one is, so applications move to it.
     env.push(("CABOOSE_GPU_EXECUTOR_SWITCH".into(), "1".into()));
+    // The routing layer (guest/gpu/routing-layer) lists the phone's GPU first, in place of
+    // Mesa's device-select layer, which orders by the computer's own GPUs, and settles
+    // each process's device-loss policy: whether the driver reports the phone's departure
+    // as device loss (applications that recover from it) or pauses the application.
+    env.push(("CABOOSE_GPU_ROUTING".into(), "1".into()));
+    env.push(("NODEVICE_SELECT".into(), "1".into()));
+    env.push(("CABOOSE_GPU_ON_LOSS".into(), "auto".into()));
     env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
 }
 
@@ -733,6 +740,9 @@ mod tests {
         assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
+        assert_eq!(get(&env, "CABOOSE_GPU_ROUTING"), Some("1"));
+        assert_eq!(get(&env, "NODEVICE_SELECT"), Some("1"));
+        assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), None);
