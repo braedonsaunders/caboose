@@ -42,6 +42,7 @@ public final class LocalScrollController {
     public init?() {
         guard let renderer = LocalScrollRenderer.shared else { return nil }
         self.renderer = renderer
+        if LocalScrollProfile.enabled { model.note = { LocalScrollProfile.note($0) } }
     }
 
     public var isActive: Bool { model.isActive }
@@ -213,7 +214,9 @@ public final class LocalScrollController {
                 if let signature, chain.generation == generation {
                     if let reported {
                         observation = reported
-                    } else if let previous = chain.previous, previous.signature.lines == signature.lines, previous.signature.bands == signature.bands {
+                    } else if let previous = chain.previous, previous.signature.lines != signature.lines || previous.signature.bands != signature.bands {
+                        LocalScrollProfile.note("picture \(id) is \(signature.span)x\(signature.lines), the previous \(previous.signature.span)x\(previous.signature.lines): unrelated")
+                    } else if let previous = chain.previous {
                         switch estimator.measure(from: previous.signature, to: signature, expected: hint.range,
                                                  center: hint.center, anchor: anchor) {
                         case .moved(let motion):
@@ -226,6 +229,7 @@ public final class LocalScrollController {
                         case .still:
                             observation = .still(reference: previous.id)
                         case .unexplained:
+                            LocalScrollProfile.note("picture \(id) unexplained against \(previous.id) over shifts \(hint.range)")
                             observation = .unrelated
                         }
                     }
