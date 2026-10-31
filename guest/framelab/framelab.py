@@ -191,8 +191,8 @@ def cpu_between(cpu, start, end, slack=1_000_000_000):
 
 
 def input_latency(inputs, frames, results=(), glass=()):
-    """For each input time, the first frame after it, the first phone result after that
-    frame and the first displayed (glass) time after that, in milliseconds."""
+    """For each input time, the first frame after it, and after that frame the first
+    phone result and the first displayed (glass) time, in milliseconds."""
     frames, results, glass = sorted(frames), sorted(results), sorted(glass)
 
     def first_after(values, t):
@@ -202,7 +202,8 @@ def input_latency(inputs, frames, results=(), glass=()):
     for t in sorted(inputs):
         frame = first_after(frames, t)
         result = first_after(results, frame) if frame is not None else None
-        shown = first_after(glass, result if result is not None else frame) if frame is not None else None
+        # The picture reaches the glass before its result reaches the computer.
+        shown = first_after(glass, frame) if frame is not None else None
         rows.append((frame, result, shown, t))
 
     def summary(index):
