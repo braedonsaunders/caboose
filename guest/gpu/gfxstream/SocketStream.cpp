@@ -47,8 +47,9 @@ static constexpr unsigned char kHello[48] = {
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
-                          kOrderedPresent = 0x400;
-static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent,
+                          kOrderedPresent = 0x400, kGuestImages = 0x800;
+static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages,
+                                   kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent,
                                    kGuestHandles};
 static std::array<unsigned char, sizeof(kHello)> helloWith(uint32_t features) {
     std::array<unsigned char, sizeof(kHello)> hello{};
@@ -73,6 +74,10 @@ int caboose_gfxstream_guest_handle_arrays = 0;
 // 1 when presents are ordered behind device-stream ORDER marks (SWAPCHAIN_PRESENT_ORDERED).
 extern "C" int caboose_gfxstream_ordered_present;
 int caboose_gfxstream_ordered_present = 0;
+// 1 when swapchain images are the guest's own: acquisition is local and the phone takes
+// a native image inside each present (hello feature 0x800).
+extern "C" int caboose_gfxstream_guest_images;
+int caboose_gfxstream_guest_images = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -240,6 +245,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_guest_handle_arrays =
         (features & kGuestHandles) && (features & kGuestHandleArrays) ? 1 : 0;
     caboose_gfxstream_ordered_present = (features & kOrderedPresent) ? 1 : 0;
+    caboose_gfxstream_guest_images = (features & kGuestImages) ? 1 : 0;
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Caboose <caboose@invalid>
 Date: Sat, 31 Oct 2026 00:00:00 +0000
-Subject: [PATCH 25/25] Connect a new instance again after the executor left
+Subject: [PATCH 25/26] Connect a new instance again after the executor left
 
 When the process's phone executor leaves, its connection ends and every device
 is lost (caboose-bounded-memory/completion_feed.h). A later vkCreateInstance in

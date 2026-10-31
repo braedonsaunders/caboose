@@ -333,6 +333,19 @@ inline Tracker& tracker() {
 // streams ended). Never cleared: every device is lost and the application recreates
 // its instance, which then finds whichever executor exists.
 inline std::atomic<bool> executorLost{false};
+}  // namespace caboose::completion
+extern "C" void caboose_read_profile_wait(uint64_t us, uint32_t what);
+namespace caboose::completion {
+// Reports the time a local wait took to CABOOSE_READ_PROFILE (`what`: the Vulkan opcode,
+// or 21001-21004 for the presentation client's waits for the phone).
+struct WaitTimer {
+    uint32_t what;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    ~WaitTimer() {
+        caboose_read_profile_wait(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                                      std::chrono::steady_clock::now() - start).count()), what);
+    }
+};
 // A device stream connected to a (new) executor.
 inline void executorConnected() {
     if (executorLost.exchange(false, std::memory_order_acq_rel)) tracker().revive();

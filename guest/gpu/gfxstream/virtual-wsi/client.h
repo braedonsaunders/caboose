@@ -22,6 +22,10 @@ public:
     Record present(const Bytes& suffix, Deadline deadline);
     void waitReleased(uint64_t serial, Deadline deadline);
     uint64_t waitAnyReleased(Deadline deadline);
+    // Guest-owned images (MAP flag 1): the guest hands image `index` to the application.
+    void acquireLocally(uint64_t swapchain, uint32_t index);
+    // Sources still being copied on the phone (not yet released).
+    size_t sourcesInFlight() const;
     void consumeRelease(uint64_t serial);
     void waitPresentationIdle(Deadline deadline);
     // Waits until fewer than `frames` presented frames are still unretired.
@@ -35,7 +39,8 @@ public:
     Status failure() const { return failure_; }
     bool released(uint64_t serial) const;
     Record createSwapchain(const Bytes& suffix, Deadline deadline);
-    Record mapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images, Deadline deadline);
+    // `flags`: 1 guest-owned images (any count up to 8), 2 with it, mailbox drop.
+    Record mapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags = 0);
     void beginAcquire(uint64_t swapchain, uint64_t request, uint64_t semaphore,
                       uint64_t fence, uint64_t timeout, Deadline deadline);
     void cancelAcquire(uint64_t swapchain, uint64_t request, Deadline deadline);
@@ -93,6 +98,7 @@ private:
         uint64_t acquire=0, completedAcquire=0;
         bool presentFailed=false;
         Status presentFailure{};
+        bool guestImages=false;
         std::vector<bool> acquired;
         std::vector<uint64_t> releasedSerial;
     };

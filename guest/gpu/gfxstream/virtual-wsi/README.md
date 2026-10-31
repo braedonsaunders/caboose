@@ -134,3 +134,12 @@ waits for them end at once, and present and acquire report `VK_ERROR_OUT_OF_DATE
 Once the process's executor is lost (see `../bounded-memory/README.md`), present and
 acquire report `VK_ERROR_DEVICE_LOST`. A surface connection the broker closes marks the
 executor lost.
+
+With guest-owned images (hello feature `0x800`), the swapchain's images are the guest's
+own pool of 4 to 8 (surface capabilities report a minimum of 4 and a maximum of 8, and
+offer mailbox). MAP sends them with flag 1 (3 with mailbox), the phone's own swapchain is
+a FIFO of its natural size, and there is no SWAPCHAIN_ACQUIRE: acquisition hands the
+application an image whose last copy the phone has released, at once, and signals its
+semaphore and fence with a submission that has no waits. Each present names a guest
+image; the phone acquires a native image inside the present, and drops the frame (it
+still reports queued and releases its image) when none is free in mailbox, or after 1 s.

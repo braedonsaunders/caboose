@@ -61,6 +61,7 @@ static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
     return found==surfaces.end() ? nullptr : found->second;
 }
 static const bool peerGoneHook=[] { Client::peerGone=caboose::completion::markExecutorLost; return true; }();
+extern "C" int caboose_gfxstream_guest_images;
 static Client::Deadline deadline() { return std::chrono::steady_clock::now()+std::chrono::seconds(10); }
 // Native errno is not a fictional provider VkResult. This is the local WSI API's
 // surface-loss result; the control client retains the original native status.
@@ -205,6 +206,8 @@ static VkResult VKAPI_CALL capabilities(VkPhysicalDevice physical, VkSurfaceKHR 
         const auto values=providerCaps(b).values;
         VkSurfaceCapabilitiesKHR c{};
         c.minImageCount=values[0]; c.maxImageCount=values[1];
+        // Guest-owned images: the guest keeps its own pool and the phone takes native images.
+        if (caboose_gfxstream_guest_images==1) { c.minImageCount=4; c.maxImageCount=8; }
         c.currentExtent={values[2],values[3]};
         c.minImageExtent={values[4],values[5]}; c.maxImageExtent={values[6],values[7]};
         c.maxImageArrayLayers=values[8]; c.supportedTransforms=values[9];
@@ -230,7 +233,11 @@ static VkResult VKAPI_CALL modes(VkPhysicalDevice physical, VkSurfaceKHR surface
     return guarded([&]() -> VkResult {
         if (!count) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
-        const auto values=providerCaps(b).modes;
+        auto values=providerCaps(b).modes;
+        // Guest-owned images offer mailbox: the phone drops a frame that finds no free image.
+        if (caboose_gfxstream_guest_images==1 &&
+            std::find(values.begin(),values.end(),uint32_t(VK_PRESENT_MODE_MAILBOX_KHR))==values.end())
+            values.push_back(VK_PRESENT_MODE_MAILBOX_KHR);
         uint32_t total=values.size(), copied=out ? std::min(*count,total) : total;
         if (out) for (uint32_t i=0;i<copied;++i) out[i]=VkPresentModeKHR(values[i]);
         *count=copied; return copied<total ? VK_INCOMPLETE : VK_SUCCESS;

@@ -85,6 +85,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0023 pipelined-acquire | Submits without command buffers do not wait for their result; with ordered presents and the feed, the next image is acquired ahead of the application |
 | 0024 static-query-cache | Format and image-format properties are asked once per physical device and parameters |
 | 0025 executor-loss | When the phone executor leaves, every device reports `VK_ERROR_DEVICE_LOST` at once; a later `vkCreateInstance` connects again |
+| 0026 wait-profile | `CABOOSE_READ_PROFILE` also counts local fence and timeline waits and the presentation client's waits for the phone |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

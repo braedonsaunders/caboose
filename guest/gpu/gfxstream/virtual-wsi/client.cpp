@@ -298,16 +298,33 @@ Record Client::createSwapchain(const Bytes& p, Deadline deadline) {
     }
     return r;
 }
-Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline) {
-    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id));
+Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags) {
+    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id) && flags<=3 && flags!=2);
     auto& swap=swapchains_.at(id);
-    require(!swap.mapped && !swap.retiring && images.size()==swap.count);
+    require(!swap.mapped && !swap.retiring);
+    if (flags) {
+        // Guest-owned images: their count is the guest's; the phone takes native images itself.
+        require(images.size()>=1 && images.size()<=8);
+        swap.count=images.size(); swap.acquired.assign(swap.count,false); swap.releasedSerial.assign(swap.count,0);
+        swap.guestImages=true;
+    } else require(images.size()==swap.count);
     auto sorted=images; std::sort(sorted.begin(),sorted.end());
     require(!sorted.empty() && sorted[0] && std::adjacent_find(sorted.begin(),sorted.end())==sorted.end());
-    Bytes p; put64(p,id); put32(p,images.size()); put32(p,0);
+    Bytes p; put64(p,id); put32(p,images.size()); put32(p,flags);
     for (auto image:images) put64(p,image);
     send(27,p,deadline); auto r=await(28,id,deadline);
     swap.mapped=status(r.body,48).success(); return r;
+}
+void Client::acquireLocally(uint64_t id, uint32_t index) {
+    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id));
+    auto& swap=swapchains_.at(id);
+    require(swap.mapped && swap.guestImages && !swap.retiring && index<swap.count && !swap.acquired[index]);
+    swap.acquired[index]=true;
+}
+size_t Client::sourcesInFlight() const {
+    size_t count=0;
+    for (const auto& item:sources_) count+=item.second.swapchain && !item.second.released ? 1 : 0;
+    return count;
 }
 void Client::beginAcquire(uint64_t id, uint64_t request, uint64_t semaphore,
                           uint64_t fence, uint64_t timeout, Deadline deadline) {

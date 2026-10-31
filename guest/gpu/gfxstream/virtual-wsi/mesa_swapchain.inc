@@ -4,6 +4,7 @@ struct Image {
     VkImage image=VK_NULL_HANDLE;
     VkDeviceMemory memory=VK_NULL_HANDLE;
     uint64_t serial=0;
+    bool held=false;   // guest-owned images: acquired by the application, not yet presented
 };
 // Pipelined acquisition, with ordered presents and the completion feed: after each
 // present the next image is acquired on the phone against one of these private
@@ -29,6 +30,11 @@ struct DeviceSwapchain {
     uint64_t preRequest=0;          // an acquire made ahead of the application, or 0
     size_t preSlot=0;
     VkQueue handoffQueue=VK_NULL_HANDLE;
+    // Guest-owned images (hello feature 0x800): acquisition is local, and the phone takes
+    // a native image inside each present, dropping the frame when none is free in mailbox.
+    bool guestImages=false;
+    bool mailbox=false;
+    size_t nextImage=0;
 };
 static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
@@ -36,6 +42,11 @@ static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
 extern "C" int caboose_gfxstream_ordered_present;
 // Frames the phone keeps in flight per surface for ordered presents.
 constexpr size_t kOrderedFramesInFlight = 2;
+// 1 when swapchain images are the guest's own (hello feature 0x800, SocketStream.cpp).
+extern "C" int caboose_gfxstream_guest_images;
+// Guest-owned swapchains: image count offered to applications, and frames in flight.
+constexpr uint32_t kGuestMinImages = 4, kGuestMaxImages = 8;
+constexpr size_t kGuestFramesInFlight = 8;
 // The result an application sees once an earlier ordered present was not queued: as on
 // any WSI, the next present or acquire reports it and the swapchain must be recreated.
 static VkResult presentFailureResult(Status s) {
@@ -101,6 +112,50 @@ static bool pipelinedAcquire(const DeviceSwapchain& swap) {
     return caboose_gfxstream_ordered_present==1 && swap.handoffQueue && swap.slots.size()==kAcquireSlots &&
            caboose::completion::feedActive.load(std::memory_order_acquire) &&
            caboose::memory::deferredReplies.singleEncoder(gfxstream::vk::ResourceTracker::getThreadLocalEncoder());
+}
+// A queue of the presentation family for local signal submissions.
+static void pickHandoffQueue(DeviceSwapchain& swap) {
+    VK_FROM_HANDLE(gfxstream_vk_device, device, swap.device);
+    for (uint32_t i=0;i<device->queue_count;++i)
+        if (device->queues[i].vk.queue_family_index==swap.family) { swap.handoffQueue=device->queues[i].internal_object; break; }
+}
+// Guest-owned images: hands the application an image whose last copy on the phone is
+// done, without asking the phone. The application's semaphore and fence are signaled by a
+// submission with no waits; the device stream orders it after that copy.
+static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphore semaphore, VkFence fence,
+                             uint32_t* index) {
+    auto& client=swap.surface->client;
+    const auto start=std::chrono::steady_clock::now();
+    constexpr uint64_t kDay=86400ull*1000000000ull;
+    for (;;) {
+        client.pump();
+        if (client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
+        const size_t count=swap.images.size();
+        for (size_t k=0;k<count;++k) {
+            const size_t i=(swap.nextImage+k)%count;
+            auto& image=swap.images[i];
+            if (image.held || (image.serial && !client.released(image.serial))) continue;
+            if (image.serial) { client.consumeRelease(image.serial); image.serial=0; }
+            if (!swap.handoffQueue) return VK_ERROR_INITIALIZATION_FAILED;
+            auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+            auto* tracker=gfxstream::vk::ResourceTracker::get();
+            VkSubmitInfo signal{}; signal.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            signal.signalSemaphoreCount=semaphore ? 1 : 0; signal.pSignalSemaphores=&semaphore;
+            if (tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap.handoffQueue,semaphore ? 1 : 0,&signal,fence)!=VK_SUCCESS)
+                return VK_ERROR_DEVICE_LOST;
+            client.acquireLocally(swap.native,uint32_t(i));
+            image.held=true; swap.nextImage=i+1; *index=uint32_t(i);
+            return VK_SUCCESS;
+        }
+        // Every image is with the application or still being copied on the phone.
+        if (!client.sourcesInFlight() || timeout==0) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+        const uint64_t spent=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now()-start).count());
+        if (timeout!=UINT64_MAX && spent>=timeout) return VK_TIMEOUT;
+        const uint64_t left=timeout==UINT64_MAX ? kDay : std::min(timeout-spent,kDay);
+        try { client.waitAnyReleased(std::chrono::steady_clock::now()+std::chrono::nanoseconds(left)); }
+        catch (const std::system_error& error) { if (error.code().value()!=ETIMEDOUT) throw; }
+    }
 }
 // Creates the private acquire semaphores and fences, before the phone maps the swapchain,
 // and picks a queue of the presentation family for the hand-off submissions. Without
@@ -214,9 +269,20 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
         if (surface->query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes request; put64(request,++surface->query);
         put64(request,get_host_u64_VkDevice(device->internal_object)); put64(request,old);
-        for (uint32_t word:{info->flags,info->minImageCount,uint32_t(info->imageFormat),uint32_t(info->imageColorSpace),
+        swap->guestImages=caboose_gfxstream_guest_images==1;
+        swap->mailbox=info->presentMode==VK_PRESENT_MODE_MAILBOX_KHR || info->presentMode==VK_PRESENT_MODE_IMMEDIATE_KHR;
+        // With guest-owned images the phone's own swapchain is a FIFO of its natural size:
+        // the application's image count and mailbox behaviour live on the guest's side.
+        uint32_t nativeMin=info->minImageCount;
+        auto presentMode=uint32_t(info->presentMode);
+        if (swap->guestImages) {
+            const uint32_t low=std::max(1u,caps.values[0]), high=caps.values[1] ? caps.values[1] : std::max(low,3u);
+            nativeMin=std::clamp(std::min(info->minImageCount,3u),low,high);
+            presentMode=VK_PRESENT_MODE_FIFO_KHR;
+        }
+        for (uint32_t word:{info->flags,nativeMin,uint32_t(info->imageFormat),uint32_t(info->imageColorSpace),
              info->imageExtent.width,info->imageExtent.height,info->imageArrayLayers,info->imageUsage,
-             uint32_t(info->preTransform),uint32_t(info->compositeAlpha),uint32_t(info->presentMode),info->clipped,
+             uint32_t(info->preTransform),uint32_t(info->compositeAlpha),presentMode,info->clipped,
              uint32_t(info->imageSharingMode),info->imageSharingMode==VK_SHARING_MODE_EXCLUSIVE?0:info->queueFamilyIndexCount})
             put32(request,word);
         if (info->imageSharingMode==VK_SHARING_MODE_CONCURRENT) {
@@ -243,7 +309,8 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
             return failure;
         };
         try {
-            swap->images.resize(u32(created.body,72));
+            swap->images.resize(swap->guestImages ? std::clamp(info->minImageCount,kGuestMinImages,kGuestMaxImages)
+                                                  : u32(created.body,72));
             auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
             VkPhysicalDeviceMemoryProperties memory{};
             encoder->vkGetPhysicalDeviceMemoryProperties(device->physical_device->internal_object,&memory,true);
@@ -295,11 +362,13 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 if (result!=VK_SUCCESS) return cleanup(result);
                 images.push_back(get_host_u64_VkImage(image.image));
             }
-            createAcquireSlots(*swap);
+            if (swap->guestImages) pickHandoffQueue(*swap);
+            else createAcquireSlots(*swap);
             // The phone maps images, and later signals acquire semaphores, this device
             // stream created, allocated and bound.
             if (!encoder->cabooseDrainDeferredObjects(true)) return cleanup(VK_ERROR_DEVICE_LOST);
-            auto mapped=surface->client.mapSwapchain(swap->native,images,deadline());
+            auto mapped=surface->client.mapSwapchain(swap->native,images,deadline(),
+                swap->guestImages ? (swap->mailbox ? 3u : 1u) : 0u);
             result=apiStatus(status(mapped.body,48)); if (result!=VK_SUCCESS) return cleanup(result);
             *out=guestHandle; return VK_SUCCESS;
         } catch (...) { cleanup(VK_ERROR_INITIALIZATION_FAILED); throw; }
@@ -372,6 +441,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             internalFence=value->internal_object;
             boxedFence=get_host_u64_VkFence(value->internal_object);
         }
+        if (swap->guestImages) return guestAcquire(*swap,timeout,internalSemaphore,internalFence,index);
         if (swap->preRequest) {
             // The image was acquired ahead of time against a private semaphore: wait as
             // long as the application allows. The phone's acquire has no timeout of its
@@ -379,6 +449,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             // are waited for a day at a time, keeping deadlines representable.
             constexpr uint64_t kDay=86400ull*1000000000ull;
             uint64_t remaining=timeout;
+            caboose::completion::WaitTimer waited{21001};
             for (;;) {
                 const uint64_t chunk=std::min(remaining,kDay);
                 if (surface.client.awaitAcquireReply(swap->native,
@@ -398,7 +469,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             uint32_t acquired=u32(reply.body,76);
             auto& image=swap->images.at(acquired);
             if (image.serial) {
-                surface.client.waitReleased(image.serial,deadline());
+                { caboose::completion::WaitTimer released{21003}; surface.client.waitReleased(image.serial,deadline()); }
                 if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
                 surface.client.consumeRelease(image.serial); image.serial=0;
             }
@@ -429,7 +500,8 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             return VK_ERROR_DEVICE_LOST;
         surface.client.beginAcquire(swap->native,request,boxedSemaphore,boxedFence,timeout,deadline());
         // A transport deadline is never relabelled as a Vulkan acquire timeout.
-        auto reply=surface.client.finishAcquire(swap->native,request,deadline());
+        auto reply=[&] { caboose::completion::WaitTimer acquired{21004};
+                         return surface.client.finishAcquire(swap->native,request,deadline()); }();
         auto returned=status(reply.body,56);
         if (u32(reply.body,80)==1 && timeout!=0 && timeout!=UINT64_MAX) return VK_TIMEOUT;
         if (returned.nativeError) return VK_ERROR_SURFACE_LOST_KHR;
@@ -438,7 +510,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             uint32_t acquired=u32(reply.body,76);
             auto& image=swap->images.at(acquired);
             if (image.serial) {
-                surface.client.waitReleased(image.serial,deadline());
+                { caboose::completion::WaitTimer released{21003}; surface.client.waitReleased(image.serial,deadline()); }
                 if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
                 surface.client.consumeRelease(image.serial); image.serial=0;
             }
@@ -485,8 +557,12 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         // Native capacity is one frame per surface, two with ordered presents; only a
         // frame's final retirement callback opens the next admission. No guest wait
         // semaphore is touched.
-        if (caboose_gfxstream_ordered_present==1) surface.client.waitPresentationRoom(kOrderedFramesInFlight,deadline());
-        else surface.client.waitPresentationIdle(deadline());
+        {
+            caboose::completion::WaitTimer room{21002};
+            if (swap->guestImages) surface.client.waitPresentationRoom(kGuestFramesInFlight,deadline());
+            else if (caboose_gfxstream_ordered_present==1) surface.client.waitPresentationRoom(kOrderedFramesInFlight,deadline());
+            else surface.client.waitPresentationIdle(deadline());
+        }
         if (surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         if (surface.client.failed()) return apiStatus(surface.client.failure());
         if (surface.presentSerial==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
@@ -499,8 +575,8 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             if (order) {
                 surface.client.presentOrdered(swap->native,serial,get_host_u64_VkQueue(queue->internal_object),
                     order,index,swap->family,waits,deadline());
-                swap->images[index].serial=serial;
-                startPreAcquire(*swap);
+                swap->images[index].serial=serial; swap->images[index].held=false;
+                if (!swap->guestImages) startPreAcquire(*swap);
                 if (info->pResults) info->pResults[0]=VK_SUCCESS;
                 return VK_SUCCESS;
             }
@@ -512,6 +588,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         auto reply=surface.client.presentIndexed(swap->native,serial,
             get_host_u64_VkQueue(queue->internal_object),index,swap->family,waits,deadline());
         auto result=apiStatus(status(reply.body,48));
+        swap->images[index].held=false;
         if (u32(reply.body,64)==1) swap->images[index].serial=serial;
         else { swap->poisoned=true; if (result==VK_SUCCESS) result=VK_ERROR_SURFACE_LOST_KHR; }
         if (info->pResults) info->pResults[0]=result;
