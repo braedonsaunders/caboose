@@ -121,10 +121,6 @@ int caboose_gpu_surface_set_capture(caboose_gpu_surface* surface, caboose_gpu_ca
                                     void* context);
 // Any thread. ESTALE for a token already released or from a replaced ring.
 int caboose_gpu_surface_release_capture(caboose_gpu_surface* surface, uint32_t token);
-// Any thread, for diagnosis: 0 once the capture ring exists, EAGAIN before any present
-// tried to make it, ENOTSUP when it could not be made (*vulkan_result is the provider's
-// result, VK_ERROR_EXTENSION_NOT_PRESENT when Metal objects cannot be exported).
-int caboose_gpu_surface_capture_state(caboose_gpu_surface* surface, int32_t* vulkan_result);
 
 // Worker only; revokes admission and blocks until all GPU source reads and
 // presentation resources are retired, or actual terminal device loss. It never

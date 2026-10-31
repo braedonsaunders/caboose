@@ -137,11 +137,11 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     fileprivate func notePresent() {
         guard LocalScrollProfile.enabled else { return }
         let (presents, captures) = captureLock.withLock { presentsSeen += 1; return (presentsSeen, capturesSeen) }
-        guard presents == 30, captures == 0, !silenceNoted, let pointer else { return }
+        guard presents == 30, captures == 0, !silenceNoted else { return }
         silenceNoted = true
-        var result: Int32 = 0
-        let state = captureLock.withLock { capturing ? caboose_gpu_surface_capture_state(pointer, &result) : -1 }
-        LocalScrollProfile.note("gpu captures MISSING window=\(bind.identity.window_id) after 30 presents: capturing=\(state >= 0) state=\(state) vkResult=\(result)")
+        let enabled = captureLock.withLock { capturing }
+        // The native presenter writes why its capture ring could not be made to stderr.
+        LocalScrollProfile.note("gpu captures MISSING window=\(bind.identity.window_id) after 30 presents: capturing=\(enabled)")
     }
 
     /// Frame worker: the picture is lent until `releaseCapture(token)`.
