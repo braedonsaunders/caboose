@@ -164,33 +164,41 @@ struct DockAppActions: View {
     var done: () -> Void = {}
 
     var body: some View {
+        ForEach(Array(Self.items(app, model: model, openWindow: openWindow).enumerated()), id: \.offset) { _, item in
+            Button(item.title, systemImage: item.systemImage, role: item.destructive ? .destructive : nil) {
+                item.perform(); done()
+            }
+        }
+    }
+
+    /// The rows, for this menu and for the desktop's pointer menu.
+    static func items(_ app: HostClient.App, model: AppModel, openWindow: OpenWindowAction) -> [DesktopModel.MenuItem] {
         let windows = model.appWindows.filter { model.matches($0, app) }
         let detached = model.detachedWindowIDs
         let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
                                        windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title, detached: detached.contains($0.id)) },
                                        windowScenes: model.supportsWindowScenes)
-        Button("Add Shortcut to Desktop", systemImage: "plus.square") {
-            Task { await model.desktopFiles.addShortcut(app, model: model) }; done()
-        }
-        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+        var items = [DesktopModel.MenuItem(title: "Add Shortcut to Desktop", systemImage: "plus.square") {
+            Task { await model.desktopFiles.addShortcut(app, model: model) }
+        }]
+        for action in actions {
             switch action {
             case .open:
-                Button(action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app); done() }
+                items.append(.init(title: action.title, systemImage: "arrow.up.forward.app") { model.openOnDesktop(app) })
             case .pin, .unpin:
-                Button(action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app); done() }
+                items.append(.init(title: action.title, systemImage: action == .pin ? "pin" : "pin.slash") { model.togglePin(app) })
             case .openInNewWindow(let id, _):
-                Button(action.title, systemImage: "macwindow.badge.plus") {
+                items.append(.init(title: action.title, systemImage: "macwindow.badge.plus") {
                     if let window = model.window(id), let ref = model.windowRef(for: window) { openWindow(value: ref) }
-                    done()
-                }
+                })
             case .moveToDesktop(let id, _):
-                Button(action.title, systemImage: "rectangle.on.rectangle") { model.moveToDesktop(id); done() }
+                items.append(.init(title: action.title, systemImage: "rectangle.on.rectangle") { model.moveToDesktop(id) })
             case .close(let id, _):
-                Button(action.title, systemImage: "xmark", role: .destructive) {
+                items.append(.init(title: action.title, systemImage: "xmark", destructive: true) {
                     if let window = model.session?.windows[id] { model.session?.closeDiagnosed(window) }
-                    done()
-                }
+                })
             }
         }
+        return items
     }
 }
