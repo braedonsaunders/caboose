@@ -59,6 +59,10 @@ class ParseTests(unittest.TestCase):
         self.assertEqual((r['window'], r['seq'], r['presented_ns']), (4, 17, 123))
         r = fl.parse_line('caboose-framelab: picture window=4 serial=99 file=4-99.png now_ns=5', 9)
         self.assertEqual(r, {'kind': 'phone_picture', 't': 9, 'window': 4, 'file': '4-99.png'})
+        r = fl.parse_line('x CABOOSE_GPU_BROKER executor session ended: lease draining', 3)
+        self.assertEqual((r['kind'], r['event']), ('session_event', 'executor session ended: lease draining'))
+        r = fl.parse_line('WARN caboose_display: private GPU control failed at gpu_control.rs:120', 3)
+        self.assertEqual(r['event'], 'private GPU control failed at gpu_control.rs:120')
         self.assertIsNone(fl.parse_line('unrelated'))
 
     def test_phone_picture_nearest_the_guest_picture(self):

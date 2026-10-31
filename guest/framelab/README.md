@@ -64,6 +64,9 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   replies for at least half the stall in the `CABOOSE_READ_PROFILE` window covering it),
   `app_busy` (the app used at least half a core) and `app_idle` (none of these). The
   evidence for each is in the stall's entry.
+- **`session_events`**: how the GPU session ended during the run, in the broker's and the
+  compositor's words (`CABOOSE_GPU_BROKER executor session ended: …`, `private GPU control
+  failed at …`), with the second of the run each was logged.
 - **`resources`**: the CPU of the app's process tree in the computer (percent of one core,
   mean and the largest half-second sample) and the bytes per second on its stream: the GPU
   stream to the phone (`CABOOSE_GPU_STREAM`) or the encoded window pictures.
