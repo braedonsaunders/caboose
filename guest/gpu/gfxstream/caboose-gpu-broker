@@ -38,9 +38,10 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # pipelines, 0x100 also for descriptor sets and command buffers (requires 0x80), 0x200 the
 # completion feed, 0x400 ordered presents (SWAPCHAIN_PRESENT_ORDERED with device-stream ORDER
 # marks), 0x800 guest-owned swapchain images (MAP flag 1; native acquires inside each
-# present). The reply grants the offered features the phone declared.
+# present), 0x1000 guest-assigned query pools (requires 0x80). The reply grants the offered
+# features the phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
-                  'ordered-present': 0x400, 'guest-images': 0x800}
+                  'ordered-present': 0x400, 'guest-images': 0x800, 'guest-query-pools': 0x1000}
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 
@@ -51,13 +52,13 @@ def negotiate_hello(offered, phone_features):
     mask = struct.unpack_from('<I', offered, 12)[0]
     known = 0
     for value in HELLO_FEATURES.values(): known |= value
-    if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & 0x100 and not mask & 0x80):
+    if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & 0x1100 and not mask & 0x80):
         return None
     granted = 0
     for name in phone_features:
         granted |= HELLO_FEATURES.get(name, 0)
     granted &= mask
-    if not granted & 0x80: granted &= ~0x100
+    if not granted & 0x80: granted &= ~0x1100
     return HELLO_V4[:12] + struct.pack('<I', 0x70 | granted) + HELLO_V4[16:]
 
 

@@ -18,7 +18,7 @@ _TOKEN = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 
 
 # Capabilities the host forwards from the phone, as `X-Caboose-GPU-Features`.
-FEATURES = frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images'})
+FEATURES = frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools'})
 class AdmissionError(ValueError):
     pass
 
