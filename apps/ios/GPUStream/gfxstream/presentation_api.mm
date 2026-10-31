@@ -604,7 +604,9 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
     try {
         {
             std::lock_guard<std::mutex> lock(s->mutex);
-            if (!s->attached || s->revoked || !s->physical || p->present_serial <= s->lastSerial)
+            // A surface query normally names the physical device first; a plain present
+            // without one (a compositor buffer, docs/gpu-buffers.md) takes its device's.
+            if (!s->attached || s->revoked || p->present_serial <= s->lastSerial)
                 return rejected(EBUSY);
 #ifdef CABOOSE_GPU_INDEXED_WSI
             if (s->indexed || s->extent.enabled()) return rejected(EBUSY);
@@ -624,7 +626,11 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
             r = acquirePresentationDevice(registry, p->identity.process_token, s->bind.boxed_instance,
                                            p->boxed_device, p->boxed_queue, p->queue_family, &device);
             if (r != VK_SUCCESS) return rejected(errorFor(r));
-            if (device->physicalDevice != s->physical) return rejected(EINVAL);
+            {
+                std::lock_guard<std::mutex> lock(s->mutex);
+                if (s->physical && device->physicalDevice != s->physical) return rejected(EINVAL);
+                s->physical = device->physicalDevice;
+            }
             s->device = std::move(device);
             s->boxedDevice = p->boxed_device; s->boxedQueue = p->boxed_queue;
             s->queueFamily = p->queue_family; s->format = static_cast<VkFormat>(p->vk_format);
