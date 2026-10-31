@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, withContainerPorts, type Docker } from './container-driver.js'
+import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneGpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -145,8 +145,11 @@ describe('GPU selection', () => {
   it('detects the GPU a container can use on each kind of host', () => {
     expect(detectGpu(path => path === '/dev/dxg')).toBe('wsl')
     expect(detectGpu(path => path === '/dev/nvidiactl')).toBe('nvidia')
-    expect(detectGpu(path => path === '/dev/dri/renderD128')).toBe('dri')
-    expect(detectGpu(() => false)).toBe('none')
+    const nouveau = () => [{ path: '/dev/dri/renderD128', driver: 'nouveau', render: true }]
+    const vgem = () => [{ path: '/dev/dri/card0', driver: 'vgem', render: false }, { path: '/dev/dri/renderD128', driver: 'vgem', render: true }]
+    expect(detectGpu(() => false, nouveau)).toBe('dri')
+    expect(detectGpu(() => false, vgem)).toBe('none')
+    expect(detectGpu(() => false, () => [])).toBe('none')
   })
 
   it('hands each kind to the container its own way', () => {
@@ -156,6 +159,24 @@ describe('GPU selection', () => {
     expect(gpuArgs('nvidia', path => path === '/dev/udmabuf')).toEqual(expect.arrayContaining(['--device', '/dev/udmabuf']))
     expect(gpuArgs('wsl', () => true)).not.toContain('/dev/udmabuf')
     expect(gpuArgs('none')).toEqual(['-e', 'CABOOSE_GPU=none'])
+  })
+
+  it('hands every computer userfaultfd and the vgem render node for the phone-GPU driver', async () => {
+    const vgem = () => [{ path: '/dev/dri/card1', driver: 'vgem', render: false }, { path: '/dev/dri/renderD129', driver: 'vgem', render: true },
+      { path: '/dev/dri/renderD128', driver: 'amdgpu', render: true }]
+    expect(phoneGpuArgs('none', path => path === '/dev/userfaultfd', () => [])).toEqual(['--device', '/dev/userfaultfd'])
+    expect(phoneGpuArgs('wsl', () => false, vgem)).toEqual(['--device', '/dev/dri/card1', '--device', '/dev/dri/renderD129'])
+    // A dri GPU already brings all of /dev/dri.
+    expect(phoneGpuArgs('dri', () => false, vgem)).toEqual([])
+    const fake = fakeDocker('missing')
+    const controller = createContainerController({ ...settings, gpu: 'none' }, {
+      fence: async () => {}, docker: fake.docker, exists: path => path === '/dev/userfaultfd', drm: vgem,
+    })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!.join(' ')
+    expect(run).toContain('--device /dev/userfaultfd')
+    expect(run).toContain('--device /dev/dri/card1 --device /dev/dri/renderD129')
+    expect(run).not.toContain('renderD128')
   })
 
   it('does not expose shared host input devices to a computer', async () => {

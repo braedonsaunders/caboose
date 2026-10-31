@@ -10,7 +10,7 @@ wire contract, the Caboose Display Protocol.
 
 ```
  apps (Wayland, and X11 through Xwayland)
-   │ wl_shm and linear dmabuf buffers, surface damage, frame callbacks
+   │ wl_shm and dmabuf buffers (linear, or phone-resident: gpu-buffers.md), damage, frame callbacks
    ▼
  caboose-display   (headless Wayland compositor, Rust + Smithay, inside the computer)
    ├ one stream per toplevel, dialog, popup and X11 window
@@ -316,7 +316,7 @@ Server → client (`0x01`–`0x7F`):
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
 | `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]`, `epoch?: text` (1–64 bytes; caboose-display sends 16 hex characters) |
-| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool` |
+| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size` |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes` |
@@ -354,7 +354,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
-| `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?` |
+| `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
 | `0x85` | `close` | `id` |
 | `0x86` | `request_keyframe` | `id` |
 | `0x87` | `displays` | `displays: [display]`; replaces the set on a live session (rotation, a TV plugged in, a zoom change). The server re-lays-out and answers with `window.update` |
@@ -423,6 +423,32 @@ into proximity of the surface under it), `down` and `up` are the tip's contact, 
 `cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
 degrees. The clipboard carries text (`text/plain;charset=utf-8`).
 
+### Overscan
+
+A client that shows only part of a window, panning inside the rest itself (phone-owned
+scrolling), asks for the window to be laid out larger than it shows: `configure.overscan`
+`[w, h]` is how much wider and taller than `geometry` to make it, in display pixels;
+`[0, 0]` ends it. It stays asked for across later configures until ended, and ends with
+the client's session. `geometry` keeps meaning what the client shows; a configure with
+only `overscan` keeps the size last configured. Only right and bottom: an application
+lays out from its top-left, so content above or left comes from its own scroll position.
+
+The server configures Wayland toplevels and X11 windows at the shown size plus the
+overscan, cut so the whole picture stays within 4096 pixels per axis and within the
+application's maximum size. Fullscreen and maximized windows have a fixed size and get
+none. While the window has exactly the enlarged size, `window.create`/`window.update`
+carry `overscan`, the part actually applied; an update carries `[0, 0]` when it ends or
+the application leaves that size. Such an update precedes every frame of the new picture
+size, as a size change precedes its keyframe. The picture is then the whole window:
+`frame.rect` is `[0, 0, w + ow, h + oh]`, tiles, video and motion rectangles map through
+it as usual, and window-local input positions with `x >= w` or `y >= h` address the
+overscan. Popup and dialog geometry stays relative to the parent's geometry origin.
+
+Anything an application sizes to its window (a full-height hero, a pane that fills the
+window) grows by the overscan, so content below it moves once when the overscan begins;
+clients ask for overscan only while it pays: a window whose scroll region they have
+measured, while the user scrolls it.
+
 ### Direct content scroll units
 
 The iOS direct-content pan negates finger movement for natural direction, integrates
@@ -452,6 +478,109 @@ Rendering back into the presented surface multiplies by `s * V / P`, leaving
 rotation, fitting and output scale, including 1.5; other responses remain proportional.
 Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
 model. The client does not infer or compensate for per-application response differences.
+
+### Phone-owned scrolling
+
+Phone-owned scrolling runs only when the iOS app is launched with `CABOOSE_LOCAL_SCROLL=1`.
+Without it, every pan scrolls the app remotely, as described under direct content scroll
+units, and no presented pictures are captured.
+
+A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
+the phone itself. That covers a window whose picture the phone draws (a card or tile) and
+a live GPU window whose presented pictures the phone captures
+([presented-picture capture](gpu-live.md#presented-picture-capture)). Games and GPU
+streams are not covered. Over a live GPU layer, the phone draws its compositions in an
+overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
+uses it differently:
+
+- **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
+  deceleration, 0.998 per millisecond) move the content at display rate, 120 Hz on
+  ProMotion, from the first movement. The phone draws the window's captured pictures moved
+  to that position.
+- **The app is driven ahead.** Forwarded scroll aims the app where the phone will be once
+  the app's picture arrives: the position one measured input-to-picture latency ahead. That
+  target is exact during momentum and extrapolated from finger velocity while tracking.
+  While content moves fast, the target adds up to half the region more, fading below 1500
+  picture pixels per second. The content a flick brings into view is therefore already in a
+  captured picture. Earlier pictures cover the content behind it.
+- **Prefetch at rest.** 0.1 s after a scroll hands back, the phone drives the app 0.7 of
+  the scrolling region further in the scroll's direction and back. It shows the unchanged
+  picture throughout, so the next flick's first frames find their content captured. Other
+  input (a tap, a key) brings the app straight back.
+- **Every picture is measured.** Each captured picture gets line signatures on the GPU:
+  per row and per vertical band of about 40 pixels, the mean colour and the mean luma step
+  along the row. Horizontal scrolling uses the transpose. A coarse search of sampled
+  detailed cells, over the shifts the forwarded scroll makes possible, finds the rigid
+  motion relative to the previous picture. A full search follows only for an unexpected
+  jump, and it must be explained by much more of the picture. Cells explained only by
+  standing still bound the moving region. Toolbars, sticky headers, status bars, sidebars
+  and gutters are drawn from the newest picture, unmoved. Inside the region, blocks of 16
+  lines by one band whose detail stood still while the content moved are fixed overlays
+  (a floating button, a chat bubble). Up to four per picture are kept, drawn from the
+  newest picture where they are, and left out of every picture's scrolled content, so
+  they leave no copies behind. No application identity is used.
+- **Learning the window.** The measured placements give the app's latency (the 75th
+  percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
+  rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
+  finger one to one. A run in which three pictures in a row stood still while the forwarded
+  scroll kept moving one way was clamped at an end, so its gain is not learned.
+- **Ends of content.** The app may stop moving while it is still being driven, for twice
+  its latency plus 120 ms (or 1.5 times its longest recent stall). Pictures that do not
+  move and no pictures at all look alike at an end and in an app whose scrolling is busy
+  (a page decoding images). So the phone sends a 24-pixel step back, alone and behind its
+  own picture. Only an app held at its end can answer by moving back, in a picture measured
+  against the one before; that confirms the end. A picture that cannot be measured voids
+  the probe. An app that moves on was stalled, and one that does not answer within a second is
+  driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
+  that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
+  picture placed beyond an end removes it. A toolkit adapter's reported range stays.
+- **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
+  driven at most 0.6 of the region per picture interval. While it has shown nothing for
+  one and a half picture intervals (and 50 ms), its drive is capped half a region past its
+  last picture. It is never held, since an app that draws only when it scrolls would
+  otherwise stay silent.
+- **Nothing is guessed.** A measurement must explain at least half of the detail that
+  could reappear at its shift, judged on the overlap. A picture that cannot be measured
+  (a new page, a reflow, a jump past the overlap) is never placed by the forwarded scroll.
+  Composition ends for that run instead: the app's own picture shows, scrolled by the
+  finger and momentum without lead, until the scroll rests.
+- **Bounded reveal.** Content no captured picture covers shows in the colour of the
+  nearest captured edge. It may fill at most 40% of the region. Past that, the shown
+  position resists and catches up as pictures arrive, never slower than the gesture.
+- **Hand back.** When the phone comes to rest, the app is brought to the same position,
+  round after round at the newly learned gain, while the phone keeps drawing from its
+  captured pictures. Once the app's newest picture is within 1.5 picture pixels, the phone
+  draws the app's own picture again. The content never moves after the finger lets it
+  rest. The one exception is a native bounce: if a correction lands without the app
+  moving, the phone probes for an end, and only a confirmed end springs the content back
+  to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
+
+- **Overscan windows.** While a window has been scrolled locally within the last 30
+  seconds and its scrolling region is measured, the phone asks for an overscan of one
+  viewport along the scroll axis (`configure.overscan`, with the whole picture kept within
+  4096 pixels), and ends it after 30 idle seconds, when the window leaves the screen or
+  changes, or when the app goes to the background. It asks and ends only at rest. Once
+  pictures of the enlarged window arrive (recognised by their shape against the announced
+  overscan), the phone shows them through the viewport, also at rest. The header and the
+  region's first lines show as they are, and what follows the region in the picture (a
+  footer, a status bar) is anchored at the viewport's end. Touches and the pointer on
+  that anchored part reach the window the overscan further on. A live GPU layer shows
+  its viewport top-left aligned, the rest clipped, until the phone composes over it.
+  Content a flick reveals below is already drawn; content above comes from the frame
+  history and from driving the app ahead.
+
+The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
+most six of them, chosen for the content they add near the current position. Video layers
+over the picture move with the scrolled content.
+
+One GPU pass draws the region: per pixel, the newest captured picture that covers it
+outside its fixed overlays, else the fill colour.
+
+`CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
+`ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
+`LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
+exact scroll offset, region, range and fixed rectangles replaces measurement for that
+picture (`ScrollObservation.reported`).
 
 ### Audio
 

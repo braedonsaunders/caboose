@@ -2,6 +2,14 @@
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
   CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland"
 fi
+# The computer's render node is vgem (docs/gpu-buffers.md), which Chromium passes over
+# when it looks for one: name it, so its Wayland GPU path allocates shared buffers there.
+for node in /dev/dri/renderD*; do
+  [ -e "$node" ] || continue
+  [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$node"
+  break
+done
 # Mesa D3D12 is available to WSL containers through /dev/dxg.
 if [ "${CABOOSE_GPU:-none}" = wsl ]; then
   export GALLIUM_DRIVER=d3d12

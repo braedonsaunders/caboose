@@ -215,6 +215,8 @@ pub struct State {
     pub epoch: String,
     pub gpu_grants: Option<crate::gpu_grant::Grants>,
     pub gpu_last_bind_request: u64,
+    /// Phone-resident buffers committed to windows and held until the broker releases them.
+    pub remote_presents: crate::remote_buffers::Presents,
     pub stats: Stats,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
@@ -305,7 +307,75 @@ impl State {
         }
     }
 
+    /// A buffer window: one this compositor asked the broker to show a remote buffer in,
+    /// bound to a live process of the compositor's user. The broker names the process that
+    /// registered the buffer; holding its dma-buf is that process's proof of ownership.
+    fn buffer_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
+        use std::os::fd::AsRawFd;
+        let window = u64::from(bind.object);
+        // SAFETY: geteuid has no arguments or memory-safety preconditions.
+        let ours = bind.uid == unsafe { libc::geteuid() } &&
+            crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd());
+        let toplevel = self.windows.get(window).is_some_and(|w| matches!(w.surface, Surface::Toplevel(_)));
+        if ours && toplevel && self.remote_presents.presenting(window) { vec![window] } else { Vec::new() }
+    }
+
+    /// A toplevel committed a new remote buffer: ask the broker to show it.
+    fn present_remote_buffer(&mut self, surface: &WlSurface) {
+        if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return }
+        let Some(id) = self.windows.by_surface(surface) else { return };
+        if !matches!(self.windows.get(id).map(|w| &w.surface), Some(Surface::Toplevel(_))) { return }
+        let Some(buffer) = with_renderer_surface_state(surface, |state| state.buffer().cloned()).flatten() else { return };
+        let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer) else { return };
+        if !crate::remote_buffers::is_remote(dmabuf) { return }
+        let (Some(identity), size) = (crate::remote_buffers::identity(dmabuf), smithay::backend::allocator::Buffer::size(dmabuf)) else { return };
+        let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else { return };
+        let fence = crate::remote_buffers::pending_fence(dmabuf);
+        let request = self.remote_presents.begin(id, buffer);
+        let Some(fence) = fence else {
+            self.send_remote_present(request, id, identity, width, height);
+            return;
+        };
+        // A client relying on implicit synchronization: show the buffer once its rendering
+        // finished. A newer commit replaces a present still waiting.
+        use smithay::reexports::calloop::generic::Generic;
+        use smithay::reexports::calloop::{Interest, Mode, PostAction};
+        let inserted = self.handle.insert_source(Generic::new(fence, Interest::READ, Mode::OneShot),
+            move |_, _, state: &mut State| {
+                if state.remote_presents.fence_signaled(id, request) {
+                    state.send_remote_present(request, id, identity, width, height);
+                }
+                Ok(PostAction::Remove)
+            });
+        match inserted {
+            Ok(token) => {
+                if let Some((replaced, old)) = self.remote_presents.fence(id, request, token) {
+                    self.handle.remove(old);
+                    self.remote_presents.released(replaced);
+                }
+            }
+            Err(_) => { self.remote_presents.released(request); }
+        }
+    }
+
+    fn send_remote_present(&mut self, request: u64, window: u64, identity: (u64, u64), width: u32, height: u32) {
+        let sent = crate::gpu_control::buffer_present(request, window, identity, width, height)
+            .and_then(|bytes| self.net.queue_gpu_control(bytes, None));
+        if sent.is_err() {
+            self.remote_presents.released(request);
+            self.gpu_control_failed();
+        }
+    }
+
+    fn release_remote_presents(&mut self) {
+        for token in self.remote_presents.release_all() {
+            self.handle.remove(token);
+        }
+    }
+
     pub(crate) fn gpu_control_failed(&mut self) {
+        // Without the broker no release will come: return every held buffer.
+        self.release_remote_presents();
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
@@ -324,9 +394,21 @@ impl State {
     }
 
     pub(crate) fn configure_gpu_window_to_display(&mut self, id: u64) {
-        let Some(window) = self.windows.get(id) else { return };
-        let Some(display) = self.displays.get(window.display) else { return };
-        let size = display.logical_size();
+        let Some(display) = self.windows.get(id).and_then(|w| self.displays.get(w.display)) else { return };
+        let mut size = display.logical_size();
+        let limit = (crate::windows::OVERSCAN_MAX_PICTURE as f64 / display.info.scale).round() as i32;
+        let Some(window) = self.windows.get_mut(id) else { return };
+        // The display's extent is what the client shows; an asked-for overscan adds to it.
+        window.overscan_size = None;
+        window.shown = Some(size);
+        if window.overscan.w > 0 || window.overscan.h > 0 {
+            let (whole, applied) = crate::windows::overscan_layout(size, window.overscan, window.max_size(), limit);
+            if applied.w > 0 || applied.h > 0 {
+                size = whole;
+                window.overscan_size = Some(whole);
+            }
+        }
+        let window = self.windows.get(id).unwrap();
         match &window.surface {
             Surface::Toplevel(toplevel) => {
                 toplevel.with_pending_state(|state| state.size = Some(size));
@@ -352,6 +434,7 @@ impl State {
                 self.gpu_last_bind_request = bind.request;
                 let mut matches = match bind.space {
                     gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
+                    gpu_control::BUFFER_WINDOW => self.buffer_gpu_bind_matches(&bind),
                     _ => self.wayland_gpu_bind_matches(&bind),
                 };
                 // A retained fallback display is not an authenticated owner layout.
@@ -386,7 +469,12 @@ impl State {
                     Err(()) => self.gpu_control_failed(),
                 }
             }
+            Record::BufferReleased { request, status } => {
+                if !self.remote_presents.released(request) { self.gpu_control_failed(); return }
+                if status != 0 { tracing::debug!("remote buffer present {request} not shown: errno {status}"); }
+            }
             Record::Lifecycle { kind, executor, generation } => {
+                if kind == 5 { self.release_remote_presents(); }
                 let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
                 match kind {
                     4 => {
@@ -458,6 +546,9 @@ impl State {
             fullscreen: false,
             maximized: false,
             lineage: None,
+            overscan: (0, 0).into(),
+            overscan_size: None,
+            shown: None,
         });
         self.assign_output(id);
         if kind == WindowKind::Toplevel {
@@ -597,8 +688,14 @@ impl State {
                 let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };
                 let Some(display) = self.displays.get(w.display) else { continue };
                 let Some((width, height)) = virtual_target_pixels(size.w, size.h, display.info.scale) else { continue };
-                now.geometry.w = width;
-                now.geometry.h = height;
+                // A size configured with overscan shows the shown part as the geometry.
+                let over = (w.overscan_size == Some(size)).then_some(w.overscan)
+                    .and_then(|o| virtual_target_pixels(o.w.max(1), o.h.max(1), display.info.scale)
+                        .map(|(ow, oh)| proto::Size { w: if o.w > 0 { ow } else { 0 }, h: if o.h > 0 { oh } else { 0 } }));
+                let (ow, oh) = over.map_or((0, 0), |o| (o.w, o.h));
+                now.geometry.w = width - ow;
+                now.geometry.h = height - oh;
+                now.overscan = over;
             }
             match &w.announced {
                 None => {
@@ -693,8 +790,10 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         // Smithay's renderer consumes this assignment, so inspect it first.
         // A missing buffer assignment is not an explicit unmap.
-        let detached = smithay::wayland::compositor::with_states(surface, |states| {
-            is_explicit_buffer_detach(states.cached_state.get::<SurfaceAttributes>().current().buffer.as_ref())
+        let (detached, new_buffer) = smithay::wayland::compositor::with_states(surface, |states| {
+            let mut attributes = states.cached_state.get::<SurfaceAttributes>();
+            let buffer = attributes.current().buffer.as_ref();
+            (is_explicit_buffer_detach(buffer), matches!(buffer, Some(BufferAssignment::NewBuffer(_))))
         });
         if detached {
             if let Some(id) = self.windows.by_surface(surface) {
@@ -705,6 +804,9 @@ impl CompositorHandler for State {
             }
         }
         on_commit_buffer_handler::<Self>(surface);
+        if new_buffer {
+            self.present_remote_buffer(surface);
+        }
         let Renderer::Pixman(r) = &mut self.renderer;
         // Import now so a client's shm buffer is released as early as possible.
         let _ = smithay::backend::renderer::utils::import_surface_tree(r, surface);
@@ -758,8 +860,13 @@ impl DmabufHandler for State {
     }
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
-        let ok = match &mut self.renderer {
-            Renderer::Pixman(r) => r.import_dmabuf(&dmabuf, None).is_ok(),
+        // A remote buffer's pixels are on the phone: nothing here can map them.
+        let ok = if crate::remote_buffers::is_remote(&dmabuf) {
+            crate::remote_buffers::identity(&dmabuf).is_some()
+        } else {
+            match &mut self.renderer {
+                Renderer::Pixman(r) => r.import_dmabuf(&dmabuf, None).is_ok(),
+            }
         };
         if ok {
             let _ = notifier.successful::<State>();

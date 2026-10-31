@@ -1,0 +1,14 @@
+--- a/host/vulkan/vk_decoder_global_state.cpp
++++ b/host/vulkan/vk_decoder_global_state.cpp
+@@ -11531,6 +11531,11 @@
+         if (m_vkEmulation->supportsPortabilityEnumeration()) {
+             hostAlwaysDeviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+         }
++        // Caboose: the phone's scroll compositor reads presented pictures as Metal textures.
++        if (std::none_of(hostAlwaysDeviceExtensions.begin(), hostAlwaysDeviceExtensions.end(),
++                         [](const char* name) { return strcmp(name, VK_EXT_METAL_OBJECTS_EXTENSION_NAME) == 0; })) {
++            hostAlwaysDeviceExtensions.push_back(VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
++        }
+ #endif
+ 
+ #if defined(__linux__)

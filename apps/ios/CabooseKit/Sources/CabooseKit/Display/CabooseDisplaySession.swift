@@ -105,6 +105,8 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Geometry the phone asked for and the server has not confirmed yet, with when: updates
     /// still on their way from before it would otherwise snap a dragged window back.
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval, display: DisplayInfo?)] = [:]
+    /// The overscan last asked for per window on this connection.
+    private var requestedOverscan: [Int: CGSize] = [:]
     /// Authenticated window output assignment; never inferred from the view's screen.
     private var windowDisplays: [Int: Int] = [:]
     private var lastVsync: [Int: UInt64] = [:]
@@ -287,6 +289,7 @@ public final class CabooseDisplaySession: DisplaySession {
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
+        requestedOverscan.removeAll()
         if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
@@ -379,6 +382,8 @@ public final class CabooseDisplaySession: DisplaySession {
                     latencyMs = Double(now - sent) / 1000
                     metrics.roundTrip(ms: Double(now - sent) / 1000)
                 }
+                LocalScrollProfile.note(String(format: "rtt sent=%.6f pong=%.6f rtt_ms=%.3f",
+                                               Double(sent) / 1_000_000, Double(now) / 1_000_000, Double(now) / 1000 - Double(sent) / 1000))
                 if let reconciling, reconciling.marker == sent { finishReconciling(reconciling.announced) }
             case .bye(let reason):
                 isReplaced = reason == "replaced"
@@ -713,6 +718,7 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         if let fullscreen = fields.fullscreen { window.isFullscreen = fullscreen }
         if let alpha = fields.alpha { window.hasAlpha = alpha }
+        if let overscan = fields.overscan { window.overscan = overscan }
         if let size = fields.minimumSize { window.minimumSize = size }
         if let size = fields.maximumSize { window.maximumSize = size }
         if let icon = fields.icon, let source = CGImageSourceCreateWithData(icon as CFData, nil),
@@ -799,6 +805,15 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)
+    }
+
+    /// Asks the app to lay `window` out `size` larger than its geometry, right and below, so
+    /// its pictures hold content beyond what the phone shows; `.zero` ends it. The server
+    /// reports the overscan actually applied in `window.update`.
+    public func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {
+        guard state == .ready, window.game == nil, requestedOverscan[window.id, default: .zero] != size else { return }
+        requestedOverscan[window.id] = size
+        send(.configure(window: window.id, geometry: nil, overscan: size))
     }
 
     public func focus(_ window: RemoteWindow?) {

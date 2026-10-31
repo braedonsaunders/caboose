@@ -315,6 +315,13 @@ host's devices when unset or `auto`:
 | `dri` | `/dev/dri/renderD128` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa + VA-API |
 | `none` | otherwise | any | nothing | CPU |
 
+Whatever its GPU, the container also gets `/dev/userfaultfd` when the host has it, owned
+by the session user's group: the phone-GPU driver tracks stores to large mapped Vulkan
+allocations with it ([coherent write tracking](../guest/gpu/gfxstream/coherent/README.md#kernel-write-tracking)).
+It also gets the host's `vgem` nodes, the computer's render node ([gpu-buffers.md](gpu-buffers.md)),
+likewise owned by the session user's group; the Linux installer loads `vgem` for the
+container runtime. A host whose only render node is `vgem` is detected as `none`.
+
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
@@ -2740,7 +2747,11 @@ and restores its dock.
   guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
   scrolling and dedicated phone trackpads retain their existing gain. This calibrates
   the Xwayland/Chromium reference response; other applications retain their own scroll
-  interpretation (see [scroll units](display.md#direct-content-scroll-units)). A new touch, context action, target change, detach or app backgrounding
+  interpretation (see [scroll units](display.md#direct-content-scroll-units)). Finger
+  pans over a window picture the phone draws are phone-owned: the phone moves captured
+  pictures at display rate with iOS momentum, drives the app ahead of itself, and hands
+  back to the app's picture at rest (see [phone-owned scrolling](display.md#phone-owned-scrolling)).
+  A new touch, context action, target change, detach or app backgrounding
   stops client inertia. Card and free-desktop scroll delivery is fenced to the original
   connection and geometry. Changing the finger count during an emulated pan cancels
   that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without

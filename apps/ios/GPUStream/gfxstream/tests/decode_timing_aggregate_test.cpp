@@ -15,26 +15,34 @@ int main() {
     agg.recordDecode(20324, 4500);
     agg.recordFlush(120);
     agg.recordDecode(20025, 200);
+    agg.recordDecode(20065, 3200);
+    agg.recordDecode(20021, 1800);
 
     DecodeTimingSnapshot period{};
     uint64_t elapsed = 0;
     assert(!agg.pollPeriod(2000999, period, elapsed));
     assert(agg.pollPeriod(2001000, period, elapsed));
     assert(elapsed == 2000000);
-    assert(period.decode_all.count == 3 && period.decode_all.sum_us == 5900 && period.decode_all.max_us == 4500);
+    assert(period.decode_all.count == 5 && period.decode_all.sum_us == 10900 && period.decode_all.max_us == 4500);
     assert(period.decode_20025.count == 2 && period.decode_20025.sum_us == 1400 && period.decode_20025.max_us == 1200);
+    assert(period.decode_20065.count == 1 && period.decode_20065.sum_us == 3200 && period.decode_20065.max_us == 3200);
+    assert(period.decode_20021.count == 1 && period.decode_20021.sum_us == 1800 && period.decode_20021.max_us == 1800);
     assert(period.read_wait.count == 2 && period.read_wait.sum_us == 350 && period.read_wait.max_us == 300);
     assert(period.read_bytes == 65496);
     assert(period.flush.count == 2 && period.flush.sum_us == 200 && period.flush.max_us == 120);
 
     // Period resets while stream total preserves all observations.
     agg.recordDecode(20025, 900);
+    agg.recordDecode(20065, 450);
     assert(!agg.pollPeriod(3000000, period, elapsed));
     assert(agg.pollPeriod(4001000, period, elapsed));
-    assert(period.decode_all.count == 1 && period.decode_all.sum_us == 900);
+    assert(period.decode_all.count == 2 && period.decode_all.sum_us == 1350);
+    assert(period.decode_20065.count == 1 && period.decode_20065.sum_us == 450);
     const auto& total = agg.total();
-    assert(total.decode_all.count == 4 && total.decode_all.sum_us == 6800 && total.decode_all.max_us == 4500);
+    assert(total.decode_all.count == 7 && total.decode_all.sum_us == 12250 && total.decode_all.max_us == 4500);
     assert(total.decode_20025.count == 3 && total.decode_20025.sum_us == 2300 && total.decode_20025.max_us == 1200);
+    assert(total.decode_20065.count == 2 && total.decode_20065.sum_us == 3650 && total.decode_20065.max_us == 3200);
+    assert(total.decode_20021.count == 1 && total.decode_20021.sum_us == 1800 && total.decode_20021.max_us == 1800);
 
     // Saturating addition never wraps on count or sum overflow.
     DecodeDurationSample sat{};

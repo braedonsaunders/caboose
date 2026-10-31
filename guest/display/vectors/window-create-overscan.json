@@ -1,0 +1,8 @@
+{
+  "name": "window-create-overscan",
+  "description": "A window laid out 2556 pixels taller than the 1179x2556 the client shows: its pictures are 1179x5112.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 14, "kind": "toplevel", "alpha": false, "title": "Wikipedia — Chromium", "app_id": "chromium", "display": 1, "geometry": [0, 0, 1179, 2556], "overscan": [0, 2556], "xwayland": false, "fullscreen": false}}
+  ],
+  "hex": "0286000000aa6269640e646b696e6468746f706c6576656c65616c706861f4657469746c657657696b69706564696120e28094204368726f6d69756d666170705f6964686368726f6d69756d67646973706c6179016867656f6d6574727984000019049b1909fc686f7665727363616e82001909fc68787761796c616e64f46a66756c6c73637265656ef4"
+}

@@ -66,14 +66,15 @@
  
 --- a/host/vulkan/vulkan_boxed_handles.h
 +++ b/host/vulkan/vulkan_boxed_handles.h
-@@ -133,6 +133,12 @@
+@@ -133,6 +133,13 @@
  
  extern BoxedHandleManager sBoxedHandleManager;
  
-+// The next boxed handle of `tag` created on this thread takes the guest-assigned value
-+// `handle` instead of a minted one. The decoder sets it from a create command's output
-+// handle and clears it once the command returns.
++// The next boxed handle(s) of `tag` created on this thread take the guest-assigned
++// value(s) instead of minted ones. The decoder sets them from a create command's output
++// handle(s) and clears them once the command returns.
 +void setNextGuestAssignedHandle(BoxedHandle handle, BoxedHandleTypeTag tag);
++void setNextGuestAssignedHandles(const BoxedHandle* handles, size_t count, BoxedHandleTypeTag tag);
 +void clearNextGuestAssignedHandle();
 +
  #define DEFINE_BOXED_DISPATCHABLE_HANDLE_API_DECL(type)               \
@@ -81,7 +82,7 @@
      void delete_##type(type boxed);                                   \
 --- a/host/vulkan/vulkan_boxed_handles.cpp
 +++ b/host/vulkan/vulkan_boxed_handles.cpp
-@@ -67,12 +67,30 @@
+@@ -67,12 +67,58 @@
  uint64_t BoxedHandleManager::getHandlesCount() const {
      std::lock_guard<std::mutex> lock(mMutex);
      return mReverseMap.size();
@@ -89,24 +90,52 @@
 +
 +namespace {
 +thread_local BoxedHandle tNextGuestHandle = 0;
++thread_local std::deque<BoxedHandle> tNextGuestHandles;
 +thread_local BoxedHandleTypeTag tNextGuestTag = Tag_Invalid;
 +}  // namespace
 +
 +void setNextGuestAssignedHandle(BoxedHandle handle, BoxedHandleTypeTag tag) {
++    tNextGuestHandles.clear();
 +    tNextGuestHandle = (handle >> 56) == 0xCA ? handle : 0;
 +    tNextGuestTag = tag;
 +}
 +
-+void clearNextGuestAssignedHandle() {
++void setNextGuestAssignedHandles(const BoxedHandle* handles, size_t count, BoxedHandleTypeTag tag) {
 +    tNextGuestHandle = 0;
-+    tNextGuestTag = Tag_Invalid;
++    tNextGuestHandles.clear();
++    if (!handles || !count) {
++        tNextGuestTag = Tag_Invalid;
++        return;
++    }
++    for (size_t i = 0; i < count; ++i) {
++        if ((handles[i] >> 56) != 0xCA) {
++            tNextGuestHandles.clear();
++            tNextGuestTag = Tag_Invalid;
++            return;
++        }
++        tNextGuestHandles.push_back(handles[i]);
++    }
++    tNextGuestTag = tag;
  }
  
++void clearNextGuestAssignedHandle() {
++    tNextGuestHandle = 0;
++    tNextGuestHandles.clear();
++    tNextGuestTag = Tag_Invalid;
++}
++
  BoxedHandle BoxedHandleManager::add(const BoxedHandleInfo& item, BoxedHandleTypeTag tag) {
      BoxedHandle handle;
  
 -    if (mHandleReplay) {
-+    if (tNextGuestHandle && tag == tNextGuestTag) {
++    if (!tNextGuestHandles.empty() && tag == tNextGuestTag) {
++        BoxedHandle next = tNextGuestHandles.front();
++        tNextGuestHandles.pop_front();
++        handle = (BoxedHandle)mStore.addFixed(next, item, (size_t)tag);
++        if (tNextGuestHandles.empty()) {
++            clearNextGuestAssignedHandle();
++        }
++    } else if (tNextGuestHandle && tag == tNextGuestTag) {
 +        handle = (BoxedHandle)mStore.addFixed(tNextGuestHandle, item, (size_t)tag);
 +        clearNextGuestAssignedHandle();
 +    } else if (mHandleReplay) {
@@ -259,7 +288,27 @@
                  vkStream->write((VkPipelineCache*)pPipelineCache, 8 * 1);
                  // Begin manual non dispatchable handle create for pPipelineCache;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -5810,6 +5828,7 @@
+@@ -5668,6 +5686,8 @@
+                         *(((VkPipeline*)pPipelines) + k) =
+                             tmpval ? (VkPipeline)(VkPipeline)((VkPipeline)tmpval) : VK_NULL_HANDLE;
+                     }
++                    setNextGuestAssignedHandles(reinterpret_cast<const BoxedHandle*>(pPipelines),
++                                                createInfoCount, Tag_VkPipeline);
+                 }
+                 if (pCreateInfos) {
+                     for (uint32_t i = 0; i < (uint32_t)createInfoCount; ++i) {
+@@ -5705,7 +5725,10 @@
+                                   "handle map overwrite requires VkPipeline to be 8 bytes long");
+                     vkStream->handleMapping()->mapHandles_VkPipeline((VkPipeline*)pPipelines,
+                                                                      createInfoCount);
++                    clearNextGuestAssignedHandle();
+                     vkStream->write((VkPipeline*)pPipelines, 8 * createInfoCount);
++                } else {
++                    clearNextGuestAssignedHandle();
+                 }
+                 // Begin manual non dispatchable handle create for pPipelines;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -5810,6 +5833,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -267,7 +316,7 @@
                  *(VkPipelineLayout*)pPipelineLayout =
                      (VkPipelineLayout)(VkPipelineLayout)((VkPipelineLayout)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -5842,6 +5861,7 @@
+@@ -5842,6 +5866,7 @@
                                "handle map overwrite requires VkPipelineLayout to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkPipelineLayout(
                      (VkPipelineLayout*)pPipelineLayout, 1);
@@ -275,7 +324,7 @@
                  vkStream->write((VkPipelineLayout*)pPipelineLayout, 8 * 1);
                  // Begin manual non dispatchable handle create for pPipelineLayout;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -5954,6 +5974,7 @@
+@@ -5954,6 +5979,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -283,7 +332,7 @@
                  *(VkSampler*)pSampler = (VkSampler)(VkSampler)((VkSampler)(*&cgen_var_2));
                  if (pCreateInfo) {
                      transform_tohost_VkSamplerCreateInfo(m_state,
-@@ -5983,6 +6004,7 @@
+@@ -5983,6 +6009,7 @@
                  static_assert(8 == sizeof(VkSampler),
                                "handle map overwrite requires VkSampler to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkSampler((VkSampler*)pSampler, 1);
@@ -291,7 +340,7 @@
                  vkStream->write((VkSampler*)pSampler, 8 * 1);
                  // Begin manual non dispatchable handle create for pSampler;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -6089,6 +6111,7 @@
+@@ -6089,6 +6116,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -299,7 +348,7 @@
                  *(VkDescriptorSetLayout*)pSetLayout =
                      (VkDescriptorSetLayout)(VkDescriptorSetLayout)((
                          VkDescriptorSetLayout)(*&cgen_var_2));
-@@ -6124,6 +6147,7 @@
+@@ -6124,6 +6152,7 @@
                      "handle map overwrite requires VkDescriptorSetLayout to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkDescriptorSetLayout(
                      (VkDescriptorSetLayout*)pSetLayout, 1);
@@ -307,7 +356,7 @@
                  vkStream->write((VkDescriptorSetLayout*)pSetLayout, 8 * 1);
                  // Begin manual non dispatchable handle create for pSetLayout;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -6234,6 +6258,7 @@
+@@ -6234,6 +6263,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -315,7 +364,7 @@
                  *(VkDescriptorPool*)pDescriptorPool =
                      (VkDescriptorPool)(VkDescriptorPool)((VkDescriptorPool)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -6266,6 +6291,7 @@
+@@ -6266,6 +6296,7 @@
                                "handle map overwrite requires VkDescriptorPool to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkDescriptorPool(
                      (VkDescriptorPool*)pDescriptorPool, 1);
@@ -323,7 +372,27 @@
                  vkStream->write((VkDescriptorPool*)pDescriptorPool, 8 * 1);
                  // Begin manual non dispatchable handle create for pDescriptorPool;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -7278,6 +7304,7 @@
+@@ -7190,6 +7221,8 @@
+                         *(((VkPipeline*)pPipelines) + k) =
+                             tmpval ? (VkPipeline)(VkPipeline)((VkPipeline)tmpval) : VK_NULL_HANDLE;
+                     }
++                    setNextGuestAssignedHandles(reinterpret_cast<const BoxedHandle*>(pPipelines),
++                                                createInfoCount, Tag_VkPipeline);
+                 }
+                 if (pCreateInfos) {
+                     for (uint32_t i = 0; i < (uint32_t)createInfoCount; ++i) {
+@@ -7228,7 +7261,10 @@
+                                   "handle map overwrite requires VkPipeline to be 8 bytes long");
+                     vkStream->handleMapping()->mapHandles_VkPipeline((VkPipeline*)pPipelines,
+                                                                      createInfoCount);
++                    clearNextGuestAssignedHandle();
+                     vkStream->write((VkPipeline*)pPipelines, 8 * createInfoCount);
++                } else {
++                    clearNextGuestAssignedHandle();
+                 }
+                 // Begin manual non dispatchable handle create for pPipelines;
+                 vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
+@@ -7278,6 +7314,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -331,7 +400,7 @@
                  *(VkFramebuffer*)pFramebuffer =
                      (VkFramebuffer)(VkFramebuffer)((VkFramebuffer)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -7310,6 +7337,7 @@
+@@ -7310,6 +7347,7 @@
                                "handle map overwrite requires VkFramebuffer to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkFramebuffer((VkFramebuffer*)pFramebuffer,
                                                                      1);
@@ -339,7 +408,7 @@
                  vkStream->write((VkFramebuffer*)pFramebuffer, 8 * 1);
                  // Begin manual non dispatchable handle create for pFramebuffer;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -7415,6 +7443,7 @@
+@@ -7415,6 +7453,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -347,7 +416,7 @@
                  *(VkRenderPass*)pRenderPass =
                      (VkRenderPass)(VkRenderPass)((VkRenderPass)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -7446,6 +7475,7 @@
+@@ -7446,6 +7485,7 @@
                  static_assert(8 == sizeof(VkRenderPass),
                                "handle map overwrite requires VkRenderPass to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkRenderPass((VkRenderPass*)pRenderPass, 1);
@@ -355,7 +424,7 @@
                  vkStream->write((VkRenderPass*)pRenderPass, 8 * 1);
                  // Begin manual non dispatchable handle create for pRenderPass;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -10929,6 +10959,7 @@
+@@ -10929,6 +10969,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -363,7 +432,7 @@
                  *(VkRenderPass*)pRenderPass =
                      (VkRenderPass)(VkRenderPass)((VkRenderPass)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -10960,6 +10991,7 @@
+@@ -10960,6 +11001,7 @@
                  static_assert(8 == sizeof(VkRenderPass),
                                "handle map overwrite requires VkRenderPass to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkRenderPass((VkRenderPass*)pRenderPass, 1);
@@ -371,7 +440,7 @@
                  vkStream->write((VkRenderPass*)pRenderPass, 8 * 1);
                  // Begin manual non dispatchable handle create for pRenderPass;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -16035,6 +16067,7 @@
+@@ -16035,6 +16077,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -379,7 +448,7 @@
                  *(VkRenderPass*)pRenderPass =
                      (VkRenderPass)(VkRenderPass)((VkRenderPass)(*&cgen_var_2));
                  if (pCreateInfo) {
-@@ -16066,6 +16099,7 @@
+@@ -16066,6 +16109,7 @@
                  static_assert(8 == sizeof(VkRenderPass),
                                "handle map overwrite requires VkRenderPass to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkRenderPass((VkRenderPass*)pRenderPass, 1);
@@ -387,7 +456,7 @@
                  vkStream->write((VkRenderPass*)pRenderPass, 8 * 1);
                  // Begin manual non dispatchable handle create for pRenderPass;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -22737,6 +22771,7 @@
+@@ -22737,6 +22781,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -395,7 +464,7 @@
                  *(VkImage*)pImage = (VkImage)(VkImage)((VkImage)(*&cgen_var_2));
                  // Begin manual dispatchable handle unboxing for pMemoryRequirements;
                  vkReadStream->unsetHandleMapping();
-@@ -22781,6 +22816,7 @@
+@@ -22781,6 +22826,7 @@
                  static_assert(8 == sizeof(VkImage),
                                "handle map overwrite requires VkImage to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkImage((VkImage*)pImage, 1);
@@ -403,7 +472,7 @@
                  vkStream->write((VkImage*)pImage, 8 * 1);
                  // Begin manual non dispatchable handle create for pImage;
                  vkStream->setHandleMapping(&m_boxedHandleUnwrapMapping);
-@@ -22838,6 +22874,7 @@
+@@ -22838,6 +22884,7 @@
                  uint64_t cgen_var_2;
                  memcpy((uint64_t*)&cgen_var_2, *readStreamPtrPtr, 8);
                  *readStreamPtrPtr += 8;
@@ -411,7 +480,7 @@
                  *(VkBuffer*)pBuffer = (VkBuffer)(VkBuffer)((VkBuffer)(*&cgen_var_2));
                  // Begin manual dispatchable handle unboxing for pMemoryRequirements;
                  vkReadStream->unsetHandleMapping();
-@@ -22882,6 +22919,7 @@
+@@ -22882,6 +22929,7 @@
                  static_assert(8 == sizeof(VkBuffer),
                                "handle map overwrite requires VkBuffer to be 8 bytes long");
                  vkStream->handleMapping()->mapHandles_VkBuffer((VkBuffer*)pBuffer, 1);
