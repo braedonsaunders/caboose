@@ -22,9 +22,9 @@ AUDIT_INPUTS = {
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
 }
-# vk_decoder_global_state.cpp after 0029 (resource cache) and 0040 (guest-device Metal objects).
+# vk_decoder_global_state.cpp after 0027/0028 (A2), 0029 (resource cache) and 0040 (guest-device Metal objects).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '3d7db1424fadd0ce6df313cdfc88202a2461677f6c1f51d5dcea0b558854d723',
+    'host/vulkan/vk_decoder_global_state.cpp': '7475aa011451740f5bd73cffaee8d60c4da832de709c593ad7e01108c42d47fd',
     'host/vulkan/caboose_pipeline_cache.h': '55c33c7a126fdd693a3c0cb4b11eca7bfb062200eb93286288a89ce068ea3fe2',
 }
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
