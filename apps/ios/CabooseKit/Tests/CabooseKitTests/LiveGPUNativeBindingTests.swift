@@ -73,6 +73,23 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertEqual(runtime.received.values.reduce(0) { $0 + $1.count }, 12) // no hello/envelope leakage
         XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
     }
+    func testStreamEOFWithEPROTODuringProcessExitDoesNotFailBinding() throws {
+        let runtime = LiveRuntimeProbe(); runtime.runEprotoOnEOF = true
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        try binding.consume(wire(.streamOpen, sequence: 3, process: 1, stream: 1))
+        try binding.consume(wire(.data, sequence: 4, process: 1, stream: 1, payload: Data([0, 0, 0, 0])))
+        try binding.consume(wire(.fin, sequence: 5, process: 1, stream: 1))
+        XCTAssertTrue(output.waitForFINs(1))
+        try binding.consume(wire(.processStop, sequence: 6, process: 1))
+        try binding.consume(wire(.revoke, sequence: 7))
+        try binding.finish()
+        XCTAssertNil(output.error)
+        XCTAssertEqual(runtime.finishedTokens, [1])
+    }
     func testDrainWaitsForSessionThenEmitsOnceWithoutInventingRetirement() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)
@@ -251,6 +268,7 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
     var finishedTokens: [UInt64] = []
     var allRunsJoinedBeforeFinish = true
     var finishCode: Int32 = 0
+    var runEprotoOnEOF = false
     var cleanupGate: DispatchSemaphore?
     let cleaning = DispatchSemaphore(value: 0)
     var reads = true
@@ -265,7 +283,7 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
         while true {
             let count = Darwin.read(fd, &bytes, bytes.count)
             if count < 0 && errno == EINTR { continue }
-            if count <= 0 { return 0 }
+            if count <= 0 { return runEprotoOnEOF ? EPROTO : 0 }
             lock.withLock { received[token, default: Data()].append(contentsOf: bytes.prefix(count)) }
             let written = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress!, count) }
             if written != count { return EIO }

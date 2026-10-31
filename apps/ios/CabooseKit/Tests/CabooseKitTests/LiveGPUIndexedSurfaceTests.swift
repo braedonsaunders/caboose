@@ -32,6 +32,7 @@ private final class IndexedSwapProbe: LiveGPUIndexedSwapchain, @unchecked Sendab
     var pendingAcquire = false
     var waitForQuery = false
     var badFinal = false
+    var retireErrno: Int32 = 0
     var operation: IndexedAcquireProbe?
     var presents = 0
     var retirements = 0
@@ -52,12 +53,13 @@ private final class IndexedSwapProbe: LiveGPUIndexedSwapchain, @unchecked Sendab
         return .init(status: .init(nativeErrno: 0, vkResult: 0), disposition: .queued)
     }
     func retire() -> LiveGPUSurfaceStatus {
-        retirements += 1; return .init(nativeErrno: 0, vkResult: nil)
+        retirements += 1; return .init(nativeErrno: retireErrno, vkResult: nil)
     }
 }
 private final class IndexedSurfaceProbe: LiveGPUIndexedSurfaceResource, @unchecked Sendable {
     let swap = IndexedSwapProbe()
     var waitForSignalInQuery = false
+    var retired = 0
     func create(_ info: LiveGPUSwapchainCreate) -> (LiveGPUSurfaceStatus, (any LiveGPUIndexedSwapchain)?) {
         (.init(nativeErrno: 0, vkResult: 0), swap)
     }
@@ -73,19 +75,21 @@ private final class IndexedSurfaceProbe: LiveGPUIndexedSurfaceResource, @uncheck
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
         XCTFail("obsolete present path called"); return .init(status: .init(nativeErrno: ENOTSUP, vkResult: nil), disposition: .rejected)
     }
-    func retire() throws {}
+    func retire() throws { retired += 1 }
 }
 private final class IndexedReceipts: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: [LiveGPUSurfaceMessage.Body] = []
     private var problems: [Error] = []
+    var closed = false
     var bodies: [LiveGPUSurfaceMessage.Body] { lock.withLock { stored } }
     var errors: [Error] { lock.withLock { problems } }
     let mapped = DispatchSemaphore(value: 0)
     let final = DispatchSemaphore(value: 0)
     let acquired = DispatchSemaphore(value: 0)
     let stopped = DispatchSemaphore(value: 0)
-    func add(_ body: LiveGPUSurfaceMessage.Body) {
+    func add(_ body: LiveGPUSurfaceMessage.Body) throws {
+        if lock.withLock({ closed }) { throw LiveGPUError.closed }
         lock.withLock { stored.append(body) }
         switch body {
         case .swapchain(.mapped): mapped.signal()
@@ -99,7 +103,7 @@ private final class IndexedReceipts: @unchecked Sendable {
 }
 final class LiveGPUIndexedSurfaceTests: XCTestCase {
     private func prepare(_ native: IndexedSurfaceProbe, _ receipts: IndexedReceipts) throws -> LiveGPUIndexedSurface {
-        let engine = LiveGPUIndexedSurface(resource: native, budget: LiveGPUBudget(), emit: { receipts.add($0) }, failed: { receipts.fail($0) })
+        let engine = LiveGPUIndexedSurface(resource: native, budget: LiveGPUBudget(), emit: { try receipts.add($0) }, failed: { receipts.fail($0) })
         try engine.enqueue(.create(.init(request: 1, device: 2, oldSwapchain: 0, flags: 0, minImageCount: 2,
             format: 44, colorSpace: 0, width: 800, height: 600, arrayLayers: 1, usage: 2, preTransform: 1,
             compositeAlpha: 1, presentMode: 2, clipped: true, sharingMode: 0, families: [])))
@@ -161,6 +165,26 @@ final class LiveGPUIndexedSurfaceTests: XCTestCase {
             if case .swapchain(.acquired(_, _, _, nil, .cancelled)) = $0 { return true }; return false
         })
         XCTAssertEqual(native.swap.presents, 0); XCTAssertTrue(receipts.errors.isEmpty)
+    }
+    func testClosedOutputDuringAcquireAndPendingPresentDoesNotPoisonNativeRetirement() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts(); native.swap.pendingAcquire = true
+        let engine = try prepare(native, receipts)
+        try engine.enqueue(acquire(2))
+        try engine.enqueue(present(1))
+        receipts.closed = true
+        try engine.retire()
+        XCTAssertEqual(native.swap.retirements, 1)
+        XCTAssertTrue(receipts.errors.isEmpty)
+    }
+    func testSurfaceRetirementFailureDuringRevokeReportsNativeErrorWithoutPoisoningSession() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
+        native.swap.retireErrno = EBUSY
+        let engine = try prepare(native, receipts)
+        XCTAssertThrowsError(try engine.retire()) { error in
+            XCTAssertEqual(error as? LiveGPUBindingError, .native(operation: "indexed retirement", code: EBUSY))
+        }
+        XCTAssertEqual(native.swap.retirements, 1)
+        XCTAssertTrue(receipts.errors.isEmpty)
     }
     func testFinalWithoutSourceFenceFailsAndCannotClaimRetirement() throws {
         let native = IndexedSurfaceProbe(), receipts = IndexedReceipts(); native.swap.badFinal = true

@@ -90,7 +90,7 @@ private final class LiveGPUDuplex: @unchecked Sendable {
     let bridge: Int32
     let native: Int32
     let workers = DispatchGroup()
-    var inboundFinished = false // consumer worker only
+    var inboundFinished = false // guarded by owning LiveGPUProcess.lock
     init() throws {
         var descriptors: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &descriptors) == 0 else {
@@ -321,12 +321,15 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             try openStream(frame)
         case .data, .fin:
             let process = try process(frame.process)
-            guard let stream = process.lock.withLock({ process.streams[frame.stream] }), !stream.inboundFinished else {
+            guard let stream = process.lock.withLock({ () -> LiveGPUDuplex? in
+                guard let stream = process.streams[frame.stream], !stream.inboundFinished else { return nil }
+                if frame.kind == .fin { stream.inboundFinished = true }
+                return stream
+            }) else {
                 throw LiveGPUBindingError.protocolViolation("unknown or half-closed stream")
             }
             if frame.kind == .data { try stream.write(frame.payload) }
             else {
-                stream.inboundFinished = true
                 guard shutdown(stream.bridge, SHUT_WR) == 0 else { throw LiveGPUBindingError.system(operation: "half-close", code: errno) }
             }
         case .surfaceBind, .surfaceQuery, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent:
@@ -386,7 +389,11 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             let result = backend.run(process.token, fd: stream.native, maxPacket: maxPacket, maxReply: maxReply)
             // Native does not own the fd. Its write half ends only after run returns.
             shutdown(stream.native, SHUT_WR)
-            if result != 0 && !(result == ECANCELED && process.lock.withLock({ process.stopped })) {
+            let expectedStreamEnd = process.lock.withLock {
+                (result == ECANCELED && process.stopped) ||
+                (result == EPROTO && (process.stopped || stream.inboundFinished))
+            }
+            if result != 0 && !expectedStreamEnd {
                 fail(LiveGPUBindingError.native(operation: "run", code: result))
             }
         }

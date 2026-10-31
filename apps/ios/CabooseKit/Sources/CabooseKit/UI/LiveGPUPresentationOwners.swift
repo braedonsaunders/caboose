@@ -33,8 +33,9 @@ public final class LiveGPUPresentationOwners {
         waiting.retry()
     }
 
-    /// Invalidates admission immediately on main; native GPU work and UIKit
-    /// ownership remain retained until the worker retirement/main detach barrier.
+    /// Invalidates admission and detaches visible presentation layers immediately on main;
+    /// native GPU work and backing layer ownership remain retained until the worker
+    /// retirement/main detach barrier.
     public func revoke() {
         stopped = true; epoch = nil; windows.removeAll()
         waiting.cancel()
@@ -44,6 +45,7 @@ public final class LiveGPUPresentationOwners {
                 LiveGPUMemoryAudit.ownerInvalidated(.session)
                 #endif
             }
+            lease.content?.removeFromSuperview()
         }
     }
 
@@ -60,6 +62,7 @@ public final class LiveGPUPresentationOwners {
                 #if DEBUG && canImport(CabooseGPUMemoryAudit)
                 LiveGPUMemoryAudit.ownerInvalidated(.withdrawn)
                 #endif
+                lease.content?.removeFromSuperview()
                 invalidated(lease.identity)
             }
         }
@@ -70,14 +73,14 @@ public final class LiveGPUPresentationOwners {
               windows[lease.windowID] == lease.windowIdentity,
               let view = lease.view, let window = view.remoteWindow,
               ObjectIdentifier(window) == lease.windowIdentity, eligible(view),
-              extent(view) == lease.extent else {
+              let currentExtent = extent(view) else {
             if lease.invalidate() {
                 #if DEBUG && canImport(CabooseGPUMemoryAudit)
                 let reason: LiveGPUMemoryAudit.OwnerInvalidation
                 if stopped { reason = .session }
                 else if epoch != lease.identity.epoch || windows[lease.windowID] != lease.windowIdentity { reason = .ownership }
                 else if let view = lease.view, eligible(view) {
-                    reason = extent(view) == lease.extent ? .ownership : .geometry
+                    reason = extent(view) == nil ? .geometry : .ownership
                 } else { reason = .visibility }
                 if reason == .geometry {
                     let pending = lease.view.flatMap { view in
@@ -91,12 +94,24 @@ public final class LiveGPUPresentationOwners {
                 }
                 LiveGPUMemoryAudit.ownerInvalidated(reason)
                 #endif
+                lease.content?.removeFromSuperview()
                 invalidated(lease.identity)
             }
             return
         }
-        // Fitting the same server pixels to a new UIKit slot does not resize Vulkan.
-        if let view = lease.view { (lease.content as? LiveGPULayerView)?.fit(in: view.bounds) }
+        if currentExtent != lease.extent {
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            let pending = ((view.session ?? view.pacer) as? CabooseDisplaySession)?.pendingPresentationSize(window)
+            LiveGPUMemoryAudit.ownerGeometry(previous: lease.extent,
+                server: window.frame.size, visible: view.bounds.size,
+                pending: pending)
+            #endif
+            lease.extent = currentExtent
+        }
+        // Fitting the view slot scales the dedicated presentation layer without
+        // invalidating the bound surface; the guest recreates its swapchain at
+        // the new extent via configurePresentationExtent.
+        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
         guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
@@ -230,11 +245,11 @@ final class LiveGPULayerLease: @unchecked Sendable {
     let identity: LiveGPUSurfaceIdentity
     let windowID: UInt64
     let windowIdentity: ObjectIdentifier
-    let extent: CGSize
+    @MainActor var extent: CGSize
     @MainActor weak var view: RemoteWindowView?
     @MainActor var content: UIView?
     @MainActor var layer: CAMetalLayer? {
-        guard let content = content as? LiveGPULayerView else { return nil }
+        guard isValid, let content = content as? LiveGPULayerView else { return nil }
         content.layoutIfNeeded()
         content.applyDrawableExtent()
         return content.metal

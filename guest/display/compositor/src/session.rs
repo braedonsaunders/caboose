@@ -397,7 +397,7 @@ impl State {
         let change = self.displays.replace(&self.dh, displays);
         let revoked: Vec<_> = self.windows.iter().filter_map(|window| {
             let available = owner_displays.contains(&window.display);
-            (!available || change.changed.contains(&window.display) || change.removed.contains(&window.display)).then_some(window.id)
+            (!available || change.removed.contains(&window.display)).then_some(window.id)
         }).collect();
         for id in revoked {
             let grant = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
@@ -408,12 +408,16 @@ impl State {
         let fallback = self.displays.primary().info.id;
         let ids = self.windows.ids();
         let mut resized = Vec::new();
+        let mut gpu_resized = Vec::new();
         for id in &ids {
+            let active_gpu = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(*id));
             if let Some(w) = self.windows.get_mut(*id) {
                 if (w.fullscreen || w.maximized)
                     && (change.changed.contains(&w.display) || change.removed.contains(&w.display))
                 {
                     resized.push(*id);
+                } else if active_gpu && change.changed.contains(&w.display) {
+                    gpu_resized.push(*id);
                 }
                 if change.removed.contains(&w.display) {
                     w.display = fallback;
@@ -428,6 +432,8 @@ impl State {
             // A removed output was remapped above, so it needs the same treatment.
             if resized.contains(&id) {
                 self.configure_window(&proto::Configure { id, ..Default::default() });
+            } else if gpu_resized.contains(&id) {
+                self.configure_gpu_window_to_display(id);
             }
         }
         // sync_windows (next tick) sends the resulting window.update messages.

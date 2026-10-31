@@ -171,6 +171,23 @@ replies. PROCESS_STOP revokes admission and interrupts active native runs.
 PROCESS_RETIRED requires every run to return and the real upstream process cleanup
 barrier to complete. Presentation resources require their own retirement proof.
 
+When an individual local application crashes or disconnects its stream or surface
+sockets, the broker contains the failure to that process and its bound surfaces
+without terminating the executor session or disturbing other live processes.
+Disconnected streams send FIN, discard undeliverable reverse DATA, and wait for
+the phone's reverse FIN; a truncated stream closed by a crashing peer at `FIN` or
+`PROCESS_STOP` completes that stream's retirement rather than failing the session.
+Disconnected surfaces cancel any pending indexed acquisition
+(`SWAPCHAIN_CANCEL_ACQUIRE`), request compositor grant revocation (`RevokeRequest`),
+wait for the crashed process's active command streams to drain before sending
+`SURFACE_RETIRE`, and release the compositor grant (`GrantRetired`) only after
+receiving the phone's `SURFACE_RETIRED` receipt, followed by `PROCESS_STOP` and
+`PROCESS_RETIRED` when the process has no remaining streams or surfaces. If native
+surface retirement returns an errno for a disconnected surface, the phone still
+detaches the UIKit presentation view and reports `SURFACE_RETIRED` with that
+nonnegative errno, quarantining only that surface slot while keeping the executor
+and other processes alive.
+
 For orderly app closure, EXECUTOR_DRAIN keeps the connection open while the broker
 stops local admission and requests process stops. After actual process retirement,
 the broker sends REVOKE. The phone sends REVOKED only after native cleanup, and the
@@ -209,8 +226,15 @@ The app's visible interactive owner view supplies the native layer; thumbnails
 cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
 and linked surface backend; ordinary display and agent sessions do not. The
 registry matches the display epoch, window object and one visible eligible view.
-The executor survives an ordinary display reconnect; losing its owner, changing
-extent requests revocation of the affected surface. Background or computer
+The executor survives an ordinary display reconnect and seamless display or
+owner-view geometry changes (such as device rotation): when the display or
+window extent changes to a valid new size, the compositor reconfigures the
+bound toplevel window to the new display dimensions and the owner view updates
+the active lease extent and fits the presentation view in place while the
+application reconfigures its swapchain at the new extent, without revoking the
+surface grant or dropping the executor. Losing the owner view, removing its
+display, or invalid/zero geometry requests revocation of only the affected
+surface (`SURFACE_REVOKE_REQUEST`). Background or computer
 replacement drains the entire executor. This path is not enabled
 by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
 AppModel then opens the existing authenticated host endpoint and updates the
@@ -269,8 +293,10 @@ the consumer worker waits; main continues processing display and layout events.
 The broker preserves this pair;
 it pins the first authenticated compositor BIND epoch to the executor and rejects
 subsequent mismatches. The fixed-extent query reports the attached
-provider's actual extent. A server pixel-size change revokes the generation and requires retirement
-and detachment before replacement.
+provider's actual extent. On the variable-extent indexed path, a valid server
+pixel-size or owner-view layout change updates the active lease extent and fits
+the presentation layer in place so the application can recreate its swapchain at
+the new size without revoking the grant.
 
 The native indexed interface also exposes an explicit variable-buffer-extent
 query. It retains actual provider min/max limits and the supported format/mode
@@ -343,7 +369,12 @@ monotonic serial high-water mark. Rejected submissions keep their acquired image
 and original wait set available to the caller.
 
 Owner-view invalidation enters the bounded serial consumer queue and emits kind
-35 once for the complete retained grant. It preserves the process and callback
+35 once for the complete retained grant. When a lease is invalidated, withdrawn,
+revoked, or retired, the owner view immediately removes the GPU presentation view
+from its superview so the underlying window picture and video path remain visible
+without a frozen GPU overlay, while the lease retains its strong reference to the
+`CAMetalLayer`-backed view until native surface retirement and detachment finish
+and only re-attaches when a new grant binds. It preserves the process and callback
 context until the compositor requests retirement and native cleanup succeeds.
 Late local invalidations after retirement are ignored; foreign peer records still
 reject. Already-in-transit query or present requests receive a local stale-owner
@@ -449,7 +480,9 @@ acquisition and source-copy completion are independent conditions for source
 reuse. The native path retains acquire-signal, copy and maintenance1 present
 fence records independently, including across reacquisition. Retirement releases
 unused acquired images only with the real enabled maintenance extension and
-proof their operations are safe; unknown completion quarantines the resources.
+proof their operations are safe (establishing device idle under the host device
+mutex when the guest process exited or the surface was revoked before an explicit
+idle call); unknown completion quarantines the resources.
 
 PRESENT_RETIRED is a final per-frame receipt after the actual copy and maintenance1
 present fences succeed, frame resources are destroyed and the native frame record

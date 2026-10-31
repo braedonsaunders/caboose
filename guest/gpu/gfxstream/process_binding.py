@@ -178,6 +178,16 @@ class ProcessBindings:
                 raise PermissionError('local socket does not match a live process')
             return existing[1]
 
+    def process_alive(self, generation, process_id):
+        """Return whether a bound process identity is still live in this generation."""
+        with self._lock:
+            if not self._active or generation != self._generation:
+                return False
+            for _key, (peer, current) in self._peers.items():
+                if current == process_id:
+                    return peer.alive()
+            return False
+
     def duplicate_process_identity(self, generation, process_id):
         """Duplicate the held pidfd for a compositor BIND; caller closes it."""
         with self._lock:

@@ -417,9 +417,17 @@ class Session:
                           Kind.SWAPCHAIN_RETIRED, Kind.SURFACE_REVOKE_REQUEST, Kind.PRESENT_RETIRED):
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
             surface = self.surfaces.get(key)
-            if surface is None or surface['process'] != frame.process or surface.get('replies') is None:
+            if surface is None or surface['process'] != frame.process or (
+                    surface.get('replies') is None and not surface.get('disconnected')):
                 raise ValueError('unexpected surface response')
-            surface['verify_peer']()
+            if surface.get('replies') is not None:
+                try:
+                    surface['verify_peer']()
+                except PermissionError:
+                    if surface.get('abort_client') is not None:
+                        surface['abort_client']('surface peer exited or changed')
+                    else:
+                        raise
             if frame.kind == Kind.SURFACE_BOUND:
                 if surface['bound'] is not None: raise ValueError('duplicate surface bind reply')
                 error, has_vk, vk, _ = struct.unpack_from('<iIiI', frame.payload, 40)
@@ -444,7 +452,9 @@ class Session:
             elif frame.kind == Kind.SURFACE_REVOKE_REQUEST:
                 if not self.indexed_enabled or surface['indexed'].revoking: raise ValueError('unexpected surface revoke')
                 surface['indexed'].revoking = True
-                await self.broker.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
+                if not surface.get('revoke_requested'):
+                    surface['revoke_requested'] = True
+                    await self.broker.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
             elif frame.kind == Kind.PRESENT_RETIRED:
                 if not self.indexed_enabled: raise ValueError('indexed executor not enabled')
                 swap, serial = struct.unpack_from('<QQ', frame.payload, 40)
@@ -481,27 +491,36 @@ class Session:
                     else:
                         if not pending['result'] or pending['terminal']: raise ValueError('unexpected terminal present event')
                         pending['terminal'] = True
-            body = (struct.pack('<Q', surface['window']) if frame.kind == Kind.SURFACE_BOUND else b'') + frame.payload
-            data = surface_wire.encode_reply(frame.kind, body)
-            if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
-                raise ValueError('surface reply byte limit')
-            surface['reply_bytes'] += len(data)
-            try: surface['replies'].put_nowait(data)
-            except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
+            if surface.get('replies') is not None:
+                body = (struct.pack('<Q', surface['window']) if frame.kind == Kind.SURFACE_BOUND else b'') + frame.payload
+                data = surface_wire.encode_reply(frame.kind, body)
+                if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
+                    raise ValueError('surface reply byte limit')
+                surface['reply_bytes'] += len(data)
+                try: surface['replies'].put_nowait(data)
+                except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
             return
         if frame.kind == Kind.SURFACE_RETIRED:
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
             surface = self.surfaces.get(key)
-            if surface is None or not surface['retiring'] or surface['process'] != frame.process:
+            if (surface is None or not surface['retiring'] or surface.get('retire_sent') is False or
+                    surface['process'] != frame.process):
                 raise ValueError('unexpected surface retirement')
-            if self.indexed_enabled and (surface['indexed'].creating or surface['presents'] or
+            if self.indexed_enabled and not surface.get('disconnected') and (
+                    surface['indexed'].creating or surface['presents'] or
                     any(swap['acquire'] is not None or swap['mapping'] for swap in surface['indexed'].swaps.values())):
                 raise ValueError('surface retired before pending operation completion')
             error, has_vk, vk, _reserved = struct.unpack_from('<iIiI', frame.payload, 40)
-            if error != 0 or (has_vk and vk != 0):
+            if (error != 0 or (has_vk and vk != 0)) and not surface.get('disconnected'):
                 raise ValueError('surface retirement failed')
             if surface.get('replies') is not None:
-                surface['verify_peer']()
+                try:
+                    surface['verify_peer']()
+                except PermissionError:
+                    if surface.get('abort_client') is not None:
+                        surface['abort_client']('surface peer exited or changed')
+                    else:
+                        raise
             await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
             if surface.get('replies') is not None:
                 data = surface_wire.encode_reply(frame.kind, frame.payload)
@@ -517,13 +536,14 @@ class Session:
             return
         stream = self.streams.get(frame.stream)
         if stream is None or stream['process'] != frame.process: raise ValueError('unknown stream')
-        discard_reply = False
+        discard_reply = stream.get('discard_reply', False)
         try:
             bound_process, _identity = self.bindings.identity(self.binding_generation, frame.stream)
         except RuntimeError:
-            # Only an already half-closed stream can drain after its creator exits.
-            # Still validate the retained generation/stream binding; never admit work.
-            if not stream.get('local_eof'): raise
+            # Only an already half-closed stream can accept native FIN after its
+            # creator exits; in-flight reverse DATA for a newly exited creator is
+            # discarded while the local reader finishes observing EOF.
+            if frame.kind != Kind.DATA and not stream.get('local_eof'): raise
             bound_process, _identity = self.bindings.identity(
                 self.binding_generation, frame.stream, require_alive=False)
             discard_reply = True
@@ -541,11 +561,18 @@ class Session:
                 stream['remote_fin'].set(); return
             raise ValueError('unexpected draining stream message')
         if frame.kind == Kind.DATA:
-            stream['writer'].write(frame.payload)
-            await stream['writer'].drain(); return
+            try:
+                stream['writer'].write(frame.payload)
+                await stream['writer'].drain()
+            except OSError:
+                stream['discard_reply'] = True
+            return
         if frame.kind == Kind.FIN:
-            stream['writer'].write_eof()
-            await stream['writer'].drain()
+            try:
+                stream['writer'].write_eof()
+                await stream['writer'].drain()
+            except OSError:
+                stream['discard_reply'] = True
             stream['remote_fin'].set(); return
         raise ValueError('unexpected executor message')
 
@@ -555,7 +582,21 @@ class Session:
         if surface is None: raise ValueError('unknown surface revoke')
         if not surface['retiring']:
             surface['retiring'] = True
-            self.send(Kind.SURFACE_RETIRE, surface['process'], payload=record.epoch + record.grant + struct.pack('<Q', record.generation))
+        self.maybe_send_surface_retire(key)
+
+    def maybe_send_surface_retire(self, key):
+        surface = self.surfaces.get(key)
+        if surface is None or not surface['retiring'] or surface.get('retire_sent'):
+            return
+        if surface.get('bind_sent') is False:
+            return
+        process = self.processes.get(surface['process'])
+        if (surface.get('disconnected') and not self.draining and process is not None and
+                process.get('streams') and not self.bindings.process_alive(self.binding_generation, surface['process'])):
+            return
+        surface['retire_sent'] = True
+        epoch, grant, generation = key
+        self.send(Kind.SURFACE_RETIRE, surface['process'], payload=epoch + grant + struct.pack('<Q', generation))
 
     def stop_process_if_idle(self, process_id):
         process = self.processes.get(process_id)
@@ -595,6 +636,8 @@ class Session:
         if self.reserved_count or self.reserved_bytes: raise RuntimeError('local read credits remain after drain')
         # Compositor LOST queues every REVOKE_GRANT. Only its authenticated
         # records cause SURFACE_RETIRE; never infer a native surface retirement.
+        for key in tuple(self.surfaces):
+            self.maybe_send_surface_retire(key)
         surfaces = tuple(self.surfaces.values())
         if surfaces:
             await asyncio.wait_for(asyncio.gather(*(surface['retired'].wait() for surface in surfaces)), 4)
@@ -640,31 +683,47 @@ class Session:
     async def local(self, reader, writer):
         peer = None
         process_id = stream_id = None
+        local_aborted = False
         try:
             sock = writer.get_extra_info('socket')
             if self.draining:
                 return
-            peer = PeerIdentity.from_socket(sock, os.getuid())
-            offered = await asyncio.wait_for(reader.readexactly(48), 5)
-            if offered != self.hello: raise ValueError('local hello mismatch')
-            if self.draining:
+            try:
+                peer = PeerIdentity.from_socket(sock, os.getuid())
+                offered = await asyncio.wait_for(reader.readexactly(48), 5)
+                if offered != self.hello: raise ValueError('local hello mismatch')
+                if self.draining:
+                    return
+                process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
+                peer = None  # bindings owns it
+            except (OSError, ValueError, PermissionError, RuntimeError, OverflowError,
+                    asyncio.TimeoutError, asyncio.IncompleteReadError):
+                local_aborted = True
                 return
-            process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
-            peer = None  # bindings owns it
             process = self.processes.get(process_id)
             if process is None:
                 process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set(), 'surfaces': set()}
                 self.processes[process_id] = process
                 self.send(Kind.PROCESS_OPEN, process_id)
-            if process['stopping']: raise ValueError('process retiring')
+            if process['stopping']:
+                local_aborted = True
+                return
             process['streams'].add(stream_id)
             await asyncio.wait_for(process['ready'].wait(), 10)
-            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(), 'remote_fin': asyncio.Event(), 'local_eof': False}
+            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(),
+                      'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
             await asyncio.wait_for(stream['ready'].wait(), 10)
-            writer.write(self.hello); await writer.drain()
-            while True:
+            try:
+                writer.write(self.hello)
+                await writer.drain()
+            except OSError:
+                self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                stream['discard_reply'] = True
+                stream['local_eof'] = True
+                self.send(Kind.FIN, process_id, stream_id)
+            while not stream['local_eof']:
                 credit = None
                 readable = False
                 try:
@@ -690,8 +749,25 @@ class Session:
                 except asyncio.TimeoutError:
                     # Waiting for credit is not an idle peer read: EOF may be
                     # queued behind backpressure after a legitimate creator exit.
-                    self.bindings.identity(self.binding_generation, stream_id,
-                                           require_alive=not readable or credit is not None)
+                    try:
+                        self.bindings.identity(self.binding_generation, stream_id,
+                                               require_alive=not readable or credit is not None)
+                    except RuntimeError:
+                        if self.draining or self.failed or self.closing_ws:
+                            raise
+                        self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                        stream['discard_reply'] = True
+                        stream['local_eof'] = True
+                        self.send(Kind.FIN, process_id, stream_id, credit=credit)
+                        break
+                except (OSError, RuntimeError):
+                    if self.draining or self.failed or self.closing_ws:
+                        raise
+                    self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                    stream['discard_reply'] = True
+                    stream['local_eof'] = True
+                    self.send(Kind.FIN, process_id, stream_id, credit=credit)
+                    break
                 finally:
                     if credit is not None: credit.release()
             await asyncio.wait_for(stream['remote_fin'].wait(), 10)
@@ -705,7 +781,9 @@ class Session:
         finally:
             if peer is not None: peer.close()
             reader.close()
-            if not await close_owned_writer(writer, abort=self.draining or self.failed or (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False))):
+            abort_writer = (local_aborted or self.draining or self.failed or
+                            (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False)))
+            if not await close_owned_writer(writer, abort=abort_writer):
                 self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
@@ -714,7 +792,10 @@ class Session:
                 if process:
                     process['streams'].discard(stream_id)
                     if not self.failed and not self.draining:
-                        try: self.stop_process_if_idle(process_id)
+                        try:
+                            for surface_key in tuple(process['surfaces']):
+                                self.maybe_send_surface_retire(surface_key)
+                            self.stop_process_if_idle(process_id)
                         except (OSError, RuntimeError, BufferError):
                             self.failed = True; self.writer.close()
 
@@ -769,7 +850,11 @@ class Broker:
                 self.closing.set()
                 raise ValueError('duplicate surface grant')
             session.surface_epoch = result.epoch
-            session.surfaces[key] = {'process': process_id, 'window': result.window, 'retiring': False, 'retired': asyncio.Event()}
+            session.surfaces[key] = {
+                'process': process_id, 'window': result.window,
+                'retiring': False, 'retire_sent': False, 'revoke_requested': False,
+                'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event()
+            }
             session.processes[process_id]['surfaces'].add(key)
             return result
         finally:
@@ -852,18 +937,27 @@ class Broker:
             result = await self.request_bind(session, process_id, obj, space=space)
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
+            identity = result.epoch + result.grant + struct.pack('<Q', result.generation)
+            def abort_client(reason=None):
+                if surface.get('disconnected'):
+                    return
+                if reason is not None:
+                    print(f'CABOOSE_GPU_SURFACE_FAILED {reason}', file=sys.stderr, flush=True)
+                surface['disconnected'] = True
+                surface['replies'] = None
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
             surface['replies'] = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
             surface.update(bound=None, queries=set(), presents={}, last_query=0, last_present=0, reply_bytes=0,
-                           verify_peer=verify_peer, indexed=IndexedSurface())
+                           verify_peer=verify_peer, abort_client=abort_client, indexed=IndexedSurface())
             sender = asyncio.create_task(send_replies(surface['replies']))
             def sender_done(task):
                 if not task.cancelled() and task.exception() is not None:
-                    print(f'CABOOSE_GPU_SURFACE_FAILED reply sender: {task.exception()!r}', file=sys.stderr, flush=True)
-                    session.failed = True
-                    session.writer.close()
+                    abort_client(f'reply sender: {task.exception()!r}')
             sender.add_done_callback(sender_done)
-            identity = result.epoch + result.grant + struct.pack('<Q', result.generation)
             session.send(Kind.SURFACE_BIND, process_id, payload=identity + struct.pack('<QQII', result.window, instance, width, height))
+            surface['bind_sent'] = True
+            session.maybe_send_surface_retire(key)
             while not session.draining:
                 verify_peer()
                 try: kind, body = await asyncio.wait_for(receive(), 1)
@@ -902,18 +996,40 @@ class Broker:
                         session.frame_timing.begin(surface, surface['presents'][serial])
                     session.send(Kind(kind), process_id, payload=identity + body)
                 elif kind == 23:
-                    if not surface['retiring']:
+                    if not surface['retiring'] and not surface.get('revoke_requested'):
+                        surface['revoke_requested'] = True
                         await self.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
                     await asyncio.wait_for(surface['retired'].wait(), 5)
-                    await asyncio.wait_for(surface['replies'].join(), 5)
+                    if surface.get('replies') is not None:
+                        await asyncio.wait_for(surface['replies'].join(), 5)
                     return
                 else: raise ValueError('unexpected surface request')
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, PermissionError) as error:
-            # A lost client cannot imply native resource retirement.
+            # Retire only this surface/process when a local client disconnects or fails,
+            # while still waiting for real native retirement before releasing the grant.
             if key is not None and key in session.surfaces:
-                print(f'CABOOSE_GPU_SURFACE_FAILED {type(error).__name__}: {error}', file=sys.stderr, flush=True)
-                session.failed = True
-                session.writer.close()
+                surface = session.surfaces[key]
+                abort_client(f'{type(error).__name__}: {error}')
+                if surface.get('bind_sent') is False:
+                    session.failed = True
+                    session.writer.close()
+                elif not session.draining and not session.failed and not session.closing_ws:
+                    try:
+                        if session.indexed_enabled:
+                            for swap_id, swap in tuple(surface['indexed'].swaps.items()):
+                                acquire = swap.get('acquire')
+                                if acquire is not None:
+                                    body = struct.pack('<QQ', swap_id, acquire)
+                                    surface['indexed'].send(31, body)
+                                    session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, process_id, payload=identity + body)
+                        if not surface['retiring'] and not surface.get('revoke_requested'):
+                            surface['revoke_requested'] = True
+                            await self.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
+                        session.maybe_send_surface_retire(key)
+                        await asyncio.wait_for(surface['retired'].wait(), 10)
+                    except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError):
+                        session.failed = True
+                        session.writer.close()
         finally:
             if key is not None and key in session.surfaces:
                 session.surfaces[key]['replies'] = None

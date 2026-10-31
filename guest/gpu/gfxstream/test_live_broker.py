@@ -536,6 +536,133 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.surfaces)
         session.bindings.finish(session.binding_generation)
 
+    async def test_crashed_process_surface_disconnect_waits_for_stream_fin_and_preserves_other_process(self):
+        from test_process_binding import FakePeer
+        session = broker.Session(None, b'a' * 16, 1, None, Writer(), indexed=True)
+        session.session_ready.set()
+        peer1 = FakePeer(71, 1)
+        peer2 = FakePeer(72, 2)
+        p1, s1 = session.bindings.bind(session.binding_generation, peer1)
+        p2, s2 = session.bindings.bind(session.binding_generation, peer2)
+        ready = asyncio.Event()
+        ready.set()
+        session.processes[p1] = {'ready': ready, 'retired': asyncio.Event(), 'stopping': False, 'streams': {s1}, 'surfaces': set()}
+        session.processes[p2] = {'ready': ready, 'retired': asyncio.Event(), 'stopping': False, 'streams': {s2}, 'surfaces': set()}
+        session.streams[s1] = {'process': p1, 'writer': Writer(), 'ready': ready, 'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
+        session.streams[s2] = {'process': p2, 'writer': Writer(), 'ready': ready, 'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
+
+        sent_envelopes = []
+        session.send = mock.Mock(side_effect=lambda kind, process=0, stream=0, payload=b'', credit=None: sent_envelopes.append((kind, process, stream, payload)))
+        control_records = []
+        async def send_control(data, fd=None):
+            control_records.append(control_protocol.decode(data, 0))
+        instance = broker.Broker.__new__(broker.Broker)
+        instance.send_control = mock.AsyncMock(side_effect=send_control)
+        session.broker = instance
+
+        key = (b'e' * 16, b'g' * 16, 7)
+        identity = key[0] + key[1] + struct.pack('<Q', key[2])
+        async def request_bind(_session, process_id, obj, space=0):
+            self.assertEqual(process_id, p1)
+            session.surfaces[key] = {
+                'process': p1, 'window': 12, 'retiring': False, 'retire_sent': False,
+                'revoke_requested': False, 'bind_sent': False, 'disconnected': False,
+                'retired': asyncio.Event(),
+            }
+            session.processes[p1]['surfaces'].add(key)
+            return control_protocol.BindResult(1, 0, key[0], key[1], 12, key[2])
+        instance.request_bind = request_bind
+
+        def cgls(kind, body):
+            return struct.pack('<4sHHII', b'CGLS', 1, kind, 16 + len(body), 0) + body
+        bound_ready = asyncio.Event()
+        steps = [
+            cgls(16, struct.pack('<QIIII', 8, 9, 0, 0, 0)),
+            bound_ready,
+            cgls(29, struct.pack('<QQQQQII', 5, 11, 21, 0, 1000, 1, 0)),
+            b'',
+        ]
+        sock = mock.Mock()
+        sock.fileno.return_value = 99
+        def recvmsg(_size, _flags):
+            if steps and isinstance(steps[0], asyncio.Event):
+                if not steps[0].is_set():
+                    raise BlockingIOError()
+                steps.pop(0)
+            data = steps.pop(0) if steps else b''
+            return data, [], 0, None
+        sock.recvmsg.side_effect = recvmsg
+        sock.send.side_effect = lambda data: len(data)
+        reader_cb = []
+        loop = asyncio.get_running_loop()
+
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=FakePeer(71, 1)), \
+             mock.patch.object(session.bindings, 'find_process', return_value=p1), \
+             mock.patch.object(loop, 'add_reader', side_effect=lambda _fd, cb: reader_cb.append(cb)), \
+             mock.patch.object(loop, 'remove_reader'), \
+             mock.patch.object(broker.surface_wire, 'validate_surface'):
+            task = asyncio.create_task(instance.surface_client(session, sock))
+            try:
+                await asyncio.sleep(0.01)
+                self.assertEqual([item[0] for item in sent_envelopes], [Kind.SURFACE_BIND])
+                await session.message(Envelope(Kind.SURFACE_BOUND, b'a' * 16, 1, p1, 0, 1, identity + struct.pack('<iIiI', 0, 1, 0, 0)))
+                surface = session.surfaces[key]
+                surface['indexed'].swaps[5] = {
+                    'count': 3, 'mapping': False, 'mapped': True, 'retiring': False,
+                    'acquire': None, 'last_acquire': None, 'acquired': set(),
+                }
+                bound_ready.set()
+                for cb in tuple(reader_cb):
+                    cb()
+                await asyncio.sleep(0.02)
+
+                # Process 1 crashed: peer1 is dead, surface socket closed while acquire 11 was pending and stream s1 is still active.
+                peer1.open = False
+                self.assertEqual([item[0] for item in sent_envelopes], [
+                    Kind.SURFACE_BIND,
+                    Kind.SWAPCHAIN_ACQUIRE,
+                    Kind.SWAPCHAIN_CANCEL_ACQUIRE,
+                ])
+                self.assertEqual(sent_envelopes[-1][3], identity + struct.pack('<QQ', 5, 11))
+                self.assertEqual(control_records, [control_protocol.RevokeRequest(*key)])
+
+                # Compositor responds with RevokeGrant, but stream s1 for dead peer1 has not drained yet, so SURFACE_RETIRE waits.
+                session.request_surface_retire(control_protocol.RevokeGrant(*key))
+                self.assertTrue(surface['retiring'])
+                self.assertFalse(surface['retire_sent'])
+                self.assertEqual([item[0] for item in sent_envelopes], [
+                    Kind.SURFACE_BIND,
+                    Kind.SWAPCHAIN_ACQUIRE,
+                    Kind.SWAPCHAIN_CANCEL_ACQUIRE,
+                ])
+
+                # Once stream s1 finishes draining, SURFACE_RETIRE is sent.
+                session.streams.pop(s1)
+                session.bindings.unbind_stream(session.binding_generation, s1)
+                session.processes[p1]['streams'].remove(s1)
+                session.maybe_send_surface_retire(key)
+                self.assertTrue(surface['retire_sent'])
+                self.assertEqual(sent_envelopes[-1][:2], (Kind.SURFACE_RETIRE, p1))
+
+                # Phone replies with SURFACE_RETIRED (even if nativeErrno != 0 on a disconnected surface) -> GrantRetired + PROCESS_STOP.
+                await session.message(Envelope(Kind.SURFACE_RETIRED, b'a' * 16, 1, p1, 0, 2, identity + struct.pack('<iIiI', 5, 0, 0, 0)))
+                await asyncio.wait_for(task, 1)
+                self.assertEqual(control_records[-1], control_protocol.GrantRetired(*key))
+                self.assertEqual(sent_envelopes[-1][:2], (Kind.PROCESS_STOP, p1))
+                await session.message(Envelope(Kind.PROCESS_RETIRED, b'a' * 16, 1, p1, 0, 3))
+                await asyncio.sleep(0.02)
+
+                # Session and Process 2 remain completely healthy.
+                self.assertFalse(session.failed)
+                self.assertNotIn(p1, session.processes)
+                self.assertIn(p2, session.processes)
+                self.assertIn(s2, session.streams)
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                session.bindings.finish(session.binding_generation)
+
     async def test_unknown_stream_is_rejected(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()

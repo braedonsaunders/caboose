@@ -323,6 +323,25 @@ impl State {
         self.net.queue_gpu_control(bytes, Some(grant))
     }
 
+    pub(crate) fn configure_gpu_window_to_display(&mut self, id: u64) {
+        let Some(window) = self.windows.get(id) else { return };
+        let Some(display) = self.displays.get(window.display) else { return };
+        let size = display.logical_size();
+        match &window.surface {
+            Surface::Toplevel(toplevel) => {
+                toplevel.with_pending_state(|state| state.size = Some(size));
+                toplevel.send_configure();
+            }
+            Surface::X11(x11) => {
+                let at = x11.geometry().loc;
+                if let Err(error) = x11.configure(smithay::utils::Rectangle::new(at, size)) {
+                    tracing::warn!("GPU window configure: {error}");
+                }
+            }
+            Surface::Popup(_) => {}
+        }
+    }
+
     fn handle_gpu_record(&mut self, record: crate::gpu_control::Record) {
         use crate::gpu_control::{self, Record};
         match record {
@@ -346,22 +365,7 @@ impl State {
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {
-                    if let Some(window) = self.windows.get(grant.window) {
-                        let size = self.displays.get(window.display).unwrap().logical_size();
-                        match &window.surface {
-                            Surface::Toplevel(toplevel) => {
-                                toplevel.with_pending_state(|state| state.size = Some(size));
-                                toplevel.send_configure();
-                            }
-                            Surface::X11(x11) => {
-                                let at = x11.geometry().loc;
-                                if let Err(error) = x11.configure(smithay::utils::Rectangle::new(at, size)) {
-                                    tracing::warn!("GPU window configure: {error}");
-                                }
-                            }
-                            Surface::Popup(_) => {}
-                        }
-                    }
+                    self.configure_gpu_window_to_display(grant.window);
                     self.sync_windows();
                 }
                 if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
