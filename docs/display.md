@@ -728,8 +728,8 @@ not hand them to Wayland), so the client is not told of them.
 
 ### Phone-owned scrolling
 
-Phone-owned scrolling runs only when the iOS app is launched with `CABOOSE_LOCAL_SCROLL=1`.
-Without it, every pan scrolls the app remotely, as described under direct content scroll
+Phone-owned scrolling is on unless the iOS app is launched with `CABOOSE_LOCAL_SCROLL=0`.
+With that, every pan scrolls the app remotely, as described under direct content scroll
 units, and no presented pictures are captured.
 
 A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
@@ -803,9 +803,11 @@ uses it differently:
   to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
 
 - **Overscan windows.** While a window has been scrolled locally within the last 30
-  seconds and its scrolling region is measured, the phone asks for an overscan of one
-  viewport along the scroll axis (`configure.overscan`, with the whole picture kept within
-  4096 pixels), and ends it after 30 idle seconds, when the window leaves the screen or
+  seconds and its scrolling region is measured, or while a reporter's `scroll.tree` names a
+  scroller with a range (so the first gesture already carries frame tags), the phone asks
+  for an overscan of one viewport along the scroll axis (`configure.overscan`, with the
+  whole picture kept within 4096 pixels). Without a reporter it ends it after 30 idle
+  seconds. In every case it ends it when the window leaves the screen or
   changes, or when the app goes to the background. It asks and ends only at rest. Once
   pictures of the enlarged window arrive (recognised by their shape against the announced
   overscan), the phone shows them through the viewport, also at rest. The header and the
