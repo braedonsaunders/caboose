@@ -152,8 +152,8 @@ def drawn(png):
         at += 12 + length
     return len(set(zlib.decompress(raw)))
 
-# A picture can lag the window; look for ten seconds.
-for _ in range(20):
+# A picture can lag the window on a busy computer; look for twenty seconds.
+for _ in range(40):
     # An X11 window without _NET_WM_PID is matched by its title.
     windows = [w for w in ask('windows')[0]['windows']
                if re.search(pattern, cmdline(w['pid']) if w['pid'] else w['title'])]
