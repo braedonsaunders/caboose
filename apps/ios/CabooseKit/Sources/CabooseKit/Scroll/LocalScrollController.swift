@@ -60,9 +60,9 @@ public final class LocalScrollController {
     /// The newest touch sample's timestamp, for the send log.
     private var lastTouch: TimeInterval?
 
-    /// Phone-owned scrolling runs only when the app is launched with `CABOOSE_LOCAL_SCROLL=1`;
-    /// otherwise every pan scrolls the app remotely, as before.
-    public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_LOCAL_SCROLL"] == "1"
+    /// Phone-owned scrolling runs unless the app is launched with `CABOOSE_LOCAL_SCROLL=0`,
+    /// which makes every pan scroll the app remotely.
+    public static let enabled = ProcessInfo.processInfo.environment["CABOOSE_LOCAL_SCROLL"] != "0"
 
     public init?(enabled: Bool = LocalScrollController.enabled) {
         guard enabled, let renderer = LocalScrollRenderer.shared else { return nil }

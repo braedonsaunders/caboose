@@ -728,8 +728,8 @@ not hand them to Wayland), so the client is not told of them.
 
 ### Phone-owned scrolling
 
-Phone-owned scrolling runs only when the iOS app is launched with `CABOOSE_LOCAL_SCROLL=1`.
-Without it, every pan scrolls the app remotely, as described under direct content scroll
+Phone-owned scrolling is on unless the iOS app is launched with `CABOOSE_LOCAL_SCROLL=0`.
+With that, every pan scrolls the app remotely, as described under direct content scroll
 units, and no presented pictures are captured.
 
 A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
