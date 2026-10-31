@@ -449,7 +449,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         contextTouchGesture = longPress
         longPress.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber]
-        longPress.minimumPressDuration = 0.5
+        longPress.minimumPressDuration = 0.65
         longPress.allowableMovement = 10
         longPress.delegate = self
         addGestureRecognizer(longPress)
@@ -587,16 +587,30 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                   isInteractive, self.window != nil, session.state == .ready,
                   session.windows[window.id] === window else { return }
             let drag = holdUsesPointerDrag
-            cancelTouches()
-            stopMomentum()
             if drag {
+                cancelTouches()
+                stopMomentum()
                 holdingDirectDrag = true
                 focusCheck = nil
                 session.focus(window)
                 sendDirectDrag(directDrag.begin(at: point, translation: .zero))
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
             } else {
-                click(at: point, button: 3)
+                // Defer secondary click by one run-loop turn so a queued touch-up from a quick tap
+                // during a main-thread stall drains before the long-press timer can cancel it.
+                let hadNativeTouch = !activeTouches.isEmpty || pencilPoint != nil
+                DispatchQueue.main.async { [weak self, weak gesture, weak window, weak session] in
+                    guard let self, let gesture, let window, let session,
+                          gesture.state == .began || gesture.state == .changed,
+                          self.remoteWindow === window, self.session === session,
+                          self.isInteractive, self.window != nil, session.state == .ready,
+                          session.windows[window.id] === window,
+                          !hadNativeTouch || !self.activeTouches.isEmpty || self.pencilPoint != nil
+                    else { return }
+                    self.cancelTouches()
+                    self.stopMomentum()
+                    self.click(at: point, button: 3)
+                }
             }
         case .changed:
             if holdingDirectDrag {
