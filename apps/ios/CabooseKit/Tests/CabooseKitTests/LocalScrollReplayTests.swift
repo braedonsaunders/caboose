@@ -173,3 +173,17 @@ struct LocalScrollEstimatorBenchmark {
         }
     }
 }
+
+extension LocalScrollRobustnessTests {
+    /// A hard flick back past the top of the page: the phone bounces at the top the app
+    /// confirms, and the app's picture then takes over without the content moving.
+    @Test func topOfContentBouncesWithoutAJumpAtRest() {
+        var app = Self.app()
+        app.startOffset = 600
+        let report = T.run("top of page", app, [ScrollReplay.Gesture.flick(at: 0.2, peak: -3500, duration: 0.11)], duration: 9)
+        #expect(report.edgeFound)
+        #expect(report.finalError <= 1.5)
+        #expect(report.handoffJump <= 2)
+        #expect(report.settleTime < 4)
+    }
+}

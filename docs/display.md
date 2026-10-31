@@ -740,8 +740,9 @@ uses it differently:
   its latency plus 120 ms (or 1.5 times its longest recent stall). Pictures that do not
   move and no pictures at all look alike at an end and in an app whose scrolling is busy
   (a page decoding images). So the phone sends a 24-pixel step back, alone and behind its
-  own picture. Only an app held at its end can answer by moving back; that confirms the
-  end. An app that moves on was stalled, and one that does not answer within a second is
+  own picture. Only an app held at its end can answer by moving back, in a picture measured
+  against the one before; that confirms the end. A picture that cannot be measured voids
+  the probe. An app that moves on was stalled, and one that does not answer within a second is
   driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
   that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
   picture placed beyond an end removes it. A toolkit adapter's reported range stays.
@@ -754,12 +755,12 @@ uses it differently:
   nearest captured edge. It may fill at most 40% of the region. Past that, the shown
   position resists and catches up as pictures arrive, never slower than the gesture.
 - **Hand back.** When the phone comes to rest, the app is brought to the same position,
-  with up to three correction rounds at the newly learned gain. Once the app's newest
-  picture is within 1.5 picture pixels of it, the phone draws the app's own picture
-  again. After the corrections, an app that stays within 6 pixels, or any app after 1.5
-  seconds at rest, takes over where it is. The phone's content never moves after the
-  finger lets it rest. A touch on moving content stops it without clicking, as in any iOS
-  scroll view.
+  round after round at the newly learned gain, while the phone keeps drawing from its
+  captured pictures. Once the app's newest picture is within 1.5 picture pixels, the phone
+  draws the app's own picture again. The content never moves after the finger lets it
+  rest. The one exception is a native bounce: if a correction lands without the app
+  moving, the phone probes for an end, and only a confirmed end springs the content back
+  to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
 
 The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
 most six of them, chosen for the content they add near the current position. Video layers

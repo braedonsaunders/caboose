@@ -108,13 +108,11 @@ public struct LocalScroll {
         public var edgeGrace: TimeInterval = 0.12
         /// How long a probe is waited for. An app that answers nothing is stalled, not at its end.
         public var edgeSilence: TimeInterval = 1.0
-        /// Correction rounds before the phone hands back to the app's picture wherever it is.
+        /// Correction rounds before an app that does not move is probed for an end.
         public var corrections = 3
         /// How near the app must come to the phone's position for the hand-back, in picture
         /// pixels: an app scrolling in its own, finer or coarser, pixels lands within it.
         public var settleTolerance = 1.5
-        /// The longest the phone keeps correcting at rest before handing back regardless.
-        public var settleLimit: TimeInterval = 1.5
         /// How long the app keeps its lead after a finger stops the content.
         public var haltHold: TimeInterval = 0.2
         /// After a scroll comes to rest, the phone briefly drives the app one region further
@@ -147,7 +145,6 @@ public struct LocalScroll {
     /// Receives one line for each decision worth diagnosing: edges, probes, corrections,
     /// hand-backs.
     public var note: ((String) -> Void)?
-    private var restSince: TimeInterval?
     public private(set) var phase: Phase = .idle
     public private(set) var axis: ScrollAxis = .vertical
     /// Picture pixels per view point along and across the axis.
@@ -201,6 +198,13 @@ public struct LocalScroll {
     /// from a stall: `resume` is where the app is expected if it was only stalled.
     private struct Probe { var candidate: Double; var direction: Double; var sentAt: TimeInterval; var resume: Double }
     private var probe: Probe?
+    /// When a picture was last measured against the one before, and when a picture last had
+    /// to be placed without measurement, breaking the chain of relative positions.
+    private var lastMeasured: TimeInterval = -.infinity
+    private var chainBroken: TimeInterval = -.infinity
+    /// The app's position when the last correction at rest was judged, to see it answer.
+    private var lastJudged: Double?
+    private var pendingProbe = 0.0
     private struct Prefetch {
         var pinned: UInt64
         var origin: Double
@@ -253,7 +257,6 @@ public struct LocalScroll {
             edges = (nil, nil)
         }
         probe = nil
-        restSince = nil
         if fromRest || phase == .prefetching { travelStart = prefetch?.origin ?? placedOffset ?? position }
         // Only a start from rest knows what the app had applied of everything sent.
         gainBaseline = fromRest && !frames.contains(where: { !$0.placed }) ? (sent, placedOffset ?? position) : nil
@@ -414,7 +417,9 @@ public struct LocalScroll {
         frames[i].region = region
         frames[i].holes = holes
         if let region { self.region = region }
-        if reportedBias == nil {
+        if guessed { chainBroken = frame.time } else { lastMeasured = frame.time }
+        // Only a measured picture says where the app is relative to an end.
+        if reportedBias == nil, !guessed {
             if let upper = edges.upper, offset > upper + 2 { note?("edge cleared: app at \(Int(offset)) past upper \(Int(upper))"); edges.upper = nil }
             if let lower = edges.lower, offset < lower - 2 { note?("edge cleared: app at \(Int(offset)) past lower \(Int(lower))"); edges.lower = nil }
         }
@@ -614,7 +619,8 @@ public struct LocalScroll {
         }
 
         // 3. The app stopped answering: its content ends where it stopped.
-        let probeStep = detectEdge(at: time, commandedBefore: commandedBefore)
+        var probeStep = detectEdge(at: time, commandedBefore: commandedBefore)
+        if pendingProbe != 0 { probeStep = pendingProbe; pendingProbe = 0 }
         if probeStep != 0 {
             // The probe goes alone: this refresh's drive forward would cancel it out.
             let dropped = Double(axis.component(send))
@@ -638,7 +644,11 @@ public struct LocalScroll {
         // A picture still being measured may show the app moving.
         guard let app = placedOffset, phase != .idle, !frames.contains(where: { !$0.placed }) else { return 0 }
         if let p = probe {
-            if (lastPicture ?? -.infinity) > p.sentAt {
+            if chainBroken > p.sentAt {
+                // A picture since the probe could not be measured: its answer is unknowable.
+                note?("probe: a picture could not be measured; not an end")
+                probe = nil; commanded = p.resume; unansweredSince = time
+            } else if lastMeasured > p.sentAt {
                 // The app answered the probe by moving back: it was held at its end. Moving
                 // on instead, it was only stalled.
                 if (app - p.candidate) * p.direction < -8 { confirmEdge(at: p.candidate, direction: p.direction, app: app) }
@@ -693,7 +703,6 @@ public struct LocalScroll {
             phase = .idle
             return
         }
-        if restSince == nil { restSince = time }
         let pending = frames.contains { !$0.placed }
         let tolerance = configuration.settleTolerance
         let residual = app - position
@@ -709,25 +718,32 @@ public struct LocalScroll {
         guard time - lastSend > 2 * latency + 0.05, time - (frames.last?.time ?? -.infinity) > 0.05 || !pending else { return }
         learnGain(app: app)
         commanded = app
-        if correctionsLeft > 0 {
-            correctionsLeft -= 1
-            note?("correction: app at \(Int(app)), phone at \(Int(position)); sending \(Int(position - app)) px at gain \(String(format: "%.2f", gain))")
-            // The next refresh sends the difference at the newly learned gain.
-            unansweredSince = nil
-        } else if abs(residual) <= 4 * tolerance || time - (restSince ?? time) > configuration.settleLimit {
-            // The app will not come nearer: its own picture takes over where it is. The phone's
-            // content never moves after the finger has let it rest.
-            note?("hand-back after corrections, \(String(format: "%.1f", residual)) px off")
-            handBack(at: app, time: time)
+        if let judged = lastJudged, abs(judged - app) < 1, correctionsLeft < configuration.corrections, abs(residual) > tolerance {
+            // A correction landed without the app moving: it is held at an end. The probe
+            // confirms it, and only a confirmed end brings the content back to the app.
+            let direction: Double = residual < 0 ? 1 : -1
+            note?("correction: app did not move from \(Int(app)); probing for an end")
+            let step = 24 * direction
+            probe = Probe(candidate: app, direction: direction, sentAt: time, resume: app)
+            commanded = app - step
+            pendingProbe = -step
+            lastJudged = nil
+            return
         }
+        lastJudged = app
+        correctionsLeft = max(0, correctionsLeft - 1)
+        // The phone's content never moves after the finger lets it rest: the app is brought
+        // here, round after round, while the phone keeps drawing from its pictures.
+        note?("correction: app at \(Int(app)), phone at \(Int(position)); sending \(Int(position - app)) px at gain \(String(format: "%.2f", gain))")
+        unansweredSince = nil
     }
 
     private mutating func handBack(at app: Double, time: TimeInterval) {
+        lastJudged = nil
         let travelled = app - (travelStart ?? app)
         learnGain(app: app)
         position = app; requested = app; wanted = app; commanded = app
         phase = .idle
-        restSince = nil
         if configuration.prefetch > 0, abs(travelled) >= 1 {
             prefetchAt = (time + configuration.prefetchDelay, travelled > 0 ? 1 : -1)
         }
