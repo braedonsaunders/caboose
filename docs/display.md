@@ -504,10 +504,11 @@ uses it differently:
   driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
   that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
   picture placed beyond an end removes it. A toolkit adapter's reported range stays.
-- **Stalls.** Consecutive pictures must overlap to be measured. The app is therefore
-  driven at most 0.6 of the region per picture interval. Its input is held while it has
-  shown nothing for three picture intervals and at least 80 ms, so the picture after a stall still
-  overlaps the last one. A picture that cannot be related to earlier ones is placed where
+- **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
+  driven at most 0.6 of the region per picture interval. While it has shown nothing for
+  one and a half picture intervals (and 50 ms), its drive is capped half a region past its
+  last picture. It is never held, since an app that draws only when it scrolls would
+  otherwise stay silent. A picture that cannot be related to earlier ones is placed where
   the forwarded scroll had taken the app, and the earlier pictures are dropped.
 - **Bounded reveal.** Content no captured picture covers shows in the colour of the
   nearest captured edge. It may fill at most 40% of the region. Past that, the shown

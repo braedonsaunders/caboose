@@ -205,6 +205,7 @@ public struct LocalScroll {
     /// The app's position when the last correction at rest was judged, to see it answer.
     private var lastJudged: Double?
     private var pendingProbe = 0.0
+    private var capSince: TimeInterval?
     private struct Prefetch {
         var pinned: UInt64
         var origin: Double
@@ -442,12 +443,13 @@ public struct LocalScroll {
         longestGap = max(longestGap * 0.98, gap)
     }
 
-    /// The app has shown nothing for three picture intervals (and 80 ms) while being driven:
-    /// it is stalled (or at its end). Its input is held so its next picture still overlaps
-    /// the last one and can be measured.
-    private func stalled(at time: TimeInterval) -> Bool {
+    /// The app has shown nothing for one and a half picture intervals while being driven.
+    /// Its drive is then capped half a region past its last picture rather than held: an
+    /// app that draws only when it scrolls keeps receiving input (holding it would silence
+    /// the app for good), while its next picture still overlaps the last and measures.
+    private func silent(at time: TimeInterval) -> Bool {
         guard let last = lastPicture, phase == .tracking || phase == .coasting || phase == .prefetching else { return false }
-        return time - last > max(0.08, 3 * frameInterval) && abs(commanded - (placedOffset ?? commanded)) > 0.25 * regionLength
+        return time - last > max(0.05, 1.5 * frameInterval)
     }
 
     private mutating func learn(from frame: Frame, previous: Frame?) {
@@ -594,9 +596,18 @@ public struct LocalScroll {
             target = time < holdUntil && phase == .settling ? commanded
                 : clampToEdges(phase == .bouncing ? springTarget : wanted)
         }
-        if stalled(at: time) || probe != nil { target = commanded }
+        if probe != nil { target = commanded }
+        let isSilent = silent(at: time)
+        if isSilent, let app = placedOffset, regionLength > 0 {
+            let allowance = 0.5 * regionLength
+            target = min(app + allowance, max(app - allowance, target))
+        }
+        if isSilent != (capSince != nil) {
+            if isSilent { capSince = time; note?("drive capped: no picture for \(Int((time - (lastPicture ?? time)) * 1000)) ms") }
+            else if let since = capSince { note?("drive cap released after \(Int((time - since) * 1000)) ms"); capSince = nil }
+        }
         // Consecutive pictures must overlap to be measured: the app may be driven at most
-        // 0.6 of the region per picture interval, which only binds after a stall or a jump.
+        // 0.6 of the region per picture interval, which only binds after a silence or a jump.
         if regionLength > 0 {
             let step = 0.6 * regionLength * max(elapsed, 1.0 / 240) / max(frameInterval, 1.0 / 120)
             target = commanded + min(step, max(-step, target - commanded))

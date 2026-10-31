@@ -39,6 +39,9 @@ public final class LocalScrollController {
     /// report replaces measurement for that picture.
     public var report: ((PictureSource) -> ScrollObservation?)?
 
+    /// The newest touch sample's timestamp, for the send log.
+    private var lastTouch: TimeInterval?
+
     public init?() {
         guard let renderer = LocalScrollRenderer.shared else { return nil }
         self.renderer = renderer
@@ -61,12 +64,15 @@ public final class LocalScrollController {
         if axis != model.axis { restartChain() }
         self.send = send
         model.begin(at: time, axis: axis, anchor: anchor, scale: scale)
+        lastTouch = time
+        LocalScrollProfile.note(String(format: "engage t=%.4f", CACurrentMediaTime()))
         armedUntil = .infinity
         profile.begin(at: time)
     }
 
     public func track(_ delta: CGPoint, at time: TimeInterval) {
         model.track(delta, at: time)
+        lastTouch = time
         profile.touch(at: time)
     }
 
@@ -137,7 +143,14 @@ public final class LocalScrollController {
         }
         let wasActive = model.isActive
         let tick = model.tick(at: time)
-        if wasActive, !model.isActive { profile.finish(model: model, at: time) }
+        if wasActive, !model.isActive {
+            LocalScrollProfile.note(String(format: "release t=%.4f", CACurrentMediaTime()))
+            profile.finish(model: model, at: time)
+        }
+        if tick.send != .zero, LocalScrollProfile.enabled {
+            LocalScrollProfile.note(String(format: "send t=%.4f touch=%.4f refresh=%.4f phase=%@ dy=%.2f dx=%.2f", CACurrentMediaTime(),
+                                           lastTouch ?? 0, time, "\(model.phase)", Double(tick.send.y), Double(tick.send.x)))
+        }
         if tick.send != .zero || tick.target != nil, let send, !send(tick.send, tick.target) {
             cancel()
             return false
