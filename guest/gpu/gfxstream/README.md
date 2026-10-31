@@ -292,6 +292,11 @@ from indexed-present admission to result, source release and retirement, the
 interval between admissions, and queued DATA bytes. They contain no payloads or
 identities. Retirement receipt rate is not displayed FPS; intervals include relay
 and executor scheduling, and do not isolate GPU execution time.
+Every two seconds while frames flow it also prints `CABOOSE_GPU_PRESENT_RATE`: presents
+received from the guest (`presented`, with ordered presents also counted as
+`ordered`), present results and source releases from the phone, and the longest
+interval between presents (`gap_max_ms`) and between results (`result_gap_max_ms`)
+in that window, so a hitch is visible on either side of the phone.
 
 The indexed socket encoder accepts `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` for bounded
 flush diagnostics. Up to 128 numeric call records and one limit marker report

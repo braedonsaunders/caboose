@@ -9,12 +9,15 @@ private final class IndexedAcquireProbe: LiveGPUAcquireOperation, @unchecked Sen
     var signalled = false
     var observations = 0
     let signal = DispatchSemaphore(value: 0)
-    init(pending: Bool, waitForQuery: Bool = false) { self.pending = pending; queryEntered = !waitForQuery }
+    let index: UInt32
+    init(pending: Bool, waitForQuery: Bool = false, index: UInt32 = 0) {
+        self.pending = pending; queryEntered = !waitForQuery; self.index = index
+    }
     func enterQuery() { gateLock.withLock { queryEntered = true } }
     func poll() -> LiveGPUAcquireCompletion {
         if cancelled { return .init(status: .init(nativeErrno: ECANCELED, vkResult: nil), index: nil, reason: .cancelled) }
         return pending ? .init(status: .init(nativeErrno: 0, vkResult: 1), index: nil, reason: .none)
-            : .init(status: .init(nativeErrno: 0, vkResult: 0), index: 0, reason: .none)
+            : .init(status: .init(nativeErrno: 0, vkResult: 0), index: index, reason: .none)
     }
     func cancel() -> Int32 { if !pending { return EALREADY }; cancelled = true; return 0 }
     func observeSignal() -> LiveGPUSurfaceStatus {
@@ -36,18 +39,38 @@ private final class IndexedSwapProbe: LiveGPUIndexedSwapchain, @unchecked Sendab
     var operation: IndexedAcquireProbe?
     var presents = 0
     var retirements = 0
+    /// Acquired indices alternate when set, so consecutive frames use different images.
+    var alternate = false
+    private var acquisitions: UInt32 = 0
+    /// Holds each frame's final callbacks until released, keeping it in flight.
+    var holdFinal = false
+    private let heldLock = NSLock()
+    private var held: [(UInt64, @Sendable (LiveGPUSurfaceMessage.Body) -> Void)] = []
+    private var presented = 0
+    var presentedCount: Int { heldLock.withLock { presented } }
+    func releaseOldest() {
+        let (serial, event) = heldLock.withLock { held.removeFirst() }
+        event(.sourceReleased(serial: serial)); event(.swapchain(.presentRetired(swapchain: id, serial: serial)))
+    }
     func map(_ images: [UInt64]) -> LiveGPUSurfaceStatus {
         mapped = images == [101,102]
         return .init(nativeErrno: mapped ? 0 : EINVAL, vkResult: nil)
     }
     func beginAcquire(_ info: LiveGPUSwapchainAcquire) -> (LiveGPUSurfaceStatus, (any LiveGPUAcquireOperation)?) {
-        let value = IndexedAcquireProbe(pending: pendingAcquire, waitForQuery: waitForQuery); operation = value
+        let value = IndexedAcquireProbe(pending: pendingAcquire, waitForQuery: waitForQuery,
+                                        index: alternate ? acquisitions % 2 : 0)
+        acquisitions += 1; operation = value
         return (.init(nativeErrno: 0, vkResult: nil), value)
     }
     func present(_ info: LiveGPUIndexedPresent,
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
         XCTAssertTrue(operation?.signalled == true, "present preceded actual signal observation")
         presents += 1
+        heldLock.withLock { presented += 1 }
+        if holdFinal {
+            heldLock.withLock { held.append((info.serial, event)) }
+            return .init(status: .init(nativeErrno: 0, vkResult: 0), disposition: .queued)
+        }
         if !badFinal { event(.sourceReleased(serial: info.serial)) }
         event(.swapchain(.presentRetired(swapchain: id, serial: info.serial)))
         return .init(status: .init(nativeErrno: 0, vkResult: 0), disposition: .queued)
@@ -130,6 +153,38 @@ final class LiveGPUIndexedSurfaceTests: XCTestCase {
     }
     private func kinds(_ receipts: IndexedReceipts) -> [LiveGPUEnvelope.Kind] {
         receipts.bodies.map { LiveGPUSurfaceMessage(identity: .init(epoch: Data(), grant: Data(), generation: 1), body: $0).kind }
+    }
+    func testTwoFramesStayInFlightAndAThirdWaitsForRetirement() throws {
+        let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()
+        native.swap.alternate = true; native.swap.holdFinal = true
+        let engine = try prepare(native, receipts)
+        // Like a real client, each acquire completes before the next one is requested.
+        try engine.enqueue(acquire(2)); XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        try engine.enqueue(present(1, index: 0))
+        try engine.enqueue(acquire(3)); XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        try engine.enqueue(present(2, index: 1))
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline && native.swap.presentedCount < 2 { usleep(1000) }
+        XCTAssertEqual(native.swap.presentedCount, 2, "second frame waited for the first to retire")
+        // A third frame waits until the oldest retires.
+        try engine.enqueue(acquire(4)); XCTAssertEqual(receipts.acquired.wait(timeout: .now()+2), .success)
+        try engine.enqueue(present(3, index: 0))
+        usleep(50_000)
+        XCTAssertEqual(native.swap.presentedCount, 2, "more than two frames in flight")
+        native.swap.releaseOldest()
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        let third = Date().addingTimeInterval(2)
+        while Date() < third && native.swap.presentedCount < 3 { usleep(1000) }
+        XCTAssertEqual(native.swap.presentedCount, 3)
+        native.swap.releaseOldest(); native.swap.releaseOldest()
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        XCTAssertEqual(receipts.final.wait(timeout: .now()+2), .success)
+        let results = receipts.bodies.compactMap { body -> UInt64? in
+            if case .presentResult(let serial, _, _, _) = body { return serial }; return nil
+        }
+        XCTAssertEqual(results, [1, 2, 3])
+        try engine.retire()
+        XCTAssertTrue(receipts.errors.isEmpty)
     }
     func testOrderedPresentRunsOnlyAfterItsDeviceStreamMark() throws {
         let native = IndexedSurfaceProbe(), receipts = IndexedReceipts()

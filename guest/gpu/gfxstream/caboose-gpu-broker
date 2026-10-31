@@ -27,7 +27,7 @@ import control_protocol
 import surface_local_protocol as surface_wire
 from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
 from live_compression import CONFIG as TRANSPORT_CONFIG, compress_data
-from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode
+from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode, is_surface
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
@@ -304,27 +304,36 @@ class Session:
         self.frame_timing = FrameTiming(self.progress_enabled)
 
     def present_rate(self, direction, kind):
-        # Every 2 s while frames flow: presents sent, results and source releases returned.
+        # Every 2 s while frames flow: presents sent (ordered ones also counted apart),
+        # results and source releases returned, and the longest gap between presents and
+        # between results, so a hitch shows on either side of the phone.
         now = time.monotonic_ns()
         rate = getattr(self, '_present_rate', None)
         if rate is None:
-            rate = self._present_rate = {'start': now, 'presented': 0, 'results': 0, 'released': 0, 'gap_max': 0, 'last': None}
-        if direction == 'received_from_guest' and kind == Kind.SWAPCHAIN_PRESENT:
+            rate = self._present_rate = {'start': now, 'presented': 0, 'ordered': 0, 'results': 0, 'released': 0,
+                                         'gap_max': 0, 'result_gap_max': 0, 'last': None, 'last_result': None}
+        if direction == 'received_from_guest' and kind in (Kind.SWAPCHAIN_PRESENT, Kind.SWAPCHAIN_PRESENT_ORDERED):
             rate['presented'] += 1
+            if kind == Kind.SWAPCHAIN_PRESENT_ORDERED: rate['ordered'] += 1
             if rate['last'] is not None: rate['gap_max'] = max(rate['gap_max'], now - rate['last'])
             rate['last'] = now
-        elif direction == 'received_from_phone' and kind == Kind.PRESENT_RESULT: rate['results'] += 1
+        elif direction == 'received_from_phone' and kind == Kind.PRESENT_RESULT:
+            rate['results'] += 1
+            if rate['last_result'] is not None:
+                rate['result_gap_max'] = max(rate['result_gap_max'], now - rate['last_result'])
+            rate['last_result'] = now
         elif direction == 'received_from_phone' and kind == Kind.SOURCE_RELEASED: rate['released'] += 1
         if now - rate['start'] >= 2_000_000_000:
             with contextlib.suppress(OSError):
                 print(f"CABOOSE_GPU_PRESENT_RATE elapsed_ms={(now - rate['start']) // 1_000_000} presented={rate['presented']} "
-                      f"results={rate['results']} released={rate['released']} gap_max_ms={rate['gap_max'] // 1_000_000}",
+                      f"ordered={rate['ordered']} results={rate['results']} released={rate['released']} "
+                      f"gap_max_ms={rate['gap_max'] // 1_000_000} result_gap_max_ms={rate['result_gap_max'] // 1_000_000}",
                       file=sys.stderr, flush=True)
-            rate.update(start=now, presented=0, results=0, released=0, gap_max=0)
+            rate.update(start=now, presented=0, ordered=0, results=0, released=0, gap_max=0, result_gap_max=0)
 
     def surface_progress(self, direction, kind, extent=None):
         # Diagnostic metadata only: no payloads, handles, identities or credentials.
-        if not self.progress_enabled or not 16 <= int(kind) <= 36: return
+        if not self.progress_enabled or not is_surface(int(kind)): return
         self.present_rate(direction, int(kind))
         ordinal = self.progress_count
         if ordinal > 128: return

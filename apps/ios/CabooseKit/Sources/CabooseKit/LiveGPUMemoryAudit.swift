@@ -55,12 +55,16 @@ enum LiveGPUMemoryAudit {
     }
 
     enum BindStage: String { case claim, prepare, attach, retireFailedAttach }
-    enum OwnerInvalidation: String { case session, ownership, visibility, geometry, withdrawn }
+    enum OwnerInvalidation: String { case session, ownership, geometry }
     static func bindStage(_ stage: BindStage, code: Int32) {
         terminal(["kind": "surfaceBindStage", "stage": stage.rawValue, "errno": code])
     }
     static func ownerInvalidated(_ reason: OwnerInvalidation) {
         terminal(["kind": "ownerInvalidated", "reason": reason.rawValue])
+    }
+    /// A lease left view (parked, still bound and presenting) or returned to one.
+    static func ownerParked(_ parked: Bool) {
+        terminal(["kind": parked ? "ownerParked" : "ownerRestored"])
     }
     static func ownerGeometry(previous: CGSize, server: CGSize?, visible: CGSize?, pending: CGSize?) {
         var fields: [String: Any] = ["kind": "ownerGeometry", "previousWidth": previous.width,
