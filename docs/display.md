@@ -512,8 +512,12 @@ uses it differently:
   driven at most 0.6 of the region per picture interval. While it has shown nothing for
   one and a half picture intervals (and 50 ms), its drive is capped half a region past its
   last picture. It is never held, since an app that draws only when it scrolls would
-  otherwise stay silent. A picture that cannot be related to earlier ones is placed where
-  the forwarded scroll had taken the app, and the earlier pictures are dropped.
+  otherwise stay silent.
+- **Nothing is guessed.** A measurement must explain at least half of the detail that
+  could reappear at its shift, judged on the overlap. A picture that cannot be measured
+  (a new page, a reflow, a jump past the overlap) is never placed by the forwarded scroll.
+  Composition ends for that run instead: the app's own picture shows, scrolled by the
+  finger and momentum without lead, until the scroll rests.
 - **Bounded reveal.** Content no captured picture covers shows in the colour of the
   nearest captured edge. It may fill at most 40% of the region. Past that, the shown
   position resists and catches up as pictures arrive, never slower than the gesture.
