@@ -18,6 +18,7 @@ mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
 mod ibus;
+mod ibus_portal;
 mod input;
 mod keymap;
 mod motion;
@@ -567,7 +568,15 @@ fn run(config: Config) -> Result<(), String> {
         }
         let path = dir.join("ibus");
         match ibus::Ibus::listen(&path, &handle) {
-            Ok(service) => state.ibus = Some(service),
+            Ok(service) => {
+                // Sandboxed applications reach it through the session bus.
+                if let Ok(address) = std::env::var("DBUS_SESSION_BUS_ADDRESS") {
+                    if let Err(e) = ibus::Ibus::serve_portal(address, &handle) {
+                        tracing::warn!("input method: no IBus portal: {e}");
+                    }
+                }
+                state.ibus = Some(service);
+            }
             Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
         }
     }

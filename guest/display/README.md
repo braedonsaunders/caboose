@@ -276,8 +276,11 @@ without `GALLIUM_DRIVER` ([docs/gpu-live.md](../../docs/gpu-live.md#applications
 text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS
 `Gtk/IMModule`; Qt; SDL) tell it when an editable field gains or loses focus, which shows
 and hides the phone's keyboard, and receive its commits and pre-edit text as IBus signals
-(`compositor/src/ibus.rs`, D-Bus wire format in `compositor/src/dbus.rs`). No IBus daemon
-runs; the image carries IBus's GTK modules and `ibus-daemon`, whose presence Qt requires.
+(`compositor/src/ibus.rs`, D-Bus wire format in `compositor/src/dbus.rs`). Sandboxed
+(Flatpak) applications reach the same service as `org.freedesktop.portal.IBus` on the
+session bus, which the compositor joins when `DBUS_SESSION_BUS_ADDRESS` is set
+(`compositor/src/ibus_portal.rs`); their fields belong to the window that had keyboard
+focus when they gained focus. No IBus daemon runs; the image carries IBus's GTK modules and `ibus-daemon`, whose presence Qt requires.
 It then runs `COMMAND` with that
 environment and exits when it does. SIGTERM stops it cleanly and logs a per-stage CPU
 summary.

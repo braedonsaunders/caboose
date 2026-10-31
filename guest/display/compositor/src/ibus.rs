@@ -13,6 +13,7 @@
 //! to the connection's process, which is how a field's focus is matched to the window that
 //! has keyboard focus.
 use crate::dbus::{self, Auth, AuthStep, Message, Value};
+use crate::ibus_portal::Portal;
 use crate::state::State;
 use crate::text_input::Surrounding;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -27,12 +28,12 @@ use std::path::{Path, PathBuf};
 const OWNER: &str = ":1.0";
 const IBUS: &str = "org.freedesktop.IBus";
 const BUS: &str = "org.freedesktop.DBus";
-const CONTEXT_INTERFACE: &str = "org.freedesktop.IBus.InputContext";
-const CONTEXT_PATH: &str = "/org/freedesktop/IBus/InputContext_";
+pub(crate) const CONTEXT_INTERFACE: &str = "org.freedesktop.IBus.InputContext";
+pub(crate) const CONTEXT_PATH: &str = "/org/freedesktop/IBus/InputContext_";
 /// Contexts per connection; a toolkit makes one or two per window.
-const MAX_CONTEXTS: usize = 256;
+pub(crate) const MAX_CONTEXTS: usize = 256;
 /// Bytes queued for a client that does not read; beyond it the connection ends.
-const MAX_QUEUED: usize = 1 << 20;
+pub(crate) const MAX_QUEUED: usize = 1 << 20;
 
 /// IBus content hints (the same values as GTK's input hints) the service acts on.
 const HINT_INHIBIT_OSK: u32 = 1 << 7;
@@ -56,14 +57,14 @@ fn purpose_name(purpose: u32) -> &'static str {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-struct Context {
-    focused: bool,
+pub(crate) struct Context {
+    pub(crate) focused: bool,
     purpose: u32,
     hints: u32,
     /// The text around the caret, with the caret and anchor as character offsets.
     surrounding: Option<(String, u32, u32)>,
     /// When it last gained focus: the most recent focused context of a process wins.
-    focus_order: u64,
+    pub(crate) focus_order: u64,
     /// Pre-edit text is showing in the field.
     preedit: bool,
 }
@@ -77,7 +78,7 @@ pub struct Field {
 }
 
 impl Context {
-    fn field(&self) -> Option<Field> {
+    pub(crate) fn field(&self) -> Option<Field> {
         if !self.focused || self.hints & HINT_INHIBIT_OSK != 0 {
             return None;
         }
@@ -236,58 +237,15 @@ impl Connection {
     }
 
     fn context_call(&mut self, id: u32, m: &Message, focus_clock: &mut u64) {
-        let interface = m.interface.as_deref().unwrap_or_default();
-        let member = m.member.as_deref().unwrap_or_default();
         let ctx = self.contexts.get_mut(&id).unwrap();
-        match (interface, member) {
-            (CONTEXT_INTERFACE, "FocusIn") => {
-                *focus_clock += 1;
-                ctx.focused = true;
-                ctx.focus_order = *focus_clock;
-            }
-            (CONTEXT_INTERFACE, "FocusOut") => ctx.focused = false,
-            (CONTEXT_INTERFACE, "SetContentType") => {
-                if let (Some(purpose), Some(hints)) =
-                    (m.body.first().and_then(Value::as_u32), m.body.get(1).and_then(Value::as_u32))
-                {
-                    (ctx.purpose, ctx.hints) = (purpose, hints);
-                }
-            }
-            (CONTEXT_INTERFACE, "SetSurroundingText") => {
-                ctx.surrounding = match (m.body.first().and_then(ibus_text), m.body.get(1), m.body.get(2)) {
-                    (Some(text), Some(Value::U32(cursor)), Some(Value::U32(anchor))) => Some((text, *cursor, *anchor)),
-                    _ => None,
-                };
-            }
-            (CONTEXT_INTERFACE, "ProcessKeyEvent") => {
-                // Keys are the application's: the phone's keyboard composes before it sends.
-                return self.reply(m, OWNER, vec![Value::Bool(false)]);
-            }
-            (CONTEXT_INTERFACE, "Destroy") => {
+        match context_method(ctx, m, focus_clock) {
+            Outcome::Reply(body) => self.reply(m, OWNER, body),
+            Outcome::Destroyed => {
                 self.contexts.remove(&id);
+                self.reply(m, OWNER, vec![]);
             }
-            (CONTEXT_INTERFACE, "Reset" | "SetCapabilities" | "SetCursorLocation" | "SetCursorLocationRelative")
-            | (CONTEXT_INTERFACE, "PropertyActivate" | "SetEngine" | "ProcessHandWritingEvent" | "CancelHandWriting") => {}
-            ("org.freedesktop.DBus.Properties", "Set") => {
-                let name = m.body.get(1).and_then(Value::as_str);
-                let value = match m.body.get(2) {
-                    Some(Value::Variant(v)) => Some(&**v),
-                    _ => None,
-                };
-                if let (Some("ContentType"), Some(Value::Struct(fields))) = (name, value) {
-                    if let (Some(purpose), Some(hints)) =
-                        (fields.first().and_then(Value::as_u32), fields.get(1).and_then(Value::as_u32))
-                    {
-                        (ctx.purpose, ctx.hints) = (purpose, hints);
-                    }
-                }
-            }
-            ("org.freedesktop.DBus.Properties", "GetAll") => {
-                return self.reply(m, OWNER, vec![Value::Array("{sv}".into(), vec![])]);
-            }
-            _ => return self.error(m, "org.freedesktop.DBus.Error.UnknownMethod", "unknown method"),
+            Outcome::Unknown => self.error(m, "org.freedesktop.DBus.Error.UnknownMethod", "unknown method"),
         }
-        self.reply(m, OWNER, vec![]);
     }
 
     /// The process's most recently focused context with focus, as a field.
@@ -311,28 +269,92 @@ impl Connection {
         });
     }
 
-    /// One change from the phone's keyboard to context `ctx`: its pre-edit text replaced
-    /// (hidden when absent or empty; the caret a byte offset into it), then a commit.
+    /// One change from the phone's keyboard to context `ctx`.
     fn input(&mut self, ctx: u32, commit: Option<&str>, preedit: Option<(&str, i32)>) {
         let Some(context) = self.contexts.get_mut(&ctx) else { return };
-        let showing = context.preedit;
-        context.preedit = preedit.is_some_and(|(text, _)| !text.is_empty());
-        match preedit.filter(|(text, _)| !text.is_empty()) {
-            Some((text, caret)) => {
-                let caret = text.get(..caret.max(0) as usize).map_or(text.chars().count(), |s| s.chars().count());
-                self.signal(ctx, "UpdatePreeditText", vec![text_value(text), Value::U32(caret as u32), Value::Bool(true)]);
-            }
-            None if showing => self.signal(ctx, "HidePreeditText", vec![]),
-            None => {}
-        }
-        if let Some(text) = commit {
-            self.signal(ctx, "CommitText", vec![text_value(text)]);
+        for (member, body) in input_signals(context, commit, preedit) {
+            self.signal(ctx, member, body);
         }
     }
 
     pub fn take_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.output)
     }
+}
+
+pub(crate) enum Outcome {
+    Reply(Vec<Value>),
+    Destroyed,
+    Unknown,
+}
+
+/// A call on an input context, from its owner.
+pub(crate) fn context_method(ctx: &mut Context, m: &Message, focus_clock: &mut u64) -> Outcome {
+    let interface = m.interface.as_deref().unwrap_or_default();
+    let member = m.member.as_deref().unwrap_or_default();
+    match (interface, member) {
+        (CONTEXT_INTERFACE, "FocusIn") => {
+            *focus_clock += 1;
+            ctx.focused = true;
+            ctx.focus_order = *focus_clock;
+        }
+        (CONTEXT_INTERFACE, "FocusOut") => ctx.focused = false,
+        (CONTEXT_INTERFACE, "SetContentType") => {
+            if let (Some(purpose), Some(hints)) =
+                (m.body.first().and_then(Value::as_u32), m.body.get(1).and_then(Value::as_u32))
+            {
+                (ctx.purpose, ctx.hints) = (purpose, hints);
+            }
+        }
+        (CONTEXT_INTERFACE, "SetSurroundingText") => {
+            ctx.surrounding = match (m.body.first().and_then(ibus_text), m.body.get(1), m.body.get(2)) {
+                (Some(text), Some(Value::U32(cursor)), Some(Value::U32(anchor))) => Some((text, *cursor, *anchor)),
+                _ => None,
+            };
+        }
+        // Keys are the application's: the phone's keyboard composes before it sends.
+        (CONTEXT_INTERFACE, "ProcessKeyEvent") => return Outcome::Reply(vec![Value::Bool(false)]),
+        (CONTEXT_INTERFACE, "Destroy") => return Outcome::Destroyed,
+        (CONTEXT_INTERFACE, "Reset" | "SetCapabilities" | "SetCursorLocation" | "SetCursorLocationRelative")
+        | (CONTEXT_INTERFACE, "PropertyActivate" | "SetEngine" | "ProcessHandWritingEvent" | "CancelHandWriting") => {}
+        ("org.freedesktop.DBus.Properties", "Set") => {
+            let name = m.body.get(1).and_then(Value::as_str);
+            let value = match m.body.get(2) {
+                Some(Value::Variant(v)) => Some(&**v),
+                _ => None,
+            };
+            if let (Some("ContentType"), Some(Value::Struct(fields))) = (name, value) {
+                if let (Some(purpose), Some(hints)) =
+                    (fields.first().and_then(Value::as_u32), fields.get(1).and_then(Value::as_u32))
+                {
+                    (ctx.purpose, ctx.hints) = (purpose, hints);
+                }
+            }
+        }
+        ("org.freedesktop.DBus.Properties", "GetAll") => return Outcome::Reply(vec![Value::Array("{sv}".into(), vec![])]),
+        _ => return Outcome::Unknown,
+    }
+    Outcome::Reply(vec![])
+}
+
+/// The signals for one change from the phone's keyboard to a context: its pre-edit text
+/// replaced (hidden when absent or empty; the caret a byte offset into it), then a commit.
+pub(crate) fn input_signals(ctx: &mut Context, commit: Option<&str>, preedit: Option<(&str, i32)>) -> Vec<(&'static str, Vec<Value>)> {
+    let mut signals = Vec::new();
+    let showing = ctx.preedit;
+    ctx.preedit = preedit.is_some_and(|(text, _)| !text.is_empty());
+    match preedit.filter(|(text, _)| !text.is_empty()) {
+        Some((text, caret)) => {
+            let caret = text.get(..caret.max(0) as usize).map_or(text.chars().count(), |s| s.chars().count());
+            signals.push(("UpdatePreeditText", vec![text_value(text), Value::U32(caret as u32), Value::Bool(true)]));
+        }
+        None if showing => signals.push(("HidePreeditText", vec![])),
+        None => {}
+    }
+    if let Some(text) = commit {
+        signals.push(("CommitText", vec![text_value(text)]));
+    }
+    signals
 }
 
 /// IBus's serialized text: `("IBusText", {}, text, <("IBusAttrList", {}, [])>)`.
@@ -364,6 +386,8 @@ pub struct Ibus {
     next_connection: u64,
     next_context: u32,
     focus_clock: u64,
+    /// The same service for sandboxed applications, on the session bus.
+    portal: Option<Portal>,
 }
 
 fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
@@ -411,6 +435,7 @@ impl Ibus {
             next_connection: 0,
             next_context: 0,
             focus_clock: 0,
+            portal: None,
         };
         service.write_address_file()?;
         Ok(service)
@@ -419,6 +444,38 @@ impl Ibus {
     /// The D-Bus address applications connect to, `IBUS_ADDRESS`.
     pub fn address(&self) -> String {
         format!("unix:path={}", self.path.display())
+    }
+
+    /// Answers sandboxed applications too, as `org.freedesktop.portal.IBus` on the session
+    /// bus at `address` (ibus_portal.rs), unless another process owns that name. Joining
+    /// the bus happens off the event loop, retried while the bus starts.
+    pub fn serve_portal(address: String, handle: &LoopHandle<'static, State>) -> io::Result<()> {
+        let (tx, rx) = smithay::reexports::calloop::channel::channel::<Portal>();
+        handle
+            .insert_source(rx, |event, _, state: &mut State| {
+                if let smithay::reexports::calloop::channel::Event::Msg(portal) = event {
+                    state.adopt_ibus_portal(portal);
+                }
+            })
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        std::thread::Builder::new().name("ibus-portal".into()).spawn(move || {
+            for attempt in 0..30 {
+                match Portal::connect(&address) {
+                    Ok(Some(portal)) => {
+                        tracing::info!("input method: serving org.freedesktop.portal.IBus");
+                        let _ = tx.send(portal);
+                        return;
+                    }
+                    Ok(None) => return tracing::info!("input method: another process serves the IBus portal"),
+                    Err(e) if attempt == 29 => return tracing::warn!("input method: no IBus portal: {e}"),
+                    Err(e) => {
+                        tracing::debug!("input method: joining the session bus: {e}");
+                        std::thread::sleep(std::time::Duration::from_secs(2))
+                    }
+                }
+            }
+        })?;
+        Ok(())
     }
 
     /// The address file IBus clients read when they do not take `IBUS_ADDRESS` (Qt among
@@ -438,23 +495,23 @@ impl Ibus {
     }
 
     /// The field with focus in `pid`'s input contexts, if any.
-    pub fn focused(&self, pid: u32) -> Option<Field> {
-        self.focused_context(pid).map(|(_, _, f)| f)
+    /// When the field gained focus, and the field.
+    pub fn focused(&self, pid: u32) -> Option<(u64, Field)> {
+        self.focused_context(pid).map(|(order, _, _, f)| (order, f))
     }
 
-    fn focused_context(&self, pid: u32) -> Option<(u64, u32, Field)> {
+    fn focused_context(&self, pid: u32) -> Option<(u64, u64, u32, Field)> {
         self.connections
             .iter()
             .filter(|(_, (_, c))| c.pid == pid)
             .filter_map(|(id, (_, c))| c.focused().map(|(order, ctx, f)| (order, *id, ctx, f)))
             .max_by_key(|(order, ..)| *order)
-            .map(|(_, conn, ctx, f)| (conn, ctx, f))
     }
 
     /// Sends the phone keyboard's change to `pid`'s focused field: pre-edit text (with its
     /// caret as a byte offset) and a commit. False when no field of `pid` has focus.
     pub fn send(&mut self, pid: u32, commit: Option<&str>, preedit: Option<(&str, i32)>) -> bool {
-        let Some((conn_id, ctx, _)) = self.focused_context(pid) else { return false };
+        let Some((_, conn_id, ctx, _)) = self.focused_context(pid) else { return false };
         let Some((stream, conn)) = self.connections.get_mut(&conn_id) else { return false };
         conn.input(ctx, commit, preedit);
         let output = conn.take_output();
@@ -534,13 +591,49 @@ impl State {
         alive
     }
 
-    /// The field of `surface`'s window, from its process's input contexts.
-    fn ibus_field(&self, surface: Option<WlSurface>) -> Option<(WlSurface, Field)> {
+    /// The field of `surface`'s window: the most recently focused of its process's input
+    /// contexts and of the sandboxed contexts placed on it, and whether it is sandboxed.
+    fn ibus_target(&self, surface: &WlSurface) -> Option<(Field, Option<u32>)> {
         let ibus = self.ibus.as_ref()?;
+        let pid = self.window_of_surface(surface).and_then(|id| self.windows.get(id)).and_then(|w| self.window_pid(&w.surface));
+        let direct = pid.and_then(|pid| ibus.focused(pid).map(|(order, field)| (order, field, Some(pid))));
+        let sandboxed = ibus.portal.as_ref().and_then(|p| p.focused(surface)).map(|(order, field)| (order, field, None));
+        [direct, sandboxed].into_iter().flatten().max_by_key(|(order, ..)| *order).map(|(_, field, pid)| (field, pid))
+    }
+
+    fn ibus_field(&self, surface: Option<WlSurface>) -> Option<(WlSurface, Field)> {
         let surface = surface?;
-        let id = self.window_of_surface(&surface)?;
-        let pid = self.window_pid(&self.windows.get(id)?.surface)?;
-        Some((surface, ibus.focused(pid)?))
+        let (field, _) = self.ibus_target(&surface)?;
+        Some((surface, field))
+    }
+
+    fn adopt_ibus_portal(&mut self, portal: Portal) {
+        let Some(ibus) = self.ibus.as_mut() else { return };
+        let Ok(watched) = portal.stream() else { return };
+        let inserted = self.handle.insert_source(Generic::new(watched, Interest::READ, Mode::Level), |_, _, state: &mut State| {
+            Ok(if state.ibus_portal_readable() { PostAction::Continue } else { PostAction::Remove })
+        });
+        if inserted.is_ok() {
+            ibus.portal = Some(portal);
+        }
+    }
+
+    /// Reads what the session bus delivered to the portal; false once it is gone.
+    fn ibus_portal_readable(&mut self) -> bool {
+        let focus = self.keyboard_focus_surface();
+        let Some(ibus) = self.ibus.as_mut() else { return false };
+        let (mut next_context, mut focus_clock) = (ibus.next_context, ibus.focus_clock);
+        let Some(portal) = ibus.portal.as_mut() else { return false };
+        let alive = portal.readable(&mut next_context, &mut focus_clock);
+        portal.bind(focus.as_ref());
+        ibus.next_context = next_context;
+        ibus.focus_clock = focus_clock;
+        if !alive {
+            tracing::warn!("input method: the session bus closed; sandboxed applications have no input method");
+            ibus.portal = None;
+        }
+        self.sync_ibus_focus();
+        alive
     }
 
     /// Shows or hides the phone's keyboard as the focused window's field changes.
@@ -573,15 +666,13 @@ impl State {
     /// Sends the phone keyboard's text to the focused window's IBus field; false when it
     /// has none.
     pub fn ibus_send(&mut self, commit: Option<&str>, preedit: Option<(&str, i32)>) -> bool {
-        let Some(pid) = self
-            .keyboard_focus_surface()
-            .and_then(|s| self.window_of_surface(&s))
-            .and_then(|id| self.windows.get(id))
-            .and_then(|w| self.window_pid(&w.surface))
-        else {
-            return false;
-        };
-        self.ibus.as_mut().is_some_and(|ibus| ibus.send(pid, commit, preedit))
+        let Some(surface) = self.keyboard_focus_surface() else { return false };
+        let Some((_, pid)) = self.ibus_target(&surface) else { return false };
+        let Some(ibus) = self.ibus.as_mut() else { return false };
+        match pid {
+            Some(pid) => ibus.send(pid, commit, preedit),
+            None => ibus.portal.as_mut().is_some_and(|p| p.send_input(&surface, commit, preedit)),
+        }
     }
 }
 
