@@ -75,6 +75,20 @@ class ExecutorLease:
             self._identity = None
             self._state = 'idle'
 
+    def abandoned(self, executor, generation):
+        """The executor's connection was lost and the broker has ended every local client of
+        the generation: nothing of it remains to finish, so a reconnect may be admitted."""
+        with self._lock:
+            if self._identity != executor or self._generation != generation or self._state == 'idle':
+                return False
+            self._identity = None
+            self._state = 'idle'
+            return True
+
+    @property
+    def idle(self):
+        with self._lock: return self._state == 'idle'
+
     def _check(self, executor, generation):
         if self._identity != executor or self._generation != generation or self._state == 'idle':
             raise RuntimeError('stale executor generation')

@@ -20,6 +20,16 @@ class LeaseTests(unittest.TestCase):
         gate.revoke(ident,generation); gate.finished(ident,generation)
         with self.assertRaises(RuntimeError): gate.finished(ident,generation)
 
+    def test_abandoned_generation_admits_a_reconnect(self):
+        gate=lease.ExecutorLease(); ident=b'a'*16; generation=gate.admit(ident)
+        gate.ready(ident,generation); gate.revoke(ident,generation)
+        self.assertFalse(gate.abandoned(b'b'*16,generation))
+        self.assertFalse(gate.idle)
+        self.assertTrue(gate.abandoned(ident,generation))
+        self.assertTrue(gate.idle)
+        self.assertFalse(gate.abandoned(ident,generation))
+        self.assertGreater(gate.admit(ident),generation)
+
     def test_direction_queue_limits_and_recovery(self):
         q=lease.BoundedQueue()
         for _ in range(64): q.put(b'x')
