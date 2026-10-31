@@ -21,7 +21,7 @@ public:
     int writeFully(const void* buf, size_t len) override;
     bool indexedHandshakeReady() const { return indexedReady_.load(std::memory_order_acquire); }
 private:
-    // A non-virtual helper: the class layout shared with the retained archive is unchanged.
+    // Connects and exchanges one hello offer; EPROTO when the broker refuses it.
     int connectWith(const char* path, const unsigned char* offer, bool guestHandles);
     std::atomic<bool> indexedReady_{false};
     int fd_ = -1;

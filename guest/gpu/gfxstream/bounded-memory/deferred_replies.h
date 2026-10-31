@@ -45,8 +45,7 @@ inline constexpr uint64_t prefetchedFenceWaitNs = 250'000'000;
 // Set while the encoder sends a prefetched fence wait instead of a real one.
 inline thread_local bool sendingPrefetchedFenceWait = false;
 
-// Pending replies and their commands' bytes per encoder, kept outside the
-// encoder so its layout, which other objects allocate, never changes. Callers
+// Pending replies and their commands' bytes per encoder. Callers
 // hold the encoder lock. A prefetched fence wait that succeeds records its
 // fence as signaled until the fence is reset, destroyed or imported; the
 // fence's generation discards prefetches that complete after such a change.
