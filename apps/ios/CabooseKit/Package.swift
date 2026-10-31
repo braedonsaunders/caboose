@@ -28,6 +28,10 @@ let gpuStreamLinking: [LinkerSetting] = [
     .linkedFramework("IOSurface"),
     .linkedFramework("Metal"),
     .linkedFramework("QuartzCore"),
+    // Phone-decoded video in GPU windows (docs/gpu-media.md).
+    .linkedFramework("VideoToolbox"),
+    .linkedFramework("CoreMedia"),
+    .linkedFramework("CoreVideo"),
     .linkedFramework("UIKit", .when(platforms: [.iOS])),
     .linkedFramework("AppKit", .when(platforms: [.macOS])),
     .linkedFramework("IOKit", .when(platforms: [.macOS])),
