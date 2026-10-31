@@ -153,7 +153,7 @@ struct DesktopWindow: View {
     var body: some View {
         let chrome = desktop.presentedChrome(window, surface: surface)
         VStack(spacing: 0) {
-            if !desktop.detachedChrome && !window.isAuxiliary && !window.isFullscreen {
+            if !window.isAuxiliary && !window.isFullscreen {
                 let ui = desktop.ui
                 let bar = desktop.titleBar
                 GeometryReader { geometry in

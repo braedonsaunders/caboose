@@ -41,10 +41,11 @@ final class DesktopModel {
     var ui: CGFloat = 1
     /// Every window's title bar: its controls' places for drawing and for hit-testing.
     var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
-    /// Laptop puts shell chrome below the hinge, outside the guest's display.
+    /// Laptop puts the dock below the hinge, outside the guest's display. Its windows keep
+    /// their title bars, and each shows in its snap, as a tile shows in its column.
     var detachedChrome = false
     var pointerArea: CGSize?
-    var titleBarHeight: CGFloat { detachedChrome ? 0 : titleBar.height }
+    var titleBarHeight: CGFloat { titleBar.height }
     var dockHeight: CGFloat { detachedChrome ? 0 : 76 * ui }
     var dockBottomInset: CGFloat { detachedChrome ? 0 : 10 * ui }
     private var dockGap: CGFloat { detachedChrome ? 0 : 8 * ui }
@@ -292,6 +293,14 @@ final class DesktopModel {
     /// The window's content rect in desktop points.
     func contentRect(_ window: RemoteWindow) -> CGRect {
         if window.isFullscreen { return CGRect(origin: .zero, size: size) }
+        // Laptop shows a snapped window in its snap whatever size the app last committed: a
+        // window still at its Tablet size, or one that cannot grow, is fitted inside it rather
+        // than hanging off the top or stopping short of the hinge.
+        if detachedChrome, !window.isAuxiliary, layout.place(for: window.id, app: app(window))?.snap != nil,
+           let snapped = layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)) {
+            return CGRect(x: snapped.minX, y: snapped.minY + titleBarHeight,
+                          width: snapped.width, height: max(1, snapped.height - titleBarHeight))
+        }
         return CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : titleBarHeight),
                width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
     }
