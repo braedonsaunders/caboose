@@ -5,6 +5,13 @@ import QuartzCore
 /// Explicitly owned by the phone's owner session. Agent sessions never receive
 /// this registry. Display epoch and object identity come from the display stream;
 /// the guest's grant cannot manufacture a visible UIKit owner.
+///
+/// Visibility never stalls the guest. While no view can show a bound window (another
+/// tab, a hidden or off-screen view, a view reused for another window) its lease is
+/// parked: the presentation layer leaves the view hierarchy but keeps its binding and
+/// keeps receiving presents. When an eligible view shows the window again the layer
+/// returns to it holding the latest frame. Only the session, the display epoch, the
+/// window's identity or its server geometry end a lease.
 @MainActor
 public final class LiveGPUPresentationOwners {
     private final class ViewRef {
@@ -13,6 +20,11 @@ public final class LiveGPUPresentationOwners {
     }
     private var epoch: Data?
     private var windows: [UInt64: ObjectIdentifier] = [:]
+    private var remoteWindows: [UInt64: WindowRef] = [:]
+    private final class WindowRef {
+        weak var window: RemoteWindow?
+        init(_ window: RemoteWindow) { self.window = window }
+    }
     private var views: [ObjectIdentifier: ViewRef] = [:]
     private var leases: [UInt64: LiveGPULayerLease] = [:]
     private let invalidated: @MainActor (LiveGPUSurfaceIdentity) -> Void
@@ -28,6 +40,9 @@ public final class LiveGPUPresentationOwners {
         self.windows = Dictionary(uniqueKeysWithValues: windows.values.compactMap {
             $0.id > 0 ? (UInt64($0.id), ObjectIdentifier($0)) : nil
         })
+        remoteWindows = Dictionary(uniqueKeysWithValues: windows.values.compactMap {
+            $0.id > 0 ? (UInt64($0.id), WindowRef($0)) : nil
+        })
         for window in windows.values { window.liveGPUPresentation = self }
         for lease in leases.values { validate(lease) }
         waiting.retry()
@@ -37,7 +52,7 @@ public final class LiveGPUPresentationOwners {
     /// native GPU work and backing layer ownership remain retained until the worker
     /// retirement/main detach barrier.
     public func revoke() {
-        stopped = true; epoch = nil; windows.removeAll()
+        stopped = true; epoch = nil; windows.removeAll(); remoteWindows.removeAll()
         waiting.cancel()
         for lease in leases.values {
             if lease.invalidate() {
@@ -52,51 +67,37 @@ public final class LiveGPUPresentationOwners {
     func observe(_ view: RemoteWindowView) {
         views = views.filter { $0.value.view != nil }
         views[ObjectIdentifier(view)] = ViewRef(view)
-        for lease in leases.values where lease.view === view { validate(lease) }
+        // Any lease may move here: a parked one returns to the view now showing its window.
+        for lease in leases.values { validate(lease) }
         waiting.retry()
     }
+    /// The view no longer shows its window: its leases park until a view shows it again.
     func withdraw(_ view: RemoteWindowView) {
         views.removeValue(forKey: ObjectIdentifier(view))
         for lease in leases.values where lease.view === view {
-            if lease.invalidate() {
-                #if DEBUG && canImport(CabooseGPUMemoryAudit)
-                LiveGPUMemoryAudit.ownerInvalidated(.withdrawn)
-                #endif
-                lease.content?.removeFromSuperview()
-                invalidated(lease.identity)
-            }
+            lease.view = nil
+            validate(lease)
         }
     }
     private func validate(_ lease: LiveGPULayerLease) {
         guard lease.isValid else { return }
-        guard !stopped, epoch == lease.identity.epoch,
-              windows[lease.windowID] == lease.windowIdentity,
-              let view = lease.view, let window = view.remoteWindow,
-              ObjectIdentifier(window) == lease.windowIdentity, eligible(view),
-              let currentExtent = extent(view) else {
-            if lease.invalidate() {
-                #if DEBUG && canImport(CabooseGPUMemoryAudit)
-                let reason: LiveGPUMemoryAudit.OwnerInvalidation
-                if stopped { reason = .session }
-                else if epoch != lease.identity.epoch || windows[lease.windowID] != lease.windowIdentity { reason = .ownership }
-                else if let view = lease.view, eligible(view) {
-                    reason = extent(view) == nil ? .geometry : .ownership
-                } else { reason = .visibility }
-                if reason == .geometry {
-                    let pending = lease.view.flatMap { view in
-                        view.remoteWindow.flatMap { window in
-                            ((view.session ?? view.pacer) as? CabooseDisplaySession)?.pendingPresentationSize(window)
-                        }
-                    }
-                    LiveGPUMemoryAudit.ownerGeometry(previous: lease.extent,
-                        server: lease.view?.remoteWindow?.frame.size, visible: lease.view?.bounds.size,
-                        pending: pending)
-                }
-                LiveGPUMemoryAudit.ownerInvalidated(reason)
-                #endif
-                lease.content?.removeFromSuperview()
-                invalidated(lease.identity)
-            }
+        guard !stopped, epoch == lease.identity.epoch, windows[lease.windowID] == lease.windowIdentity else {
+            end(lease, stopped ? .session : .ownership)
+            return
+        }
+        guard let view = host(for: lease) else {
+            park(lease)
+            return
+        }
+        guard let window = view.remoteWindow else { park(lease); return }
+        // An eligible view has visible bounds: only the window's server geometry fails here.
+        guard let currentExtent = extent(view) else {
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            let pending = ((view.session ?? view.pacer) as? CabooseDisplaySession)?.pendingPresentationSize(window)
+            LiveGPUMemoryAudit.ownerGeometry(previous: lease.extent,
+                server: window.frame.size, visible: view.bounds.size, pending: pending)
+            #endif
+            end(lease, .geometry)
             return
         }
         if currentExtent != lease.extent {
@@ -108,10 +109,52 @@ public final class LiveGPUPresentationOwners {
             #endif
             lease.updateExtent(currentExtent)
         }
+        lease.view = view
+        if let content = lease.content, content.superview !== view {
+            // The layer still holds the last frame presented while parked.
+            view.insertSubview(content, at: 0)
+        }
+        if lease.parked {
+            lease.parked = false
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            LiveGPUMemoryAudit.ownerParked(false)
+            #endif
+        }
         // Fitting the view slot scales the dedicated presentation layer without
         // invalidating the bound surface; the guest recreates its swapchain at
         // the new extent via configurePresentationExtent.
         (lease.content as? LiveGPULayerView)?.fit(in: view.bounds)
+    }
+    /// The one eligible view showing the lease's window, preferring its current view.
+    private func host(for lease: LiveGPULayerLease) -> RemoteWindowView? {
+        func shows(_ view: RemoteWindowView) -> Bool {
+            view.remoteWindow.map(ObjectIdentifier.init) == lease.windowIdentity && eligible(view)
+        }
+        if let view = lease.view, shows(view) { return view }
+        // A duplicated visible owner is not resolved by picking an arbitrary view.
+        let candidates = views.values.compactMap(\.view).filter(shows)
+        return candidates.count == 1 ? candidates[0] : nil
+    }
+    /// Takes the layer out of view while keeping the binding and its presents.
+    private func park(_ lease: LiveGPULayerLease) {
+        lease.content?.removeFromSuperview()
+        guard !lease.parked else { return }
+        lease.parked = true
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        LiveGPUMemoryAudit.ownerParked(true)
+        #endif
+    }
+    private func end(_ lease: LiveGPULayerLease, _ reason: EndReason) {
+        guard lease.invalidate() else { return }
+        #if DEBUG && canImport(CabooseGPUMemoryAudit)
+        switch reason {
+        case .session: LiveGPUMemoryAudit.ownerInvalidated(.session)
+        case .ownership: LiveGPUMemoryAudit.ownerInvalidated(.ownership)
+        case .geometry: LiveGPUMemoryAudit.ownerInvalidated(.geometry)
+        }
+        #endif
+        lease.content?.removeFromSuperview()
+        invalidated(lease.identity)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
         guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
@@ -141,16 +184,22 @@ public final class LiveGPUPresentationOwners {
         guard epoch == identity.epoch else { throw unavailable(ESTALE) }
         guard let object = windows[windowID] else { throw unavailable(EAGAIN) }
         guard leases[windowID] == nil else { throw unavailable(EBUSY) }
-        let candidates = views.values.compactMap(\.view).filter {
+        let showing = views.values.compactMap(\.view).filter {
             guard let window = $0.remoteWindow else { return false }
-            return ObjectIdentifier(window) == object && eligible($0)
+            return ObjectIdentifier(window) == object
         }
+        let candidates = showing.filter(eligible)
         // A duplicated visible owner is not resolved by picking an arbitrary view.
         guard candidates.count < 2 else { throw unavailable(EBUSY) }
-        guard let view = candidates.first, let window = view.remoteWindow else { throw unavailable(EAGAIN) }
-        let display = (view.session ?? view.pacer) as? CabooseDisplaySession
+        // With no view showing the window, the lease starts parked at the window's
+        // server extent: binding never waits for the window to be on screen.
+        let view = candidates.first
+        guard let window = view?.remoteWindow ?? remoteWindows[windowID]?.window,
+              ObjectIdentifier(window) == object else { throw unavailable(EAGAIN) }
+        let display = ((view ?? showing.first).flatMap { $0.session ?? $0.pacer }) as? CabooseDisplaySession
+        let bounds = view?.bounds.size ?? window.frame.size
         guard let size = LiveGPUDrawableGeometry.extent(serverPixels: window.frame.size,
-            visibleBounds: view.bounds.size, requestedPixels: display?.pendingPresentationSize(window)) else {
+            visibleBounds: bounds, requestedPixels: display?.pendingPresentationSize(window)) else {
             #if DEBUG && canImport(CabooseGPUMemoryAudit)
             LiveGPUMemoryAudit.ownerPending(server: window.frame.size,
                 requested: display?.pendingPresentationSize(window))
@@ -158,9 +207,9 @@ public final class LiveGPUPresentationOwners {
             throw unavailable(EAGAIN)
         }
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
-        LiveGPUMemoryAudit.ownerExtent(server: size, view: view.bounds.size)
+        LiveGPUMemoryAudit.ownerExtent(server: size, view: bounds)
         #endif
-        let content = LiveGPULayerView(frame: view.bounds, pixelExtent: size)
+        let content = LiveGPULayerView(frame: CGRect(origin: .zero, size: bounds), pixelExtent: size)
         content.isUserInteractionEnabled = false
         content.isOpaque = true
         content.backgroundColor = .black
@@ -169,9 +218,15 @@ public final class LiveGPUPresentationOwners {
         layer.drawableSize = size
         layer.framebufferOnly = false
         layer.presentsWithTransaction = false
-        view.insertSubview(content, at: 0)
+        view?.insertSubview(content, at: 0)
         let lease = LiveGPULayerLease(identity: identity, windowID: windowID,
             windowIdentity: object, extent: size, view: view, content: content)
+        if view == nil {
+            lease.parked = true
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            LiveGPUMemoryAudit.ownerParked(true)
+            #endif
+        }
         leases[windowID] = lease
         return lease
     }
@@ -182,6 +237,7 @@ public final class LiveGPUPresentationOwners {
         lease.content = nil
         leases.removeValue(forKey: lease.windowID)
     }
+    private enum EndReason { case session, ownership, geometry }
     private func unavailable(_ code: Int32) -> LiveGPUBindingError { .native(operation: "visible owner", code: code) }
 }
 
@@ -268,8 +324,10 @@ final class LiveGPULayerLease: @unchecked Sendable {
     func updateExtent(_ newExtent: CGSize) { lock.withLock { currentExtent = newExtent } }
     var isValid: Bool { lock.withLock { valid } }
     @discardableResult func invalidate() -> Bool { lock.withLock { let old = valid; valid = false; return old } }
+    /// Out of view, still bound and still presenting (LiveGPUPresentationOwners).
+    @MainActor var parked = false
     @MainActor init(identity: LiveGPUSurfaceIdentity, windowID: UInt64, windowIdentity: ObjectIdentifier,
-                    extent: CGSize, view: RemoteWindowView, content: UIView) {
+                    extent: CGSize, view: RemoteWindowView?, content: UIView) {
         self.identity = identity; self.windowID = windowID; self.windowIdentity = windowIdentity
         self.currentExtent = extent; self.view = view; self.content = content
     }
