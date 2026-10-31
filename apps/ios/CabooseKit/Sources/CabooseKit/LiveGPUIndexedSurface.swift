@@ -11,10 +11,18 @@ protocol LiveGPUIndexedSwapchain: AnyObject, Sendable {
     var id: UInt64 { get }
     var imageCount: UInt32 { get }
     func map(_ images: [UInt64]) -> LiveGPUSurfaceStatus
+    /// Guest-owned images: presents name one of `images`; native acquires inside each present.
+    func mapGuestImages(_ images: [UInt64], mailbox: Bool) -> LiveGPUSurfaceStatus
     func beginAcquire(_ info: LiveGPUSwapchainAcquire) -> (LiveGPUSurfaceStatus, (any LiveGPUAcquireOperation)?)
     func present(_ info: LiveGPUIndexedPresent,
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission
     func retire() -> LiveGPUSurfaceStatus
+}
+
+extension LiveGPUIndexedSwapchain {
+    func mapGuestImages(_ images: [UInt64], mailbox: Bool) -> LiveGPUSurfaceStatus {
+        .init(nativeErrno: ENOTSUP, vkResult: nil)
+    }
 }
 
 /// One off-consumer worker per retained surface. A shared executor budget bounds
@@ -24,6 +32,10 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
     private final class Swapchain {
         let native: any LiveGPUIndexedSwapchain
         var mapped = false
+        /// Guest-owned images: presents name one of `count` guest images, and there is no
+        /// acquisition here; native takes an image inside each present.
+        var guestImages = false
+        var count: UInt32 = 0
         var polling: UInt64?
         var lastCompleted: UInt64 = 0
         var tasks: [UInt64: LiveGPUAcquireTask] = [:]
@@ -45,6 +57,8 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
     /// Frames native presentation keeps in flight per surface: the next frame's copy is
     /// queued while the previous one presents.
     static let framesInFlight = 2
+    /// With guest-owned images native acquires inside each present; more frames may wait.
+    static let guestFramesInFlight = 8
     private let resource: any LiveGPUIndexedSurfaceResource
     private let acquireBudget: LiveGPUBudget
     private let budget: LiveGPUBudget
@@ -105,15 +119,20 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 guard !status.querySucceeded else { throw violation("missing native swapchain") }
                 try reply(.created(request: info.request, swapchain: 0, status: status, count: 0))
             }
-        case .map(let id, let images):
+        case .map(let id, let images, let flags):
             let swap = try active(id)
-            guard !swap.mapped, images.count == Int(swap.native.imageCount) else { throw violation("map count/state") }
-            let status = swap.native.map(images)
+            let guest = flags & 1 != 0
+            guard !swap.mapped, guest ? (1...8).contains(images.count) : images.count == Int(swap.native.imageCount) else {
+                throw violation("map count/state")
+            }
+            let status = guest ? swap.native.mapGuestImages(images, mailbox: flags & 2 != 0) : swap.native.map(images)
             swap.mapped = status.succeeded
+            swap.guestImages = guest && status.succeeded
+            swap.count = guest ? UInt32(images.count) : swap.native.imageCount
             try reply(.mapped(swapchain: id, status: status))
         case .acquire(let info):
             let swap = try active(info.swapchain)
-            guard swap.mapped else { throw violation("acquire before map") }
+            guard swap.mapped, !swap.guestImages else { throw violation("acquire before map, or with guest images") }
             guard swap.polling == nil, swap.tasks.count < 256 else {
                 try reply(.acquired(swapchain: info.swapchain, request: info.request,
                     status: .init(nativeErrno: EBUSY, vkResult: nil), index: nil, reason: .other)); return
@@ -159,7 +178,7 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
             else if request != swap.lastCompleted { throw violation("stale acquire cancellation") }
         case .present(let info):
             let swap = try active(info.swapchain)
-            guard swap.mapped, info.index < swap.native.imageCount,
+            guard swap.mapped, info.index < swap.count,
                   !swap.pending.contains(where: { $0.index == info.index }), swap.pending.count < 64 else {
                 throw violation("indexed present admission")
             }
@@ -206,7 +225,8 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 if !swap.orderWaiting { awaitOrder(info.order, swap: swap) }
                 continue
             }
-            guard swap.frames.count < Self.framesInFlight, swap.ready.contains(info.index) else { continue }
+            guard swap.frames.count < (swap.guestImages ? Self.guestFramesInFlight : Self.framesInFlight),
+                  swap.guestImages || swap.ready.contains(info.index) else { continue }
             swap.pending.removeFirst()
             swap.frames[info.serial] = Frame(index: info.index)
             let result = swap.native.present(info) { [self] body in

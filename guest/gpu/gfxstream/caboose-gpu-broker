@@ -37,9 +37,10 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # capability that enables each: 0x80 guest-assigned handles for single-object creates and
 # pipelines, 0x100 also for descriptor sets and command buffers (requires 0x80), 0x200 the
 # completion feed, 0x400 ordered presents (SWAPCHAIN_PRESENT_ORDERED with device-stream ORDER
-# marks). The reply grants the offered features the phone declared.
+# marks), 0x800 guest-owned swapchain images (MAP flag 1; native acquires inside each
+# present). The reply grants the offered features the phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
-                  'ordered-present': 0x400}
+                  'ordered-present': 0x400, 'guest-images': 0x800}
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 

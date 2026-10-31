@@ -46,7 +46,8 @@ enum LiveGPUAcquireLocalReason: UInt32, Sendable { case none, deadline, cancelle
 enum LiveGPUSwapchainMessage: Equatable, Sendable {
     case create(LiveGPUSwapchainCreate)
     case created(request: UInt64, swapchain: UInt64, status: LiveGPUSurfaceStatus, count: UInt32)
-    case map(swapchain: UInt64, images: [UInt64])
+    /// `flags`: 0, or 1 (guest-owned images, any count up to 8), or 3 (also mailbox).
+    case map(swapchain: UInt64, images: [UInt64], flags: UInt32 = 0)
     case mapped(swapchain: UInt64, status: LiveGPUSurfaceStatus)
     case acquire(LiveGPUSwapchainAcquire)
     case acquired(swapchain: UInt64, request: UInt64, status: LiveGPUSurfaceStatus,
@@ -122,11 +123,12 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             }
             value = .created(request: request, swapchain: swapchain, status: status, count: count)
         case .swapchainMap:
-            let swapchain = try r.u64(), count = try r.u32(), reserved = try r.u32()
-            try check(swapchain > 0 && (1...256).contains(count) && reserved == 0 && r.remaining == Int(count) * 8, "map fields")
+            let swapchain = try r.u64(), count = try r.u32(), flags = try r.u32()
+            try check(swapchain > 0 && (1...256).contains(count) && [0, 1, 3].contains(flags) &&
+                      (flags == 0 || count <= 8) && r.remaining == Int(count) * 8, "map fields")
             let images = try (0..<count).map { _ in try r.u64() }
             try check(images.allSatisfy { $0 > 0 } && Set(images).count == images.count, "source image identities")
-            value = .map(swapchain: swapchain, images: images)
+            value = .map(swapchain: swapchain, images: images, flags: flags)
         case .swapchainMapped, .swapchainRetired:
             let swapchain = try r.u64(), status = try r.status()
             try check(swapchain > 0, "swapchain identity")
@@ -190,9 +192,9 @@ enum LiveGPUSwapchainMessage: Equatable, Sendable {
             for v in c.families { w.u32(v) }
         case let .created(request, swapchain, status, count):
             w.u64(request); w.u64(swapchain); w.status(status); w.u32(count); w.u32(0)
-        case let .map(swapchain, images):
+        case let .map(swapchain, images, flags):
             try Self.check(images.count <= 256, "image limit")
-            w.u64(swapchain); w.u32(UInt32(images.count)); w.u32(0)
+            w.u64(swapchain); w.u32(UInt32(images.count)); w.u32(flags)
             for v in images { w.u64(v) }
         case let .mapped(swapchain, status), let .retired(swapchain, status): w.u64(swapchain); w.status(status)
         case .acquire(let a):

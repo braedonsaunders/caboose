@@ -346,6 +346,13 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
         let code = images.withUnsafeBufferPointer { caboose_gpu_virtual_swapchain_map(pointer, $0.baseAddress, UInt32($0.count)) }
         return .init(nativeErrno: code, vkResult: nil)
     }
+    func mapGuestImages(_ images: [UInt64], mailbox: Bool) -> LiveGPUSurfaceStatus {
+        guard let pointer else { return .init(nativeErrno: ESTALE, vkResult: nil) }
+        let code = images.withUnsafeBufferPointer {
+            caboose_gpu_virtual_swapchain_map_guest_images(pointer, $0.baseAddress, UInt32($0.count), mailbox ? 2 : 0)
+        }
+        return .init(nativeErrno: code, vkResult: nil)
+    }
     func beginAcquire(_ info: LiveGPUSwapchainAcquire) -> (LiveGPUSurfaceStatus, (any LiveGPUAcquireOperation)?) {
         guard let pointer else { return (.init(nativeErrno: ESTALE, vkResult: nil), nil) }
         var native = caboose_gpu_acquire_info()
