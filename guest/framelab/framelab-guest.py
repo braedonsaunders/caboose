@@ -2,7 +2,7 @@
 """Frame lab's guest side: runs the matrix on this computer's seat and measures each app.
 
     framelab-guest.py [--matrix FILE] [--apps ID,...] [--out DIR] [--env FILE]
-                      [--broker-log FILE] [--offline] [--no-reference]
+                      [--broker-log FILE] [--offline] [--no-reference] [--set KEY=VALUE]...
 
 Run as the seat's owner (caboose) inside the computer. Each app is launched with the
 seat's launch environment (--env, default /run/caboose/display.env) and measured through
@@ -226,15 +226,17 @@ class Run:
                 return w
         return None
 
-    def stable_picture(self, window, seconds=20):
-        """The window's picture once it stops changing (two in a row, a second apart, the
-        same), or the last one after `seconds`: a page still loading is not the scene."""
-        previous, deadline = None, time.monotonic() + seconds
+    def stable_picture(self, window, seconds=30):
+        """The window's picture once it is drawn and stops changing (three in a row, a
+        second apart, the same), or the last one after `seconds`: a page still loading
+        is not the scene."""
+        previous, same, deadline = None, 0, time.monotonic() + seconds
         while True:
             self.control.ask('settle')
             time.sleep(0.25)
             png = self.control.ask(f'screenshot {window}')[1]
-            if png == previous:
+            same = same + 1 if png == previous else 0
+            if same >= 2 and framelab.drawn(png):
                 return png, True
             if time.monotonic() >= deadline:
                 return png, False
@@ -476,6 +478,8 @@ def main():
     parser.add_argument('--broker-log', help='the GPU broker log (default: found from the running broker)')
     parser.add_argument('--offline', action='store_true', help='local pages instead of the network')
     parser.add_argument('--no-reference', action='store_true', help='skip the CPU reference pictures')
+    parser.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                        help="add to every app's launch environment (repeatable)")
     args = parser.parse_args()
     # The driver stops a run with SIGTERM (or the session ends): unwind, so every app
     # launched is stopped and the present trace switched off.
@@ -485,6 +489,7 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     env = read_env(args.env)
+    env.update(dict(item.split('=', 1) for item in args.set))
     control = Control(env['CABOOSE_DISPLAY_CONTROL'])
     apps = json.loads(Path(args.matrix).read_text())['apps']
     if args.apps:
