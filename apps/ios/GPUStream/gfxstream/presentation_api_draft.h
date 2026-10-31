@@ -106,7 +106,7 @@ caboose_gpu_submit_result caboose_gpu_surface_present(caboose_gpu_surface* surfa
     const caboose_gpu_present_info* present, caboose_gpu_present_callback callback, void* context);
 
 // Presented-picture capture for the phone's own compositing (phone-owned scrolling).
-// With a callback set, each present also copies its source into one of two device-local
+// With a callback set, each present also copies its source into one of three device-local
 // capture images when one is free, in the same submission. Once that copy's fence has
 // actually signaled, the callback receives the present serial, a token and the image's
 // MTLTexture (id<MTLTexture>, unretained; valid while retained by the receiver). The slot

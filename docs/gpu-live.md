@@ -503,7 +503,7 @@ app link checks do not establish physical presentation or game compatibility.
 
 The owner view's [phone-owned scrolling](display.md#phone-owned-scrolling) reads what a
 live GPU window presents. With a capture callback set (`caboose_gpu_surface_set_capture`),
-each present's copy submission also copies the guest source into one of two device-local
+each present's copy submission also copies the guest source into one of three device-local
 capture images on the presenting device. This happens only when a capture image is free,
 and it adds no wait. The images are created with `VK_EXT_metal_objects` export, and the
 decoder enables that extension on guest devices where the provider offers it (patch
