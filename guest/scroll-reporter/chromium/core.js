@@ -76,7 +76,22 @@
     return rect.top - clipTop + scrollTop
   }
 
-  const api = { BLOCKS, tagBlocks, tagValue, blockCss, tagRect, deviceRect, stuck, intersects, changed, documentY }
+  /**
+   * Whether sample elements' document positions moved by a layout shift: at least two by
+   * the same amount beyond `threshold` (CSS pixels). One element alone (an animation) or
+   * rounding of a fractional scroll offset is not a shift.
+   */
+  function coherentShift(moves, threshold) {
+    const big = moves.filter(m => Math.abs(m) > threshold)
+    for (let i = 0; i < big.length; i++) {
+      for (let j = i + 1; j < big.length; j++) {
+        if (Math.abs(big[i] - big[j]) <= threshold) return true
+      }
+    }
+    return false
+  }
+
+  const api = { BLOCKS, tagBlocks, tagValue, blockCss, tagRect, deviceRect, stuck, intersects, changed, documentY, coherentShift }
   globalThis.CabooseScrollCore = api
   if (typeof module === 'object' && module.exports) module.exports = api
 })()

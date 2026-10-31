@@ -35,3 +35,11 @@ test('a report changes with anything but its frame number', () => {
   assert.ok(C.changed(a, { ...a, applied: 4 }))
   assert.ok(C.changed(null, a))
 })
+
+test('a layout shift moves two sample elements alike; rounding and one animation do not', () => {
+  assert.ok(C.coherentShift([0, 50, 50.4], 1))
+  assert.ok(C.coherentShift([-120, -120, -120], 1))
+  assert.ok(!C.coherentShift([0.6, -0.4, 0.8], 1))
+  assert.ok(!C.coherentShift([0, 30, 0], 1))
+  assert.ok(!C.coherentShift([0, 30, -60], 1))
+})
