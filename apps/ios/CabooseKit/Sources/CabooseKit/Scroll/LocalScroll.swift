@@ -46,6 +46,9 @@ public struct ScrollComposition: Equatable, Sendable {
         public var lines: Range<Int>
         /// Its fixed overlays, in its own picture: newer or older content shows there instead.
         public var holes: [ScrollRegion] = []
+        /// The part of a line it moves beyond `shift` (within ±0.5): the phone's position is
+        /// fractional, and drawing it so keeps motion smooth.
+        public var fraction: Float = 0
     }
     public var axis: ScrollAxis
     /// The newest placed frame, drawn unmoved: everything outside `region` comes from it.
@@ -63,6 +66,10 @@ public struct ScrollComposition: Equatable, Sendable {
     /// in viewport lines, and everything the newest picture shows after the region (a
     /// footer, a status bar) is drawn this many lines further up, at the viewport's end.
     public var overscan = 0
+    /// A pinch's transform of the whole viewport: viewport point `p` shows at
+    /// `p * zoom + translation` (viewport pixels). Identity when not zoomed.
+    public var zoom: Double = 1
+    public var translation: CGPoint = .zero
 
     public static func == (a: ScrollComposition, b: ScrollComposition) -> Bool {
         a.axis == b.axis && a.base == b.base && a.region == b.region && a.layers == b.layers && a.blank == b.blank
@@ -477,8 +484,13 @@ public struct LocalScroll {
             holes = ref.holes
         case .reported(let reported, let measured, let bounds, let fixed, let epoch):
             if let last = reportedEpoch, last != epoch {
-                // Content moved in the document: earlier pictures no longer line up by offset.
+                // Content moved in the document (a relayout, scroll anchoring): earlier
+                // pictures no longer line up by offset, and offsets have a new origin. The
+                // content on screen did not move, so the new origin is anchored where the app
+                // was driven to, as for the first report.
                 frames.removeSubrange(..<index)
+                note?("picture \(id): reporter epoch \(last) -> \(epoch), offset \(Int(reported)); re-anchored")
+                reportedBias = nil
             }
             reportedEpoch = epoch
             // A reporter applies scroll exactly, in content pixels.
@@ -966,7 +978,8 @@ public struct LocalScroll {
             let shift = Int((offset - position).rounded())
             let lines = max(region.along.lowerBound, own.along.lowerBound + shift)..<min(region.along.upperBound, own.along.upperBound + shift)
             return ScrollComposition(axis: axis, base: pinned.id, region: region,
-                                     layers: lines.isEmpty ? [] : [.init(frame: pinned.id, shift: shift, lines: lines)], blank: 0,
+                                     layers: lines.isEmpty ? [] : [.init(frame: pinned.id, shift: shift, lines: lines,
+                                                                         fraction: Float(offset - position - Double(shift)))], blank: 0,
                                      fillFrom: nil, overscan: overscan)
         }
         guard let region = viewRegion, let base = frames.last(where: \.placed), let baseOffset = base.offset else { return nil }
@@ -982,7 +995,8 @@ public struct LocalScroll {
             let lower = max(region.along.lowerBound, own.along.lowerBound + shift)
             let upper = min(region.along.upperBound, own.along.upperBound + shift)
             guard lower < upper else { continue }
-            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper, holes: frame.holes))
+            layers.append(.init(frame: frame.id, shift: shift, lines: lower..<upper, holes: frame.holes,
+                                fraction: Float(offset - position - Double(shift))))
             covered.append(lower..<upper)
         }
         // Drop layers that newer ones hide entirely; a newer layer with holes hides nothing

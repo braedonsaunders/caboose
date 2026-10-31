@@ -72,6 +72,7 @@ public enum DisplayProtocol {
         case key = 0x93
         case text = 0x94
         case scrollTarget = 0x95
+        case scrollZoom = 0x99
         case gpuAck = 0x96
         case gameDecline = 0x97
         case webviewDecline = 0x98
@@ -935,6 +936,7 @@ public enum ClientMessage: Sendable {
                  scrollSeq: UInt64? = nil)
     /// Scroll a reported scroller by `delta` content pixels, exactly, as input `seq`.
     case scrollTarget(window: Int, scroller: Int, seq: UInt64, delta: CGPoint)
+    case scrollZoom(window: Int, seq: UInt64, scale: Double, focus: CGPoint)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(ClipboardContent)
@@ -1077,6 +1079,11 @@ public enum ClientMessage: Sendable {
             return DisplayFrame(type: T.scrollTarget.rawValue, body: map([
                 ("id", CBOR(window)), ("scroller", CBOR(scroller)), ("seq", CBOR(seq)),
                 ("delta", [CBOR(Double(delta.x)), CBOR(Double(delta.y))]),
+            ]))
+        case .scrollZoom(let window, let seq, let scale, let focus):
+            return DisplayFrame(type: T.scrollZoom.rawValue, body: map([
+                ("id", CBOR(window)), ("seq", CBOR(seq)), ("scale", CBOR(scale)),
+                ("focus", [CBOR(Double(focus.x)), CBOR(Double(focus.y))]),
             ]))
         case .key(let keysym, let pressed, let modifiers):
             return DisplayFrame(type: T.key.rawValue, body: map([

@@ -1020,6 +1020,13 @@ public final class CabooseDisplaySession: DisplaySession {
         return true
     }
 
+    public func scrollZoom(in window: RemoteWindow, scale: Double, focus: CGPoint) -> UInt64? {
+        guard state == .ready, window.game == nil, scale > 0 else { return nil }
+        let seq = nextScrollSeq(window.id)
+        send(.scrollZoom(window: window.id, seq: seq, scale: scale, focus: focus))
+        return seq
+    }
+
     public func resetScroll() {}
 
     /// Reports a 120 Hz local scroll on scene node `nodeID` in `window` back to the compositor.
