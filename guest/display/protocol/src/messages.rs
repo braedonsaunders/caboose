@@ -214,6 +214,9 @@ pub struct Frame {
     pub crop: Rect,
     /// Annex-B for h264/hevc; one temporal unit of low-overhead OBUs for av1.
     pub data: Vec<u8>,
+    /// The highest `pointer.scroll.seq` delivered to the window's client before the
+    /// commit this picture shows: the picture contains no scroll input after it.
+    pub input_seq: Option<u64>,
 }
 
 /// `tile` (0x11): a lossless refresh of static content.
@@ -301,6 +304,8 @@ pub struct ClientHello {
     pub scaled_motion: bool,
     /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
     pub devices: bool,
+    /// The client places pictures by toolkit scroll reports (`scroll.tree`). Sent only when true.
+    pub scroll: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -451,6 +456,9 @@ pub struct Scroll {
     pub dx: f64,
     pub dy: f64,
     pub precise: bool,
+    /// The window's input sequence number for this scroll (docs/display.md, "Scroll
+    /// reports"): per window, strictly increasing from 1 for each display session.
+    pub seq: Option<u64>,
 }
 
 pub mod buttons {
@@ -469,6 +477,50 @@ pub struct Pointer {
     pub y: f64,
     pub buttons: u32,
     pub scroll: Option<Scroll>,
+}
+
+/// One scrolling area in a `scroll.tree`, window-local display pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scroller {
+    /// The reporter's id for this scroller, stable while it exists.
+    pub id: u32,
+    /// Where the scroller's visible area is in the window.
+    pub rect: Rect,
+    /// Its content offset `[x, y]`.
+    pub offset: [f64; 2],
+    /// Its largest offset `[x, y]`; the smallest is 0.
+    pub range: [f64; 2],
+    /// Rectangles inside `rect` that do not move with the content (fixed and stuck
+    /// sticky elements, the frame tag). Absent when empty.
+    pub fixed: Vec<Rect>,
+}
+
+/// `scroll.tree` (0x23): a toolkit reporter's scroll state for the pictures that show
+/// frame tag `tag`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollTree {
+    pub id: u64,
+    /// The 24-bit frame tag drawn in the pictures this report describes; absent when the
+    /// window has no overscan to draw it in.
+    pub tag: Option<u32>,
+    /// Where the tag's 32 blocks are drawn, window-local display pixels.
+    pub tag_rect: Option<Rect>,
+    /// The last `scroll.target` seq the app had applied when it drew these pictures; 0 none.
+    pub applied: u64,
+    /// Changes when content moved in document coordinates (a layout shift, scroll
+    /// anchoring): pictures of different epochs are not placed against each other.
+    pub epoch: u64,
+    /// The primary scroller first.
+    pub scrollers: Vec<Scroller>,
+}
+
+/// `scroll.target` (0x95): scroll a reported scroller by `delta` content pixels, exactly.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollTarget {
+    pub id: u64,
+    pub scroller: u32,
+    pub seq: u64,
+    pub delta: [f64; 2],
 }
 
 /// `key` (0x93).
@@ -509,6 +561,7 @@ pub enum Message {
         name: String,
     },
     TextInput(TextInputState),
+    ScrollTree(ScrollTree),
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
@@ -594,6 +647,7 @@ pub enum Message {
     Pointer(Pointer),
     Key(Key),
     Text(Text),
+    ScrollTarget(ScrollTarget),
     ClientClipboard(Clipboard),
     /// The complete set of devices the phone offers now.
     Devices {
@@ -666,6 +720,7 @@ pub mod type_id {
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
+    pub const SCROLL_TREE: u8 = 0x23;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
     pub const AUDIO: u8 = 0x40;
@@ -690,6 +745,7 @@ pub mod type_id {
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
+    pub const SCROLL_TARGET: u8 = 0x95;
     pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
@@ -752,6 +808,7 @@ impl Message {
             Message::Cursor(_) => CURSOR,
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
+            Message::ScrollTree(_) => SCROLL_TREE,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::Audio(_) => AUDIO,
@@ -796,6 +853,7 @@ impl Message {
             Message::Pointer(_) => POINTER,
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
+            Message::ScrollTarget(_) => SCROLL_TARGET,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::VideoAck { .. } => VIDEO_ACK,
             Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
@@ -948,6 +1006,21 @@ impl Message {
                 .put("rect", m.rect)
                 .put("crop", m.crop)
                 .put("data", m.data.clone())
+                .opt("input_seq", m.input_seq)
+                .build(),
+            Message::ScrollTree(m) => MapBuilder::new()
+                .put("id", m.id)
+                .opt("tag", m.tag)
+                .opt("tag_rect", m.tag_rect)
+                .put("applied", m.applied)
+                .put("epoch", m.epoch)
+                .put("scrollers", Value::Array(m.scrollers.iter().map(scroller_value).collect()))
+                .build(),
+            Message::ScrollTarget(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("scroller", m.scroller)
+                .put("seq", m.seq)
+                .put("delta", Value::Array(vec![m.delta[0].into(), m.delta[1].into()]))
                 .build(),
             Message::Tile(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1015,6 +1088,7 @@ impl Message {
                 .opt("gpu", m.gpu.then_some(true))
                 .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
+                .opt("scroll", m.scroll.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1069,7 +1143,7 @@ impl Message {
                     "scroll",
                     m.scroll
                         .as_ref()
-                        .map(|s| MapBuilder::new().put("dx", s.dx).put("dy", s.dy).put("precise", s.precise).build()),
+                        .map(|s| MapBuilder::new().put("dx", s.dx).put("dy", s.dy).put("precise", s.precise).opt("seq", s.seq).build()),
                 )
                 .build(),
             Message::Key(m) => {
@@ -1146,6 +1220,15 @@ impl Message {
                 rect: f.rect("rect")?,
                 crop: f.rect("crop")?,
                 data: f.bytes("data")?,
+                input_seq: f.opt_u64("input_seq")?,
+            }),
+            SCROLL_TREE => Message::ScrollTree(ScrollTree {
+                id: f.u64("id")?,
+                tag: f.opt_u32("tag")?,
+                tag_rect: f.opt_rect("tag_rect")?,
+                applied: f.u64("applied")?,
+                epoch: f.u64("epoch")?,
+                scrollers: f.array("scrollers")?.iter().map(scroller_from).collect::<Result<_, _>>()?,
             }),
             TILE => Message::Tile(Tile {
                 id: f.u64("id")?,
@@ -1282,6 +1365,7 @@ impl Message {
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
                 scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
+                scroll: f.opt_bool("scroll")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -1333,13 +1417,19 @@ impl Message {
                     None => None,
                     Some(v) => {
                         let s = Fields::new("pointer.scroll", v)?;
-                        Some(Scroll { dx: s.f64("dx")?, dy: s.f64("dy")?, precise: s.bool("precise")? })
+                        Some(Scroll { dx: s.f64("dx")?, dy: s.f64("dy")?, precise: s.bool("precise")?, seq: s.opt_u64("seq")? })
                     }
                 },
             }),
             KEY => {
                 Message::Key(Key { keysym: f.u32("keysym")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })
             }
+            SCROLL_TARGET => Message::ScrollTarget(ScrollTarget {
+                id: f.u64("id")?,
+                scroller: f.u32("scroller")?,
+                seq: f.u64("seq")?,
+                delta: f.req("delta", fields::as_f64_pair)?,
+            }),
             TEXT => Message::Text(Text {
                 commit: f.opt_string("commit")?,
                 preedit: f.opt_string("preedit")?,
@@ -1402,6 +1492,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
+        SCROLL_TREE => "scroll.tree",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",
         AUDIO => "audio",
@@ -1418,6 +1509,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         POINTER => "pointer",
         KEY => "key",
         TEXT => "text",
+        SCROLL_TARGET => "scroll.target",
         PING => "ping",
         DEVICE_STATUS => "device.status",
         DEVICE_OPEN => "device.open",
@@ -1434,5 +1526,29 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         DEVICE_BATTERY => "device.battery",
         DEVICE_ERROR => "device.error",
         _ => return None,
+    })
+}
+
+fn scroller_value(s: &Scroller) -> Value {
+    MapBuilder::new()
+        .put("id", s.id)
+        .put("rect", s.rect)
+        .put("offset", Value::Array(vec![s.offset[0].into(), s.offset[1].into()]))
+        .put("range", Value::Array(vec![s.range[0].into(), s.range[1].into()]))
+        .opt("fixed", (!s.fixed.is_empty()).then(|| Value::Array(s.fixed.iter().map(|&r| r.into()).collect())))
+        .build()
+}
+
+fn scroller_from(v: &Value) -> Result<Scroller, ProtocolError> {
+    let f = Fields::new("scroll.tree.scrollers", v)?;
+    Ok(Scroller {
+        id: f.u32("id")?,
+        rect: f.rect("rect")?,
+        offset: f.req("offset", fields::as_f64_pair)?,
+        range: f.req("range", fields::as_f64_pair)?,
+        fixed: match f.opt("fixed", fields::as_array)? {
+            None => Vec::new(),
+            Some(items) => items.iter().map(|r| fields::as_rect(r).ok_or(ProtocolError::Field { message: "scroll.tree.scrollers", field: "fixed", problem: "not a rect" })).collect::<Result<_, _>>()?,
+        },
     })
 }
