@@ -458,10 +458,12 @@ time to hand back and the learned latency and gain, and it asserts the bar.
 `LocalScrollRendererTests` checks the GPU signature kernel against its CPU definition and
 that a measured composition redraws a scrolled picture pixel for pixel.
 `LocalScrollControllerTests` runs a flick end to end on the GPU against a window whose app
-scrolls as forwarded scroll arrives. On a device, `CABOOSE_SCROLL_PROFILE=1` logs each
-gesture (touch-to-glass latency, frame intervals, late frames, blank area, picture
-placement, the app's latency and gain) to the `org.caboose` `scroll` log and to
-`Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_REPLAY=1` plays the standard flick script
+scrolls as forwarded scroll arrives. On a device, `CABOOSE_SCROLL_PROFILE=1` writes
+`caboose-scroll:` lines to standard output and the `org.caboose` `scroll` log: each pan's
+decision (local on the video or GPU path, or the flags that kept it on the app's path),
+live GPU capture start, arrival and absence, and each gesture's summary (touch-to-glass
+latency, frame intervals, late frames, blank area, picture placement, the app's latency
+and gain), which is also appended to `Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_REPLAY=1` plays the standard flick script
 through the same path three seconds after an interactive window appears. See
 `scripts/check-scroll.sh`.
 
