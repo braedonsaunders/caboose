@@ -2420,8 +2420,11 @@ the app card, and a detached view releases its layers.
   an app and open a terminal; ⌘⌥ reaches Linux as Ctrl+Alt, so plain ⌘ stays the apps' Ctrl. The layout
   and each app's hand-chosen width are kept per computer (window ids survive reconnects
   and parking). The layout engine is `CabooseKit/Switchyard` and is unit-tested.
-- **Lifecycle.** The display socket closes when the app goes to the background; the
-  computer parks on idle and resumes on the next foreground. The last frame of every window
+- **Lifecycle.** The display socket closes when the app goes to the background, unless the
+  computer is playing sound: then the connection stays open for it (the app's `audio`
+  background mode), pictures are acknowledged without being decoded so windows run at the
+  minimised rate, and every window and video restarts at a keyframe on the next
+  foreground. Otherwise the computer parks on idle and resumes on the next foreground. The last frame of every window
   is cached with the server's `epoch`, and shown on reopening only when the new hello has
   the same epoch. Pictures are reduced on the GPU to a 1024-pixel long edge and read back
   off the main thread, most recently raised first within a 24 MiB budget. Home's kept
