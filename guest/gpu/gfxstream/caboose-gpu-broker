@@ -37,9 +37,10 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # capability that enables each: 0x80 guest-assigned handles for single-object creates and
 # pipelines, 0x100 also for descriptor sets and command buffers (requires 0x80), 0x200 the
 # completion feed, 0x400 ordered presents (SWAPCHAIN_PRESENT_ORDERED with device-stream ORDER
-# marks). The reply grants the offered features the phone declared.
+# marks), 0x800 guest-owned swapchain images (MAP flag 1; native acquires inside each
+# present). The reply grants the offered features the phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
-                  'ordered-present': 0x400}
+                  'ordered-present': 0x400, 'guest-images': 0x800}
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 
@@ -86,13 +87,20 @@ class IndexedSurface:
         state = self.swaps.get(swap)
         if state is None: raise ValueError('unknown swapchain')
         if kind == 27:
-            if state['mapping'] or state['mapped'] or state['retiring'] or struct.unpack_from('<I', body, 8)[0] != state['count']:
+            count, flags = struct.unpack_from('<II', body, 8)
+            # Guest-owned images (flag 1) map the guest's own pool of up to 8 images.
+            guest = bool(flags & 1)
+            if (state['mapping'] or state['mapped'] or state['retiring'] or
+                    (count > 8 if guest else count != state['count'])):
                 raise ValueError('invalid swapchain mapping')
             state['mapping'] = True
+            state['guest_images'] = guest
+            if guest: state['count'] = count
         elif kind == 29:
             request = struct.unpack_from('<Q', body, 8)[0]
             self.request(request)
-            if not state['mapped'] or state['retiring'] or state['acquire'] is not None:
+            if (not state['mapped'] or state['retiring'] or state['acquire'] is not None or
+                    state.get('guest_images')):
                 raise ValueError('acquire unavailable')
             state['acquire'] = request
         elif kind == 31:
@@ -103,9 +111,14 @@ class IndexedSurface:
             state['retiring'] = True
         elif kind in (34, 39):
             index = struct.unpack_from('<I', body, 24 if kind == 34 else 32)[0]
-            if not state['mapped'] or state['retiring'] or index not in state['acquired']:
+            if not state['mapped'] or state['retiring']:
                 raise ValueError('present source not acquired')
-            state['acquired'].remove(index)
+            if state.get('guest_images'):
+                # The guest acquires its own images; the phone checks each source is free.
+                if index >= state['count']: raise ValueError('present source not acquired')
+            else:
+                if index not in state['acquired']: raise ValueError('present source not acquired')
+                state['acquired'].remove(index)
         else: raise ValueError('invalid indexed request')
 
     def reply(self, kind, payload):
@@ -260,6 +273,62 @@ class FrameTiming:
         for values in self.samples.values(): values[:] = [0, 0, 0]
 
 
+class PresentTrace:
+    """Frame lab's present timeline (guest/framelab), on stderr while it is on: one line per
+    present from the guest and per present result and source release from the phone, and
+    every second the bytes written to and read from the phone. Broker-clock times only; no
+    payloads, handles or identities. On with CABOOSE_PRIVATE_GPU_PRESENT_TRACE=1, or while
+    the file $XDG_RUNTIME_DIR/caboose-gpu-present-trace exists (looked at once a second),
+    so a running seat can be measured without a restart."""
+    EVENTS = {('received_from_guest', int(Kind.SWAPCHAIN_PRESENT)): 'present',
+              ('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED)): 'present',
+              ('received_from_phone', int(Kind.PRESENT_RESULT)): 'result',
+              ('received_from_phone', int(Kind.SOURCE_RELEASED)): 'released'}
+
+    def __init__(self, environ=os.environ):
+        self.forced = environ.get('CABOOSE_PRIVATE_GPU_PRESENT_TRACE') == '1'
+        runtime = environ.get('XDG_RUNTIME_DIR')
+        self.flag = Path(runtime) / 'caboose-gpu-present-trace' if runtime else None
+        self.checked = None
+        self.on = self.forced
+        self.started = None
+        self.to_phone = self.from_phone = 0
+
+    def enabled(self, now):
+        if self.forced or self.flag is None: return self.forced
+        if self.checked is None or now - self.checked >= 1_000_000_000:
+            self.checked = now
+            self.on = self.flag.exists()
+        return self.on
+
+    def emit(self, line):
+        with contextlib.suppress(OSError):
+            print(line, file=sys.stderr, flush=True)
+
+    def surface(self, direction, kind):
+        event = self.EVENTS.get((direction, kind))
+        if event is None: return
+        now = time.monotonic_ns()
+        if self.enabled(now): self.emit(f'CABOOSE_GPU_PRESENT event={event} monotonic_ns={now}')
+
+    def stream(self, to_phone=0, from_phone=0):
+        now = time.monotonic_ns()
+        if not self.enabled(now):
+            self.started = None
+            return
+        if self.started is None:
+            self.started, self.to_phone, self.from_phone = now, 0, 0
+        self.to_phone += to_phone
+        self.from_phone += from_phone
+        if now - self.started >= 1_000_000_000:
+            self.emit(f'CABOOSE_GPU_STREAM elapsed_ms={(now - self.started) // 1_000_000} to_phone_bytes={self.to_phone} '
+                      f'from_phone_bytes={self.from_phone} monotonic_ns={now}')
+            self.started, self.to_phone, self.from_phone = now, 0, 0
+
+
+PRESENT_TRACE = PresentTrace()
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -338,7 +407,9 @@ class Session:
 
     def surface_progress(self, direction, kind, extent=None):
         # Diagnostic metadata only: no payloads, handles, identities or credentials.
-        if not self.progress_enabled or not is_surface(int(kind)): return
+        if not is_surface(int(kind)): return
+        PRESENT_TRACE.surface(direction, int(kind))
+        if not self.progress_enabled: return
         self.present_rate(direction, int(kind))
         ordinal = self.progress_count
         if ordinal > 128: return
@@ -418,6 +489,7 @@ class Session:
             while True:
                 data, charge = await self.pending.get()
                 self.writer.write(data)
+                PRESENT_TRACE.stream(to_phone=len(data))
                 await self.writer.drain()
                 self.pending_bytes -= charge
                 self.pending_count -= 1
@@ -433,6 +505,7 @@ class Session:
         if frame.kind == Kind.SURFACE_CAPS and len(frame.payload) >= 128:
             if struct.unpack_from('<iIiI', frame.payload, 48) == (0, 1, 0, 0):
                 extent = struct.unpack_from('<II', frame.payload, 72)
+        PRESENT_TRACE.stream(from_phone=len(frame.payload))
         self.surface_progress("received_from_phone", frame.kind, extent)
         if frame.kind == Kind.SESSION_READY:
             if self.session_received or frame.payload != self.hello: raise ValueError('bad session receipt')

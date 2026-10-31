@@ -35,7 +35,7 @@ const BUTTONS: [(u32, u32); 5] = [
 const WHEEL_STEP: f64 = 15.0;
 
 /// A surface and its origin in the logical space.
-type Focus = (WlSurface, Point<f64, Logical>);
+pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
 
 #[derive(Default)]
 pub struct InputState {
@@ -140,6 +140,8 @@ impl State {
     }
 
     pub fn pointer(&mut self, m: &proto::Pointer) {
+        let kind = if m.scroll.is_some() { "scroll" } else { "pointer" };
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind });
         let Some((location, under)) = self.locate(m.id, m.x, m.y) else { return };
         let Some(pointer) = self.seat.get_pointer() else { return };
         let utime = self.now_us();
@@ -153,6 +155,11 @@ impl State {
         // Both vectors are identical: this virtual device adds no acceleration.
         pointer.relative_motion(self, under, &RelativeMotionEvent { delta, delta_unaccel: delta, utime });
         let changed = self.input.pointer_buttons ^ m.buttons;
+        if changed != 0 {
+            // Xwayland applies a frame's motion when the frame ends but a button at once:
+            // the motion's own frame puts a press or release where it happened.
+            pointer.frame(self);
+        }
         if changed & m.buttons != 0 {
             self.press_focus(m.id);
         }
@@ -211,6 +218,7 @@ impl State {
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "touch" });
         let Some(touch) = self.seat.get_touch() else { return };
         let time = self.now_ms();
         for p in &m.points {
@@ -275,6 +283,7 @@ impl State {
     }
 
     pub fn key(&mut self, m: &proto::Key) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "key" });
         let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {
@@ -336,6 +345,7 @@ impl State {
     }
 
     pub fn text(&mut self, m: &proto::Text) {
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "text" });
         let Some(surface) = self.keyboard_focus_surface() else { return };
         // Deletions are BackSpace and Delete presses, for every surface. They remove one
         // grapheme cluster in every toolkit, which is what the client counts; text-input-v3's
@@ -351,9 +361,12 @@ impl State {
         if m.commit.is_none() && preedit.is_none() {
             return;
         }
-        if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit) {
-            // No text-input-v3 here (X11 through Xwayland, a terminal emulator without it):
-            // the commit is typed. Pre-edit text has no key equivalent and is not shown.
+        if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit)
+            && !self.ibus_send(m.commit.as_deref(), preedit.map(|(text, begin, _)| (text, begin)))
+        {
+            // Neither text-input-v3 nor an IBus field (an X11 client without input-method
+            // support, a terminal emulator): the commit is typed. Pre-edit text has no key
+            // equivalent and is not shown.
             if let Some(commit) = &m.commit {
                 self.type_text(commit);
             }

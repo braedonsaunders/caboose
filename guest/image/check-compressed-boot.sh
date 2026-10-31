@@ -58,7 +58,13 @@ done
 # Executing the real guest Python reads the compressed /usr lower. Exercise
 # copy-up, new-file writes, whiteouts and an immutable lower in this snapshot.
 chroot "$rootmnt" /usr/bin/python3 - <<'PY' || fail 'Guest compressed I/O checks failed'
-import errno, pathlib
+import errno, pathlib, subprocess
+excludes = pathlib.Path('/etc/dpkg/dpkg.cfg.d/caboose-excludes').read_text()
+for rule in ('path-exclude=/usr/share/doc/*', 'path-include=/usr/share/doc/*/copyright',
+             'path-exclude=/usr/share/info/*', 'path-exclude=/usr/share/lintian/*'):
+    assert rule in excludes
+assert pathlib.Path('/usr/share/doc/base-files/copyright').is_file()
+assert not subprocess.check_output(['dpkg', '--audit'], text=True).strip()
 lower = pathlib.Path('/.caboose-system/usr/bin/true')
 original = lower.read_bytes()
 assert original

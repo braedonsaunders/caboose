@@ -15,3 +15,4 @@ apps/ios/Caboose/Config/Local.xcconfig
 __pycache__/
 apps/ios/CabooseKit/Frameworks/
 /guest/gpu/out/
+/guest/framelab/out/

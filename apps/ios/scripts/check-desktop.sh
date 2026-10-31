@@ -242,6 +242,37 @@ Record which device/orientation/display and checks passed; a build alone is not 
 CHECK
 
 cat <<'CHECK'
+Linux windows in iPad windows (iPad with Stage Manager on, hardware keyboard to hand):
+1. Open VS Code (or Mousepad) on the Desktop tab, then Open in New Window from its tile's
+   menu (Tiled), the dock app's menu (Free) and Home's window tile menu. Each opens one
+   iPadOS window titled like the Linux window; choosing it again brings that window forward
+   instead of opening another. The Desktop's tiles and floating desktop no longer show it.
+   Drag the Home tile out past the app's edge and drop it: the same window opens there.
+2. Resize the iPadOS window from each corner: the app redraws at the new size, with the
+   picture stretched only briefly, and its menu bar is whole below the window's bar. Open a
+   fixed-minimum window (a preferences dialog's parent, or GIMP): the iPadOS window cannot be
+   made smaller than it. Rename a file or switch editor tabs: App Exposé and the window menu
+   show the new title.
+3. Click between the Caboose shell and the Linux window: typing on the hardware keyboard
+   goes to the window in front each time. Open a menu, a context menu and a Save dialog in
+   the window: each appears inside it and takes input; none appears on the Desktop tab.
+   Tap a text field without a hardware keyboard: the software keyboard comes and goes.
+4. Window Options -> Move to Desktop: the iPadOS window closes, Caboose comes forward on
+   Desktop with the window focused at its old place. Open it in a new window again and close
+   the iPadOS window with its own close button: the Linux window is still running on the
+   Desktop. Open it again and close the Linux window from Window Options (or File > Quit):
+   the iPadOS window closes.
+5. With a Linux window in its own window, put the shell's window away (another Stage
+   Manager set) and keep using the Linux window: the display stays connected. Send every
+   Caboose window to the background, wait, and return: the window reconnects with its picture.
+6. Quit Caboose from the app switcher with a Linux window open in its own window and
+   relaunch: it shows the same Linux window once the computer is back. Restart the computer
+   from Computer settings: the window closes. Relaunch with a restored window whose Linux
+   window has gone: it says so and Close closes it. Switch computers: these windows close.
+7. In Stage Manager and the Dock, each such window carries Caboose's icon.
+CHECK
+
+cat <<'CHECK'
 Direct touch on mouse-only windows:
 - In an X11 paint app, select a paintable layer and draw with one finger: a continuous
   stroke begins at the contact point. In a text editor, drag to select; in a file manager,

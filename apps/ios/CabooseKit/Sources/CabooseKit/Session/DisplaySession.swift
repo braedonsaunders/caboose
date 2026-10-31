@@ -34,8 +34,12 @@ public protocol DisplaySession: AnyObject {
     /// only within one. Nil for a server that sends none.
     var epoch: String? { get }
 
-    var onClipboardText: ((String) -> Void)? { get set }
-    var clipboardProvider: (() -> String?)? { get set }
+    /// The computer's clipboard changed (docs/display.md, Clipboard).
+    var onClipboard: ((ClipboardContent) -> Void)? { get set }
+    /// The user chose Paste in a window and the phone's pasteboard has no text. Returns
+    /// whether it takes the paste; if so it puts the pasteboard's images and files on the
+    /// computer's clipboard and then calls `paste`, which pastes them into the window.
+    var onPasteItems: ((_ paste: @escaping @MainActor () -> Void) -> Bool)? { get set }
     var onNotification: ((RemoteNotification) -> Void)? { get set }
     var onBell: (() -> Void)? { get set }
     var onRaise: ((Int) -> Void)? { get set }
@@ -65,7 +69,24 @@ public protocol DisplaySession: AnyObject {
     func refresh(_ window: RemoteWindow)
     /// Changes the screen the server lays windows out for, on the live connection.
     func reconfigure(_ capabilities: ClientCapabilities)
-    func offerClipboard(_ text: String)
+    /// Puts a copy made on the phone on the computer's clipboard; the same copy again,
+    /// or the computer's own coming back, is not sent.
+    func offerClipboard(_ content: ClipboardContent)
+
+    // MARK: Drag and drop (docs/display.md, Drag and drop)
+
+    var dropAccepted: Bool? { get }
+    var onDropResult: ((Bool, String?) -> Void)? { get set }
+    var computerDrag: [String]? { get }
+    var dragOutFrame: CGRect? { get set }
+    var dragOutHovering: Bool { get }
+    var onDragData: ((ClipboardContent) -> Void)? { get set }
+    func dropEnter(_ window: RemoteWindow, at point: CGPoint, types: [String])
+    func dropMove(_ window: RemoteWindow, at point: CGPoint)
+    func dropLeave()
+    func dropPerform(_ content: ClipboardContent)
+    func trackDragOut(at windowPoint: CGPoint)
+    @discardableResult func takeDragIfOver(_ windowPoint: CGPoint) -> Bool
 
     // MARK: Input
 
@@ -166,4 +187,10 @@ public extension DisplaySession {
     var windowsAnnounced: Int { 0 }
     var epoch: String? { nil }
     func probeLiveness() {}
+}
+
+public extension DisplaySession {
+    func offerClipboard(_ text: String) {
+        if let content = ClipboardPolicy.content(text: text) { offerClipboard(content) }
+    }
 }

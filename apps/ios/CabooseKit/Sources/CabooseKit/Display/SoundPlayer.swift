@@ -96,7 +96,11 @@ final class SoundPlayer: @unchecked Sendable {
 
     init(clock: MediaClock, now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }, activate: @escaping () throws -> Void = {
         #if os(iOS)
-        try AVAudioSession.sharedInstance().setActive(true)
+        let session = AVAudioSession.sharedInstance()
+        if session.category != .playback, session.category != .playAndRecord {
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        }
+        try session.setActive(true)
         #endif
     }) {
         self.clock = clock

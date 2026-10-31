@@ -5,5 +5,8 @@ let package = Package(
     name: "CabooseMenu",
     platforms: [.macOS(.v14)],
     products: [.executable(name: "CabooseMenu", targets: ["CabooseMenu"])],
-    targets: [.executableTarget(name: "CabooseMenu")]
+    targets: [
+        .executableTarget(name: "CabooseMenu"),
+        .testTarget(name: "CabooseMenuTests", dependencies: ["CabooseMenu"])
+    ]
 )

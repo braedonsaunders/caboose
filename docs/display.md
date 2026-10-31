@@ -1,7 +1,7 @@
 # Caboose Display
 
 Caboose Display is the computer's display server: a headless Wayland compositor, with
-Xwayland for X11 applications, that streams every window as its own encoded video for the
+Xwayland for X11 applications, that streams every window as its own surface or encoded video for the
 phone or TV to show as a native surface. The code is in [guest/display](../guest/display);
 its README covers building, running and testing it. This document is the design and the
 wire contract, the Caboose Display Protocol.
@@ -10,39 +10,59 @@ wire contract, the Caboose Display Protocol.
 
 ```
  apps (Wayland, and X11 through Xwayland)
+   │ wl_shm and linear dmabuf buffers, surface damage, frame callbacks
+   │ + guest/scene (LD_PRELOAD Cairo/GTK/Qt scene hook, Chromium layer flags, Vulkan WSI / Zink promotion)
    │ wl_shm and dmabuf buffers (linear, or phone-resident: gpu-buffers.md), damage, frame callbacks
    ▼
  caboose-display   (headless Wayland compositor, Rust + Smithay, inside the computer)
    ├ one stream per toplevel, dialog, popup and X11 window
-   ├ an encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
+   ├ Surface Atlas (Layer 0, when client advertises atlas: true):
+   │   64×64 XXH64 content-addressed tile cache, CopyRect scroll detection, solid RGBA fills,
+   │   and adaptive lossless micro-codec (pal2-lz4, pal16-lz4, rgba-lz4) via surface.batch (0x23)
+   ├ Scene Graph (Layer 1, when client advertises scene: true):
+   │   outline font faces (scene.font, 0x25), retained vector/glyph trees (scene.commit, 0x26),
+   │   and 120 Hz client-predicted scroll sync (scene.scroll, 0x9A)
+   ├ legacy/fallback video encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
    ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
    ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
-   ├ games: WebAssembly games handed off to the client, which runs them itself
+   ├ games & 3D: WebAssembly games handed off to the client, and Vulkan / Zink GPU streams
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
    ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
    └ sound: a private PulseAudio, sent as Opus on the pictures' clock
    │ Caboose Display Protocol (below), relayed byte for byte by caboose-host
    ▼
- CabooseKit (iOS): VideoToolbox HEVC / AV1 / H.264 → Metal, one surface per window
+ CabooseKit (iOS): Metal Surface Atlas + CoreText/Metal Scene Graph + VideoToolbox HEVC / AV1 / H.264, one surface per window
 ```
 
 - **The compositor composites nothing across windows.** It is a window and buffer broker.
   Each window's surface tree is rendered alone, cropped to its window geometry, and
-  encoded as its own stream. The phone and the TV are the compositors, which is how each
+  streamed as its own surface. The phone and the TV are the compositors, which is how each
   window stays a native surface with its own title, icon, size hints and parent.
-- **Nothing runs while nothing changes.** Only damaged 16×16 blocks are compared, only
-  blocks whose pixels really changed are converted, and the encoder is told which
-  macroblocks changed. A window that is one surface with one wl_shm buffer is read in
-  place without composition. With no client connected the server does no per-window work.
+- **Zero Server Video when `atlas: true` is negotiated.** When a client advertises `atlas: true`
+  in `ClientHello` (even with `decoders: []`), the server skips per-window H.264/HEVC video
+  encoding (`0x10` `frame`) and instead transmits atomic byte-perfect `surface.batch` (`0x23`)
+  damage updates (Layer 0) and retained vector/glyph `scene.commit` (`0x26`) trees (Layer 1).
+  Hardware video (`video.*` passthrough and motion streams) remains reserved for actual video
+  media and high-churn motion regions.
+- **Nothing runs while nothing changes.** Only damaged blocks are compared, and with no client
+  connected the server does no per-window encoding work. In legacy video mode, only damaged
+  16×16 blocks whose pixels really changed are converted and passed to the video encoder.
 - **The client paces the applications.** Frame callbacks are released on the client's
-  display refresh and only while fewer than two frames are unacknowledged, so
+  display refresh and only while fewer than two frames or surface batches are unacknowledged, so
   applications draw at the rate the link and the screen can show.
-- **Text stays sharp and cheap.** Small changes (typing, a caret) go as lossless PNG tiles
-  instead of pictures. Areas that have been quiet for 300 ms are coded once more at a low
-  QP and then cost nothing until they change.
+- **Text stays sharp and cheap.** In Surface Atlas mode, 64×64 UI tiles are content-addressed by
+  64-bit `XXH64`, deduplicated across frames and scroll positions, and compressed with the
+  lossless UI micro-codec (`pal2-lz4`, `pal16-lz4`, `rgba-lz4`). In Scene Graph mode, outline
+  fonts (`scene.font`, `0x25`) and positioned glyph runs (`scene.commit`, `0x26`) rasterize
+  natively on the client at retina scale. In legacy video mode, small changes go as lossless
+  PNG tiles (`0x11` `tile`) and quiet areas are sharpened after 300 ms.
+- **Popups keep their shape.** A popup (an xdg popup, an X11 override-redirect menu or
+  tooltip) has its rounded corners and shadow inside its window geometry, so it is sent
+  with `alpha: true`, composed on a transparent canvas and coded losslessly with alpha,
+  never as lossy video frames; the client shows it on a transparent surface.
 
 The renderer is pixman, on the CPU. Applications render themselves (with Mesa's D3D12
-driver on WSL2 hosts, for example), and their buffers reach the encoder through system
+driver on WSL2 hosts, for example), and their buffers reach the compositor through system
 memory.
 
 GTK 3 ordinary windows use the KDE server-decoration default; xdg-decoration
@@ -55,7 +75,9 @@ safely removed by cropping the picture.
 
 caboose-display probes its encoders at start-up by encoding a test picture and offers
 only those that work, hardware first (HEVC, then AV1, then H.264), then libx264 and
-libx265. The server picks the first codec in its order that the client decodes.
+libx265. The server picks the first codec in its order that the client decodes. When a
+client advertises `atlas: true`, it may send `decoders: []` (zero window-video decoders)
+and still complete the handshake with `encoders: []`.
 
 | Host (`CABOOSE_GPU`) | Runtime | Encoders |
 | --- | --- | --- |
@@ -83,7 +105,9 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | D-Bus session bus | `/run/user/1000/bus` | `/run/user/1000/agent-bus`, with its own notification endpoint |
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Video socket | `$XDG_RUNTIME_DIR/caboose-video.sock` | `$XDG_RUNTIME_DIR/caboose-video-agent.sock` |
+| Scene socket | `$XDG_RUNTIME_DIR/caboose-scene.sock` | `$XDG_RUNTIME_DIR/caboose-scene-agent.sock` |
 | Game socket | `$XDG_RUNTIME_DIR/caboose-game.sock` | none (`--no-games`) |
+| WSI auto-promotion | `CABOOSE_WSI_AUTO_PROMOTE=1` (`CABOOSE_SEAT=owner`) | disabled (`CABOOSE_SEAT=agent`) |
 | Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Scroll socket ([Scroll reports](#scroll-reports)) | `…/caboose-display/wayland-caboose-0/scroll.sock` | `…/caboose-display/wayland-caboose-agent/scroll.sock` |
@@ -97,19 +121,18 @@ The computer runs two instances of caboose-display, one for the owner and one fo
   them. In the container runtime both ports are published on host loopback only.
 - **Launch environment.** Once Wayland and Xwayland are ready, each instance writes the
   environment its applications need (`WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`,
-  `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `CABOOSE_SCROLL_SOCKET`, `PULSE_SERVER` when it
-  plays sound, `CABOOSE_GAME_SOCKET` when it hands games off, the VA-API passthrough
-  variables when the driver is installed) to its env file in sh syntax.
+  `XDG_RUNTIME_DIR`, toolkit backends, `CABOOSE_DISPLAY_CONTROL`, `CABOOSE_SCENE_SOCKET`, `CABOOSE_SCROLL_SOCKET`,
+  `PULSE_SERVER` when it plays sound, `CABOOSE_GAME_SOCKET` when it hands games off, the
+  VA-API passthrough variables when the driver is installed) to its env file in sh syntax.
 - **Per-instance state.** Each instance keeps its X authority (`Xauthority`), the
   Xwayland shim that adds `-auth` (`bin/Xwayland`), its PulseAudio socket
   (`pulse/native`), its control socket (`control.sock`) and its scroll socket (`scroll.sock`) under
   `$XDG_RUNTIME_DIR/caboose-display/<Wayland socket name>/`, owner-only, so the two never
   share them.
-- **Readiness.** `caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]` exits 0 once the
-  instance on `PORT` (default 14600) answers a `hello` made with the per-wake token and has
-  written its launch environment (`/run/caboose/display.env`, or `agent-display.env` for
-  14601), trying for `TIMEOUT` seconds (default 60). The `hello` answers before Xwayland
-  is up; the launch environment is written after it.
+- **Readiness.** `caboose-display-ready [TIMEOUT] [PORT] [ENV_FILE]` checks the written
+  launch environment, its peer-authenticated control socket and the selected listening
+  TCP port, for up to `TIMEOUT` seconds (default 60). It sends no display hello and does
+  not validate WebSocket token acceptance or evict an existing watcher.
 - **Control socket.** The computer's own tools see and act on a seat through its
   control socket rather than through X: the window list (each window's process, geometry,
   surface and focus, Wayland and X11 alike), the seat's pointer and keyboard, and pictures
@@ -171,7 +194,8 @@ for byte.
   server happens to write one protocol message per WebSocket message).
 - Each message is `type: u8`, `length: u32` little-endian, then `payload[length]`. The
   payload is always exactly one CBOR map with text keys. Binary content (NAL units, OBUs,
-  PNG, Opus) is a CBOR byte string field, so it is raw bytes on the wire.
+  PNG, LZ4 tiles, font faces, glyph runs, Opus) is a CBOR byte string field, so it is raw
+  bytes on the wire.
 - The largest payload is 16 MiB minus the 5-byte header (the relay's WebSocket
   `maxPayload` is 16 MiB). A larger announced length is a protocol error and closes the
   connection.
@@ -260,10 +284,13 @@ The client speaks first, as soon as the socket opens, with `hello` carrying the
 `display.token` from `/v1/session`. The server re-reads the per-wake token file on every
 hello. On a mismatch it sends `bye { reason: "auth" }` and closes; on an unsupported
 version, `bye { reason: "version" }`; when none of its encoders is in the client's
-`decoders`, `bye { reason: "protocol" }`. Otherwise it answers `hello` with the display
+`decoders` **and** the client did not advertise `atlas: true`, `bye { reason: "protocol" }`.
+When the client advertises `atlas: true`, `decoders: []` is valid and negotiates a zero-video
+window session (`encoders: []` in `ServerHello`). Otherwise it answers `hello` with the display
 ids it accepted, `encoders` = its encoders ∩ the client's decoders in the server's
 preference order, its `features` and its `epoch`; then sends `window.create` for every
-live window, followed by a keyframe of each.
+live window, followed by a keyframe (`surface.batch` with `keyframe: true` when `atlas` is
+active, or `frame` in legacy video mode) of each.
 
 The client also parses the optional `gpu_live_epoch` as a 16-byte CBOR byte string
 with at least one nonzero byte, separately from the text `epoch`.
@@ -277,39 +304,47 @@ client's windows are exactly the server's. A server that sends `epoch` guarantee
 order; a client relies on it only from such a server.
 
 `features` is any of `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`, `clipboard`,
-`cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`, `devices`, `scroll`. A feature is listed only
-when the server implements it. caboose-display always lists `vsync`, `ack`, `touch`, `pencil`,
-`text-input-v3`, `cursor-named` and `clipboard`; `xwayland` when Xwayland runs; `video`
-when it can send video streams and the client lists `video_decoders`; `audio` when it
-plays sound; `tiles` unless tiles are turned off; `wasm` when it hands games off (the
-owner's display) and the client's hello says `wasm: true`; and `gpu` when it relays GPU
-streams (the owner's display) and the client's hello says `gpu: true`; `webview` when the owner display and client support agent-app handoff; and `devices` when
-the owner's display accepts the phone's hardware ([devices.md](devices.md)) and the client's
-hello says `devices: true`; and `scroll` when the instance listens on its scroll socket and
-the client's hello says `scroll: true`.
+`clipboard-types`, `drop`, `drag`, `cursor-named`, `tiles`, `audio`, `xwayland`, `video`, `wasm`, `gpu`, `webview`,
+`devices`, `atlas`, `scene`, `scroll`. A feature is listed only when the server implements it.
+caboose-display always lists `vsync`, `ack`, `touch`, `pencil`, `text-input-v3`,
+`cursor-named`, `clipboard`, `clipboard-types`, `drop` and `drag`; `xwayland` when Xwayland runs; `video` when it can send video streams and the
+client lists `video_decoders`; `audio` when it plays sound; `tiles` unless tiles are turned
+off or superseded by `atlas`; `wasm` when it hands games off (the owner's display) and the
+client's hello says `wasm: true`; `gpu` when it relays GPU streams (the owner's display) and
+the client's hello says `gpu: true`; `webview` when the owner display and client support
+agent-app handoff; `devices` when the owner's display accepts the phone's hardware
+([devices.md](devices.md)) and the client's hello says `devices: true`; `atlas` when the
+client's hello says `atlas: true`; `scene` when the client's hello says `scene: true`; and `scroll` when the instance listens
+on its scroll socket and the client's hello says `scroll: true`.
 
 ### Pacing and flow control
 
 - `pts_us` is the server's `CLOCK_MONOTONIC` at the surface commit, in microseconds.
 - The client sends `vsync` once per refresh of each display that shows a window. Frame
-  callbacks of a window are released on a vsync of its display, and only while fewer than
-  2 of its frames are unacknowledged (`ack` matches by `pts_us`). A window whose display
-  sends no vsync is throttled like a minimised one: it gets frame callbacks once a second.
-- **Tiles.** A small change (typing, a caret, a small widget) can arrive as `tile`s
-  instead of a frame: lossless PNGs, 8-bit RGB, of the changed 16×16 blocks.
-  `tile.rect` is in picture pixels, the space of `frame.crop`, and maps to the window
-  the way the last frame's `crop` maps to its `rect`. A tile paints over the window's
-  picture. Tiles are applied in order with frames and are not acknowledged, and a later
-  frame repaints the whole picture, tiles included. The server makes that frame carry
+  callbacks are released on that display's vsync while fewer than 2 video frames or 12
+  negotiated atlas batches are unacknowledged (`ack` matches by `pts_us`). Atlas also releases
+  a pending callback when an acknowledgment creates room, provided that display's vsync
+  is still current. Video callbacks retain vsync pacing. Each window has at most one encode
+  in progress, counted against callback admission. A display without current vsync gets
+  callbacks once a second. The connection's existing 48 MiB WebSocket write-buffer cap
+  still applies; exceeding it closes the connection rather than accumulating more data.
+  These limits bound work in flight; they do not guarantee a frame rate.
+- **Tiles (legacy mode).** When `atlas` is not negotiated, a small change (typing, a caret, a
+  small widget) can arrive as `tile`s instead of a frame: lossless PNGs, 8-bit RGB, of the
+  changed 16×16 blocks. `tile.rect` is in picture pixels, the space of `frame.crop`, and maps
+  to the window the way the last frame's `crop` maps to its `rect`. A tile paints over the
+  window's picture. Tiles are applied in order with frames and are not acknowledged, and a
+  later frame repaints the whole picture, tiles included. The server makes that frame carry
   the current content of every tiled area. The server lists `tiles` in `features` when
   it sends them.
 - A frame can change no content and only sharpen it: once part of a window has been
   unchanged for a while, the server codes it once more at a lower QP (progressive
   refinement). It is an ordinary non-key `frame` under the same flow control. Its `pts_us`
   is when it was made, which is later than the commit of the content it shows.
-- `ack.decoded_us` is the decode duration, or `-1` if decoding failed, after which the
-  client also sends `request_keyframe`. The next frame after `request_keyframe`, a
-  reconnect, or a size change is a keyframe with parameter sets.
+- `ack.decoded_us` is the decode or batch-apply duration, or `-1` if decoding failed, after
+  which the client also sends `request_keyframe`. The next update after `request_keyframe`, a
+  reconnect, or a size change is a keyframe (`surface.batch` with `keyframe: true` or a video
+  `frame` with parameter sets).
 
 ### Messages
 
@@ -337,10 +372,19 @@ Server → client (`0x01`–`0x7F`):
 | `0x1D` | `webview.destroy` | `id` |
 | `0x20` | `cursor` | `id?`, `image: bytes` (PNG), `hotspot: [x, y]` |
 | `0x21` | `cursor.named` | `name` (cursor-shape-v1 / CSS names: `default`, `text`, `pointer`, `vertical-text`, …) |
-| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (`normal`, `terminal`, `password`, `email`, `url`, `number`, …), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
-| `0x23` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]` ([Scroll reports](#scroll-reports)) |
-| `0x30` | `clipboard` | `mime`, `data: bytes` |
+| `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text` (text-input-v3 content purpose: `normal`, `alpha`, `digits`, `number`, `phone`, `url`, `email`, `name`, `password`, `pin`, `date`, `time`, `datetime`, `terminal`), `surrounding?: text`, `cursor?: uint`, `anchor?: uint` |
+| `0x23` | `surface.batch` | `id`, `seq`, `pts_us`, `size: [w, h]`, `rect`, `keyframe?: bool`, `copies?: [[dx, dy, x, y, w, h]]`, `fills?: [[x, y, w, h, rgba]]`, `refs?: [[x, y, hash]]`, `tiles?: [{ x, y, w, h, fmt: "pal2-lz4"\|"pal16-lz4"\|"rgba-lz4"\|"png", hash?: uint, data: bytes }]` |
+| `0x24` | `surface.reset` | `epoch: uint` |
+| `0x25` | `scene.font` | `font: uint` (`XXH64`), `index: uint`, `family?: text`, `data: bytes` (TTF/OTF) |
+| `0x26` | `scene.commit` | `id`, `seq`, `pts_us`, `root: uint`, `reset?: bool`, `nodes?: [{ id, kind: "group"\|"clip"\|"rclip"\|"scroll"\|"rect"\|"border"\|"shadow"\|"glyphs"\|"path"\|"surface", rect?, radius?: [u32 × 4], color?: uint, scroll?: rect, children?: [uint], font?: uint, size?: float, glyphs?: bytes, path?: bytes, surface?: uint }]`, `remove?: [uint]` |
+| `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]` ([Scroll reports](#scroll-reports)) |
+| `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
+| `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
+| `0x33` | `drop.result` | `ok: bool`, `reason?: "rejected"\|"cancelled"\|"timeout"\|"invalid"` |
+| `0x34` | `drag.start` | `mimes: [mime]` |
+| `0x35` | `drag.end` | `taken: bool` |
+| `0x36` | `drag.data` | as `clipboard` |
 | `0x40` | `audio` | `codec: "opus"`, `pts_us`, `channels?: uint` (1 or 2, absent = 2), `data: bytes` |
 | `0x60` | `device.status` | `devices: [{ id, nodes: [text], error?: text }]` ([devices.md](devices.md#protocol)) |
 | `0x61` | `device.open` | `device`, `rate_hz?: float` |
@@ -354,7 +398,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `atlas?: bool`, `scene?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -372,7 +416,13 @@ Client → server (`0x81`–`0xFF`):
 | `0x96` | `gpu.ack` | `id`, `offset`: the client has consumed the stream up to `offset` |
 | `0x97` | `game.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes; the server logs no more): the client cannot run game `id` ([game-handoff.md, "Declining"](game-handoff.md#declining)) |
 | `0x98` | `webview.decline` | `id`, `reason: text` (at most 200 UTF-8 bytes) |
-| `0xA0` | `clipboard` | `mime`, `data: bytes` |
+| `0x9A` | `scene.scroll` | `id`, `node: uint`, `sx: float`, `sy: float` (client-predicted scroll offset synced back to the guest) |
+| `0xA0` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` |
+| `0xA1` | `drop.enter` | `id`, `x`, `y`, `mimes: [mime]` |
+| `0xA2` | `drop.motion` | `id`, `x`, `y` |
+| `0xA3` | `drop.leave` | (empty map) |
+| `0xA4` | `drop.perform` | as `clipboard` |
+| `0xA5` | `drag.take` | (empty map) |
 | `0xB0` | `devices` | `devices: [device]` ([devices.md](devices.md#protocol)) |
 | `0xB1` | `device.camera` | `device`, `seq`, `keyframe: bool`, `t_us`, `data: bytes` (H.264, Annex-B) |
 | `0xB2` | `device.depth` | `device`, `t_us`, `size: [w, h]`, `data: bytes` (u16 LE millimetres) |
@@ -394,7 +444,11 @@ the guest applies no acceleration. The two motion timestamps share one monotonic
 the pointer message's pixel coordinates or its precise-pixel versus wheel-click units.
 
 - `frame.data` is Annex-B for H.264 and HEVC, with parameter sets on keyframes; for AV1 it is
-  one temporal unit of low-overhead OBUs with the sequence header on keyframes.
+  one temporal unit of low-overhead OBUs with the sequence header on keyframes. A frame
+  carries no alpha. A window with `alpha: true` gets no frames: every picture of it, the
+  first and the answer to `request_keyframe` included, is `tile` messages of 8-bit RGBA
+  PNG (straight alpha) over a transparent surface (or `surface.batch` when `atlas` is
+  negotiated); the tiles of other windows are 8-bit RGB.
 - `text` is text-input-v3. Deletions (`delete_before`, `delete_after`, in grapheme
   clusters) are sent to every surface as BackSpace and Delete presses, one per cluster,
   before the commit; that removes one grapheme cluster in every toolkit, where
@@ -419,13 +473,122 @@ the pointer message's pixel coordinates or its precise-pixel versus wheel-click 
   including momentum, stops when its connection or coordinate mapping changes.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
-and no `cursor` images; tiles only as `png`; `video.create` and `video.update` without
+and no `cursor` images; tiles only as `png` in legacy mode; `alpha: true` for windows of kind `popup` and
+`alpha: false` for every other; no `icon`, because Smithay 0.7 supports neither
+xdg-toplevel-icon-v1 nor `_NET_WM_ICON`, so the phone resolves a window's icon from the
+computer's app list by its `app_id` or class; `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
 the app through the host, from [guest/notifications](../guest/notifications)). It delivers
 `pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
 into proximity of the surface under it), `down` and `up` are the tip's contact, `leave` and
 `cancel` take it out of proximity; pressure maps to 0–65535 and tilt passes through in
-degrees. The clipboard carries text (`text/plain;charset=utf-8`).
+degrees. The clipboard carries text, images and files ("Clipboard" below).
+
+### Surface Atlas (`0x23` `surface.batch`, `0x24` `surface.reset`)
+
+When the client advertises `atlas: true` in `ClientHello` and the server includes `"atlas"`
+in `ServerHello.features`, window surfaces are transmitted as atomic byte-perfect
+`surface.batch` (`0x23`) updates instead of lossy H.264/HEVC `frame`s (`0x10`). This is
+**Layer 0** of the OS Decomposition ("Zero Server Video") architecture, implemented in
+`guest/display/protocol/src/atlas.rs`.
+
+Each `surface.batch` applies operations to window `id` (at surface dimensions `size: [w, h]`
+and window-local placement `rect: [x, y, w, h]`) in strict deterministic order before
+acknowledging `pts_us` via `ack` (`0x83`):
+
+1. **`copies` (`CopyRect`)**: Each `[dx, dy, x, y, w, h]` copies the rectangle from source
+   `[x - dx, y - dy, w, h]` of the window's existing retained texture into destination
+   `[x, y, w, h]` (using an intermediate scratch blit so overlapping scroll regions never
+   alias). The phone queues the GPU copies and dirty pixel uploads together; failure to
+   allocate a required resource rejects the batch and requests a keyframe instead of
+   acknowledging a partial picture. Ordinary touch/wheel input remains server-authoritative;
+   pixel copies do not establish a semantic scroll target for local prediction.
+   The server's scroll detector (`detect_scroll_copy`) hashes rows inside damaged
+   regions (`w >= 64 && h >= 64`) with `XXH64` and emits a `SurfaceCopy` whenever at least
+   60% of overlapping rows match a vertical displacement `dy`, reducing scroll bandwidth to
+   only the newly exposed strip.
+2. **`fills`**: Each `[x, y, w, h, rgba]` fills a solid rectangle with packed 32-bit
+   `0xRRGGBBAA` color. Single-color 64×64 blocks are coalesced into `fills` rather than
+   encoded as tiles.
+3. **`refs` (`XXH64` tile cache references)**: Each `[x, y, hash]` blits a previously cached
+   64×64 RGBA8888 tile identified by its 64-bit `XXH64` (`seed = 0`) content hash onto
+   `(x, y)`. Both server and client maintain a session-wide content-addressed tile cache,
+   so repeated UI chrome, icons, and text blocks across windows or scroll positions cost
+   only a 16-byte reference.
+4. **`tiles` (Lossless UI micro-codec)**: Newly observed tiles `{ x, y, w, h, fmt, hash?, data }`
+   are decoded, blitted to `[x, y, w, h]`, and inserted into the client's `XXH64` tile cache
+   when `hash` is present.
+
+The adaptive lossless UI micro-codec (`encode_atlas_tile` / `decode_atlas_tile`) inspects the
+unique RGBA8888 colors in each `w × h` tile and prefixes the payload with a 4-byte
+little-endian uncompressed byte length followed by an LZ4 raw block:
+
+- **`pal2-lz4` (1–2 unique colors)**: Uncompressed payload is `c0: [u8; 4]`, `c1: [u8; 4]`,
+  followed by `⌈(w × h) / 8⌉` bytes of MSB-first 1-bit palette indices (`0 → c0`, `1 → c1`).
+- **`pal16-lz4` (3–16 unique colors)**: Uncompressed payload is `count: u8`, `palette: [u8; count * 4]`,
+  followed by `⌈(w × h) / 2⌉` bytes of 4-bit nibble-packed palette indices (even pixel in high
+  nibble `byte >> 4`, odd pixel in low nibble `byte & 0x0F`).
+- **`rgba-lz4` (> 16 unique colors)**: Uncompressed payload is the raw `w * h * 4` RGBA8888
+  pixel buffer compressed with LZ4.
+- **`png`**: Standard lossless PNG bytes.
+
+`surface.reset` (`0x24`, `{ epoch: uint }`) clears the client's `XXH64` tile cache when the
+server evicts its dictionary or advances the cache epoch.
+
+### Scene Graph & Guest Interceptor (`0x25` `scene.font`, `0x26` `scene.commit`, `0x9A` `scene.scroll`)
+
+When the client advertises `scene: true` in `ClientHello` and the server includes `"scene"`
+in `ServerHello.features`, the server streams **Layer 1** retained vector and glyph scene
+graphs alongside Surface Atlas updates:
+
+- **`scene.font` (`0x25`)**: Registers an outline font face (`font`: 64-bit `XXH64` hash of
+  the font bytes with `seed = 0`, `index`: face index within a TTC collection, optional
+  `family` name, and `data`: raw TrueType/OpenType bytes). Each `(font, index)` pair is
+  deduplicated and sent at most once per session.
+- **`scene.commit` (`0x26`)**: Updates the retained scene tree for window `id` at sequence
+  `seq`, timestamp `pts_us`, and root node `root`. When `reset: true`, the client clears
+  previous nodes for the window before inserting `nodes` and pruning `remove`. Each node
+  carries `id` and `kind`:
+  - `group`, `clip`, `rclip`: Container and clipping nodes with `rect`, optional per-corner
+    radii `radius: [tl, tr, br, bl]`, and `children: [node_id, ...]`.
+  - `scroll`: Scrollable viewport container with `rect` (viewport bounds), `scroll`
+    (content offset and size `[sx, sy, cw, ch]`), and `children`.
+  - `rect`, `border`, `shadow`: Vector box primitives with `rect`, optional `radius`, and
+    32-bit `0xRRGGBBAA` `color`.
+  - `glyphs`: Positioned glyph run referencing `font` (`XXH64`), point `size`, `color`,
+    `rect`, and `glyphs`: packed 10-byte little-endian records `(glyph_id: u16 LE, x: f32 LE, y: f32 LE)`.
+  - `path`: Binary vector path stream (`0x01` MoveTo, `0x02` LineTo, `0x03` QuadTo,
+    `0x04` CubicTo, `0x05` Close with IEEE-754 `f32` LE coordinates) and `color`.
+  - `surface`: Embeds a Surface Atlas or media surface `surface` inside the vector tree.
+- **`scene.scroll` (`0x9A`)**: Client → server feedback `{ id, node, sx, sy }`. The iOS client
+  runs touch pan and 120 Hz ProMotion momentum physics locally on `scroll` nodes and streams
+  the predicted offset `(sx, sy)` back to the guest so the application's scroll state stays
+  synchronized without round-trip frame latency.
+
+**Guest Scene Interceptor (`guest/scene`) & Headless Liveness Invariant.** Inside the Linux
+guest, `guest/scene` provides:
+1. `libcaboose_scene_cairo.so` (`guest/scene/src/caboose_scene_cairo.c` and `src/scene_wire.h`),
+   an `LD_PRELOAD`-compatible Cairo/GTK/Qt interceptor with zero link-time dependency on
+   `libcairo` (resolving symbols via `dlsym(RTLD_NEXT, ...)`). It hashes font faces with
+   `cb_xxh64`, deduplicates `0x25` `scene.font` registrations per session, packs 10-byte
+   glyph records into canonical RFC 8949 CBOR `0x26` `scene.commit` frames over the
+   non-blocking `$CABOOSE_SCENE_SOCKET`, and polls `0x9A` `scene.scroll` events.
+2. `chromium/caboose-chromium-scene.conf`, configuring Chromium and Electron apps
+   (`claude-desktop`, `chatgpt`, `code`, `obsidian`, `chromium`) for native Ozone-Wayland
+   subsurface delegation (`WaylandOverlayDelegation`), hardware VA-API decode, and smooth
+   scroll tree emission.
+3. `libcaboose_wsi_promote.so` (`VK_LAYER_CABOOSE_wsi_promote`), an implicit Vulkan WSI and
+   Mesa Zink (`MESA_LOADER_DRIVER_OVERRIDE=zink`, `GALLIUM_DRIVER=zink`) promotion gate
+   enabled only when `CABOOSE_WSI_AUTO_PROMOTE=1` and `CABOOSE_SEAT != "agent"`. It promotes
+   3D, Vulkan, Zink, and Proton swapchains while keeping denylisted 2D desktop tools and
+   Electron apps on the Scene Graph and Surface Atlas lanes.
+4. **Headless Liveness Invariant (Invariant A)**: The guest computer must always continue
+   unattended work when the phone disconnects or when running headlessly on the agent seat.
+   If `$CABOOSE_SCENE_SOCKET` is unset, missing, refuses connection, or returns
+   `EAGAIN`/`EWOULDBLOCK`/`EPIPE`/`ECONNRESET` on write, `cb_scene_client_t` immediately
+   switches to non-blocking local passthrough mode (`SO_NOSIGPIPE` / `MSG_NOSIGNAL` /
+   `O_NONBLOCK`) without stalling the application or raising `SIGPIPE` (< 5 ms for 1,000
+   commits).
 
 ### Overscan
 
@@ -482,6 +645,86 @@ Rendering back into the presented surface multiplies by `s * V / P`, leaving
 rotation, fitting and output scale, including 1.5; other responses remain proportional.
 Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
 model. The client does not infer or compensate for per-application response differences.
+
+### Clipboard
+
+One `clipboard` message is one copy: its first representation in `mime` and `data`, and
+the same content in other types in `alternatives`, absent when there are none. Either
+side sends one whenever its own clipboard changes; the server also sends the computer's
+current copy right after `hello`. The types are:
+
+| Type | Content |
+| --- | --- |
+| `text/plain;charset=utf-8` | UTF-8 text, at most 1 MiB |
+| `image/png` | A PNG, beginning with the PNG signature |
+| `image/jpeg` | A JPEG, beginning with `FF D8 FF` |
+| `text/uri-list` | Files: `file://` URIs of absolute paths (empty or `localhost` host, percent-encoded), one per line, `#` lines ignored; at most 64 files and 256 KiB |
+
+- A copy carries each type at most once, at most 12 MiB (`MAX_BYTES`) for every
+  representation together, and is listed text first, then images, then files. A receiver
+  refuses a whole copy with an unknown or repeated type, bytes that are not what their
+  type says, or more than the limit; the framing's 16 MiB limit is enforced before any of
+  it is read.
+- **To the client**, the server sends text, and the other types only when the client's
+  `hello` lists them in `clipboard_types`; a copy that leaves nothing for the client is
+  not sent. caboose-display reads an application's copy in its best text type
+  (`text/plain;charset=utf-8`, `UTF8_STRING`, `text/plain`, `TEXT`, `STRING`), its best
+  image type (`image/png`, then `image/jpeg`) and its files (`text/uri-list`, or
+  GNOME's `x-special/gnome-copied-files`, converted), each within its share of the limit
+  and five seconds. Paths are the computer's; a client fetches files under the home
+  through the host's `/v1/fs` routes and cannot reach others.
+- **From the client**, `text/uri-list` may only name files the client has uploaded to the
+  computer's transfer area (`~/.cache/caboose/transfers/<id>/<name>`, through the host's
+  `/v1/fs/transfer`, [architecture.md § Files](architecture.md#files)). caboose-display
+  opens each one without following links before it offers the copy, and refuses the copy
+  otherwise. It offers applications the text in every text type above, the images in
+  their own types, and files as `text/uri-list` and `x-special/gnome-copied-files`
+  (`copy`), and gives an application that pastes thirty seconds to read.
+
+### Drag and drop
+
+The clipboard's types, limits and checks apply to everything dragged either way; a
+drop's or a drag's content has the shape of a `clipboard` message.
+
+**A drop from the client** (`drop`). While the client drags something over a window,
+it sends `drop.enter` with the window, the window-local position and the types it can
+deliver, then `drop.motion` as it moves, over the same window or another. Applications
+read what a drag offers as it enters, and many decide from it whether to accept, but the
+client can deliver the content only once the user has let go. So the server follows the
+finger and enters the application under it as each kind of window allows:
+
+- **X11 windows** get an XDND (version 3 to 5) drag from the server's own X client, with
+  the copy action only, as the finger moves. `drop.status { accepted }` reports the
+  window's answer whenever it changes. A window that asked for the data before it was
+  there is entered again once it is.
+- **Wayland windows** are entered only on the drop, with the content ready: a
+  compositor-owned Wayland drag follows the finger without entering any surface, and
+  `drop.status` is sent without `accepted`.
+
+When the user lets go, the client prepares the content (it uploads files to the transfer
+area first) and sends `drop.perform` with it: the types are a subset of those it entered
+with, and its files must be in the transfer area. The server then drops on the
+application under the last position. A Wayland application is entered and the drag
+released once it accepts the offer, has been sent everything it asked for and has had
+0.6 s to read it, the drag moving over it meanwhile; an XDND window is dropped on once it
+accepts, its position renewed for up to 2 s. `drop.result` ends the drop: `ok`, or
+`rejected` (the application did not accept it; a Wayland application has 3 s), `cancelled`
+(no drop was in progress), `timeout` (the application did not finish within 30 s, or the
+drop hovered 15 minutes without a `drop.motion`) or `invalid` (the content failed the
+checks). `drop.leave` ends a drop without a result. While a drop is in progress the server
+ignores the client's `pointer` messages, which would move the drag.
+
+**A drag to the client** (`drag`). When a Wayland application starts dragging something
+in a type the client takes (text, or one its hello lists in `clipboard_types`), the
+server sends `drag.start` with those types. If the user releases it on the client's
+own drop target, the client sends `drag.take` before the release. The server moves the
+drag off every window, reads the content from the application as it reads a copy, and
+holds the client's `touch`, `pointer` and `key` messages until it is read (five seconds
+at most). It sends `drag.data` and then applies the held input, so the release ends the
+drag over no window: the application sees a drag that was not dropped, and removes
+nothing. `drag.end` says the application's drag ended and whether the client took it.
+Drags started by X11 applications stay within X11 (Xwayland and its window manager do
+not hand them to Wayland), so the client is not told of them.
 
 ### Phone-owned scrolling
 
@@ -601,7 +844,7 @@ compositor binds the reporter to a toplevel of a process in the reporter's own l
 Among several, it takes the one whose title the report names, then the focused one. It
 then sends each report to the client as `scroll.tree`.
 
-**`scroll.tree`** (`0x23`): the window's scrollers as one application frame drew them, in
+**`scroll.tree`** (`0x27`): the window's scrollers as one application frame drew them, in
 window-local display pixels (the space of `frame.rect`, overscan included). The primary
 scroller comes first. `rect` is the scroller's visible area, `offset` its content offset,
 and `range` its largest offset (the smallest is 0). `fixed` are rectangles inside `rect`
@@ -710,9 +953,9 @@ A video stream is layered into a window (`window`) by the client: it decodes it 
 own decoder and draws it at `rect` (window-local display pixels, the whole picture,
 scaled to fit), showing only `clip` when present (a scrolled or cropped player, or an
 H.264 1088-line picture whose 1080 lines are visible). Every video stream is drawn above
-the window's own picture, ordered by `z` (higher on top); window pictures carry no alpha,
-so the server sends the visible region as `clip` instead of relying on a hole in the
-window. Video ids are their own namespace, unique for the server's lifetime.
+the window's own picture, ordered by `z` (higher on top); frames carry no alpha (only a
+popup's picture does, as PNG tiles with alpha, and a popup has no video streams), so the
+server sends the visible region as `clip` instead of relying on a hole in the window. Video ids are their own namespace, unique for the server's lifetime.
 The client intersects `clip` (or `rect` when absent) with the window's bounds and `rect`;
 clipping preserves the scale and origin of the complete decoded picture. The window's
 picture and video layers share one window-pixel-to-view transform, including while the
@@ -873,3 +1116,5 @@ CHROME_CONFIG_HOME, CHROME_USER_DATA_DIR and PATH. VSCODE_IPC_HOOK_CLI is empty 
 reusing an inherited editor instance. The guest agent-profile launcher supplies these
 values; the owner compositor's environment contract is unchanged. This changes no display
 wire messages. See [persistent agent profiles](../guest/desktop-mcp/README.md#persistent-agent-gui-profiles).
+
+`CABOOSE_ATLAS_NO_REFS=1` disables cache references for isolated diagnostics and sends full lossless tiles instead. Copies and fills remain available. With this option unset, atlas sessions use references only to published cache entries; publication revalidates entries against eviction.

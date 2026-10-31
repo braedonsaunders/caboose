@@ -218,7 +218,14 @@ static VkResult VKAPI_CALL support(VkPhysicalDevice physical, uint32_t family, V
         *out=indexed() && family==chosen ? VK_TRUE : VK_FALSE; return VK_SUCCESS;
     });
 }
-static VkBool32 VKAPI_CALL waylandSupport(VkPhysicalDevice, uint32_t, wl_display*) { return VK_FALSE; }
+static VkBool32 VKAPI_CALL waylandSupport(VkPhysicalDevice, uint32_t family, wl_display*) {
+    return indexed() && family == 0 ? VK_TRUE : VK_FALSE;
+}
+#ifdef VK_USE_PLATFORM_XCB_KHR
+static VkBool32 VKAPI_CALL xcbSupport(VkPhysicalDevice, uint32_t family, xcb_connection_t*, xcb_visualid_t) {
+    return indexed() && family == 0 ? VK_TRUE : VK_FALSE;
+}
+#endif
 static VkResult VKAPI_CALL presentRectangles(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkRect2D*) {
     return VK_ERROR_FEATURE_NOT_PRESENT;
 }
@@ -228,6 +235,11 @@ static void maskHostImageCopy(void* chain) {
             reinterpret_cast<VkPhysicalDeviceHostImageCopyFeaturesEXT*>(item)->hostImageCopy=VK_FALSE;
         if (item->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES)
             reinterpret_cast<VkPhysicalDeviceVulkan14Features*>(item)->hostImageCopy=VK_FALSE;
+        if (item->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT) {
+            auto* pv=reinterpret_cast<VkPhysicalDeviceProvokingVertexFeaturesEXT*>(item);
+            pv->provokingVertexLast=VK_TRUE;
+            pv->transformFeedbackPreservesProvokingVertex=VK_TRUE;
+        }
     }
 }
 static void VKAPI_CALL features2(VkPhysicalDevice physical, VkPhysicalDeviceFeatures2* features) {
@@ -289,6 +301,9 @@ static void install(vk_physical_device_dispatch_table& table) {
     if (!active()) return;
     table.GetPhysicalDeviceSurfaceSupportKHR=support;
     table.GetPhysicalDeviceWaylandPresentationSupportKHR=waylandSupport;
+#ifdef VK_USE_PLATFORM_XCB_KHR
+    table.GetPhysicalDeviceXcbPresentationSupportKHR=xcbSupport;
+#endif
     table.GetPhysicalDeviceSurfaceCapabilitiesKHR=capabilities;
     table.GetPhysicalDeviceSurfaceFormatsKHR=formats;
     table.GetPhysicalDeviceSurfacePresentModesKHR=modes;
@@ -318,6 +333,7 @@ static void gate(vk_instance_extension_table& extensions) {
         const char* name=vk_instance_extensions[i].extensionName;
         if ((strstr(name,"surface") || strstr(name,"display")) &&
             strcmp(name,"VK_KHR_surface") && strcmp(name,"VK_KHR_wayland_surface") &&
+            strcmp(name,"VK_KHR_xcb_surface") && strcmp(name,"VK_EXT_headless_surface") &&
             strcmp(name,"VK_KHR_get_surface_capabilities2")) extensions.extensions[i]=false;
     }
 }

@@ -178,29 +178,35 @@ impl Net {
         self.gpu_router.as_ref().ok_or_else(|| io::Error::other("GPU router unavailable"))?.queue_control(bytes, revoke)
     }
 
-    /// Queues one protocol message. Errors other than a full kernel buffer close the
-    /// connection at the next service.
-    pub fn send(&mut self, id: ConnId, message: &proto::Message) {
-        let bytes = proto::encode(message);
-        self.send_bytes(id, bytes);
+    /// Whether `id` is an open, non-closing WebSocket connection.
+    pub fn can_send(&self, id: ConnId) -> bool {
+        self.conns.get(&id).is_some_and(|c| matches!(c.socket, Socket::Open(_)) && c.closing.is_none())
     }
 
-    pub fn send_bytes(&mut self, id: ConnId, bytes: Vec<u8>) {
-        let Some(conn) = self.conns.get_mut(&id) else { return };
-        let Socket::Open(ws) = &mut conn.socket else { return };
+    /// Queues one protocol message. Errors other than a full kernel buffer close the
+    /// connection at the next service.
+    pub fn send(&mut self, id: ConnId, message: &proto::Message) -> bool {
+        let bytes = proto::encode(message);
+        self.send_bytes(id, bytes)
+    }
+
+    pub fn send_bytes(&mut self, id: ConnId, bytes: Vec<u8>) -> bool {
+        let Some(conn) = self.conns.get_mut(&id) else { return false };
+        let Socket::Open(ws) = &mut conn.socket else { return false };
         if conn.closing.is_some() {
-            return;
+            return false;
         }
         let mut result = ws.write(WsMessage::Binary(Bytes::from(bytes)));
         if result.is_ok() {
             result = ws.flush();
         }
         match result {
-            Ok(()) => {}
-            Err(tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Ok(()) => true,
+            Err(tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => true,
             Err(e) => {
                 tracing::info!("connection {id}: write failed: {e}");
                 conn.closing.get_or_insert_with(Instant::now);
+                false
             }
         }
     }
@@ -308,8 +314,8 @@ impl Net {
                 }
             }
             match ws.flush() {
-                Ok(()) => {}
-                Err(tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Ok(()) => {},
+                Err(tungstenite::Error::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {},
                 Err(_) => dead = true,
             }
         }

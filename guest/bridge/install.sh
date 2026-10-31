@@ -5,8 +5,9 @@ set -eu
 here=$(dirname "$0")
 install -d -m 0755 /opt/caboose/bridge
 install -m 0644 "$here/bridgecore.py" /opt/caboose/bridge/
-install -m 0755 "$here/caboose-bridge" "$here/caboose-portal" /opt/caboose/bridge/
+install -m 0755 "$here/caboose-bridge" "$here/caboose-portal" "$here/caboose-scan" /opt/caboose/bridge/
 ln -sf /opt/caboose/bridge/caboose-bridge /usr/local/bin/caboose-bridge
+ln -sf /opt/caboose/bridge/caboose-scan /usr/local/bin/caboose-scan
 install -Dm644 "$here/caboose.portal" /usr/share/xdg-desktop-portal/portals/caboose.portal
 install -Dm644 "$here/org.freedesktop.impl.portal.desktop.caboose.service" /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.caboose.service
 install -Dm644 "$here/portals.conf" /etc/xdg/xdg-desktop-portal/portals.conf

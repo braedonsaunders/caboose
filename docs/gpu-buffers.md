@@ -16,12 +16,14 @@ which lists the formats). Two DRM format modifiers describe where the pixels are
 | Modifier | Value | Pixels |
 | --- | --- | --- |
 | `DRM_FORMAT_MOD_LINEAR` | `0` | In the dma-buf, as ordinary shared memory |
-| `CABOOSE_FORMAT_MOD_REMOTE` | `0xcb00000000000001` | In phone GPU memory; the dma-buf has the nominal size and no meaningful bytes |
+| `CABOOSE_FORMAT_MOD_REMOTE` | `0x7e00000000000001` | In phone GPU memory; the dma-buf has the nominal size and no meaningful bytes |
 
 A remote buffer's pages are never touched, so it costs no computer memory. Its identity
 is the dma-buf's inode: the kernel numbers dma-bufs from a counter that does not repeat
 while it runs, and every descriptor of one buffer, in any process, has the same inode.
-Vendor `0xcb` is not allocated in `drm_fourcc.h`.
+Vendor `0x7e` is not allocated in `drm_fourcc.h`; the vendor byte is below `0x80` because EGL
+carries a modifier as two signed 32-bit attributes, and Chromium refuses a half that does
+not fit one.
 
 A caller that offers `CABOOSE_FORMAT_MOD_REMOTE` among its modifiers and does not ask for
 a CPU-visible layout (`GBM_BO_USE_LINEAR`, `GBM_BO_USE_WRITE`, `GBM_BO_USE_CURSOR`) gets a

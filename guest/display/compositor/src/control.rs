@@ -23,6 +23,11 @@
 //! type TEXT                    the rest of the line; `\n` and `\\` are escapes
 //! settle                       let every window draw now (frame callbacks), as if watched
 //! screenshot [ID]              a window, or the whole display: {"png":N,…} then N bytes
+//! frames [SINCE]               what happened after SINCE (CLOCK_MONOTONIC µs, default 0):
+//!                              now_us; per window its commits and the pictures sent to the
+//!                              client as [at, pts, bytes, refined]; input from the client as
+//!                              [at, kind] (pointer, scroll, touch, key, text). Each list
+//!                              keeps the newest 1024 entries.
 //! ```
 
 use crate::encode::CpuImage;
@@ -257,6 +262,15 @@ impl State {
         };
         let result = match op {
             "windows" => Ok(self.control_windows()),
+            "stats" => {
+                let s = &self.stats;
+                Ok(format!(
+                    "{{\"frames\":{},\"bytes\":{},\"renders\":{},\"direct\":{},\"unchanged_renders\":{},\"render_us\":{},\"encode_cpu_us\":{},\"damaged_px\":{},\"picture_px\":{},\"motion_frames\":{},\"tile_pictures\":{},\"tiles\":{}}}\n",
+                    s.frames, s.bytes, s.renders, s.direct, s.unchanged_renders, s.render_us, s.encode_cpu_us,
+                    s.damaged_px, s.picture_px, s.motion_frames, s.tile_pictures, s.tiles
+                )
+                .into_bytes())
+            }
             "focus" => args
                 .first()
                 .and_then(|a| a.parse::<u64>().ok())
@@ -327,10 +341,11 @@ impl State {
                     .filter(|w| w.stream.callbacks_pending && w.stream.can_release_callbacks())
                     .map(|w| w.id)
                     .collect();
+                let released = ids.len();
                 for id in ids {
                     self.release_frame_callbacks(id);
                 }
-                Ok(b"{\"ok\":true}\n".to_vec())
+                Ok(format!("{{\"ok\":true,\"released\":{released}}}\n").into_bytes())
             }
             "screenshot" => match args.first() {
                 Some(a) => match a.parse::<u64>().ok().filter(|id| self.windows.get(*id).is_some()) {
@@ -338,6 +353,11 @@ impl State {
                     None => Err("no such window".to_owned()),
                 },
                 None => self.screenshot(None),
+            },
+            "frames" => match args.first().map(|a| a.parse::<u64>()) {
+                None => Ok(self.control_frames(0)),
+                Some(Ok(since)) => Ok(self.control_frames(since)),
+                Some(Err(_)) => Err("frames: SINCE must be a number".to_owned()),
             },
             "" => Err("empty request".to_owned()),
             other => Err(format!("unknown request {other}")),
@@ -403,7 +423,7 @@ impl State {
         out
     }
 
-    fn window_pid(&self, surface: &Surface) -> Option<u32> {
+    pub(crate) fn window_pid(&self, surface: &Surface) -> Option<u32> {
         use smithay::reexports::wayland_server::Resource;
         match surface {
             Surface::X11(x) => x.pid(),
@@ -480,6 +500,34 @@ impl State {
         .into_bytes()
     }
 
+    fn control_frames(&self, since: u64) -> Vec<u8> {
+        let windows: Vec<String> = self
+            .windows
+            .ids()
+            .into_iter()
+            .filter_map(|id| self.windows.get(id).map(|w| (id, &w.stream.trace)))
+            .map(|(id, trace)| {
+                let commits: Vec<String> = trace.commits.after(since, |t| *t).iter().map(u64::to_string).collect();
+                let sent: Vec<String> = trace
+                    .sent
+                    .after(since, |s| s.at_us)
+                    .iter()
+                    .map(|s| format!("[{},{},{},{}]", s.at_us, s.pts_us, s.bytes, s.refined))
+                    .collect();
+                format!("{{\"id\":{id},\"commits\":[{}],\"sent\":[{}]}}", commits.join(","), sent.join(","))
+            })
+            .collect();
+        let input: Vec<String> =
+            self.input_trace.after(since, |i| i.at_us).iter().map(|i| format!("[{},\"{}\"]", i.at_us, i.kind)).collect();
+        format!(
+            "{{\"ok\":true,\"now_us\":{},\"windows\":[{}],\"input\":[{}]}}\n",
+            self.now_us(),
+            windows.join(","),
+            input.join(",")
+        )
+        .into_bytes()
+    }
+
     /// One window's picture (logical pixels), or every window composed over the displays.
     fn screenshot(&mut self, only: Option<u64>) -> Result<Vec<u8>, String> {
         let stacked = self.stacked();
@@ -504,7 +552,7 @@ impl State {
             let local = win.local_geometry();
             let size = (listed.rect.size.w, listed.rect.size.h).into();
             let mut image = CpuImage::new(listed.rect.size.w as u32, listed.rect.size.h as u32);
-            let mut canvas = Canvas::new(size, 1.0);
+            let mut canvas = Canvas::new(size, 1.0, false);
             if let Err(e) = canvas.render(&mut self.renderer, &root, local.loc, &mut image, 0) {
                 tracing::debug!("control: window {}: {e}", listed.id);
                 continue;
@@ -529,7 +577,7 @@ impl State {
                 }
             }
         }
-        let png = crate::stream::png(w as u32, h as u32, &rgb)?;
+        let png = crate::stream::png(w as u32, h as u32, &rgb, false)?;
         let mut out =
             format!("{{\"ok\":true,\"png\":{},\"rect\":[{},{},{},{}]}}\n", png.len(), area.loc.x, area.loc.y, w, h)
                 .into_bytes();

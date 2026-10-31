@@ -8,7 +8,10 @@ iPhone app's job, and the people who use the computers need no account. Launchin
 tasks and choosing a default agent live in the app, and the console does not repeat them.
 
 - **Setup** (`/setup`) — on a new host, from the link it prints: your name, email, password
-  and first household or team. That account is the operator's.
+  and first household or team. That account is the operator's. The next screen pairs the
+  iPhone with a single-use, ten-minute QR code, detects a newly connected phone, shows
+  computer image download status, and offers Tailscale HTTPS when Tailscale is signed in.
+  Continue to console leaves pairing optional; Phones can create another code later.
 - **Sign in** — email and password. The owner token works too, kept for the tab only.
 - **Invitation** (`/invite?token=…`) — a new administrator chooses a name and password; one
   with an account signs in, completing their authenticator challenge if enabled.

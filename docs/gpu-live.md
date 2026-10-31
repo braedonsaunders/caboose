@@ -4,7 +4,8 @@ The live GPU source is separate from the GFXReconstruct capture protocol in
 [gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
-It does not activate a general Vulkan driver or provide window presentation.
+Applications reach it through their launch environment, as [Applications](#applications)
+describes.
 
 ## Connection and authority
 
@@ -506,7 +507,11 @@ instance. With no executor the Caboose ICD fails `vkCreateInstance` and the load
 offers lavapipe. When the phone returns, the executor switch layer
 (`guest/gpu/executor-switch`) makes those lavapipe devices report device loss, and
 the applications move back onto the phone. Returning to the foreground starts a new
-executor. Computer switches and display takeover
+executor. An application launched with `CABOOSE_GPU_ON_LOSS=pause` instead
+waits: every call that would report the loss blocks until the broker has a new
+executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its device
+on the returned phone. Its devices cannot be resumed as they were, because their
+objects lived on the executor that left. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
 app releases its process-wide owner reservation only after native cleanup, its
 REVOKED receipt, and a normal broker WebSocket close. Local abort, transport loss
@@ -572,7 +577,7 @@ structural parsing alone does not prove them.
 | --- | --- | --- |
 | 25 | SWAPCHAIN_CREATE | request ID, boxed device, old swapchain ID (3 u64); 14 u32 creation fields; queue-family array |
 | 26 | SWAPCHAIN_CREATED | request ID, actual swapchain ID (2 u64); status; actual image count, reserved zero (2 u32) |
-| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, reserved zero (2 u32); ordered boxed source images (u64 each) |
+| 27 | SWAPCHAIN_MAP | swapchain ID (u64); image count, flags (2 u32); ordered boxed source images (u64 each) |
 | 28 | SWAPCHAIN_MAPPED | swapchain ID (u64); status |
 | 29 | SWAPCHAIN_ACQUIRE | swapchain ID, request ID, boxed binary semaphore, boxed fence, timeout nanoseconds (5 u64); device mask, reserved zero (2 u32) |
 | 30 | SWAPCHAIN_ACQUIRED | swapchain ID, request ID (2 u64); status; has-index, index, local reason, reserved zero (4 u32) |
@@ -591,6 +596,15 @@ The guest rejects unsupported `pNext` rather than dropping it. The native path
 honors every accepted parameter or returns an explicit error. Creation has no
 queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
+
+MAP flags are 0, or with the `guest-images` capability (hello feature `0x800`) 1 for
+guest-owned images or 3 for guest-owned images with mailbox. With guest-owned images the
+guest maps its own pool of 1 to 8 images instead of the provider's count. There is no
+SWAPCHAIN_ACQUIRE: the guest hands an image to the application once its previous copy
+was released, and signals the application's semaphore and fence itself. Each present
+names a guest image, and native acquires a provider image inside the present, waiting up
+to 1 s, or not at all with mailbox. A present that finds no provider image is dropped: it
+reports QUEUED, then releases its source and retires. Up to 8 frames may be in flight.
 
 Creation success carries actual `VK_SUCCESS`, the native ID and the provider's
 complete image count (1–256). Failure carries no ID or image count. MAP supplies
@@ -652,3 +666,53 @@ it. Replies retain the full native payload. The CGLS parser does not activate
 these operations or imply that a native implementation exists.
 
 The opt-in memory-audit package records at most 64 decoder calls taking 50 ms or longer per runtime process. Each record contains a local stream ordinal, opcode and elapsed time; the pinned command-buffer host-sync call also includes its two numeric ordering fields. It also records up to 64 stream totals and 128 two-second samples per runtime process, counting decode time (including mapped-memory flushes), socket read wait and bytes, and reply flush time. Counters saturate instead of wrapping. Stream wait includes time when the guest has no work and does not identify a transport fault by itself. Handles, addresses and command contents are excluded. Execution and timeout behavior are unchanged.
+
+## Applications
+
+The owner's display started with the private GPU sockets
+(`--private-gpu-stream-socket`, `--private-gpu-surface-socket`) routes its applications to
+the phone's GPU through their launch environment, when the driver is installed: `python3
+guest/gpu/install-live.py --driver libvulkan_gfxstream.so` puts it and its loader manifest
+in `/usr/local/lib/caboose-gpu-live`, a directory no Vulkan loader searches by itself. No
+application is configured individually; each toolkit's own GPU path reaches the driver.
+
+| Applications | Path to the phone's GPU |
+| --- | --- |
+| Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the routing layer (`guest/gpu/routing-layer`, enabled by `CABOOSE_GPU_ROUTING=1` in place of Mesa's device-select layer) lists the phone's GPU first and CPU renderers such as lavapipe last. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
+| OpenGL on X11 (GLX and EGL) | Mesa tries Zink, OpenGL on Vulkan, before its CPU renderer. `LIBGL_KOPPER_DRI2=1` lets Zink present through the driver's X11 surfaces on Xwayland, which has no DRI3, and the launch environment carries no `GALLIUM_DRIVER`, which would stop Mesa trying Zink. |
+| GTK 4 | `GSK_RENDERER=vulkan`. |
+| Qt 6 Quick | OpenGL through Xwayland, so Zink. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client whose ANGLE draws with OpenGL, so Zink. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+
+The broker listens on its local socket only while a phone's executor is ready. With no
+phone the driver fails its Vulkan instance and the loader continues with the computer's
+drivers; Zink finds no GPU and Mesa uses llvmpipe; GTK and Chromium draw with lavapipe.
+Those applications draw on the computer and reach the phone as pictures, like every
+application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
+lavapipe device lose itself once a phone's executor is ready, and an application that
+recreates lost devices, as Chromium does, moves to the phone.
+
+When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
+`restart` reports device loss, `pause` holds the application until the phone returns.
+The launch environment sets `auto`, which the routing layer resolves per process:
+`restart` for Chromium-family GPU processes (Chromium, Electron), which restart, and for
+Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
+recover from device loss (Zink, GTK 4, Vulkan applications and games).
+
+Some applications draw on the computer even with a phone attached: OpenGL clients on
+Wayland, because Mesa's Zink there needs a DRM render node and linux-dmabuf; Wine and
+Proton games, because the driver's surfaces are Wayland and XCB, not Xlib.
+
+Flatpak applications take the same paths inside their sandbox. `install-live.py
+--driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
+extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
+runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
+override. The launch environment's variables pass into the sandbox unchanged;
+`PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
+which shares no other part of the runtime directory with games.
+
+`guest/gpu/check-apps.sh` checks each path in a disposable container
+([guest/gpu](../guest/gpu/README.md#application-routing-check)).

@@ -336,7 +336,9 @@ impl Windows {
             fullscreen,
             display: Some(d.info.id),
             xwayland: w.surface.is_x11(),
-            alpha: false,
+            // A popup's rounded corners and shadow lie inside its geometry: its picture
+            // keeps the alpha, as lossless tiles (docs/display.md, "Video streams").
+            alpha: w.kind == WindowKind::Popup,
             overscan,
         })
     }

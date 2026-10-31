@@ -1,0 +1,8 @@
+{
+  "name": "drop-status",
+  "description": "The application under the client's drop accepts it.",
+  "messages": [
+    {"direction": "server", "type": "drop.status", "type_id": 50, "fields": {"accepted": true}}
+  ],
+  "hex": "320b000000a1686163636570746564f5"
+}

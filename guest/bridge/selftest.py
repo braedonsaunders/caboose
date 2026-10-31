@@ -1,7 +1,13 @@
 #!/usr/bin/python3
 """Checks bridgecore's pure logic; runs anywhere with Python 3 (no D-Bus): python3 selftest.py"""
+import importlib.machinery
+import importlib.util
 import os
+import pathlib
 import sys
+import tempfile
+import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -66,6 +72,119 @@ class Requests(unittest.TestCase):
         self.assertEqual(core.chosen(saving, {'paths': ['/home/caboose/Docs/new.odt']}, exists, isdir), ['/home/caboose/Docs/new.odt'])
         self.assertIsNone(core.chosen(saving, {'paths': ['/home/caboose/Missing/new.odt']}, exists, isdir))
         self.assertIsNone(core.chosen(saving, {'paths': ['/home/caboose/Docs']}, exists, isdir))
+
+
+class Scan(unittest.TestCase):
+    def test_scan_requests(self):
+        pdf = core.new_scan_request('pdf', now=7)
+        self.assertRegex(pdf['id'], core.ID)
+        self.assertEqual((pdf['type'], pdf['multiple'], pdf['directory'], pdf['currentFilter'], pdf['created']), ('scan', False, False, 0, 7))
+        self.assertEqual(pdf['filters'], [{'name': 'PDF', 'patterns': ['*.pdf'], 'mimeTypes': ['application/pdf']}])
+        jpeg = core.new_scan_request('jpeg')
+        self.assertTrue(jpeg['multiple'])
+        self.assertEqual(jpeg['filters'][0]['mimeTypes'], ['image/jpeg'])
+        # The request's filter is a copy: changing it leaves the format alone.
+        jpeg['filters'][0]['patterns'].append('*.png')
+        self.assertEqual(core.SCAN_FORMATS['jpeg'][0]['patterns'], ['*.jpg', '*.jpeg'])
+
+    def test_scan_answers(self):
+        ident = 'b' * 32
+        pdf, jpeg = core.new_scan_request('pdf'), core.new_scan_request('jpeg')
+        two = {'id': ident, 'response': 'ok', 'paths': ['/home/caboose/p1.jpg', '/home/caboose/p2.jpg'], 'filter': 0}
+        self.assertEqual(core.check_answer(two, jpeg)['paths'], two['paths'])
+        with self.assertRaises(core.Invalid):
+            core.check_answer(two, pdf)
+        self.assertEqual(core.check_answer({'id': ident, 'response': 'computer'}, pdf)['response'], 'computer')
+        files = {'/home/caboose/p1.jpg'}
+        exists, isdir = (lambda p: p in files or p == '/home/caboose'), (lambda p: p == '/home/caboose')
+        self.assertEqual(core.chosen(jpeg, {'paths': ['/home/caboose/p1.jpg']}, exists, isdir), ['/home/caboose/p1.jpg'])
+        self.assertIsNone(core.chosen(jpeg, two, exists, isdir))
+
+    def test_output(self):
+        dirs = {'/home/caboose', '/home/caboose/Scans'}
+        files = {'/home/caboose/a.pdf'}
+        exists, isdir = (lambda p: p in dirs or p in files), (lambda p: p in dirs)
+        self.assertIsNone(core.scan_output_problem('/home/caboose/Scans', 'pdf', exists, isdir))
+        self.assertIsNone(core.scan_output_problem('/home/caboose/a.pdf', 'pdf', exists, isdir))
+        self.assertIsNone(core.scan_output_problem('/home/caboose/Pages', 'jpeg', exists, isdir))
+        self.assertIn('not a folder', core.scan_output_problem('/home/caboose/a.pdf', 'jpeg', exists, isdir))
+        self.assertIn('does not exist', core.scan_output_problem('/home/caboose/Missing/a.pdf', 'pdf', exists, isdir))
+        scanned = ['/home/caboose/Caboose Documents/u/Scan 2026-10-30 14.05.pdf']
+        self.assertEqual(core.scan_destinations(scanned, '/home/caboose/r.pdf', 'pdf', isdir), [(scanned[0], '/home/caboose/r.pdf')])
+        self.assertEqual(core.scan_destinations(scanned, '/home/caboose/Scans', 'pdf', isdir),
+                         [(scanned[0], '/home/caboose/Scans/Scan 2026-10-30 14.05.pdf')])
+        pages = ['/home/caboose/Caboose Documents/u/Scan Page 1.jpg', '/home/caboose/Caboose Documents/u/Scan Page 2.jpg']
+        self.assertEqual([d for _, d in core.scan_destinations(pages, '/home/caboose/Pages', 'jpeg', isdir)],
+                         ['/home/caboose/Pages/Scan Page 1.jpg', '/home/caboose/Pages/Scan Page 2.jpg'])
+
+
+class ScanCommand(unittest.TestCase):
+    """caboose-scan's wait against a bridge folder in a temporary directory, with the host's
+    part played here."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.tmp.name)
+        self.saved = {name: getattr(core, name) for name in ('ROOT', 'REQUESTS', 'CLAIMED', 'RESPONSES', 'CANCELS', 'PRESENT', 'CLAIM_SECONDS', 'ABSENT_SECONDS')}
+        core.ROOT, core.REQUESTS, core.CLAIMED = root, root / 'requests', root / 'claimed'
+        core.RESPONSES, core.CANCELS, core.PRESENT = root / 'responses', root / 'cancels', root / 'present'
+        core.CLAIM_SECONDS, core.ABSENT_SECONDS = 0.5, 0.5
+        core.prepare()
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'caboose-scan')
+        loader = importlib.machinery.SourceFileLoader('caboose_scan', path)
+        self.scan = importlib.util.module_from_spec(importlib.util.spec_from_loader('caboose_scan', loader))
+        loader.exec_module(self.scan)
+        self.scan.POLL_SECONDS = 0.02
+
+    def tearDown(self):
+        for name, value in self.saved.items():
+            setattr(core, name, value)
+        self.tmp.cleanup()
+
+    def host(self, answer, present=True):
+        """Claims the request like `drain` and, when `answer` is given, answers it."""
+        def run():
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                if present:
+                    core.PRESENT.touch()
+                for path in list(core.REQUESTS.glob('*.json')):
+                    os.replace(path, core.CLAIMED / path.name)
+                    if answer is not None:
+                        core.write_json(core.RESPONSES / path.name, {'id': path.stem, **answer})
+                    return
+                time.sleep(0.01)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
+
+    def write(self, request):
+        core.write_json(core.REQUESTS / f"{request['id']}.json", request)
+        return request
+
+    def test_answered(self):
+        request = self.write(core.new_scan_request('pdf'))
+        self.host({'response': 'cancel'})
+        self.assertEqual(self.scan.wait_for_answer(request), {'id': request['id'], 'response': 'cancel'})
+        self.assertEqual(list(core.CLAIMED.iterdir()) + list(core.RESPONSES.iterdir()), [])
+
+    def test_unclaimed_fails_fast(self):
+        request = self.write(core.new_scan_request('pdf'))
+        started = time.monotonic()
+        with self.assertRaises(SystemExit) as raised:
+            self.scan.wait_for_answer(request)
+        self.assertEqual(raised.exception.code, 3)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertEqual(list(core.REQUESTS.iterdir()), [])
+
+    def test_phone_leaving_withdraws(self):
+        request = self.write(core.new_scan_request('jpeg'))
+        self.host(None, present=False)
+        with self.assertRaises(SystemExit) as raised:
+            self.scan.wait_for_answer(request)
+        self.assertEqual(raised.exception.code, 3)
+        self.assertTrue((core.CANCELS / request['id']).exists())
+        self.assertEqual(list(core.CLAIMED.iterdir()), [])
 
 
 class Appearance(unittest.TestCase):

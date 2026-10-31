@@ -9,7 +9,7 @@ mod scroll;
 
 use caboose_display_protocol::{self as proto, Codec, Decoded, Message, StreamDecoder};
 use ffmpeg_next as ff;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{ErrorKind, Write as _};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -28,14 +28,18 @@ OPTIONS:
     --token TOKEN          display token
     --token-file PATH      read the token from a file
     --display WxH@HZxS     a display to announce (repeatable) [default: 1920x1080@60x1]
-    --decoders LIST        comma-separated codecs [default: hevc,h264]
+    --decoders LIST        comma-separated codecs, or empty for none [default: hevc,h264]
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
+    --atlas                request Surface Atlas batches (surface.batch / surface.reset)
+    --scene                request Semantic Scene Graph commits (scene.font / scene.commit)
+    --zero-video           advertise no window video decoders and enable --atlas
     --scaled-motion        accept half-resolution motion streams
     --audio                play the computer's sound (decoded and measured, not heard)
     --wasm                 run games handed off to the client (reports game.create and
                            game.destroy; a game's window is a target like any other)
     --gpu-save DIR         take Vulkan streams (gpu.*): write each to DIR/gpu-<id>.gfxr and
                            acknowledge what was written
+    --clipboard-types LIST MIME types to take from the computer's clipboard besides text
     --duration SECS        how long to run [default: 10]
     --stall-after SECS     then stop reading and sending, the socket left open (a
                            suspended client)
@@ -50,7 +54,15 @@ OPTIONS:
     --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
                            key:KEYSYM[+mod...] (press and release; mods shift, control,
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
-                           then commit), copy:STRING (the phone's clipboard), tap:X,Y,
+                           then commit), copy:STRING (the phone's clipboard),
+                           copy-file:MIME:PATH (the file's bytes as MIME on the
+                           phone's clipboard), copy-files:PATH[,PATH...] (the files as
+                           the phone's text/uri-list), tap:X,Y, press:X,Y,
+                           move:X,Y, release:X,Y (the left button),
+                           drop-enter:TYPE[|TYPE...]@X,Y (`text` for UTF-8 text),
+                           drop-move:X,Y, drop-leave,
+                           drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
+                           the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
@@ -73,10 +85,13 @@ struct Args {
     displays: Vec<proto::Display>,
     decoders: Vec<Codec>,
     video_decoders: Option<Vec<Codec>>,
+    atlas: bool,
+    scene: bool,
     scaled_motion: bool,
     audio: bool,
     wasm: bool,
     gpu_save: Option<PathBuf>,
+    clipboard_types: Option<Vec<String>>,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
     stall_after: Option<Duration>,
@@ -111,6 +126,18 @@ fn parse_display(id: u32, s: &str) -> Option<proto::Display> {
     })
 }
 
+fn parse_codec_list(raw: &str) -> Result<Vec<Codec>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "none" {
+        return Ok(Vec::new());
+    }
+    trimmed
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|c| Codec::parse(c.trim()).ok_or_else(|| format!("unknown codec {c}")))
+        .collect()
+}
+
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
         url: "ws://127.0.0.1:14600/".into(),
@@ -118,10 +145,13 @@ fn parse_args() -> Result<Args, String> {
         displays: Vec::new(),
         decoders: vec![Codec::Hevc, Codec::H264],
         video_decoders: None,
+        atlas: false,
+        scene: false,
         scaled_motion: false,
         audio: false,
         wasm: false,
         gpu_save: None,
+        clipboard_types: None,
         duration: Duration::from_secs(10),
         stall_after: None,
         windows: None,
@@ -155,23 +185,22 @@ fn parse_args() -> Result<Args, String> {
                 let id = a.displays.len() as u32 + 1;
                 a.displays.push(parse_display(id, &v).ok_or_else(|| format!("bad --display {v}"))?);
             }
+            "--atlas" => a.atlas = true,
+            "--scene" => a.scene = true,
+            "--zero-video" => {
+                a.atlas = true;
+                a.decoders.clear();
+            }
             "--audio" => a.audio = true,
             "--scaled-motion" => a.scaled_motion = true,
             "--wasm" => a.wasm = true,
             "--gpu-save" => a.gpu_save = Some(value()?.into()),
+            "--clipboard-types" => a.clipboard_types = Some(value()?.split(',').map(str::to_owned).collect()),
             "--video-decoders" => {
-                a.video_decoders = Some(
-                    value()?
-                        .split(',')
-                        .map(|c| Codec::parse(c.trim()).ok_or(format!("unknown codec {c}")))
-                        .collect::<Result<_, _>>()?,
-                );
+                a.video_decoders = Some(parse_codec_list(&value()?)?);
             }
             "--decoders" => {
-                a.decoders = value()?
-                    .split(',')
-                    .map(|c| Codec::parse(c.trim()).ok_or(format!("unknown codec {c}")))
-                    .collect::<Result<_, _>>()?;
+                a.decoders = parse_codec_list(&value()?)?;
             }
             "--duration" => a.duration = Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --duration")?),
             "--stall-after" => {
@@ -214,6 +243,12 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+/// FNV-1a, 64-bit: how the report identifies clipboard bytes (scripts/check.py computes
+/// the same).
+fn fnv1a(data: &[u8]) -> u64 {
+    data.iter().fold(0xcbf29ce484222325, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3))
+}
+
 fn monotonic_us() -> u64 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: clock_gettime writes the timespec it is given.
@@ -252,6 +287,8 @@ struct WindowStats {
     kind: &'static str,
     parent: Option<u64>,
     geometry: proto::Rect,
+    /// The window keeps its alpha: it is sent as RGBA tiles and no frames.
+    alpha: bool,
     frames: u64,
     keyframes: u64,
     bytes: u64,
@@ -273,11 +310,146 @@ struct WindowStats {
     tile_bytes: u64,
     /// Tiles that did not decode or came before any picture.
     tile_errors: u64,
+    surface_batches: u64,
+    atlas_copies: u64,
+    atlas_fills: u64,
+    atlas_refs: u64,
+    atlas_tiles: u64,
     /// The overscan last announced, and the last frame's rect size.
     overscan: (i32, i32),
     rect: (i32, i32),
     /// Frames whose rect was not the announced geometry plus overscan when they came.
     rect_mismatch: u64,
+}
+
+/// Per-window reconstructed RGBA8888 surface when streaming via `SurfaceBatch`.
+struct AtlasSurface {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl AtlasSurface {
+    fn ensure_size(&mut self, width: u32, height: u32) {
+        if self.width != width || self.height != height {
+            self.width = width;
+            self.height = height;
+            self.rgba.clear();
+            self.rgba.resize((width as usize) * (height as usize) * 4, 0);
+        }
+    }
+
+    fn apply_batch(
+        &mut self,
+        batch: &proto::SurfaceBatch,
+        cache: &mut HashMap<u64, Vec<u8>>,
+    ) -> Result<(), String> {
+        let w = batch.size.w.max(0) as u32;
+        let h = batch.size.h.max(0) as u32;
+        if w == 0 || h == 0 {
+            return Err("empty surface batch rect".into());
+        }
+        self.ensure_size(w, h);
+        let stride = (w as usize) * 4;
+
+        for cp in &batch.copies {
+            let rx = cp.rect.x.max(0) as u32;
+            let ry = cp.rect.y.max(0) as u32;
+            let rw = (cp.rect.w.max(0) as u32).min(w.saturating_sub(rx));
+            let rh = (cp.rect.h.max(0) as u32).min(h.saturating_sub(ry));
+            let sx = (cp.rect.x - cp.dx).max(0) as u32;
+            let sy = (cp.rect.y - cp.dy).max(0) as u32;
+            if rw == 0 || rh == 0 || sx + rw > w || sy + rh > h {
+                continue;
+            }
+            let row_bytes = (rw as usize) * 4;
+            let mut tmp = vec![0u8; row_bytes * (rh as usize)];
+            for row in 0..rh as usize {
+                let s_off = (sy as usize + row) * stride + (sx as usize) * 4;
+                tmp[row * row_bytes..(row + 1) * row_bytes]
+                    .copy_from_slice(&self.rgba[s_off..s_off + row_bytes]);
+            }
+            for row in 0..rh as usize {
+                let d_off = (ry as usize + row) * stride + (rx as usize) * 4;
+                self.rgba[d_off..d_off + row_bytes]
+                    .copy_from_slice(&tmp[row * row_bytes..(row + 1) * row_bytes]);
+            }
+        }
+
+        for fill in &batch.fills {
+            let rx = fill.rect.x.max(0) as u32;
+            let ry = fill.rect.y.max(0) as u32;
+            let rw = (fill.rect.w.max(0) as u32).min(w.saturating_sub(rx));
+            let rh = (fill.rect.h.max(0) as u32).min(h.saturating_sub(ry));
+            let rgba = fill.rgba.to_be_bytes();
+            for row in 0..rh as usize {
+                let row_start = (ry as usize + row) * stride + (rx as usize) * 4;
+                for col in 0..rw as usize {
+                    let idx = row_start + col * 4;
+                    self.rgba[idx..idx + 4].copy_from_slice(&rgba);
+                }
+            }
+        }
+
+        for r in &batch.refs {
+            let tile = cache
+                .get(&r.hash)
+                .ok_or_else(|| format!("missing atlas cache entry for hash 0x{:016x}", r.hash))?;
+            let rx = (r.x as u32).min(w);
+            let ry = (r.y as u32).min(h);
+            let rw = 64u32.min(w.saturating_sub(rx));
+            let rh = 64u32.min(h.saturating_sub(ry));
+            if tile.len() < (rw as usize) * (rh as usize) * 4 {
+                return Err("cached tile too small".into());
+            }
+            let row_bytes = (rw as usize) * 4;
+            for row in 0..rh as usize {
+                let s_off = row * 64 * 4;
+                let d_off = (ry as usize + row) * stride + (rx as usize) * 4;
+                self.rgba[d_off..d_off + row_bytes].copy_from_slice(&tile[s_off..s_off + row_bytes]);
+            }
+        }
+
+        for tile in &batch.tiles {
+            let rx = tile.rect.x.max(0) as u32;
+            let ry = tile.rect.y.max(0) as u32;
+            let rw = (tile.rect.w.max(0) as u32).min(w.saturating_sub(rx));
+            let rh = (tile.rect.h.max(0) as u32).min(h.saturating_sub(ry));
+            let tw = tile.rect.w.max(0) as u32;
+            let th = tile.rect.h.max(0) as u32;
+            let decoded = proto::atlas::decode_atlas_tile(tile.format, &tile.data, tw, th)?;
+            if let Some(hash) = tile.hash {
+                if tw == 64 && th == 64 {
+                    cache.insert(hash, decoded.clone());
+                }
+            }
+            let row_bytes = (rw as usize) * 4;
+            let src_stride = (tw as usize) * 4;
+            for row in 0..rh as usize {
+                let s_off = row * src_stride;
+                let d_off = (ry as usize + row) * stride + (rx as usize) * 4;
+                self.rgba[d_off..d_off + row_bytes].copy_from_slice(&decoded[s_off..s_off + row_bytes]);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn save_atlas_png(surf: &AtlasSurface, path: &std::path::Path) -> Result<(), String> {
+    if surf.width == 0 || surf.height == 0 {
+        return Err("empty atlas surface".into());
+    }
+    let mut rgb = Vec::with_capacity((surf.width as usize) * (surf.height as usize) * 3);
+    for px in surf.rgba.chunks_exact(4) {
+        rgb.push(px[0]);
+        rgb.push(px[1]);
+        rgb.push(px[2]);
+    }
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), surf.width, surf.height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.write_header().and_then(|mut w| w.write_image_data(&rgb)).map_err(|e| e.to_string())
 }
 
 /// The `audio` stream as received.
@@ -363,16 +535,29 @@ struct Decoder {
     tiles: Vec<(proto::Rect, Vec<u8>)>,
 }
 
-/// A PNG tile's RGB pixels, if it is an 8-bit RGB PNG of the rectangle's size.
+/// A PNG tile's RGB pixels, if it is an 8-bit RGB or RGBA PNG of the rectangle's size
+/// (an alpha window's tile is composed over black).
 fn decode_tile(rect: proto::Rect, data: &[u8]) -> Option<Vec<u8>> {
     let mut reader = png::Decoder::new(std::io::Cursor::new(data)).read_info().ok()?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut buf).ok()?;
     let fits = info.width == rect.w as u32 && info.height == rect.h as u32;
-    (fits && info.color_type == png::ColorType::Rgb && info.bit_depth == png::BitDepth::Eight).then(|| {
-        buf.truncate(info.buffer_size());
-        buf
-    })
+    if !fits || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    match info.color_type {
+        png::ColorType::Rgb => Some(buf),
+        png::ColorType::Rgba => Some(
+            buf.chunks_exact(4)
+                .flat_map(|px| {
+                    let a = px[3] as u32;
+                    [px[0], px[1], px[2]].map(|c| ((c as u32 * a + 127) / 255) as u8)
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn open_decoder(codec: Codec) -> Result<ff::decoder::Video, ff::Error> {
@@ -459,7 +644,23 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
         "copy" => vec![Message::ClientClipboard(proto::Clipboard {
             mime: "text/plain;charset=utf-8".into(),
             data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
         })],
+        // copy-file:MIME:PATH copies the file's bytes as MIME, as copying an image does.
+        "copy-file" => {
+            let (mime, path) = arg.split_once(':').ok_or_else(|| format!("bad copy-file {arg}"))?;
+            let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            vec![Message::ClientClipboard(proto::Clipboard { mime: mime.into(), data, alternatives: Vec::new() })]
+        }
+        // copy-files:PATH,... copies files the phone uploaded, as a text/uri-list.
+        "copy-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::ClientClipboard(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
         // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
         // as an autocorrection does.
         "edit" => {
@@ -491,6 +692,46 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 points: vec![proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None }],
             })]
         }
+        // press, move and release drive the left button separately, as a drag does.
+        "press" | "move" | "release" => {
+            let (x, y) = point(arg)?;
+            let buttons = if verb == "release" { 0 } else { proto::buttons::LEFT };
+            vec![Message::Pointer(proto::Pointer { id, x, y, buttons, scroll: None })]
+        }
+        // drop-enter:TYPES@X,Y starts a drop from the phone offering TYPES (`|`-separated;
+        // `text` stands for text/plain;charset=utf-8, whose `;` would end the action).
+        "drop-enter" => {
+            let (types, at) = arg.split_once('@').ok_or_else(|| format!("bad drop-enter {arg}"))?;
+            let (x, y) = point(at)?;
+            vec![Message::DropEnter(proto::DropEnter {
+                id,
+                x,
+                y,
+                mimes: types
+                    .split('|')
+                    .map(|t| if t == "text" { proto::clipboard::TEXT.to_owned() } else { t.to_owned() })
+                    .collect(),
+            })]
+        }
+        "drop-move" => {
+            let (x, y) = point(arg)?;
+            vec![Message::DropMotion { id, x, y }]
+        }
+        "drop-leave" => vec![Message::DropLeave],
+        "drop-text" => vec![Message::DropPerform(proto::Clipboard {
+            mime: proto::clipboard::TEXT.into(),
+            data: arg.as_bytes().to_vec(),
+            alternatives: Vec::new(),
+        })],
+        "drop-files" => {
+            let paths: Vec<&str> = arg.split(',').collect();
+            vec![Message::DropPerform(proto::Clipboard {
+                mime: proto::clipboard::URI_LIST.into(),
+                data: proto::clipboard::uri_list(&paths),
+                alternatives: Vec::new(),
+            })]
+        }
+        "drag-take" => vec![Message::DragTake],
         "click" => {
             let (x, y) = point(arg)?;
             [proto::buttons::LEFT, 0]
@@ -600,6 +841,9 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             gpu: args.gpu_save.is_some(),
             scaled_motion: args.scaled_motion,
+            clipboard_types: args.clipboard_types.clone(),
+            atlas: args.atlas,
+            scene: args.scene,
         }),
     )?;
 
@@ -609,6 +853,15 @@ fn run(args: Args) -> Result<bool, String> {
     let mut decoder_stream = StreamDecoder::new();
     let mut windows: BTreeMap<u64, WindowStats> = BTreeMap::new();
     let mut decoders: BTreeMap<u64, Decoder> = BTreeMap::new();
+    let mut atlas_surfaces: BTreeMap<u64, AtlasSurface> = BTreeMap::new();
+    let mut atlas_cache: HashMap<u64, Vec<u8>> = HashMap::new();
+    let mut surface_batches = 0u64;
+    let mut atlas_copies = 0u64;
+    let mut atlas_fills = 0u64;
+    let mut atlas_refs = 0u64;
+    let mut atlas_tiles = 0u64;
+    let mut scene_fonts = 0u64;
+    let mut scene_commits = 0u64;
     let mut hello: Option<proto::ServerHello> = None;
     let mut acted = false;
     let mut pending: std::collections::VecDeque<String> = args.actions.iter().cloned().collect();
@@ -617,10 +870,16 @@ fn run(args: Args) -> Result<bool, String> {
     let vsync_interval = Duration::from_secs_f64(1.0 / args.displays[0].refresh_hz.max(1.0));
     let mut next_vsync = Instant::now();
     let mut text_input_events = 0u32;
+    // The phone keyboard's state as the display announced it, in order.
+    let mut text_inputs: Vec<proto::TextInputState> = Vec::new();
     let mut videos: BTreeMap<u64, VideoStats> = BTreeMap::new();
     let mut games: BTreeMap<u64, GameStats> = BTreeMap::new();
     let mut gpus: BTreeMap<u64, GpuStats> = BTreeMap::new();
     let mut clipboard: Option<String> = None;
+    let mut clipboard_entries: Vec<(String, usize, u64)> = Vec::new();
+    // Drag and drop as the server reported it, in order: "status:true", "result:ok",
+    // "result:rejected", "start:TYPES", "data:MIME=TEXT_OR_SIZE", "end:taken".
+    let mut dnd_events: Vec<String> = Vec::new();
     let mut sound = AudioStats::default();
     let mut ping_sent: Option<u64> = None;
     let mut rtt_us: Option<u64> = None;
@@ -714,6 +973,7 @@ fn run(args: Args) -> Result<bool, String> {
                     s.overscan = c.overscan.map_or((0, 0), |o| (o.w, o.h));
                     s.kind = c.kind.as_str();
                     s.parent = c.parent;
+                    s.alpha = c.alpha;
                 }
                 Message::WindowUpdate(u) => {
                     let s = windows.entry(u.id).or_default();
@@ -723,12 +983,16 @@ fn run(args: Args) -> Result<bool, String> {
                     if let Some(g) = u.geometry {
                         s.geometry = g;
                     }
+                    if let Some(a) = u.alpha {
+                        s.alpha = a;
+                    }
                     if let Some(o) = u.overscan {
                         s.overscan = (o.w, o.h);
                     }
                 }
                 Message::WindowDestroy { id } => {
                     decoders.remove(&id);
+                    atlas_surfaces.remove(&id);
                     windows.entry(id).or_default().destroyed = true;
                 }
                 Message::Tile(t) => {
@@ -737,8 +1001,101 @@ fn run(args: Args) -> Result<bool, String> {
                     s.tile_bytes += t.data.len() as u64;
                     match (decode_tile(t.rect, &t.data), decoders.get_mut(&t.id)) {
                         (Some(rgb), Some(d)) if d.last.is_some() => d.tiles.push((t.rect, rgb)),
+                        // An alpha window has no picture for its tiles to paint over.
+                        (Some(_), _) if s.alpha => {}
                         _ => s.tile_errors += 1,
                     }
+                }
+                Message::SurfaceReset { .. } => {
+                    atlas_cache.clear();
+                }
+                Message::SurfaceBatch(b) => {
+                    let received = monotonic_us();
+                    let t0 = Instant::now();
+                    surface_batches += 1;
+                    atlas_copies += b.copies.len() as u64;
+                    atlas_fills += b.fills.len() as u64;
+                    atlas_refs += b.refs.len() as u64;
+                    atlas_tiles += b.tiles.len() as u64;
+
+                    let s = windows.entry(b.id).or_default();
+                    if s.frames == 0 {
+                        s.first_keyframe = b.keyframe;
+                    }
+                    s.frames += 1;
+                    s.keyframes += b.keyframe as u64;
+                    s.surface_batches += 1;
+                    s.atlas_copies += b.copies.len() as u64;
+                    s.atlas_fills += b.fills.len() as u64;
+                    s.atlas_refs += b.refs.len() as u64;
+                    s.atlas_tiles += b.tiles.len() as u64;
+                    let batch_bytes: u64 = b.tiles.iter().map(|t| t.data.len() as u64).sum::<u64>()
+                        + (b.copies.len() * 24 + b.fills.len() * 20 + b.refs.len() * 16) as u64;
+                    s.bytes += batch_bytes;
+                    if s.last_crop != Some((b.size.w, b.size.h)) {
+                        s.sizes += 1;
+                        s.resized_without_keyframe |= !b.keyframe;
+                        s.last_crop = Some((b.size.w, b.size.h));
+                    }
+                    s.size = (b.size.w.max(0) as u32, b.size.h.max(0) as u32);
+                    s.first.get_or_insert_with(Instant::now);
+                    s.last = Some(Instant::now());
+                    if b.pts_us >= connected_us {
+                        s.latency_us.push(received.saturating_sub(b.pts_us));
+                    }
+
+                    let surf = atlas_surfaces.entry(b.id).or_insert_with(|| AtlasSurface {
+                        width: 0,
+                        height: 0,
+                        rgba: Vec::new(),
+                    });
+                    let ok = surf.apply_batch(&b, &mut atlas_cache).is_ok();
+                    let decoded_us = if ok { t0.elapsed().as_micros() as i64 } else { -1 };
+                    if decoded_us >= 0 {
+                        s.decode_us.push(decoded_us as u64);
+                    } else {
+                        s.decode_errors += 1;
+                    }
+                    send(&mut ws, &Message::Ack { id: b.id, pts_us: b.pts_us, decoded_us })?;
+                    if decoded_us < 0 {
+                        send(&mut ws, &Message::RequestKeyframe { id: b.id })?;
+                    }
+                    if target.is_none()
+                        && ok
+                        && args.window.is_none_or(|w| w == b.id)
+                        && windows.get(&b.id).is_some_and(|w| w.kind != "popup")
+                    {
+                        target = Some(b.id);
+                    }
+                    if !acted && ok {
+                        acted = true;
+                        if let Some((x, y)) = args.click {
+                            for buttons in [proto::buttons::LEFT, 0] {
+                                send(
+                                    &mut ws,
+                                    &Message::Pointer(proto::Pointer { id: b.id, x, y, buttons, scroll: None }),
+                                )?;
+                            }
+                        }
+                        if let Some((x, y)) = args.touch {
+                            for phase in [proto::TouchPhase::Down, proto::TouchPhase::Up] {
+                                let point = proto::TouchPoint { slot: 0, phase, x, y, force: None, radius: None };
+                                send(&mut ws, &Message::Touch(proto::Touch { id: b.id, points: vec![point] }))?;
+                            }
+                        }
+                        if let Some(text) = &args.type_text {
+                            send(
+                                &mut ws,
+                                &Message::Text(proto::Text { commit: Some(text.clone()), ..Default::default() }),
+                            )?;
+                        }
+                    }
+                }
+                Message::SceneFont(_) => {
+                    scene_fonts += 1;
+                }
+                Message::SceneCommit(_) => {
+                    scene_commits += 1;
                 }
                 Message::Frame(f) => {
                     let received = monotonic_us();
@@ -865,7 +1222,10 @@ fn run(args: Args) -> Result<bool, String> {
                         }
                     }
                 }
-                Message::TextInput(_) => text_input_events += 1,
+                Message::TextInput(t) => {
+                    text_input_events += 1;
+                    text_inputs.push(t);
+                }
                 Message::ScrollTree(t) => scroll_check.tree(t),
                 Message::GameCreate(g) => {
                     // A game's window sends no pictures, so it becomes the target when its game binds.
@@ -909,7 +1269,32 @@ fn run(args: Args) -> Result<bool, String> {
                         g.destroyed = true;
                     }
                 }
-                Message::ServerClipboard(c) => clipboard = Some(String::from_utf8_lossy(&c.data).into_owned()),
+                Message::ServerClipboard(c) => {
+                    clipboard = c
+                        .entries()
+                        .find(|(m, _)| *m == proto::clipboard::TEXT)
+                        .map(|(_, d)| String::from_utf8_lossy(d).into_owned());
+                    clipboard_entries = c.entries().map(|(m, d)| (m.to_owned(), d.len(), fnv1a(d))).collect();
+                }
+                Message::DropStatus { accepted } => {
+                    dnd_events.push(format!("status:{}", accepted.map(|a| a.to_string()).unwrap_or("unknown".into())))
+                }
+                Message::DropResult { ok, reason } => dnd_events
+                    .push(format!("result:{}", if ok { "ok" } else { reason.map(|r| r.as_str()).unwrap_or("failed") })),
+                Message::DragStart { mimes } => dnd_events.push(format!("start:{}", mimes.join("|"))),
+                Message::DragEnd { taken } => {
+                    dnd_events.push(format!("end:{}", if taken { "taken" } else { "not-taken" }))
+                }
+                Message::DragData(c) => {
+                    for (mime, data) in c.entries() {
+                        let shown = if mime == proto::clipboard::TEXT || mime == proto::clipboard::URI_LIST {
+                            String::from_utf8_lossy(data).trim_end().to_owned()
+                        } else {
+                            format!("{} bytes", data.len())
+                        };
+                        dnd_events.push(format!("data:{mime}={shown}"));
+                    }
+                }
                 Message::Audio(a) => sound.packet(&a),
                 Message::VideoCreate(c) => {
                     videos.insert(
@@ -992,10 +1377,18 @@ fn run(args: Args) -> Result<bool, String> {
         _ => None,
     };
     if let Some(dir) = &args.save {
+        let _ = std::fs::create_dir_all(dir);
         for (id, d) in &decoders {
             if let Some(frame) = &d.last {
                 if let Err(e) = save_png(frame, d.crop, &d.tiles, &dir.join(format!("window-{id}.png"))) {
                     eprintln!("window {id}: cannot save PNG: {e}");
+                }
+            }
+        }
+        for (id, surf) in &atlas_surfaces {
+            if !decoders.contains_key(id) && surf.width > 0 && surf.height > 0 {
+                if let Err(e) = save_atlas_png(surf, &dir.join(format!("window-{id}.png"))) {
+                    eprintln!("window {id}: cannot save atlas PNG: {e}");
                 }
             }
         }
@@ -1032,8 +1425,12 @@ fn run(args: Args) -> Result<bool, String> {
                     (Some(a), Some(b)) => (b - a).as_secs_f64(),
                     _ => 0.0,
                 };
+                let codec_name = w
+                    .codec
+                    .map(|c| c.as_str())
+                    .unwrap_or(if w.surface_batches > 0 { "atlas" } else { "" });
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -1041,8 +1438,9 @@ fn run(args: Args) -> Result<bool, String> {
                     w.geometry.y,
                     w.geometry.w,
                     w.geometry.h,
+                    w.alpha,
                     w.first_keyframe,
-                    w.codec.map(|c| c.as_str()).unwrap_or(""),
+                    codec_name,
                     w.size.0,
                     w.size.1,
                     w.frames,
@@ -1060,6 +1458,11 @@ fn run(args: Args) -> Result<bool, String> {
                     w.tiles,
                     w.tile_bytes,
                     w.tile_errors,
+                    w.surface_batches,
+                    w.atlas_copies,
+                    w.atlas_fills,
+                    w.atlas_refs,
+                    w.atlas_tiles,
                     w.overscan.0,
                     w.overscan.1,
                     w.rect.0,
@@ -1069,7 +1472,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"clipboard\":{},\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"surface_batches\":{surface_batches},\"atlas_copies\":{atlas_copies},\"atlas_fills\":{atlas_fills},\"atlas_refs\":{atlas_refs},\"atlas_tiles\":{atlas_tiles},\"scene_fonts\":{scene_fonts},\"scene_commits\":{scene_commits},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
                     "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
@@ -1131,7 +1534,23 @@ fn run(args: Args) -> Result<bool, String> {
             cpu_ms.map(|c| format!("{:.1}", c / elapsed / 10.0)).unwrap_or("null".into()),
             cpu_ms.filter(|_| total_frames > 0).map(|c| format!("{:.2}", c / total_frames as f64)).unwrap_or("null".into()),
             rtt_us.map(|r| format!("{:.2}", r as f64 / 1000.0)).unwrap_or("null".into()),
+            text_inputs
+                .iter()
+                .map(|t| format!(
+                    "{{\"window\":{},\"enabled\":{},\"purpose\":{}}}",
+                    t.id,
+                    t.enabled,
+                    t.purpose.as_ref().map(|p| format!("{p:?}")).unwrap_or("null".into())
+                ))
+                .collect::<Vec<_>>()
+                .join(","),
             clipboard.as_ref().map(|c| format!("{c:?}")).unwrap_or("null".into()),
+            clipboard_entries
+                .iter()
+                .map(|(mime, bytes, hash)| format!("{{\"mime\":{mime:?},\"bytes\":{bytes},\"fnv1a\":\"{hash:016x}\"}}"))
+                .collect::<Vec<_>>()
+                .join(","),
+            dnd_events.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","),
             sound.packets,
             sound.bytes,
             sound.decoded,
@@ -1154,7 +1573,7 @@ fn run(args: Args) -> Result<bool, String> {
             println!(
                 "window {id} {:?}: {} {}x{}, {} frames ({} key), {:.1} fps, {:.0} kbit/s, decode p50 {:.2} ms, latency p50 {:.2} ms p95 {:.2} ms, {} decode errors",
                 w.title,
-                w.codec.map(|c| c.as_str()).unwrap_or("-"),
+                w.codec.map(|c| c.as_str()).unwrap_or(if w.surface_batches > 0 { "atlas" } else { "-" }),
                 w.size.0,
                 w.size.1,
                 w.frames,

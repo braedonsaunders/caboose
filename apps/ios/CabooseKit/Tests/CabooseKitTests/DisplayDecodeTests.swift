@@ -54,6 +54,7 @@ import VideoToolbox
     }
 
     /// A 62x60 picture in a 64x64 coded frame, shown at twice its size: crop, then scale.
+    /// A picture anchored at the window's origin sizes the surface to its rect.
     @Test func hevcKeyframeIsCroppedAndScaled() throws {
         let frame = try frame("frame-hevc-keyframe-scaled")
         let sent = Sent()
@@ -62,10 +63,8 @@ import VideoToolbox
         pipeline.flush()
         #expect(sent.acks == [sent.acks.first ?? -1] && (sent.acks.first ?? -1) >= 0)
         let image = try #require(pipeline.surface.snapshot())
+        #expect(image.width == 124 && image.height == 120)
         #expect(painted(image, width: 124, height: 120) > 0.5)
-        // Nothing lands outside `rect`.
-        #expect(pixel(image, 127, 60) == [0, 0, 0, 0])
-        #expect(pixel(image, 60, 123) == [0, 0, 0, 0])
     }
 
     @Test func av1SequenceHeaderAndConfigurationRecord() throws {
@@ -124,5 +123,183 @@ import VideoToolbox
         }
         if !current.isEmpty { units.append(current) }
         return units
+    }
+
+    /// Wraps raw uncompressed bytes in a valid LZ4 literal-only block with 4-byte LE size header.
+    private static func lz4LiteralPrependSize(_ uncompressed: Data) -> Data {
+        var out = Data()
+        let len = UInt32(uncompressed.count)
+        out.append(UInt8(len & 0xFF))
+        out.append(UInt8((len >> 8) & 0xFF))
+        out.append(UInt8((len >> 16) & 0xFF))
+        out.append(UInt8((len >> 24) & 0xFF))
+        guard !uncompressed.isEmpty else { return out }
+        if uncompressed.count < 15 {
+            out.append(UInt8(uncompressed.count << 4))
+        } else {
+            out.append(0xF0)
+            var rem = uncompressed.count - 15
+            while rem >= 255 {
+                out.append(255)
+                rem -= 255
+            }
+            out.append(UInt8(rem))
+        }
+        out.append(uncompressed)
+        return out
+    }
+
+    @Test func xxh64MatchesCanonicalVectors() {
+        #expect(SurfaceAtlasCodec.xxh64(Data()) == 0xEF46_DB37_51D8_E999)
+        #expect(SurfaceAtlasCodec.xxh64(Data("abc".utf8)) == 0x44BC_2CF5_AD77_0999)
+        let sixtyFour = Data((0 ..< 64).map { UInt8($0) })
+        let h1 = SurfaceAtlasCodec.xxh64(sixtyFour)
+        let h2 = SurfaceAtlasCodec.xxh64(sixtyFour)
+        #expect(h1 == h2 && h1 != 0)
+    }
+
+    @Test func surfaceAtlasDecodeTileFormats() throws {
+        // 1. pal2-lz4 on a 4x2 tile (8 pixels -> 1 byte bitmask: 0b1010_0101 = 0xA5)
+        var pal2Raw = Data([
+            0x10, 0x20, 0x30, 0xFF, // color 0
+            0xE0, 0xF0, 0x40, 0xFF, // color 1
+            0xA5,                   // bits: 1,0,1,0,0,1,0,1
+        ])
+        let pal2Tile = SurfaceTile(
+            rect: CGRect(x: 0, y: 0, width: 4, height: 2),
+            format: .pal2Lz4,
+            data: Self.lz4LiteralPrependSize(pal2Raw)
+        )
+        let pal2Decoded = try #require(SurfaceAtlasCodec.decodeTile(pal2Tile))
+        #expect(pal2Decoded.count == 4 * 2 * 4)
+        #expect(Array(pal2Decoded[0 ..< 4]) == [0xE0, 0xF0, 0x40, 0xFF]) // bit 0 = 1
+        #expect(Array(pal2Decoded[4 ..< 8]) == [0x10, 0x20, 0x30, 0xFF]) // bit 1 = 0
+        #expect(Array(pal2Decoded[8 ..< 12]) == [0xE0, 0xF0, 0x40, 0xFF]) // bit 2 = 1
+
+        // 2. pal16-lz4 on a 2x2 tile (4 pixels -> 3 colors, 2 packed bytes)
+        pal2Raw.removeAll()
+        let pal16Raw = Data([
+            3,                      // 3 palette entries
+            0x11, 0x22, 0x33, 0xFF, // idx 0
+            0x44, 0x55, 0x66, 0xFF, // idx 1
+            0x77, 0x88, 0x99, 0xFF, // idx 2
+            0x10,                   // pixel 0 = 0, pixel 1 = 1
+            0x02,                   // pixel 2 = 2, pixel 3 = 0
+        ])
+        let pal16Tile = SurfaceTile(
+            rect: CGRect(x: 0, y: 0, width: 2, height: 2),
+            format: .pal16Lz4,
+            data: Self.lz4LiteralPrependSize(pal16Raw)
+        )
+        let pal16Decoded = try #require(SurfaceAtlasCodec.decodeTile(pal16Tile))
+        #expect(Array(pal16Decoded[0 ..< 4]) == [0x11, 0x22, 0x33, 0xFF])
+        #expect(Array(pal16Decoded[4 ..< 8]) == [0x44, 0x55, 0x66, 0xFF])
+        #expect(Array(pal16Decoded[8 ..< 12]) == [0x77, 0x88, 0x99, 0xFF])
+        #expect(Array(pal16Decoded[12 ..< 16]) == [0x11, 0x22, 0x33, 0xFF])
+
+        // 3. rgba-lz4 on a 2x1 tile
+        let rgbaRaw = Data([1, 2, 3, 255, 9, 8, 7, 255])
+        let rgbaTile = SurfaceTile(
+            rect: CGRect(x: 0, y: 0, width: 2, height: 1),
+            format: .rgbaLz4,
+            data: Self.lz4LiteralPrependSize(rgbaRaw)
+        )
+        #expect(SurfaceAtlasCodec.decodeTile(rgbaTile) == rgbaRaw)
+    }
+
+    @Test func surfaceAtlasRendererAppliesFillsCopiesTilesAndRefsBitExact() throws {
+        let cache = TileAtlasCache(capacity: 16)
+        let renderer = SurfaceAtlasRenderer()
+
+        // Create a 64x64 solid tile of 0xAA, 0xBB, 0xCC, 0xFF
+        var tilePixels = Data(capacity: 64 * 64 * 4)
+        for _ in 0 ..< (64 * 64) {
+            tilePixels.append(contentsOf: [0xAA, 0xBB, 0xCC, 0xFF])
+        }
+        let tileHash = SurfaceAtlasCodec.xxh64(tilePixels)
+        let tile = SurfaceTile(
+            rect: CGRect(x: 0, y: 0, width: 64, height: 64),
+            hash: tileHash,
+            format: .rgbaLz4,
+            data: Self.lz4LiteralPrependSize(tilePixels)
+        )
+
+        // Batch 1: 128x64 keyframe with fill on right half and 64x64 tile on left half
+        let batch1 = SurfaceBatch(
+            window: 7,
+            seq: 1,
+            ptsMicros: 1000,
+            size: CGSize(width: 128, height: 64),
+            rect: CGRect(x: 0, y: 0, width: 128, height: 64),
+            keyframe: true,
+            fills: [SurfaceFill(rect: CGRect(x: 64, y: 0, width: 64, height: 64), rgba: 0x1234_56FF)],
+            tiles: [tile]
+        )
+        let img1 = try #require(renderer.apply(batch1, cache: cache))
+        #expect(pixel(img1, 0, 0) == [0xAA, 0xBB, 0xCC, 0xFF])
+        #expect(pixel(img1, 64, 0) == [0x12, 0x34, 0x56, 0xFF])
+        #expect(cache.get(hash: tileHash) == tilePixels)
+
+        // Batch 2: copy left 64x64 to (32, 0) via dx=+32, and ref the cached tile at (64, 0)
+        let batch2 = SurfaceBatch(
+            window: 7,
+            seq: 2,
+            ptsMicros: 2000,
+            size: CGSize(width: 128, height: 64),
+            rect: CGRect(x: 32, y: 0, width: 96, height: 64),
+            keyframe: false,
+            copies: [SurfaceCopy(dx: 32, dy: 0, rect: CGRect(x: 32, y: 0, width: 64, height: 64))],
+            refs: [SurfaceTileRef(x: 64, y: 0, hash: tileHash)]
+        )
+        let img2 = try #require(renderer.apply(batch2, cache: cache))
+        #expect(pixel(img2, 40, 10) == [0xAA, 0xBB, 0xCC, 0xFF])
+        #expect(pixel(img2, 100, 10) == [0xAA, 0xBB, 0xCC, 0xFF])
+        let rawBytes = try #require(renderer.rgbaBytes(forWindow: 7))
+        #expect(rawBytes.count == 128 * 64 * 4)
+    }
+
+    @Test func sceneGraphUnpacksGlyphsAndRendersRetainedTree() throws {
+        var glyphBytes = Data()
+        let gId: UInt16 = 42
+        let gx: Float = 12.5
+        let gy: Float = 28.0
+        glyphBytes.append(UInt8(gId & 0xFF))
+        glyphBytes.append(UInt8(gId >> 8))
+        var xBits = gx.bitPattern.littleEndian
+        var yBits = gy.bitPattern.littleEndian
+        withUnsafeBytes(of: &xBits) { glyphBytes.append(contentsOf: $0) }
+        withUnsafeBytes(of: &yBits) { glyphBytes.append(contentsOf: $0) }
+
+        let unpacked = PositionedGlyph.unpack(glyphBytes)
+        #expect(unpacked == [PositionedGlyph(glyphID: 42, x: 12.5, y: 28.0)])
+
+        let fontCache = SceneFontCache()
+        fontCache.register(SceneFontDescriptor(font: 99, index: 0, family: "Helvetica", data: Data([0, 1, 0, 0])))
+
+        let scene = WindowSceneState(windowID: 7)
+        let commit = SceneCommit(
+            window: 7,
+            seq: 1,
+            ptsMicros: 1000,
+            root: 1,
+            reset: true,
+            nodes: [
+                SceneNode(id: 1, kind: .rclip, rect: CGRect(x: 0, y: 0, width: 64, height: 64), radius: [8, 8, 8, 8], children: [2]),
+                SceneNode(id: 2, kind: .scroll, rect: CGRect(x: 0, y: 0, width: 64, height: 64), scroll: CGRect(x: 0, y: 0, width: 64, height: 200), children: [3, 4]),
+                SceneNode(id: 3, kind: .rect, rect: CGRect(x: 0, y: 0, width: 64, height: 64), color: 0x2040_80FF),
+                SceneNode(id: 4, kind: .glyphs, rect: CGRect(x: 4, y: 4, width: 56, height: 24), color: 0xFFFF_FFFF, font: 99, size: 14, glyphs: glyphBytes),
+            ]
+        )
+        scene.apply(commit)
+        let image = try #require(scene.render(size: CGSize(width: 64, height: 64), scale: 2.0, fontCache: fontCache))
+        #expect(image.width == 128 && image.height == 128)
+        #expect(pixel(image, 64, 64) == [0x20, 0x40, 0x80, 0xFF])
+
+        let scrollMsg = scene.userScrolled(nodeID: 2, offset: CGPoint(x: 0, y: 120))
+        if case .sceneScroll(let w, let n, let sx, let sy) = scrollMsg {
+            #expect(w == 7 && n == 2 && sx == 0 && sy == 120)
+        } else {
+            Issue.record("expected sceneScroll")
+        }
     }
 }

@@ -9,7 +9,7 @@ export const GPU_CLOSE_TIMEOUT_MS = 1000
 export const GPU_HEARTBEAT_MS = 1000
 export const GPU_HEARTBEAT_TIMEOUT_MS = 3000
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {
@@ -69,7 +69,9 @@ export function relayGPU(client: WebSocket, options: {
     // A phone that vanishes without closing would leave the guest's GPU clients waiting on
     // it: silence ends the relay, and the broker then ends the executor's streams.
     let heard = Date.now()
+    // The phone pings on its own while delivery to a busy decoder holds back its reading.
     client.on('pong', () => { heard = Date.now() })
+    client.on('ping', () => { heard = Date.now() })
     const heartbeat = setInterval(() => {
       if (client.readyState !== WebSocket.OPEN) return
       // While the relay itself holds the phone back, its replies wait unread: not silence.

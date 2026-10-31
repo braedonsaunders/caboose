@@ -2,7 +2,7 @@
 """The native bridge's guest side (docs/native-bridge.md).
 
 The host runs, as the owner:
-  caboose-bridge drain              claim pending file requests and withdrawn ones, as JSON
+  caboose-bridge drain              claim pending file and scan requests and withdrawn ones, as JSON
   caboose-bridge respond JSON       answer a claimed request
   caboose-bridge appearance JSON    the phone's appearance
 and caboose-bridge.service runs `caboose-bridge daemon` on the owner's session bus: the
@@ -64,7 +64,7 @@ def respond(raw):
         print(json.dumps({'answered': False}))
         return
     try:
-        answer = core.check_answer(answer, request if request.get('type') in ('file.open', 'file.save') and isinstance(request.get('filters'), list) else None)
+        answer = core.check_answer(answer, request if request.get('type') in ('file.open', 'file.save', 'scan') and isinstance(request.get('filters'), list) else None)
     except core.Invalid as error:
         raise SystemExit(f'Invalid answer: {error}')
     core.write_json(core.RESPONSES / f'{ident}.json', answer)

@@ -113,6 +113,18 @@ public enum DesktopGeometry {
                height: max(1, size.height - dockHeight - dockBottomInset - dockGap - titleBarHeight))
     }
 
+    /// How far the desktop slides up while the software keyboard is shown, instead of resizing
+    /// the computer's windows: enough to keep `caretY` (window coordinates) `margin` above the
+    /// keyboard's top edge, never more than the keyboard covers of the stage, and nothing when
+    /// the caret is already visible or unknown.
+    public static func keyboardPan(caretY: CGFloat?, stageMinY: CGFloat, stageMaxY: CGFloat,
+                                   keyboardTopY: CGFloat, margin: CGFloat = 56) -> CGFloat {
+        guard let caretY, caretY.isFinite, keyboardTopY.isFinite, stageMaxY > keyboardTopY,
+              caretY >= stageMinY, caretY <= stageMaxY else { return 0 }
+        let needed = caretY + margin - keyboardTopY
+        return min(max(0, needed), stageMaxY - keyboardTopY)
+    }
+
     /// Local web content reflows at the viewport size; guest pictures keep their coordinate space.
     public static func surfaceSize(natural: CGSize, available: CGSize, locallyRendered: Bool) -> CGSize {
         if locallyRendered || natural.width <= 0 || natural.height <= 0 { return available }

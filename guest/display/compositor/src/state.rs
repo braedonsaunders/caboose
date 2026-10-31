@@ -21,6 +21,8 @@ use smithay::reexports::calloop::channel::Sender;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::{wl_buffer, wl_seat, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Clock, IsAlive, Monotonic, Serial, SERIAL_COUNTER};
@@ -187,6 +189,10 @@ pub struct State {
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
+    /// The input-method service for applications without text-input-v3 (ibus.rs).
+    pub ibus: Option<crate::ibus::Ibus>,
+    /// The IBus field the phone's keyboard was last shown for, and its window's surface.
+    pub ibus_shown: Option<(WlSurface, crate::ibus::Field)>,
     pub text_inputs: TextInputs,
 
     pub windows: Windows,
@@ -201,10 +207,14 @@ pub struct State {
     pub focus_history: Vec<u64>,
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
+    pub scene: crate::scene::SceneServer,
     pub control: crate::control::Control,
     /// Toolkit scroll reporters (scroll.rs).
     pub scroll: crate::scroll::ScrollHub,
     pub clipboard: crate::clipboard::Clipboard,
+    /// How the compositor reaches its Xwayland as a client, once it runs.
+    pub x11: Option<crate::x11sel::Access>,
+    pub dnd: crate::dnd::Dnd,
     /// The compositor's PulseAudio, when it runs.
     pub audio: Option<crate::audio::Audio>,
     pub audio_tx: smithay::reexports::calloop::channel::Sender<crate::audio::Packet>,
@@ -220,6 +230,8 @@ pub struct State {
     /// Phone-resident buffers committed to windows and held until the broker releases them.
     pub remote_presents: crate::remote_buffers::Presents,
     pub stats: Stats,
+    /// When client input arrived, for frame lab (`frames` on the control socket).
+    pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
     /// The wake-up for the next refinement: when (monotonic µs), and its timer.
@@ -624,6 +636,7 @@ impl State {
         }
         self.video_window_gone(id);
         self.game_window_gone(id);
+        self.scene_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
                 let conn = s.conn;
@@ -1156,6 +1169,7 @@ impl SeatHandler for State {
         for toggle in self.text_inputs.set_focus(surface.as_ref()) {
             self.on_text_input_toggle(toggle);
         }
+        self.sync_ibus_focus_to(surface);
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
@@ -1193,8 +1207,21 @@ impl SelectionHandler for State {
         owner: &crate::clipboard::Owner,
     ) {
         match owner {
-            crate::clipboard::Owner::Phone(data) => crate::clipboard::write_to(fd, data.clone()),
+            crate::clipboard::Owner::Phone(offer) => offer.send(&mime_type, fd),
             crate::clipboard::Owner::X11 => {
+                // Smithay's window manager transfers text; other types are read directly.
+                if ty == SelectionTarget::Clipboard && !crate::x11sel::smithay_transfers(&mime_type) {
+                    if let Some(access) = self.x11.clone() {
+                        crate::x11sel::copy_into(
+                            access,
+                            mime_type,
+                            fd,
+                            crate::clipboard::X11_LIMIT,
+                            crate::clipboard::X11_TIMEOUT,
+                        );
+                    }
+                    return;
+                }
                 let handle = self.handle.clone();
                 if let Some(xwm) = self.xwm.as_mut() {
                     if let Err(e) = xwm.send_selection(ty, mime_type, fd, handle) {
@@ -1212,8 +1239,38 @@ impl DataDeviceHandler for State {
     }
 }
 
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
+impl ClientDndGrabHandler for State {
+    fn started(&mut self, source: Option<WlDataSource>, _icon: Option<WlSurface>, _seat: Seat<Self>) {
+        self.drag_started(source);
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.drag_ended();
+    }
+}
+
+/// The compositor's own drag, which carries a drop from the phone (see `dnd.rs`).
+impl ServerDndGrabHandler for State {
+    fn accept(&mut self, mime_type: Option<String>, _seat: Seat<Self>) {
+        self.drop_accepted(mime_type);
+    }
+
+    fn action(&mut self, action: DndAction, _seat: Seat<Self>) {
+        self.drop_action(action);
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        self.drop_cancelled();
+    }
+
+    fn send(&mut self, mime_type: String, fd: std::os::fd::OwnedFd, _seat: Seat<Self>) {
+        self.drop_send(mime_type, fd);
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        self.drop_finished();
+    }
+}
 
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&self) -> &PrimarySelectionState {

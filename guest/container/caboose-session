@@ -53,6 +53,8 @@ then :; else
   [ "$status" = 1 ] || { echo 'System bus recovery requires operator attention' >&2; exit "$status"; }
   dbus-daemon --system --fork
 fi
+chown caboose:caboose "$CABOOSE_HOME"
+install -d -o caboose -g caboose -m 0755 "$CABOOSE_HOME/Desktop"
 install -d -o caboose -g caboose -m 0700 "$CABOOSE_HOME/.cache"
 
 # Each seat has its own session bus, so the agents' notifications never reach the owner.
@@ -113,8 +115,13 @@ seat_ready() {
 # (port, sockets, X display).
 start_display() {
   local name=$1 port=$2 bus=$3 envfile=$4 video_socket=$5; shift 5
-  if caboose-display-probe --check --url "ws://127.0.0.1:$port/" --token-file "$TOKEN" >/dev/null 2>&1; then return; fi
+  if [ -s "$envfile" ] && caboose-display-ready 1 "$port" "$envfile" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
+  # The broker refuses sockets a stopped display left; no display serves them now.
+  if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
+    install -d -o caboose -g caboose -m 0700 "$PHONE_GPU_DIR"
+    rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
+  fi
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
   local wrapper=()
   if [ "$port" = 14601 ]; then wrapper=(python3 /opt/caboose/agent-profile.py exec); fi
@@ -128,14 +135,15 @@ start_display() {
     "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
+# A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].
 notification_endpoint() {
-  local name=$1 bus=$2
-  [ -f "$3" ] || return 0
+  local name=$1 bus=$2 script=$3; shift 3
+  [ -f "$script" ] || return 0
   local pidfile="$XDG_RUNTIME_DIR/$name.pid" log="$CABOOSE_HOME/.cache/$name.log"
   if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then return; fi
   touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" \
-    /bin/sh -c 'echo $$ > "$0"; exec python3 "$1"' "$pidfile" "$3" >>"$log" 2>&1 < /dev/null &
+    /bin/sh -c 'pidfile=$0; echo $$ > "$pidfile"; exec python3 "$@"' "$pidfile" "$script" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
 # The native bridge (guest/bridge): Now Playing, the phone's appearance and the seat's
@@ -149,12 +157,21 @@ bridge_daemon() {
     /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/bridge/caboose-bridge daemon' "$pidfile" >>"$log" 2>&1 < /dev/null &
 }
 
+# The phone's GPU (docs/gpu-live.md): with the broker and the phone's driver installed, the
+# owner's display serves the broker's sockets and routes its applications to that GPU.
+# Prints the display's options for it.
+PHONE_GPU_DIR=$XDG_RUNTIME_DIR/caboose-gpu
+phone_gpu_args() {
+  [ -x /usr/local/libexec/caboose-gpu-broker ] && [ -f /usr/local/lib/caboose-gpu-live/icd.json ] || return 0
+  echo --private-gpu-stream-socket "$PHONE_GPU_DIR/gpu.sock" \
+    --private-gpu-surface-socket "$PHONE_GPU_DIR/surface.sock" --private-gpu-indexed
+}
+
 start_owner() {
   local bus="$XDG_RUNTIME_DIR/bus"
   session_bus "$bus"
-  # The monitor records the owner's notifications; the endpoint owns the D-Bus name.
-  notification_endpoint caboose-notifications "$bus" /opt/caboose/notifications/monitor.py
-  notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
+  # The owner's endpoint owns the D-Bus name and records the owner's notifications.
+  notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py --owner
   # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
@@ -168,7 +185,8 @@ start_owner() {
     [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
     chgrp caboose "$node" && chmod 0660 "$node"
   done
-  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock"
+  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock" \
+    $(phone_gpu_args)
   bridge_daemon "$bus"
 }
 

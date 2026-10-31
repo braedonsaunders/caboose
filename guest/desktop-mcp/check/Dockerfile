@@ -2,7 +2,7 @@
 # and app packages, Mousepad and Chromium, and Caboose Display built from this checkout for
 # the owner's display and the agent seat. Native architecture: builds on amd64 and arm64.
 # Built with guest/ as the context by ../check-a11y.sh.
-FROM debian:trixie-slim AS display
+FROM debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS display
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config clang libclang-dev \
@@ -12,9 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
 COPY display /src
-RUN cd /src && cargo build --release --locked -p caboose-display -p caboose-display-probe
+RUN cd /src && CARGO_BUILD_JOBS=2 cargo build --release --locked -p caboose-display -p caboose-display-probe
 
-FROM debian:trixie-slim
+FROM debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       xvfb xwayland libegl1 libgl1-mesa-dri xauth x11-utils xdotool wmctrl imagemagick dbus dbus-x11 at-spi2-core \

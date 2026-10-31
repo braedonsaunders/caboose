@@ -26,6 +26,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Check initramfs acceptance-hook admission
+        run: python3 -m unittest discover -s guest/image -p test_boot_check.py -v
       - name: Install image inspection tools
         run: |
           sudo apt-get update
