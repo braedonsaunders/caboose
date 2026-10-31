@@ -42,6 +42,9 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
         var released = false
     }
     typealias Emit = @Sendable (LiveGPUSurfaceMessage.Body) throws -> Void
+    /// Frames native presentation keeps in flight per surface: the next frame's copy is
+    /// queued while the previous one presents.
+    static let framesInFlight = 2
     private let resource: any LiveGPUIndexedSurfaceResource
     private let acquireBudget: LiveGPUBudget
     private let budget: LiveGPUBudget
@@ -203,7 +206,7 @@ final class LiveGPUIndexedSurface: @unchecked Sendable {
                 if !swap.orderWaiting { awaitOrder(info.order, swap: swap) }
                 continue
             }
-            guard swap.frames.isEmpty, swap.ready.contains(info.index) else { continue }
+            guard swap.frames.count < Self.framesInFlight, swap.ready.contains(info.index) else { continue }
             swap.pending.removeFirst()
             swap.frames[info.serial] = Frame(index: info.index)
             let result = swap.native.present(info) { [self] body in

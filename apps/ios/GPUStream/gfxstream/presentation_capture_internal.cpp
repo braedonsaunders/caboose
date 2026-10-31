@@ -2,6 +2,7 @@
 #include "presentation_capture_internal.h"
 #include <vulkan/vulkan_metal.h>
 #include "vk_decoder_global_state.h"
+#include <cstdio>
 #include <new>
 
 namespace caboose::gpuv2 {
@@ -17,7 +18,13 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDe
         return VK_ERROR_INITIALIZATION_FAILED;
     auto exportObjects = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(
         vk->vkGetDeviceProcAddr(device, "vkExportMetalObjectsEXT"));
-    if (!exportObjects) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    // MoltenVK's own accessor serves a device created without VK_EXT_metal_objects.
+    using GetTexture = void (*)(VkImage, void**);
+    auto getTexture = reinterpret_cast<GetTexture>(vk->vkGetDeviceProcAddr(device, "vkGetMTLTextureMVK"));
+    if (!exportObjects && !getTexture) {
+        fprintf(stderr, "caboose-scroll: capture ring: neither vkExportMetalObjectsEXT nor vkGetMTLTextureMVK on the presenting device\n");
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
     std::unique_ptr<PresentationCaptureRing> ring(new (std::nothrow) PresentationCaptureRing());
     if (!ring) return VK_ERROR_OUT_OF_HOST_MEMORY;
     ring->vk = vk; ring->device = device; ring->format = format; ring->extent = extent;
@@ -30,7 +37,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDe
             exportInfo.exportObjectType = VK_EXPORT_METAL_OBJECT_TYPE_METAL_TEXTURE_BIT_EXT;
             VkImageCreateInfo info{};
             info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            info.pNext = &exportInfo;
+            info.pNext = exportObjects ? &exportInfo : nullptr;
             info.imageType = VK_IMAGE_TYPE_2D;
             info.format = format;
             info.extent = {extent.width, extent.height, 1};
@@ -42,7 +49,11 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDe
             info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             VkImage image = VK_NULL_HANDLE;
             VkResult r = vk->vkCreateImage(device, &info, nullptr, &image);
-            if (r != VK_SUCCESS) { destroyCaptureRing(*ring); return r; }
+            if (r != VK_SUCCESS) {
+                fprintf(stderr, "caboose-scroll: capture ring: vkCreateImage format %d %ux%u failed (%d)\n",
+                        static_cast<int>(format), extent.width, extent.height, static_cast<int>(r));
+                destroyCaptureRing(*ring); return r;
+            }
             ring->images.push_back(image);
             VkMemoryRequirements requirements{};
             vk->vkGetImageMemoryRequirements(device, image, &requirements);
@@ -51,27 +62,44 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkPhysicalDe
                 if ((requirements.memoryTypeBits & (1u << t)) &&
                     (properties.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { type = t; break; }
             }
-            if (type == UINT32_MAX) { destroyCaptureRing(*ring); return VK_ERROR_FEATURE_NOT_PRESENT; }
+            if (type == UINT32_MAX) {
+                fprintf(stderr, "caboose-scroll: capture ring: no device-local memory type in 0x%x\n", requirements.memoryTypeBits);
+                destroyCaptureRing(*ring); return VK_ERROR_FEATURE_NOT_PRESENT;
+            }
             VkMemoryAllocateInfo allocation{};
             allocation.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
             allocation.allocationSize = requirements.size;
             allocation.memoryTypeIndex = type;
             VkDeviceMemory memory = VK_NULL_HANDLE;
             r = vk->vkAllocateMemory(device, &allocation, nullptr, &memory);
-            if (r != VK_SUCCESS) { destroyCaptureRing(*ring); return r; }
+            if (r != VK_SUCCESS) {
+                fprintf(stderr, "caboose-scroll: capture ring: vkAllocateMemory failed (%d)\n", static_cast<int>(r));
+                destroyCaptureRing(*ring); return r;
+            }
             ring->memory.push_back(memory);
             r = vk->vkBindImageMemory(device, image, memory, 0);
-            if (r != VK_SUCCESS) { destroyCaptureRing(*ring); return r; }
-            VkExportMetalTextureInfoEXT texture{};
-            texture.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT;
-            texture.image = image;
-            texture.plane = VK_IMAGE_ASPECT_PLANE_0_BIT;
-            VkExportMetalObjectsInfoEXT objects{};
-            objects.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT;
-            objects.pNext = &texture;
-            exportObjects(device, &objects);
-            if (!texture.mtlTexture) { destroyCaptureRing(*ring); return VK_ERROR_EXTENSION_NOT_PRESENT; }
-            ring->textures.push_back(reinterpret_cast<void*>(texture.mtlTexture));
+            if (r != VK_SUCCESS) {
+                fprintf(stderr, "caboose-scroll: capture ring: vkBindImageMemory failed (%d)\n", static_cast<int>(r));
+                destroyCaptureRing(*ring); return r;
+            }
+            void* metal = nullptr;
+            if (exportObjects) {
+                VkExportMetalTextureInfoEXT texture{};
+                texture.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_TEXTURE_INFO_EXT;
+                texture.image = image;
+                texture.plane = VK_IMAGE_ASPECT_PLANE_0_BIT;
+                VkExportMetalObjectsInfoEXT objects{};
+                objects.sType = VK_STRUCTURE_TYPE_EXPORT_METAL_OBJECTS_INFO_EXT;
+                objects.pNext = &texture;
+                exportObjects(device, &objects);
+                metal = reinterpret_cast<void*>(texture.mtlTexture);
+            }
+            if (!metal && getTexture) getTexture(image, &metal);
+            if (!metal) {
+                fprintf(stderr, "caboose-scroll: capture ring: the presenting device exported no Metal texture\n");
+                destroyCaptureRing(*ring); return VK_ERROR_EXTENSION_NOT_PRESENT;
+            }
+            ring->textures.push_back(metal);
         }
     } catch (const std::bad_alloc&) { destroyCaptureRing(*ring); return VK_ERROR_OUT_OF_HOST_MEMORY; }
     *out = std::move(ring);
