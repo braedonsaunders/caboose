@@ -60,6 +60,8 @@ struct SwitchyardView: View {
                     .frame(width: proxy.size.width, height: area.height)
                     .zIndex(7)
                 YardKeyCommands(yard: yard)
+                SceneMenuView(menu: yard.menu, space: Self.space, bounds: CGRect(origin: .zero, size: proxy.size))
+                    .zIndex(8)
             }
             .coordinateSpace(name: Self.space)
             .onAppear { yard.finishCarryGesture(); yard.screenSize = area }

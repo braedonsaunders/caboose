@@ -17,20 +17,21 @@ struct DesktopFilesView: View {
         let center = model.desktopFiles
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Menu {
-                    ForEach(Array(backgroundMenu.enumerated()), id: \.offset) { _, item in
-                        Button(item.title, systemImage: item.systemImage, action: item.perform)
+                Group {
+                    // The desktop draws its menus in the scene, where its pointer reaches them.
+                    if let desktop {
+                        Button { desktop.showDesktopMenu() } label: { desktopLabel }
+                    } else {
+                        Menu {
+                            ForEach(Array(backgroundMenu.enumerated()), id: \.offset) { _, item in
+                                Button(item.title, systemImage: item.systemImage, action: item.perform)
+                            }
+                        } label: { desktopLabel }
                     }
-                } label: { Label("Desktop", systemImage: "folder").font(.caption.weight(.semibold)).padding(8) }
+                }
+                .buttonStyle(.plain)
                 .background(.ultraThinMaterial, in: Capsule())
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop?.desktopMenuFrame = $0 }
-                .popover(isPresented: Binding(get: { desktop?.desktopMenuOpen ?? false }, set: { desktop?.desktopMenuOpen = $0 })) {
-                    VStack(spacing: 16) {
-                        ForEach(Array(backgroundMenu.enumerated()), id: \.offset) { _, item in
-                            Button(item.title) { desktop?.desktopMenuOpen = false; item.perform() }
-                        }
-                    }.padding().presentationCompactAdaptation(.popover)
-                }
                 if center.busy { ProgressView().tint(.white) }
                 Spacer()
             }
@@ -63,11 +64,9 @@ struct DesktopFilesView: View {
                         }
                         .buttonStyle(.plain)
                         .onDisappear { desktop?.desktopItemFrames[item.id] = nil }
-                        .contextMenu { actions(item) }
+                        .simultaneousGesture(LongPressGesture().onEnded { _ in desktop?.showItemMenu(item.id) })
+                        .contextMenu { if desktop == nil { actions(item) } }
                         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop?.desktopItemFrames[item.id] = $0 }
-                        .popover(isPresented: Binding(get: { desktop?.desktopContextItem == item.id }, set: { if !$0 { desktop?.desktopContextItem = nil } })) {
-                            VStack(alignment: .leading, spacing: 16) { actions(item) }.padding().presentationCompactAdaptation(.popover)
-                        }
                     }
                 }
             }
@@ -114,12 +113,13 @@ struct DesktopFilesView: View {
         }
     }
 
+    private var desktopLabel: some View {
+        Label("Desktop", systemImage: "folder").font(.caption.weight(.semibold)).padding(8)
+    }
+
     @ViewBuilder private func actions(_ item: DesktopFilesCenter.Item) -> some View {
         ForEach(Array(itemMenu(item).enumerated()), id: \.offset) { _, row in
-            Button(row.title, systemImage: row.systemImage, role: row.destructive ? .destructive : nil) {
-                desktop?.desktopContextItem = nil
-                row.perform()
-            }
+            Button(row.title, systemImage: row.systemImage, role: row.destructive ? .destructive : nil, action: row.perform)
         }
     }
 

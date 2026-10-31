@@ -7,6 +7,7 @@ import SwiftUI
 struct YardDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
+    @Environment(\.openWindow) private var openWindow
     let yard: YardModel
     let width: CGFloat
 
@@ -23,32 +24,33 @@ struct YardDock: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
                     ForEach(apps) { app in
-                        // A tap goes to the app; holding it offers Open, Pin and Close. A menu with a
-                        // primary action shows on the hold itself, so neither the dock's swipe nor the
-                        // system's bottom edge can take the press from it.
-                        Menu { DockAppActions(app: app) } label: {
-                            VStack(spacing: 3) {
-                                Group {
-                                    if let image = model.appIcons[app.id] {
-                                        Image(uiImage: image).resizable().scaledToFit()
-                                    } else {
-                                        Image(systemName: "app.dashed").font(.title2)
-                                    }
+                        // A tap goes to the app; holding it opens its menu above it, in the yard.
+                        VStack(spacing: 3) {
+                            Group {
+                                if let image = model.appIcons[app.id] {
+                                    Image(uiImage: image).resizable().scaledToFit()
+                                } else {
+                                    Image(systemName: "app.dashed").font(.title2)
                                 }
-                                .frame(width: icon, height: icon)
-                                .modifier(DockLaunchFeedback(appID: app.id))
-                                Circle()
-                                    .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
-                                    .frame(width: 4, height: 4)
                             }
-                            .contentShape(Rectangle())
-                        } primaryAction: {
-                            model.openOnDesktop(app)
+                            .frame(width: icon, height: icon)
+                            .modifier(DockLaunchFeedback(appID: app.id))
+                            Circle()
+                                .fill(.white.opacity(isRunning(app) ? 0.85 : 0))
+                                .frame(width: 4, height: 4)
                         }
-                        .menuIndicator(.hidden)
-                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(SwitchyardView.space)) } action: {
+                            yard.dockFrames[app.id] = $0
+                        }
+                        .onTapGesture { model.openOnDesktop(app) }
+                        .onLongPressGesture(minimumDuration: 0.4) { showMenu(app) }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityAddTraits(.isButton)
                         .accessibilityLabel(app.name)
                         .accessibilityHint("Hold for Open, Pin and Close.")
+                        .accessibilityAction { model.openOnDesktop(app) }
+                        .accessibilityAction(named: "Actions") { showMenu(app) }
                     }
                 }
                 // Extend only the vertical viewport. Horizontal scroll clipping still
@@ -78,6 +80,14 @@ struct YardDock: View {
             }
         )
         .animation(.smooth(duration: 0.3), value: columns.map(\.id))
+    }
+
+    /// The app's actions, above its icon.
+    private func showMenu(_ app: HostClient.App) {
+        guard let frame = yard.dockFrames[app.id] else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        yard.menu.show(DockAppActions.items(app, model: model, openWindow: openWindow),
+                       at: CGPoint(x: frame.minX, y: frame.minY - 6), above: true)
     }
 
     private func isRunning(_ app: HostClient.App) -> Bool {

@@ -60,7 +60,7 @@ struct DesktopView: View {
                 QuickSwitchStrip(owner: .desktop, height: desktop.workArea.height, space: .named("desktop"), tappable: false)
                     .frame(width: desktop.size.width, height: desktop.workArea.height)
                 if !desktop.detachedChrome {
-                    PointerMenuView(desktop: desktop, space: "desktop", bounds: proxy.size)
+                    SceneMenuView(menu: desktop.menu, space: "desktop", bounds: CGRect(origin: .zero, size: proxy.size), ui: desktop.ui)
                 }
                 if desktop.showsCursor && !desktop.detachedChrome {
                     Cursor(hit: desktop.hovered, ui: desktop.ui)
@@ -272,12 +272,7 @@ struct Dock: View {
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
                 .onTapGesture { if interactive { model.openOnDesktop(app) } }
-                .onLongPressGesture { if interactive { desktop.contextDockID = app.id } }
-                .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
-                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) { desktop.contextDockID = nil } }
-                        .padding(20)
-                        .presentationCompactAdaptation(.popover)
-                }
+                .onLongPressGesture { if interactive { desktop.showDockMenu(app.id) } }
             }
             Divider().frame(height: 44 * ui).overlay(.white.opacity(0.25))
             let hot = desktop.hovered == .launchpadButton
@@ -325,11 +320,7 @@ struct Dock: View {
                 .accessibilityAddTraits(.isButton)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
                 .onTapGesture { model.openOnDesktop(app) }
-                .onLongPressGesture { desktop.contextDockID = app.id }
-                .popover(isPresented: Binding(get: { desktop.contextDockID == app.id }, set: { if !$0 { desktop.contextDockID = nil } })) {
-                    VStack(alignment: .leading, spacing: 16) { DockAppActions(app: app) { desktop.contextDockID = nil } }
-                        .padding(20).presentationCompactAdaptation(.popover)
-                }
+                .onLongPressGesture { desktop.showDockMenu(app.id) }
             }
             Spacer(minLength: 0)
             Image(systemName: "square.grid.3x3.fill")

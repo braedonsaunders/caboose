@@ -66,7 +66,9 @@ struct LaptopContainer<Content: View>: View {
                 if active && !isCard && !model.externalDisplayActive {
                     // Below the hinge too: the taskbar's menus open from there.
                     ZStack(alignment: .topLeading) {
-                        PointerMenuView(desktop: model.desktop, space: "laptop", bounds: proxy.size)
+                        // Inside where the pointer reaches: a taskbar menu opens upward.
+                        SceneMenuView(menu: model.desktop.menu, space: "laptop",
+                                      bounds: CGRect(origin: .zero, size: model.desktop.pointerArea ?? proxy.size))
                         if model.desktop.showsCursor {
                             Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
                                 .position(model.desktop.cursor).allowsHitTesting(false)
