@@ -5,6 +5,9 @@ export const GPU_MAX_MESSAGE = 256 * 1024
 export const GPU_MAX_PENDING = 1024 * 1024
 export const GPU_MAX_PENDING_MESSAGES = 64
 export const GPU_CLOSE_TIMEOUT_MS = 1000
+/** The phone is pinged this often; one silent this long has left (backgrounded, off the network). */
+export const GPU_HEARTBEAT_MS = 1000
+export const GPU_HEARTBEAT_TIMEOUT_MS = 3000
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
 export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present'] as const
 
@@ -63,6 +66,17 @@ export function relayGPU(client: WebSocket, options: {
     function stop(): void {
       for (const endpoint of endpoints) if (endpoint.readyState !== WebSocket.CLOSED) endpoint.terminate()
     }
+    // A phone that vanishes without closing would leave the guest's GPU clients waiting on
+    // it: silence ends the relay, and the broker then ends the executor's streams.
+    let heard = Date.now()
+    client.on('pong', () => { heard = Date.now() })
+    const heartbeat = setInterval(() => {
+      if (client.readyState !== WebSocket.OPEN) return
+      // While the relay itself holds the phone back, its replies wait unread: not silence.
+      if (upstream.readyState !== WebSocket.OPEN || pendingMessages[0]! > 0) { heard = Date.now(); return }
+      if (Date.now() - heard > GPU_HEARTBEAT_TIMEOUT_MS) { stop(); return }
+      client.ping()
+    }, GPU_HEARTBEAT_MS)
     for (const [index, source] of endpoints.entries()) {
       const destination = endpoints[1 - index]!
       source.on('error', stop)
@@ -70,6 +84,7 @@ export function relayGPU(client: WebSocket, options: {
         closed++
         if (closed === 2) {
           if (closeTimer) clearTimeout(closeTimer)
+          clearInterval(heartbeat)
           resolve()
           return
         }
@@ -82,6 +97,7 @@ export function relayGPU(client: WebSocket, options: {
         } else stop()
       })
       source.on('message', (data: RawData, binary: boolean) => {
+        if (index === 0) heard = Date.now()
         const bytes = size(data)
         if (!binary || bytes > GPU_MAX_MESSAGE || destination.readyState !== WebSocket.OPEN ||
             pending[index]! + bytes > GPU_MAX_PENDING ||
