@@ -697,9 +697,12 @@ not hand them to Wayland), so the client is not told of them.
 
 ### Phone-owned scrolling
 
-A one-finger or two-finger pan over a window whose picture the phone draws (a card or tile
-with pointer gestures, not a game, GPU stream or live GPU layer) is scrolled by the phone
-itself. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
+A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
+the phone itself. That covers a window whose picture the phone draws (a card or tile) and
+a live GPU window whose presented pictures the phone captures
+([presented-picture capture](gpu-live.md#presented-picture-capture)). Games and GPU
+streams are not covered. Over a live GPU layer, the phone draws its compositions in an
+overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
 uses it differently:
 
 - **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
