@@ -84,7 +84,9 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   drawn and unchanging). Before comparing, a uniform border the color of each picture's
   corner is trimmed, so a swapchain's shadow margin does not count as a difference.
   `sizes_differ` notes when the two runs' windows had different sizes (a window bound to
-  the phone's GPU can be configured to another extent), so their layouts differ too.
+  the phone's GPU can be configured to another extent), so their layouts differ too; the
+  summary then shows `size≠` instead of `FAIL`. The phone picture compared is the first one
+  written after the guest's own picture (when the app was ready), else the latest.
 
 ## Where the numbers come from
 

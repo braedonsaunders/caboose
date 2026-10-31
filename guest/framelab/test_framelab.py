@@ -68,7 +68,8 @@ class ParseTests(unittest.TestCase):
     def test_phone_picture_nearest_the_guest_picture(self):
         records = [{'kind': 'phone_picture', 't': 100 + t, 'window': w, 'file': f'{w}-{t}.png'}
                    for w, t in ((1, 5), (1, 20), (2, 11))]
-        self.assertEqual(fl.phone_picture(records, 1, 12, offset=100), '1-5.png')
+        self.assertEqual(fl.phone_picture(records, 1, 12, offset=100), '1-20.png')
+        self.assertEqual(fl.phone_picture(records, 1, 30, offset=100), '1-20.png')
         self.assertEqual(fl.phone_picture(records, 1, 14, offset=100), '1-20.png')
         self.assertIsNone(fl.phone_picture(records, 3, 14, offset=100))
         self.assertIsNone(fl.phone_picture(records, 1, 14, offset=None))
