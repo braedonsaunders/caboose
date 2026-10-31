@@ -90,3 +90,26 @@ struct WindowControls: View {
         }
     }
 }
+
+/// Every Linux window's outline on this device, tiled, floating or on Laptop's upper screen:
+/// cut to a container-concentric corner (the screen's own radius where the window meets the
+/// screen's corner, `radius` elsewhere) with a fine bevel, light along the top edge and a
+/// little shade along the bottom, as glass has. A full-screen window has square corners.
+struct WindowFrameStyle: ViewModifier {
+    let radius: CGFloat
+    var fullscreen = false
+    var bevel = true
+
+    func body(content: Content) -> some View {
+        let shape = ConcentricRectangle(corners: fullscreen ? .fixed(0) : .concentric(minimum: .fixed(radius)))
+        content
+            .clipShape(shape)
+            .overlay {
+                if bevel && !fullscreen {
+                    shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.3), .white.opacity(0.07), .black.opacity(0.28)],
+                                                      startPoint: .top, endPoint: .bottom), lineWidth: 0.75)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}

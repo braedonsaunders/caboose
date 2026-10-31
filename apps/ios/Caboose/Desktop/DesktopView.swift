@@ -185,7 +185,8 @@ struct DesktopWindow: View {
                 .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint, presentedSize: surface.size))
         }
         .frame(width: chrome.width, height: chrome.height)
-        .clipShape(ConcentricRectangle(corners: window.isFullscreen ? .fixed(0) : .concentric(minimum: .fixed((window.isAuxiliary ? 6 : 11) * desktop.ui))))
+        .modifier(WindowFrameStyle(radius: (window.isAuxiliary ? 6 : 11) * desktop.ui, fullscreen: window.isFullscreen,
+                                   bevel: !window.isAuxiliary))
         .onDisappear { desktop.titleBarLeadingInsets[window.id] = nil }
         .shadow(color: .black.opacity(window.isAuxiliary ? 0.25 : 0.45), radius: window.isAuxiliary ? 8 : 24, y: window.isAuxiliary ? 3 : 12)
         .position(x: chrome.midX, y: chrome.midY)

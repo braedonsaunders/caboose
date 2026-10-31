@@ -95,4 +95,16 @@ struct WindowSizePolicyTests {
         #expect(requested.size == CGSize(width: 1600, height: 1000))
         #expect(shown == CGRect(x: 0, y: 0, width: 400, height: 250))
     }
+
+    /// Obsidian's vault picker is 800 × 650 with equal minimum and maximum: maximized on
+    /// Laptop's upper screen it sits in the middle, not in the top-left corner.
+    @Test func fixedSizeWindowIsCentredInItsSnap() {
+        let area = CGRect(x: 0, y: 0, width: 1380, height: 860)
+        let fixed = CGSize(width: 800, height: 650)
+        let fitted = WindowSizePolicy.fitting(area, minimum: fixed, maximum: fixed, fullscreen: false)!
+        #expect(WindowSizePolicy.centred(fitted, in: area) == CGRect(x: 290, y: 105, width: 800, height: 650))
+        let large = CGRect(x: 0, y: 0, width: 1600, height: 900)
+        #expect(WindowSizePolicy.centred(large, in: area) == CGRect(x: 0, y: 0, width: 1600, height: 900))
+        #expect(WindowSizePolicy.centred(area, in: area) == area)
+    }
 }

@@ -670,7 +670,7 @@ final class DesktopModel {
         if layout.snap(of: window.id) != nil {
             guard let fitted = WindowSizePolicy.fitting(frame, minimum: window.minimumSize,
                 maximum: window.maximumSize, fullscreen: window.isFullscreen) else { return }
-            frame = fitted
+            frame = WindowSizePolicy.centred(fitted, in: frame)
         }
         guard window.frame != frame else { return }
         session.configure(window, frame: frame, state: ["maximized": false])
