@@ -59,7 +59,7 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   input-driven app owes a picture from each input until its next frame (at most 2 s, for
   an input that changes nothing). Causes, first match wins:
   `surface_failed` (the broker ended one of the app's surface connections inside the stall,
-  `CABOOSE_GPU_SURFACE_FAILED`), `phone_decode` (the phone spent 50 ms or more decoding commands inside the stall,
+  `CABOOSE_GPU_SURFACE_FAILED`, or the app's driver logged a failed `CABOOSE_GPU_SURFACE_BIND`), `phone_decode` (the phone spent 50 ms or more decoding commands inside the stall,
   `CABOOSE_GPU_DECODE_TIMING`), `guest_read` (the app's processes were blocked reading
   replies for at least half the stall in the `CABOOSE_READ_PROFILE` window covering it),
   `app_busy` (the app used at least half a core) and `app_idle` (none of these). The

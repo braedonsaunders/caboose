@@ -61,6 +61,12 @@ def parse_line(line, received_ns=None):
         f = fields(line.split('CABOOSE_GPU_DECODE_TIMING ', 1)[1])
         if 'elapsed_us' in f:
             return {'kind': 'decode', 't': received_ns, 'opcode': f.get('opcode'), 'elapsed_us': f['elapsed_us']}
+    elif 'CABOOSE_GPU_SURFACE_BIND' in line:
+        # The guest driver's bind attempt for a window's layer; a nonzero errno is a failure.
+        f = fields(line.split('CABOOSE_GPU_SURFACE_BIND', 1)[1])
+        if f.get('errno', 0) not in (0, '0'):
+            return {'kind': 'surface_failed', 't': received_ns,
+                    'reason': 'bind ' + line.split('CABOOSE_GPU_SURFACE_BIND', 1)[1].strip()}
     elif 'CABOOSE_GPU_SURFACE_FAILED' in line:
         return {'kind': 'surface_failed', 't': received_ns,
                 'reason': line.split('CABOOSE_GPU_SURFACE_FAILED', 1)[1].strip()}
