@@ -348,6 +348,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if (localScrollEngaged || liveGPU), let localScroll, let window = remoteWindow {
             // A live GPU layer presents itself; local scrolling draws over it.
             let target = liveGPU ? overlay() : metalLayer
+            localScroll.displayScale = self.window?.screen.scale ?? traitCollection.displayScale
             let composed = localScroll.refresh(at: targetTime, surface: liveGPU ? nil : window.surface, layer: target)
             followLocalScroll()
             showOverlay(liveGPU && composed)

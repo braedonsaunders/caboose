@@ -177,10 +177,11 @@ public final class LocalScrollRenderer: @unchecked Sendable {
     // MARK: Drawing
 
     private struct Quad {
-        var rect: SIMD4<Float>     // x, y, width, height in target pixels
-        var offset: SIMD2<Float>   // target pixel - offset = source pixel
+        var rect: SIMD4<Float>     // x, y, width, height in viewport pixels
+        var offset: SIMD2<Float>   // viewport pixel - offset = source pixel
         var target: SIMD2<Float>
         var color: SIMD4<Float>
+        var view = SIMD4<Float>(1, 1, 0, 0)  // target pixel = viewport pixel * xy + zw
     }
 
     /// One resolve pass over the region: per pixel, the newest layer that covers it outside
@@ -194,6 +195,8 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         var layers = [SIMD4<Int32>](repeating: .zero, count: LocalScrollRenderer.maximumLayers)
         // along lower, along upper, across lower, across upper, in the layer's picture
         var holes = [SIMD4<Int32>](repeating: .zero, count: LocalScrollRenderer.maximumLayers * LocalScrollRenderer.maximumHoles)
+        // Each layer's shift beyond its whole lines, as drawn: snapped to target pixels.
+        var fractions = [Float](repeating: 0, count: LocalScrollRenderer.maximumLayers)
 
         func bytes() -> [UInt8] {
             var out = [UInt8]()
@@ -201,15 +204,19 @@ public final class LocalScrollRenderer: @unchecked Sendable {
             withUnsafeBytes(of: (count, vertical, padding)) { out += $0 }
             layers.withUnsafeBytes { out += $0 }
             holes.withUnsafeBytes { out += $0 }
+            fractions.withUnsafeBytes { out += $0 }
             return out
         }
     }
 
-    /// Draws `composition` into `target`, a picture-sized texture. `textures` holds the frames
+    /// Draws `composition` into `target`. `viewport` is the picture's shown part in picture
+    /// pixels (the target's size when nil); a target of more pixels, such as the screen's,
+    /// gets the viewport scaled up and filtered, with each layer's fractional position snapped
+    /// to target pixels, so motion is smooth and text stays crisp. `textures` holds the frames
     /// it names; `fill` is the colour of content not yet captured. Returns false, drawing
     /// nothing, when a frame it names has no texture.
     public func encode(_ composition: ScrollComposition, textures: [UInt64: MTLTexture], fill: SIMD3<Float>,
-                       into target: MTLTexture, commands: MTLCommandBuffer) -> Bool {
+                       into target: MTLTexture, viewport: CGSize? = nil, commands: MTLCommandBuffer) -> Bool {
         guard let base = textures[composition.base],
               composition.layers.allSatisfy({ textures[$0.frame] != nil }),
               let pipeline = pipelines(for: target.pixelFormat) else { return false }
@@ -219,7 +226,15 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return false }
         let size = SIMD2<Float>(Float(target.width), Float(target.height))
+        let shown = viewport.map { SIMD2<Float>(Float(max(1, $0.width)), Float(max(1, $0.height))) } ?? size
+        // Viewport to target: the target's density, times the pinch's zoom about its focus.
+        let zoom = Float(composition.zoom)
+        let density = size / shown
+        let focus = SIMD2<Float>(Float(composition.focus.x), Float(composition.focus.y))
+        let view = SIMD4<Float>(density.x * zoom, density.y * zoom,
+                                density.x * focus.x * (1 - zoom), density.y * focus.y * (1 - zoom))
         let vertical = composition.axis == .vertical
+        let alongScale = vertical ? view.y : view.x
         func rect(along: Range<Int>, across: Range<Int>) -> SIMD4<Float> {
             vertical ? SIMD4(Float(across.lowerBound), Float(along.lowerBound), Float(across.count), Float(along.count))
                      : SIMD4(Float(along.lowerBound), Float(across.lowerBound), Float(along.count), Float(across.count))
@@ -227,6 +242,7 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         let none = SIMD4<Float>(0, 0, 0, 0)
         func draw(_ quad: Quad, texture: MTLTexture) {
             var q = quad
+            q.view = view
             encoder.setRenderPipelineState(pipeline.textured)
             encoder.setVertexBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
             encoder.setFragmentBytes(&q, length: MemoryLayout<Quad>.stride, index: 0)
@@ -234,17 +250,21 @@ public final class LocalScrollRenderer: @unchecked Sendable {
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         // Everything outside the region comes from the newest picture, unmoved.
-        draw(Quad(rect: SIMD4(0, 0, size.x, size.y), offset: .zero, target: size, color: none), texture: base)
+        draw(Quad(rect: SIMD4(0, 0, shown.x, shown.y), offset: .zero, target: size, color: none), texture: base)
         let region = composition.region
         // The newest layers win, so the oldest beyond the pass's capacity are left out.
         let layers = Array(composition.layers.suffix(Self.maximumLayers))
         var resolve = Resolve(quad: Quad(rect: rect(along: region.along, across: region.across), offset: .zero,
                                          target: size, color: SIMD4(fill.x, fill.y, fill.z, 1)))
+        resolve.quad.view = view
         resolve.count = UInt32(layers.count)
         resolve.vertical = vertical ? 1 : 0
         for (i, layer) in layers.enumerated() {
             let holes = layer.holes.prefix(Self.maximumHoles)
             resolve.layers[i] = SIMD4(Int32(layer.shift), Int32(layer.lines.lowerBound), Int32(layer.lines.upperBound), Int32(holes.count))
+            // Whole target pixels, so a still layer is never resampled between them.
+            let moved = Float(layer.shift) + layer.fraction
+            resolve.fractions[i] = (moved * alongScale).rounded() / alongScale - Float(layer.shift)
             for (h, hole) in holes.enumerated() {
                 resolve.holes[i * Self.maximumHoles + h] = SIMD4(Int32(hole.along.lowerBound), Int32(hole.along.upperBound),
                                                                  Int32(hole.across.lowerBound), Int32(hole.across.upperBound))
@@ -265,10 +285,10 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         }
         // With an overscan, what follows the region in the picture (a footer, a status bar)
         // is anchored to the viewport's end.
-        let viewLines = vertical ? target.height : target.width
+        let viewLines = Int(vertical ? shown.y : shown.x)
         if composition.overscan > 0, region.along.upperBound < viewLines {
             let shift = Float(-composition.overscan)
-            let span = vertical ? 0..<target.width : 0..<target.height
+            let span = vertical ? 0..<Int(shown.x) : 0..<Int(shown.y)
             draw(Quad(rect: rect(along: region.along.upperBound..<viewLines, across: span),
                       offset: vertical ? SIMD2(0, shift) : SIMD2(shift, 0), target: size, color: none), texture: base)
         }
@@ -320,22 +340,35 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         out[block] = sum / 9.0;
     }
 
-    struct Quad { float4 rect; float2 offset; float2 target; float4 color; };
+    struct Quad { float4 rect; float2 offset; float2 target; float4 color; float4 view; };
     struct Fragment { float4 position [[position]]; };
 
     vertex Fragment scroll_quad_vertex(uint vid [[vertex_id]], constant Quad &q [[buffer(0)]]) {
         float2 corner = float2(vid & 1, vid >> 1);
-        float2 p = q.rect.xy + corner * q.rect.zw;
+        float2 p = (q.rect.xy + corner * q.rect.zw) * q.view.xy + q.view.zw;
         Fragment f;
         f.position = float4(p.x / q.target.x * 2.0 - 1.0, 1.0 - p.y / q.target.y * 2.0, 0.0, 1.0);
         return f;
     }
 
+    // The viewport point a target pixel's centre shows.
+    static float2 viewportPoint(float4 position, float4 view) { return (position.xy - view.zw) / view.xy; }
+
+    // Bilinear sample at a continuous point (pixel centres at i + 0.5): exact at centres.
+    static half4 sampleAt(texture2d<half, access::read> picture, float2 point) {
+        float2 c = point - 0.5;
+        float2 i = floor(c);
+        half2 f = half2(c - i);
+        int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
+        int2 a = clamp(int2(i), int2(0), limit), b = clamp(int2(i) + 1, int2(0), limit);
+        half4 top = mix(picture.read(uint2(a.x, a.y)), picture.read(uint2(b.x, a.y)), f.x);
+        half4 bottom = mix(picture.read(uint2(a.x, b.y)), picture.read(uint2(b.x, b.y)), f.x);
+        return mix(top, bottom, f.y);
+    }
+
     fragment half4 scroll_quad_texture(Fragment in [[stage_in]], constant Quad &q [[buffer(0)]],
                                        texture2d<half, access::read> picture [[texture(0)]]) {
-        int2 source = int2(floor(in.position.xy - q.offset));
-        int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
-        return picture.read(uint2(clamp(source, int2(0), limit)));
+        return sampleAt(picture, viewportPoint(in.position, q.view) - q.offset);
     }
 
     struct Resolve {
@@ -344,28 +377,28 @@ public final class LocalScrollRenderer: @unchecked Sendable {
         uint2 padding;
         int4 layers[8];
         int4 holes[32];
+        float fractions[8];
     };
 
     // Per pixel of the region, the newest layer covering it outside its holes; else fill.
     fragment half4 scroll_resolve(Fragment in [[stage_in]], constant Resolve &r [[buffer(0)]],
                                   array<texture2d<half, access::read>, 8> layers [[texture(0)]]) {
-        int2 p = int2(floor(in.position.xy));
+        float2 v = viewportPoint(in.position, r.quad.view);
         bool vertical = r.vertical != 0;
-        int along = vertical ? p.y : p.x, across = vertical ? p.x : p.y;
+        float alongAt = vertical ? v.y : v.x, acrossAt = vertical ? v.x : v.y;
+        int along = int(floor(alongAt)), across = int(floor(acrossAt));
         for (int i = int(r.count) - 1; i >= 0; i--) {
             int4 layer = r.layers[i];
             if (along < layer.y || along >= layer.z) continue;
-            int source = along - layer.x;
+            float sourceAt = alongAt - float(layer.x) - r.fractions[i];
+            int source = int(floor(sourceAt));
             bool hole = false;
             for (int h = 0; h < layer.w; h++) {
                 int4 b = r.holes[i * 4 + h];
                 if (source >= b.x && source < b.y && across >= b.z && across < b.w) { hole = true; break; }
             }
             if (hole) continue;
-            texture2d<half, access::read> picture = layers[i];
-            int2 coord = vertical ? int2(p.x, source) : int2(source, p.y);
-            int2 limit = int2(picture.get_width(), picture.get_height()) - 1;
-            return picture.read(uint2(clamp(coord, int2(0), limit)));
+            return sampleAt(layers[i], vertical ? float2(acrossAt, sourceAt) : float2(sourceAt, acrossAt));
         }
         return half4(r.quad.color);
     }

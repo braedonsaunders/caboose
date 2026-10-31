@@ -206,10 +206,15 @@ public final class LocalScrollController {
         let extra = pictureOverscan(base)
         let size = CGSize(width: max(1, base.width - max(Int(extra.width), composition.axis == .horizontal ? composition.overscan : 0)),
                           height: max(1, base.height - max(Int(extra.height), composition.axis == .vertical ? composition.overscan : 0)))
-        if layer.drawableSize != size { layer.drawableSize = size }
+        // Composed at the screen's own pixels when they are more than the picture's: the
+        // renderer filters and snaps positions to them, where the layer's scaling would not.
+        let screen = CGSize(width: (layer.bounds.width * displayScale).rounded(), height: (layer.bounds.height * displayScale).rounded())
+        let drawn = screen.width > size.width || screen.height > size.height ? screen : size
+        if layer.drawableSize != drawn { layer.drawableSize = drawn }
         lastViewport = Int(composition.axis == .vertical ? size.height : size.width)
         guard let drawable = layer.nextDrawable(), let commands = renderer.queue.makeCommandBuffer(),
-              renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, commands: commands) else {
+              renderer.encode(composition, textures: textures, fill: fill, into: drawable.texture, viewport: size,
+                              commands: commands) else {
             isComposing = false
             return false
         }
@@ -321,6 +326,9 @@ public final class LocalScrollController {
         let deadline: CFTimeInterval
     }
     private var placing: [Placing] = []
+    /// Screen pixels per point of the layer compositions are drawn into; 0 draws them at the
+    /// picture's own pixels.
+    public var displayScale: CGFloat = 0
     private var measuringSince: CFTimeInterval?
     private var capturesIssued = 0, capturesLanded = 0, capturesPlaced = 0
     private var lastStatus: CFTimeInterval = 0

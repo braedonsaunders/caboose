@@ -741,7 +741,10 @@ touches, a finger's first 150 ms are held back from the app. If it moves past th
 slop, the phone scrolls; if it stays still, lifts, or a second finger lands, the finger goes
 to the app as it went down, and the app gets its taps, presses, drags and pinches
 natively. Games and GPU streams are not covered. Over a live GPU layer, the phone draws its compositions in an
-overlay above the layer, and only while it owns the scroll. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
+overlay above the layer, and only while it owns the scroll. Compositions are drawn at the
+screen's own pixels, with pictures filtered as the layer would scale them. The content's
+fractional position is snapped to whole screen pixels, so motion advances evenly and text
+stays crisp. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
 uses it differently:
 
 - **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
