@@ -16,6 +16,7 @@
 // read. Pieces are written off the decoding thread: a piece waits in memory, where it already
 // resolves, until a writer thread has put it in a pack.
 
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -136,6 +137,7 @@ private:
     };
     UploadStore(std::string directory, UploadStoreLimits limits);
     void write();
+    void reportUnresolved(const UploadPrefix& prefix, const char* reason);
     bool startPack();
     std::string pathOf(uint32_t number) const;
 
@@ -155,6 +157,7 @@ private:
     bool stopping_ = false;
     bool failing_ = false;  // a write failed: pieces stay in memory and none more are asked for
     UploadStoreStats stats_;
+    std::atomic<uint64_t> unresolvedReports_{0};
     std::thread writer_;
 };
 

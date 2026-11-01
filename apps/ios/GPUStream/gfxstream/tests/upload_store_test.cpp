@@ -183,6 +183,10 @@ int main(int argc, char** argv) {
         const auto inventory = store->inventory();
         assert(inventory.size() == 1 && holds(inventory, keyB.prefix()));
         assert(!store->resolve(keyA.prefix().bytes, out));
+        // A piece a guest stores under that prefix is still resolvable for the run.
+        store->store(a.data());
+        store->drain();
+        assert(store->resolve(keyA.prefix().bytes, out) && std::memcmp(out, a.data(), sizeof(out)) == 0);
     }
     {
         // The budget applies at open, dropping whole least recently used packs, and bounds
