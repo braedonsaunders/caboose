@@ -106,6 +106,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0036 modifier-lists-in-the-guest | On the socket transport both DRM format modifier lists are answered in the guest and never sent to the host, whose reply could desynchronise the stream; `vkGetPhysicalDeviceFormatProperties2KHR` takes the core entry point's path |
 | 0037 d3d11-features | What DXVK needs for Direct3D 11 and the phone's device lacks is offered and kept from it: `geometryShader` (a geometry pipeline draws nothing), `shaderCullDistance` (cull distances become private variables), `VK_EXT_depth_clip_enable` (depth clip becomes depth clamp) and `VK_EXT_robustness2` `nullDescriptor` and `robustBufferAccess2` (null resources become zeroed per-device stand-ins); `VK_KHR_maintenance5`, `VK_KHR_maintenance6` and `VK_KHR_load_store_op_none` pass through (`../feature-emulation/README.md`) |
 | 0038 ignored-descriptor-pointers | A descriptor write's pointers its type does not use are cleared before it is marshalled: DXVK points all three at one union, and the encoder read a buffer offset as an image view and faulted holding its lock |
+| 0039 encoder-reentry | The encoder lock records its owner thread: a thread that takes the lock it already holds (an earlier call faulted while encoding, as Wine allows) prints `CABOOSE_GPU_ENCODER_REENTERED` and aborts instead of spinning forever |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
