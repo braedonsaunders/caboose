@@ -148,9 +148,15 @@ check, read from the computer's `/proc/net` tables) while either of these is tru
 - **Another machine is connected:** an established TCP connection to one of the computer's
   servers from an address that is not loopback.
 
-A running managed service keeps it awake too, and after a host restart the host wakes a
-computer with services that start with it. The check runs each time the idle timeout passes, then every minute while the computer is busy.
-The computer parks one full idle timeout after the check last found it busy. A check that fails
+A running managed service keeps it awake too, as does an app at work: one using 5% of a core
+or 1 MB/s of disk in its last sample (a download, a build, a game) in the running-apps
+listing. Caboose's own session does not count. After a host restart, the host wakes a
+computer that has services that start with it.
+
+The same check holds both the in-memory pause (a microVM's freeze, three seconds after the
+last lease) and parking. It runs when either would happen, then every minute while the
+computer is busy, and the computer parks one full idle timeout after the check last found
+it busy. A check that fails
 counts as idle. An open phone (a foreground control socket) already holds a lease. Servers keep
 running with the app closed and the phone off: nothing in their path is on the phone or in the
 app.
