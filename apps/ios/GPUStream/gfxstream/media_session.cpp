@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "media_session.h"
+#include "executor_gate.h"
 #include "media_stats.h"
 #include <cerrno>
 #include <deque>
@@ -80,7 +81,11 @@ private:
         auto* p = static_cast<uint8_t*>(data);
         size_t got = 0;
         while (got < size) {
-            const ssize_t n = recv(fd_, p + got, size - got, 0);
+            ssize_t n;
+            {
+                ExecutorGate::Idle idle(ExecutorGate::instance());
+                n = recv(fd_, p + got, size - got, 0);
+            }
             if (n < 0 && errno == EINTR) continue;
             if (n == 0) return got ? -EPROTO : 0;
             if (n < 0) return -errno;
@@ -187,6 +192,8 @@ int Session::run() {
         if (length > kMaxRecord) return EPROTO;
         try { payload.resize(length); } catch (const std::bad_alloc&) { return ENOMEM; }
         if (length && (r = readFully(payload.data(), length)) <= 0) return stop_ ? 0 : (r ? -r : EPROTO);
+        // A suspended executor decodes no video (docs/gpu-live.md, "Suspending an executor").
+        if (!ExecutorGate::instance().pass(stop_)) return 0;
         if ((r = handle(type, payload.data(), length)) != 0) return r;
     }
     return 0;

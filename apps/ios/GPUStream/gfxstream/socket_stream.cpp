@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "socket_stream.h"
+#include "executor_gate.h"
 
 #include <cerrno>
 #include <cstdlib>
@@ -49,7 +50,11 @@ const unsigned char* SocketStream::readRaw(void* data, size_t* size) {
     if (!*size) return static_cast<unsigned char*>(data);
     if (eof_) { *size = 0; return nullptr; }
     ssize_t n;
-    do { n = recv(fd_, data, *size, 0); } while (n < 0 && errno == EINTR);
+    {
+        // Waiting for input runs no command: a suspended executor need not wait for it.
+        ExecutorGate::Idle idle(ExecutorGate::instance());
+        do { n = recv(fd_, data, *size, 0); } while (n < 0 && errno == EINTR);
+    }
     if (n <= 0) {
         if (n == 0) eof_ = true;
         else fail(errno);

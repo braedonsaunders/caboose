@@ -12,6 +12,8 @@ struct LiveGPUEnvelope: Equatable {
         case swapchainCreate = 25, swapchainCreated, swapchainMap, swapchainMapped, swapchainAcquire, swapchainAcquired, swapchainCancelAcquire, swapchainRetire, swapchainRetired, swapchainPresent, surfaceRevokeRequest, presentRetired
         case transportConfig = 37, transportReady
         case swapchainPresentOrdered = 39
+        // 40 ACK and 41 RESUME belong to the resumable transport and never reach this codec.
+        case executorSuspend = 42, quiesce, quiesced, executorResume
         var isSurface: Bool { (rawValue >= 16 && rawValue <= 36) || self == .swapchainPresentOrdered }
         var isIndexed: Bool { (rawValue >= 25 && rawValue <= 36) || self == .swapchainPresentOrdered }
     }
@@ -38,14 +40,15 @@ struct LiveGPUEnvelope: Equatable {
             return
         }
         switch kind {
-        case .session, .sessionReady, .revoke, .revoked, .executorDrain, .transportConfig, .transportReady: try require(process == 0 && stream == 0)
+        case .session, .sessionReady, .revoke, .revoked, .executorDrain, .transportConfig, .transportReady,
+             .executorSuspend, .quiesce, .quiesced, .executorResume: try require(process == 0 && stream == 0)
         case .processOpen, .processReady, .processStop, .processRetired, .surfaceBind, .surfaceBound, .surfaceQuery, .surfaceCaps, .present, .presentResult, .sourceReleased, .surfaceRetire, .surfaceRetired: try require(process > 0 && stream == 0)
         default: try require(process > 0 && stream > 0)
         }
         if kind.isSurface { try LiveGPUSurfaceMessage.validateLength(length, kind: kind); return }
         switch kind {
         case .session, .sessionReady: try require(length == 48)
-        case .transportConfig, .transportReady: try require(length == 8)
+        case .transportConfig, .transportReady, .executorResume: try require(length == 8)
         case .data: try require(length > 0)
         default: try require(length == 0)
         }

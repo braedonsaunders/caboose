@@ -5,11 +5,14 @@
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 #include "memory_audit.h"
 #endif
+#include "executor_gate.h"
 #include "headless_framebuffer.h"
 #include "process_registry.h"
 #include "frame_buffer.h"
 #include "gfxstream/host/features.h"
 #include "vulkan_dispatch.h"
+#include "vk_decoder_global_state.h"
+#include <chrono>
 #include <cerrno>
 #include <cstdio>
 #include <cstdint>
@@ -217,6 +220,17 @@ extern "C" int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t ma
 extern "C" int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial) {
     auto* r = getRegistry();
     return r ? caboose_gfx_process_wait_order(r, token, serial) : ENODEV;
+}
+extern "C" int caboose_gpu_runtime_suspend(uint32_t timeout_ms) {
+    if (!getRegistry()) return ENODEV;
+    if (const int closed = caboose::gpuv2::ExecutorGate::instance().close(std::chrono::milliseconds(timeout_ms)))
+        return closed;
+    auto* state = gfxstream::host::vk::VkDecoderGlobalState::get();
+    return state && state->waitCabooseQueuesIdle() != VK_SUCCESS ? EIO : 0;
+}
+extern "C" int caboose_gpu_runtime_resume(void) {
+    caboose::gpuv2::ExecutorGate::instance().open();
+    return 0;
 }
 extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
     auto* r = getRegistry();

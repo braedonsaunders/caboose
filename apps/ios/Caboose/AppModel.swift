@@ -516,16 +516,22 @@ final class AppModel {
 
     func appPhaseChanged(_ phase: ScenePhase) {
         guard phase != appPhase else { return }
+        let previous = appPhase
         appPhase = phase
         switch phase {
         case .active: sceneBecameActive()
         case .background: sceneEnteredBackground()
+        // Leaving the foreground starts here, while the GPU still runs: the executor finishes
+        // its commands and suspends in place. A notification or Control Centre pull also
+        // passes through here; becoming active again just resumes it.
+        case .inactive where previous == .active: suspendLiveGPU()
         default: break
         }
     }
 
     func sceneBecameActive() {
         sceneActive = true
+        resumeLiveGPU()
         registerFiles()
         phone.setActive(true)
         bridge.setActive(true)
@@ -558,7 +564,7 @@ final class AppModel {
     /// GPU rendering leaves the phone either way (iOS runs no GPU work in the background).
     func sceneEnteredBackground() {
         sceneActive = false
-        closeLiveGPU(allowBackgroundTime: true)
+        backgroundLiveGPU()
         phone.setActive(false)
         bridge.setActive(false)
         wakes.invalidate()
@@ -1192,6 +1198,41 @@ final class AppModel {
             guard let self else { return }
             self.liveGPURetryPending = false
             if self.sceneActive { self.syncLiveGPU() }
+        }
+    }
+
+    /// The executor's suspension as the app leaves the foreground; one that cannot suspend is
+    /// drained once the app is in the background, as before.
+    private func suspendLiveGPU() {
+        guard let owner = liveGPUOwner else { return }
+        owner.suspend { [weak self, weak owner] suspended in
+            guard let self, let owner, !suspended, !self.sceneActive, self.liveGPUOwner === owner else { return }
+            self.closeLiveGPU(allowBackgroundTime: true)
+        }
+    }
+    private func resumeLiveGPU() {
+        endLiveGPUBackgroundTime()
+        liveGPUOwner?.resume()
+    }
+    /// A suspended executor stays on this phone through the background: its socket closes once
+    /// the computer holds it, within a little background time. Any other is drained.
+    private func backgroundLiveGPU() {
+        guard let owner = liveGPUOwner else { return }
+        switch owner.suspension {
+        case .none: closeLiveGPU(allowBackgroundTime: true)
+        case .suspending, .suspended, .quiesced:
+            if liveGPUBackgroundTask == .invalid {
+                liveGPUBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "GPU suspension") { [weak self] in
+                    Task { @MainActor in self?.endLiveGPUBackgroundTime() }
+                }
+            }
+            owner.closeTransportWhenQuiesced()
+            let task = liveGPUBackgroundTask
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, self.liveGPUBackgroundTask == task else { return }
+                self.endLiveGPUBackgroundTime()
+            }
         }
     }
 

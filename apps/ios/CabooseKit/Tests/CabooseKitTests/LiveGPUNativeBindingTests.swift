@@ -293,6 +293,77 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertEqual(runtime.finishedTokens.count, 17)
     }
 
+    func testSuspendHoldsProcessMessagesUntilResumeAndAnswersQuiesce() throws {
+        for cancelled in [false, true] {
+            let runtime = LiveRuntimeProbe()
+            let binding = try LiveGPUNativeBinding(backend: runtime)
+            let output = LiveOutputProbe()
+            try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+            var seq: UInt64 = 0
+            func send(_ kind: LiveGPUEnvelope.Kind, _ p: UInt64 = 0, _ s: UInt64 = 0, _ data: Data = Data()) throws {
+                seq += 1; try binding.consume(wire(kind, sequence: seq, process: p, stream: s, payload: data))
+            }
+            func kinds() throws -> [LiveGPUEnvelope.Kind] { try output.frames().map(\.kind) }
+            try send(.session, 0, 0, LiveGPUEnvelope.hello)
+            try send(.processOpen, 1); try send(.streamOpen, 1, 1)
+            let quiesced = expectation(description: "quiesced")
+            XCTAssertTrue(try binding.suspend(quiesced: { quiesced.fulfill() }))
+            XCTAssertFalse(try binding.suspend(quiesced: {}))
+            XCTAssertEqual(runtime.gate, ["suspend"])
+            XCTAssertEqual(try kinds().last, .executorSuspend)
+            // Held, not decoded, while suspended.
+            try send(.data, 1, 1, Data([1, 2, 3, 4]))
+            XCTAssertNil(runtime.lock.withLock { runtime.received[1] })
+            if cancelled {
+                // A suspend cancelled before QUIESCE decodes at once and resumes after answering it.
+                try binding.resumeExecutor()
+                XCTAssertEqual(runtime.gate, ["suspend", "resume"])
+                try send(.quiesce)
+                wait(for: [quiesced], timeout: 2)
+                XCTAssertEqual(Array(try kinds().filter { $0 != .data }.suffix(2)), [.quiesced, .executorResume])
+            } else {
+                try send(.quiesce)
+                wait(for: [quiesced], timeout: 2)
+                XCTAssertEqual(try kinds().last, .quiesced)
+                XCTAssertThrowsError(try send(.quiesce))
+                try? binding.revoke(); try? binding.finish()
+                continue
+            }
+            let deadline = Date().addingTimeInterval(2)
+            while runtime.lock.withLock({ runtime.received[1]?.count ?? 0 }) < 4 && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            XCTAssertEqual(runtime.lock.withLock { runtime.received[1] }, Data([1, 2, 3, 4]))
+            try binding.revoke(); try binding.finish()
+        }
+        // Resumed after QUIESCED: EXECUTOR_RESUME first, then the held messages.
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        XCTAssertTrue(try binding.suspend(quiesced: {}))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        try binding.consume(wire(.quiesce, sequence: 3))
+        XCTAssertEqual(runtime.lock.withLock { runtime.next }, 0)
+        try binding.resumeExecutor()
+        let frames = try output.frames()
+        XCTAssertEqual(frames.map(\.kind).suffix(4), [.executorSuspend, .quiesced, .executorResume, .processReady])
+        XCTAssertEqual(frames.first { $0.kind == .executorResume }?.payload, Data(count: 8))
+        try binding.revoke(); try binding.finish()
+    }
+
+    func testRuntimeThatCannotSuspendLeavesTheExecutorAsItWas() throws {
+        let runtime = LiveRuntimeProbe(); runtime.suspendResult = ENOTSUP
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        XCTAssertFalse(try binding.suspend(quiesced: {}))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        XCTAssertEqual(try output.frames().map(\.kind), [.sessionReady, .processReady])
+        XCTAssertThrowsError(try binding.consume(wire(.quiesce, sequence: 3)))
+        try? binding.finish()
+    }
+
     private func wire(_ kind: LiveGPUEnvelope.Kind, sequence: UInt64, process: UInt64 = 0,
                       stream: UInt64 = 0, payload: Data = Data()) throws -> Data {
         try LiveGPUEnvelope(kind: kind, executor: Data(repeating: 1, count: 16), generation: 7,
@@ -354,6 +425,10 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
         }
     }
     func stop(_ token: UInt64) -> Int32 { stopped.signal(); return 0 }
+    var suspendResult: Int32 = 0
+    var gate: [String] = []
+    func suspend(timeoutMilliseconds: UInt32) -> Int32 { lock.withLock { gate.append("suspend") }; return suspendResult }
+    func resume() -> Int32 { lock.withLock { gate.append("resume") }; return 0 }
     func finish(_ token: UInt64) -> Int32 {
         if let cleanupGate { cleaning.signal(); cleanupGate.wait() }
         lock.withLock {

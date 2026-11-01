@@ -20,6 +20,26 @@ protocol LiveGPURuntimeBackend: Sendable {
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32
     func stop(_ token: UInt64) -> Int32
     func finish(_ token: UInt64) -> Int32
+    /// Stops all decoding at command boundaries and waits every queue idle; ETIMEDOUT leaves
+    /// it stopping. ENOTSUP when the runtime cannot suspend.
+    func suspend(timeoutMilliseconds: UInt32) -> Int32
+    func resume() -> Int32
+}
+
+extension LiveGPURuntimeBackend {
+    func suspend(timeoutMilliseconds: UInt32) -> Int32 { ENOTSUP }
+    func resume() -> Int32 { ENOTSUP }
+}
+
+/// Suspend in place (docs/gpu-live.md, "Suspending an executor"). Serial worker calls.
+protocol LiveGPUSuspending: AnyObject {
+    /// Stops native decoding, sends EXECUTOR_SUSPEND and holds every later process message
+    /// until resume. `quiesced` runs once QUIESCED has been sent. False when this executor
+    /// cannot suspend; it is then unchanged.
+    func suspend(quiesced: @escaping @Sendable () -> Void) throws -> Bool
+    /// Continues decoding and the held messages, and sends EXECUTOR_RESUME once the broker's
+    /// QUIESCE has been answered.
+    func resumeExecutor() throws
 }
 
 private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
@@ -79,6 +99,20 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
         return ENODEV
         #endif
     }
+    func suspend(timeoutMilliseconds: UInt32) -> Int32 {
+        #if canImport(CabooseGPULive)
+        return caboose_gpu_runtime_suspend(timeoutMilliseconds)
+        #else
+        return ENODEV
+        #endif
+    }
+    func resume() -> Int32 {
+        #if canImport(CabooseGPULive)
+        return caboose_gpu_runtime_resume()
+        #else
+        return ENODEV
+        #endif
+    }
     func finish(_ token: UInt64) -> Int32 {
         #if canImport(CabooseGPULive)
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
@@ -110,6 +144,18 @@ private final class LiveGPUDuplex: @unchecked Sendable {
     private let stateLock = NSLock()
     private var nativeReaderThread: pthread_t?
     private var bridgeWriteClosed = false
+    private var replyingNow = false
+    /// The reply reader holds bytes it read and has not yet handed to the transport.
+    var replying: Bool {
+        get { stateLock.withLock { replyingNow } }
+        set { stateLock.withLock { replyingNow = newValue } }
+    }
+    /// Reply bytes the native decoder wrote that the reader has not read yet.
+    var unreadReplies: Int32 {
+        var count: Int32 = 0
+        var size = socklen_t(MemoryLayout<Int32>.size)
+        return getsockopt(bridge, SOL_SOCKET, SO_NREAD, &count, &size) == 0 ? count : 1
+    }
     /// Native run returned with an error: this stream alone ends, and further input for it
     /// is discarded. Guarded by the owning LiveGPUProcess.lock.
     var nativeEnded = false
@@ -214,7 +260,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, LiveGPUSuspending, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -245,6 +291,17 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var finishError: Error?
     private var retirementError: Error?
     private var decodingFailed = false
+    // Suspension, all on the serial worker except nativeSuspended (guarded by lock).
+    private var suspendSent = false
+    private var quiesceReceived = false
+    private var resumeAfterQuiesce = false
+    private var holding = false
+    private var held: [LiveGPUEnvelope] = []
+    private var heldRevocations: [LiveGPUSurfaceIdentity] = []
+    private var nativeSuspended = false
+    private var onQuiesced: (@Sendable () -> Void)?
+    /// The native suspension did not reach an idle GPU in time (a command still ran).
+    private(set) var quiesceIncomplete = false
 
     public convenience init(maxPacket: Int = 16 * 1024 * 1024, maxReplyBuffer: Int = 1024 * 1024) throws {
         #if canImport(CabooseGPULive)
@@ -333,8 +390,53 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws {
         guard lock.withLock({ started && !cancelled && !finished }),
               negotiated, !peerRevoked, !drainRequested else { return }
+        // A suspended executor sends nothing; the revocation follows its resume.
+        if holding || suspendSent { heldRevocations.append(identity); return }
         try surfaces?.requestRevocation(identity) { [self] process, message in
             try send(message.kind, process: process, payload: message.encoded())
+        }
+    }
+    func suspend(quiesced: @escaping @Sendable () -> Void) throws -> Bool {
+        guard lock.withLock({ started && !cancelled && !finished }), negotiated, !peerRevoked,
+              !drainRequested, !suspendSent else { return false }
+        // The gate closes before the broker hears of it: commands already here wait as well.
+        let result = backend.suspend(timeoutMilliseconds: 1000)
+        guard result == 0 || result == ETIMEDOUT || result == EIO else { return false }
+        lock.withLock { nativeSuspended = true }
+        quiesceIncomplete = result != 0
+        holding = true; onQuiesced = quiesced
+        try send(.executorSuspend)
+        suspendSent = true
+        return true
+    }
+    func resumeExecutor() throws {
+        guard suspendSent, !peerRevoked else { return }
+        openNativeGate()
+        holding = false
+        let frames = held; held = []
+        if quiesceReceived { try finishResume() } else { resumeAfterQuiesce = true }
+        for frame in frames { try handle(frame) }
+    }
+    private func openNativeGate() {
+        if lock.withLock({ () -> Bool in defer { nativeSuspended = false }; return nativeSuspended }) {
+            _ = backend.resume()
+        }
+    }
+    private func finishResume() throws {
+        try send(.executorResume, payload: Data(count: 8))
+        suspendSent = false; quiesceReceived = false; resumeAfterQuiesce = false; onQuiesced = nil
+        let revocations = heldRevocations; heldRevocations = []
+        for identity in revocations { try requestSurfaceRevocation(identity) }
+    }
+    /// After QUIESCE: every reply the parked decoders wrote has been handed to the transport.
+    private func waitForReplies() {
+        let deadline = Date().addingTimeInterval(1)
+        var quietChecks = 0
+        while quietChecks < 2 && Date() < deadline {
+            let streams = lock.withLock { processes.values.flatMap { p in p.lock.withLock { Array(p.streams.values) } } }
+            let quiet = streams.allSatisfy { !$0.replying && $0.unreadReplies == 0 }
+            quietChecks = quiet ? quietChecks + 1 : 0
+            if quietChecks < 2 { Thread.sleep(forTimeInterval: 0.01) }
         }
     }
     private func sendDrainIfReady() throws {
@@ -371,7 +473,19 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             try sendDrainIfReady()
             return
         }
+        if holding, frame.kind != .quiesce, frame.kind != .revoke {
+            held.append(frame); return
+        }
         switch frame.kind {
+        case .quiesce:
+            guard suspendSent, !quiesceReceived else {
+                throw LiveGPUBindingError.protocolViolation("unexpected QUIESCE")
+            }
+            quiesceReceived = true
+            if holding { waitForReplies() }
+            try send(.quiesced)
+            onQuiesced?()
+            if resumeAfterQuiesce { try finishResume() }
         case .transportConfig:
             guard frame.payload == LiveGPUCompression.offer, lastProcess == 0,
                   !drainRequested, !lock.withLock({ compressedTransport }) else {
@@ -421,6 +535,9 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             try retire(frame.process, process)
             try send(.processRetired, process: frame.process)
         case .revoke:
+            // A hold that ended: nothing resumes, and every process retires as usual.
+            holding = false; held = []
+            openNativeGate()
             peerRevoked = true
             let snapshot = lock.withLock { processes }
             for process in snapshot.values { process.stop(backend) }
@@ -497,6 +614,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
                     stream.nudgeNativeReaderIfDisconnected()
                     continue
                 }
+                stream.replying = true
+                defer { stream.replying = false }
                 let count = Darwin.read(stream.bridge, &buffer, buffer.count)
                 if count < 0 && errno == EINTR { continue }
                 if process.lock.withLock({ process.stopped }) { return }
@@ -540,6 +659,10 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         callback?(error)
     }
     public func revoke() throws {
+        // A suspended gate would hold stopping decoders only until they see the stop; open it.
+        if lock.withLock({ () -> Bool in defer { nativeSuspended = false }; return nativeSuspended }) {
+            _ = backend.resume()
+        }
         let snapshot = lock.withLock { cancelled = true; return Array(processes.values) }
         for process in snapshot { process.stop(backend) }
         if let error = snapshot.compactMap({ p in p.lock.withLock { p.cleanupError } }).first { throw error }

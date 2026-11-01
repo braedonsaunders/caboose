@@ -1602,8 +1602,9 @@ described in [the live GPU contract](../../docs/gpu-live.md). This path never
 selects a diagnostic endpoint or creates an agent/thumbnail executor.
 
 The app's ordinary display supplies the compositor epoch and owner window objects;
-only their visible interactive views can supply a Metal layer. Backgrounding or
-switching computers drains the executor. Failed or unconfirmed retirement keeps
+only their visible interactive views can supply a Metal layer. Backgrounding suspends
+the executor in place when the computer resumes executors, and drains it otherwise;
+switching computers drains it. Failed or unconfirmed retirement keeps
 its reservation and disables replacement for that app process. Native indexed
 presentation and game execution on this path remain unverified.
 

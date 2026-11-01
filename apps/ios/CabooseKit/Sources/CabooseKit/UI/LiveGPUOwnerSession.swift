@@ -9,6 +9,10 @@ import OSLog
 public final class LiveGPUOwnerSession {
     private static let log = Logger(subsystem: "org.caboose", category: "LiveGPUOwner")
     public enum State: Equatable { case idle, connecting, connected, draining, ended(cleanupFailed: Bool) }
+    /// Suspension in place across the background (docs/gpu-live.md, "Suspending an executor").
+    public enum Suspension: Equatable { case none, suspending, suspended, quiesced }
+    public private(set) var suspension = Suspension.none
+    private var closesTransportWhenQuiesced = false
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
     /// A new executor may follow once this one has ended. A transport loss never brings the
@@ -85,6 +89,41 @@ public final class LiveGPUOwnerSession {
             presentationOwners.update(epoch: display.server?.gpuLiveEpoch, windows: display.windows)
         case .draining, .ended: break
         }
+    }
+    /// Suspends the executor in place as the app leaves the foreground: its objects, memory and
+    /// surfaces stay, and the computer holds its applications. `completion(false)` when it
+    /// cannot (the computer does not resume executors, or it is ending); close it then.
+    public func suspend(_ completion: @escaping @MainActor (Bool) -> Void) {
+        guard suspension == .none, state == .connecting || state == .connected else { completion(false); return }
+        suspension = .suspending
+        executor.suspend(quiesced: { [weak self] in
+            Task { @MainActor in self?.quiesced() }
+        }, done: { [weak self] suspended in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.suspension == .suspending { self.suspension = suspended ? .suspended : .none }
+                Self.log.info("Owner executor suspend: \(suspended, privacy: .public)")
+                completion(suspended)
+            }
+        })
+    }
+    private func quiesced() {
+        guard suspension == .suspended || suspension == .suspending else { return }
+        suspension = .quiesced
+        if closesTransportWhenQuiesced { executor.suspendTransport() }
+    }
+    /// In the background: closes the suspended executor's socket once the broker holds it, so
+    /// the host keeps it for its extended window rather than ending it as silent.
+    public func closeTransportWhenQuiesced() {
+        closesTransportWhenQuiesced = true
+        if suspension == .quiesced { executor.suspendTransport() }
+    }
+    /// Back in the foreground: reconnects if needed and continues the suspended executor.
+    public func resume() {
+        guard suspension != .none else { return }
+        suspension = .none; closesTransportWhenQuiesced = false
+        Self.log.info("Owner executor resumed")
+        executor.resume()
     }
     public func close() {
         switch state {
