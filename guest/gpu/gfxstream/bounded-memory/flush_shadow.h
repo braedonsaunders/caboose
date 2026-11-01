@@ -88,6 +88,20 @@ public:
         }
     }
 
+    // Whether the host holds every block of [offset, offset + size) whole and the mapping
+    // still has the bytes it was sent: a flush of the range would send nothing.
+    bool unchanged(uint64_t key, const uint8_t* base, uint64_t allocation, uint64_t offset,
+                   uint64_t size) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto found = entries_.find(key);
+        if (found == entries_.end() || found->second.charged < allocation || !size ||
+            offset > allocation || size > allocation - offset) return false;
+        const Entry& entry = found->second;
+        for (uint64_t first = offset - offset % shadowBlockBytes; first < offset + size; first += shadowBlockBytes)
+            if (!entry.valid[size_t(first / shadowBlockBytes)]) return false;
+        return std::memcmp(entry.bytes.get() + offset, base + offset, size_t(size)) == 0;
+    }
+
     void forget(uint64_t key) {
         std::lock_guard<std::mutex> lock(mutex_);
         forgetLocked(key);

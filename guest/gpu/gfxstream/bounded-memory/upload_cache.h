@@ -6,15 +6,20 @@
 // bytes. A process asks once per executor for the 16-byte prefixes of the keys the store holds
 // and how many pieces it may ask the phone to store (UPLOAD_INVENTORY, one round trip on its
 // device stream). From then on a flush cuts each whole 4096 bytes of an application range of at
-// least 16 KiB, counted from the range's offset, into a piece: one the process knows goes as its
-// prefix (kind 2), another as its bytes for the phone to store (kind 1) while the allowance
-// lasts, and the rest is flushed as before.
+// least 16 KiB, counted from the range's offset, into a piece. A piece the host already holds
+// unchanged costs nothing, as before; a changed one the process knows goes as its prefix
+// (kind 2); a changed one of staging memory (image uploads, not per-frame vertex or uniform
+// data) as its bytes for the phone to store (kind 1) while the allowance lasts; and the rest is
+// flushed as before.
 
 #include "ranges.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -216,15 +221,69 @@ private:
     std::unordered_set<Prefix, PrefixHash> prefixes_;
 };
 
-// Decides what a whole piece of a cacheable range is sent as. `hash(piece, Prefix*)` fills the
-// first 16 bytes of the piece's BLAKE3-256. The inventory must be loaded.
+// What the process's pieces went as, for CABOOSE_PRIVATE_GPU_UPLOAD_LOG=1.
+struct Counts {
+    std::atomic<uint64_t> unchanged{0}, stored{0}, namedInventory{0}, namedStream{0}, literal{0};
+};
+inline Counts& counts() {
+    static Counts instance;
+    return instance;
+}
+// At most every 5 seconds, when the log is on: one line of the counts so far.
+inline void report() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("CABOOSE_PRIVATE_GPU_UPLOAD_LOG");
+        return value && value[0] == '1';
+    }();
+    if (!enabled) return;
+    static std::atomic<int64_t> last{0};
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t prior = last.load(std::memory_order_relaxed);
+    if (now - prior < 5 || !last.compare_exchange_strong(prior, now)) return;
+    const Counts& c = counts();
+    std::fprintf(stderr,
+                 "CABOOSE_GPU_UPLOADS unchanged=%llu stored=%llu named_inventory=%llu named_stream=%llu literal=%llu\n",
+                 (unsigned long long)c.unchanged.load(), (unsigned long long)c.stored.load(),
+                 (unsigned long long)c.namedInventory.load(), (unsigned long long)c.namedStream.load(),
+                 (unsigned long long)c.literal.load());
+}
+
+// Decides what a changed whole piece of a cacheable range is sent as (the caller sends an
+// unchanged one as nothing). `hash(piece, Prefix*)` fills the first 16 bytes of the piece's
+// BLAKE3-256; `mayStore` is whether its memory is staging. The inventory must be loaded.
 template <class Hash>
-Kind plan(Inventory& inventory, StreamKnown& known, const uint8_t* piece, Hash&& hash,
-          Prefix* prefix) {
-    if (zeroPiece(piece)) return literal;
+Kind plan(Inventory& inventory, StreamKnown& known, const uint8_t* piece, bool mayStore,
+          Hash&& hash, Prefix* prefix) {
+    Counts& c = counts();
+    if (zeroPiece(piece)) {
+        c.literal.fetch_add(1, std::memory_order_relaxed);
+        return literal;
+    }
     hash(piece, prefix);
-    if (inventory.contains(*prefix) || known.contains(inventory, *prefix)) return stored;
-    return inventory.takeAllowance() ? store : literal;
+    if (inventory.contains(*prefix)) {
+        c.namedInventory.fetch_add(1, std::memory_order_relaxed);
+        return stored;
+    }
+    if (known.contains(inventory, *prefix)) {
+        c.namedStream.fetch_add(1, std::memory_order_relaxed);
+        return stored;
+    }
+    if (mayStore && inventory.takeAllowance()) {
+        c.stored.fetch_add(1, std::memory_order_relaxed);
+        return store;
+    }
+    c.literal.fetch_add(1, std::memory_order_relaxed);
+    return literal;
+}
+
+// Staging memory: bound only to buffers that are copied from (image uploads), never to ones
+// the device reads per draw, whose contents change every frame and are not worth storing.
+inline bool staging(uint32_t bufferUsage) {
+    constexpr uint32_t transferSource = 0x1;  // VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+    constexpr uint32_t perDraw = 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80 | 0x100;
+    // UNIFORM_TEXEL, STORAGE_TEXEL, UNIFORM, STORAGE, INDEX, VERTEX, INDIRECT
+    return (bufferUsage & transferSource) && !(bufferUsage & perDraw);
 }
 
 // Writes a piece's data. A stored piece is its prefix. A piece to store is copied, the copy

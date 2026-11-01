@@ -104,9 +104,9 @@ int main() {
     // allowance lasts; a piece stored on this stream is named on it, not on another.
     StreamKnown stream, other;
     Prefix prefix;
-    assert(plan(inventory, stream, zero.data(), standIn, &prefix) == literal);
-    assert(plan(inventory, stream, a.data(), standIn, &prefix) == stored && prefix == prefixOf(a));
-    assert(plan(inventory, stream, b.data(), standIn, &prefix) == store && prefix == prefixOf(b));
+    assert(plan(inventory, stream, zero.data(), true, standIn, &prefix) == literal);
+    assert(plan(inventory, stream, a.data(), true, standIn, &prefix) == stored && prefix == prefixOf(a));
+    assert(plan(inventory, stream, b.data(), true, standIn, &prefix) == store && prefix == prefixOf(b));
     std::vector<uint8_t> wire;
     auto write = [&](const void* data, size_t size) {
         const auto* bytes = static_cast<const uint8_t*>(data);
@@ -117,13 +117,29 @@ int main() {
     assert(hex(wire.data(), kPieceHeaderBytes) == "001000000000008001000000");
     assert(std::memcmp(wire.data() + kPieceHeaderBytes, b.data(), kPieceBytes) == 0);
     assert(stream.contains(inventory, prefixOf(b)) && !other.contains(inventory, prefixOf(b)));
-    assert(plan(inventory, stream, b.data(), standIn, &prefix) == stored);
-    assert(plan(inventory, other, b.data(), standIn, &prefix) == store);
-    assert(plan(inventory, stream, c.data(), standIn, &prefix) == literal);  // allowance spent
+    assert(plan(inventory, stream, b.data(), true, standIn, &prefix) == stored);
+    assert(plan(inventory, other, b.data(), true, standIn, &prefix) == store);
+    assert(plan(inventory, stream, c.data(), true, standIn, &prefix) == literal);  // allowance spent
+    assert(counts().stored == 2 && counts().namedInventory == 1 && counts().namedStream == 1 &&
+           counts().literal == 2);
     wire.clear();
     writePiece(stored, a.data(), prefixOf(a), inventory, stream, write, standIn);
     assert(wire.size() == pieceDataBytes(stored));
     assert(std::memcmp(wire.data() + kPieceHeaderBytes, prefixOf(a).data(), kPrefixBytes) == 0);
+
+    // Only staging memory is stored: buffers copied from, never ones read per draw.
+    {
+        Inventory fresh{budget};
+        StreamKnown none;
+        assert(fresh.ensure([](std::vector<uint8_t>* p, uint32_t* g) { p->clear(); *g = 4; return true; }) ==
+               Inventory::State::loaded);
+        assert(plan(fresh, none, d.data(), false, standIn, &prefix) == literal);
+        assert(plan(fresh, none, d.data(), true, standIn, &prefix) == store);
+    }
+    assert(staging(0x1) && staging(0x1 | 0x2));       // TRANSFER_SRC, with TRANSFER_DST
+    assert(!staging(0x2) && !staging(0));             // never copied from, or no buffer
+    assert(!staging(0x1 | 0x80) && !staging(0x1 | 0x10) && !staging(0x1 | 0x40) &&
+           !staging(0x1 | 0x20) && !staging(0x1 | 0x100));  // vertex, uniform, index, storage, indirect
 
     // The key that becomes known is the hash of the bytes written, not of the planned ones.
     StreamKnown raced;

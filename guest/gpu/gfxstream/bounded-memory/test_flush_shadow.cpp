@@ -92,6 +92,18 @@ int main() {
     assert(shadow.emitChanged(2, other.data(), size, 19968, 512, fresh.sender(other)) == success);
     assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(19968 + 256), uint64_t(256)));
 
+    // A range is unchanged only when every block it touches is held whole and its bytes match.
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(shadow.unchanged(1, local.data(), size, 64, 4096) && shadow.unchanged(1, local.data(), size, 0, size));
+    local[70] ^= 1;
+    assert(!shadow.unchanged(1, local.data(), size, 64, 4096) && shadow.unchanged(1, local.data(), size, 4160, 4096));
+    local[70] ^= 1;
+    shadow.forgetRange(1, 5000, 5001);
+    assert(!shadow.unchanged(1, local.data(), size, 4160, 4096) && shadow.unchanged(1, local.data(), size, 64, 4096));
+    assert(!shadow.unchanged(9, local.data(), size, 0, 4096) && !shadow.unchanged(1, local.data(), size, size - 10, 4096));
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+
     // A device write forgets the blocks it touches, even partly, and only those.
     remote.sends.clear();
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);

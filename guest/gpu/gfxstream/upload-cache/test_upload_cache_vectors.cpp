@@ -86,10 +86,10 @@ int main(int argc, char** argv) {
     }) == Inventory::State::loaded);
     StreamKnown stream;
     Prefix prefix;
-    assert(plan(inventory, stream, a.data(), prefixHash, &prefix) == stored);
-    assert(plan(inventory, stream, b.data(), prefixHash, &prefix) == stored);
+    assert(plan(inventory, stream, a.data(), true, prefixHash, &prefix) == stored);
+    assert(plan(inventory, stream, b.data(), true, prefixHash, &prefix) == stored);
     const auto c = pattern(13);
-    assert(plan(inventory, stream, c.data(), prefixHash, &prefix) == store);
+    assert(plan(inventory, stream, c.data(), true, prefixHash, &prefix) == store);
 
     std::vector<uint8_t> wire;
     auto write = [&](const void* data, size_t size) {
