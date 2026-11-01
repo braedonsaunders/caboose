@@ -857,7 +857,7 @@ first. New Service defines one of the owner's services: a name, a command split 
 as a shell would (quotes and backslashes, no expansion), an optional working directory and
 environment, a restart policy, Start with Computer, and Start Now.
 
-A held dock or taskbar app also offers Quit and Force Quit when it is running; each reads
+A held dock or taskbar app also offers a single Quit when it is running (Force Quit follows only if it does not end); it reads
 a fresh listing and acts on the app's scopes, found by its windows and then by its desktop
 entry. The shell refreshes the last listing when windows open or close, so an app that keeps
 running without windows stays in the dock, marked running, until it ends.

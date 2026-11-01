@@ -237,18 +237,19 @@ struct RunningAppsTests {
         #expect(TaskManager.matching(windowIDs: [3], desktopID: "xfce4-terminal.desktop", in: [session]).isEmpty)
     }
 
-    @Test func dockMenuOffersQuitOnlyWithWindows() throws {
+    @Test func dockMenuOffersOneQuit() throws {
         let apps = try Self.decoded().apps
         #expect(DockMenu.Ending([apps[1]]) == .init(canQuit: true, canForceQuit: true))
         #expect(DockMenu.Ending([apps[2]]) == .init(canQuit: false, canForceQuit: true))
         #expect(DockMenu.Ending([apps[0]]) == nil)
         #expect(DockMenu.Ending([]) == nil)
         let actions = DockMenu.actions(appName: "Steam", pinned: true, windows: [], ending: DockMenu.Ending([apps[2]]))
-        #expect(actions == [.open, .unpin, .forceQuit])
-        #expect(actions.map(\.title) == ["Open", "Unpin", "Force Quit…"])
+        // A windowless app (Steam in its tray) still gets Quit; quitting it asks to force-quit.
+        #expect(actions == [.open, .unpin, .quit])
+        #expect(actions.map(\.title) == ["Open", "Unpin", "Quit"])
         let firefox = DockMenu.actions(appName: "Firefox", pinned: false, windows: [.init(id: 12, title: "Home")],
                                        ending: .init(canQuit: true, canForceQuit: true))
-        #expect(firefox == [.open, .pin, .close(window: 12, title: "Home"), .quit, .forceQuit])
+        #expect(firefox == [.open, .pin, .quit])
     }
 
     // MARK: Quit, then Force Quit

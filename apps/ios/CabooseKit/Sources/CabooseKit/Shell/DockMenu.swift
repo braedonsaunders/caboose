@@ -2,7 +2,7 @@
 /// windows, named by title (or the app's name for a window without one). Where windows can
 /// have iPadOS windows of their own, each window also offers Open in New Window, or Move to
 /// Desktop when it is already in one. Where the computer has app scopes (`TaskManager`), a
-/// running app also offers Quit, when it has windows to close, and Force Quit.
+/// running app offers a single Quit, which escalates to Force Quit when the app does not end.
 public enum DockMenu {
     /// What ending the app offers, from its running apps (`TaskManager.matching`).
     public struct Ending: Equatable, Sendable {
@@ -76,12 +76,15 @@ public enum DockMenu {
                                                : .openInNewWindow(window: window.id, title: title))
             }
         }
-        for window in windows {
-            actions.append(.close(window: window.id, title: window.title.isEmpty ? appName : window.title))
-        }
-        if let ending {
-            if ending.canQuit { actions.append(.quit) }
-            if ending.canForceQuit { actions.append(.forceQuit) }
+        // One way to end an app, as on a Mac: Quit closes every window and ends the app, and
+        // offers Force Quit on its own when the app does not end (or has no windows to close).
+        // Closing windows one by one is offered only where the computer cannot end the app.
+        if let ending, ending.canQuit || ending.canForceQuit {
+            actions.append(.quit)
+        } else {
+            for window in windows {
+                actions.append(.close(window: window.id, title: window.title.isEmpty ? appName : window.title))
+            }
         }
         return actions
     }
