@@ -48,7 +48,12 @@ final class DesktopModel {
     var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
     /// Laptop puts the dock below the hinge, outside the guest's display. Its windows keep
     /// their title bars, and each shows in its snap, as a tile shows in its column.
-    var detachedChrome = false
+    var detachedChrome = false {
+        didSet { if detachedChrome != oldValue { laptopFilled.removeAll() } }
+    }
+    /// The windows Laptop has filled its screen with since it opened: each once, so one the
+    /// owner restores stays where the owner put it.
+    private var laptopFilled: Set<Int> = []
     var pointerArea: CGSize?
     var titleBarHeight: CGFloat { titleBar.height }
     var dockHeight: CGFloat { detachedChrome ? 0 : 76 * ui }
@@ -103,6 +108,23 @@ final class DesktopModel {
     }
 
     private func app(_ window: RemoteWindow) -> String? { window.appClass?.name }
+
+    /// The window's smallest and largest content, in desktop points.
+    private func contentLimits(_ window: RemoteWindow) -> (minimum: CGSize?, maximum: CGSize?) {
+        func points(_ size: CGSize?) -> CGSize? {
+            size.map { CGSize(width: $0.width / pixelsPerPoint, height: $0.height / pixelsPerPoint) }
+        }
+        return (points(window.minimumSize), points(window.maximumSize))
+    }
+
+    /// Whether the window can take the snap. Laptop shows a snapped window fitted into its
+    /// snap, so there a resizable window held larger than the snap by its minimum size takes
+    /// it too: laid out at the snap's shape grown to that minimum, and shown scaled down.
+    func canSnap(_ snap: FreeDesktopLayout.Snap, _ window: RemoteWindow) -> Bool {
+        let limits = contentLimits(window)
+        return FreeDesktopLayout.accepts(snap, in: workArea, titleBar: titleBarHeight, minimum: limits.minimum,
+                                         maximum: limits.maximum, scaled: detachedChrome)
+    }
 
     /// Where the window belongs on this desktop by its place, in Linux pixels, if it has one.
     func placedFrame(_ window: RemoteWindow) -> CGRect? {
@@ -562,7 +584,7 @@ final class DesktopModel {
             guard let window = session.windows[id], let frame = dragged else { return }
             // Where it was let go is where it returns to from a snap.
             layout.setPreferred(id, frame: frame, in: workArea, app: app(window))
-            if let snap = pendingSnap, FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) {
+            if let snap = pendingSnap, canSnap(snap, window) {
                 layout.setSnap(id, snap, current: frame, in: workArea, app: app(window))
                 applyPlace(window, session)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -601,14 +623,14 @@ final class DesktopModel {
             var frame = start.chrome.offsetBy(dx: dx, dy: dy)
             frame.origin.y = min(max(area.minY, frame.minY), area.maxY - titleBarHeight)
             if hypot(dx, dy) > 12 * ui {
-                snapPalette = FreeDesktopLayout.SnapPalette(in: area, scale: ui, minimum: minimumChrome(window))
+                snapPalette = FreeDesktopLayout.SnapPalette(in: area, scale: ui) { snap, _ in self.canSnap(snap, window) }
             }
             let zone: FreeDesktopLayout.Snap?
             if let palette = snapPalette, palette.frame.contains(cursor) {
                 zone = palette.selection(at: cursor)
             } else {
                 zone = FreeDesktopLayout.zone(at: cursor, in: area, edge: (directTouch ? 20 : 12) * ui)
-                    .flatMap { FreeDesktopLayout.allows($0, in: area, minimum: minimumChrome(window)) ? $0 : nil }
+                    .flatMap { canSnap($0, window) ? $0 : nil }
             }
             if zone == nil {
                 let others = stacking.filter { $0 != id && isVisible($0) }.compactMap { session.windows[$0] }
@@ -698,7 +720,7 @@ final class DesktopModel {
     func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) -> Bool {
         guard let window = session.windows[id], !window.isAuxiliary, !detached.contains(id), app(window) != nil,
               size.width > 0, size.height > 0 else { return false }
-        if let snap, !FreeDesktopLayout.allows(snap, in: workArea, minimum: minimumChrome(window)) { return false }
+        if let snap, !canSnap(snap, window) { return false }
         raise(id)
         focus(id, session)
         layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
@@ -708,17 +730,21 @@ final class DesktopModel {
     }
 
     /// Laptop's upper screen shows one app at a time, like a laptop's maximized windows: every
-    /// app window that can fill the desktop does, without changing which one is in front.
-    /// Their Tablet places are another arrangement and stay as they were.
+    /// app window that can fill the desktop does, once, without changing which one is in front.
+    /// A window held larger than the screen by its minimum size fills it at the screen's shape,
+    /// scaled down (`canSnap`). Their Tablet places are another arrangement and stay as they were.
     func fillWorkArea(_ session: any DisplaySession) {
         guard size.width > 0, size.height > 0 else { return }
         let candidates = session.windows.values.filter { !detached.contains($0.id) }.map { window in
-            FreeDesktopLayout.FillCandidate(id: window.id, app: app(window), minimum: minimumChrome(window),
-                                            isAuxiliary: window.isAuxiliary, isFullscreen: window.isFullscreen)
+            let limits = contentLimits(window)
+            return FreeDesktopLayout.FillCandidate(id: window.id, app: app(window), minimum: limits.minimum ?? .zero,
+                                                   maximum: limits.maximum, isAuxiliary: window.isAuxiliary,
+                                                   isFullscreen: window.isFullscreen)
         }
-        let fill = layout.windowsToFill(candidates, in: workArea)
+        let fill = layout.windowsToFill(candidates, in: workArea, titleBar: titleBarHeight, filled: laptopFilled)
         for id in fill {
             guard let window = session.windows[id] else { continue }
+            laptopFilled.insert(id)
             layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
             applyPlace(window, session)
         }
