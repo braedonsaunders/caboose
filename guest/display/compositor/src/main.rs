@@ -217,12 +217,16 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("SDL_VIDEODRIVER", "x11,wayland"),
     ("MOZ_ENABLE_WAYLAND", "0"),
     ("LIBGL_KOPPER_DRI2", "1"),
+    // EGL's software path takes no Zink unless named, and prefers Mesa D3D12 (WSL's
+    // /dev/dxg) to it: named here, OpenGL always reaches the phone, or the routing layer's
+    // presented CPU device when no phone is attached.
+    ("GALLIUM_DRIVER", "zink"),
     ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
     ("MESA_GLSL_VERSION_OVERRIDE", "450"),
 ];
 
-/// The seat's own renderer selection, which would keep OpenGL off Zink (Mesa D3D12 on WSL).
-const GPU_LIVE_REMOVED_ENV: &[&str] = &["GALLIUM_DRIVER"];
+/// Launch-environment entries the GPU seat drops (none beyond those it replaces).
+const GPU_LIVE_REMOVED_ENV: &[&str] = &[];
 
 /// On the seat that renders on the phone's GPU: every application's Vulkan loader also
 /// loads the phone's driver, which reaches the phone through the broker's sockets; they
@@ -913,7 +917,7 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
-        assert_eq!(get(&env, "GALLIUM_DRIVER"), None, "OpenGL goes through Zink");
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("zink"), "OpenGL goes through Zink, never Mesa D3D12");
         std::fs::remove_file(&icd).unwrap();
     }
 

@@ -128,6 +128,17 @@ Placement& placement() {
     return *instance;
 }
 
+// CABOOSE_GPU_EXECUTOR_SWITCH_TRACE=1: every instance, device and lookup the layer handles,
+// with dispatch keys, on stderr (diagnosis of how a driver reaches it).
+const char tracingCopy = 0;
+bool tracing() {
+    static const bool on = [] { const char* v = std::getenv("CABOOSE_GPU_EXECUTOR_SWITCH_TRACE"); return v && *v == '1'; }();
+    return on;
+}
+// `copy` tells apart two copies of this library in one process (two manifest paths).
+#define TRACE(format, ...) do { if (tracing()) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH_TRACE pid=%d copy=%p " format "\n", \
+                                    int(getpid()), static_cast<const void*>(&tracingCopy), ##__VA_ARGS__); } while (0)
+
 void* key(const void* dispatchable) { return *static_cast<void* const*>(dispatchable); }
 
 struct InstanceData {
@@ -161,11 +172,16 @@ struct DeviceData {
     std::atomic<bool> lost{false};
 };
 
-std::mutex mutex;
-std::unordered_map<void*, std::unique_ptr<InstanceData>> instances;
-std::unordered_map<void*, std::unique_ptr<DeviceData>> devices;
-// Queues by their own dispatch key, for a stack in which a queue's key is not its device's.
-std::unordered_map<void*, DeviceData*> queues;
+// Never destroyed: a driver may call the layer from its own exit-time cleanup, after this
+// library's static destructors have run.
+std::mutex& mutex = *new std::mutex;
+std::unordered_map<void*, std::unique_ptr<InstanceData>>& instances = *new std::unordered_map<void*, std::unique_ptr<InstanceData>>;
+std::unordered_map<void*, std::unique_ptr<DeviceData>>& devices = *new std::unordered_map<void*, std::unique_ptr<DeviceData>>;
+// Queues by handle. A driver that takes vkGetDeviceQueue from vkGetDeviceProcAddr (Zink)
+// calls it past the loader's trampoline, which is what writes the device's dispatch pointer
+// into a queue: such a queue keeps the ICD's placeholder (ICD_LOADER_MAGIC), the same for
+// every queue, so it cannot be found by dispatch key.
+std::unordered_map<const void*, DeviceData*>& queues = *new std::unordered_map<const void*, DeviceData*>;
 
 InstanceData* instanceData(const void* handle) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -176,15 +192,15 @@ DeviceData* deviceData(const void* handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto found = devices.find(key(handle));
     if (found != devices.end()) return found->second.get();
-    auto queue = queues.find(key(handle));
+    auto queue = queues.find(handle);
     return queue == queues.end() ? nullptr : queue->second;
 }
 // Instance-level lookups of the wrapped device functions return the next layer's
 // dispatching trampolines, which serve any device. A device this layer did not see created
 // (a driver that reaches it through vkGetInstanceProcAddr, past this layer's vkCreateDevice)
 // is served through them, unmanaged, instead of failing.
-std::mutex fallbackMutex;
-std::unordered_map<std::string, PFN_vkVoidFunction> fallbacks;
+std::mutex& fallbackMutex = *new std::mutex;
+std::unordered_map<std::string, PFN_vkVoidFunction>& fallbacks = *new std::unordered_map<std::string, PFN_vkVoidFunction>;
 void rememberFallback(const char* name, PFN_vkVoidFunction next) {
     std::lock_guard<std::mutex> lock(fallbackMutex);
     fallbacks.emplace(name, next);
@@ -197,6 +213,7 @@ F fallback(const char* name) {
 }
 // Said once, by name: such a device does not move to the phone.
 void unknownDevice(const char* call) {
+    TRACE("unknown device for %s", call);
     static std::atomic<bool> said{false};
     if (!said.exchange(true))
         std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: %s on a device or queue this layer did not create; "
@@ -250,6 +267,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo* info, 
     data->createDevice = reinterpret_cast<PFN_vkCreateDevice>(next(*instance, "vkCreateDevice"));
     data->properties =
         reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(next(*instance, "vkGetPhysicalDeviceProperties"));
+    TRACE("CreateInstance instance=%p key=%p", static_cast<void*>(*instance), key(*instance));
     std::lock_guard<std::mutex> lock(mutex);
     instances[key(*instance)] = std::move(data);
     return VK_SUCCESS;
@@ -277,6 +295,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
                                             const VkAllocationCallbacks* allocator, VkDevice* device) {
     InstanceData* owner = instanceData(physical);
     auto* link = const_cast<VkLayerDeviceCreateInfo*>(deviceLink(info));
+    TRACE("CreateDevice physical=%p key=%p owner=%d link=%d", static_cast<void*>(physical), key(physical), owner != nullptr,
+          link && link->u.pLayerInfo);
     if (!owner || !link || !link->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
     PFN_vkGetInstanceProcAddr nextInstance = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     PFN_vkGetDeviceProcAddr next = link->u.pLayerInfo->pfnNextGetDeviceProcAddr;
@@ -295,6 +315,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     data->next = next;
     data->switchable = switchable;
     data->staying = switchable && !processMoves();
+    TRACE("CreateDevice device=%p key=%p vendor=0x%x type=%d switchable=%d staying=%d", static_cast<void*>(*device),
+          key(*device), properties.vendorID, int(properties.deviceType), switchable, data->staying);
     data->destroy = load<PFN_vkDestroyDevice>(next, *device, "vkDestroyDevice");
     data->queueSubmit = load<PFN_vkQueueSubmit>(next, *device, "vkQueueSubmit");
     data->queueSubmit2 = load<PFN_vkQueueSubmit2>(next, *device, "vkQueueSubmit2");
@@ -317,6 +339,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
 
 VKAPI_ATTR void VKAPI_CALL DestroyDevice(VkDevice device, const VkAllocationCallbacks* allocator) {
     if (!device) return;
+    TRACE("DestroyDevice device=%p key=%p", static_cast<void*>(device), key(device));
     PFN_vkDestroyDevice destroy = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -337,6 +360,8 @@ VKAPI_ATTR void VKAPI_CALL DestroyDevice(VkDevice device, const VkAllocationCall
 #define FORWARD(handle, member, name, ...)                                  \
     DeviceData* data = deviceData(handle);                                  \
     if (!data) {                                                            \
+        TRACE("unknown handle=%p key=%p for %s devices=%zu queues=%zu", static_cast<const void*>(handle), \
+              handle ? key(handle) : nullptr, #member, devices.size(), queues.size()); \
         unknownDevice(#member);                                             \
         auto next = fallback<decltype(DeviceData::member)>(name);           \
         return next ? next(__VA_ARGS__) : VK_ERROR_INITIALIZATION_FAILED;   \
@@ -356,9 +381,9 @@ VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit2KHR(VkQueue queue, uint32_t count, co
     FORWARD(queue, queueSubmit2KHR, "vkQueueSubmit2KHR", queue, count, submits, fence);
 }
 void rememberQueue(DeviceData* data, VkQueue queue) {
-    if (!queue || key(queue) == nullptr) return;
+    if (!queue) return;
     std::lock_guard<std::mutex> lock(mutex);
-    if (!devices.count(key(queue))) queues[key(queue)] = data;
+    queues[queue] = data;
 }
 VKAPI_ATTR void VKAPI_CALL GetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue* queue) {
     DeviceData* data = deviceData(device);
@@ -369,6 +394,8 @@ VKAPI_ATTR void VKAPI_CALL GetDeviceQueue(VkDevice device, uint32_t family, uint
     }
     if (!data->getQueue) return;
     data->getQueue(device, family, index, queue);
+    if (queue) TRACE("GetDeviceQueue device=%p key=%p -> queue=%p key=%p", static_cast<void*>(device), key(device),
+                     static_cast<void*>(*queue), *queue ? key(*queue) : nullptr);
     if (queue) rememberQueue(data, *queue);
 }
 VKAPI_ATTR void VKAPI_CALL GetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* info, VkQueue* queue) {
@@ -380,6 +407,8 @@ VKAPI_ATTR void VKAPI_CALL GetDeviceQueue2(VkDevice device, const VkDeviceQueueI
     }
     if (!data->getQueue2) return;
     data->getQueue2(device, info, queue);
+    if (queue) TRACE("GetDeviceQueue2 device=%p key=%p -> queue=%p key=%p", static_cast<void*>(device), key(device),
+                     static_cast<void*>(*queue), *queue ? key(*queue) : nullptr);
     if (queue) rememberQueue(data, *queue);
 }
 VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
@@ -449,6 +478,8 @@ PFN_vkVoidFunction deviceFunction(const char* name) {
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name) {
     DeviceData* data = deviceData(device);
+    if (deviceFunction(name)) TRACE("GetDeviceProcAddr device=%p key=%p %s known=%d", static_cast<void*>(device),
+                                    key(device), name, data != nullptr);
     if (!data) return nullptr;
     PFN_vkVoidFunction next = data->next(device, name);
     // Only functions the device has are wrapped; a missing one stays missing.
@@ -468,6 +499,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance
     PFN_vkVoidFunction next = data->next(instance, name);
     if (!next) return nullptr;
     if (PFN_vkVoidFunction own = deviceFunction(name)) {
+        TRACE("GetInstanceProcAddr instance=%p %s", static_cast<void*>(instance), name);
         rememberFallback(name, next);
         return own;
     }

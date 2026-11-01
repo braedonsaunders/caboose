@@ -42,6 +42,9 @@ Wrapped calls: `vkQueueSubmit`, `vkQueueSubmit2(KHR)`, `vkQueuePresentKHR`,
 `vkWaitSemaphores(KHR)`, `vkDeviceWaitIdle` and `vkQueueWaitIdle`. Everything else
 goes straight to the next layer.
 
+`CABOOSE_GPU_EXECUTOR_SWITCH_TRACE=1` logs every instance, device and proc-address lookup
+the layer handles, with dispatch keys, as `CABOOSE_GPU_EXECUTOR_SWITCH_TRACE` lines on stderr.
+
 ## Build and test
 
 ```sh
