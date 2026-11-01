@@ -20,6 +20,7 @@ pub const IMAGE: u8 = 0x20;
 pub const GLYPH: u8 = 0x21;
 pub const PRESENT: u8 = 0x30;
 pub const PIXELS: u8 = 0x31;
+pub const BEGIN: u8 = 0x32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrawError {
@@ -184,6 +185,8 @@ pub enum Op<'a> {
     Glyph { font: u64, glyph: u32, path: Path<'a> },
     Present { surface: u32, wl_surface: u32 },
     Pixels { surface: u32, w: u32, h: u32, rgba: &'a [u8] },
+    /// A recording starts afresh: nothing before it in the stream is referred to after it.
+    Begin { generation: u32 },
     Unknown { op: u8, payload: &'a [u8] },
 }
 
@@ -348,6 +351,7 @@ fn decode(op: u8, payload: &[u8]) -> Option<Op<'_>> {
         }
         GLYPH => Op::Glyph { font: c.u64()?, glyph: c.u32()?, path: c.path()? },
         PRESENT => Op::Present { surface: c.u32()?, wl_surface: c.u32()? },
+        BEGIN => Op::Begin { generation: c.u32()? },
         PIXELS => {
             let surface = c.u32()?;
             let w = c.u32()?;

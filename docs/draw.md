@@ -6,9 +6,23 @@ renderer can draw the same picture at its own density. The imaging model is the 
 of PDF, cairo, Skia and the HTML canvas, so each op maps to one call in any of them. No
 toolkit, X11 or Vulkan semantics are on the wire.
 
-The writer is [guest/draw/src/cdl.h](../guest/draw/src/cdl.h). Today the cairo recorder
-(`libcaboose-draw-cairo.so`) writes draw lists to a capture file, and `caboose-draw-replay`
-reads them back; both are in [guest/draw](../guest/draw/README.md).
+The writer is [guest/draw/src/cdl.h](../guest/draw/src/cdl.h). The cairo recorder
+(`libcaboose-draw-cairo.so`, [guest/draw](../guest/draw/README.md)) writes draw lists to
+caboose-display's draw socket, which forwards them to a client that draws them
+([display.md, Draw lists](display.md#draw-lists)), or to a capture file;
+`caboose-draw-replay` draws a capture again. The Rust reader is
+`caboose_display_protocol::draw`.
+
+## The draw socket
+
+`draw.sock` in the display instance's private directory
+(`$XDG_RUNTIME_DIR/caboose-display/<Wayland socket>/`), owner-only, named to applications by
+`CABOOSE_DRAW_SOCKET`. A recorder connects when it loads and records nothing until the
+compositor asks: the compositor writes `R` and a generation (`u32` LE) when a client that
+draws connects, and `S` when it leaves. A recorder starts a fresh stream at its next frame
+with a `begin` op of that generation; the compositor drops bytes before it. A recorder never
+waits on the socket: what it cannot send stays queued, and past 64 MiB queued it stops
+recording and closes.
 
 ## Stream
 
@@ -57,6 +71,7 @@ the source's pixels for surfaces and images. `extend` is `0` none, `1` repeat, `
 | `0x21` | `glyph` | `font: u64`, `glyph: u32`, path in em units, y down |
 | `0x30` | `present` | `surface: u32`, `wl_surface: u32`: the window buffer `surface` was committed to the Wayland surface with this protocol id |
 | `0x31` | `pixels` | `surface: u32`, `w: u32`, `h: u32`, premultiplied RGBA8: what the application really drew, for checking |
+| `0x32` | `begin` | `generation: u32`: a fresh recording; nothing before it is referred to after it |
 
 - **Matrices.** A drawing op's matrix maps user space to the target's pixels. Paths, glyph
   positions and the stroke's width and dashes are in user space, so a non-uniform matrix gives

@@ -67,7 +67,7 @@ pub fn socket_path() -> Option<PathBuf> {
     None
 }
 
-fn peer_credentials(stream: &UnixStream) -> Option<(u32, u32)> {
+pub(crate) fn peer_credentials(stream: &UnixStream) -> Option<(u32, u32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: getsockopt writes at most `len` bytes into `cred`.

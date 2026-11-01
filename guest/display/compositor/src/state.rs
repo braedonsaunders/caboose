@@ -211,6 +211,7 @@ pub struct State {
     pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
     pub scene: crate::scene::SceneServer,
+    pub draw: crate::draw::DrawServer,
     pub control: crate::control::Control,
     /// Toolkit scroll reporters (scroll.rs).
     pub scroll: crate::scroll::ScrollHub,

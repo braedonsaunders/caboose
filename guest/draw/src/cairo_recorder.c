@@ -29,7 +29,10 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 #include <wayland-util.h>
 
@@ -190,15 +193,24 @@ static void resolve_cairo(void) {
 /* Recorder state                                                                              */
 
 static pthread_mutex_t lock;
+/* Recording now: always with a capture file; with the draw socket, between the compositor's
+ * `R` and `S`. */
 static int enabled;
 static int capture_fd = -1;
+static int sock_fd = -1;
 static int capture_pixels;
 static cdl_buf out;
+/* The recording's generation: surfaces and resources of an earlier one are unknown to the
+ * stream's reader. */
+static uint32_t generation;
 static __thread int depth;
 
 static uint32_t next_surface_id = 1;
 static uint32_t current_target;
 static uint64_t current_clip = 1; /* hash of the last CLIP op's payload; 1 = none sent yet */
+
+/* Bytes the socket has not taken yet, at most this many before the recorder gives up. */
+#define MAX_UNSENT (64u << 20)
 
 /* Open-addressed set of 64-bit keys: images and glyphs the stream already carries. */
 typedef struct {
@@ -232,13 +244,26 @@ static int keyset_add(keyset *s, uint64_t key) {
     return 1;
 }
 
+static void keyset_clear(keyset *s) {
+    free(s->keys);
+    s->keys = NULL;
+    s->cap = s->len = 0;
+}
+
 static keyset sent_images, sent_glyphs;
+
+/* Stops for good: the stream cannot be continued, and the application draws on unrecorded. */
+static void give_up(void) {
+    enabled = 0;
+    if (sock_fd >= 0) close(sock_fd);
+    sock_fd = -1;
+    out.len = 0;
+}
 
 static void flush_out(void) {
     if (out.failed) {
-        /* Out of memory once: what was recorded is incomplete, so drop it and stop. */
-        enabled = 0;
-        out.len = 0;
+        /* Out of memory once: what was recorded is incomplete. */
+        give_up();
         return;
     }
     if (capture_fd >= 0) {
@@ -252,8 +277,95 @@ static void flush_out(void) {
             }
             done += (size_t)n;
         }
+        out.len = 0;
+    } else if (sock_fd >= 0) {
+        /* Never waits: what the socket does not take now goes with the next flush. */
+        size_t done = 0;
+        while (done < out.len) {
+            ssize_t n = send(sock_fd, out.data + done, out.len - done, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (n < 0 && errno == EINTR) continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+            if (n <= 0) {
+                give_up();
+                return;
+            }
+            done += (size_t)n;
+        }
+        if (done) {
+            memmove(out.data, out.data + done, out.len - done);
+            out.len -= done;
+        }
+        if (out.len > MAX_UNSENT) give_up();
+    } else {
+        out.len = 0;
     }
-    out.len = 0;
+}
+
+/* A fresh recording: everything recorded so far is unknown to its reader. */
+static void begin(uint32_t g) {
+    generation = g;
+    keyset_clear(&sent_images);
+    keyset_clear(&sent_glyphs);
+    current_target = 0;
+    current_clip = 1;
+    size_t at = cdl_begin(&out, CDL_BEGIN);
+    cdl_u32(&out, g);
+    cdl_end(&out, at);
+    enabled = 1;
+}
+
+/* The compositor's commands: `R` and a generation starts a recording, `S` stops it. */
+static void poll_control(void) {
+    if (sock_fd < 0) return;
+    for (;;) {
+        uint8_t cmd[64];
+        ssize_t n = recv(sock_fd, cmd, sizeof cmd, MSG_DONTWAIT | MSG_PEEK);
+        if (n < 0 && errno == EINTR) continue;
+        if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            give_up();
+            return;
+        }
+        if (n <= 0) return;
+        if (cmd[0] == 'S') {
+            (void)recv(sock_fd, cmd, 1, MSG_DONTWAIT);
+            enabled = 0;
+        } else if (cmd[0] == 'R') {
+            if (n < 5) return; /* the rest of it has not arrived */
+            (void)recv(sock_fd, cmd, 5, MSG_DONTWAIT);
+            begin(cdl_read32(cmd + 1));
+        } else {
+            give_up();
+            return;
+        }
+    }
+}
+
+/* The compositor's draw socket: CABOOSE_DRAW_SOCKET, or (in a sandbox, where the launch
+ * environment does not reach) the instance's directory found from WAYLAND_DISPLAY. */
+static int connect_socket(void) {
+    char path[sizeof(((struct sockaddr_un *)0)->sun_path)];
+    const char *explicit_path = getenv("CABOOSE_DRAW_SOCKET");
+    const char *runtime = getenv("XDG_RUNTIME_DIR"), *wayland = getenv("WAYLAND_DISPLAY");
+    if (explicit_path && *explicit_path) {
+        if (snprintf(path, sizeof path, "%s", explicit_path) >= (int)sizeof path) return -1;
+    } else if (runtime && *runtime && wayland && *wayland && !strchr(wayland, '/')) {
+        if (snprintf(path, sizeof path, "%s/caboose-display/%s/draw.sock", runtime, wayland) >= (int)sizeof path) return -1;
+    } else {
+        return -1;
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    memcpy(addr.sun_path, path, strlen(path) + 1);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        close(fd);
+        return -1;
+    }
+    int big = 4 << 20;
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &big, sizeof big);
+    return fd;
 }
 
 __attribute__((constructor)) static void init(void) {
@@ -271,15 +383,31 @@ __attribute__((constructor)) static void init(void) {
             snprintf(path, sizeof path, "%s", capture);
         }
         capture_fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-        enabled = capture_fd >= 0;
+        if (capture_fd >= 0) begin(1);
         const char *pixels = getenv("CABOOSE_DRAW_PIXELS");
         capture_pixels = pixels && *pixels == '1';
+    } else {
+        sock_fd = connect_socket();
     }
 }
 
 __attribute__((destructor)) static void fini(void) {
     pthread_mutex_lock(&lock);
-    if (enabled) flush_out();
+    if (capture_fd >= 0) flush_out();
+    pthread_mutex_unlock(&lock);
+}
+
+/* An X11 application commits nothing the recorder sees: the compositor's commands are read
+ * from drawing calls too, at most five times a second. */
+static void maybe_poll_control(void) {
+    static __thread struct timespec last;
+    struct timespec now;
+    if (sock_fd < 0 || clock_gettime(CLOCK_MONOTONIC_COARSE, &now) != 0) return;
+    if (now.tv_sec == last.tv_sec && now.tv_nsec - last.tv_nsec < 200000000) return;
+    if (now.tv_sec - last.tv_sec == 1 && now.tv_nsec + 1000000000 - last.tv_nsec < 200000000) return;
+    last = now;
+    pthread_mutex_lock(&lock);
+    poll_control();
     pthread_mutex_unlock(&lock);
 }
 
@@ -288,7 +416,8 @@ __attribute__((destructor)) static void fini(void) {
 
 typedef struct surf {
     uint32_t id;
-    int declared;
+    uint32_t gen;      /* the recording that saw it created (0: none did, its content is unknown) */
+    uint32_t declared; /* the recording it was declared to (0: not yet) */
     int clear;       /* created transparent, so its content is exactly its recorded ops */
     int pixels;      /* written directly or drawn without a record: its pixels are the truth */
     int window;      /* a wl_shm buffer */
@@ -310,7 +439,7 @@ static void surf_gone(void *data) {
             break;
         }
     }
-    if (enabled && s->declared) {
+    if (enabled && s->declared == generation) {
         size_t at = cdl_begin(&out, CDL_FREE);
         cdl_u32(&out, s->id);
         cdl_end(&out, at);
@@ -331,6 +460,7 @@ static surf_t *surf_get(cairo_surface_t *surface) {
     s = (surf_t *)calloc(1, sizeof *s);
     if (!s) return NULL;
     s->id = next_surface_id++;
+    s->gen = enabled ? generation : 0;
     s->surface = surface;
     if (real_cairo_surface_set_user_data(surface, &surf_key, s, surf_gone) != CAIRO_STATUS_SUCCESS) {
         free(s);
@@ -373,16 +503,17 @@ static void surface_size(cairo_surface_t *surface, int *w, int *h) {
 
 /* Declares a surface to the stream the first time it is drawn into or drawn from. */
 static void surf_declare(cairo_surface_t *surface, surf_t *s) {
-    if (s->declared) return;
+    if (s->declared == generation) return;
     int w, h;
     surface_size(surface, &w, &h);
     size_t at = cdl_begin(&out, CDL_SURFACE);
     cdl_u32(&out, s->id);
     cdl_u32(&out, (uint32_t)w);
     cdl_u32(&out, (uint32_t)h);
-    cdl_u8(&out, s->window ? CDL_SURFACE_WINDOW : s->clear ? CDL_SURFACE_CLEAR : CDL_SURFACE_UNKNOWN);
+    int known = s->gen == generation;
+    cdl_u8(&out, !known ? CDL_SURFACE_UNKNOWN : s->window ? CDL_SURFACE_WINDOW : s->clear ? CDL_SURFACE_CLEAR : CDL_SURFACE_UNKNOWN);
     cdl_end(&out, at);
-    s->declared = 1;
+    s->declared = generation;
 }
 
 /* The memfd or shm file and offset behind `data`, from /proc/self/maps; 0 when private. */
@@ -794,7 +925,7 @@ static int put_source(cdl_buf *b, cairo_pattern_t *p) {
         cairo_matrix_t pm;
         to_pixels(surface, &m, &pm);
         surf_t *s = surf_get(surface);
-        if (s && s->clear && !s->pixels) {
+        if (s && s->clear && !s->pixels && s->gen == generation) {
             surf_declare(surface, s);
             cdl_u8(b, CDL_SOURCE_SURFACE);
             cdl_u32(b, s->id);
@@ -1061,6 +1192,7 @@ done:
 /* A hook records only at the outermost level, while recording is on. */
 #define ENTER()                       \
     resolve_cairo();                  \
+    if (!enabled && !depth) maybe_poll_control(); \
     int recording = enabled && !depth; \
     depth++
 #define LEAVE() depth--
@@ -1237,7 +1369,10 @@ static void group_pushed(cairo_t *cr) {
     pthread_mutex_lock(&lock);
     ctx_save(cr);
     surf_t *s = surf_get(real_cairo_get_group_target(cr));
-    if (s && !s->declared) s->clear = 1;
+    if (s && s->declared != generation) {
+        s->clear = 1;
+        s->gen = generation;
+    }
     pthread_mutex_unlock(&lock);
 }
 
@@ -1299,7 +1434,9 @@ EXPORT cairo_surface_t *cairo_image_surface_create_for_data(unsigned char *data,
     cairo_surface_t *s = real_cairo_image_surface_create_for_data
                              ? real_cairo_image_surface_create_for_data(data, format, width, height, stride)
                              : NULL;
-    if (recording && s) {
+    /* Window buffers are registered while the recorder waits too: a toolkit keeps its buffers,
+     * and a recording that starts later must still know which commit shows which. */
+    if ((recording || (sock_fd >= 0 && !depth)) && s) {
         uint64_t ino = 0, off = 0;
         int shared = shared_mapping(data, &ino, &off);
         pthread_mutex_lock(&lock);
@@ -1467,10 +1604,12 @@ static void observe(struct wl_proxy *proxy, uint32_t opcode, union wl_argument *
             e->buffer = (struct wl_proxy *)args[0].o;
         } else if (opcode == 6) {
             wl_entry *e = wl_find(proxy, 0);
-            if (e && e->buffer) present(proxy, e->buffer);
+            if (enabled && e && e->buffer) present(proxy, e->buffer);
             if (e) e->buffer = NULL;
-            /* The frame's ops leave before the commit that shows them. */
+            /* The frame's ops leave before the commit that shows them; a new recording starts
+             * on the frame after it. */
             flush_out();
+            poll_control();
         }
     }
 }
@@ -1490,7 +1629,7 @@ static struct wl_proxy *marshal(struct wl_proxy *proxy, uint32_t opcode, const s
                                 uint32_t version, uint32_t flags, union wl_argument *args) {
     resolve_wl();
     if (!real_wl_proxy_marshal_array_flags) return NULL;
-    if (!enabled || depth) return real_wl_proxy_marshal_array_flags(proxy, opcode, interface, version, flags, args);
+    if ((!enabled && sock_fd < 0) || depth) return real_wl_proxy_marshal_array_flags(proxy, opcode, interface, version, flags, args);
     depth++;
     pthread_mutex_lock(&lock);
     observe(proxy, opcode, args, NULL);

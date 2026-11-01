@@ -483,7 +483,7 @@ public final class CabooseDisplaySession: DisplaySession {
                 }
             case .deviceStatus, .deviceOpen, .deviceClose, .deviceRumble, .deviceKeyframe:
                 devices?.handle(message)
-            case .frame, .tile, .surfaceBatch, .surfaceReset, .sceneFont, .sceneCommit, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
+            case .frame, .tile, .surfaceBatch, .surfaceReset, .sceneFont, .sceneCommit, .drawOps, .drawPresent, .drawEnd, .videoFrame, .videoPresent, .gpuData, .audio, .unknown, .malformed:
                 continue // pictures and streams were routed on the socket's queue; unknown types are not used
             }
         }
@@ -1367,6 +1367,9 @@ private final class Incoming: @unchecked Sendable {
             case .sceneCommit(let commit):
                 echo.drew(commit.window)
                 pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
+            case .drawOps, .drawPresent, .drawEnd:
+                // This client's hello does not ask for draw lists, so the computer sends none.
+                break
             case .videoFrame(let frame):
                 passthroughVideoFrames &+= 1
                 recordAtlasWire()

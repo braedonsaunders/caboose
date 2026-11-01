@@ -42,13 +42,22 @@ calls cairo on. Calls cairo makes internally do not reach it, so each operation 
   the recorded ops are written out before the commit leaves the process. Applications built
   against libwayland older than 1.20 use the older marshalling calls, which are not observed:
   their ops are recorded but no `present` marks their frames.
-- **Nothing to record into, nothing recorded.** Without `CABOOSE_DRAW_CAPTURE` the hooks only
-  forward calls. Every cairo, FreeType and libwayland function is resolved with `dlsym`, so the
+- **The draw socket.** Without `CABOOSE_DRAW_CAPTURE` the recorder connects to caboose-display's
+  draw socket (`CABOOSE_DRAW_SOCKET`, or the display instance's directory found from
+  `XDG_RUNTIME_DIR` and `WAYLAND_DISPLAY` inside a sandbox) and records only while the
+  compositor asks it to, from the frame after it asks, in a fresh stream that starts with
+  `begin` ([docs/draw.md](../../docs/draw.md#the-draw-socket)). It reads the compositor's
+  commands at each commit, and from drawing calls at most five times a second for X11
+  applications. It never waits on the socket: past 64 MiB unsent it stops for good, and the
+  application draws on unrecorded.
+- **Nothing to record into, nothing recorded.** With neither a capture file nor a draw socket
+  the hooks only forward calls. Every cairo, FreeType and libwayland function is resolved with `dlsym`, so the
   library links only libc and is inert in processes without cairo.
 
 | Variable | Effect |
 | --- | --- |
-| `CABOOSE_DRAW_CAPTURE` | Append the draw lists to this file; `%p` becomes the process id |
+| `CABOOSE_DRAW_SOCKET` | caboose-display's draw socket (set in the launch environment) |
+| `CABOOSE_DRAW_CAPTURE` | Append the draw lists to this file instead; `%p` becomes the process id |
 | `CABOOSE_DRAW_PIXELS=1` | After each `present`, also write the pixels the application drew (`pixels` op), for checking |
 
 ## Build
