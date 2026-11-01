@@ -352,10 +352,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x2070), everything), hello(0x2070))
         self.assertEqual(negotiate(hello(0x3FF0), frozenset({'shader-cache'})), hello(0x2070))
         self.assertEqual(negotiate(hello(0x3FF0), everything - {'shader-cache'}), hello(0x1FF0))
+        # So does the upload cache.
+        self.assertEqual(negotiate(hello(0x8070), everything), hello(0x8070))
+        self.assertEqual(negotiate(hello(0x8070), everything - {'upload-cache'}), hello(0x70))
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x8070), everything))
+        self.assertIsNone(negotiate(hello(0x10070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
         # Executor resume is granted only when the phone declared it.
         self.assertEqual(negotiate(hello(0x4070), everything), hello(0x4070))

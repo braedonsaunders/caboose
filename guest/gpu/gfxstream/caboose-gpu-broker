@@ -44,10 +44,12 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # present), 0x1000 guest-assigned query pools (requires 0x80), 0x2000 shader modules named by
 # hash from the phone's persistent store (docs/gpu-live.md, "Shader cache"), 0x4000 an executor
 # that resumes and suspends (docs/gpu-live.md, "Resuming an executor"), so local waits for the
-# phone need no deadline of their own. The reply grants the offered features the phone declared.
+# phone need no deadline of their own, 0x8000 4 KiB upload pieces kept by hash in the phone's
+# persistent store (docs/gpu-live.md, "Upload cache"). The reply grants the offered features the
+# phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
                   'ordered-present': 0x400, 'guest-images': 0x800, 'guest-query-pools': 0x1000,
-                  'shader-cache': 0x2000, 'executor-resume': 0x4000}
+                  'shader-cache': 0x2000, 'executor-resume': 0x4000, 'upload-cache': 0x8000}
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 
