@@ -115,9 +115,6 @@ VKAPI_ATTR void VKAPI_CALL DestroyInstance(VkInstance instance, const VkAllocati
     destroy(instance, allocator);
 }
 
-// The rank of a device this process does not see.
-constexpr int kHidden = -1;
-
 bool processHidesPhone() {
     static const bool hides = hidesPhone(commandLine());
     return hides;
@@ -169,6 +166,7 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumeratePhysicalDevices(VkInstance instance, uin
     all.resize(total);
     std::vector<int> ranks;
     for (auto device : all) ranks.push_back(deviceRank(*data, device));
+    hideCpuBesidePhone(ranks);
     dropHidden(all, ranks);
     return answer(all, ranks, count, out);
 }
@@ -186,6 +184,7 @@ VkResult enumerateGroups(PFN_vkEnumeratePhysicalDeviceGroups next, InstanceData&
     all.resize(total);
     std::vector<int> ranks;
     for (auto& group : all) ranks.push_back(group.physicalDeviceCount ? deviceRank(data, group.physicalDevices[0]) : 5);
+    hideCpuBesidePhone(ranks);
     dropHidden(all, ranks);
     total = static_cast<uint32_t>(all.size());
     if (!out) {

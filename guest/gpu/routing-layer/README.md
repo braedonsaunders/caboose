@@ -11,6 +11,11 @@ turns it off.
   lavapipe last, keeping the driver's order among equals. Applications that take the
   first device, and toolkits such as Zink that take the first suitable one, render on
   the phone whenever it is attached.
+- **CPU implementations beside the phone.** While the phone's GPU is listed, CPU
+  implementations such as lavapipe are not, so applications that pick a device by their
+  own rules, or judge the computer by every device they are offered (Steam turns its GPU
+  web views off on seeing llvmpipe), see only the phone. Without it they are listed again,
+  last; devices made on them before the phone attached are moved by the executor switch.
 - **Pipeline pre-compiling.** Steam's `fossilize_replay`, which compiles a game's recorded
   pipelines for the driver's disk cache before the game starts, does not see the phone's
   GPU: the phone's driver keeps no cache on the computer, so that work would only cross the

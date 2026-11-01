@@ -29,6 +29,18 @@ inline int rank(uint32_t vendor, int type) {
     }
 }
 
+// The rank of a device this process does not see.
+constexpr int kHidden = -1;
+
+// While the phone's GPU is listed, CPU implementations such as lavapipe are not: an
+// application or toolkit that picks a device by its own rules, or that judges the computer
+// by the slowest one it is offered (Steam disables its GPU web views), sees only the phone.
+// Without the phone they are listed again, last.
+inline void hideCpuBesidePhone(std::vector<int>& ranks) {
+    if (std::find(ranks.begin(), ranks.end(), rank(kPhoneVendor, 0)) == ranks.end()) return;
+    for (int& r : ranks) if (r == rank(0, kCpu)) r = kHidden;
+}
+
 // The order to list `ranks.size()` devices in: indexes into the driver's order, stable
 // among equal ranks.
 inline std::vector<size_t> order(const std::vector<int>& ranks) {

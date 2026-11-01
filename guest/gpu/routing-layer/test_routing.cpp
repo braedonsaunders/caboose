@@ -15,6 +15,17 @@ int main() {
     assert((order({2, 1, 2, 1}) == std::vector<size_t>{1, 3, 0, 2}));
     assert(order({}).empty());
 
+    // With the phone listed, lavapipe is not; without it, it is, last.
+    std::vector<int> withPhone = {rank(0x10005, kCpu), rank(kPhoneVendor, kIntegrated), rank(0x10de, kDiscrete)};
+    hideCpuBesidePhone(withPhone);
+    assert((withPhone == std::vector<int>{kHidden, rank(kPhoneVendor, kIntegrated), rank(0x10de, kDiscrete)}));
+    std::vector<int> withoutPhone = {rank(0x10005, kCpu), rank(0x10de, kDiscrete)};
+    hideCpuBesidePhone(withoutPhone);
+    assert((withoutPhone == std::vector<int>{rank(0x10005, kCpu), rank(0x10de, kDiscrete)}));
+    std::vector<int> phoneHidden = {rank(0x10005, kCpu), kHidden};  // fossilize_replay
+    hideCpuBesidePhone(phoneHidden);
+    assert(phoneHidden[0] == rank(0x10005, kCpu));
+
     assert(hidesPhone("/home/u/.local/share/Steam/ubuntu12_64/fossilize_replay a.foz --device-index 0"));
     assert(hidesPhone("fossilize_replay"));
     assert(!hidesPhone("/usr/bin/vkcube"));
