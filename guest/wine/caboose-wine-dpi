@@ -23,6 +23,7 @@ EXPLORER = "[Software\\\\Wine\\\\Explorer]"
 DESKTOPS = "[Software\\\\Wine\\\\Explorer\\\\Desktops]"
 # A Steam game's virtual desktop: landscape, at least what games commonly require.
 GAME_DESKTOP = (1920, 1080)
+GAME_MINIMUM = (1280, 720)
 RESCAN_SECONDS = 10
 
 
@@ -94,6 +95,27 @@ def with_log_pixels(text, dpi):
     return with_value(text, DESKTOP, "LogPixels", f"dword:{dpi:08x}")
 
 
+def without_value(text, section, name):
+    """user.reg `text` without `"name"=…` in `section`."""
+    lines = text.split("\n")
+    start = next((i for i, line in enumerate(lines) if line == section or line.startswith(section + " ")), None)
+    if start is None:
+        return text
+    end = start + 1
+    while end < len(lines) and lines[end].strip() and not lines[end].startswith("["):
+        end += 1
+    kept = [line for line in lines[start + 1:end] if not line.startswith(f'"{name}"=')]
+    if len(kept) == end - start - 1:
+        return text
+    return "\n".join(lines[:start + 1] + kept + lines[end:])
+
+
+def needs_desktop(display):
+    """Whether a game needs a virtual desktop on a display of `display` (width, height)
+    pixels: one smaller than 1280x720, the least games commonly require, on either side."""
+    return display[0] < GAME_MINIMUM[0] or display[1] < GAME_MINIMUM[1]
+
+
 def game_desktop(display):
     """A Steam game's virtual desktop for a display of `display` (width, height) pixels:
     landscape, the display's own size where that is larger than GAME_DESKTOP on each side."""
@@ -102,23 +124,25 @@ def game_desktop(display):
 
 
 def with_game_settings(text, desktop):
-    """A Steam game's user.reg: 96 DPI, and a virtual desktop of `desktop` (width, height).
-    Wine reports the virtual desktop's size as the screen whatever the phone's orientation,
+    """A Steam game's user.reg: 96 DPI, and a virtual desktop of `desktop` (width, height),
+    or none when `desktop` is None. Wine reports the virtual desktop's size as the screen,
     and the phone shows the desktop window scaled to fit."""
     text = with_log_pixels(text, 96)
+    if desktop is None:
+        return without_value(text, EXPLORER, "Desktop")
     text = with_value(text, EXPLORER, "Desktop", '"Default"')
     return with_value(text, DESKTOPS, "Default", f'"{desktop[0]}x{desktop[1]}"')
 
 
-def apply(prefix, dpi, desktop=None):
-    """Writes `dpi` into `prefix`'s user.reg, or, with a `desktop` size, a Steam game's
-    settings; True if it changed."""
+def apply(prefix, dpi, game=False, desktop=None):
+    """Writes `dpi` into `prefix`'s user.reg, or a Steam game's settings (`desktop`, a size
+    or None); True if it changed."""
     reg = Path(prefix) / "user.reg"
     try:
         current = reg.read_text(encoding="utf-8", errors="surrogateescape")
     except OSError:
         return False
-    updated = with_game_settings(current, desktop) if desktop else with_log_pixels(current, dpi)
+    updated = with_game_settings(current, desktop) if game else with_log_pixels(current, dpi)
     if updated == current:
         return False
     fd, temporary = tempfile.mkstemp(prefix=".user.reg.", dir=reg.parent)
@@ -135,14 +159,20 @@ def apply(prefix, dpi, desktop=None):
 
 def apply_all(home, dpi, display=(0, 0)):
     """`dpi` in every prefix but games'. Games keep 96, since Wine shows one that does not
-    declare itself DPI-aware a screen smaller by the DPI's factor, and run in a virtual
-    desktop (`game_desktop` for `display`, in pixels), since games refuse to run below their
-    minimum resolution and a phone in portrait is narrow."""
+    declare itself DPI-aware a screen smaller by the DPI's factor. On a display smaller than
+    games commonly require (`needs_desktop`; a phone in portrait), they run in a virtual
+    desktop (`game_desktop`), since games refuse to run below their minimum resolution;
+    otherwise directly on the display."""
     changed = []
-    desktop = game_desktop(display)
+    desktop = game_desktop(display) if needs_desktop(display) else None
     for prefix, game in prefixes(home):
-        if apply(prefix, dpi, desktop if game else None):
-            what = f"virtual desktop {desktop[0]}x{desktop[1]}" if game else f"LogPixels {dpi}"
+        if apply(prefix, dpi, game, desktop):
+            if not game:
+                what = f"LogPixels {dpi}"
+            elif desktop:
+                what = f"virtual desktop {desktop[0]}x{desktop[1]}"
+            else:
+                what = "no virtual desktop"
             print(f"{what} in {prefix}", flush=True)
             changed.append(prefix)
     return changed

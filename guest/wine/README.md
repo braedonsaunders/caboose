@@ -14,10 +14,12 @@ shows a program that does not declare itself DPI-aware a screen smaller by the D
 factor, and a game checks that screen against its minimum resolution: Halo: The Master
 Chief Collection refused to run on a 1338x911 display at 192 DPI, which it saw as 669x455.
 
-Each Steam game's prefix also runs in a Wine virtual desktop (`HKCU\Software\Wine\Explorer`
-`Desktop` and `Explorer\Desktops\Default`), landscape and at least 1920x1080 (the display's
-own size where that is larger). Wine reports it as the screen whatever the phone's
-orientation, so a game's minimum resolution holds on a phone in portrait. caboose-display
+On a display smaller than 1280x720 on either side, the least games commonly require (a
+phone in portrait), each Steam game's prefix also runs in a Wine virtual desktop
+(`HKCU\Software\Wine\Explorer` `Desktop` and `Explorer\Desktops\Default`), landscape and at
+least 1920x1080 (the display's own size where that is larger). Wine reports it as the
+screen, so a game's minimum resolution holds. On a larger display the virtual desktop is
+removed and games run on the display itself. caboose-display
 holds the desktop window at that size and the phone shows it scaled to fit
 ([display.md](../../docs/display.md)). A full-screen game's swapchain covers the desktop and
 renders on the phone's GPU; a windowed game inside the desktop does not cover it, and shows

@@ -65,6 +65,18 @@ class GameDesktop(unittest.TestCase):
         self.assertEqual(wine_dpi.game_desktop((1290, 2796)), (2796, 1290))
         self.assertEqual(wine_dpi.game_desktop((0, 0)), (1920, 1080))
 
+    def test_only_below_1280x720(self):
+        self.assertTrue(wine_dpi.needs_desktop((932, 1356)))
+        self.assertTrue(wine_dpi.needs_desktop((1338, 700)))
+        self.assertFalse(wine_dpi.needs_desktop((1338, 911)))
+        self.assertFalse(wine_dpi.needs_desktop((1280, 720)))
+
+    def test_no_desktop_removes_only_its_value(self):
+        text = '[Software\\\\Wine\\\\Explorer] 1\n"Desktop"="Default"\n"Other"="x"\n\n[B] 1\n"Desktop"="keep"\n'
+        out = wine_dpi.with_game_settings(text, None)
+        self.assertIn('[Software\\\\Wine\\\\Explorer] 1\n"Other"="x"\n\n[B] 1\n"Desktop"="keep"\n', out)
+        self.assertEqual(wine_dpi.with_game_settings(out, None), out)
+
     def test_sections_are_matched_whole(self):
         text = '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1\n"Default"="800x600"\n'
         out = wine_dpi.with_game_settings(text, (1920, 1080))
@@ -116,6 +128,13 @@ class Prefixes(unittest.TestCase):
                 self.assertIn('[Software\\\\Wine\\\\Explorer] 0\n"Desktop"="Default"\n', text)
                 self.assertIn('[Software\\\\Wine\\\\Explorer\\\\Desktops] 0\n"Default"="1920x1080"\n', text)
             self.assertEqual(wine_dpi.apply_all(home, 288, (932, 1356)), [])
+            # On a display games accept, the virtual desktop goes; the DPI stays 96.
+            self.assertEqual(wine_dpi.apply_all(home, 192, (1338, 911)), [wine, tricks, game, other])
+            for prefix in (game, other):
+                text = (prefix / "user.reg").read_text()
+                self.assertNotIn('"Desktop"=', text)
+                self.assertIn('"LogPixels"=dword:00000060', text)
+            self.assertEqual(wine_dpi.apply_all(home, 192, (1338, 911)), [])
 
     def test_keeps_the_file_mode(self):
         with tempfile.TemporaryDirectory() as home:
