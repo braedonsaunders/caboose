@@ -568,8 +568,13 @@ the applications move back onto the phone. Returning to the foreground starts a 
 executor. An application launched with `CABOOSE_GPU_ON_LOSS=pause` instead
 waits: every call that would report the loss blocks until the broker has a new
 executor, then reports `VK_ERROR_DEVICE_LOST`, and the application recreates its device
-on the returned phone. Its devices cannot be resumed as they were, because their
-objects lived on the executor that left. Computer switches and display takeover
+on the returned phone. That includes a `VK_ERROR_DEVICE_LOST` the phone returns while its
+app closes, before the executor's streams end, and a device stream that ends before the
+broker has removed the executor's socket: either is held for up to 10 s for the executor
+to leave, and taken as a loss of the device alone if it stays. Its devices cannot be
+resumed as they were, because their objects lived on the executor that left, so an
+application without device-loss recovery, such as a game under DXVK, ends when the phone
+returns rather than when it leaves. Computer switches and display takeover
 also drain the owner. Ordinary display reconnects keep the same executor. The
 app releases its process-wide owner reservation once the executor has ended; the
 server fences the old executor (the host relay ends only after both of its sides close,
