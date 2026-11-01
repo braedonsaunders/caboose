@@ -1,7 +1,10 @@
 #!/bin/bash
-# bubblewrap for a computer that runs in a container (guest/flatpak/README.md). The kernel
-# lets a sandbox mount a fresh /proc only where a fully visible one exists, and Docker masks
-# parts of the container's; each sandbox gets the container's /proc, read-only, instead.
+# bubblewrap for a computer that runs in a container (guest/flatpak/README.md). Older kernels
+# let a sandbox mount a fresh /proc only where a fully visible one exists, and Docker masks
+# parts of the container's. Where a probe shows the kernel refuses, each sandbox gets the
+# container's /proc, read-only, instead; where it allows, the sandbox keeps its own /proc, so
+# the process IDs an app reads there match the ones its peers report (Steam rejects its own
+# web helper otherwise).
 # bwrap's sysctl lock on nested user namespaces needs that fresh /proc too: Flatpak's own
 # seccomp filter still refuses every app a user namespace. Root holds no CAP_SYS_ADMIN here,
 # so a sandbox it starts begins in a user namespace of its own.
@@ -14,9 +17,11 @@ while (($#)); do
 done
 out=()
 [[ $(id -u) == 0 ]] && out+=(--unshare-user)
+fresh_proc=0
+/usr/bin/bwrap.distrib "${out[@]}" --unshare-user-try --unshare-pid --ro-bind / / --proc /proc true 2>/dev/null && fresh_proc=1
 for ((i = 0; i < ${#args[@]}; i++)); do
   case ${args[i]} in
-    --proc) out+=(--ro-bind /proc "${args[i + 1]}"); ((i += 1)) ;;
+    --proc) ((fresh_proc)) && out+=(--proc "${args[i + 1]}") || out+=(--ro-bind /proc "${args[i + 1]}"); ((i += 1)) ;;
     --disable-userns|--assert-userns-disabled) ;;
     *) out+=("${args[i]}") ;;
   esac
