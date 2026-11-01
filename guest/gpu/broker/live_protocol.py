@@ -53,6 +53,25 @@ class Kind(IntEnum):
     TRANSPORT_CONFIG = 37
     TRANSPORT_READY = 38
     SWAPCHAIN_PRESENT_ORDERED = 39
+    # Executor resume (feature `executor-resume`, docs/gpu-live.md "Resuming an executor").
+    ACK = 40
+    RESUME = 41
+    EXECUTOR_SUSPEND = 42
+    QUIESCE = 43
+    QUIESCED = 44
+    EXECUTOR_RESUME = 45
+    SNAPSHOT_REFUSED = 46
+
+
+# Outside the directional sequence: sequence 0, never retained or sent again.
+UNSEQUENCED = frozenset((Kind.ACK, Kind.RESUME))
+SESSION_KINDS = frozenset((Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN,
+                           Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY, Kind.ACK, Kind.RESUME,
+                           Kind.EXECUTOR_SUSPEND, Kind.QUIESCE, Kind.QUIESCED, Kind.EXECUTOR_RESUME,
+                           Kind.SNAPSHOT_REFUSED))
+# Fixed payload sizes of the resume kinds.
+RESUME_SIZES = {Kind.ACK: 8, Kind.RESUME: 32, Kind.EXECUTOR_SUSPEND: 0, Kind.QUIESCE: 0, Kind.QUIESCED: 0,
+                Kind.EXECUTOR_RESUME: 8, Kind.SNAPSHOT_REFUSED: 8}
 
 
 class ProtocolError(ValueError):
@@ -84,13 +103,15 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
         raise ProtocolError("unknown message kind") from error
     if len(executor) != 16 or executor == bytes(16):
         raise ProtocolError("invalid executor identity")
-    if not 1 <= generation < 2**64 or not 1 <= sequence < 2**64:
+    if not 1 <= generation < 2**64:
+        raise ProtocolError("invalid generation or sequence")
+    if (sequence != 0) if kind in UNSEQUENCED else not 1 <= sequence < 2**64:
         raise ProtocolError("invalid generation or sequence")
     if not 0 <= process < 2**64 or not 0 <= stream < 2**64:
         raise ProtocolError("invalid resource identity")
     if not 0 <= length <= MAX_PAYLOAD:
         raise ProtocolError("payload limit")
-    if kind in (Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN, Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
+    if kind in SESSION_KINDS:
         if process or stream:
             raise ProtocolError("session message has resource identity")
     elif kind in (Kind.PROCESS_OPEN, Kind.PROCESS_READY, Kind.PROCESS_STOP, Kind.PROCESS_RETIRED) or is_surface(kind):
@@ -98,7 +119,10 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
             raise ProtocolError("invalid process scope")
     elif not process or not stream:
         raise ProtocolError("invalid stream scope")
-    if is_surface(kind):
+    if kind in RESUME_SIZES:
+        if length != RESUME_SIZES[kind]:
+            raise ProtocolError("invalid resume control size")
+    elif is_surface(kind):
         if length < 40:
             raise ProtocolError("truncated surface control")
     elif kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
@@ -146,11 +170,15 @@ class Decoder:
     otherwise the first SESSION establishes it on this transport only.
     """
 
-    def __init__(self, executor=None, generation=None):
+    def __init__(self, executor=None, generation=None, replay=False):
         if (executor is None) != (generation is None):
             raise ValueError("identity must be supplied together")
         self.executor = executor
         self.generation = generation
+        # With executor resume a peer sends its retained envelopes again after a splice:
+        # those already received are skipped instead of refused.
+        self.replay = replay
+        self._skip = False
         self._sequence = 1
         self._buffer = bytearray()
         self._header = None
@@ -159,6 +187,11 @@ class Decoder:
     @property
     def buffered_bytes(self):
         return len(self._buffer)
+
+    @property
+    def received(self):
+        """The highest contiguous sequence delivered."""
+        return self._sequence - 1
 
     def feed(self, data: bytes, deliver):
         if self._ended:
@@ -180,7 +213,8 @@ class Decoder:
                     if magic != b"CGLV" or version != 1 or reserved:
                         raise ProtocolError("invalid header")
                     kind = _validate(kind, executor, generation, process, stream, sequence, length)
-                    if sequence != self._sequence:
+                    self._skip = self.replay and kind not in UNSEQUENCED and 0 < sequence < self._sequence
+                    if kind not in UNSEQUENCED and sequence != self._sequence and not self._skip:
                         raise ProtocolError("sequence mismatch")
                     if self.executor is None:
                         if kind != Kind.SESSION:
@@ -195,12 +229,16 @@ class Decoder:
                 _, _, kind, _, _, executor, generation, process, stream, sequence = self._header
                 frame = Envelope(Kind(kind), executor, generation, process, stream,
                                  sequence, bytes(self._buffer))
+                self._header = None
+                self._buffer.clear()
+                if self._skip:
+                    self._skip = False
+                    continue
                 if is_surface(frame.kind):
                     _surface(frame.kind, frame.payload)
                 _transport(frame.kind, frame.payload)
-                self._header = None
-                self._buffer.clear()
-                self._sequence += 1
+                if frame.kind not in UNSEQUENCED:
+                    self._sequence += 1
                 deliver(frame)
         except Exception:
             self._ended = True

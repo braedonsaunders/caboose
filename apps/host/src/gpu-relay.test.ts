@@ -26,7 +26,7 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, gpuFeatures, gpuUpstreamURL, relayGPU } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
@@ -179,4 +179,100 @@ it('counts pings from the phone as life while it reads nothing', async () => {
     expect(client.readyState).toBe(WebSocket.OPEN)
     client.peerClose(1006)
   } finally { vi.useRealTimers() }
+})
+
+function resumable() {
+  const client = new WebSocket('ws://test') as ControlledSocket
+  const relay = startGPURelay(client, { displayURL: 'ws://guest:14600', displayToken: 'test', computer: 'owner', executor: 'test', resumable: true })
+  const upstream = state.created.at(-1) as ControlledSocket
+  upstream.emit('open')
+  return { client, upstream, relay }
+}
+
+it('parks a resumable relay when its phone is lost, without telling the guest, and splices a resuming phone', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream, relay } = resumable()
+    client.peerClose(1006)
+    expect(upstream.readyState).toBe(WebSocket.OPEN)
+    expect(upstream.paused).toBe(true)
+    expect(upstream.closeCodes).toEqual([])
+    // Messages the guest side had already parsed are dropped; the broker sends them again.
+    upstream.emit('message', Buffer.from([7]), true)
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS - 1000)
+    const next = new WebSocket('ws://test') as ControlledSocket
+    expect(relay.attach(next)).toBe(true)
+    expect(upstream.paused).toBe(false)
+    expect(next.pending).toHaveLength(0)
+    upstream.emit('message', Buffer.from([8]), true)
+    expect(next.pending).toHaveLength(1)
+    next.emit('message', Buffer.from([9]), true)
+    expect(upstream.pending).toHaveLength(1)
+    // The hold no longer runs once a phone resumed.
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS)
+    expect(upstream.readyState).toBe(WebSocket.OPEN)
+    next.pending.shift()!(); upstream.pending.shift()!()
+    upstream.peerClose(1006)
+    await relay.done
+  } finally { vi.useRealTimers() }
+})
+
+it('ends the guest side abruptly once a hold expires', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream, relay } = resumable()
+    let finished = false
+    void relay.done.then(() => { finished = true })
+    client.emit('error', new Error('reset'))
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS - 1)
+    expect(upstream.readyState).toBe(WebSocket.OPEN)
+    await vi.advanceTimersByTimeAsync(2)
+    await relay.done
+    expect(finished).toBe(true)
+    expect(upstream.closeCodes).toEqual([])
+    expect(upstream.readyState).toBe(WebSocket.CLOSED)
+    expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
+  } finally { vi.useRealTimers() }
+})
+
+it('holds a suspended phone for the extended hold, and a silent one for the short one', async () => {
+  vi.useFakeTimers()
+  try {
+    const suspended = resumable()
+    suspended.client.peerClose(GPU_SUSPENDED_CLOSE)
+    await vi.advanceTimersByTimeAsync(GPU_SUSPEND_HOLD_MS - 1000)
+    expect(suspended.upstream.readyState).toBe(WebSocket.OPEN)
+    await vi.advanceTimersByTimeAsync(2000)
+    await suspended.relay.done
+    const silent = resumable()
+    await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_TIMEOUT_MS + 2 * GPU_HEARTBEAT_MS)
+    expect(silent.client.readyState).toBe(WebSocket.CLOSED)
+    expect(silent.upstream.readyState).toBe(WebSocket.OPEN)
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS)
+    await silent.relay.done
+    expect(silent.upstream.readyState).toBe(WebSocket.CLOSED)
+  } finally { vi.useRealTimers() }
+})
+
+it('takes a resuming phone while the old phone side still looks open, ending the old one', async () => {
+  const { client, upstream, relay } = resumable()
+  const next = new WebSocket('ws://test') as ControlledSocket
+  expect(relay.attach(next)).toBe(true)
+  expect(client.readyState).toBe(WebSocket.CLOSED)
+  // Late events of the replaced phone side change nothing.
+  client.emit('message', Buffer.from([1]), true)
+  expect(upstream.pending).toHaveLength(0)
+  expect(upstream.readyState).toBe(WebSocket.OPEN)
+  next.peerClose(1000)
+  expect(upstream.closeCodes).toEqual([1000])
+  upstream.peerClose(1000)
+  await relay.done
+})
+
+it('keeps the normal close receipt and never parks a relay that is not resumable', async () => {
+  const { client, upstream, done } = pair()
+  client.peerClose(GPU_SUSPENDED_CLOSE)
+  await done
+  expect(upstream.readyState).toBe(WebSocket.CLOSED)
+  expect(upstream.closeCodes).toEqual([])
 })

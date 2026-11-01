@@ -1172,3 +1172,116 @@ class ProcessUsageTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+def written_envelopes(data):
+    """The CGLV envelopes in the broker's server-to-phone WebSocket frames (unmasked)."""
+    out, view = [], bytes(data)
+    while view:
+        size = view[1] & 127
+        if size == 126: size, offset = struct.unpack('!H', view[2:4])[0], 4
+        elif size == 127: size, offset = struct.unpack('!Q', view[2:10])[0], 10
+        else: offset = 2
+        body = view[offset:offset + size]
+        view = view[offset + size:]
+        magic, version, kind, length = struct.unpack_from('<4sHHI', body)
+        sequence = struct.unpack_from('<Q', body, 56)[0]
+        out.append((Kind(kind), sequence, body[64:64 + length]))
+    return out
+
+
+class ExecutorResumeTests(unittest.IsolatedAsyncioTestCase):
+    """Executor resume (docs/gpu-live.md, "Resuming an executor") on the broker's side."""
+    executor = b'a' * 16
+
+    def session(self):
+        return broker.Session(None, self.executor, 1, None, Writer(), indexed=True,
+                              features={'executor-resume', 'completion-feed'})
+
+    def phone(self, kind, sequence, payload=b''):
+        return Envelope(kind, self.executor, 1, 0, 0, sequence, payload)
+
+    async def drained(self, session):
+        for _ in range(20): await asyncio.sleep(0)
+
+    async def test_retains_until_acknowledged_and_resumes_after_what_the_phone_had(self):
+        session = self.session()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            session.send_unsequenced(Kind.ACK, struct.pack('<Q', 0))
+            session.send(Kind.SESSION, payload=session.hello)
+            for _ in range(3): session.send(Kind.REVOKE)
+            await self.drained(session)
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.ACK, 0), (Kind.SESSION, 1), (Kind.REVOKE, 2), (Kind.REVOKE, 3), (Kind.REVOKE, 4)])
+            self.assertEqual([s for s, _ in session.retained], [1, 2, 3, 4])
+            await session.message(self.phone(Kind.ACK, 0, struct.pack('<Q', 2)))
+            self.assertEqual([s for s, _ in session.retained], [3, 4])
+            # A splice: the phone had 3; the broker answers with its RESUME and the nonce,
+            # then sends 4 again, ahead of anything queued after.
+            session.writer.data.clear()
+            nonce = b'n' * 16
+            await session.message(self.phone(Kind.RESUME, 0, struct.pack('<QQ16s', 3, 0, nonce)))
+            session.send(Kind.REVOKE)
+            await self.drained(session)
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.RESUME, 0), (Kind.REVOKE, 4), (Kind.REVOKE, 5)])
+            self.assertEqual(sent[0][2], struct.pack('<QQ16s', session.decoder.received, 0, nonce))
+            # Out of range acknowledgements are protocol errors.
+            with self.assertRaises(ValueError):
+                session.acknowledge(2)
+            with self.assertRaises(ValueError):
+                session.acknowledge(99)
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_full_window_holds_the_sender_until_an_acknowledgement(self):
+        session = self.session()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            with mock.patch.object(broker, 'RESUME_WINDOW_MESSAGES', 2):
+                for _ in range(3): session.send(Kind.REVOKE)
+                await self.drained(session)
+                self.assertEqual([s for s, _ in session.retained], [1, 2])
+                self.assertEqual(session.pending_count, 1)
+                session.acknowledge(1)
+                await self.drained(session)
+                self.assertEqual([s for s, _ in session.retained], [2, 3])
+                self.assertEqual(session.pending_count, 0)
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_acknowledges_the_phone_after_a_delay_and_skips_what_it_sends_again(self):
+        session = self.session()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            delivered = []
+            async def deliver(frame): delivered.append(frame)
+            with mock.patch.object(broker, 'ACK_DELAY', 0.01):
+                frames = encode(self.phone(Kind.REVOKED, 1)) + encode(self.phone(Kind.REVOKED, 2))
+                got = []
+                session.decoder.feed(frames, got.append)
+                for frame in got: session.received_sequenced(64)
+                await asyncio.sleep(0.05)
+                sent = written_envelopes(session.writer.data)
+                self.assertEqual([(k, s, p) for k, s, p in sent], [(Kind.ACK, 0, struct.pack('<Q', 2))])
+                # The phone sends 2 again after a splice: skipped, 3 delivered.
+                got.clear()
+                session.decoder.feed(encode(self.phone(Kind.REVOKED, 2)) + encode(self.phone(Kind.REVOKED, 3)), got.append)
+                self.assertEqual([f.sequence for f in got], [3])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_resume_controls_are_refused_without_the_feature(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'completion-feed'})
+        try:
+            with self.assertRaises(ValueError):
+                await session.message(self.phone(Kind.ACK, 0, struct.pack('<Q', 0)))
+        finally:
+            session.bindings.finish(session.binding_generation)

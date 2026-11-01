@@ -138,3 +138,44 @@ class LiveProtocolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def session(kind, sequence, payload=b""):
+    return Envelope(kind, IDENTITY, 7, 0, 0, sequence, payload)
+
+
+class ExecutorResumeProtocolTests(unittest.TestCase):
+    def test_ack_and_resume_sit_outside_the_directional_sequence(self):
+        ack = session(Kind.ACK, 0, (5).to_bytes(8, "little"))
+        resume = session(Kind.RESUME, 0, (3).to_bytes(8, "little") + bytes(8) + b"n" * 16)
+        got, parser = [], Decoder(IDENTITY, 7)
+        parser.feed(encode(ack) + encode(frame(sequence=1)) + encode(resume) + encode(frame(sequence=2)), got.append)
+        self.assertEqual([m.kind for m in got], [Kind.ACK, Kind.DATA, Kind.RESUME, Kind.DATA])
+        self.assertEqual(parser.received, 2)
+
+    def test_resume_kinds_have_fixed_sizes_session_scope_and_their_sequencing(self):
+        with self.assertRaises(ProtocolError):
+            encode(session(Kind.ACK, 1, bytes(8)))  # an ACK is never sequenced
+        with self.assertRaises(ProtocolError):
+            encode(session(Kind.QUIESCE, 0))  # QUIESCE is
+        with self.assertRaises(ProtocolError):
+            encode(session(Kind.RESUME, 0, bytes(8)))
+        with self.assertRaises(ProtocolError):
+            encode(Envelope(Kind.EXECUTOR_SUSPEND, IDENTITY, 7, 11, 0, 1))
+        encode(session(Kind.EXECUTOR_RESUME, 4, (1).to_bytes(4, "little") + bytes(4)))
+        encode(session(Kind.QUIESCED, 9))
+
+    def test_a_replaying_decoder_skips_envelopes_it_already_has(self):
+        got, parser = [], Decoder(IDENTITY, 7, replay=True)
+        parser.feed(encode(frame(sequence=1)) + encode(frame(sequence=2)), got.append)
+        # After a splice the peer sends 2 again, then 3.
+        parser.feed(encode(frame(sequence=2, payload=b"again")) + encode(frame(sequence=3)), got.append)
+        self.assertEqual([m.sequence for m in got], [1, 2, 3])
+        self.assertEqual(parser.received, 3)
+        # A gap is still refused, and a decoder without replay refuses the duplicate.
+        with self.assertRaises(ProtocolError):
+            parser.feed(encode(frame(sequence=5)), got.append)
+        strict = Decoder(IDENTITY, 7)
+        strict.feed(encode(frame(sequence=1)), got.append)
+        with self.assertRaises(ProtocolError):
+            strict.feed(encode(frame(sequence=1)), got.append)

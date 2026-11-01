@@ -8,7 +8,7 @@ import { CapacitySampler, capacityFor } from './capacity.js'
 import { recoveryRoute } from './recovery.js'
 import { AccountSocketFence } from './identity/socket-fence.js'
 import { computerSizes, expandSize } from './sizes.js'
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { upgradeComponents, type ComponentsMode, type UpgradeStatus } from './components.js'
 import { parseCraftRequest, runCraft } from './craft-jobs.js'
 import { COMMAND_LIMITS, CommandStore, ComputerCommands, commandJob, commandSummary, commandView, parseCommandRequest, parseWait } from './commands.js'
@@ -72,7 +72,7 @@ import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journa
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
 import { AgentProfiles, prepareProfileStart, profileContext } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
-import { GPU_PROTOCOL, GPU_MAX_MESSAGE, relayGPU, gpuFeatures } from './gpu-relay.js'
+import { GPU_PROTOCOL, GPU_MAX_MESSAGE, startGPURelay, gpuFeatures, type GPURelay } from './gpu-relay.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -196,6 +196,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const gpuSockets = new Set<WebSocket>()
   const pendingGPUSockets = new Map<Duplex, string | undefined>()
   let gpuReservation: object | undefined
+  /** The running relay's resume credential (`executor-resume`), the phone it was issued to,
+   * and the relay a resuming phone is spliced onto. Host memory only, one at a time. */
+  let gpuResume: { credential: Buffer; phoneId: string | undefined; relay: GPURelay } | undefined
+  /** Credentials to announce in the 101 response of the upgrade they belong to. */
+  const gpuResumeHeaders = new WeakMap<IncomingMessage, string>()
+  gpuWss.on('headers', (headers, request) => {
+    const credential = gpuResumeHeaders.get(request)
+    if (credential) headers.push(`X-Caboose-GPU-Resume: ${credential}`)
+  })
   function broadcast(event: unknown): void {
     const message = JSON.stringify(event)
     for (const socket of controls) if (socket.readyState === WebSocket.OPEN) socket.send(message)
@@ -493,6 +502,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   function closeSockets(): void {
     for (const socket of sockets) socket.terminate()
     for (const socket of pendingGPUSockets.keys()) socket.destroy()
+    gpuResume?.relay.end()
   }
   const commands = new ComputerCommands(pieces.commands ?? CommandStore.memory(), {
     guest: () => controller.guest(),
@@ -1193,6 +1203,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
     // No agent route, arbitrary destination, client-supplied executor or query credentials.
     if (url.search || offered.length !== 1 || offered[0] !== GPU_PROTOCOL) return refuse('400 Bad Request')
+    const resumeHeader = request.headers['x-caboose-gpu-resume']
+    if (resumeHeader !== undefined) return resumeGPU(request, socket, head, typeof resumeHeader === 'string' ? resumeHeader : '', principal, refuse)
     if (!computer.acceptsConnections || gpuReservation) return refuse('409 Conflict')
     const reservation = {}
     gpuReservation = reservation
@@ -1223,13 +1235,43 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
           // Only trusted host identities and the guest's current per-wake token cross
           // this boundary. The guest authenticates before trusting these headers.
           try {
-            void relayGPU(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
-              computer: id, executor: randomUUID(),
-              features: gpuFeatures(request.headers['x-caboose-gpu-features']) }).then(finish, () => { client.terminate(); finish() })
+            const features = gpuFeatures(request.headers['x-caboose-gpu-features'])
+            const relay = startGPURelay(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
+              computer: id, executor: randomUUID(), features, resumable: credential !== undefined })
+            if (credential !== undefined) gpuResume = { credential: Buffer.from(credential, 'base64url'), phoneId: principal.phoneId, relay }
+            void relay.done.then(() => {
+              if (gpuResume?.relay === relay) gpuResume = undefined
+              finish()
+            }, () => { client.terminate(); finish() })
           } catch { client.terminate(); finish() }
         })
       } catch { socket.destroy(); finish() }
     }, () => { refuse('502 Bad Gateway'); finish() })
+    // A phone that declared `executor-resume` gets the executor's resume credential with its 101.
+    const credential = gpuFeatures(request.headers['x-caboose-gpu-features']).includes('executor-resume')
+      ? randomBytes(32).toString('base64url') : undefined
+    if (credential !== undefined) gpuResumeHeaders.set(request, credential)
+  }
+
+  /** Splices a resuming phone onto the parked (or still running) relay its credential names:
+   * the executor's own transport, not a new executor, so the reservation is the relay's. An
+   * unknown or expired credential, or one issued to another phone, is gone. */
+  function resumeGPU(request: IncomingMessage, socket: Duplex, head: Buffer, presented: string, principal: Principal, refuse: (status: string) => void): void {
+    const offered = Buffer.from(presented, 'base64url')
+    const current = gpuResume
+    if (!current || offered.length !== current.credential.length || !timingSafeEqual(offered, current.credential) ||
+      current.phoneId !== principal.phoneId || !computer.acceptsConnections) return refuse('410 Gone')
+    gpuResumeHeaders.set(request, presented)
+    try {
+      gpuWss.handleUpgrade(request, socket, head, client => {
+        sockets.add(client)
+        gpuSockets.add(client)
+        if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
+        client.on('error', () => client.terminate())
+        client.once('close', () => { sockets.delete(client); gpuSockets.delete(client); phoneSockets.delete(client) })
+        if (gpuResume !== current || !current.relay.attach(client)) client.close(1011)
+      })
+    } catch { socket.destroy() }
   }
 
   function connect(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, path: string, principal: Principal): void {
@@ -1286,6 +1328,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   function disconnectPhone(phoneId: string): void {
     for (const [socket, phone] of phoneSockets) if (phone === phoneId) socket.terminate()
     for (const [socket, phone] of pendingGPUSockets) if (phone === phoneId) socket.destroy()
+    // A revoked phone's parked executor is not kept for it.
+    if (gpuResume?.phoneId === phoneId) gpuResume.relay.end()
   }
 
   async function shutdown(): Promise<void> {

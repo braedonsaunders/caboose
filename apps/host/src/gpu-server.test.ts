@@ -212,3 +212,47 @@ it('preserves a real broker normal-close receipt through the authenticated relay
   expect((await closed)[0]).toBe(1000)
   await vi.waitFor(() => expect(f.upstream.clients.size).toBe(0))
 })
+
+it('gives a resuming phone its parked executor back, and only with its own credential', async () => {
+  const f = await fixture()
+  const first = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-features': 'executor-resume' })
+  const opened = once(first, 'open')
+  const [response] = await once(first, 'upgrade') as [IncomingMessage]
+  const credential = response.headers['x-caboose-gpu-resume']
+  expect(credential).toMatch(/^[A-Za-z0-9_-]{43}$/)
+  await opened
+  await vi.waitFor(() => expect(f.requests).toHaveLength(1))
+  const executor = f.requests[0]!.headers['x-caboose-gpu-executor']
+  expect(f.requests[0]!.headers['x-caboose-gpu-features']).toBe('executor-resume')
+  // The phone's transport is lost: the relay parks, and the guest side stays open.
+  first.terminate()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(f.upstream.clients.size).toBe(1)
+  // A new executor is still refused; a wrong credential is gone.
+  expect(await refused(f.connect())).toBe(409)
+  expect(await refused(f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': 'A'.repeat(43) }))).toBe(410)
+  const resumed = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': credential as string })
+  const resumedOpen = once(resumed, 'open')
+  const [again] = await once(resumed, 'upgrade') as [IncomingMessage]
+  expect(again.headers['x-caboose-gpu-resume']).toBe(credential)
+  await resumedOpen
+  const reply = once(resumed, 'message'); resumed.send(Buffer.from([5])); expect((await reply)[0]).toEqual(Buffer.from([5]))
+  // The same executor: no second guest connection was made.
+  expect(f.requests).toHaveLength(1)
+  expect(f.upstream.clients.size).toBe(1)
+  expect(executor).toMatch(/^[a-f0-9-]{36}$/)
+  const closed = once(resumed, 'close'); resumed.close(1000); await closed
+  await vi.waitFor(() => expect(f.upstream.clients.size).toBe(0))
+  // Once the relay ended, its credential is gone too.
+  expect(await refused(f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': credential as string }))).toBe(410)
+})
+
+it('does not offer a resume credential to a phone that did not declare executor-resume', async () => {
+  const f = await fixture()
+  const client = f.connect()
+  const opened = once(client, 'open')
+  const [response] = await once(client, 'upgrade') as [IncomingMessage]
+  expect(response.headers['x-caboose-gpu-resume']).toBeUndefined()
+  await opened
+  expect(await refused(f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': 'A'.repeat(43) }))).toBe(410)
+})

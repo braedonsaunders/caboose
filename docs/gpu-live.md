@@ -353,6 +353,37 @@ by the same broker. Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
 as `CABOOSE_GPU_BROKER executor session ended: <reason>`.
 
+## Resuming an executor
+
+A phone that declares `executor-resume` gets the executor's resume credential with its
+upgrade response (`X-Caboose-GPU-Resume`): 32 random bytes in unpadded base64url, kept in the
+host's memory for the executor's lifetime and never rotated. A later upgrade that presents it
+is spliced onto the same executor; an unknown or expired credential, one issued to another
+phone, or one presented after the executor ended gets `410 Gone`. A phone without the feature
+gets no credential, and a lost socket ends its executor as before.
+
+The host's relay (`apps/host/src/gpu-relay.ts`) parks instead of ending when a resumable
+phone side is lost: a socket error, a close other than 1000, a failed send, or 3 s without a
+pong or a message. It stops reading the broker's side, so nothing is queued while parked and
+the broker's own window is the only replay, keeps that side open, and still counts the
+executor as the computer's one. It holds it for 30 s, or for 30 min after a phone that closed
+with code 4001 (suspended); neither close is forwarded to the broker. A phone close with 1000
+keeps the normal-close receipt. A splice that arrives while the old phone socket still looks
+open ends that socket. When a hold expires the relay ends the broker's side abruptly, and the
+executor is lost as after any lost transport; a host restart ends parked relays too.
+
+The broker (`guest/gpu/gfxstream/caboose-gpu-broker`) negotiates the session as resumable when
+the phone declared the feature, and then sends ACK with value 0 as its first envelope. It keeps
+every sequenced envelope it wrote, as the exact bytes written (CGLZ records included), until
+the phone's ACK or RESUME covers it, and stops writing new ones while 8 MiB or 2048 are
+unacknowledged, so local streams wait for credit as they do for a busy phone. It acknowledges
+the phone after 64 KiB received or 50 ms after the first unacknowledged envelope. On the phone's
+RESUME it writes its own RESUME with the phone's nonce, then everything after the sequence the
+phone named, both ahead of anything queued; envelopes from the phone it already received are
+skipped. Each splice is logged as `CABOOSE_GPU_BROKER executor resumed: phone had N, sent again
+M envelopes`. An ACK or RESUME in a session that is not resumable, or an acknowledgement below
+an earlier one or above the highest sequence sent, ends the session.
+
 ## Window identity boundary
 
 The optional owner display hello field `gpu_live_epoch` is exactly 16 nonzero
