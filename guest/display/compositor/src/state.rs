@@ -364,7 +364,13 @@ impl State {
                 }
                 matches
             }
-            Ok(_) => Vec::new(),
+            Ok(_) => {
+                // Binds are rare and retried a few times: each refusal says why, so a window
+                // left without its phone surface (white) can be told from the log alone.
+                tracing::info!("GPU X11 bind of {:#x} by process {} refused: {}", bind.object, bind.pid,
+                               lookup.refusal(bind.object, &ids, self.x11_scale, bind.pid));
+                Vec::new()
+            }
             Err(error) => {
                 tracing::warn!("GPU X11 window lookup: {error}");
                 Vec::new()

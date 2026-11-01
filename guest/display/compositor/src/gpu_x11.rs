@@ -89,6 +89,45 @@ impl X11Windows {
         Ok(covers((at.dst_x, at.dst_y), (inner.width, inner.height), (outer.width, outer.height), scale))
     }
 
+    /// Why `window` does not bind for `pid`, for the log: no bindable top-level above it
+    /// (its X ancestors), a child that does not cover its top-level (both geometries), or
+    /// a window another process made.
+    pub fn refusal(&self, window: Window, toplevels: &[Window], scale: f64, pid: u32) -> String {
+        self.explain(window, toplevels, scale, pid).unwrap_or_else(|error| format!("the X server could not say: {error}"))
+    }
+
+    fn explain(&self, window: Window, toplevels: &[Window], scale: f64, pid: u32) -> Result<String, Error> {
+        let Some(toplevel) = self.toplevel_of(window, toplevels)? else {
+            let mut ancestors = Vec::new();
+            let mut current = window;
+            for _ in 0..MAX_DEPTH {
+                let parent = self.conn.query_tree(current)?.reply()?.parent;
+                if parent == x11rb::NONE || parent == self.root {
+                    break;
+                }
+                ancestors.push(format!("{parent:#x}"));
+                current = parent;
+            }
+            return Ok(format!("no bindable top-level holds it (its ancestors: [{}]; bindable: {:x?})",
+                              ancestors.join(", "), toplevels));
+        };
+        if window != toplevel {
+            let inner = self.conn.get_geometry(window)?.reply()?;
+            let outer = self.conn.get_geometry(toplevel)?.reply()?;
+            let at = self.conn.translate_coordinates(window, toplevel, 0, 0)?.reply()?;
+            if !at.same_screen ||
+                covers((at.dst_x, at.dst_y), (inner.width, inner.height), (outer.width, outer.height), scale) == Cover::No {
+                return Ok(format!("it is {}x{} at ({}, {}) in top-level {toplevel:#x} of {}x{} (scale {scale})",
+                                  inner.width, inner.height, at.dst_x, at.dst_y, outer.width, outer.height));
+            }
+        }
+        Ok(match self.client_pid(window)? {
+            Some(maker) if maker != pid => format!("process {maker} made it, under top-level {toplevel:#x}"),
+            Some(_) => format!("it binds to top-level {toplevel:#x} (the process changed meanwhile)"),
+            None => "the X server does not know which process made it".into(),
+        })
+    }
+
     fn client_pid(&self, window: Window) -> Result<Option<u32>, Error> {
         let spec = ClientIdSpec { client: window, mask: ClientIdMask::LOCAL_CLIENT_PID };
         let reply = self.conn.res_query_client_ids(&[spec])?.reply()?;
