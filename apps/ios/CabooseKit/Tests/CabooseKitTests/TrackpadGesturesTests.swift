@@ -81,6 +81,35 @@ struct TrackpadGesturesTests {
         #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.90) == [.endDrag])
     }
 
+    /// What the finger feels through a session: a tap, a two-finger right-click and a
+    /// tap-and-a-half drag, and nothing for pointing.
+    @Test func clicksRightClicksAndDragsAreFelt() {
+        func felt(_ actions: [TrackpadGestures.Action]) -> [TrackpadGestures.Feedback] {
+            actions.compactMap(TrackpadGestures.feedback(for:))
+        }
+        var gestures = TrackpadGestures()
+        var feedback: [TrackpadGestures.Feedback] = []
+        feedback += felt(gestures.began(touches: 1, centroid: here, at: 1.00))
+        feedback += felt(gestures.moved(touches: 1, centroid: CGPoint(x: 160, y: 240), at: 1.10))
+        feedback += felt(gestures.ended(remaining: 0, centroid: nil, at: 1.20))
+        #expect(feedback.isEmpty, "pointing is not felt")
+        feedback += felt(gestures.began(touches: 1, centroid: here, at: 2.00))
+        feedback += felt(gestures.ended(remaining: 0, centroid: nil, at: 2.06))
+        feedback += felt(gestures.began(touches: 1, centroid: here, at: 2.20))
+        feedback += felt(gestures.moved(touches: 1, centroid: CGPoint(x: 101, y: 200), at: 2.22))
+        feedback += felt(gestures.moved(touches: 1, centroid: CGPoint(x: 140, y: 200), at: 2.30))
+        feedback += felt(gestures.ended(remaining: 0, centroid: nil, at: 2.60))
+        feedback += felt(gestures.began(touches: 1, centroid: here, at: 4.00))
+        feedback += felt(gestures.began(touches: 2, centroid: CGPoint(x: 130, y: 200), at: 4.04))
+        feedback += felt(gestures.ended(remaining: 1, centroid: CGPoint(x: 160, y: 200), at: 4.15))
+        feedback += felt(gestures.ended(remaining: 0, centroid: nil, at: 4.20))
+        #expect(feedback == [.click, .dragBegan, .dragEnded, .secondaryClick])
+        #expect(TrackpadGestures.feedback(for: .doubleClick) == .click)
+        #expect(TrackpadGestures.feedback(for: .click(button: 2)) == .click)
+        #expect(TrackpadGestures.feedback(for: .zoom(0.2)) == nil)
+        #expect(TrackpadGestures.feedback(for: .workspace(.up)) == nil)
+    }
+
     @Test func movingOneFingerOnlyMovesTheCursor() {
         var gestures = TrackpadGestures()
         _ = gestures.began(touches: 1, centroid: here, at: 1.00)

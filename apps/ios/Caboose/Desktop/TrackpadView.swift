@@ -244,22 +244,20 @@ final class TrackpadSurface: RemoteTextInputView {
             default: break
             }
             if let target { perform(action, in: target); continue }
+            TrackpadFeedback.play(for: action)
             switch action {
             case .workspace, .zoom: break // handled before window routing
             case .move(let delta):
                 desktop?.pointerHovering = true
                 desktop?.move(by: delta, session: session)
             case .scroll(let delta): desktop?.scroll(by: delta, session: session)
-            case .beginDrag:
-                desktop?.beginDrag(session: session)
-                haptics.impactOccurred()
+            case .beginDrag: desktop?.beginDrag(session: session)
             case .endDrag: desktop?.endDrag(session: session)
             case .click(let button):
                 resetTyping()
                 defer { followField(purpose: session?.textPurpose, isCode: RemoteWindowView.isCodeApp(focusedWindow)) }
                 desktop?.click(button: button, session: session, open: open)
                 if button == 1 { checkDesktopTextFocus() }
-                haptics.impactOccurred()
             case .doubleClick:
                 resetTyping()
                 desktop?.doubleClick(session: session, open: open)
@@ -317,6 +315,7 @@ final class TrackpadSurface: RemoteTextInputView {
     /// Free desktops and external monitors continue through DesktopModel's hit testing.
     private func perform(_ action: TrackpadGestures.Action, in target: RemoteWindow) {
         guard let session, session.state == .ready, session.windows[target.id] === target else { return }
+        TrackpadFeedback.play(for: action)
         func pixel() -> CGPoint { CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height) }
         func button(_ button: Int, _ down: Bool) {
             session.pointerButton(in: target, button: button, pressed: down, at: pixel())
@@ -335,7 +334,6 @@ final class TrackpadSurface: RemoteTextInputView {
             session.focus(target)
             pointerClicks.click(in: target, session: session, at: pixel(), button: number)
             if number == 1 { checkTextFocus(session, target: target) }
-            haptics.impactOccurred()
         case .doubleClick:
             session.focus(target)
             pointerClicks.click(in: target, session: session, at: pixel())

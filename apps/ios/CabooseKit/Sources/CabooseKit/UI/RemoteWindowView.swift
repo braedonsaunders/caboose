@@ -673,7 +673,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// where it went: a ring blooms there for a moment, with a tick, so the menu that opens is
     /// plainly the press's.
     private func showSecondaryClick(at point: CGPoint) {
-        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.7)
+        TrackpadFeedback.play(.secondaryClick)
         guard !UIAccessibility.isReduceMotionEnabled else { return }
         let ring = CAShapeLayer()
         let radius: CGFloat = 22
@@ -971,11 +971,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
                     lastPointer = pixel
                     session.pointerMove(in: window, to: pixel)
                     pointerClicks.click(in: window, session: session, at: pixel, button: 1)
+                    TrackpadFeedback.play(.click)
                     tapped()
                 }
             case .dragging:
                 session?.takeDragIfOver(convert(point, to: nil))
                 if let window = remoteWindow { session?.pointerButton(in: window, button: 1, pressed: false, at: pixel) }
+                TrackpadFeedback.play(.dragEnded)
             case .idle: break
             }
             endAim()
@@ -1064,7 +1066,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         aim.startDrag()
         session.pointerMove(in: window, to: pixel)
         session.pointerButton(in: window, button: 1, pressed: true, at: pixel)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        TrackpadFeedback.play(.dragBegan)
         showAim()
     }
 

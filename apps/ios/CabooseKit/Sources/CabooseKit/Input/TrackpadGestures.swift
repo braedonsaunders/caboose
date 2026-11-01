@@ -24,6 +24,27 @@ public struct TrackpadGestures {
         case zoom(CGFloat)
     }
 
+    /// What a trackpad's finger feels for an action (`TrackpadFeedback` plays it).
+    public enum Feedback: Equatable, Sendable {
+        /// A click or a double-click's second click: the keyboard's light press.
+        case click
+        /// A right-click: firmer, so it is told from a click.
+        case secondaryClick
+        case dragBegan, dragEnded
+    }
+
+    /// The feedback for an action, if it has one: pointing, scrolling, zooming and switching
+    /// workspaces have none of their own.
+    public static func feedback(for action: Action) -> Feedback? {
+        switch action {
+        case .click(let button): return button == 3 ? .secondaryClick : .click
+        case .doubleClick: return .click
+        case .beginDrag: return .dragBegan
+        case .endDrag: return .dragEnded
+        case .move, .scroll, .workspace, .zoom: return nil
+        }
+    }
+
     public struct Tuning: Sendable {
         public var tapDuration: TimeInterval = 0.25
         public var twoFingerTapDuration: TimeInterval = 0.4

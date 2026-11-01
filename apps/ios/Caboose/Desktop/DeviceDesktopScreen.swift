@@ -334,7 +334,6 @@ final class DesktopTouchSurface: RemoteTextInputView {
     private var holdTimer: Timer?
     private var lastCentroid: CGPoint?
     private var lastTap: (time: TimeInterval, point: CGPoint)?
-    private let haptics = UIImpactFeedbackGenerator(style: .light)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -450,7 +449,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
                               id == target.id else { self.scrollSuppressed = true; return }
                         self.dragging = true
                         desktop.beginDrag(session: session)
-                        self.haptics.impactOccurred()
+                        TrackpadFeedback.play(.dragBegan)
                         return
                     }
                     self.contextOpened = true
@@ -460,7 +459,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
                         return
                     }
                     desktop.click(button: 3, session: self.session, open: self.open)
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    TrackpadFeedback.play(.secondaryClick)
                 }
             }
         } else { cancelHold() }
@@ -539,6 +538,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
             dragging = true
             cancelHold()
             desktop.beginDrag(session: session)
+            TrackpadFeedback.play(.dragBegan)
         }
         if dragging, let finger = fingers.first { point(at: finger.location(in: self)) }
     }
@@ -574,7 +574,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         guard travel < 12 else { return }
         if maxFingers >= 2 {
-            if duration < 0.4 { desktop.click(button: 3, session: session, open: open); haptics.impactOccurred() }
+            if duration < 0.4 { desktop.click(button: 3, session: session, open: open); TrackpadFeedback.play(.secondaryClick) }
             return
         }
         if duration > 0.5 { return }
@@ -587,7 +587,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
         }
         resetTyping()
         followFocusedField()
-        haptics.impactOccurred()
+        TrackpadFeedback.play(.click)
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -595,6 +595,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
     }
 
     private func releaseDrag() {
+        TrackpadFeedback.play(.dragEnded)
         if pansContent {
             let liveTarget = panWindow.map { panSession?.windows[$0.id] === $0 } ?? false
             desktop?.endDrag(session: liveTarget ? panSession : nil)

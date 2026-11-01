@@ -3373,6 +3373,10 @@ and restores its dock.
   recognition are mutually exclusive; pinch produces bounded Control–Plus/Minus shortcuts
   for the focused app. Multi-finger lift or system cancellation releases a drag immediately
   and suppresses leftover touches. A gesture guide is available in both control surfaces.
+  Every trackpad (Laptop's, the touch-driven desktop and a window's held pointer) is felt
+  through `TrackpadFeedback`: a click is the keyboard keys' light press, a right-click a
+  firmer tap, and a drag a tap as it starts and a softer one as it ends. UIKit plays none
+  while System Haptics is off.
   System-reserved/accessibility gestures, Force Touch and app-specific rotation are not emulated.
 - **Pointer.** A hardware trackpad and mouse work through `UIPointerInteraction` and
   `GCMouse`. The guest's virtual pointer pairs absolute positioning with relative
