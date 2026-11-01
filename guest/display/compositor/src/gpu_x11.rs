@@ -42,16 +42,24 @@ impl X11Windows {
     }
 
     /// The top-level in `toplevels` that `window` is, or that it covers, with the PID of the
-    /// X client that created `window`. None when it is neither, or unknown. X11 windows are
-    /// in display pixels at `scale` (x11_scale.rs) while the compositor sizes top-levels in
-    /// whole logical pixels, so a child sized to an odd display (a full-screen game's, 911
-    /// pixels high at scale 2) may fall short of its top-level by less than a logical pixel.
-    pub fn resolve(&self, window: Window, toplevels: &[Window], scale: f64) -> Result<Option<(Window, u32)>, Error> {
+    /// X client that created `window` and whether `window` is larger than the top-level.
+    /// None when it is neither, or unknown. X11 windows are in display pixels at `scale`
+    /// (x11_scale.rs) while the compositor sizes top-levels in whole logical pixels, so a
+    /// child sized to an odd display (a full-screen game's, 911 pixels high at scale 2) may
+    /// fall short of its top-level by less than a logical pixel. A game's child sized to the
+    /// screen may also be larger than a top-level the phone holds smaller (a maximized
+    /// window below Laptop's title bar).
+    pub fn resolve(&self, window: Window, toplevels: &[Window], scale: f64) -> Result<Option<Resolved>, Error> {
         let Some(toplevel) = self.toplevel_of(window, toplevels)? else { return Ok(None) };
-        if window != toplevel && !self.covers(window, toplevel, scale)? {
-            return Ok(None);
+        let mut larger = false;
+        if window != toplevel {
+            match self.covers(window, toplevel, scale)? {
+                Cover::No => return Ok(None),
+                Cover::Exactly => {}
+                Cover::Larger => larger = true,
+            }
         }
-        Ok(self.client_pid(window)?.map(|pid| (toplevel, pid)))
+        Ok(self.client_pid(window)?.map(|pid| Resolved { toplevel, pid, larger }))
     }
 
     fn toplevel_of(&self, window: Window, toplevels: &[Window]) -> Result<Option<Window>, Error> {
@@ -69,13 +77,16 @@ impl X11Windows {
         Ok(None)
     }
 
-    /// The window lies at the top-level's origin and has its size, to within a logical
-    /// pixel, so its pictures are the top-level's whole content.
-    fn covers(&self, window: Window, toplevel: Window, scale: f64) -> Result<bool, Error> {
+    /// Whether the window lies at the top-level's origin with at least its size, to within a
+    /// logical pixel, so its pictures hold the top-level's whole content.
+    fn covers(&self, window: Window, toplevel: Window, scale: f64) -> Result<Cover, Error> {
         let inner = self.conn.get_geometry(window)?.reply()?;
         let outer = self.conn.get_geometry(toplevel)?.reply()?;
         let at = self.conn.translate_coordinates(window, toplevel, 0, 0)?.reply()?;
-        Ok(at.same_screen && covers((at.dst_x, at.dst_y), (inner.width, inner.height), (outer.width, outer.height), scale))
+        if !at.same_screen {
+            return Ok(Cover::No);
+        }
+        Ok(covers((at.dst_x, at.dst_y), (inner.width, inner.height), (outer.width, outer.height), scale))
     }
 
     fn client_pid(&self, window: Window) -> Result<Option<u32>, Error> {
@@ -85,13 +96,38 @@ impl X11Windows {
     }
 }
 
+/// A bound X11 window's top-level, the bound process, and whether the window is larger
+/// than the top-level (its window should grow to the display to show all of it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Resolved {
+    pub toplevel: Window,
+    pub pid: u32,
+    pub larger: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Cover {
+    No,
+    /// The top-level's size, to within a logical pixel.
+    Exactly,
+    /// Larger than the top-level on at least one side, and covering it on the other.
+    Larger,
+}
+
 /// Whether a child at `at` in its top-level, of size `inner`, covers a top-level of size
 /// `outer`: at its origin, and no more than the rounding of one logical pixel at `scale`
-/// smaller in either direction, never larger.
-fn covers(at: (i16, i16), inner: (u16, u16), outer: (u16, u16), scale: f64) -> bool {
+/// smaller in either direction. A larger child covers it too: it is a game's swapchain
+/// sized to the screen in a top-level held smaller.
+fn covers(at: (i16, i16), inner: (u16, u16), outer: (u16, u16), scale: f64) -> Cover {
     let slack = if scale.is_finite() && scale > 1.0 { scale.ceil() as u16 - 1 } else { 0 };
-    let within = |inner: u16, outer: u16| inner <= outer && outer - inner <= slack;
-    at == (0, 0) && within(inner.0, outer.0) && within(inner.1, outer.1)
+    let reaches = |inner: u16, outer: u16| inner >= outer || outer - inner <= slack;
+    if at != (0, 0) || !reaches(inner.0, outer.0) || !reaches(inner.1, outer.1) {
+        Cover::No
+    } else if inner.0 > outer.0 || inner.1 > outer.1 {
+        Cover::Larger
+    } else {
+        Cover::Exactly
+    }
 }
 
 /// The one LocalClientPID record, if the X server reported exactly one.
@@ -109,22 +145,34 @@ mod tests {
 
     #[test]
     fn a_child_covers_its_toplevel_to_within_a_logical_pixel() {
+        use Cover::*;
         // Exactly, at any scale.
-        assert!(covers((0, 0), (1338, 912), (1338, 912), 1.0));
-        assert!(covers((0, 0), (1338, 912), (1338, 912), 2.0));
+        assert_eq!(covers((0, 0), (1338, 912), (1338, 912), 1.0), Exactly);
+        assert_eq!(covers((0, 0), (1338, 912), (1338, 912), 2.0), Exactly);
         // A full-screen game's child on a 911-pixel display, its top-level 456 logical pixels at 2.
-        assert!(covers((0, 0), (1338, 911), (1338, 912), 2.0));
-        assert!(!covers((0, 0), (1338, 911), (1338, 912), 1.0));
+        assert_eq!(covers((0, 0), (1338, 911), (1338, 912), 2.0), Exactly);
+        assert_eq!(covers((0, 0), (1338, 911), (1338, 912), 1.0), No);
         // Up to two pixels at scale 3, one at a fractional scale below 2.
-        assert!(covers((0, 0), (930, 1354), (932, 1356), 3.0));
-        assert!(!covers((0, 0), (929, 1356), (932, 1356), 3.0));
-        assert!(covers((0, 0), (1599, 900), (1600, 900), 1.5));
-        assert!(!covers((0, 0), (1598, 900), (1600, 900), 1.5));
-        // Never offset, never larger, and no slack for a scale that is not one.
-        assert!(!covers((1, 0), (1338, 912), (1338, 912), 2.0));
-        assert!(!covers((0, 0), (1339, 912), (1338, 912), 2.0));
-        assert!(!covers((0, 0), (1337, 912), (1338, 912), f64::NAN));
-        assert!(!covers((0, 0), (1337, 912), (1338, 912), 0.5));
+        assert_eq!(covers((0, 0), (930, 1354), (932, 1356), 3.0), Exactly);
+        assert_eq!(covers((0, 0), (929, 1356), (932, 1356), 3.0), No);
+        assert_eq!(covers((0, 0), (1599, 900), (1600, 900), 1.5), Exactly);
+        assert_eq!(covers((0, 0), (1598, 900), (1600, 900), 1.5), No);
+        // Never offset, and no slack for a scale that is not one.
+        assert_eq!(covers((1, 0), (1338, 912), (1338, 912), 2.0), No);
+        assert_eq!(covers((0, 0), (1337, 912), (1338, 912), f64::NAN), No);
+        assert_eq!(covers((0, 0), (1337, 912), (1338, 912), 0.5), No);
+    }
+
+    #[test]
+    fn a_screen_sized_child_covers_a_toplevel_held_smaller() {
+        use Cover::*;
+        // Halo: The Master Chief Collection's swapchain child at the 1338x911 screen in a
+        // top-level maximized below Laptop's title bar, 1338x848.
+        assert_eq!(covers((0, 0), (1338, 911), (1338, 848), 2.0), Larger);
+        assert_eq!(covers((0, 0), (1339, 912), (1338, 912), 2.0), Larger);
+        // Larger on one side does not make up for falling short on the other.
+        assert_eq!(covers((0, 0), (1338, 911), (1300, 960), 2.0), No);
+        assert_eq!(covers((0, 4), (1338, 911), (1338, 848), 2.0), No);
     }
 
     #[test]

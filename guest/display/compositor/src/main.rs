@@ -625,6 +625,7 @@ fn run(config: Config) -> Result<(), String> {
         x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
+        gpu_bind_larger: false,
         x11_identity: None,
         ibus: None,
         ibus_shown: None,

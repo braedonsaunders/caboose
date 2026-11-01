@@ -575,24 +575,23 @@ X11 `_NET_WM_PID` is not authority.
 
 - A Wayland bind matches a toplevel whose own `wl_surface` has that ID and whose
   accepted Wayland peer is the bound process (its held pidfd and the broker's).
-- An X11 bind matches a managed, non-override-redirect X11 toplevel that is the
-  window or that the window covers (a descendant at the toplevel's origin with its
-  size, as Chromium's GPU process draws into, or short of it by less than a logical
-  pixel: X11 windows are in display pixels and toplevels are sized in whole logical
-  pixels, so a full-screen game's child on a display 911 pixels high at scale 2 is
-  one pixel shorter than its 912-pixel toplevel). The X server's own record of
 - An X11 bind matches a managed X11 toplevel, or an override-redirect window (a menu,
   tooltip or dropdown, which the phone shows as a popup over its parent), that is the
-  window or that the window covers exactly (a descendant at the toplevel's origin
-  with its size, as Chromium's GPU process draws into). The X server's own record of
+  window or that the window covers: a descendant at the toplevel's origin with its
+  size, as Chromium's GPU process draws into, or short of it by less than a logical
+  pixel (X11 windows are in display pixels and toplevels are sized in whole logical
+  pixels, so a full-screen game's child on a display 911 pixels high at scale 2 is
+  one pixel shorter than its 912-pixel toplevel), or larger than it (a game's
+  swapchain sized to the screen in a window the phone holds smaller, maximized below
+  Laptop's title bar). The X server's own record of
   the client that created the window (X-Resource `LocalClientPID`) must be the bound
   process, the broker's pidfd must identify that live process (PID, start time and
   owner), and the owner must be the compositor's user. The grant is the toplevel's
-  window. A bind configures a full-screen window, or one the client has not given a
-  geometry, to the display's extent; a window the client placed keeps its geometry, so
-  an application that rebinds each time it recreates its swapchain (CEF) is not resized.
-  window, which is configured to the display's extent like a Wayland toplevel; a popup
-  keeps the place and size its application gave it.
+  window. A bind configures a full-screen window, one the client has not given a
+  geometry, or one whose bound child is larger than it, to the display's extent; any
+  other window the client placed keeps its geometry, so an application that rebinds
+  each time it recreates its swapchain (CEF) is not resized. A popup keeps the place
+  and size its application gave it.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.

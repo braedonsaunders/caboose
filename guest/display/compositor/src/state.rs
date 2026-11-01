@@ -195,6 +195,8 @@ pub struct State {
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
+    /// The X11 bind being answered names a window larger than its top-level (gpu_x11.rs).
+    pub gpu_bind_larger: bool,
     pub x11_identity: Option<crate::x11_identity::X11Identity>,
     /// The input-method service for applications without text-input-v3 (ibus.rs).
     pub ibus: Option<crate::ibus::Ibus>,
@@ -334,7 +336,7 @@ impl State {
 
     /// The managed X11 toplevel the bind's window is or covers, when the X server records
     /// the bound process as the client that created that window (docs/gpu-live.md).
-    fn x11_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
+    fn x11_gpu_bind_matches(&mut self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
         use std::os::fd::AsRawFd;
         let Some(lookup) = &self.gpu_x11 else { return Vec::new() };
         // SAFETY: geteuid has no arguments or memory-safety preconditions.
@@ -352,9 +354,16 @@ impl State {
         }).collect();
         let ids: Vec<u32> = toplevels.iter().map(|(xid, _)| *xid).collect();
         match lookup.resolve(bind.object, &ids, self.x11_scale) {
-            Ok(Some((toplevel, pid))) if pid == bind.pid &&
-                crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) =>
-                toplevels.iter().filter(|(xid, _)| *xid == toplevel).map(|(_, id)| *id).collect(),
+            Ok(Some(found)) if found.pid == bind.pid &&
+                crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) => {
+                let matches: Vec<u64> = toplevels.iter().filter(|(xid, _)| *xid == found.toplevel).map(|(_, id)| *id).collect();
+                if found.larger {
+                    // A swapchain larger than its top-level (a game's, sized to the screen,
+                    // in a window held smaller): the window grows to the display to show it.
+                    self.gpu_bind_larger = true;
+                }
+                matches
+            }
             Ok(_) => Vec::new(),
             Err(error) => {
                 tracing::warn!("GPU X11 window lookup: {error}");
@@ -560,6 +569,7 @@ impl State {
                 if self.gpu_grants.as_mut().is_some_and(|grants| !grants.accept_bind_request(bind.request)) {
                     self.gpu_control_failed(); return;
                 }
+                self.gpu_bind_larger = false;
                 let mut matches = match bind.space {
                     gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
                     gpu_control::BUFFER_WINDOW => self.buffer_gpu_bind_matches(&bind),
@@ -579,8 +589,9 @@ impl State {
                     // A popup keeps the place and size its application gave it, and a window the
                     // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
                     // would otherwise resize it to the display each time.
+                    let grows = std::mem::take(&mut self.gpu_bind_larger);
                     if self.windows.get(grant.window)
-                        .is_some_and(|window| window.kind != WindowKind::Popup && window.gpu_bind_follows_display()) {
+                        .is_some_and(|window| window.kind != WindowKind::Popup && (grows || window.gpu_bind_follows_display())) {
                         self.configure_gpu_window_to_display(grant.window);
                     }
                     self.sync_windows();
