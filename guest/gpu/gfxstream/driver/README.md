@@ -122,6 +122,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0050 poll-stall-log | A fence, query, event or timeline polled without change for 10 seconds prints `CABOOSE_GPU_POLL_STALLED` with the call, the object and what the completion tracker knows of it (`../bounded-memory/poll_stall.h`) |
 | 0051 event-status-from-feed | `vkGetEventStatus` is answered from the completion tracker: events are followed from creation, host sets and resets, and the completed batches whose command buffers set or reset them; a batch that touches an event is watched even without a fence |
 | 0052 format-cache-and-async-events | `vkGetPhysicalDeviceFormatProperties2` with exactly a `VkFormatProperties3` chain (DXVK's, per view) is cached like one without; `vkSetEvent` and `vkResetEvent` are sent without waiting, their results checked with the deferred replies |
+| 0053 query-reserve-coherent-memprops-backoff | `DeferredReplies::reserve()` drains socket-ready replies (`FIONREAD`) and only the oldest half-budget prefix when full; coherent GPU writes recorded in command buffers invalidate only after their submission serial completes; physical-device memory and budget properties are served from cache; `QueryResults` holds 8192 entries and evicts completed entries first; `PollStall` backs off tight not-ready spin loops |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

@@ -151,6 +151,12 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return lastSerial_;
     }
+    // True once the watched submission `serial` has completed (or the feed ended).
+    bool serialCompleted(uint64_t serial) {
+        if (!serial) return true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_ || (serial <= lastSerial_ && !watches_.count(serial));
+    }
     // The device reported `queue` idle (vkQueueWaitIdle), or every queue of `device`
     // (vkDeviceWaitIdle, queue 0), for a wait sent after serial `through`: every watched
     // submission there up to it has completed, even if its record is still in flight.

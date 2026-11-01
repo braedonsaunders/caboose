@@ -29,6 +29,7 @@ struct QueryReply {
 
 class QueryResults {
 public:
+    static constexpr size_t kMaxEntries = 8192, kMaxRecorded = 1024;
     struct Key {
         uint64_t pool; uint32_t first, count; uint64_t size, stride; uint32_t flags;
         bool operator<(const Key& o) const {
@@ -50,7 +51,16 @@ public:
     }
     void requested(const Key& key, std::shared_ptr<QueryReply> reply) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (entries_.size() >= kMaxEntries) entries_.erase(entries_.begin());
+        if (!entries_.count(key) && entries_.size() >= kMaxEntries) {
+            auto victim = entries_.end();
+            for (auto it = entries_.begin(); it != entries_.end(); ++it) {
+                if (it->second->done.load(std::memory_order_relaxed)) {
+                    victim = it;
+                    break;
+                }
+            }
+            entries_.erase(victim != entries_.end() ? victim : entries_.begin());
+        }
         entries_[key] = std::move(reply);
     }
     // Queries [first, first+count) of `pool` were reset: results fetched before are stale.
@@ -80,7 +90,6 @@ public:
 
 private:
     struct Reset { uint64_t pool; uint32_t first, count; };
-    static constexpr size_t kMaxEntries = 256, kMaxRecorded = 64;
     void resetLocked(uint64_t pool, uint32_t first, uint32_t count) {
         const uint64_t end = uint64_t(first) + count;
         for (auto it = entries_.begin(); it != entries_.end();) {
