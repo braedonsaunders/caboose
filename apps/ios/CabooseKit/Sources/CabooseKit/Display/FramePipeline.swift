@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreVideo
 import Foundation
 import ImageIO
+import Metal
 import QuartzCore
 
 /// Decodes and applies one window's Caboose Display pictures, in order, off the main thread.
@@ -229,6 +230,16 @@ final class FramePipeline: @unchecked Sendable {
                 metrics?.picture(window: windowID, waited: started - arrived, took: finished - started, failed: true, at: finished)
                 send(.ack(window: windowID, ptsMicros: batch.ptsMicros, decodedMicros: -1))
             }
+        }
+    }
+
+    /// A picture the phone drew from the window's draw lists (docs/draw.md).
+    func drawn(_ picture: MTLTexture) {
+        queue.async { [self] in
+            guard !isRetired else { return }
+            let shown = surface.show(drawn: picture)
+            if shown { showsLivePicture = true }
+            DrawStatistics.shared.record("draw", failed: !shown)
         }
     }
 

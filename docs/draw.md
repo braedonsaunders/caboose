@@ -11,7 +11,8 @@ The writer is [guest/draw/src/cdl.h](../guest/draw/src/cdl.h). The cairo recorde
 caboose-display's draw socket, which forwards them to a client that draws them
 ([display.md, Draw lists](display.md#draw-lists)), or to a capture file;
 `caboose-draw-replay` draws a capture again. The Rust reader is
-`caboose_display_protocol::draw`.
+`caboose_display_protocol::draw`. On the phone, CabooseDraw ([apps/ios/Draw](../apps/ios/Draw/README.md))
+draws them with Skia on Metal.
 
 ## The draw socket
 

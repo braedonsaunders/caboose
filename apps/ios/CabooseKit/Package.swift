@@ -21,6 +21,18 @@ let gpuBinaryTargets: [Target] = gpuLive
     ? [.binaryTarget(name: "CabooseGPULive", path: "Frameworks/CabooseGPULive.xcframework")]
     : (gpuStream ? [.binaryTarget(name: "CabooseGPUStream", path: "Frameworks/CabooseGPUStream.xcframework")] : [])
 
+// Draw lists (docs/draw.md) are drawn by CabooseDraw.xcframework: Skia on Metal and the renderer
+// in ../Draw, built by ../scripts/build-draw.sh. A build product, not checked in; without it
+// CabooseKit builds without the draw-list renderer.
+let draw = FileManager.default.fileExists(
+    atPath: Context.packageDirectory + "/Frameworks/CabooseDraw.xcframework/Info.plist")
+let drawDependencies: [Target.Dependency] = draw ? [.target(name: "CabooseDraw")] : []
+let drawBinaryTargets: [Target] = draw ? [.binaryTarget(name: "CabooseDraw", path: "Frameworks/CabooseDraw.xcframework")] : []
+let drawLinking: [LinkerSetting] = draw
+    ? [.linkedLibrary("c++"), .linkedFramework("Metal"), .linkedFramework("CoreGraphics"),
+       .linkedFramework("CoreText"), .linkedFramework("CoreFoundation"), .linkedFramework("Foundation")]
+    : []
+
 let gpuStreamLinking: [LinkerSetting] = [
     .linkedLibrary("c++"),
     .linkedFramework("Foundation"),
@@ -46,10 +58,10 @@ let package = Package(
     targets: [
         .target(
             name: "CabooseKit",
-            dependencies: gpuDependencies,
+            dependencies: gpuDependencies + drawDependencies,
             resources: [.process("Resources")],
-            linkerSettings: [.linkedLibrary("z")] + (gpuStream || gpuLive ? gpuStreamLinking : [])),
+            linkerSettings: [.linkedLibrary("z")] + (gpuStream || gpuLive ? gpuStreamLinking : []) + drawLinking),
         .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),
-    ] + gpuBinaryTargets,
+    ] + gpuBinaryTargets + drawBinaryTargets,
     swiftLanguageModes: [.v5]
 )
