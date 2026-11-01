@@ -9,7 +9,8 @@ struct TaskManagerScreen: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("taskManagerSort") private var sort: TaskManager.Sort = .cpu
+    /// Busiest first, as Activity Monitor opens; a sort control changed little with a handful of apps.
+    private let sort: TaskManager.Sort = .cpu
     @State private var creatingService = false
 
     var body: some View {
@@ -41,15 +42,6 @@ struct TaskManagerScreen: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done", systemImage: "checkmark") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        Picker("Sort By", selection: $sort) {
-                            ForEach(TaskManager.Sort.allCases) { Text($0.title).tag($0) }
-                        }
-                    } label: {
-                        Label("Sort By", systemImage: "arrow.up.arrow.down")
-                    }
                 }
             }
         }
