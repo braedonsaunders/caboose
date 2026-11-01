@@ -11,10 +11,13 @@
 //!
 //! ```text
 //! windows                      every window, bottom to top: id, parent, kind, title, app_id,
-//!                              pid, x11 (its X window, for Xwayland), rect (the window),
+//!                              pid, desktop_id (the entry it was launched from, or null),
+//!                              x11 (its X window, for Xwayland), rect (the window),
 //!                              surface (its root surface's x, y, w, h, shadows included),
 //!                              display, scale, focused
 //! focus ID                     give a window the keyboard
+//! close ID                     ask a window to close, as its close button would (quitting
+//!                              an app, guest/scopes)
 //! click X Y [BUTTON [COUNT]]   BUTTON is left, middle or right
 //! press X Y [BUTTON]           and `release X Y [BUTTON]`, for a drag
 //! move X Y
@@ -280,6 +283,15 @@ impl State {
                     b"{\"ok\":true}\n".to_vec()
                 })
                 .ok_or_else(|| "no such window".to_owned()),
+            "close" => args
+                .first()
+                .and_then(|a| a.parse::<u64>().ok())
+                .filter(|id| self.windows.get(*id).is_some())
+                .map(|id| {
+                    self.close_window(id);
+                    b"{\"ok\":true}\n".to_vec()
+                })
+                .ok_or_else(|| "no such window".to_owned()),
             "click" | "press" | "release" | "move" => (|| {
                 let at: Point<f64, Logical> = (number(0)?, number(1)?).into();
                 let button = button(args.get(2).copied())?;
@@ -456,13 +468,19 @@ impl State {
             };
             let r = listed.rect;
             items.push(format!(
-                "{{\"id\":{},\"parent\":{},\"kind\":\"{kind}\",\"title\":{},\"app_id\":{},\"pid\":{},\"x11\":{},\
+                "{{\"id\":{},\"parent\":{},\"kind\":\"{kind}\",\"title\":{},\"app_id\":{},\"pid\":{},\"desktop_id\":{},\"x11\":{},\
                  \"rect\":[{},{},{},{}],\"surface\":[{},{},{},{}],\"display\":{},\"scale\":{},\"focused\":{}}}",
                 listed.id,
                 w.parent.map_or("null".into(), |p| p.to_string()),
                 json_str(&described.title),
                 json_str(&described.app_id),
-                self.window_pid(&w.surface).map_or("null".into(), |p| p.to_string()),
+                // The process the window's identity names (window.create's), else its client's.
+                w.lineage
+                    .as_ref()
+                    .and_then(|l| l.first().copied())
+                    .or_else(|| self.window_pid(&w.surface))
+                    .map_or("null".into(), |p| p.to_string()),
+                w.desktop_id.clone().flatten().map_or("null".into(), |d| json_str(&d)),
                 match &w.surface {
                     Surface::X11(x) => x.window_id().to_string(),
                     _ => "null".into(),

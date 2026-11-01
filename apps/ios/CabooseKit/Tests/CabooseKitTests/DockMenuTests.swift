@@ -8,6 +8,11 @@ struct DockMenuTests {
         #expect(DockMenu.actions(appName: "Firefox", pinned: true, windows: []) == [.open, .unpin])
     }
 
+    @Test func aWindowsOwnApplicationOpensAndClosesButDoesNotPin() {
+        #expect(DockMenu.actions(appName: "Halo", pinned: false, pinnable: false, windows: [.init(id: 36, title: "Halo")])
+                == [.open, .close(window: 36, title: "Halo")])
+    }
+
     @Test func eachRunningWindowCanBeClosedByName() {
         let actions = DockMenu.actions(appName: "Terminal", pinned: true, windows: [
             .init(id: 4, title: "~/src — bash"), .init(id: 9, title: ""),

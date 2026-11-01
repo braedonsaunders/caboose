@@ -107,6 +107,9 @@ struct RootView: View {
             }
         }
         .animation(.snappy, value: model.session?.computerDrag != nil)
+        .background { RunningAppsRefresher() }
+        // An app card presents its own (`WindowScreen`).
+        .modifier(TaskManagerPresenter(active: !(model.phase == .ready && model.presentedWindowID != nil)))
         .sheet(item: Binding(get: { model.phase == .ready ? model.documents.pending : nil }, set: { _ in })) { item in
             OpenDocumentPicker(item: item).environment(model).interactiveDismissDisabled()
         }

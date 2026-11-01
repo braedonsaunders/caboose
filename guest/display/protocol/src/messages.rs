@@ -207,6 +207,8 @@ pub struct WindowCreate {
     pub overscan: Option<Size>,
     /// The desktop entry whose launch started the window's process (`<id>.desktop`).
     pub desktop_id: Option<String>,
+    /// The process that owns a toplevel (`_NET_WM_PID` or the Wayland client's), when known.
+    pub pid: Option<u32>,
 }
 
 /// `window.update` (0x03): the id plus whichever fields changed.
@@ -228,6 +230,7 @@ pub struct WindowUpdate {
     /// `[0, 0]` when the overscan ended.
     pub overscan: Option<Size>,
     pub desktop_id: Option<String>,
+    pub pid: Option<u32>,
 }
 
 impl WindowUpdate {
@@ -1386,6 +1389,7 @@ impl Message {
                 .put("alpha", m.alpha)
                 .opt("overscan", m.overscan)
                 .opt("desktop_id", m.desktop_id.clone())
+                .opt("pid", m.pid)
                 .build(),
             Message::WindowUpdate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1403,6 +1407,7 @@ impl Message {
                 .opt("alpha", m.alpha)
                 .opt("overscan", m.overscan)
                 .opt("desktop_id", m.desktop_id.clone())
+                .opt("pid", m.pid)
                 .build(),
             Message::WindowDestroy { id }
             | Message::Close { id }
@@ -1784,6 +1789,7 @@ impl Message {
                 alpha: f.opt_bool("alpha")?.unwrap_or(false),
                 overscan: f.opt_size("overscan")?,
                 desktop_id: f.opt_string("desktop_id")?,
+                pid: f.opt_u32("pid")?,
             }),
             WINDOW_UPDATE => Message::WindowUpdate(WindowUpdate {
                 id: f.u64("id")?,
@@ -1804,6 +1810,7 @@ impl Message {
                 alpha: f.opt_bool("alpha")?,
                 overscan: f.opt_size("overscan")?,
                 desktop_id: f.opt_string("desktop_id")?,
+                pid: f.opt_u32("pid")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
             FRAME => Message::Frame(Frame {

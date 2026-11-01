@@ -114,6 +114,8 @@ struct WindowScreen: View {
         .sheet(item: $askingAbout) { window in
             AskAboutWindowSheet(window: window).environment(model)
         }
+        // The shell beneath cannot present over this card.
+        .modifier(TaskManagerPresenter(active: true))
     }
 
     private var controlsDismissalKey: [Int] {

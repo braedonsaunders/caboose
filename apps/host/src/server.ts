@@ -23,6 +23,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, RequestTooLargeError, json, noContent, readJson } from './http.js'
 import { createDesktopShortcut, parseAppLaunch, type AppAction } from './guest-apps.js'
+import { deleteService, endRunningApp, listRunningApps, parseRunningAppId, parseServiceName, putService, readActivity, serviceAction, serviceLogs, type GuestActivity, type RunningAppAction, type ServiceAction, type ServiceMemory } from './running-apps.js'
 import { crossSite } from './cross-site.js'
 import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
@@ -121,7 +122,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -374,6 +375,19 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     // An existing/custom store may require an interactive unlock or recovery tool.
     // Keep that route available; the persistent status carries the preparation error.
   }
+  /** The guest's services and listening ports, remembering whether it has autostart services. */
+  async function serviceActivity(guest: AgentGuest): Promise<GuestActivity> {
+    const activity = await readActivity(guest)
+    await pieces.serviceMemory?.record(activity.services.autostart > 0)
+    return activity
+  }
+  /** The guest, when it tracks app scopes (container computers; docs/architecture.md § Running apps). */
+  function scopesGuest(): AgentGuest {
+    if (controller.componentsMode !== 'container') throw new ComputerConflictError('This computer does not track running apps')
+    const guest = controller.guest()
+    if (!guest) throw new AgentUnavailableError()
+    return guest
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -383,7 +397,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size - terminals.size - gpuSockets.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
-      capabilities: { restart: typeof controller.restart === 'function', push: !!push },
+      capabilities: { restart: typeof controller.restart === 'function', push: !!push, runningApps: controller.componentsMode === 'container' },
       upgrade, keyring,
       routines: { error: routineError },
       agentTools: { error: toolsError },
@@ -804,6 +818,40 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
     }
+    if (request.method === 'GET' && path === '/v1/running-apps') {
+      const listing = await leased(() => listRunningApps(scopesGuest()))
+      await pieces.serviceMemory?.record(listing.services.some(service => service.autostart)).catch(() => {})
+      return json(response, 200, listing)
+    }
+    const service = /^\/v1\/services\/([^/]+)(?:\/(start|stop|restart|enable|disable|logs))?$/.exec(path)
+    if (service?.[1]) {
+      const name = parseServiceName(decodeURIComponent(service[1]))
+      const action = service[2]
+      if (action === 'logs' && request.method === 'GET') {
+        const lines = Number(new URL(request.url ?? '/', 'http://localhost').searchParams.get('lines') ?? '200')
+        return json(response, 200, await leased(() => serviceLogs(scopesGuest(), name, lines)))
+      }
+      const work = action && action !== 'logs' && request.method === 'POST' ? (guest: AgentGuest) => serviceAction(guest, name, action as ServiceAction)
+        : !action && request.method === 'PUT' ? async (guest: AgentGuest) => putService(guest, name, await readJson(request))
+        : !action && request.method === 'DELETE' ? (guest: AgentGuest) => deleteService(guest, name)
+        : undefined
+      if (work) {
+        // Leased, not serialized: stopping a service may wait for it.
+        const result = await leased(async () => {
+          const guest = scopesGuest()
+          const answer = await work(guest)
+          await serviceActivity(guest).catch(() => {})
+          return answer
+        })
+        return json(response, 200, result)
+      }
+    }
+    const runningApp = /^\/v1\/running-apps\/([^/]+)\/(quit|force-quit|kill)$/.exec(path)
+    if (request.method === 'POST' && runningApp?.[1]) {
+      const id = parseRunningAppId(decodeURIComponent(runningApp[1]))
+      // Leased, not serialized: Force Quit may wait seconds for an app, and nothing else should.
+      return json(response, 200, await leased(() => endRunningApp(scopesGuest(), id, runningApp[2] as RunningAppAction)))
+    }
     const desktopShortcut = /^\/v1\/apps\/([^/]+)\/desktop-shortcut$/.exec(path)
     if (request.method === 'POST' && desktopShortcut?.[1]) {
       return json(response, 201, await computer.run(async () => {
@@ -1201,6 +1249,16 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
 
   return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+    /**
+     * What the running computer serves (services and listening ports), for the park decision;
+     * null when it is not running or tracks no services. Never wakes it.
+     */
+    activity: async (): Promise<GuestActivity | null> => {
+      const guest = controller.componentsMode === 'container' && computer.state === 'running' ? controller.guest() : undefined
+      return guest ? serviceActivity(guest) : null
+    },
+    /** Whether the computer has services that start with it, as last seen; kept across host restarts. */
+    autostartServices: () => pieces.serviceMemory?.autostart() ?? false,
     /** What someone started on the computer that deleting it would cut short, if anything. */
     operation: () => appCatalog.busy ? 'An app is being installed, updated or removed on this computer' : craftBusy > 0 ? 'A Craft job is running on this computer' : commands.busy > 0 ? 'A command is running on this computer' : null,
   }

@@ -79,6 +79,7 @@ install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
   install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
+  sh "$root/scopes/install.sh"
 else
   install -Dm644 "$root/components/caboose-workloads.slice" /etc/systemd/system/caboose-workloads.slice
   install -Dm755 "$root/components/caboose-owner-run" /usr/local/libexec/caboose-owner-run

@@ -538,7 +538,7 @@ also see as their root window's.
 
 | Request | Answer |
 | --- | --- |
-| `windows` | `{ windows: [{ id, parent, kind, title, app_id, pid, x11, rect: [x, y, w, h], surface: [x, y, w, h], display, scale, focused }], focused, bounds }`, bottom to top. `x11` is the X window of an Xwayland window, else null; `surface` is the root surface, client-side shadows included |
+| `windows` | `{ windows: [{ id, parent, kind, title, app_id, pid, desktop_id, x11, rect: [x, y, w, h], surface: [x, y, w, h], display, scale, focused }], focused, bounds }`, bottom to top. `desktop_id` is the desktop entry a toplevel's process was launched from, else null; `x11` is the X window of an Xwayland window, else null; `surface` is the root surface, client-side shadows included |
 | `focus ID` | Gives the window the keyboard |
 | `click X Y [BUTTON [COUNT]]`, `press X Y [BUTTON]`, `release X Y [BUTTON]`, `move X Y` | The seat's pointer, delivered to the topmost window at that position |
 | `scroll X Y DX DY` | Wheel clicks at that position |
@@ -546,6 +546,7 @@ also see as their root window's.
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
 | `settle` | `{ ok: true, released: N }`: number of windows whose pending frame callbacks were released |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
+| `close ID` | Asks the window to close, as its own close button would: `xdg_toplevel.close` for Wayland, `WM_DELETE_WINDOW` (else destroying the window) for X11, `popup_done` for a popup |
 | `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
 `guest/desktop-mcp/seat.py` is its client, as a library and a command.
@@ -647,6 +648,65 @@ location. See [native-bridge.md](native-bridge.md).
 **Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
 messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
+
+**App scopes.** `guest/scopes` (`caboose-scopes`, root, container computers) places every app
+the owner runs in a cgroup v2 scope of its own, so an app's whole process tree (helpers,
+Wine, pressure-vessel, Flatpak sandboxes) is accounted and ended together. Inside the
+container's cgroup namespace:
+
+| cgroup | Holds |
+| --- | --- |
+| `/init.scope` | The container's init, root's services and `docker exec` arrivals |
+| `/owner.slice/session.scope` | The owner's processes no app claims, Caboose's own services among them |
+| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a Steam game's `steam_app_<id>`, a window's class, `caboose-terminal` or `caboose-agent`, escaped as systemd escapes unit names |
+
+The memory, IO and pids controllers are enabled on both levels. The daemon moves the
+owner's processes out of `init.scope`, and once a second (every 3 s while nobody has listed
+for 30 s) moves processes into scopes, first rule first:
+
+1. Steam's game reaper (`reaper SteamLaunch AppId=N`) and its tree, into a scope for game N.
+2. Children forked during a split and left in the scope it came from follow their parent.
+3. A phone terminal session (a child of the terminal service), or an agent task's runner,
+   gets its own scope.
+4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
+   `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
+5. A toplevel window whose process is in the session scope or a phone terminal session's
+   scope, or in an app scope when the process runs on a terminal under a windowed process
+   of that scope that is not on that terminal (a program run from a terminal app), takes
+   its process tree into a scope of its own.
+
+Dock launches ask for their scope before the app starts (`guest-apps.py` sends the
+desktop id over `/run/caboose/scopes.sock`). Empty scopes are removed. Windows come from
+the owner display's control socket and belong to an app when their process (its `pid`
+there) is in its scope. GPU use comes from the private GPU broker's
+per-process counters ([gpu-live.md](gpu-live.md#applications)). Quit asks each of the app's
+windows to close (`xdg_toplevel.close`, `WM_DELETE_WINDOW`); Force Quit sends SIGTERM to
+every process of the scope and, after 5 s, kills the scope (`cgroup.kill`); Kill kills it at
+once. Caboose's session scope cannot be ended. The daemon needs a writable cgroup
+hierarchy: new containers are created with `--security-opt writable-cgroups=true`, and at
+each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup` writable in
+that container's mount namespace with a one-shot privileged helper. A microVM computer has
+no app scopes. See [guest/scopes](../guest/scopes/README.md).
+
+**Services.** The same daemon is the container computer's service manager. A service is
+declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
+(may set `User=`) and the owner's in `~/.config/caboose/services/<name>.service` (run as the
+owner; a system unit of the same name wins). Supported keys: `[Unit]` `Description`,
+`Requires`, `After`; `[Service]` `ExecStart`, `Type` (`simple`, `forking`, `oneshot`),
+`WorkingDirectory`, `Environment`, `User`, `Restart` (`no`, `on-failure` (the default),
+`always`), `RestartSec`, `TimeoutStopSec`; `[Install]` `WantedBy=default.target` (or
+`multi-user.target`), which starts it with the computer. A unit file using anything else
+is refused with the reason. Each service runs in `/services.slice/<name>.service`; its
+standard output and error go to `/var/log/caboose/services/<name>.log` (kept under 1 MiB,
+the older half in `<name>.log.1`). The daemon starts at every wake and container start and
+then starts the autostart services, dependencies first; a dependency cycle or a missing
+dependency fails the services behind it. A service whose process ends is restarted after
+`RestartSec` by its policy, unless it started 5 times within a minute, which fails it.
+Stopping a service stops the services that require it first, then sends SIGTERM to its
+cgroup and kills what remains after `TimeoutStopSec`. Services the daemon did not start
+(it was itself restarted) are adopted by their cgroup. Owner unit files live in the
+owner's home, so they survive the container being recreated; a system unit survives
+restarts of the container.
 
 ### Catalog
 
@@ -1253,7 +1313,7 @@ Management status:
   restartRequired: boolean,
   clients: { display: number, control: number, terminal: number },
   tasks: { running: number, paused: number },
-  capabilities: { restart: boolean, push: boolean },
+  capabilities: { restart: boolean, push: boolean, runningApps: boolean },
   lastError: string | null
 }
 ```
@@ -1315,6 +1375,94 @@ Repeated launches of the same pending app coalesce; each app has an independent 
 A matching real window or launch error settles it; an HTTP acknowledgement does not. After
 30 seconds without a matching window the app reports that opening may still be in progress.
 Disconnect clears pending feedback. Existing windows are focused immediately.
+
+### Running apps
+
+On a container computer, `capabilities.runningApps` in the management status is true and
+the host serves the guest's app scopes. These routes do not wake the computer.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/running-apps` | The running apps, with live resource use (below) |
+| `POST` | `/v1/running-apps/:id/quit` | Ask every window of the app to close → `{ closed }`, the number of windows asked. 409 when the app has no windows |
+| `POST` | `/v1/running-apps/:id/force-quit` | SIGTERM every process, then kill what remains after 5 s → `{ ended, killed }`: whether the app has ended (within a further 2 s), and whether it had to be killed |
+| `POST` | `/v1/running-apps/:id/kill` | Kill every process of the app at once → `{ ended, killed: true }` |
+
+`:id` is the app's `id`, percent-encoded. Unknown apps answer 404; the session scope
+(`kind: "session"`) answers 409, as does a computer without app scopes. The listing:
+
+```ts
+{
+  version: 1,
+  sampledAt: number,          // Unix ms of the guest's latest sample
+  intervalMs: number,         // what the rates are measured over; 0 before a second sample
+  machine: { cpus: number, memoryBytes: number },   // the computer's limits
+  apps: Array<{
+    id: string,               // the scope: "session.scope" or "app-<key>-<n>.scope", at most 255 characters
+    kind: "app" | "session",
+    desktopId: string | null, // the desktop entry it was launched from or matched to
+    name: string,             // the entry's Name, a Steam game's name, else a window class; at most 200 characters
+    origin: "launch" | "window" | "game" | "terminal" | "agent" | "session",
+    startedAt: number,        // Unix ms the scope was made; 0 for the session
+    windows: number[],        // the owner display's window ids (toplevels and dialogs) of its processes
+    cpuPercent: number,       // of one CPU, over intervalMs
+    memoryBytes: number,      // charged memory less inactive page cache
+    io: { readBytesPerSecond: number, writeBytesPerSecond: number },
+    gpu: { streams: number, surfaces: number, toPhoneBytesPerSecond: number, fromPhoneBytesPerSecond: number } | null,
+    processCount: number,
+    ports: Array<{ protocol: "tcp" | "udp", address: string, port: number }>,   // its listening sockets; the session's are Caboose's own
+    processes: Array<{        // at most 256, busiest first
+      pid: number, ppid: number,
+      name: string,           // at most 64 characters
+      command: string,        // its arguments joined by spaces, at most 512 characters; empty when unreadable
+      state: "running" | "sleeping" | "waiting" | "stopped" | "zombie" | "idle" | "other",
+      cpuPercent: number, memoryBytes: number   // resident set
+    }>
+  }>,
+  services: Array<{           // every service with a unit file, running or not
+    id: string,               // "<name>.service"
+    name: string, description: string,
+    source: "system" | "owner",
+    state: "inactive" | "activating" | "active" | "deactivating" | "failed",
+    error: string | null,     // why it failed or is restarting, or why its unit file is refused
+    autostart: boolean, restart: "no" | "on-failure" | "always", requires: string[],
+    since: number,            // Unix ms of the last state change
+    restarts: number,         // automatic restarts since the daemon started
+    lastExit: { code: number | null, signal: number | null, at: number } | null,
+    cpuPercent, memoryBytes, io, gpu, processCount, processes, ports   // as for apps
+  }>
+}
+```
+
+The host checks the guest's answer field by field and drops what fails. Window ids are the
+display protocol's (`window.create`).
+
+### Services
+
+Container computers' services ([guest services](#guest-services)); routes do not wake the
+computer.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `PUT` | `/v1/services/:name` | Create or replace an owner service → its status (the `services` entry without resource use). Body: `{ command: string[], description?, workingDirectory?, environment?: { [name]: value }, restart?: "no" \| "on-failure" \| "always", autostart?: boolean (default true), requires?: string[] }`. It is not started; 409 when a system service has the name |
+| `DELETE` | `/v1/services/:name` | Stop an owner service and remove its unit file → `{ removed: true }`; 409 for a system service |
+| `POST` | `/v1/services/:name/start` | Start it, and what it requires → status |
+| `POST` | `/v1/services/:name/stop` | Stop it, and what requires it → status, once stopped |
+| `POST` | `/v1/services/:name/restart` | Stop, then start → status |
+| `POST` | `/v1/services/:name/enable`, `/disable` | Start it with the computer, or not → status |
+| `GET` | `/v1/services/:name/logs?lines=N` | The last N (1–2000, default 200) lines of its log → `{ lines }` |
+
+`:name` is 1–64 of `A-Z a-z 0-9 _ . @ -`, not starting with a punctuation character, without
+`.service`. Invalid definitions answer 400 with the reason; unknown services 404.
+
+The host remembers whether a computer has autostart services in `services.json` in its
+state directory, updated whenever it reads the services. For its park decision it reads the
+computer's activity (`caboose-scopes activity`): `{ services: { active, autostart, failed },
+listening: [{ protocol, address, port, pid, owner, established, lastActiveAt }] }`, where
+`owner` is the service (`<name>.service`) or app scope holding the socket, or `caboose` for
+Caboose's own processes and anything outside the owner's apps and services; `established` is
+the TCP connections to it from non-loopback peers now and `lastActiveAt` the Unix ms one was
+last seen (read at most every 5 s).
 
 ### Files
 
@@ -2714,6 +2862,12 @@ the app card, and a detached view releases its layers.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
   each, with a dot for an open app; tapping focuses or opens it and holding exposes
   its window actions. Icons keep their size and scroll horizontally when they do not fit.
+  The running apps are the computer's windows, however they were started (Steam, a
+  terminal, a script, Wine), grouped by application (`CabooseKit/Shell/Taskbar`, matched as
+  [Windows and launches](display.md#windows-and-launches) describes); a window no desktop
+  entry claims appears as an application of its own with its window's icon, and closing
+  its last window removes it. A dock too narrow for every icon leaves out everyday apps
+  without windows first, never a running one.
   Overview shows every window (tap to go, swipe up to close), alongside All Apps. The side
   edges move along the track.
   ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
@@ -3052,6 +3206,23 @@ not account discovery.
 A full-screen app card entering Laptop mode returns its focused window to the shared
 Laptop desktop. The compact dock belongs to the top of the lower control surface;
 there is no separate dockless Laptop app-card workspace.
+
+### Task Manager
+
+When `capabilities.runningApps` is true, the Task Manager is reachable from the computer
+menu on every tab (and the iPad rail's page controls) and from holding an app in the dock or
+taskbar. It lists the running apps (with a Background badge for windowless ones, such as
+Steam hidden in its tray, and Terminal or Agent for those scopes), the services, and
+Caboose's own processes apart, with CPU, memory, disk and GPU use (GPU only with a phone
+GPU connection) and listening ports, polling `/v1/running-apps` every 2 s while it is
+shown. An app opens to its processes. Quit is offered while an app has windows; after a
+Quit, an app still running 5 s later is offered Force Quit. Force Quit and Kill All Processes
+confirm first. Services can be started, stopped, restarted, set to start with the computer,
+created from a form (the command split as shell words, without expansion), deleted (the
+owner's only) and their logs followed. The dock's Quit and Force Quit resolve the app from a
+fresh listing: the running apps holding the windows of the dock app's taskbar group, else the
+one launched from its desktop entry. A running app with a desktop
+entry and no windows stays in the dock with its running dot.
 
 ### Input
 

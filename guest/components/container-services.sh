@@ -84,6 +84,11 @@ owner_service() {
   echo "$label did not become ready" >&2; return 1
 }
 MODE=${1:-}
+# App scopes (guest/scopes): every app the owner runs in a cgroup of its own. An update
+# replaces the running daemon. Without a writable cgroup tree it says why and is absent.
+if [ -x /usr/local/bin/caboose-scopes ]; then
+  /usr/local/bin/caboose-scopes ensure ${MODE:+--$MODE} || echo 'App scopes are unavailable' >&2
+fi
 # The keyring needs both buses even when the owner display stays stopped.
 install -d -m 0755 /run/dbus
 # /run survives a container stop. Only a failed connection with a known stale-socket

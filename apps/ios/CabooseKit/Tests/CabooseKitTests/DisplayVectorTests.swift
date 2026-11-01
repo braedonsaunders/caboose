@@ -195,6 +195,11 @@ import Testing
 
         guard case .windowCreate(let launched) = try server("window-create-launched").first else { Issue.record("launched"); return }
         #expect(launched.desktopID == "org.example.Game.desktop" && launched.appID == "game-engine")
+        #expect(launched.pid == nil)
+
+        guard case .windowCreate(let game) = try server("window-create-unlisted").first else { Issue.record("unlisted"); return }
+        #expect(game.appID == "steam_app_976730" && game.pid == 2113 && game.desktopID == nil)
+        #expect(game.icon?.prefix(4) == Data([0x89, 0x50, 0x4E, 0x47]))
 
         guard case .windowCreate(let xterm) = try server("window-create-xwayland").first else { Issue.record("xterm"); return }
         #expect(xterm.xwayland == true && xterm.fullscreen == true && xterm.title == "xterm")
