@@ -31,6 +31,7 @@ enum cdl_op {
     CDL_GLYPH = 0x21,       /* u64 font, u32 glyph, path (em units, y down) */
     CDL_PRESENT = 0x30,     /* u32 surface, u32 wl_surface: a window surface's buffer was committed */
     CDL_PIXELS = 0x31,      /* u32 surface, u32 w, u32 h: premultiplied RGBA8 the app really drew */
+    CDL_BEGIN = 0x32,       /* u32 generation: a fresh recording; nothing before it is referred to */
 };
 
 enum cdl_surface_kind {
