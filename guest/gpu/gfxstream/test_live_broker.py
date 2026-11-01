@@ -238,6 +238,33 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(guest_writer.wait_closed(), phone_writer.wait_closed())
             session.bindings.finish(session.binding_generation)
 
+    async def test_one_read_of_many_small_frames_keeps_the_session(self):
+        # The phone sends many small frames; hundreds can arrive in one read, and the
+        # session must take them all instead of ending (it once ended at 64).
+        left, right = socket.socketpair()
+        left.setblocking(False); right.setblocking(False)
+        guest_reader, guest_writer = await asyncio.open_connection(sock=left)
+        phone_reader, phone_writer = await asyncio.open_connection(sock=right)
+        session = broker.Session(None, b'a' * 16, 1, guest_reader, guest_writer, indexed=True, features={'executor-resume'})
+        session.transport_config = None
+        sender = asyncio.create_task(session.send_loop())
+        receiver = asyncio.create_task(session.read_loop())
+        try:
+            session.send(Kind.SESSION, payload=session.hello)
+            await asyncio.wait_for(phone_reader.readexactly(2 + 112), 1)
+            ack = encode(Envelope(Kind.ACK, b'a' * 16, 1, 0, 0, 0, struct.pack('<Q', 0)))
+            ready = encode(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 1, session.hello))
+            phone_writer.write(b''.join(client_frame(2, ack) for _ in range(300)) + client_frame(2, ready))
+            await phone_writer.drain()
+            await asyncio.wait_for(session.session_ready.wait(), 1)
+            self.assertFalse(receiver.done())
+        finally:
+            sender.cancel(); receiver.cancel()
+            await asyncio.gather(sender, receiver, return_exceptions=True)
+            guest_writer.close(); phone_writer.close()
+            await asyncio.gather(guest_writer.wait_closed(), phone_writer.wait_closed())
+            session.bindings.finish(session.binding_generation)
+
     async def test_session_uses_exact_hello_and_actual_ready(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.send(Kind.SESSION, payload=broker.HELLO)
