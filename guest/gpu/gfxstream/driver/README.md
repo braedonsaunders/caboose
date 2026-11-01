@@ -119,6 +119,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0047 upload-cache | With hello `0x8000`, whole 4096-byte pieces of a flushed range of at least 16 KiB go as the prefix of a piece the phone's upload store holds, or as bytes for it to store while the allowance lasts; the process asks for the store's prefixes once per executor (`../bounded-memory/upload_cache.h`, docs/gpu-live.md "Upload cache") |
 | 0048 coherent-flush-skips-released-mappings | The coherent mappings flushed before a submit skip one another thread unmapped or freed after they were found, instead of failing the submit (`../bounded-memory/ranges.h` `skipVanishedMappings`) |
 | 0049 coherent-writes-only | Coherent memory is the guest's own anonymous pages, write-protected through `/dev/userfaultfd`, and the flush before a submit sends only the 16 KiB blocks written since the last one (`../bounded-memory/write_watch.h`); without the device it flushes whole mappings |
+| 0050 poll-stall-log | A fence, query, event or timeline polled without change for 10 seconds prints `CABOOSE_GPU_POLL_STALLED` with the call, the object and what the completion tracker knows of it (`../bounded-memory/poll_stall.h`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

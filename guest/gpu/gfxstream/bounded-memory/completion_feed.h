@@ -178,6 +178,28 @@ public:
         it->second.value = std::max(it->second.value, value);
         changed_.notify_all();
     }
+    // What the tracker knows of a fence or timeline, for a stalled poll's log line.
+    std::string describeFence(uint64_t fence) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        static const char* const names[] = {"unsignaled", "signaled", "pending", "untracked"};
+        auto it = fences_.find(fence);
+        std::string out = "fence=";
+        out += it == fences_.end() ? "unknown" : names[int(it->second.state)];
+        if (it != fences_.end() && it->second.serial)
+            out += " serial=" + std::to_string(it->second.serial) +
+                   (watches_.count(it->second.serial) ? " (watch outstanding)" : " (watch answered)");
+        return out + describeLocked();
+    }
+    std::string describeSemaphore(uint64_t semaphore) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = semaphores_.find(semaphore);
+        std::string out = "timeline=";
+        if (it == semaphores_.end()) out += "unknown";
+        else out += std::string(it->second.tracked ? "tracked" : "untracked") + " value=" +
+                    std::to_string(it->second.value) + " pending=" + std::to_string(it->second.pending);
+        return out + describeLocked();
+    }
+
     // The completed value of a tracked timeline; false when untracked.
     bool timelineValue(uint64_t semaphore, uint64_t* value) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -285,6 +307,17 @@ public:
     }
 
 private:
+    std::string describeLocked() const {
+        std::string out = " last_serial=" + std::to_string(lastSerial_) + " watches=" + std::to_string(watches_.size());
+        if (!watches_.empty()) {
+            uint64_t oldest = UINT64_MAX;
+            for (const auto& entry : watches_) oldest = std::min(oldest, entry.first);
+            out += " oldest_watch=" + std::to_string(oldest);
+        }
+        if (closed_) out += " feed=closed";
+        if (lost_) out += " lost";
+        return out;
+    }
     struct FenceState { Fence state = Fence::Unsignaled; uint64_t serial = 0; uint64_t device = 0; };
     struct SemaphoreState { bool tracked = false; uint64_t value = 0; uint64_t pending = 0; uint64_t device = 0; };
     struct Watch {

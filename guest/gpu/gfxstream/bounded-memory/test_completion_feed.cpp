@@ -171,5 +171,15 @@ int main() {
     assert(!lossPolicyPauses("auto", "qml6 t.qml", qt));
     assert(!lossPolicyPauses("auto", "kp", {"libQt5Gui.so.5"}));
     assert(!lossPolicyPauses("bogus", "vkcube", none));
+    // A stalled poll's description names the fence's state and its outstanding watch.
+    {
+        Tracker described;
+        const uint64_t serial = described.submitted(0xf00, {});
+        assert(described.describeFence(0xf00) == "fence=pending serial=" + std::to_string(serial) +
+               " (watch outstanding) last_serial=" + std::to_string(serial) + " watches=1 oldest_watch=" +
+               std::to_string(serial));
+        assert(described.describeFence(0xbad).rfind("fence=unknown", 0) == 0);
+        assert(described.describeSemaphore(0x5e).rfind("timeline=unknown", 0) == 0);
+    }
     return 0;
 }
