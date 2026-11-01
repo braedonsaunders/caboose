@@ -153,7 +153,13 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             return
         }
         guard var entry = entries[identity.grant], entry.identity == identity, entry.process == process else {
-            throw violation("unknown or foreign grant")
+            // A record for a grant this phone does not hold under that process (one the broker
+            // and phone retired in a different order): answered as stale, so one surface's
+            // mismatch never ends the executor and every other process with it.
+            print("CABOOSE_GPU_SURFACE_UNKNOWN kind=\(message.kind.rawValue) process=\(process) " +
+                  "known=\(entries[identity.grant] != nil ? 1 : 0)")
+            fflush(stdout)
+            return try answerStale(message.body, emit: emit)
         }
         guard let resource = entry.resource else {
             // The backend either never acquired a resource or completed its cleanup
@@ -250,6 +256,39 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             // A failed outgoing receipt still leaves the remote lease fenced.
             entries.removeValue(forKey: identity.grant)
             try emit(.retired(.init(nativeErrno: 0, vkResult: nil)))
+        default: throw violation("wrong-direction surface message")
+        }
+    }
+
+    /// A surface record for a process this executor does not have: answered on its own.
+    func answerForUnknownProcess(_ message: LiveGPUSurfaceMessage, process: UInt64, output: @escaping Output) throws {
+        let emit: (LiveGPUSurfaceMessage.Body) throws -> Void = { try output(process, .init(identity: message.identity, body: $0)) }
+        if case .bind = message.body { return try emit(.bound(.init(nativeErrno: ESRCH, vkResult: nil))) }
+        try answerStale(message.body, emit: emit)
+    }
+
+    /// The answer to a surface record that has no native presentation behind it: every request
+    /// fails as stale, and a retirement succeeds.
+    private func answerStale(_ body: LiveGPUSurfaceMessage.Body, emit: (LiveGPUSurfaceMessage.Body) throws -> Void) throws {
+        let stale = LiveGPUSurfaceStatus(nativeErrno: ESTALE, vkResult: nil)
+        switch body {
+        case .retire: try emit(.retired(.init(nativeErrno: 0, vkResult: nil)))
+        case .query(let request, _): try emit(.capabilities(request: request, status: stale, value: nil))
+        case .present(let request):
+            try emit(.presentResult(serial: request.serial, status: stale, disposition: .rejected, event: .submission))
+        case .swapchain(let control):
+            switch control {
+            case .create(let info): try emit(.swapchain(.created(request: info.request, swapchain: 0, status: stale, count: 0)))
+            case .map(let id, _, _): try emit(.swapchain(.mapped(swapchain: id, status: stale)))
+            case .acquire(let info):
+                try emit(.swapchain(.acquired(swapchain: info.swapchain, request: info.request, status: stale, index: nil, reason: .other)))
+            case .cancelAcquire(let id, let request):
+                try emit(.swapchain(.acquired(swapchain: id, request: request, status: stale, index: nil, reason: .cancelled)))
+            case .retire(let id): try emit(.swapchain(.retired(swapchain: id, status: .init(nativeErrno: 0, vkResult: nil))))
+            case .present(let info):
+                try emit(.presentResult(serial: info.serial, status: stale, disposition: .rejected, event: .submission))
+            default: throw violation("wrong-direction indexed message")
+            }
         default: throw violation("wrong-direction surface message")
         }
     }
