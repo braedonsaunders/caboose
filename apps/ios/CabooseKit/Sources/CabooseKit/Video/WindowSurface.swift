@@ -248,6 +248,23 @@ public final class WindowSurface: @unchecked Sendable {
     }
 
     /// Draws a decoded image (png/jpeg/webp) into a region.
+    /// Shows a picture drawn on the phone (a draw list's surface, docs/draw.md) as the window's
+    /// pixels, resizing to it first. The copy is queued after the drawing on the shared queue.
+    func show(drawn picture: MTLTexture) -> Bool {
+        resize(width: picture.width, height: picture.height)
+        lock.lock()
+        defer { lock.unlock() }
+        guard let texture = backing, texture.width == picture.width, texture.height == picture.height,
+              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else { return false }
+        blit.copy(from: picture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
+                  sourceSize: MTLSize(width: picture.width, height: picture.height, depth: 1),
+                  to: texture, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blit.endEncoding()
+        commands.commit()
+        generation &+= 1
+        return true
+    }
+
     public func upload(image: CGImage, x: Int, y: Int) {
         upload(image: image, into: CGRect(x: x, y: y, width: image.width, height: image.height))
     }

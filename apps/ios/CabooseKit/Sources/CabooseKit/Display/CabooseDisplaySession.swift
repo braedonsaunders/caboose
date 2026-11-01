@@ -383,7 +383,7 @@ public final class CabooseDisplaySession: DisplaySession {
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
                     scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
                     atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled,
-                    targets: true))
+                    targets: true, draw: DrawLists.enabled))
     }
 
     // MARK: Server messages
@@ -1280,6 +1280,8 @@ private final class Incoming: @unchecked Sendable {
     private let send: @Sendable (ClientMessage) -> Void
     private let tileCache = TileAtlasCache()
     private let fontCache = SceneFontCache()
+    /// This connection's draw lists, drawn on the phone when on (DrawLists).
+    private let drawLists = DrawLists.make()
     // Socket-queue counters for an explicitly launched atlas acceptance run. No payloads.
     private let atlasAudit = ProcessInfo.processInfo.environment["CABOOSE_SURFACE_ATLAS"] != "0"
     private var atlasBatches: UInt64 = 0
@@ -1367,9 +1369,13 @@ private final class Incoming: @unchecked Sendable {
             case .sceneCommit(let commit):
                 echo.drew(commit.window)
                 pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
-            case .drawOps, .drawPresent, .drawEnd:
-                // This client's hello does not ask for draw lists, so the computer sends none.
-                break
+            case .drawOps(let stream, let ops):
+                drawLists?.ops(stream: stream, ops)
+            case .drawPresent(let window, let stream, let surface, _):
+                echo.drew(window)
+                drawLists?.present(stream: stream, surface: surface, on: pipelines[window])
+            case .drawEnd(let stream):
+                drawLists?.end(stream: stream)
             case .videoFrame(let frame):
                 passthroughVideoFrames &+= 1
                 recordAtlasWire()
