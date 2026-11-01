@@ -1004,8 +1004,15 @@ as far apart as the last one took. GTK and Chromium windows read in about 50–7
 **`targets`** (`0x28`): window `id`'s controls, replacing its previous list; an empty list
 clears it. Each is `[x, y, w, h, kind]` in window-local display pixels. `kind` is 1 button,
 2 toggle (check box, radio, switch), 3 link, 4 menu item, 5 tab, 6 text field, 7 item
-(list, tree or table cell), 8 adjustable (slider, spin button, scroll bar) or 0 other, with
-`0x80` set for a disabled control. A control belongs to the topmost window of the focused
+(list, tree or table cell), 8 adjustable (slider, spin button, scroll bar), 9 window control
+or 0 other, with `0x80` set for a disabled control. A window control is one the application
+draws in its own page, which toolkit settings cannot remove (an Electron app's HTML title
+bar): a row of controls named Minimize, Maximize, Restore or Close, one of them Close,
+against the window's top-left or top-right corner within 64 logical pixels of its top. The
+client covers each row with the colour read beside it from the window's picture and sends
+no click there (Caboose's own controls are on every window); it never aims a touch at one.
+Electron renders its pages' trees only with `--force-renderer-accessibility`, which the
+guest's launcher adds when an entry's program sits beside Chromium's resource packs. A control belongs to the topmost window of the focused
 window's family (its popups, newest first, then itself) that holds its centre. `serial`
 increases with every list in a session. A list is sent only when it changed; it describes
 the window as of a reading, so a client treats it as a hint that may lag the picture by a

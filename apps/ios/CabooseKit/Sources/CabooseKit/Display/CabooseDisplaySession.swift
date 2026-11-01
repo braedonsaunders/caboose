@@ -396,7 +396,9 @@ public final class CabooseDisplaySession: DisplaySession {
             case .scrollTree(let tree):
                 windows[tree.window]?.scrollReports.record(tree)
             case .targets(let window, _, let targets):
-                windows[window]?.touchTargets = targets
+                windows[window]?.touchTargets = targets.filter { $0.kind != .windowControl }
+                let drawn = targets.filter { $0.kind == .windowControl }.map(\.rect)
+                if windows[window]?.drawnControls != drawn { windows[window]?.drawnControls = drawn }
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
                 // Focus leaving a field (Return in a search box, a tap elsewhere) turns its

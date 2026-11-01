@@ -386,6 +386,8 @@ final class DesktopModel {
                 if !detachedChrome, !window.isAuxiliary, !window.isFullscreen,
                    point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
                 guard let local = DesktopGeometry.remotePoint(point, shown: content, remote: window.frame.size) else { continue }
+                // The application's own window controls are covered: there, it is title bar.
+                if window.isOnDrawnControl(local) { return .titleBar(id) }
                 return .content(id, local)
             }
             // The controls answer where DesktopWindow draws them, across the bar's height.

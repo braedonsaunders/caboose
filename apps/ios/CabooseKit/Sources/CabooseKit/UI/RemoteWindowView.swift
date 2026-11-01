@@ -36,6 +36,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
     private var laidOutVideos: (window: ObjectIdentifier, layout: Int, size: CGSize, bounds: CGRect)?
     private var hostedVideos: [CALayer] = []
+    /// Covers the window controls the application draws itself (`RemoteWindow.drawnControls`).
+    private let drawnCover = DrawnControlsCover()
+    private var laidOutDrawnControls: (controls: [CGRect], frame: CGSize, bounds: CGSize)?
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
     /// The containing slot adopts the drawable's size before it is presented.
@@ -181,6 +184,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             localScroll?.cancel()
             liveGPUCaptures = false
             laidOutVideos = nil
+            drawnCover.removeAll()
+            laidOutDrawnControls = nil
         }
         remoteWindow?.scrollReports.stopObserving(self)
         remoteWindow = window
@@ -233,6 +238,23 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         layoutGame()
         layoutGPUStream()
         layoutLiveGPU()
+        layoutDrawnControls()
+    }
+
+    /// Lays the covers over the application's own window controls when they, the window's
+    /// size or this view's size changed (or `force`, once a cover's colour is known).
+    private func layoutDrawnControls(force: Bool = false) {
+        guard let window = remoteWindow else { return }
+        let now = (controls: window.drawnControls, frame: window.frame.size, bounds: bounds.size)
+        if !force, let laid = laidOutDrawnControls, laid.controls == now.controls, laid.frame == now.frame, laid.bounds == now.bounds { return }
+        laidOutDrawnControls = now
+        drawnCover.layout(in: layer, controls: now.controls, frame: now.frame)
+    }
+
+    /// Reads the colour beside the application's own window controls from a picture.
+    private func sampleDrawnControls(_ texture: MTLTexture) {
+        guard let window = remoteWindow, !window.drawnControls.isEmpty else { return }
+        drawnCover.sample(texture, frame: window.frame.size) { [weak self] in self?.layoutDrawnControls(force: true) }
     }
 
     func layoutLiveGPU() {
@@ -460,6 +482,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             LocalScrollProfile.note("gpu captures arriving window=\(remoteWindow?.id ?? 0) \(texture.width)x\(texture.height) format=\(texture.pixelFormat.rawValue)")
         }
         liveGPUCaptures = true
+        layoutDrawnControls()
+        sampleDrawnControls(texture)
         localScroll.offer(texture, serial: serial, done: release)
     }
 
@@ -480,6 +504,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     fileprivate func present() {
         followAlpha()
+        layoutDrawnControls()
         guard let picture = remoteWindow?.surface.presentation() else { return }
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
@@ -504,6 +529,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         commands.present(drawable)
         commands.commit()
         presentedGeneration = generation
+        sampleDrawnControls(texture)
     }
 
     /// Called after acquiring a drawable. Adoption belongs to the attached window,
@@ -616,6 +642,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private func click(at point: CGPoint, button: Int = 1, aimed: Bool = false) {
         guard let window = remoteWindow, let session else { return }
+        // The application's own window controls are covered; Caboose's are the ones to use.
+        if window.isOnDrawnControl(pixelPoint(point)) { return }
         // A click can move focus or the caret, so iOS must not edit text from before it.
         resetTyping()
         caretAnchor = point

@@ -16,6 +16,12 @@ disabled control:
 
     1 button   2 toggle (check, radio, switch)   3 link   4 menu item   5 tab
     6 text field   7 item (list, tree, table cell)   8 adjustable (slider, spin, scroll bar)
+    9 window control the application draws itself (minimize, maximize, close)
+
+Caboose draws every window's controls; toolkits are asked to draw none (an empty button
+layout). An application that draws them in its own page (Electron apps with HTML title
+bars, such as Obsidian) still lists them: named Minimize, Maximize, Restore or Close, in a
+row against the window's top-left or top-right corner. The client hides and ignores those.
 
 It runs as the desktop user with the seat's launch environment and reads the seat the way
 a11y.py, next to it, does: Wayland and X11 windows alike, an application only while all its
@@ -31,7 +37,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import a11y  # noqa: E402
 
-BUTTON, TOGGLE, LINK, MENU, TAB, FIELD, ITEM, ADJUST = range(1, 9)
+BUTTON, TOGGLE, LINK, MENU, TAB, FIELD, ITEM, ADJUST, CAPTION = range(1, 10)
 DISABLED = 0x80
 MAX_TARGETS = 1024
 
@@ -58,6 +64,80 @@ MIN_GAP = 0.15
 POLL = 2.0
 EVENTS = ("window:activate", "window:create", "window:destroy", "object:state-changed:showing",
           "object:children-changed")
+
+
+# Window controls an application draws: the first word of their name, the band below the
+# window's top edge they lie in, their size range, how far apart neighbours may be and how
+# close the row must come to the window's side (logical pixels).
+CAPTION_WORDS = ("minimize", "minimise", "maximize", "maximise", "unmaximize", "restore", "close")
+CAPTION_BAND = 64
+CAPTION_SIZE = (12, 96)
+CAPTION_GAP = 12
+CAPTION_EDGE = 12
+CAPTION_VISITS = 4000
+
+
+def is_caption_name(name):
+    words = " ".join((name or "").split()).casefold().split(" ")
+    return bool(words) and words[0] in CAPTION_WORDS
+
+
+def caption_row(candidates, window):
+    """The candidates (dicts with x, y, width, height and name) that are a window's own
+    controls: a row of neighbours, one of them Close, against the window's top-left or
+    top-right corner. `window` is the window's rectangle."""
+    left, right = window["x"], window["x"] + window["width"]
+    row = sorted(candidates, key=lambda c: c["x"])
+    groups, group = [], []
+    for c in row:
+        if group and c["x"] - (group[-1]["x"] + group[-1]["width"]) > CAPTION_GAP:
+            groups.append(group)
+            group = []
+        group.append(c)
+    if group:
+        groups.append(group)
+    found = []
+    for group in groups:
+        start, end = group[0]["x"], max(c["x"] + c["width"] for c in group)
+        against = start - left <= CAPTION_EDGE or right - end <= CAPTION_EDGE
+        if against and any(" ".join(c["name"].split()).casefold().startswith("close") for c in group):
+            found.extend(group)
+    return found
+
+
+def caption_controls(tree, root, origin, window):
+    """The window controls an application drew in `root`, a window at `window`. Only the
+    band below the window's top edge is visited."""
+    band = window["y"] + CAPTION_BAND
+    candidates = []
+    stack = [root]
+    visits = 0
+    while stack and visits < CAPTION_VISITS:
+        node = stack.pop()
+        visits += 1
+        states = tree.states(node)
+        if states is None or (node is not root and not tree.has(states, "SHOWING")):
+            continue
+        bounds = tree.bounds(node, origin)
+        if bounds is not None:
+            if bounds["y"] >= band:
+                continue
+            try:
+                name = node.get_name() or ""
+            except Exception:
+                name = ""
+            low, high = CAPTION_SIZE
+            if (is_caption_name(name) and bounds["y"] + bounds["height"] <= band
+                    and low <= bounds["width"] <= high and low <= bounds["height"] <= high):
+                _, actions = tree.actions(node)
+                if any(action in tree.press_actions for action in actions):
+                    candidates.append(dict(bounds, name=name))
+                    continue
+        for _, child in tree.children(node):
+            if child is not None:
+                stack.append(child)
+    tree.visited += visits
+    return caption_row(candidates, window)
 
 
 def role_kinds(Atspi):
@@ -127,6 +207,9 @@ class Reader:
         if frame is not None:
             roots.append((frame[1], rect or whole, frame[2]))
         found = result["targets"]
+        if frame is not None and rect:
+            for c in caption_controls(tree, frame[1], frame[2], rect):
+                found.append([c["x"], c["y"], c["width"], c["height"], CAPTION])
 
         def add(node, role, states, origin, clip):
             kind = kind_of(tree, kinds, node, role, states)

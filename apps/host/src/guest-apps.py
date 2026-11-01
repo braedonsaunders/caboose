@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import sys
 
@@ -108,6 +109,42 @@ def desktop_shortcut(ident):
         finally: os.close(fd)
     print(json.dumps({'path': 'Desktop/' + ident}))
 
+# Electron applications build their pages' accessibility trees only with this switch. The
+# trees give the phone its touch targets and name the window controls an application draws
+# in its own page, which Caboose hides: every window already has Caboose's own.
+ELECTRON_SWITCH = '--force-renderer-accessibility'
+
+def electron(exec_line):
+    """Whether an Exec line starts an Electron (or other Chromium-packaged) binary itself:
+    its directory holds Chromium's resource packs and V8 snapshot beside `resources/`."""
+    try:
+        argv = shlex.split(exec_line)
+    except ValueError:
+        return False
+    program = shutil.which(argv[0]) if argv else None
+    if not program:
+        return False
+    here = pathlib.Path(os.path.realpath(program)).parent
+    return ((here / 'resources').is_dir() and (here / 'v8_context_snapshot.bin').is_file()
+            and any((here / pack).is_file() for pack in ('resources.pak', 'chrome_100_percent.pak')))
+
+def with_accessibility(entry, section):
+    """The entry to launch: for an Electron binary, a copy under the runtime directory whose
+    Exec adds ELECTRON_SWITCH, with the same file name (the launch still names the entry)."""
+    exec_line = section['Exec']
+    if ELECTRON_SWITCH in exec_line or not electron(exec_line):
+        return entry
+    runtime = pathlib.Path(os.environ.get('XDG_RUNTIME_DIR') or f'/tmp/caboose-{os.getuid()}') / 'caboose-launch'
+    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    copy = runtime / entry.name
+    lines = []
+    for line in entry.read_text(encoding='utf-8').splitlines():
+        if re.match(r'^Exec\s*=', line):
+            line = f'{line} {ELECTRON_SWITCH}'
+        lines.append(line)
+    copy.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return copy
+
 if sys.argv[1] == 'desktop-shortcut':
     desktop_shortcut(sys.argv[2])
     sys.exit(0)
@@ -141,7 +178,7 @@ if sys.argv[1] in ('launch', 'action'):
     import gi
     gi.require_version('Gio', '2.0')
     from gi.repository import Gio
-    info = Gio.DesktopAppInfo.new_from_filename(str(entry))
+    info = Gio.DesktopAppInfo.new_from_filename(str(with_accessibility(entry, section)))
     if info is None:
         raise SystemExit('Application could not be started')
     # Everything the launch starts inherits the entry's id, through wrapper scripts and game

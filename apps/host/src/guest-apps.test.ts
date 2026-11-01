@@ -36,6 +36,9 @@ class _Info:
     def launch_action(self, action, context):
         _record({'launch': os.path.basename(self.path), 'action': action})
 class Gio:
+    class AppLaunchContext:
+        def setenv(self, name, value):
+            pass
     class DesktopAppInfo:
         @staticmethod
         def new_from_filename(path):
@@ -58,7 +61,8 @@ function fixture(entries: Record<string, string>) {
   expect(script).not.toBe(original)
   const launches = join(root, 'launches.jsonl')
   const env = { ...process.env, PYTHONPATH: root, HOME: root, TEST_LAUNCHES: launches }
-  const run = (...args: string[]) => spawnSync('/usr/bin/python3', ['-c', script, ...args], { env, encoding: 'utf8' })
+  const run = Object.assign((...args: string[]) => spawnSync('/usr/bin/python3', ['-c', script, ...args], { env, encoding: 'utf8' }),
+    { command: ['/usr/bin/python3', '-c', script], options: { env, encoding: 'utf8' as const } })
   const recorded = () => existsSync(launches) ? readFileSync(launches, 'utf8').trim().split('\n').map(line => JSON.parse(line) as unknown) : []
   return { run, recorded, root }
 }
@@ -136,6 +140,27 @@ describe('guest-apps.py', () => {
     const hidden = run('action', 'hidden.desktop', 'go')
     expect(hidden.stderr).toContain('Application not found')
     expect(recorded()).toHaveLength(2)
+  })
+
+  it('launches an Electron binary with its pages\' accessibility trees, through a copy of the entry', () => {
+    const app = mkdtempSync(join(tmpdir(), 'caboose-electron-test-')); roots.push(app)
+    mkdirSync(join(app, 'resources'))
+    for (const file of ['v8_context_snapshot.bin', 'resources.pak']) writeFileSync(join(app, file), '')
+    writeFileSync(join(app, 'notes'), '#!/bin/sh\n', { mode: 0o755 })
+    const { run, recorded, root } = fixture({
+      ...ENTRIES,
+      'notes.desktop': `[Desktop Entry]\nType=Application\nName=Notes\nExec=${join(app, 'notes')} %U\n`,
+    })
+    const runtime = join(root, 'runtime')
+    mkdirSync(runtime)
+    const launched = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'notes.desktop'], run.options)
+    expect(launched.status).toBe(0)
+    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
+      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility`)
+    // Anything else launches from its own entry, unchanged.
+    expect(spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'plain.desktop'], run.options).status).toBe(0)
+    expect(existsSync(join(runtime, 'caboose-launch', 'plain.desktop'))).toBe(false)
+    expect(recorded()).toEqual([{ launch: 'notes.desktop', files: [] }, { launch: 'plain.desktop', files: [] }])
   })
 })
 

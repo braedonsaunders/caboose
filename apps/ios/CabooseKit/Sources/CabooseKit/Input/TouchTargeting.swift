@@ -5,6 +5,8 @@ import Foundation
 public struct TouchTarget: Equatable, Sendable {
     public enum Kind: UInt8, Sendable {
         case other = 0, button, toggle, link, menu, tab, field, item, adjustable
+        /// A window control the application draws in its own page; Caboose hides it.
+        case windowControl
     }
 
     public var rect: CGRect
