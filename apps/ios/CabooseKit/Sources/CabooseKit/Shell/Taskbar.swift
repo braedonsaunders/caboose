@@ -194,6 +194,30 @@ public struct Taskbar: Equatable, Sendable {
     }
 }
 
+/// The dock's place for one kind of everyday app (a web browser, a file manager): the
+/// first of `ids` installed, else the first app of `category`. An id names its entry exactly
+/// (`thunar` is `thunar.desktop`), or a variant of it in the same category (`firefox-esr`
+/// for a browser); never another app that merely shares its prefix, such as Thunar's Bulk
+/// Rename (`thunar-bulk-rename`).
+public enum DockSlot {
+    public static func choose<App>(ids: [String], category: String, among apps: [App],
+                                   id: (App) -> String, categories: (App) -> [String]) -> App? {
+        func stem(_ app: App) -> String {
+            let lowered = id(app).lowercased()
+            return lowered.hasSuffix(".desktop") ? String(lowered.dropLast(8)) : lowered
+        }
+        func variant(_ app: App, of wanted: String) -> Bool {
+            stem(app).hasPrefix(wanted + "-") && (category.isEmpty || categories(app).contains(category))
+        }
+        for wanted in ids {
+            if let app = apps.first(where: { stem($0) == wanted }) ?? apps.first(where: { variant($0, of: wanted) }) {
+                return app
+            }
+        }
+        return category.isEmpty ? nil : apps.first { categories($0).contains(category) }
+    }
+}
+
 /// Fits the dock's apps into `fit` places: an app with a window is never the one left
 /// out; everyday apps without one give up their places, from the end, first.
 public enum DockFit {
