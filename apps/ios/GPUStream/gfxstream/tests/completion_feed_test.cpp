@@ -83,9 +83,18 @@ int main() {
         Record r = readRecord(sockets[0]);
         assert(r.serial == 2 && r.status == CompletionFeed::kUnwatched);
         completions.watch(0x2, 3);
+        // What a stall report reads: the oldest marker still waited for and what was sent.
+        for (int i = 0; i < 200 && completions.state().lastWrittenSerial != 2; ++i) usleep(5000);
+        auto state = completions.state();
+        assert(state.watches == 3 && state.unwatched == 1 && state.outstanding == 2);
+        assert(state.oldestSerial == 1 && state.oldestQueue == 0x1 && state.oldestWatchedMs > 0);
+        assert(state.lastWrittenSerial == 2 && state.lastCompletedSerial == 0 && state.feedAttached);
         gpu.release(0x1);
         r = readRecord(sockets[0]);
         assert(r.serial == 1 && r.status == CompletionFeed::kCompleted);
+        state = completions.state();
+        assert(state.lastCompletedSerial == 1 && state.lastStatus == CompletionFeed::kCompleted);
+        assert(state.outstanding == 1 && state.oldestSerial == 3 && state.oldestQueue == 0x2);
         gpu.release(0x2, -4);
         r = readRecord(sockets[0]);
         assert(r.serial == 3 && r.status == CompletionFeed::kDeviceLost);

@@ -10,6 +10,7 @@
 #include <vector>
 #endif
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <chrono>
 #include <string>
@@ -41,6 +42,7 @@ struct Process {
     std::atomic_bool stopped{false};
     std::set<int> sockets;
     std::map<int, std::shared_ptr<caboose::gpuv2::DecodeProgress>> progress;
+    int64_t stallReportedMs = 0;  // the stall watchdog's own bookkeeping
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
     caboose::gpuv2::DecodeDiagnosticBudget terminalBudget;
 #endif
@@ -52,7 +54,76 @@ struct caboose_gfx_registry {
     std::set<int> activeSockets;
     uint64_t nextContext = 1;
     bool synchronousOnly = false;
+    // The stall watchdog: once a second, any process whose oldest completion marker has
+    // waited 3 s is reported (watchStalls).
+    std::mutex watchdogMutex;
+    std::condition_variable watchdogWake;
+    bool watchdogStopping = false;
+    std::thread watchdog;
 };
+namespace {
+constexpr int64_t kStallMs = 3000;
+constexpr int64_t kStallRepeatMs = 30000;
+
+// A guest answers fence and timeline status from completion records. A marker that never
+// completes (its queue waits for something that is never signaled) stops them all and the
+// guest spins: report, always and cheaply, where every process's completion stands, what its
+// decoders are doing, and what each queue last submitted and waits on.
+void watchStalls(caboose_gfx_registry* registry) {
+    std::unique_lock<std::mutex> wake(registry->watchdogMutex);
+    while (!registry->watchdogWake.wait_for(wake, std::chrono::seconds(1), [registry] { return registry->watchdogStopping; })) {
+        struct Seen { uint64_t token; std::shared_ptr<Process> process; size_t count; std::string streams; };
+        std::vector<Seen> seen;
+        {
+            std::lock_guard<std::mutex> lock(registry->mutex);
+            for (const auto& [token, process] : registry->processes) {
+                if (process->stopped || !process->completions) continue;
+                std::string streams;
+                for (const auto& [fd, p] : process->progress)
+                    streams += " fd" + std::to_string(fd) + ":op" + std::to_string(p->opcode.load()) +
+                               "/stage" + std::to_string(p->stage.load());
+                seen.push_back({token, process, process->progress.size(), std::move(streams)});
+            }
+        }
+        const int64_t now = caboose::gpuv2::CompletionFeed::nowMs();
+        bool describe = false;
+        for (auto& [token, process, count, streams] : seen) {
+            const auto s = process->completions->state();
+            const bool stalled = s.outstanding && now - s.oldestWatchedMs >= kStallMs;
+            if (!stalled) {
+                if (process->stallReportedMs) {
+                    std::fprintf(stderr, "CABOOSE_GPU_QUEUE_RECOVERED token=%llu context=%u last_completed=%llu\n",
+                                 (unsigned long long)token, process->context, (unsigned long long)s.lastCompletedSerial);
+                    process->stallReportedMs = 0;
+                }
+                continue;
+            }
+            if (process->stallReportedMs && now - process->stallReportedMs < kStallRepeatMs) continue;
+            process->stallReportedMs = now;
+            describe = true;
+            auto age = [now](int64_t at) { return at ? (long long)(now - at) : -1LL; };
+            std::fprintf(stderr,
+                "CABOOSE_GPU_QUEUE_STALL token=%llu context=%u outstanding=%zu oldest_serial=%llu "
+                "oldest_queue=0x%llx oldest_age_ms=%lld watches=%llu unwatched=%llu last_completed=%llu "
+                "last_status=%d last_completed_age_ms=%lld last_written=%llu last_written_age_ms=%lld "
+                "unwritten=%zu feed=%s ordered=%llu streams=%zu%s\n",
+                (unsigned long long)token, process->context, s.outstanding, (unsigned long long)s.oldestSerial,
+                (unsigned long long)s.oldestQueue, age(s.oldestWatchedMs), (unsigned long long)s.watches,
+                (unsigned long long)s.unwatched, (unsigned long long)s.lastCompletedSerial, s.lastStatus,
+                age(s.lastCompletedMs), (unsigned long long)s.lastWrittenSerial, age(s.lastWrittenMs),
+                s.unwritten, s.feedAttached ? "attached" : "detached", (unsigned long long)s.ordered,
+                count, streams.c_str());
+        }
+        if (!describe) continue;
+        wake.unlock();
+        if (auto* state = gfxstream::host::vk::VkDecoderGlobalState::get()) {
+            const std::string queues = state->describeCabooseQueues();
+            std::fputs(queues.c_str(), stderr);
+        }
+        wake.lock();
+    }
+}
+}  // namespace
 static int createRegistry(caboose_gfx_registry** out, bool synchronousOnly) {
     if (!out) return EINVAL;
     *out = nullptr;
@@ -61,6 +132,8 @@ static int createRegistry(caboose_gfx_registry** out, bool synchronousOnly) {
     if (!FrameBuffer::getFB() || !FrameBuffer::getFB()->hasEmulationVk()) return ENODEV;
     try { *out = new caboose_gfx_registry; } catch (const std::bad_alloc&) { return ENOMEM; }
     (*out)->synchronousOnly = synchronousOnly;
+    caboose_gfx_registry* registry = *out;
+    registry->watchdog = std::thread([registry] { watchStalls(registry); });
     registryExists = true;
     return 0;
 }
@@ -79,6 +152,12 @@ extern "C" int caboose_gfx_registry_destroy(caboose_gfx_registry* registry) {
         if (!registry->processes.empty()) return EBUSY;
     }
     FrameBuffer::getFB()->waitForAllPendingCleanups();
+    {
+        std::lock_guard<std::mutex> lock(registry->watchdogMutex);
+        registry->watchdogStopping = true;
+    }
+    registry->watchdogWake.notify_all();
+    if (registry->watchdog.joinable()) registry->watchdog.join();
     delete registry;
     registryExists = false;
     return 0;

@@ -69,6 +69,26 @@ public:
     // on process stop. Records after this are dropped.
     void close();
 
+    // Where completion stands, for a stalled-completion report (process_registry): the oldest
+    // marker still waited for, the last completion and the last record the guest was sent.
+    // Times are steady-clock milliseconds; 0 when it never happened.
+    struct State {
+        uint64_t watches = 0, unwatched = 0;
+        size_t outstanding = 0;
+        uint64_t oldestSerial = 0, oldestQueue = 0;
+        int64_t oldestWatchedMs = 0;
+        uint64_t lastCompletedSerial = 0;
+        int32_t lastStatus = 0;
+        int64_t lastCompletedMs = 0;
+        uint64_t lastWrittenSerial = 0;
+        int64_t lastWrittenMs = 0;
+        size_t unwritten = 0;
+        bool feedAttached = false;
+        uint64_t ordered = 0;
+    };
+    State state();
+    static int64_t nowMs();
+
     // Parses a complete WATCH packet; false if malformed.
     static bool parseWatch(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial);
     // Parses a complete ORDER packet; false if malformed.
@@ -77,7 +97,7 @@ public:
     static bool parseFeed(const unsigned char* packet, size_t size);
 
 private:
-    struct Pending { uint64_t serial; Waiter wait; };
+    struct Pending { uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0; };
     struct Record { uint64_t serial; int32_t status; };
     void watcherLoop();
     void push(uint64_t serial, int32_t status);
@@ -91,6 +111,12 @@ private:
     uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return
     bool detached_ = false;
     bool closing_ = false;
+    bool attached_ = false;
+    Pending waiting_;  // the marker the watcher waits for (no waiter), serial 0 when none
+    uint64_t watches_ = 0, unwatched_ = 0;
+    uint64_t lastCompletedSerial_ = 0, lastWrittenSerial_ = 0;
+    int32_t lastStatus_ = 0;
+    int64_t lastCompletedMs_ = 0, lastWrittenMs_ = 0;
     std::thread watcher_;
     std::mutex orderMutex_;
     std::condition_variable orderChanged_;
