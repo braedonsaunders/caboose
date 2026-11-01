@@ -1,4 +1,5 @@
 import { once } from 'node:events'
+import { createServer } from 'node:http'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -209,3 +210,42 @@ it('wakes a computer whose services start with it after the host starts, headles
   active = 0
   await vi.waitFor(() => expect(app.computer.state).toBe('parked'))
 })
+
+it('does not pause a computer in memory while Steam listens, nor while an app works, and pauses it once idle', async () => {
+  let listening = true, cpu = 0
+  const tables = () => `@@ /proc/sys/net/ipv4/ip_local_port_range\n32768 60999\n@@ /proc/net/tcp\n  sl local rem st\n${listening ? '   0: 00000000:6984 00000000:0000 0A 0 0 0 0 0 0 0 1\n' : ''}@@ /proc/net/tcp6\n@@ /proc/net/udp\n@@ /proc/net/udp6\n`
+  const app = { id: 'app-steam-1.scope', kind: 'app', desktopId: null, name: 'Steam', origin: 'launch', startedAt: 1, windows: [], memoryBytes: 1, io: { readBytesPerSecond: 0, writeBytesPerSecond: 0 }, gpu: null, processCount: 1, processes: [], ports: [] }
+  const guest = { run: vi.fn(async (command: string, args: string[]) => {
+    if (command === '/bin/sh') return tables()
+    if (args[0] === 'activity') return JSON.stringify({ ok: true, result: { services: { active: 0, autostart: 0, failed: 0 }, listening: [] } })
+    if (args[0] === 'list') return JSON.stringify({ ok: true, result: { version: 1, sampledAt: 1, intervalMs: 2000, machine: { cpus: 4, memoryBytes: 1 }, apps: [{ ...app, cpuPercent: cpu }], services: [] } })
+    return ''
+  }) }
+  let running = false
+  // An empty terminal service, so only the busy check stands between the computer and a pause.
+  const terminals = createServer((_, response) => { response.setHeader('content-type', 'application/json'); response.end('{"sessions":[]}') })
+  terminals.listen(0, '127.0.0.1')
+  await once(terminals, 'listening')
+  cleanup.push(() => new Promise<void>(resolve => terminals.close(() => resolve())))
+  const { app: server, controller, request } = await fixture(controller => {
+    controller.componentsMode = 'container'
+    controller.terminalService = () => ({ url: `http://127.0.0.1:${(terminals.address() as AddressInfo).port}`, token: 't' })
+    const wake = controller.wake
+    controller.wake = async mode => { running = true; return wake(mode) }
+    controller.canFreeze = () => true
+    controller.freeze = vi.fn(async () => {})
+    controller.thaw = vi.fn(async () => {})
+    controller.guest = () => running ? guest : undefined
+  })
+  await request('/v1/session', 'POST')
+  await new Promise(resolve => setTimeout(resolve, 3500))
+  expect(server.computer.state).toBe('running')
+  expect(controller.freeze).not.toHaveBeenCalled()
+  // Steam stops listening but is downloading: still at work.
+  listening = false; cpu = 25
+  server.computer.setIdleMs(4000)
+  await new Promise(resolve => setTimeout(resolve, 4500))
+  expect(controller.freeze).not.toHaveBeenCalled()
+  cpu = 0
+  await vi.waitFor(() => expect(controller.freeze).toHaveBeenCalled(), { timeout: 8000 })
+}, 20_000)

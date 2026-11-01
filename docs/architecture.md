@@ -1107,8 +1107,8 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   address that is not loopback) or another machine is connected to one ([network](network.md#not-idle-while-a-server-runs)).
   It then neither freezes nor parks: the check runs when the idle timeout passes and every
   minute after, and the computer parks one full idle timeout after it was last found busy. A
-  failed check counts as idle. A running managed service also keeps a container computer
-  busy.
+  failed check counts as idle. A running managed service, or an app using 5% of a core or
+  1 MB/s of disk in its last sample, also keeps a container computer busy.
 - **Autostart.** Five seconds after the host starts, it wakes, headless, every parked
   computer it last saw with services that start with it (`services.json`), so they run
   unattended after a host restart.

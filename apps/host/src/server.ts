@@ -48,6 +48,7 @@ import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
 import { MAX_SLOTS } from './network.js'
 import { networkBusy, readNetworkActivity, type NetworkServer } from './network-activity.js'
+import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
@@ -362,13 +363,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     void readServers(guest).catch(() => {})
   }
   computer.subscribe(state => { if (state !== 'running' && servers.list.length) servers = { list: [], readAt: 0 } })
-  // So does a managed service (docs/architecture.md § Services): it is the computer's own work.
+  // So does a managed service (docs/architecture.md § Services), or an app using CPU or disk.
   computer.setBusyCheck(async () => {
     const guest = controller.guest()
     if (!guest) return false
     if (networkBusy(await readServers(guest))) return true
     if (controller.componentsMode !== 'container') return false
-    try { return (await serviceActivity(guest)).services.active > 0 } catch { return false }
+    try { if ((await serviceActivity(guest)).services.active > 0) return true } catch { /* no service manager */ }
+    // An app at work (a download, a build, a game) keeps it awake too.
+    try { return appsBusy(await listRunningApps(guest)) } catch { return false }
   })
   /** What caboose-ports (guest/ports) was last told, so it is told again only on a change. */
   let forwarding: string | undefined
