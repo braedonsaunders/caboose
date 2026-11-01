@@ -816,7 +816,11 @@ uses it differently:
   the probe. An app that moves on was stalled, and one that does not answer within a second is
   driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
   that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
-  picture placed beyond an end removes it. A toolkit adapter's reported range stays.
+  picture placed beyond an end removes it. A toolkit adapter's reported range stays. With an overscan, the
+  application's enlarged viewport stops one overscan short of the content's end, which its
+  picture still shows, so the phone's end is the reported range plus the overscan. The
+  application is driven no further than its range; past it the phone rests with the
+  picture moved, and taps there land on the content shown.
 - **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
   driven at most 0.6 of the region per picture interval. While it has shown nothing for
   two picture intervals (and 100 ms) of being driven, counted from its last picture or,

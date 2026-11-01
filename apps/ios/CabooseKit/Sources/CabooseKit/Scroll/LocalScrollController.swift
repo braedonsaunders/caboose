@@ -54,6 +54,13 @@ public final class LocalScrollController {
         guard model.overscan > 0, let composition = lastComposition, lastViewport > 0 else { return nil }
         return (composition.axis, composition.region.along.upperBound, lastViewport)
     }
+    /// At rest past the app's reported end, the region shows the app's picture moved by
+    /// `shift` lines: a point there is on the app's content `shift` lines back.
+    public var restingShift: (axis: ScrollAxis, lines: Range<Int>, shift: Int, viewport: Int)? {
+        guard isComposing, zoom == nil, hold == nil, !model.isActive, let composition = lastComposition, lastViewport > 0,
+              let layer = composition.layers.last, layer.shift != 0 else { return nil }
+        return (composition.axis, composition.region.along, layer.shift, lastViewport)
+    }
     private var lastViewport = 0
     private var lastViewportSize: CGSize?
     private var lastComposition: ScrollComposition?
