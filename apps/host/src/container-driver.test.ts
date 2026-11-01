@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { config } from './config.js'
 import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneGpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
@@ -37,7 +37,7 @@ function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited', publis
 }
 
 const env = {
-  CABOOSE_OWNER_TOKEN: 'x', CABOOSE_RUNTIME: 'container', CABOOSE_MEMORY_MB: '6144', CABOOSE_VCPUS: '4',
+  CABOOSE_OWNER_TOKEN: 'x', CABOOSE_RUNTIME: 'container', CABOOSE_MEMORY_MB: '6144', CABOOSE_VCPUS: '4', CABOOSE_TAILNET: 'off',
   CABOOSE_CONTAINER_IMAGE: 'caboose-computer:gpu', CABOOSE_CONTAINER_HOME: '/srv/caboose/home', CABOOSE_CONTAINER_ARGS: '--security-opt seccomp=unconfined',
 }
 const settings = config(env)
@@ -107,6 +107,23 @@ describe('createContainerController', () => {
     expect(fake.calls.some(call => call[0] === 'unpause')).toBe(true)
     expect(second.display.token).toBe(first.display.token)
     expect(fake.calls.filter(call => call[0] === 'run')).toHaveLength(1)
+  })
+
+  it('brings up its tailnet companion after a wake without holding the wake, and removes it with the computer', async () => {
+    const fake = fakeDocker('missing')
+    const allowed: string[][] = []
+    let changed = 0
+    const controller = createContainerController(config({ ...env, CABOOSE_TAILNET: 'on' }), { fence: async () => {}, unfence: async () => {}, docker: fake.docker, exists: () => false,
+      allowCompanion: async (...args) => { allowed.push(args) } })
+    controller.onNetworkChange?.(() => { changed++ })
+    expect(controller.network?.()).toEqual({ tailnet: { state: 'starting' } })
+    await controller.wake('headless')
+    await vi.waitFor(() => expect(changed).toBe(1))
+    expect(fake.calls.some(call => call[0] === 'exec' && call[1] === 'caboose-owner-net' && call.at(-1) === '172.18.0.2')).toBe(true)
+    expect(allowed).toEqual([['caboose-br0', '172.18.0.2', '172.18.0.2']])
+    await controller.destroy!()
+    expect(fake.calls).toContainEqual(['rm', '-f', 'caboose-owner-net'])
+    expect(fake.calls).toContainEqual(['volume', 'rm', '-f', 'caboose-owner-net'])
   })
 
   it('reports a missing Files port mapping on an existing container', async () => {

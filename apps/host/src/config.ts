@@ -2,6 +2,7 @@ import { resolve } from 'node:path'
 import { publicUrl } from './reach.js'
 import { REGISTRY_URL } from './registry.js'
 import { parseTrustedProxies, type TrustedProxies } from './proxies.js'
+import { tailnetConfig, type TailnetConfig } from './tailnet.js'
 
 export interface Config {
   /** `CABOOSE_OWNER_TOKEN`; null means the host generates one in its state directory. */
@@ -48,6 +49,8 @@ export interface Config {
   mdns: boolean
   /** `CABOOSE_TRUSTED_PROXIES`: reverse proxies whose forwarding headers are believed; loopback always is. */
   trustedProxies: TrustedProxies
+  /** `CABOOSE_TAILNET` and its credentials: each container computer's own tailnet device (docs/network.md). */
+  tailnet?: TailnetConfig
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -107,6 +110,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     vmFreePageReporting,
     parkedFiles,
     trustedProxies: parseTrustedProxies(env.CABOOSE_TRUSTED_PROXIES),
+    tailnet: selectedRuntime === 'container' ? tailnetConfig(env) : { mode: 'off' },
   }
 }
 

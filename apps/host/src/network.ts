@@ -114,6 +114,38 @@ export async function fenceBridge(device: string): Promise<void> {
 export async function unfenceBridge(device: string): Promise<void> {
   await dropRule('filter', 'INPUT', ['-i', device, '-j', 'CABOOSE-CIN'])
   await dropRule('filter', 'DOCKER-USER', ['-i', device, '-j', 'CABOOSE-CFWD'])
+  await dropCompanion(device)
+}
+
+/**
+ * The one exception to a container computer's fence: its tailnet companion (tailnet.ts), on
+ * the same bridge, may open connections to it. Nothing else changes: the computer still
+ * opens nothing to the companion, and both addresses are checked.
+ */
+export function companionRule(device: string, companion: string, computer: string): string[] {
+  return ['-s', `${companion}/32`, '-d', `${computer}/32`, '-i', device, '-o', device, '-m', 'comment', '--comment', `caboose-companion:${device}`, '-j', 'ACCEPT']
+}
+
+/** The rules `iptables -S DOCKER-USER` lists for a bridge's companion, as arguments to delete them. */
+export function companionRulesIn(listing: string, device: string): string[][] {
+  return listing.split('\n').map(line => line.trim().split(/\s+/))
+    .filter(args => args[0] === '-A' && args[1] === 'DOCKER-USER' && args.includes(`caboose-companion:${device}`))
+    .map(args => args.slice(2))
+}
+
+async function dropCompanion(device: string): Promise<void> {
+  const listing = await privilegedOutput('iptables', ['-S', 'DOCKER-USER']).catch(() => '')
+  for (const args of companionRulesIn(listing, device)) await privileged('iptables', ['-D', 'DOCKER-USER', ...args])
+}
+
+/** Lets the companion reach its computer, replacing any rule for earlier addresses (both change across restarts). */
+export async function allowCompanion(device: string, companion: string, computer: string): Promise<void> {
+  const rule = companionRule(device, companion, computer)
+  const listing = await privilegedOutput('iptables', ['-S', 'DOCKER-USER'])
+  const current = companionRulesIn(listing, device)
+  if (current.length === 1 && current[0]!.join(' ') === rule.join(' ')) return
+  await dropCompanion(device)
+  await privileged('iptables', ['-I', 'DOCKER-USER', '1', ...rule])
 }
 
 /** Persistent named TAP: it must exist before both boot and snapshot restore. */

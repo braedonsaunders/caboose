@@ -46,6 +46,8 @@ import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
 import { MAX_SLOTS } from './network.js'
+import { networkBusy, readNetworkActivity } from './network-activity.js'
+import type { ComputerNetwork } from './tailnet.js'
 import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
 import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
@@ -99,6 +101,14 @@ export interface Controller extends ComputerDriver<Session> {
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
   lastError?(): string | null
+  /** Where other machines reach the computer (docs/network.md); empty when it has no address of its own. */
+  network?(): ComputerNetwork
+  /** Reads the network's state again, as after the owner signs the computer in to Tailscale. */
+  refreshNetwork?(): Promise<void>
+  /** Gives the computer's network names its new name. */
+  renameNetwork?(): Promise<void>
+  /** Called whenever network() may answer differently. */
+  onNetworkChange?(listener: () => void): void
   /** Deletes the computer and its disk; only when the computer itself is deleted. */
   destroy?(): Promise<void>
   /** Refuse a restored disk this computer cannot boot, before anything changes. */
@@ -328,6 +338,24 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   bridge.canScan = () => [...scanControls].some(socket => phoneControls.has(socket) && !backgroundControls.has(socket) && socket.readyState === WebSocket.OPEN)
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
+  /** Whether another machine can reach the computer at an address of its own. */
+  function reachable(): boolean { return controller.network?.().tailnet?.state === 'running' }
+  // A server another machine can reach, or an outside connection, keeps the computer awake (docs/network.md).
+  computer.setBusyCheck(async () => {
+    const guest = controller.guest()
+    return guest ? networkBusy(await readNetworkActivity(guest), reachable()) : false
+  })
+  controller.onNetworkChange?.(() => broadcastSettings())
+  // Until the device is up (the owner may be signing it in), its state is read every 10 s; then every 5 minutes.
+  let networkChecked = 0
+  const networkPoll = setInterval(() => {
+    const state = controller.network?.().tailnet?.state
+    if (computer.state !== 'running' || !state || state === 'off') return
+    if (state === 'running' && Date.now() - networkChecked < 300_000) return
+    networkChecked = Date.now()
+    void controller.refreshNetwork?.()
+  }, 10_000)
+  networkPoll.unref()
   const nowPlaying = new NowPlaying(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   /** Media is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
@@ -388,6 +416,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       routines: { error: routineError },
       agentTools: { error: toolsError },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
+      network: controller.network?.() ?? {},
     }
   }
   /**
@@ -668,8 +697,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const input = expandSize(rawInput, shared.gpuEnabled)
       if ('defaultAgent' in input) await catalog.ensureKnown(input.defaultAgent)
       if (admit && ('memoryMb' in input || 'vcpus' in input)) await admit(id, updateSettings(settings.get(), input, settings.limits))
+      const before = settings.get().name
       const updated = await settings.update(input)
       computer.setIdleMs(updated.idleMs)
+      if (updated.name !== before && computer.state === 'running') void controller.renameNetwork?.()
       broadcastSettings()
       return json(response, 200, managementStatus())
     }
@@ -1168,6 +1199,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await tiering?.close()
     pieces.storage?.close()
     clearInterval(autoUpdates)
+    clearInterval(networkPoll)
     guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()
@@ -1184,6 +1216,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    */
   async function destroy(): Promise<void> {
     clearInterval(autoUpdates)
+    clearInterval(networkPoll)
     guestEvents.stop()
     await (await routinesReady)?.close()
     agents.pause()

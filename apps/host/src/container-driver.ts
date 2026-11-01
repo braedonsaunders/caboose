@@ -11,7 +11,8 @@ import type { ComputerIdentity, ComputerResources } from './driver.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
 import type { ComputerSettings } from './settings.js'
-import { fenceBridge, unfenceBridge } from './network.js'
+import { allowCompanion, fenceBridge, unfenceBridge } from './network.js'
+import { TailnetNode, dockerInputCli, tailnetHostname, type DockerInput, type TailnetStatus } from './tailnet.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 
@@ -204,10 +205,25 @@ export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = 
   return [...userfaultfd, ...vgem]
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; identity?: ComputerIdentity } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; identity?: ComputerIdentity } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
+  /** The computer's own device on the owner's tailnet (tailnet.ts), unless the host turns it off. */
+  const tailnet = config.tailnet && config.tailnet.mode !== 'off'
+    ? new TailnetNode({ config: config.tailnet, docker, dockerInput: dependencies.dockerInput ?? (dependencies.docker ? undefined : dockerInputCli()), name: `${place.name}-net`,
+      computer: place.name, network: place.network, hostname: () => tailnetHostname(settings().name),
+      allow: (companion, computer) => (dependencies.allowCompanion ?? allowCompanion)(place.bridge, companion, computer) })
+    : undefined
+  let networkWork: Promise<unknown> = Promise.resolve()
+  let networkChanged = () => {}
+  /** Network work runs one at a time beside the lifecycle, never inside a wake. */
+  function networkTask(work: (node: TailnetNode) => Promise<unknown>): Promise<void> {
+    if (!tailnet) return Promise.resolve()
+    const run = networkWork.then(() => work(tailnet)).then(() => networkChanged(), error => console.error('Tailnet companion failed:', error instanceof Error ? error.message : error))
+    networkWork = run
+    return run
+  }
   /** What the container was created with; settings changes apply on the next restart. */
   let resources: ComputerResources | null = null
   let lastError: string | null = null
@@ -333,6 +349,10 @@ export function createContainerController(config: Config, dependencies: { docker
       return { run: (command: string, args: string[], timeoutMs?: number) => exec('root', command, args, timeoutMs), ownerEnv: launchEnv }
     },
     stats: () => ({ host: 'caboose-host', runtime: 'container', gpu, container: name, running }),
+    network: () => tailnet ? { tailnet: tailnet.status } : {},
+    refreshNetwork: () => networkTask(node => node.refresh()),
+    renameNetwork: () => networkTask(node => node.rename()),
+    onNetworkChange(listener) { networkChanged = listener },
     activeResources: () => resources,
     hasSavedState: () => resources !== null,
     lastError: () => lastError,
@@ -383,6 +403,7 @@ export function createContainerController(config: Config, dependencies: { docker
           await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
         if (mode === 'interactive') await ownerDisplay()
+        void networkTask(node => node.ensure())
         return session()
       } catch (error) {
         running = false
@@ -427,6 +448,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if ((await state()) !== 'missing') await docker(['rm', '-f', name], 120_000)
       if (place.home.startsWith('/')) await rm(place.home, { recursive: true, force: true }).catch(error => console.error(`Could not remove ${place.home}:`, error))
       else await docker(['volume', 'rm', '-f', place.home], 60_000)
+      await networkTask(node => node.destroy())
       await docker(['network', 'rm', place.network], 30_000).catch(() => {})
       await (dependencies.unfence ?? unfenceBridge)(place.bridge)
     },
