@@ -62,8 +62,11 @@ build ios-sim 'target_os="ios" target_cpu="arm64" ios_use_simulator=true ios_min
   arm64-apple-ios17.0-simulator iphonesimulator
 
 headers=$(mktemp -d)
-cp "$DRAW/include/CabooseDraw.h" "$headers/"
-printf 'module CabooseDraw {\n    header "CabooseDraw.h"\n    export *\n}\n' > "$headers/module.modulemap"
+# A subdirectory keeps this module map from colliding with another static xcframework's in the
+# app's shared include directory; clang finds module maps one directory down.
+mkdir "$headers/CabooseDraw"
+cp "$DRAW/include/CabooseDraw.h" "$headers/CabooseDraw/"
+printf 'module CabooseDraw {\n    header "CabooseDraw.h"\n    export *\n}\n' > "$headers/CabooseDraw/module.modulemap"
 xcodebuild -create-xcframework \
   -library "$ROOT/out/mac/libCabooseDraw.a" -headers "$headers" \
   -library "$ROOT/out/ios/libCabooseDraw.a" -headers "$headers" \
