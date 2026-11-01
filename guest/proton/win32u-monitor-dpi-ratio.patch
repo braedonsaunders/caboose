@@ -1,22 +1,52 @@
-win32u: Reduce a monitor's raw DPI ratio instead of asserting on it.
+win32u: Update current mode on physical mode change and reduce raw DPI ratio.
 
-monitor_get_dpi() packs a source's physical size over its current size, times its DPI, into
-16 bits each. After a mode change the two sizes can share no factor: a phone turning from
-1338x911 to 932x1356 while an application runs gives 1356 * 96 over 911, and the assertion
-ends every process that then asks for a DPI (GE-Proton11-11, sysparams.c:2884). Upstream Wine
-replaced these assertions with a ratio type; this keeps Proton's packed form and halves both
-terms until they fit, which keeps the DPI within a fraction of a percent.
+In Proton's emulate_modeset path, add_modes() writes ENUM_CURRENT_SETTINGS on initial
+display setup and then reads it back as the virtual mode on every subsequent update. When
+the host display itself changes resolution or rotates (e.g. 1338x911 landscape to 932x1356
+portrait via XRandR), add_modes() mistakes the previous initial mode in ENUM_CURRENT_SETTINGS
+for an application-requested virtual mode, leaving source->current at 1338x911 while
+updating source->physical (WINE_ENUM_PHYSICAL_SETTINGS) to 932x1356. That keeps SM_CXSCREEN
+and SM_CYSCREEN at 1338x911 and makes monitor_get_dpi() compute an asymmetric raw DPI of
+932*96/1338 = 67 by 1356*96/911 = 143, which also triggers the 16-bit ratio assertion
+(1356 * 96 / gcd(130176, 911) < 65536) in monitor_get_dpi().
 
-Also unpack the fractional DPI with round_fractional_dpi() in get_monitor_dpi() (which backs
-NtUserGetDpiForMonitor / GetDpiForMonitor) and for raw_dpi in get_monitor_from_rect(), matching
-NtUserCallHwndParam_GetWinMonitorDpi, so callers receive an integer DPI rather than the packed
-(den << 16) | num bitfield.
+When WINE_ENUM_PHYSICAL_SETTINGS changes dimensions, update virtual (ENUM_CURRENT_SETTINGS)
+and ENUM_REGISTRY_SETTINGS to the new physical mode so the desktop and raw DPI follow the
+rotated display (932x1356 at 96x96 DPI).
+
+In addition, reduce and approximate the ratio in monitor_get_dpi() with pack_dpi_ratio()
+instead of asserting when an application sets a virtual mode whose size shares no factor
+with the physical mode, and unpack fractional DPI values with round_fractional_dpi() in
+get_monitor_dpi() and get_monitor_from_rect().
 
 diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
-index e3e20c7..599b2a1 100644
+index e3e20c7..8c6438e 100644
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c
-@@ -2858,6 +2858,27 @@ static UINT gcd( UINT a, UINT b )
+@@ -2739,7 +2739,12 @@ static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEV
+     }
+     else
+     {
+-        if (!read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &virtual ) || is_detached_mode( &virtual ))
++        DEVMODEW old_physical;
++        BOOL physical_changed = !read_source_mode( source->key, WINE_ENUM_PHYSICAL_SETTINGS, &old_physical ) ||
++                                old_physical.dmPelsWidth != physical.dmPelsWidth ||
++                                old_physical.dmPelsHeight != physical.dmPelsHeight;
++
++        if (physical_changed || !read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &virtual ) || is_detached_mode( &virtual ))
+             virtual = physical;
+         else
+             sync_mode_position( &virtual, &physical );
+@@ -2751,6 +2756,8 @@ static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEV
+ 
+             write_source_mode( source->key, WINE_ENUM_PHYSICAL_SETTINGS, &physical );
+         }
++        if (physical_changed)
++            write_source_mode( source->key, ENUM_REGISTRY_SETTINGS, current );
+     }
+ 
+     if (current == &detached || !read_source_mode( source->key, ENUM_REGISTRY_SETTINGS, &registry_mode ))
+@@ -2858,6 +2865,27 @@ static UINT gcd( UINT a, UINT b )
      }
  }
  
@@ -44,7 +74,7 @@ index e3e20c7..599b2a1 100644
  /* display_lock must be held */
  static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UINT *dpi_x, UINT *dpi_y )
  {
-@@ -2867,25 +2888,8 @@ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UIN
+@@ -2867,25 +2895,8 @@ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UIN
      if (!source || !(dpi = source->dpi)) dpi = system_dpi;
      if (source && type != MDT_EFFECTIVE_DPI)
      {
@@ -72,7 +102,7 @@ index e3e20c7..599b2a1 100644
          if (source->physical.dmPelsWidth * source->current.dmPelsHeight <=
              source->physical.dmPelsHeight * source->current.dmPelsWidth)
              dpi_ret = *dpi_x;
-@@ -3570,7 +3574,7 @@ static struct monitor *get_monitor_from_rect( RECT rect, UINT flags, UINT dpi, M
+@@ -3570,7 +3581,7 @@ static struct monitor *get_monitor_from_rect( RECT rect, UINT flags, UINT dpi, M
          UINT density, raw_dpi, x, y;
  
          if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
@@ -81,7 +111,7 @@ index e3e20c7..599b2a1 100644
          x = round_fractional_dpi( x );
          y = round_fractional_dpi( y );
          density = raw_dpi * raw_dpi / 96 / 96;
-@@ -3715,7 +3719,12 @@ static UINT get_monitor_dpi( HMONITOR handle, UINT type, UINT *x, UINT *y )
+@@ -3715,7 +3726,12 @@ static UINT get_monitor_dpi( HMONITOR handle, UINT type, UINT *x, UINT *y )
      UINT dpi = system_dpi;
  
      if (!lock_display_devices( FALSE )) return 0;
