@@ -454,6 +454,24 @@ pub struct SceneFont {
     pub data: Vec<u8>,
 }
 
+/// `draw.ops` (0x2A): draw-list ops (docs/draw.md) one process recorded, in its order. `stream`
+/// names the process's recording; its surface ids, images and glyphs belong to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawOps {
+    pub stream: u32,
+    pub ops: Vec<u8>,
+}
+
+/// `draw.present` (0x2B): window `id` now shows surface `surface` of draw stream `stream`, as
+/// the picture stamped `pts_us`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawPresent {
+    pub id: u64,
+    pub stream: u32,
+    pub surface: u32,
+    pub pts_us: u64,
+}
+
 /// A retained node in a `scene.commit` vector/glyph scene graph (Layer 1).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneNode {
@@ -627,6 +645,8 @@ pub struct ClientHello {
     pub atlas: bool,
     /// The client renders retained vector and glyph `scene.font` and `scene.commit` messages. Sent only when true.
     pub scene: bool,
+    /// The client draws draw lists (`draw.ops`, `draw.present`, `draw.end`; docs/draw.md). Sent only when true.
+    pub draw: bool,
 }
 
 /// Colour description of a video stream, as ITU-T H.273 code points.
@@ -933,6 +953,13 @@ pub enum Message {
     },
     SceneFont(SceneFont),
     SceneCommit(SceneCommit),
+    DrawOps(DrawOps),
+    DrawPresent(DrawPresent),
+    /// `draw.end` (0x2C): draw stream `stream` ended (its process is gone or stopped
+    /// recording); its surfaces, images and glyphs can go.
+    DrawEnd {
+        stream: u32,
+    },
     ServerClipboard(Clipboard),
     Notification(Notification),
     Audio(Audio),
@@ -1132,6 +1159,9 @@ pub mod type_id {
     pub const SURFACE_RESET: u8 = 0x24;
     pub const SCENE_FONT: u8 = 0x25;
     pub const SCENE_COMMIT: u8 = 0x26;
+    pub const DRAW_OPS: u8 = 0x2A;
+    pub const DRAW_PRESENT: u8 = 0x2B;
+    pub const DRAW_END: u8 = 0x2C;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
     pub const DROP_STATUS: u8 = 0x32;
@@ -1256,6 +1286,9 @@ impl Message {
             Message::SurfaceReset { .. } => SURFACE_RESET,
             Message::SceneFont(_) => SCENE_FONT,
             Message::SceneCommit(_) => SCENE_COMMIT,
+            Message::DrawOps(_) => DRAW_OPS,
+            Message::DrawPresent(_) => DRAW_PRESENT,
+            Message::DrawEnd { .. } => DRAW_END,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::DropStatus { .. } => DROP_STATUS,
@@ -1546,6 +1579,14 @@ impl Message {
                 )
                 .build(),
             Message::SurfaceReset { epoch } => MapBuilder::new().put("epoch", *epoch).build(),
+            Message::DrawOps(m) => MapBuilder::new().put("stream", m.stream).put("ops", m.ops.clone()).build(),
+            Message::DrawPresent(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("stream", m.stream)
+                .put("surface", m.surface)
+                .put("pts_us", m.pts_us)
+                .build(),
+            Message::DrawEnd { stream } => MapBuilder::new().put("stream", *stream).build(),
             Message::SceneFont(m) => MapBuilder::new()
                 .put("font", m.font)
                 .put("index", m.index)
@@ -1638,6 +1679,7 @@ impl Message {
                 .opt("clipboard_types", m.clipboard_types.clone())
                 .opt("atlas", m.atlas.then_some(true))
                 .opt("scene", m.scene.then_some(true))
+                .opt("draw", m.draw.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
             Message::Ack { id, pts_us, decoded_us } => {
@@ -1837,6 +1879,14 @@ impl Message {
                 },
             }),
             SURFACE_RESET => Message::SurfaceReset { epoch: f.u64("epoch")? },
+            DRAW_OPS => Message::DrawOps(DrawOps { stream: f.u32("stream")?, ops: f.bytes("ops")? }),
+            DRAW_PRESENT => Message::DrawPresent(DrawPresent {
+                id: f.u64("id")?,
+                stream: f.u32("stream")?,
+                surface: f.u32("surface")?,
+                pts_us: f.u64("pts_us")?,
+            }),
+            DRAW_END => Message::DrawEnd { stream: f.u32("stream")? },
             SCENE_FONT => Message::SceneFont(SceneFont {
                 font: f.u64("font")?,
                 index: f.u32("index")?,
@@ -1992,6 +2042,7 @@ impl Message {
                 },
                 atlas: f.opt_bool("atlas")?.unwrap_or(false),
                 scene: f.opt_bool("scene")?.unwrap_or(false),
+                draw: f.opt_bool("draw")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
             ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
@@ -2142,6 +2193,9 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         SURFACE_RESET => "surface.reset",
         SCENE_FONT => "scene.font",
         SCENE_COMMIT => "scene.commit",
+        DRAW_OPS => "draw.ops",
+        DRAW_PRESENT => "draw.present",
+        DRAW_END => "draw.end",
         SCENE_SCROLL => "scene.scroll",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",

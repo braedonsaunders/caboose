@@ -41,6 +41,10 @@ public enum DisplayProtocol {
         // Controls a finger may mean (docs/display.md, "Touch targets").
         case targets = 0x28
         case textFocus = 0x29
+        // Draw lists (docs/draw.md); sent only to a client whose hello says `draw`.
+        case drawOps = 0x2A
+        case drawPresent = 0x2B
+        case drawEnd = 0x2C
         case clipboard = 0x30
         case notification = 0x31
         case dropStatus = 0x32
@@ -674,6 +678,12 @@ public enum ServerMessage: Sendable {
     case surfaceReset(epoch: UInt64)
     case sceneFont(SceneFontDescriptor)
     case sceneCommit(SceneCommit)
+    /// Draw-list ops one process recorded, in its order (docs/draw.md).
+    case drawOps(stream: UInt32, ops: Data)
+    /// The window now shows a surface of a draw stream.
+    case drawPresent(window: Int, stream: UInt32, surface: UInt32, pts: UInt64)
+    /// A draw stream ended; its surfaces, images and glyphs can go.
+    case drawEnd(stream: UInt32)
     case clipboard(ClipboardContent)
     /// Whether the application under a drop from the phone accepts it; nil when it answers
     /// only once it has the content, on the drop.
@@ -761,6 +771,21 @@ public enum ServerMessage: Sendable {
         case .surfaceReset: parsed = body["epoch"]?.uint64.map { .surfaceReset(epoch: $0) }
         case .sceneFont: parsed = SceneFontDescriptor(body).map(ServerMessage.sceneFont)
         case .sceneCommit: parsed = SceneCommit(body).map(ServerMessage.sceneCommit)
+        case .drawOps:
+            if let stream = body["stream"]?.uint64, let ops = body["ops"]?.data, stream <= UInt64(UInt32.max) {
+                parsed = .drawOps(stream: UInt32(stream), ops: ops)
+            } else {
+                parsed = nil
+            }
+        case .drawPresent:
+            if let window = body["id"]?.int, let stream = body["stream"]?.uint64, let surface = body["surface"]?.uint64,
+               let pts = body["pts_us"]?.uint64, stream <= UInt64(UInt32.max), surface <= UInt64(UInt32.max) {
+                parsed = .drawPresent(window: window, stream: UInt32(stream), surface: UInt32(surface), pts: pts)
+            } else {
+                parsed = nil
+            }
+        case .drawEnd:
+            parsed = body["stream"]?.uint64.flatMap { $0 <= UInt64(UInt32.max) ? .drawEnd(stream: UInt32($0)) : nil }
         case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
         case .dropStatus: parsed = .dropStatus(accepted: body["accepted"]?.bool)
         case .dropResult: parsed = body["ok"]?.bool.map { .dropResult(ok: $0, reason: body["reason"]?.string) }
@@ -943,7 +968,7 @@ public enum ClientMessage: Sendable {
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
                audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
                devices: Bool = false, clipboardTypes: [String]? = nil, atlas: Bool = false, scene: Bool = false,
-               scroll: Bool = false, targets: Bool = false)
+               scroll: Bool = false, targets: Bool = false, draw: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
@@ -1009,7 +1034,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let clipboardTypes, let atlas, let scene, let scroll, let targets):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let clipboardTypes, let atlas, let scene, let scroll, let targets, let draw):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -1025,6 +1050,7 @@ public enum ClientMessage: Sendable {
                 ("clipboard_types", clipboardTypes.map { .array($0.map { CBOR($0) }) }),
                 ("atlas", atlas ? CBOR(true) : nil),
                 ("scene", scene ? CBOR(true) : nil),
+                ("draw", draw ? CBOR(true) : nil),
             ]))
         case .sceneScroll(let window, let node, let sx, let sy):
             return DisplayFrame(type: T.sceneScroll.rawValue, body: map([

@@ -482,6 +482,9 @@ import Testing
         "client-hello-scaled-motion": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], scaledMotion: true),
+        "client-hello-draw": .hello(token: "f3a9c1d27e8b4a6f", decoders: [], displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], atlas: true, draw: true),
         "gpu-ack": .gpuAck(id: 1, offset: 65536),
         "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
         "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),

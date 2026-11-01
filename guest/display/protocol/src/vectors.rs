@@ -455,6 +455,25 @@ pub fn all(media: &Media) -> Vec<Vector> {
             }),
         ),
         one(
+            "draw-ops",
+            "Draw-list ops of stream 3: a 64x32 window buffer declared (surface, kind 1), made the target, \
+             and presented to wl_surface 12 (docs/draw.md).",
+            Message::DrawOps(DrawOps {
+                stream: 3,
+                ops: vec![
+                    0x01, 13, 0, 0, 0, 1, 0, 0, 0, 64, 0, 0, 0, 32, 0, 0, 0, 1, // surface 1, 64x32, window
+                    0x03, 4, 0, 0, 0, 1, 0, 0, 0, // target 1
+                    0x30, 8, 0, 0, 0, 1, 0, 0, 0, 12, 0, 0, 0, // present 1 on wl_surface 12
+                ],
+            }),
+        ),
+        one(
+            "draw-present",
+            "Window 7 now shows surface 1 of draw stream 3.",
+            Message::DrawPresent(DrawPresent { id: 7, stream: 3, surface: 1, pts_us: 1_234_567_890 }),
+        ),
+        one("draw-end", "Draw stream 3 ended; its surfaces, images and glyphs can go.", Message::DrawEnd { stream: 3 }),
+        one(
             "surface-reset",
             "Resets the client's XXH64 tile cache on a new epoch.",
             Message::SurfaceReset { epoch: 2 },
@@ -776,7 +795,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
-                scene: false,
+                scene: false, draw: false,
                 clipboard_types: None, scroll: false,
             }),
         ),
@@ -786,7 +805,16 @@ pub fn all(media: &Media) -> Vec<Vector> {
             Message::ClientHello(ClientHello {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: true, targets: false, devices: false,
-                atlas: false, scene: false, clipboard_types: None, scroll: false,
+                atlas: false, scene: false, draw: false, clipboard_types: None, scroll: false,
+            }),
+        ),
+        one(
+            "client-hello-draw",
+            "A client that draws draw lists besides Surface Atlas batches.",
+            Message::ClientHello(ClientHello {
+                version: 0, token: "f3a9c1d27e8b4a6f".into(), decoders: vec![], displays: vec![phone()],
+                video_decoders: None, audio_decoders: None, wasm: false, webview: false, gpu: false, scaled_motion: false, targets: false, devices: false,
+                atlas: true, scene: false, draw: true, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -805,7 +833,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
-                scene: false,
+                scene: false, draw: false,
                 clipboard_types: None, scroll: false,
             }),
         ),
@@ -823,7 +851,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 gpu: false,
                 scaled_motion: false, targets: false,
-                devices: false, clipboard_types: None, atlas: false, scene: false, scroll: false,
+                devices: false, clipboard_types: None, atlas: false, scene: false, draw: false, scroll: false,
             }),
         ),
         one(
@@ -843,7 +871,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 devices: false,
                 clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
                 atlas: false,
-                scene: false,
+                scene: false, draw: false,
                 scroll: false,
             }),
         ),
@@ -863,7 +891,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
-                scene: false,
+                scene: false, draw: false,
                 clipboard_types: None, scroll: false,
             }),
         ),
@@ -883,7 +911,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 scaled_motion: false, targets: false,
                 devices: false,
                 atlas: false,
-                scene: false,
+                scene: false, draw: false,
                 clipboard_types: None, scroll: false,
             }),
         ),
@@ -894,7 +922,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: None, wasm: false, webview: true, gpu: false, scaled_motion: false, targets: false,
-                devices: false, atlas: false, scene: false, clipboard_types: None, scroll: false,
+                devices: false, atlas: false, scene: false, draw: false, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -904,7 +932,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, targets: false, devices: true, atlas: false, scene: false, clipboard_types: None, scroll: false,
+                scaled_motion: false, targets: false, devices: true, atlas: false, scene: false, draw: false, clipboard_types: None, scroll: false,
             }),
         ),
         one(
@@ -914,7 +942,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, targets: false, devices: false, scroll: true, atlas: false, scene: false, clipboard_types: None,
+                scaled_motion: false, targets: false, devices: false, scroll: true, atlas: false, scene: false, draw: false, clipboard_types: None,
             }),
         ),
         one(
@@ -924,7 +952,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 version: 0, token: "f3a9c1d27e8b4a6f".into(),
                 decoders: vec![Codec::Hevc, Codec::H264], displays: vec![phone()],
                 video_decoders: None, audio_decoders: Some(vec!["opus".into()]), wasm: false, webview: false, gpu: false,
-                scaled_motion: false, targets: true, devices: false, scroll: false, atlas: false, scene: false, clipboard_types: None,
+                scaled_motion: false, targets: true, devices: false, scroll: false, atlas: false, scene: false, draw: false, clipboard_types: None,
             }),
         ),
         one(
@@ -943,7 +971,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 scaled_motion: false, targets: false,
                 devices: false,
                 atlas: true,
-                scene: true,
+                scene: true, draw: false,
                 clipboard_types: None, scroll: false,
             }),
         ),

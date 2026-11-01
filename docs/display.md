@@ -115,6 +115,7 @@ The computer runs two instances of caboose-display, one for the owner and one fo
 | Phone devices ([devices.md](devices.md)) | the phone's hardware, while it is connected | none (`--no-devices`) |
 | Control socket | `…/caboose-display/wayland-caboose-0/control.sock` | `…/caboose-display/wayland-caboose-agent/control.sock` |
 | Scroll socket ([Scroll reports](#scroll-reports)) | `…/caboose-display/wayland-caboose-0/scroll.sock` | `…/caboose-display/wayland-caboose-agent/scroll.sock` |
+| Draw socket ([Draw lists](#draw-lists)) | `…/caboose-display/wayland-caboose-0/draw.sock` | `…/caboose-display/wayland-caboose-agent/draw.sock` |
 | Started | by the host at each wake | on demand, when an agent task or a watcher (the app's Agent space) needs it |
 
 - **Token.** At each wake the host writes a fresh token to `/run/caboose/display-token`
@@ -385,6 +386,9 @@ Server → client (`0x01`–`0x7F`):
 | `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]`, `zoom?: float`, `zoom_range?: [min, max]` ([Scroll reports](#scroll-reports)) |
 | `0x28` | `targets` | `id`, `serial: uint`, `targets: [[x, y, w, h, kind]]` ([Touch targets](#touch-targets)) |
 | `0x29` | `text_focus` | `id`, `editing: bool` ([Touch targets](#touch-targets)) |
+| `0x2A` | `draw.ops` | `stream: uint`, `ops: bytes` (draw-list ops, [Draw lists](#draw-lists)) |
+| `0x2B` | `draw.present` | `id`, `stream: uint`, `surface: uint`, `pts_us` ([Draw lists](#draw-lists)) |
+| `0x2C` | `draw.end` | `stream: uint` ([Draw lists](#draw-lists)) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
@@ -405,7 +409,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool`, `draw?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -602,6 +606,27 @@ guest, `guest/scene` provides:
    switches to non-blocking local passthrough mode (`SO_NOSIGPIPE` / `MSG_NOSIGNAL` /
    `O_NONBLOCK`) without stalling the application or raising `SIGPIPE` (< 5 ms for 1,000
    commits).
+
+### Draw lists (`0x2A` `draw.ops`, `0x2B` `draw.present`, `0x2C` `draw.end`)
+
+When the client advertises `draw: true` and the server includes `"draw"` in
+`ServerHello.features`, the server forwards what applications draw with cairo as draw lists
+(format: [draw.md](draw.md)). It sends them alongside Surface Atlas batches, which stay the
+window's picture until a client draws them.
+
+- **`draw.ops`** carries the ops of one stream: one application process's recording since
+  its `begin`. A stream's `draw.ops` payloads concatenate into its op stream; an op may
+  continue from one payload into the next. Surface ids, images and glyphs belong to the
+  stream.
+- **`draw.present`**: window `id` now shows surface `surface` of stream `stream`, picture
+  `pts_us`. The surface is the buffer the application committed, in buffer pixels; a client
+  shows it in place of the window's picture, scaled as the picture would be.
+- **`draw.end`**: the stream ended (its process exited, its recording was stopped or broke,
+  or a new `begin` replaced it). Its surfaces, images and glyphs can go.
+
+Recordings start fresh for each client that draws them, so a stream never refers to anything
+sent before it. Surfaces that existed before the recording started are declared as
+unknown content (kind `2`); their pictures are what the Surface Atlas shows.
 
 ### Windows and launches
 
