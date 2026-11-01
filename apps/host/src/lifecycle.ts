@@ -31,7 +31,8 @@ export class ComputerLifecycle<T> {
   private beforeFreeze: () => Promise<boolean> = async () => true
   private freezeAllowed: () => boolean = () => true
   private busy: () => Promise<boolean> = async () => false
-  private lastBusyAt = Number.NEGATIVE_INFINITY
+  /** Since when the computer has had no lease and nothing has kept it busy. */
+  private idleSince = Date.now()
   private parkedGeneration = 0
   private cancelParkedWork: () => void = () => {}
   private parkedWorkCancellers = new Set<() => void>()
@@ -58,7 +59,7 @@ export class ComputerLifecycle<T> {
   private async isBusy(): Promise<boolean> {
     let busy = false
     try { busy = await this.busy() } catch (error) { console.error('Could not check whether the computer is in use:', error instanceof Error ? error.message : error) }
-    if (busy) this.lastBusyAt = Date.now()
+    if (busy) this.idleSince = Date.now()
     return busy
   }
 
@@ -127,11 +128,18 @@ export class ComputerLifecycle<T> {
     this.idleTimer = undefined
   }
 
+  /**
+   * Waits for the computer to be idle. A retry keeps counting from the same start; anything
+   * else (a lease released, a wake, a new setting) starts the count again. A running computer
+   * that could park is checked every minute (or sooner) while it waits, so a busy spell is
+   * seen even when the check before the deadline happens to fall in a short gap.
+   */
   private armIdle(retryMs?: number): void {
     this.clearIdle()
+    if (retryMs === undefined) this.idleSince = Date.now()
     if (this.leases || !['running', 'frozen'].includes(this.current) || this.retired) return
     const freezing = this.current === 'running' && this.idleMs > 3000 && this.freezeAllowed() && this.driver.canFreeze?.() && this.driver.freeze && this.driver.thaw
-    const delay = this.current === 'frozen' ? Math.min(this.idleMs - 3000, this.freezeParkMs) : freezing ? 3000 : this.idleMs
+    const delay = this.current === 'frozen' ? Math.min(this.idleMs - 3000, this.freezeParkMs) : freezing ? 3000 : Math.min(this.idleMs, BUSY_RECHECK_MS)
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined
       void this.serialize(async () => {
@@ -139,8 +147,8 @@ export class ComputerLifecycle<T> {
         if (freezing && !this.freezeAllowed()) { this.armIdle(); return }
         if (this.current === 'running') {
           if (await this.isBusy()) { this.armIdle(Math.min(this.idleMs, BUSY_RECHECK_MS)); return }
-          const quiet = Date.now() - this.lastBusyAt
-          if (!freezing && quiet < this.idleMs) { this.armIdle(this.idleMs - quiet); return }
+          const quiet = Date.now() - this.idleSince
+          if (!freezing && quiet < this.idleMs) { this.armIdle(Math.min(this.idleMs - quiet, BUSY_RECHECK_MS)); return }
         }
         if (freezing && this.current === 'running') {
           // Publish the fence before awaiting the VMM so new work queues behind pause.
