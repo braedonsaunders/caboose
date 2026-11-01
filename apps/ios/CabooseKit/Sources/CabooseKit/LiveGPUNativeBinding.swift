@@ -293,7 +293,13 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var failed: (@Sendable (Error) -> Void)?
     private var failure: Error?
     private var finishError: Error?
-    private var retirementError: Error?
+    private var retirementError: Error? // guarded by lock
+    /// Process retirement waits for native cleanup, which can take long or not return (a decoder
+    /// blocked in the driver); it runs here, so the serial worker keeps serving every other
+    /// process. The surface controller is shared with the worker under surfaceLock.
+    private let retirements = DispatchQueue(label: "caboose.gpu.retire")
+    private let surfaceLock = NSLock()
+    private var retiring = Set<UInt64>() // guarded by lock
     private var decodingFailed = false
     // Suspension, all on the serial worker except nativeSuspended (guarded by lock).
     private var suspendSent = false
@@ -403,9 +409,9 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
               negotiated, !peerRevoked, !drainRequested else { return }
         // A suspended executor sends nothing; the revocation follows its resume.
         if holding || suspendSent { heldRevocations.append(identity); return }
-        try surfaces?.requestRevocation(identity) { [self] process, message in
+        try surfaceLock.withLock { try surfaces?.requestRevocation(identity) { [self] process, message in
             try send(message.kind, process: process, payload: message.encoded())
-        }
+        } }
     }
     func suspend(quiesced: @escaping @Sendable () -> Void) throws -> Bool {
         guard lock.withLock({ started && !cancelled && !finished }), negotiated, !peerRevoked,
@@ -549,27 +555,37 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)
             guard let process = lock.withLock({ processes[frame.process] }) else {
                 dropped("surface record", frame)
-                return try surfaces.answerForUnknownProcess(message, process: frame.process) { [self] id, reply in
+                return try surfaceLock.withLock { try surfaces.answerForUnknownProcess(message, process: frame.process) { [self] id, reply in
                     try send(reply.kind, process: id, payload: reply.encoded())
-                }
+                } }
             }
-            try surfaces.consume(message, process: frame.process, token: process.token,
+            try surfaceLock.withLock { try surfaces.consume(message, process: frame.process, token: process.token,
                 output: { [self] id, reply in
                     try send(reply.kind, process: id, payload: reply.encoded())
-                }, failed: { [self] in fail($0) })
+                }, failed: { [self] in fail($0) }) }
         case .processStop:
             // A process the phone does not have is already retired.
             guard let process = lock.withLock({ processes[frame.process] }) else {
                 dropped("process stop", frame)
                 return try send(.processRetired, process: frame.process)
             }
-            try retire(frame.process, process)
-            try send(.processRetired, process: frame.process)
+            // Once: a repeated stop for a process already retiring adds nothing.
+            guard lock.withLock({ retiring.insert(frame.process).inserted }) else { return }
+            process.stop(backend)
+            let id = frame.process
+            retirements.async { [self] in
+                do {
+                    try retire(id, process)
+                    try send(.processRetired, process: id)
+                } catch { fail(error) }
+            }
         case .revoke:
             // A hold that ended: nothing resumes, and every process retires as usual.
             holding = false; held = []
             openNativeGate()
             peerRevoked = true
+            // Retirements already under way finish first; REVOKED follows every one.
+            retirements.sync {}
             let snapshot = lock.withLock { processes }
             for process in snapshot.values { process.stop(backend) }
             for (id, process) in snapshot.sorted(by: { $0.key < $1.key }) {
@@ -581,6 +597,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         default: throw LiveGPUBindingError.protocolViolation("unexpected peer message")
         }
     }
+    /// Returns once every process retirement started so far has finished (tests, finish).
+    func waitForRetirements() { retirements.sync {} }
     /// A peer record that names a process or stream this executor does not have.
     private func dropped(_ what: String, _ frame: LiveGPUEnvelope) {
         print("CABOOSE_GPU_DROPPED \(what) kind=\(frame.kind.rawValue) process=\(frame.process) stream=\(frame.stream) " +
@@ -685,15 +703,15 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             for stream in process.streams.values { stream.closeAfterJoin() }
             process.streams.removeAll()
         }
-        do { try surfaces?.retireProcess(id) }
-        catch { retirementError = error; throw error }
+        do { try surfaceLock.withLock { try surfaces?.retireProcess(id) } }
+        catch { lock.withLock { retirementError = error }; throw error }
         let result = backend.finish(process.token)
-        lock.withLock { _ = processes.removeValue(forKey: id) }
+        lock.withLock { _ = processes.removeValue(forKey: id); retiring.remove(id) }
         if result != 0 {
             let error = LiveGPUBindingError.native(operation: "finish", code: result)
-            retirementError = error; throw error
+            lock.withLock { retirementError = error }; throw error
         }
-        if let error = process.lock.withLock({ process.cleanupError }) { retirementError = error; throw error }
+        if let error = process.lock.withLock({ process.cleanupError }) { lock.withLock { retirementError = error }; throw error }
     }
     private func fail(_ error: Error) {
         let callback = lock.withLock { () -> (@Sendable (Error) -> Void)? in
@@ -717,7 +735,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     }
     public func finish() throws {
         if finished { if let finishError { throw finishError }; return }
-        var error: Error? = retirementError
+        retirements.sync {}
+        var error: Error? = lock.withLock { retirementError }
         do { try revoke() } catch let caught { error = caught }
         let snapshot = lock.withLock { processes }
         for (id, process) in snapshot {
