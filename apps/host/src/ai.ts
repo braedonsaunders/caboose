@@ -14,6 +14,8 @@ export const MAX_AI_REQUESTS = 16
 export const MAX_AI_REQUEST_BYTES = 32 * 1024 * 1024
 /** One message from the phone (an answer's pieces are small). */
 export const MAX_AI_EVENT_BYTES = 1024 * 1024
+/** Texts in one embeddings request. */
+export const MAX_EMBED_INPUTS = 256
 const RECONNECT_MS = [500, 1000, 2000, 5000, 10_000]
 
 export interface AiService { url: string; token: string }
@@ -27,6 +29,8 @@ export interface AiModel {
   family?: string
   parameterSize?: string
   quantization?: string
+  /** `chat` (the default) or `embedding`. */
+  type?: 'chat' | 'embedding'
 }
 
 const REQUEST_ID = /^[0-9a-f]{32}$/
@@ -165,12 +169,14 @@ export function parseAiModels(value: unknown): AiModel[] {
   const seen = new Set<string>()
   return value.map(raw => {
     if (!isObject(raw)) return fail('each model must be an object')
-    only(raw, ['id', 'name', 'contextSize', 'capabilities', 'ownedBy', 'family', 'parameterSize', 'quantization'], 'a model')
+    only(raw, ['id', 'name', 'contextSize', 'capabilities', 'ownedBy', 'family', 'parameterSize', 'quantization', 'type'], 'a model')
+    if (raw.type !== undefined && raw.type !== 'chat' && raw.type !== 'embedding') fail('type must be chat or embedding')
     if (typeof raw.id !== 'string' || !MODEL_ID.test(raw.id) || seen.has(raw.id)) fail('each model needs its own id')
     seen.add(raw.id as string)
     if (!Array.isArray(raw.capabilities) || raw.capabilities.some(c => typeof c !== 'string' || !CAPABILITIES.has(c))) fail('capabilities must be tools, vision, json or reasoning')
     const model: AiModel = { id: raw.id as string, name: label(raw.name, 'model name', 100), contextSize: numberIn(raw.contextSize, 'contextSize', 1, 10_000_000, true), capabilities: [...new Set(raw.capabilities as string[])] }
     for (const key of ['ownedBy', 'family', 'parameterSize', 'quantization'] as const) if (raw[key] !== undefined) model[key] = label(raw[key], key, 64)
+    if (raw.type === 'embedding') model.type = 'embedding'
     return model
   })
 }
@@ -204,6 +210,12 @@ export function parsePhoneMessage(value: unknown): Json {
       }
       return event
     }
+    case 'vector': {
+      only(value, ['type', 'id', 'index', 'values'], 'vector')
+      if (!Array.isArray(value.values) || value.values.length < 1 || value.values.length > 8192) fail('values must be a list of 1 to 8192 numbers')
+      return { type: 'vector', id, index: numberIn(value.index, 'index', 0, MAX_EMBED_INPUTS - 1, true),
+        values: (value.values as unknown[]).map(v => numberIn(v, 'a value', -1e6, 1e6)) }
+    }
     case 'done': {
       only(value, ['type', 'id', 'finishReason', 'usage'], 'done')
       if (typeof value.finishReason !== 'string' || !FINISH.has(value.finishReason)) fail('finishReason must be stop, length, tool_calls or content_filter')
@@ -225,11 +237,21 @@ export function parsePhoneMessage(value: unknown): Json {
   }
 }
 
-/** One message from caboose-ai: a request, or a cancellation. */
-export function parseGuestMessage(value: unknown): { type: 'request'; id: string; request: Json } | { type: 'cancel'; id: string } {
+/** An embeddings request from caboose-ai (docs/ai.md § Embeddings). */
+export function parseEmbedRequest(value: unknown): Json {
+  if (!isObject(value)) return fail('the request must be an object')
+  only(value, ['model', 'input'], 'the request')
+  if (typeof value.model !== 'string' || !MODEL_ID.test(value.model)) fail('model must be a model id')
+  if (!Array.isArray(value.input) || value.input.length < 1 || value.input.length > MAX_EMBED_INPUTS) fail(`input must be a list of 1 to ${MAX_EMBED_INPUTS} strings`)
+  return { model: value.model, input: (value.input as unknown[]).map(item => text(item, 'input', 32_000)) }
+}
+
+/** One message from caboose-ai: a chat or embeddings request, or a cancellation. */
+export function parseGuestMessage(value: unknown): { type: 'request' | 'embed'; id: string; request: Json } | { type: 'cancel'; id: string } {
   if (!isObject(value) || typeof value.id !== 'string' || !REQUEST_ID.test(value.id)) return fail('a message needs a request id')
   if (value.type === 'cancel') { only(value, ['type', 'id'], 'cancel'); return { type: 'cancel', id: value.id } }
   if (value.type === 'request') { only(value, ['type', 'id', 'request'], 'request'); return { type: 'request', id: value.id, request: parseAiRequest(value.request) } }
+  if (value.type === 'embed') { only(value, ['type', 'id', 'request'], 'embed'); return { type: 'embed', id: value.id, request: parseEmbedRequest(value.request) } }
   return fail('unknown message type')
 }
 
@@ -371,7 +393,7 @@ export class AiRelay {
       if (this.requests.has(parsed.id)) return
       if (this.requests.size >= MAX_AI_REQUESTS) { guest.send(phoneError(parsed.id, `At most ${MAX_AI_REQUESTS} requests at once.`, 429, 'too_many_requests')); return }
       this.requests.set(parsed.id, phone.socket)
-      phone.socket.send(JSON.stringify({ type: 'request', id: parsed.id, request: parsed.request }))
+      phone.socket.send(JSON.stringify({ type: parsed.type, id: parsed.id, request: parsed.request }))
     })
     const lost = () => {
       if (this.guest !== guest) return

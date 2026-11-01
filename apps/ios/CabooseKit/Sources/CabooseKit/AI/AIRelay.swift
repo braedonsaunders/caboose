@@ -78,9 +78,17 @@ public enum AIRelay {
         public init(name: String = "response", schema: AIJSON? = nil) { self.name = name; self.schema = schema }
     }
 
+    /// Texts to embed with an embedding model (docs/ai.md § Embeddings).
+    public struct EmbedRequest: Equatable, Sendable {
+        public var model: String
+        public var input: [String]
+        public init(model: String, input: [String]) { self.model = model; self.input = input }
+    }
+
     /// What the host sends: a request to run, or one to stop.
     public enum Incoming: Equatable, Sendable {
         case request(id: String, Request)
+        case embed(id: String, EmbedRequest)
         case cancel(id: String)
     }
 
@@ -99,6 +107,11 @@ public enum AIRelay {
         case "cancel": return .cancel(id: id)
         case "request":
             do { return .request(id: id, try request(json["request"])) } catch let error as InvalidMessage { throw InvalidMessage(id: id, reason: error.reason) }
+        case "embed":
+            guard let model = json["request"]?["model"]?.string, let input = json["request"]?["input"]?.array?.compactMap(\.string), !input.isEmpty else {
+                throw InvalidMessage(id: id, reason: "an embeddings request needs a model and texts")
+            }
+            return .embed(id: id, EmbedRequest(model: model, input: input))
         default: throw InvalidMessage(id: id, reason: "unknown message type")
         }
     }
@@ -168,8 +181,11 @@ public enum AIRelay {
         public var contextSize: Int
         public var capabilities: [String]
         public var family: String?
-        public init(id: String, name: String, contextSize: Int, capabilities: [String], family: String? = nil) {
+        public var embedding: Bool
+        public var ownedBy: String
+        public init(id: String, name: String, contextSize: Int, capabilities: [String], family: String? = nil, embedding: Bool = false, ownedBy: String = "apple") {
             self.id = id; self.name = name; self.contextSize = contextSize; self.capabilities = capabilities; self.family = family
+            self.embedding = embedding; self.ownedBy = ownedBy
         }
     }
 
@@ -205,8 +221,9 @@ public enum AIRelay {
     public static func hello(_ models: [Model]) -> String {
         AIJSON.object([("type", .string("hello")), ("models", .array(models.map { model in
             var pairs: [(key: String, value: AIJSON)] = [("id", .string(model.id)), ("name", .string(model.name)), ("contextSize", .number(Double(model.contextSize))),
-                                                        ("capabilities", .array(model.capabilities.map(AIJSON.string))), ("ownedBy", .string("apple"))]
+                                                        ("capabilities", .array(model.capabilities.map(AIJSON.string))), ("ownedBy", .string(model.ownedBy))]
             if let family = model.family { pairs.append(("family", .string(family))) }
+            if model.embedding { pairs.append(("type", .string("embedding"))) }
             return .object(pairs)
         }))]).text
     }
@@ -229,6 +246,11 @@ public enum AIRelay {
             })))
         }
         return AIJSON.object(pairs).text
+    }
+
+    public static func vector(_ id: String, index: Int, values: [Float]) -> String {
+        AIJSON.object([("type", .string("vector")), ("id", .string(id)), ("index", .number(Double(index))),
+                       ("values", .array(values.map { .number(Double($0)) }))]).text
     }
 
     public static func done(_ id: String, finish: FinishReason, usage: Usage) -> String {
