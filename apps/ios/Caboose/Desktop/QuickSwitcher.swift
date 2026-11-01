@@ -345,9 +345,9 @@ struct QuickSwitchStrip: View {
 }
 
 extension AppModel {
-    /// The name of a window's app, as the computer lists it, else its window class.
+    /// The name of a window's app, as the computer lists it, else what its windows call it.
     func appName(for window: RemoteWindow) -> String {
-        apps.first { matches(window, $0) }?.name ?? window.appClass?.name ?? "Window"
+        taskbar.group(of: window.id)?.name ?? apps.first { matches(window, $0) }?.name ?? window.appClass?.name ?? "Window"
     }
 
     /// What a window is called on its title bar: its own title, else its app's name, so an

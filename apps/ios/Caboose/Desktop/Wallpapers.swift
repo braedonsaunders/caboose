@@ -554,6 +554,9 @@ struct ShellBackground: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.shellWallpaperWidth) private var wallpaperWidth
     var store = WallpaperStore.shared
+    /// Whether this background sets the size wallpapers are drawn at. Laptop's upper screen
+    /// does while it shows the desktop: the picture is cut to that screen's shape.
+    var drivesStore = true
 
     var body: some View {
         wallpaper
@@ -579,13 +582,16 @@ struct ShellBackground: View {
             .frame(width: size.width, height: size.height)
             .clipped()
             // The TV, when one is connected, sets the size wallpapers are drawn at.
-            .onAppear { if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
-            .onChange(of: size) { _, size in if !model.externalDisplayActive { store.show(pixelSize: pixels(size)) } }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active, !model.externalDisplayActive { store.show(pixelSize: pixels(size)) }
-            }
+            .onAppear { show(size) }
+            .onChange(of: size) { _, size in show(size) }
+            .onChange(of: drivesStore) { _, _ in show(size) }
+            .onChange(of: scenePhase) { _, phase in if phase == .active { show(size) } }
         }
         .ignoresSafeArea()
+    }
+
+    private func show(_ size: CGSize) {
+        if drivesStore, !model.externalDisplayActive { store.show(pixelSize: pixels(size)) }
     }
 
     private func pixels(_ size: CGSize) -> CGSize {

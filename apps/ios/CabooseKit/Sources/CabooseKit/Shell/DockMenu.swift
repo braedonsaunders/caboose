@@ -64,9 +64,11 @@ public enum DockMenu {
         }
     }
 
-    public static func actions(appName: String, pinned: Bool, windows: [Window], windowScenes: Bool = false,
+    /// `pinnable` is false for an application only its windows make, which no desktop entry
+    /// names: it has nothing to keep once they close. `ending` adds Quit and Force Quit.
+    public static func actions(appName: String, pinned: Bool, pinnable: Bool = true, windows: [Window], windowScenes: Bool = false,
                                ending: Ending? = nil) -> [Action] {
-        var actions: [Action] = [.open, pinned ? .unpin : .pin]
+        var actions: [Action] = pinnable ? [.open, pinned ? .unpin : .pin] : [.open]
         if windowScenes {
             for window in windows {
                 let title = window.title.isEmpty ? appName : window.title

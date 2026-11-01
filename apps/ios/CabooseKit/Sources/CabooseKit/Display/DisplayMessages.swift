@@ -153,6 +153,8 @@ public struct WindowFields: Equatable, Sendable {
     public var overscan: CGSize?
     /// The desktop entry whose launch started the window's process (`<id>.desktop`).
     public var desktopID: String?
+    /// The process that owns a toplevel, as the computer sees it.
+    public var pid: Int?
 
     public init(id: Int) { self.id = id }
 
@@ -173,6 +175,7 @@ public struct WindowFields: Equatable, Sendable {
         alpha = body["alpha"]?.bool
         overscan = body["overscan"].flatMap(Self.size)
         desktopID = body["desktop_id"]?.string
+        pid = body["pid"]?.int
     }
 
     static func rect(_ value: CBOR) -> CGRect? {
