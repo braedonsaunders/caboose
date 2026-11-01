@@ -303,6 +303,13 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     /// The native suspension did not reach an idle GPU in time (a command still ran).
     private(set) var quiesceIncomplete = false
 
+    /// Opens the process-wide native gate: an app in the foreground with no suspended executor
+    /// must always decode, whatever an ended executor left behind.
+    static func allowDecoding() {
+        #if canImport(CabooseGPULive)
+        _ = LinkedLiveGPURuntime().resume()
+        #endif
+    }
     public convenience init(maxPacket: Int = 16 * 1024 * 1024, maxReplyBuffer: Int = 1024 * 1024) throws {
         #if canImport(CabooseGPULive)
         try self.init(backend: LinkedLiveGPURuntime(), maxPacket: maxPacket, maxReplyBuffer: maxReplyBuffer)
@@ -400,9 +407,16 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         guard lock.withLock({ started && !cancelled && !finished }), negotiated, !peerRevoked,
               !drainRequested, !suspendSent else { return false }
         // The gate closes before the broker hears of it: commands already here wait as well.
+        // Marked first, so a revoke racing this call always opens the gate again.
+        guard lock.withLock({ () -> Bool in
+            guard !cancelled else { return false }
+            nativeSuspended = true
+            return true
+        }) else { return false }
         let result = backend.suspend(timeoutMilliseconds: 1000)
-        guard result == 0 || result == ETIMEDOUT || result == EIO else { return false }
-        lock.withLock { nativeSuspended = true }
+        guard result == 0 || result == ETIMEDOUT || result == EIO else { openNativeGate(); return false }
+        // A revoke while the gate was closing: it may have opened the gate before this closed it.
+        if lock.withLock({ cancelled }) { _ = backend.resume(); return false }
         quiesceIncomplete = result != 0
         holding = true; onQuiesced = quiesced
         try send(.executorSuspend)
@@ -660,10 +674,13 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     }
     public func revoke() throws {
         // A suspended gate would hold stopping decoders only until they see the stop; open it.
-        if lock.withLock({ () -> Bool in defer { nativeSuspended = false }; return nativeSuspended }) {
-            _ = backend.resume()
+        // Cancelled first, so a suspension still closing the gate opens it again itself.
+        let (suspended, snapshot) = lock.withLock { () -> (Bool, [LiveGPUProcess]) in
+            cancelled = true
+            defer { nativeSuspended = false }
+            return (nativeSuspended, Array(processes.values))
         }
-        let snapshot = lock.withLock { cancelled = true; return Array(processes.values) }
+        if suspended { _ = backend.resume() }
         for process in snapshot { process.stop(backend) }
         if let error = snapshot.compactMap({ p in p.lock.withLock { p.cleanupError } }).first { throw error }
     }

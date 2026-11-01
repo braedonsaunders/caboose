@@ -120,6 +120,9 @@ public final class LiveGPUOwnerSession {
         closesTransportWhenQuiesced = true
         if suspension == .quiesced { executor.suspendTransport() }
     }
+    /// In the foreground with no executor suspended: the native gate is open (a suspension
+    /// that ended with its executor cannot leave the next one unable to decode).
+    public static func allowDecoding() { LiveGPUNativeBinding.allowDecoding() }
     /// Back in the foreground: reconnects if needed and continues the suspended executor.
     public func resume() {
         guard suspension != .none else { return }
