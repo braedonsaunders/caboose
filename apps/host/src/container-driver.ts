@@ -121,6 +121,29 @@ export const SECCOMP_PROFILE = fileURLToPath(new URL('../../../guest/container/c
 /** The Docker volume holding the host's shared Flatpak runtimes (docs/architecture.md § Runtime depot). */
 export const DEPOT_VOLUME = 'caboose-depot'
 
+/**
+ * Whether the container's cgroup v2 tree, as /proc/self/mounts shows it, is writable: app
+ * scopes (guest/scopes) need it. Null when there is no cgroup v2 hierarchy at all.
+ */
+export function cgroupWritable(mounts: string): boolean | null {
+  for (const line of mounts.split('\n')) {
+    const [, target, type, options] = line.split(' ')
+    if (target === '/sys/fs/cgroup' && type === 'cgroup2') return (options ?? '').split(',').includes('rw')
+  }
+  return null
+}
+
+/**
+ * The one-shot helper that makes an older container's cgroup tree writable. Docker cannot
+ * change a container's options, and such a container mounts its cgroup namespace read-only;
+ * a privileged container in its pid namespace enters its mount namespace and bind-remounts
+ * that mount writable. nsdelegate still confines the computer to its own cgroup.
+ */
+export function cgroupRemountArgs(name: string, image: string): string[] {
+  return ['run', '--rm', '--privileged', '--pid', `container:${name}`, '--network', 'none', '--entrypoint', '/usr/bin/nsenter',
+    image, '--target', '1', '--mount', '--', '/bin/mount', '-o', 'remount,bind,rw', '/sys/fs/cgroup']
+}
+
 /** The profile, unless the operator's own arguments choose a seccomp policy. */
 export function securityArgs(extra: readonly string[]): string[] {
   const chosen = extra.some((arg, index) => arg.startsWith('--security-opt=seccomp') || (extra[index - 1] === '--security-opt' && arg.startsWith('seccomp')))
@@ -256,6 +279,8 @@ export function createContainerController(config: Config, dependencies: { docker
       // Shared runtimes: written only by the host's builder, never by a computer.
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
       ...securityArgs(config.containerArgs),
+      // Its own cgroup tree, writable, for app scopes (guest/scopes).
+      '--security-opt', 'writable-cgroups=true',
       ...gpuArgs(gpu, dependencies.exists),
       ...phoneGpuArgs(gpu, dependencies.exists, dependencies.drm),
       ...config.containerArgs,
@@ -284,6 +309,18 @@ export function createContainerController(config: Config, dependencies: { docker
     if (mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.terminal}`)) return loopback
     const address = (await docker(['inspect', '-f', `{{with index .NetworkSettings.Networks "${place.network}"}}{{.IPAddress}}{{end}}`, name], 15_000).catch(() => '')).trim()
     return /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(address) ? `http://${address}:${TERMINAL_PORT}` : loopback
+  }
+
+  /** App scopes need a writable cgroup tree; a container created without one gets it remounted. */
+  async function ensureWritableCgroups(): Promise<void> {
+    try {
+      if (cgroupWritable(await exec('root', '/bin/cat', ['/proc/self/mounts'], 15_000)) !== false) return
+      const image = (await docker(['inspect', '-f', '{{.Image}}', name], 15_000)).trim()
+      await docker(cgroupRemountArgs(name, image), 60_000)
+    } catch (error) {
+      // The computer works without app scopes; the running-apps routes then say so.
+      console.error(`Could not make ${name}'s cgroups writable:`, error instanceof Error ? error.message : error)
+    }
   }
 
   /** The size an existing container was created with (survives a host restart). */
@@ -382,6 +419,7 @@ export function createContainerController(config: Config, dependencies: { docker
           displayToken = randomBytes(32).toString('hex')
           await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
+        await ensureWritableCgroups()
         if (mode === 'interactive') await ownerDisplay()
         return session()
       } catch (error) {
