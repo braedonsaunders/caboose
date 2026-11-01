@@ -16,7 +16,11 @@
 #include <mutex>
 #include <unordered_map>
 #include <vulkan/vulkan.h>
+#ifdef __APPLE__
 #include <mach/mach_time.h>
+#else
+#include <time.h>
+#endif
 
 namespace caboose::framelab {
 
@@ -52,9 +56,16 @@ void reportPresented(const Dispatch* vk, VkDevice device, VkSwapchainKHR swapcha
     uint32_t count = 16;
     VkResult result = fn(device, swapchain, &count, timings);
     if (result != VK_SUCCESS && result != VK_INCOMPLETE) return;
+#ifdef __APPLE__
     mach_timebase_info_data_t base{};
     mach_timebase_info(&base);
     const uint64_t now = mach_absolute_time() * base.numer / base.denom;
+#else
+    // The Linux reference decoder: the monotonic clock, as Mesa's presentation timings use.
+    timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    const uint64_t now = uint64_t(ts.tv_sec) * 1000000000u + uint64_t(ts.tv_nsec);
+#endif
     for (uint32_t i = 0; i < count; ++i) {
         if (!timings[i].actualPresentTime) continue;
         std::fprintf(stderr, "caboose-framelab: present window=%llu seq=%u presented_ns=%llu now_ns=%llu\n",
