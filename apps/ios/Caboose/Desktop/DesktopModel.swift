@@ -49,11 +49,19 @@ final class DesktopModel {
     /// Laptop puts the dock below the hinge, outside the guest's display. Its windows keep
     /// their title bars, and each shows in its snap, as a tile shows in its column.
     var detachedChrome = false {
-        didSet { if detachedChrome != oldValue { laptopFilled.removeAll() } }
+        didSet {
+            guard detachedChrome != oldValue else { return }
+            laptopFilled.removeAll()
+            fill.reset()
+        }
     }
     /// The windows Laptop has filled its screen with since it opened: each once, so one the
     /// owner restores stays where the owner put it.
     private var laptopFilled: Set<Int> = []
+    /// What each window was last configured to, and Laptop's hold on it (`LaptopFill`).
+    @ObservationIgnored private var fill = LaptopFill()
+    /// Laptop's upper screen below a title bar, in Linux pixels: what a filled window takes.
+    private var laptopScreen: CGRect { linuxFrame(workArea) }
     var pointerArea: CGSize?
     var titleBarHeight: CGFloat { titleBar.height }
     var dockHeight: CGFloat { detachedChrome ? 0 : 76 * ui }
@@ -131,15 +139,21 @@ final class DesktopModel {
         layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)).map(linuxFrame)
     }
 
-    /// A window that has no place yet gets its first one, and keeps it. One whose app is
-    /// not known yet is placed without taking over a place kept under its id.
-    func place(_ window: RemoteWindow, index: Int) -> CGRect {
-        if let frame = placedFrame(window) { return frame }
-        let frame = placement(for: window, index: index)
-        guard app(window) != nil || layout.places[window.id] == nil else { return frame }
-        layout.setPreferred(window.id, frame: chromeRect(frame: frame), in: workArea, app: app(window))
-        save()
-        return frame
+    /// Configures a window this session has not placed yet at its place. One that has no
+    /// place gets its first one, and keeps it; one whose app is not known yet is placed
+    /// without taking over a place kept under its id.
+    func place(_ window: RemoteWindow, index: Int, session: any DisplaySession) {
+        if placedFrame(window) == nil {
+            let frame = placement(for: window, index: index)
+            guard app(window) != nil || layout.places[window.id] == nil else {
+                fill.release(window.id)
+                session.configure(window, frame: frame, state: ["maximized": false])
+                return
+            }
+            layout.setPreferred(window.id, frame: chromeRect(frame: frame), in: workArea, app: app(window))
+            save()
+        }
+        applyPlace(window, session, always: true)
     }
 
     /// The whole frame, in desktop points, of a window at `frame` Linux pixels.
@@ -331,6 +345,11 @@ final class DesktopModel {
            let snapped = layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)) {
             return CGRect(x: snapped.minX, y: snapped.minY + titleBarHeight,
                           width: snapped.width, height: max(1, snapped.height - titleBarHeight))
+        }
+        // A window larger than Laptop's screen is shown scaled to fit it, title bar at the top.
+        if detachedChrome, !window.isAuxiliary, LaptopFill.exceeds(window.frame.size, laptopScreen.size) {
+            return CGRect(x: workArea.minX, y: workArea.minY + titleBarHeight,
+                          width: workArea.width, height: max(1, workArea.height - titleBarHeight))
         }
         return CGRect(x: window.frame.minX / pixelsPerPoint, y: window.frame.minY / pixelsPerPoint + (window.isAuxiliary ? 0 : titleBarHeight),
                width: window.frame.width / pixelsPerPoint, height: window.frame.height / pixelsPerPoint)
@@ -645,6 +664,7 @@ final class DesktopModel {
                 if zone != nil { UISelectionFeedbackGenerator().selectionChanged() }
             }
             dragged = frame
+            fill.release(id)
             session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .resize(let id):
             guard let window = session.windows[id] else { return }
@@ -654,6 +674,7 @@ final class DesktopModel {
                                width: max(max(minimum.width, 120 * ui), drag.chrome.width + dx),
                                height: max(max(minimum.height, 80 * ui + titleBarHeight), drag.chrome.height + dy))
             dragged = frame
+            fill.release(id)
             session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .content(let id, _):
             guard let window = session.windows[id] else { return }
@@ -686,7 +707,11 @@ final class DesktopModel {
         guard let session, !detached.contains(window.id) else { return }
         if window.isFullscreen {
             if entered { raise(window.id) }
+        } else if fill.isHeld(window.id) {
+            // Laptop's layout, not the size before full screen, is where it goes back to.
+            applyPlace(window, session, always: true)
         } else if let previous = restore {
+            fill.release(window.id)
             session.configure(window, frame: previous, state: ["maximized": false])
         }
     }
@@ -741,25 +766,52 @@ final class DesktopModel {
                                                    maximum: limits.maximum, isAuxiliary: window.isAuxiliary,
                                                    isFullscreen: window.isFullscreen)
         }
-        let fill = layout.windowsToFill(candidates, in: workArea, titleBar: titleBarHeight, filled: laptopFilled)
-        for id in fill {
+        let filling = layout.windowsToFill(candidates, in: workArea, titleBar: titleBarHeight, filled: laptopFilled)
+        for id in filling {
             guard let window = session.windows[id] else { continue }
             laptopFilled.insert(id)
             layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
             applyPlace(window, session)
         }
-        if !fill.isEmpty { save() }
+        if !filling.isEmpty { save() }
     }
 
-    private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession) {
-        guard var frame = placedFrame(window) else { return }
-        if layout.snap(of: window.id) != nil {
-            guard let fitted = WindowSizePolicy.fitting(frame, minimum: window.minimumSize,
-                maximum: window.maximumSize, fullscreen: window.isFullscreen) else { return }
-            frame = WindowSizePolicy.centred(fitted, in: frame)
+    /// Where the window is configured by its place: on Laptop, `LaptopFill`'s layout, which
+    /// maximizes a window filling the screen; elsewhere its place, a snap fitted to the
+    /// window's limits.
+    private func laidOut(_ window: RemoteWindow) -> LaptopFill.Layout? {
+        guard !window.isFullscreen, let frame = placedFrame(window) else { return nil }
+        let snap = layout.snap(of: window.id)
+        if detachedChrome {
+            return LaptopFill.layout(frame, snap: snap, screen: laptopScreen,
+                                     minimum: window.minimumSize, maximum: window.maximumSize)
         }
-        guard window.frame != frame else { return }
-        session.configure(window, frame: frame, state: ["maximized": false])
+        guard snap != nil else { return LaptopFill.Layout(frame: frame, maximized: false, held: false) }
+        guard let fitted = WindowSizePolicy.fitting(frame, minimum: window.minimumSize,
+            maximum: window.maximumSize, fullscreen: false) else { return nil }
+        return LaptopFill.Layout(frame: WindowSizePolicy.centred(fitted, in: frame), maximized: false, held: false)
+    }
+
+    /// Configures the window to its place, when it is not there already (or `always`).
+    private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession, always: Bool = false) {
+        guard let laid = laidOut(window) else { return }
+        let needed = always || fill.needsConfigure(window.id, laid, current: window.frame)
+        fill.laidOut(window.id, laid, current: window.frame)
+        guard needed else { return }
+        session.configure(window, frame: laid.frame, state: ["maximized": laid.maximized])
+    }
+
+    /// Laptop puts back a window the app resized off its layout (`LaptopFill`): Steam
+    /// reloading, or a browser restoring the size it saved.
+    func holdLayout(_ session: any DisplaySession) {
+        guard case .ready = session.state else { return }
+        fill.keep(Set(session.windows.keys))
+        guard detachedChrome else { return }
+        let now = CACurrentMediaTime()
+        for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && !detached.contains(window.id) {
+            guard let laid = fill.restore(window.id, committed: window.frame, now: now) else { continue }
+            session.configure(window, frame: laid.frame, state: ["maximized": laid.maximized])
+        }
     }
 
     /// Rotation, a new screen, toolbar changes and display scaling: every placed window is

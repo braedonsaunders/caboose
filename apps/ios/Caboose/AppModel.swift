@@ -831,8 +831,7 @@ final class AppModel {
             // one gets a first place, which it keeps.
             for (index, window) in workspaceWindows.reversed().enumerated() where !placedWindowIDs.contains(window.id) {
                 placedWindowIDs.insert(window.id)
-                let frame = desktop.place(window, index: index)
-                session.configure(window, frame: frame, state: ["maximized": false])
+                desktop.place(window, index: index, session: session)
                 desktop.raise(window.id)
             }
             if laptopNeedsInitialFit, laptopDesktopActive, !externalDisplayActive,
@@ -842,6 +841,7 @@ final class AppModel {
                 if desktop.snap(front.id, .maximized, session) { laptopNeedsInitialFit = false }
             }
             if laptopDesktopActive, !externalDisplayActive { desktop.fillWorkArea(session) }
+            desktop.holdLayout(session)
             // Dialogs and tool windows: over their parent, or centred, never left at the origin.
             // Menus and tooltips (override-redirect) keep the place the app chose.
             for window in session.windows.values where window.isAuxiliary && !window.isOverrideRedirect

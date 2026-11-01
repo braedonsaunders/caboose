@@ -603,7 +603,12 @@ impl State {
             let active_gpu = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(*id));
             if let Some(w) = self.windows.get_mut(*id) {
                 match change.follow(w.display, w.fullscreen || w.maximized, active_gpu) {
-                    crate::displays::Follow::Display => resized.push(*id),
+                    // The geometry the client gave for the old display no longer fits it:
+                    // the window takes the new display until the client lays it out again.
+                    crate::displays::Follow::Display => {
+                        w.maximized_geometry = None;
+                        resized.push(*id);
+                    }
                     crate::displays::Follow::GpuWindow => gpu_resized.push(*id),
                     crate::displays::Follow::Stay => {}
                 }

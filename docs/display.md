@@ -255,8 +255,13 @@ for byte.
   size, so the phone keeps it fixed-size and shows it scaled to fit. Resizing it, smaller
   or larger, would cut or pad its picture, since the application keeps drawing at the size
   it chose, and a swapchain child that no longer covers it would lose its GPU surface.
+- A window configured `maximized: true` with a `geometry` takes that geometry and keeps it
+  while it stays maximized; one maximized without a geometry (the application's own
+  request) takes its display's rectangle. An X11 application's own configure request
+  sizes its window, except while it is maximized or fullscreen.
 - An output mode/origin change reconfigures existing fullscreen and maximized windows
-  through the common Wayland/X11 configure path, preserving their state flags. Removed
+  through the common Wayland/X11 configure path, preserving their state flags; a maximized
+  window takes the changed display's rectangle until the client configures it again. Removed
   outputs first remap to the primary output. Unchanged outputs and ordinary windows do
   not receive a geometry configure from this reconciliation. Fullscreen pictures fit
   centered in the client viewport without transient stretching; pointer/touch input,

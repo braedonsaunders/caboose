@@ -2815,7 +2815,14 @@ the app card, and a detached view releases its layers.
   power and navigation; the system-wide bars are hidden while Laptop is active. Opening
   a window from the Laptop desktop focuses it there, without a separate full-screen card
   or Full Screen/Exit App Full Screen controls. Every app window that can fills the whole
-  upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places. Controls never move above the hinge.
+  upper screen, as it is announced and whenever Laptop starts; Tablet keeps its own places.
+  A filled window is configured maximized at the screen below its title bar, grown to its
+  minimum size, so the app cannot resize it out of the screen and knows it fills it; the
+  green button returns it to its own frame, unmaximized. A window whose minimum size holds
+  it larger than the screen takes the screen's shape, zoomed or not, and shows scaled to
+  fit edge to edge. A window the app resizes off Laptop's layout anyway (one leaving the
+  maximized state itself, or a snapped half) is put back, at most three times in ten
+  seconds (`LaptopFill`). Controls never move above the hinge.
   The measured reserved division between the upper panel and controls stays black throughout
   Laptop mode, including window, fullscreen and loading transitions. Keyboard occlusion does
   not enlarge that division.
