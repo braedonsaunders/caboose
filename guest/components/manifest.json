@@ -18,6 +18,7 @@
   "scopes/install.sh",
   "scopes/caboose-scopes",
   "scopes/scopecore.py",
+  "scopes/servicecore.py",
   "keyring/install.sh",
   "keyring/install-services.py",
   "keyring/caboose-keyring",

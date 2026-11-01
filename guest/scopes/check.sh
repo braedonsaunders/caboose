@@ -35,8 +35,23 @@ wait_app() {
   done
   return 1
 }
+services=()
 cleanup() {
   for scope in "${started[@]}"; do scopes kill "$scope" >/dev/null 2>&1 || true; done
+  for service in "${services[@]}"; do scopes service-delete "$service" >/dev/null 2>&1 || true; done
+}
+# A field of a service's status: `service NAME EXPR`, EXPR over `service`.
+service() {
+  scopes list | python3 -c '
+import json, sys
+answer = json.load(sys.stdin)
+found = [s for s in answer["result"]["services"] if s["name"] == sys.argv[1]]
+service = found[0] if found else None
+print(eval(sys.argv[2]) if service else "")' "$1" "$2"
+}
+wait_service() {
+  for _ in $(seq 1 40); do [ "$(service "$1" "$2")" = "$3" ] && return 0; sleep 0.5; done
+  return 1
 }
 trap cleanup EXIT
 
@@ -94,7 +109,30 @@ answer=$(scopes kill session.scope)
 [[ "$answer" == *'"error":"forbidden"'* ]] || fail "the session scope was not refused: $answer"
 pass 'session scope refused'
 
-# 7. With --window: a window opened outside any app gets a scope; Quit closes it politely.
+# 7. Services: an owner service starts in its cgroup, is restarted when it dies, listens
+#    where activity can see it, stops; one that keeps failing stops being restarted.
+services+=(caboose-check-http caboose-check-fail)
+answer=$(scopes service-put caboose-check-http '{"command":["python3","-m","http.server","18765","--bind","0.0.0.0"],"restart":"always","autostart":false}')
+[[ "$answer" == *'"state":"inactive"'* ]] || fail "service-put: $answer"
+scopes service start caboose-check-http | grep -q '"state":"active"' || fail 'the service did not start'
+wait_service caboose-check-http 'service["processCount"]' 1 || fail 'the service has no process in its cgroup'
+[ -n "$(in_guest cat /sys/fs/cgroup/services.slice/caboose-check-http.service/cgroup.procs)" ] || fail 'no services cgroup'
+for _ in $(seq 1 20); do
+  scopes activity | grep -q '"port":18765,"pid":[0-9]*,"owner":"caboose-check-http.service"' && break; sleep 0.5
+done
+scopes activity | grep -q '"port":18765,"pid":[0-9]*,"owner":"caboose-check-http.service"' || fail 'activity does not show the listener'
+pid=$(service caboose-check-http 'service["processes"][0]["pid"]')
+in_guest kill -9 "$pid"
+wait_service caboose-check-http 'service["restarts"] >= 1 and service["state"] == "active"' True || fail 'the service was not restarted'
+scopes service stop caboose-check-http | grep -q '"state":"inactive"' || fail 'the service did not stop'
+scopes logs caboose-check-http 20 | grep -q 'starting python3 -m http.server' || fail 'no service log'
+pass 'service start, restart, listener, stop and log'
+scopes service-put caboose-check-fail '{"command":["/bin/false"],"autostart":false}' >/dev/null
+scopes service start caboose-check-fail >/dev/null
+wait_service caboose-check-fail 'service["state"]' failed || fail 'a crash-looping service was not failed'
+pass "a crash loop fails: $(service caboose-check-fail 'service["error"]')"
+
+# 8. With --window: a window opened outside any app gets a scope; Quit closes it politely.
 if [ "$window" = --window ]; then
   env=$(in_guest cat /run/caboose/display.env | sed -n "s/^\(WAYLAND_DISPLAY\|DISPLAY\|XAUTHORITY\|XDG_RUNTIME_DIR\|GDK_BACKEND\)='\(.*\)'$/\1=\2/p")
   vars=()

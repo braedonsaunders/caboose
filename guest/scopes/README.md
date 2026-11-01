@@ -17,6 +17,7 @@ refuses to set up there and the host reports no running apps.
 | --- | --- | --- |
 | `caboose-scopes` | `/opt/caboose/scopes/caboose-scopes`, linked from `/usr/local/bin` | The daemon and its command-line client |
 | `scopecore.py` | `/opt/caboose/scopes/scopecore.py` | The pure logic: scope names, kernel file parsing, classification, the snapshot |
+| `servicecore.py` | `/opt/caboose/scopes/servicecore.py` | The services' pure logic: unit files, dependency order, restart decisions, socket tables |
 | `install.sh` | | Run by `guest/components/install.sh` for containers |
 | `check.sh` | | The live check against a running computer (below) |
 
@@ -29,6 +30,7 @@ cgroup v2):
 /init.scope                        the container's init, root's services, docker exec
 /owner.slice/session.scope         the owner's processes no app claims
 /owner.slice/app-<key>-<n>.scope   one app
+/services.slice/<name>.service     one service
 ```
 
 `<key>` is the desktop id without `.desktop` (`steam`), `steam_app_<id>` for a Steam game,
@@ -94,6 +96,73 @@ allocates after the move; an app launched from the dock is born in its scope. GP
 time. An app's windows are the owner display's toplevels and dialogs whose process (the
 control socket's `pid`, the same the display protocol reports) is in its scope.
 
+## Services
+
+The daemon is also the computer's service manager. A unit file declares a service in a
+subset of systemd's format; anything outside the subset is refused with the reason, which
+the service's `error` shows:
+
+```ini
+# ~/.config/caboose/services/dev.service (the owner's; runs as the owner)
+[Unit]
+Description=My dev server
+Requires=postgres.service
+After=postgres.service
+
+[Service]
+ExecStart=npm run dev -- --host 0.0.0.0
+WorkingDirectory=/home/caboose/app
+Environment=PORT=3000 "NODE_OPTIONS=--max-old-space-size=4096"
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+| Key | Meaning |
+| --- | --- |
+| `Description` | Its name in the Task Manager (else the file name) |
+| `Requires` | Services started before it and stopped after it; its start fails when theirs does |
+| `After` | Ordering only, among services starting together |
+| `ExecStart` | The command, split as a shell would split words, run without a shell; `PATH` includes `~/.local/bin` |
+| `Type` | `simple` (the default): the command is the service. `forking`: the command exits 0 and leaves the service running. `oneshot`: the command runs to completion |
+| `WorkingDirectory` | An absolute path, or `~`; default the user's home |
+| `Environment` | `KEY=value` words, repeatable; on top of `HOME`, `USER`, `PATH`, `LANG` and, for the owner, `XDG_RUNTIME_DIR` |
+| `User` | System units only (`/etc/caboose/services`); default the owner |
+| `Restart` | `no`, `on-failure` (the default) or `always` |
+| `RestartSec`, `TimeoutStopSec` | Seconds (or `500ms`, `1min`); defaults 2 and 10 |
+| `WantedBy` | `default.target` or `multi-user.target`: start with the computer |
+
+A service starts through `caboose-scopes enter`, which joins its cgroup as root, takes the
+service's user and groups, changes directory and executes the command, so nothing it starts
+can escape its cgroup. A command that is not found exits 127 and the log says so. Its output
+is appended to `/var/log/caboose/services/<name>.log` with a line at each start. A supervisor
+thread looks twice a second for ended main processes (and, for `forking` services and those
+adopted after a daemon restart, for an empty cgroup) and applies `servicecore.restart_decision`.
+Unit files are reread when their directories change. The owner's unit files are read and
+written by the observer, as the owner, so root never follows a link out of the owner's
+directory.
+
+```
+caboose-scopes service start|stop|restart|enable|disable NAME
+caboose-scopes service-put dev '{"command":["npm","run","dev"],"workingDirectory":"/home/caboose/app"}'
+caboose-scopes service-delete dev
+caboose-scopes logs dev 100
+```
+
+## Activity
+
+`caboose-scopes activity` is what the host weighs before parking the computer: services
+active, set to autostart and failed, and every listening socket (TCP in LISTEN, UDP bound
+without a peer) with the pid and the service or app scope that holds it (`caboose` for
+processes outside the owner's apps and services: Caboose's display, files, terminal and
+port forwarder), its current ESTABLISHED connections from non-loopback peers, and when the
+daemon last saw one. Sockets are matched to processes through their descriptors, which only
+their own user can read in a container: root reads root's, the observer the owner's, and a
+one-shot `caboose-scopes sockets` as each other user a service runs as. They are read at
+most every 5 s.
+
 ## Requests
 
 `/run/caboose/scopes.sock` (mode 0666) takes one JSON line and answers one, `{"ok": true,
@@ -107,6 +176,11 @@ control socket's `pid`, the same the display protocol reports) is in its scope.
 | `{"op":"quit","scope":S}` | Asks each toplevel and dialog of the app to close (`close ID` on the control socket) → `{closed}`; `no-windows` when it has none |
 | `{"op":"force-quit","scope":S}` | SIGTERM and SIGCONT to every process, `cgroup.kill` after 5 s → `{ended, killed}` once empty, at most 2 s later |
 | `{"op":"kill","scope":S}` | `cgroup.kill` → `{ended, killed: true}` |
+
+Services take `{"op":"service","action":A,"name":N}` (A one of start, stop, restart,
+enable, disable → its status), `{"op":"service-put","name":N,"definition":D}`,
+`{"op":"service-delete","name":N}`, `{"op":"service-logs","name":N,"lines":L}` and
+`{"op":"activity"}`.
 
 Error codes: `invalid`, `unknown` (no such scope), `forbidden` (the session scope),
 `no-windows`, `gone`, `failed`. The client commands print the answer as one JSON line and
@@ -129,8 +203,9 @@ python3 -m unittest discover -s guest/scopes -p 'test_*.py'
 
 `check.sh` exercises a running container computer through `docker exec`: the hierarchy,
 a scoped process tree with a double-forked child, a fake Steam reaper split into its game's
-scope, Force Quit of a tree and of one that ignores SIGTERM, Kill, and the refusal to end
-the session scope. With `--window` it also opens a GTK window on the owner's display from
+scope, Force Quit of a tree and of one that ignores SIGTERM, Kill, the refusal to end
+the session scope, and an owner service: started in its cgroup, its port in `activity`,
+restarted after being killed, stopped, logged, and a crash-looping one failed. With `--window` it also opens a GTK window on the owner's display from
 outside any app, checks it gets a scope of its own with that window, and quits it politely.
 It cleans up what it started.
 

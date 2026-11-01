@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""caboose-scopes: every app the owner runs in a cgroup v2 scope of its own.
+"""caboose-scopes: every app the owner runs in a cgroup v2 scope of its own, and the
+computer's services.
 
     caboose-scopes setup                  make the hierarchy (root; safe to repeat)
     caboose-scopes ensure [--restart]     start the daemon unless it runs (root)
@@ -8,12 +9,17 @@
     caboose-scopes list                   the snapshot, as JSON
     caboose-scopes quit|force-quit|kill SCOPE
     caboose-scopes run DESKTOP_ID -- COMMAND [ARG...]
+    caboose-scopes service start|stop|restart|enable|disable NAME
+    caboose-scopes service-put NAME DEFINITION_JSON      caboose-scopes service-delete NAME
+    caboose-scopes logs NAME [LINES]
+    caboose-scopes activity               services running and ports listening, as JSON
 
 The hierarchy, inside the container's own cgroup namespace:
 
     /init.scope                     the container's init, root's services, `docker exec`
     /owner.slice/session.scope      the owner's processes no app claims (Caboose's services)
     /owner.slice/app-<key>-<n>.scope  one per app launch, game or split-off window
+    /services.slice/<name>.service  one per running service
 
 The daemon runs as root, which alone moves processes between cgroups. A forked observer
 that has dropped to the owner reads what root may not in a container without
@@ -35,6 +41,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import scopecore as core  # noqa: E402
+import servicecore as units  # noqa: E402
 
 CGROUP = Path(os.environ.get('CABOOSE_SCOPES_CGROUP', '/sys/fs/cgroup'))
 INIT = 'init.scope'
@@ -45,10 +52,17 @@ STATE = RUN / 'scopes' / 'state.json'
 PIDFILE = RUN / 'scopes.pid'
 DISPLAY_ENV = RUN / 'display.env'
 OWNER_USER = 'caboose'
+SERVICES = 'services.slice'
+SYSTEM_UNITS = Path('/etc/caboose/services')
+OWNER_UNITS = '.config/caboose/services'
+LOGS = Path('/var/log/caboose/services')
+MAX_LOG = 1 << 20
 CONTROLLERS = ('memory', 'io', 'pids')
 # Sampling: every second while someone looks (a list in the last 30 s), else every 3 s.
 FAST, SLOW, WATCHED = 1.0, 3.0, 30.0
 TERM_GRACE, KILL_WAIT = 5.0, 2.0
+# Listening sockets are read at most this often (every process's descriptors).
+LISTEN_SECONDS = 5.0
 ROOTS = ['.local/share/applications', '/usr/local/share/applications',
          '/var/lib/flatpak/exports/share/applications', '/usr/share/applications']
 PAGE = os.sysconf('SC_PAGE_SIZE')
@@ -113,7 +127,7 @@ def setup():
     if own not in ('0::/', f'0::/{INIT}') or (read('/proc/1/comm', '') or '').strip() == 'systemd':
         raise Unavailable('not the root of a container cgroup namespace')
     uid = owner()[0]
-    for group in (INIT, OWNER, f'{OWNER}/{core.SESSION}'):
+    for group in (INIT, OWNER, f'{OWNER}/{core.SESSION}', SERVICES):
         (CGROUP / group).mkdir(exist_ok=True)
     # Domain controllers need the namespace root empty: root's processes go to init.scope,
     # the owner's to the session scope.
@@ -128,7 +142,7 @@ def setup():
     available = set(read(CGROUP / 'cgroup.controllers', '').split())
     wanted = ' '.join(f'+{name}' for name in CONTROLLERS if name in available)
     if wanted:
-        for group in ('.', OWNER):
+        for group in ('.', OWNER, SERVICES):
             try:
                 write(CGROUP / group / 'cgroup.subtree_control', wanted)
             except OSError as error:
@@ -196,7 +210,63 @@ def observe(request):
     if op == 'close':
         answer = control(f"close {int(request['id'])}")
         return bool(answer and answer.get('ok'))
+    if op == 'sockets':
+        return process_sockets(os.getuid())
+    if op in ('units', 'write-unit', 'remove-unit'):
+        return owner_units(request)
     return None
+
+
+def process_sockets(uid):
+    """{socket inode: pid} for the processes of `uid` (reading another user's descriptors
+    takes ptrace rights container root lacks, so root and the owner each read their own)."""
+    out = {}
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            if proc.stat().st_uid != uid:
+                continue
+            links = [os.readlink(fd) for fd in (proc / 'fd').iterdir()]
+        except OSError:
+            continue
+        for inode in units.socket_inodes(links):
+            out.setdefault(str(inode), int(proc.name))
+    return out
+
+
+def owner_units(request):
+    """The owner's unit files, read and written as the owner (never following a link out of
+    the owner's own directory as root would)."""
+    directory = Path.home() / OWNER_UNITS
+    op = request['op']
+    if op == 'units':
+        found = {}
+        try:
+            paths = sorted(directory.glob('*' + units.SUFFIX))
+        except OSError:
+            paths = []
+        for path in paths[:256]:
+            try:
+                found[path.name[:-len(units.SUFFIX)]] = path.read_text()[:units.MAX_UNIT + 1]
+            except (OSError, UnicodeDecodeError) as error:
+                found[path.name[:-len(units.SUFFIX)]] = {'error': str(error)[:200]}
+        return found
+    name = request.get('name')
+    if not units.valid_name(name):
+        return {'error': 'invalid service name'}
+    path = directory / (name + units.SUFFIX)
+    try:
+        if op == 'remove-unit':
+            path.unlink(missing_ok=True)
+            return {}
+        directory.mkdir(parents=True, exist_ok=True)
+        temporary = directory / f'.{name}.tmp'
+        temporary.write_text(request['text'])
+        os.replace(temporary, path)
+        return {}
+    except OSError as error:
+        return {'error': str(error)[:200]}
 
 
 def observer_main():
@@ -315,6 +385,366 @@ class Entries:
         return None
 
 
+# -- Services -----------------------------------------------------------------------------
+
+class Service:
+    """One service's unit and what its supervisor knows of it."""
+
+    def __init__(self, name, source):
+        self.name, self.source = name, source
+        self.unit = None          # parsed settings, or None when its file is invalid
+        self.text = None
+        self.error = None         # why it is not running, or why its file is invalid
+        self.state = 'inactive'   # inactive, activating, active, deactivating, failed
+        self.since = time.time()
+        self.process = None       # the main process, when this daemon started it
+        self.starts = []
+        self.restarts = 0
+        self.stopping = False
+        self.restart_at = None
+        self.last_exit = None
+
+    @property
+    def group(self):
+        return f'{SERVICES}/{self.name}{units.SUFFIX}'
+
+    def set(self, state, error=None):
+        if state != self.state:
+            self.since = time.time()
+        self.state, self.error = state, error
+
+    def populated(self):
+        return core.parse_keyed(read(CGROUP / self.group / 'cgroup.events', '') or '').get('populated') == 1
+
+
+def exit_message(code):
+    if code is None:
+        return 'its processes ended'
+    if code == 127:
+        return 'its command was not found (status 127)'
+    if code == 126:
+        return 'its command could not be run (status 126)'
+    if code < 0:
+        return f'it was ended by signal {-code}'
+    return f'it exited with status {code}'
+
+
+class Supervisor:
+    """Starts, watches, restarts and stops the computer's services (README.md, Services)."""
+
+    def __init__(self, daemon):
+        self.daemon = daemon
+        self.lock = threading.RLock()
+        self.services = {}
+        self.stamp = None
+
+    # Unit files: root's in /etc/caboose/services, the owner's in ~/.config/caboose/services.
+    def read_units(self):
+        found = {}
+        try:
+            paths = sorted(SYSTEM_UNITS.glob('*' + units.SUFFIX))
+        except OSError:
+            paths = []
+        for path in paths[:256]:
+            found[path.name[:-len(units.SUFFIX)]] = ('system', read(path))
+        owner = self.daemon.observer.ask({'op': 'units'})
+        for name, text in (owner.items() if isinstance(owner, dict) else []):
+            if name not in found:
+                found[name] = ('owner', text if isinstance(text, str) else None)
+        return found
+
+    def reload(self, force=False):
+        stamp = []
+        for directory in (SYSTEM_UNITS, Path(self.daemon.home) / OWNER_UNITS):
+            try:
+                stamp.append(directory.stat().st_mtime_ns)
+                stamp.extend(p.stat().st_mtime_ns for p in sorted(directory.glob('*' + units.SUFFIX)))
+            except OSError:
+                stamp.append(0)
+        if not force and stamp == self.stamp:
+            return
+        self.stamp = stamp
+        found = self.read_units()
+        with self.lock:
+            for name, (source, text) in found.items():
+                service = self.services.get(name) or Service(name, source)
+                service.source, service.text = source, text
+                try:
+                    if text is None:
+                        raise units.UnitError('its unit file cannot be read')
+                    service.unit = units.parse_unit(name, text, source == 'system')
+                    if service.state == 'failed' and service.error and service.error.startswith('unit file'):
+                        service.set('inactive')
+                except units.UnitError as error:
+                    service.unit = None
+                    if service.state in ('inactive', 'failed'):
+                        service.set('failed', f'unit file: {error}')
+                self.services[name] = service
+            for name in [n for n, s in self.services.items() if n not in found]:
+                service = self.services[name]
+                if service.state in ('inactive', 'failed') and not service.populated():
+                    del self.services[name]
+            # Services this daemon did not start (it was restarted) are adopted by their cgroup.
+            for service in self.services.values():
+                if service.process is None and service.state == 'inactive' and service.populated():
+                    service.set('active')
+
+    def unit_map(self):
+        return {n: s.unit for n, s in self.services.items() if s.unit}
+
+    def autostart(self):
+        with self.lock:
+            wanted = [n for n, s in self.services.items() if s.unit and s.unit['autostart']]
+            order, broken = units.start_order(self.unit_map(), wanted)
+            for name in broken:
+                if name in self.services:
+                    self.services[name].set('failed', 'a dependency is missing or circular')
+            for name in order:
+                if self.services[name].state in ('inactive', 'failed'):
+                    self.start(name)
+
+    def start(self, name):
+        with self.lock:
+            service = self.services.get(name)
+            if service is None:
+                raise ScopeError('unknown', 'no such service')
+            if service.unit is None:
+                raise ScopeError('invalid', service.error or 'the service has no valid unit file')
+            if service.state in ('active', 'activating'):
+                return
+            order, broken = units.start_order(self.unit_map(), [name])
+            if broken:
+                service.set('failed', 'a dependency is missing or circular')
+                return
+            for dep in order:
+                other = self.services[dep]
+                if dep != name and other.state not in ('active', 'activating'):
+                    self.start(dep)
+                    if other.state == 'failed':
+                        service.set('failed', f'{dep} failed to start')
+                        return
+            service.starts = [t for t in service.starts if time.time() - t <= units.BURST_SECONDS]
+            self.spawn(service)
+
+    def spawn(self, service):
+        unit, now = service.unit, time.time()
+        uid, gid, home = owner()
+        if unit['user']:
+            try:
+                entry = pwd.getpwnam(unit['user'])
+                uid, gid, home = entry.pw_uid, entry.pw_gid, entry.pw_dir
+            except KeyError:
+                service.set('failed', f"no user {unit['user']}")
+                return
+        directory = home if unit['directory'] in (None, '~') else unit['directory']
+        environment = {'HOME': home, 'USER': pwd.getpwuid(uid).pw_name, 'LOGNAME': pwd.getpwuid(uid).pw_name,
+                       'SHELL': '/bin/bash', 'LANG': 'C.UTF-8',
+                       'PATH': f'{home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                       **({'XDG_RUNTIME_DIR': f'/run/user/{uid}'} if uid == self.daemon.uid else {}),
+                       'CABOOSE_SERVICE': service.name, **unit['environment']}
+        (CGROUP / service.group).mkdir(exist_ok=True)
+        LOGS.mkdir(parents=True, exist_ok=True)
+        import subprocess
+        with open(LOGS / f'{service.name}.log', 'ab') as log:
+            log.write(f'-- {time.strftime("%Y-%m-%d %H:%M:%S")} starting {shlex.join(unit["argv"])}\n'.encode())
+            log.flush()
+            service.process = subprocess.Popen(
+                [sys.executable, os.path.realpath(__file__), 'enter', service.group, str(uid), str(gid), directory, '--',
+                 *unit['argv']], env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                start_new_session=True, close_fds=True)
+        service.starts.append(now)
+        service.stopping = False
+        service.restart_at = None
+        service.set('active')
+
+    def stop(self, name, cascade=True):
+        with self.lock:
+            service = self.services.get(name)
+            if service is None:
+                raise ScopeError('unknown', 'no such service')
+            if cascade:
+                for other in units.dependents(self.unit_map(), name):
+                    if self.services[other].state in ('active', 'activating'):
+                        self.stop(other, cascade=False)
+            service.stopping = True
+            service.restart_at = None
+            if not service.populated() and service.process is None:
+                service.set('inactive')
+                return
+            service.set('deactivating')
+            grace = service.unit['stopSec'] if service.unit else 10.0
+        group = CGROUP / service.group
+        for pid in procs_of(service.group):
+            for number in (signal.SIGTERM, signal.SIGCONT):
+                try:
+                    os.kill(pid, number)
+                except OSError:
+                    pass
+        if not Daemon.wait_empty(group, grace):
+            write(group / 'cgroup.kill', '1')
+            Daemon.wait_empty(group, 2.0)
+        with self.lock:
+            if service.process is not None:
+                service.process.poll()
+            self.ended(service, time.time())
+
+    def ended(self, service, now):
+        """Its main process has exited, or (adopted, forking) its cgroup emptied."""
+        code = service.process.returncode if service.process is not None else None
+        if service.process is not None or service.last_exit is None or service.state != 'deactivating':
+            service.last_exit = {'code': code if code is None or code >= 0 else None,
+                                 'signal': -code if code is not None and code < 0 else None, 'at': int(now * 1000)}
+        service.process = None
+        if service.populated() and not (service.unit and service.unit['type'] == 'forking' and code == 0 and not service.stopping):
+            write(CGROUP / service.group / 'cgroup.kill', '1')
+        decision = units.restart_decision(service.unit or {'restart': 'no', 'type': 'simple'}, code, service.stopping, service.starts, now)
+        service.stopping = False
+        if decision == 'restart':
+            service.restarts += 1
+            service.restart_at = now + service.unit['restartSec']
+            service.set('activating', exit_message(code))
+        elif decision == 'fail':
+            many = len(service.starts) >= units.BURST and service.unit and service.unit['restart'] != 'no'
+            service.set('failed', f'{exit_message(code)}; it started {units.BURST} times in a minute' if many else exit_message(code))
+        else:
+            service.set('inactive')
+
+    def poll(self):
+        now = time.time()
+        with self.lock:
+            for service in list(self.services.values()):
+                if service.state == 'deactivating':
+                    continue
+                if service.process is not None and service.process.poll() is not None:
+                    code = service.process.returncode
+                    if service.unit and service.unit['type'] == 'forking' and code == 0 and service.populated():
+                        service.process = None      # the daemon it forked carries on
+                        service.last_exit = {'code': 0, 'signal': None, 'at': int(now * 1000)}
+                    else:
+                        self.ended(service, now)
+                elif service.process is None and service.state == 'active' and not service.populated():
+                    self.ended(service, now)
+                if service.restart_at is not None and now >= service.restart_at and service.unit:
+                    self.spawn(service)
+                self.rotate(service)
+
+    @staticmethod
+    def rotate(service):
+        """Keeps a service's log under 1 MiB: the older half moves to `.log.1`."""
+        path = LOGS / f'{service.name}.log'
+        try:
+            if path.stat().st_size <= MAX_LOG:
+                return
+            data = path.read_bytes()
+            (LOGS / f'{service.name}.log.1').write_bytes(data)
+            with open(path, 'r+b') as handle:
+                handle.truncate(0)
+        except OSError:
+            pass
+
+    def logs(self, name, lines):
+        if name not in self.services:
+            raise ScopeError('unknown', 'no such service')
+        data = b''
+        for path in (LOGS / f'{name}.log.1', LOGS / f'{name}.log'):
+            try:
+                data += path.read_bytes()[-(256 << 10):]
+            except OSError:
+                pass
+        text = data[-(256 << 10):].decode('utf-8', 'replace')
+        return text.splitlines()[-lines:]
+
+    def put(self, name, definition):
+        if not units.valid_name(name):
+            raise ScopeError('invalid', 'a service name is 1 to 64 of A-Z, a-z, 0-9, and _ . @ - not first')
+        with self.lock:
+            existing = self.services.get(name)
+            if existing is not None and existing.source == 'system':
+                raise ScopeError('forbidden', 'a system service of that name exists')
+        try:
+            text = units.render_unit(definition)
+        except units.UnitError as error:
+            raise ScopeError('invalid', str(error)) from None
+        answer = self.daemon.observer.ask({'op': 'write-unit', 'name': name, 'text': text})
+        if not isinstance(answer, dict) or answer.get('error'):
+            raise ScopeError('failed', (answer or {}).get('error') or 'the unit file could not be written')
+        self.reload(force=True)
+        return self.status(name)
+
+    def remove(self, name):
+        with self.lock:
+            service = self.services.get(name)
+            if service is None:
+                raise ScopeError('unknown', 'no such service')
+            if service.source == 'system':
+                raise ScopeError('forbidden', "a system service's unit belongs to the system")
+        self.stop(name)
+        answer = self.daemon.observer.ask({'op': 'remove-unit', 'name': name})
+        if not isinstance(answer, dict) or answer.get('error'):
+            raise ScopeError('failed', (answer or {}).get('error') or 'the unit file could not be removed')
+        self.reload(force=True)
+        with self.lock:
+            self.services.pop(name, None)
+        try:
+            (CGROUP / f'{SERVICES}/{name}{units.SUFFIX}').rmdir()
+        except OSError:
+            pass
+        return {'removed': True}
+
+    def set_autostart(self, name, enabled):
+        with self.lock:
+            service = self.services.get(name)
+            if service is None:
+                raise ScopeError('unknown', 'no such service')
+            if service.unit is None:
+                raise ScopeError('invalid', service.error or 'the service has no valid unit file')
+            text = units.set_autostart(service.text, enabled)
+        if service.source == 'system':
+            path = SYSTEM_UNITS / f'{name}{units.SUFFIX}'
+            write(path.with_suffix('.tmp'), text)
+            os.replace(path.with_suffix('.tmp'), path)
+        else:
+            answer = self.daemon.observer.ask({'op': 'write-unit', 'name': name, 'text': text})
+            if not isinstance(answer, dict) or answer.get('error'):
+                raise ScopeError('failed', (answer or {}).get('error') or 'the unit file could not be written')
+        self.reload(force=True)
+
+    def act(self, name, action):
+        if action == 'start':
+            self.start(name)
+        elif action == 'stop':
+            self.stop(name)
+        elif action == 'restart':
+            self.stop(name)
+            self.start(name)
+        elif action in ('enable', 'disable'):
+            self.set_autostart(name, action == 'enable')
+        else:
+            raise ScopeError('invalid', 'unknown service action')
+        return self.status(name)
+
+    def status(self, name):
+        with self.lock:
+            service = self.services.get(name)
+            if service is None:
+                raise ScopeError('unknown', 'no such service')
+            unit = service.unit or {}
+            return {'id': f'{name}{units.SUFFIX}', 'name': name, 'description': unit.get('description', name),
+                    'source': service.source, 'state': service.state, 'error': service.error,
+                    'autostart': bool(unit.get('autostart')), 'restart': unit.get('restart', 'no'),
+                    'requires': list(unit.get('requires', [])), 'since': int(service.since * 1000),
+                    'restarts': service.restarts, 'lastExit': service.last_exit}
+
+    def run(self):
+        while True:
+            try:
+                self.reload()
+                self.poll()
+            except Exception as error:  # noqa: BLE001 - keep supervising whatever one pass met
+                print(f'caboose-scopes: services: {error!r}', file=sys.stderr, flush=True)
+            time.sleep(0.5)
+
+
 # -- The daemon ---------------------------------------------------------------------------
 
 class Daemon:
@@ -331,6 +761,10 @@ class Daemon:
         self.gpu = {}        # (pid, start) -> counters
         self.windows = []
         self.membership = {}
+        self.listening = []
+        self.listened_at = 0.0
+        self.active_at = {}  # (protocol, port) -> ms it last had a non-loopback peer
+        self.supervisor = Supervisor(self)
         self.snapshot = None
         self.sampled = None
         self.watched = 0.0
@@ -488,8 +922,6 @@ class Daemon:
                 marks = info.get('marks')
                 self.argv[keys[pid]] = {'argv': info.get('argv') if isinstance(info.get('argv'), list) else None,
                                        'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None}
-        live = set(keys.values())
-        self.argv = {k: v for k, v in self.argv.items() if k in live}
         for pid, proc in procs.items():
             info = self.argv.get(keys[pid], {})
             proc.argv, proc.marks = info.get('argv'), info.get('marks')
@@ -521,48 +953,147 @@ class Daemon:
         except ValueError:
             return []
 
+    def service_members(self):
+        """{pid: 'name.service'} for every process in a service's cgroup."""
+        members = {}
+        try:
+            groups = sorted(p.name for p in (CGROUP / SERVICES).iterdir() if p.is_dir() and p.name.endswith(units.SUFFIX))
+        except OSError:
+            groups = []
+        for group in groups:
+            for pid in procs_of(f'{SERVICES}/{group}'):
+                members[pid] = group
+        return members
+
+    def listeners(self, members, procs, now):
+        """The computer's listening sockets, each with the app or service that owns it
+        (`caboose` for Caboose's own processes and anything outside the owner's apps and
+        services), how many non-loopback peers it has now, and when it last had one."""
+        tables = []
+        for protocol, family, path in (('tcp', 4, 'tcp'), ('tcp', 6, 'tcp6'), ('udp', 4, 'udp'), ('udp', 6, 'udp6')):
+            text = read(f'/proc/net/{path}', '') or ''
+            tables.append((protocol, family, text))
+        found, connected = [], {}
+        for protocol, family, text in tables:
+            found.extend(units.listening(text, protocol, family))
+            if protocol == 'tcp':
+                for port, peer in units.established(text, family):
+                    if not units.loopback(peer):
+                        connected[port] = connected.get(port, 0) + 1
+        inodes = {int(k): v for k, v in process_sockets(0).items()}
+        answer = self.observer.ask({'op': 'sockets'})
+        if isinstance(answer, dict):
+            inodes.update({int(k): v for k, v in answer.items() if k.isdigit() and isinstance(v, int)})
+        # Services that run as another user: read their descriptors as that user.
+        others = {procs[pid].uid for pid in members if pid in procs and procs[pid].uid not in (0, self.uid)}
+        for uid in sorted(others)[:8]:
+            import subprocess
+            try:
+                output = subprocess.run([sys.executable, os.path.realpath(__file__), 'sockets'], user=uid,
+                                        group=pwd.getpwuid(uid).pw_gid, extra_groups=[], capture_output=True,
+                                        timeout=5, env={'PATH': '/usr/bin:/bin'}).stdout
+                inodes.update({int(k): v for k, v in json.loads(output or b'{}').items() if k.isdigit()})
+            except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+                pass
+        out = []
+        for protocol, address, port, inode in found:
+            pid = inodes.get(inode)
+            key = members.get(pid)
+            owner_name = key if key and key != core.SESSION else 'caboose'
+            established = connected.get(port, 0) if protocol == 'tcp' else 0
+            if established:
+                self.active_at[(protocol, port)] = int(now * 1000)
+            out.append({'protocol': protocol, 'address': address, 'port': port, 'pid': pid, 'owner': owner_name,
+                        'established': established, 'lastActiveAt': self.active_at.get((protocol, port))})
+        return out
+
+    def measure(self, key, group, members, procs, seconds, ticks_now, windows_by_pid):
+        """A cgroup's counters now, at the last sample, and its processes and windows."""
+        cpu = core.parse_keyed(read(group / 'cpu.stat', '') or '')
+        read_bytes, written = core.parse_io_stat(read(group / 'io.stat', '') or '')
+        current = read(group / 'memory.current', '')
+        memory = core.memory_in_use(int(current), core.parse_keyed(read(group / 'memory.stat', '') or '')) \
+            if current and current.strip().isdigit() else 0
+        counters = {'cpu_usec': cpu.get('usage_usec', 0), 'read': read_bytes, 'written': written, 'memory': memory}
+        previous = self.samples.get(key)
+        self.samples[key] = counters
+        processes, windows = [], []
+        for pid in [pid for pid, owner_key in members.items() if owner_key == key and pid in procs]:
+            proc = procs[pid]
+            ticks_now[(pid, proc.start)] = proc.ticks
+            before = self.ticks.get((pid, proc.start))
+            cpu_percent = core.percent((proc.ticks - before) / TICKS, seconds) if before is not None else 0.0
+            statm = (read(f'/proc/{pid}/statm', '') or '').split()
+            rss = int(statm[1]) * PAGE if len(statm) > 1 and statm[1].isdigit() else 0
+            processes.append(core.process_entry(pid, proc.ppid, proc.comm, proc.argv, proc.state, cpu_percent, rss))
+            windows.extend(windows_by_pid.get(pid, []))
+        return counters, previous, processes, windows
+
     def sample(self, procs, membership, now):
         seconds = now - self.sampled if self.sampled else 0
         self.sampled = now
+        services = self.service_members()
+        procs = {**procs, **self.read_procs(services)}
+        members = {**membership, **services}
         gpu_now = {}
         for entry in self.gpu_entries():
             if entry['pid'] in procs and procs[entry['pid']].start == entry['start']:
-                gpu_now.setdefault(membership.get(entry['pid']), []).append(entry)
+                gpu_now.setdefault(members.get(entry['pid']), []).append(entry)
         windows_by_pid = {}
         for window in self.windows:
             if isinstance(window, dict) and isinstance(window.get('pid'), int) and isinstance(window.get('id'), int) \
                     and window.get('kind') in ('toplevel', 'dialog'):
                 windows_by_pid.setdefault(window['pid'], []).append(window['id'])
-        ticks_now, apps = {}, []
+        if now - self.listened_at >= LISTEN_SECONDS:
+            self.listening = self.listeners(members, procs, now)
+            self.listened_at = now
+        ports = {}
+        for listener in self.listening:
+            ports.setdefault(listener['owner'], []).append(
+                {k: listener[k] for k in ('protocol', 'address', 'port')})
+        ticks_now, apps, entries = {}, [], []
         for name in [core.SESSION, *self.app_scopes()]:
-            group = CGROUP / OWNER / name
-            cpu = core.parse_keyed(read(group / 'cpu.stat', '') or '')
-            read_bytes, written = core.parse_io_stat(read(group / 'io.stat', '') or '')
-            current = read(group / 'memory.current', '')
-            memory = core.memory_in_use(int(current), core.parse_keyed(read(group / 'memory.stat', '') or '')) \
-                if current and current.strip().isdigit() else 0
-            counters = {'cpu_usec': cpu.get('usage_usec', 0), 'read': read_bytes, 'written': written, 'memory': memory}
-            previous = self.samples.get(name)
-            self.samples[name] = counters
-            members = [pid for pid, scope in membership.items() if scope == name and pid in procs]
-            processes, windows = [], []
-            for pid in members:
-                proc = procs[pid]
-                key = (pid, proc.start)
-                ticks_now[key] = proc.ticks
-                before = self.ticks.get(key)
-                cpu_percent = core.percent((proc.ticks - before) / TICKS, seconds) if before is not None else 0.0
-                statm = (read(f'/proc/{pid}/statm', '') or '').split()
-                rss = int(statm[1]) * PAGE if len(statm) > 1 and statm[1].isdigit() else 0
-                processes.append(core.process_entry(pid, proc.ppid, proc.comm, proc.argv, proc.state, cpu_percent, rss))
-                windows.extend(windows_by_pid.get(pid, []))
+            counters, previous, processes, windows = self.measure(
+                name, CGROUP / OWNER / name, members, procs, seconds, ticks_now, windows_by_pid)
             meta = {'origin': 'session', 'name': 'System', 'createdAt': 0} if name == core.SESSION else self.meta(name, now)
             gpu = core.gpu_usage(gpu_now.get(name, []), self.gpu, seconds) if name in gpu_now else None
-            apps.append(core.app_entry(name, meta, counters, previous, seconds, processes, windows, gpu))
+            app = core.app_entry(name, meta, counters, previous, seconds, processes, windows, gpu)
+            app['ports'] = ports.get(name, []) if name != core.SESSION else ports.get('caboose', [])
+            apps.append(app)
+        for name in sorted(self.supervisor.services):
+            try:
+                status = self.supervisor.status(name)
+            except ScopeError:
+                continue
+            key = status['id']
+            counters, previous, processes, _ = self.measure(
+                key, CGROUP / SERVICES / key, members, procs, seconds, ticks_now, {})
+            gpu = core.gpu_usage(gpu_now.get(key, []), self.gpu, seconds) if key in gpu_now else None
+            usage = core.app_entry(key, {}, counters, previous, seconds, processes, [], gpu)
+            status.update({k: usage[k] for k in ('cpuPercent', 'memoryBytes', 'io', 'gpu', 'processCount', 'processes')})
+            status['ports'] = ports.get(key, [])
+            entries.append(status)
         self.ticks = ticks_now
-        self.gpu = {(e['pid'], e['start']): e for entries in gpu_now.values() for e in entries}
+        self.argv = {k: v for k, v in self.argv.items() if k in {(p, proc.start) for p, proc in procs.items()}}
+        self.gpu = {(e['pid'], e['start']): e for entries_ in gpu_now.values() for e in entries_}
         self.snapshot = {'version': core.VERSION, 'sampledAt': int(now * 1000), 'intervalMs': int(seconds * 1000),
-                         'machine': self.machine(), 'apps': apps}
+                         'machine': self.machine(), 'apps': apps, 'services': entries}
+
+    def activity(self):
+        """What the host weighs before parking the computer (README.md, Activity)."""
+        now = time.time()
+        if now - self.listened_at > 2:
+            with self.lock:
+                members = {**self.read_membership(), **self.service_members()}
+                procs = self.read_procs(members)
+                self.listening = self.listeners(members, procs, now)
+                self.listened_at = now
+        with self.supervisor.lock:
+            states = [s.state for s in self.supervisor.services.values()]
+            autostart = sum(1 for s in self.supervisor.services.values() if s.unit and s.unit['autostart'])
+        return {'services': {'active': sum(1 for s in states if s in ('active', 'activating', 'deactivating')),
+                             'autostart': autostart, 'failed': states.count('failed')},
+                'listening': self.listening}
 
     @staticmethod
     def machine():
@@ -595,6 +1126,22 @@ class Daemon:
                 if not move(peer_pid, f'{OWNER}/{name}'):
                     raise ScopeError('gone', 'the process has ended')
             return {'scope': name}
+        if op == 'activity':
+            return self.activity()
+        if op in ('service', 'service-put', 'service-delete', 'service-logs'):
+            name = request.get('name')
+            if not units.valid_name(name):
+                raise ScopeError('invalid', 'invalid service name')
+            if op == 'service':
+                return self.supervisor.act(name, request.get('action'))
+            if op == 'service-put':
+                return self.supervisor.put(name, request.get('definition'))
+            if op == 'service-delete':
+                return self.supervisor.remove(name)
+            lines = request.get('lines', 200)
+            if not isinstance(lines, int) or isinstance(lines, bool) or not 1 <= lines <= 2000:
+                raise ScopeError('invalid', 'lines: 1 to 2000')
+            return {'lines': self.supervisor.logs(name, lines)}
         scope = request.get('scope')
         if op not in ('quit', 'force-quit', 'kill'):
             raise ScopeError('invalid', 'unknown request')
@@ -677,6 +1224,10 @@ class Daemon:
                 threading.Thread(target=self.serve, args=(connection,), daemon=True).start()
 
         threading.Thread(target=accept, daemon=True).start()
+        # Services start with the computer: the daemon starts at every wake and container start.
+        self.supervisor.reload(force=True)
+        self.supervisor.autostart()
+        threading.Thread(target=self.supervisor.run, daemon=True).start()
         while True:
             started = time.monotonic()
             try:
@@ -749,6 +1300,17 @@ def main(argv):
             print(f'caboose-scopes: {error}', file=sys.stderr)
             return 3
         return 0
+    if command == 'enter':
+        return enter(argv[1:])
+    if command == 'sockets':
+        print(json.dumps(process_sockets(os.getuid())))
+        return 0
+    if command == 'service' and len(argv) == 3:
+        return client({'op': 'service', 'action': argv[1], 'name': argv[2]})
+    if command == 'logs' and len(argv) in (2, 3):
+        return client({'op': 'service-logs', 'name': argv[1], 'lines': int(argv[2]) if len(argv) == 3 and argv[2].isdigit() else 200})
+    if command == 'activity':
+        return client({'op': 'activity'})
     if command == 'observe':
         observer_main()
         return 0
@@ -785,17 +1347,56 @@ def main(argv):
             pass  # Without the daemon the command still runs, unscoped.
         os.execvp(argv[3], argv[3:])
     if command in ('list', 'quit', 'force-quit', 'kill'):
-        body = {'op': command} if command == 'list' else {'op': command, 'scope': argv[1] if len(argv) > 1 else ''}
-        # One JSON answer on stdout, success or not, so a caller that sees only stdout on
-        # success (the host's `docker exec`) always reads why.
+        return client({'op': command} if command == 'list' else {'op': command, 'scope': argv[1] if len(argv) > 1 else ''})
+    if command == 'service-delete' and len(argv) == 2:
+        return client({'op': command, 'name': argv[1]})
+    if command == 'service-put' and len(argv) == 3:
         try:
-            answer = request(body)
-        except (OSError, ValueError) as error:
-            answer = {'ok': False, 'error': 'unavailable', 'message': f'caboose-scopes is not running: {error}'}
-        print(json.dumps(answer, separators=(',', ':')))
-        return 0
+            definition = json.loads(argv[2])
+        except ValueError:
+            print(json.dumps({'ok': False, 'error': 'invalid', 'message': 'the definition is not JSON'}))
+            return 0
+        return client({'op': command, 'name': argv[1], 'definition': definition})
     print(__doc__.strip(), file=sys.stderr)
     return 2
+
+
+def client(body):
+    """Prints the daemon's answer as one JSON line and exits 0 whatever it says, so a caller
+    that sees only stdout on success (the host's `docker exec`) always reads why."""
+    try:
+        answer = request(body, timeout=60)
+    except (OSError, ValueError) as error:
+        answer = {'ok': False, 'error': 'unavailable', 'message': f'caboose-scopes is not running: {error}'}
+    print(json.dumps(answer, separators=(',', ':')))
+    return 0
+
+
+def enter(args):
+    """`enter CGROUP UID GID DIRECTORY -- COMMAND...`: a service's first step, as root: join
+    its cgroup, become its user, and run its command."""
+    if len(args) < 6 or args[4] != '--' or not args[0].startswith(f'{SERVICES}/'):
+        print('usage: caboose-scopes enter CGROUP UID GID DIRECTORY -- COMMAND [ARG...]', file=sys.stderr)
+        return 2
+    group, uid, gid, directory, command = args[0], int(args[1]), int(args[2]), args[3], args[5:]
+    write(CGROUP / group / 'cgroup.procs', str(os.getpid()))
+    if uid != 0 or gid != 0:
+        os.initgroups(pwd.getpwuid(uid).pw_name, gid)
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+    try:
+        os.chdir(directory)
+    except OSError as error:
+        print(f'caboose-scopes: WorkingDirectory {directory}: {error.strerror}', file=sys.stderr, flush=True)
+        return 200
+    try:
+        os.execvp(command[0], command)
+    except FileNotFoundError:
+        print(f'caboose-scopes: {command[0]}: command not found', file=sys.stderr, flush=True)
+        return 127
+    except OSError as error:
+        print(f'caboose-scopes: {command[0]}: {error.strerror}', file=sys.stderr, flush=True)
+        return 126
 
 
 if __name__ == '__main__':

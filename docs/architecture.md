@@ -687,6 +687,26 @@ each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup`
 that container's mount namespace with a one-shot privileged helper. A microVM computer has
 no app scopes. See [guest/scopes](../guest/scopes/README.md).
 
+**Services.** The same daemon is the container computer's service manager. A service is
+declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
+(may set `User=`) and the owner's in `~/.config/caboose/services/<name>.service` (run as the
+owner; a system unit of the same name wins). Supported keys: `[Unit]` `Description`,
+`Requires`, `After`; `[Service]` `ExecStart`, `Type` (`simple`, `forking`, `oneshot`),
+`WorkingDirectory`, `Environment`, `User`, `Restart` (`no`, `on-failure` (the default),
+`always`), `RestartSec`, `TimeoutStopSec`; `[Install]` `WantedBy=default.target` (or
+`multi-user.target`), which starts it with the computer. A unit file using anything else
+is refused with the reason. Each service runs in `/services.slice/<name>.service`; its
+standard output and error go to `/var/log/caboose/services/<name>.log` (kept under 1 MiB,
+the older half in `<name>.log.1`). The daemon starts at every wake and container start and
+then starts the autostart services, dependencies first; a dependency cycle or a missing
+dependency fails the services behind it. A service whose process ends is restarted after
+`RestartSec` by its policy, unless it started 5 times within a minute, which fails it.
+Stopping a service stops the services that require it first, then sends SIGTERM to its
+cgroup and kills what remains after `TimeoutStopSec`. Services the daemon did not start
+(it was itself restarted) are adopted by their cgroup. Owner unit files live in the
+owner's home, so they survive the container being recreated; a system unit survives
+restarts of the container.
+
 ### Catalog
 
 The Library is every application a computer can add: Caboose's curated entries
