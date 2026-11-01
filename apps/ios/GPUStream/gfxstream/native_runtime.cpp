@@ -2,6 +2,7 @@
 #include "native_runtime.h"
 #include "caboose_pipeline_cache.h"
 #include "shader_store.h"
+#include "upload_store.h"
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 #include "memory_audit.h"
 #endif
@@ -260,6 +261,16 @@ extern "C" int caboose_gpu_runtime_finish(uint64_t token) {
             (unsigned long long)s.resolvedBytes, (unsigned long long)s.unresolved,
             (unsigned long long)s.inserted, (unsigned long long)s.writeFailures,
             (unsigned long long)hits, (unsigned long long)misses, archiveSaved ? 1 : 0);
+    }
+    if (const auto store = caboose::gpuv2::currentUploadStore()) {
+        const auto s = store->stats();
+        std::fprintf(stderr,
+            "CABOOSE_GPU_CACHES uploads=%llu upload_packs=%llu stored=%llu duplicates=%llu resolved=%llu "
+            "unresolved=%llu write_failures=%llu dropped_packs=%llu budget_bytes=%llu\n",
+            (unsigned long long)s.pieces, (unsigned long long)s.packs, (unsigned long long)s.stored,
+            (unsigned long long)s.duplicates, (unsigned long long)s.resolved, (unsigned long long)s.unresolved,
+            (unsigned long long)s.writeFailures, (unsigned long long)s.droppedPacksAtOpen,
+            (unsigned long long)s.budgetBytes);
     }
     return 0;
 }

@@ -33,10 +33,12 @@ else()
     target_compile_definitions(caboose_blake3 PRIVATE BLAKE3_USE_NEON=0
         BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
 endif()
-add_library(caboose_shader_store STATIC shader_store.cpp)
+add_library(caboose_shader_store STATIC shader_store.cpp upload_store.cpp)
 target_compile_features(caboose_shader_store PRIVATE cxx_std_17)
 target_include_directories(caboose_shader_store PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(caboose_shader_store PRIVATE caboose_blake3)
+find_package(Threads REQUIRED)
+# The upload store writes its packs on a thread of its own.
+target_link_libraries(caboose_shader_store PRIVATE caboose_blake3 Threads::Threads)
 add_library(caboose_gfxstream_connection STATIC socket_stream.cpp packet_framing.cpp decode_connection.cpp completion_feed.cpp executor_gate.cpp
     media_bitstream.cpp media_registry.cpp media_session.cpp)
 target_link_libraries(caboose_gfxstream_connection PUBLIC caboose_shader_store)
@@ -298,4 +300,8 @@ if(CABOOSE_GFXSTREAM_FRAMING_TESTS)
     add_executable(caboose_gpu_shader_store_test tests/shader_store_test.cpp)
     target_compile_features(caboose_gpu_shader_store_test PRIVATE cxx_std_17)
     target_link_libraries(caboose_gpu_shader_store_test PRIVATE caboose_shader_store)
+    # Run with guest/gpu/gfxstream/upload-cache/vectors.json as its argument.
+    add_executable(caboose_gpu_upload_store_test tests/upload_store_test.cpp)
+    target_compile_features(caboose_gpu_upload_store_test PRIVATE cxx_std_17)
+    target_link_libraries(caboose_gpu_upload_store_test PRIVATE caboose_shader_store)
 endif()

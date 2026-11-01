@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "shader_store.h"
+#include "upload_store.h"
 
 #include "blake3/blake3.h"
 
@@ -324,12 +325,16 @@ int setShaderStoreRoot(const char* root) {
         gCurrent.reset();
         gCurrentRoot.clear();
     }
+    setUploadStoreRoot({});
     if (!root) return 0;
     if (root[0] != '/') return EINVAL;
     std::string dir(root);
     while (dir.size() > 1 && dir.back() == '/') dir.pop_back();
     auto store = ShaderStore::open(dir + "/shaders");
     if (!store) return EIO;
+    // Uploads live beside the shaders; without them the shader cache still works.
+    const int uploads = setUploadStoreRoot(dir);
+    if (uploads) std::fprintf(stderr, "CABOOSE_GPU_CACHES uploads=unavailable error=%d\n", uploads);
     std::lock_guard<std::mutex> lock(gCurrentMutex);
     gCurrent = std::move(store);
     gCurrentRoot = dir;

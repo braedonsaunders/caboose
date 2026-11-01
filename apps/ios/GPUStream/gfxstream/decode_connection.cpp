@@ -7,6 +7,7 @@
 #include "completion_feed.h"
 #include "executor_gate.h"
 #include "shader_store.h"
+#include "upload_store.h"
 #include "frame_buffer.h"
 #include "gfxstream/host/features.h"
 #include "render_thread_info.h"
@@ -237,6 +238,30 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     if (!passGate()) return finish(DecodeStage::stopped, 0);
                     const auto store = currentShaderStore();
                     const auto reply = encodeShaderInventoryReply(store ? store->inventory() : std::vector<ShaderKey>{});
+                    stream.writeFully(reply.data(), reply.size());
+                    if (stream.error()) return finish(DecodeStage::flush, stream.error());
+                    pending.erase(pending.begin(), pending.begin() + declared);
+                    decodedAny = true;
+                    continue;
+                }
+                // UPLOAD_INVENTORY: the prefixes of the pieces the phone's upload store holds and
+                // how many the process may still ask it to store (docs/gpu-live.md, "Upload cache").
+                if (opcode == kUploadInventoryOpcode) {
+                    if (declared != kUploadInventoryPacketBytes) return finish(DecodeStage::framing, EPROTO);
+                    if (pending.size() < declared) {
+                        if (!readMore(declared - pending.size())) {
+                            if (stop) return finish(DecodeStage::stopped, 0);
+                            if (stream.error()) return finish(DecodeStage::input, stream.error());
+                            return finish(DecodeStage::eof, EPROTO);
+                        }
+                        continue;
+                    }
+                    if (!parseUploadInventoryPacket(pending.data(), declared))
+                        return finish(DecodeStage::framing, EPROTO);
+                    if (!passGate()) return finish(DecodeStage::stopped, 0);
+                    const auto store = currentUploadStore();
+                    const auto reply = store ? encodeUploadInventoryReply(store->inventory(), store->allowance())
+                                             : encodeUploadInventoryReply({}, 0);
                     stream.writeFully(reply.data(), reply.size());
                     if (stream.error()) return finish(DecodeStage::flush, stream.error());
                     pending.erase(pending.begin(), pending.begin() + declared);
