@@ -518,6 +518,7 @@ final class AppModel {
         guard phase != appPhase else { return }
         let previous = appPhase
         appPhase = phase
+        print("CABOOSE_APP_PHASE \(phase)"); fflush(stdout)
         switch phase {
         case .active: sceneBecameActive()
         case .background: sceneEnteredBackground()
@@ -1212,7 +1213,8 @@ final class AppModel {
     }
     private func resumeLiveGPU() {
         endLiveGPUBackgroundTime()
-        liveGPUOwner?.resume()
+        if let owner = liveGPUOwner, owner.suspension != .none { owner.resume() }
+        else { LiveGPUOwnerSession.allowDecoding() }
     }
     /// A suspended executor stays on this phone through the background: its socket closes once
     /// the computer holds it, within a little background time. Any other is drained.

@@ -24,6 +24,10 @@ enum ConsoleCapture {
         guard Darwin.pipe(&pipe) == 0 else { close(file); return }
         // Everything still reaches the original output (Xcode, a launch console).
         let originalOut = dup(STDOUT_FILENO)
+        // Passing output on must never hold the app back: if whatever launched it stops reading,
+        // a blocking write would fill this pipe and stop every thread that logs (the GPU decoder
+        // included). What it cannot take at once is dropped; the file still has it.
+        if originalOut >= 0 { _ = fcntl(originalOut, F_SETFL, fcntl(originalOut, F_GETFL) | O_NONBLOCK) }
         setvbuf(stdout, nil, _IOLBF, 0)
         dup2(pipe[1], STDOUT_FILENO); dup2(pipe[1], STDERR_FILENO); close(pipe[1])
         let reader = pipe[0]
@@ -35,7 +39,7 @@ enum ConsoleCapture {
                 let count = read(reader, &buffer, buffer.count)
                 if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { return }
-                _ = buffer.withUnsafeBytes { write(originalOut, $0.baseAddress, count) }
+                if originalOut >= 0 { _ = buffer.withUnsafeBytes { write(originalOut, $0.baseAddress, count) } }
                 guard written < limit else { continue }
                 // Each line starts with the wall-clock time, to line it up with host logs.
                 var stamped = Data()
