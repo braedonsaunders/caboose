@@ -511,6 +511,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard let remoteWindow, bounds.width > 0, bounds.height > 0 else { return .zero }
         var mapped = CGPoint(x: point.x * remoteWindow.frame.width / bounds.width,
                              y: point.y * remoteWindow.frame.height / bounds.height)
+        // Resting past the app's end, the region shows its content moved back.
+        if let resting = localScroll?.restingShift {
+            let vertical = resting.axis == .vertical
+            let along = (vertical ? point.y / bounds.height : point.x / bounds.width) * CGFloat(resting.viewport)
+            if resting.lines.contains(Int(along)) {
+                let back = CGFloat(resting.shift) * (vertical ? remoteWindow.frame.height : remoteWindow.frame.width) / CGFloat(resting.viewport)
+                if vertical { mapped.y -= back } else { mapped.x -= back }
+            }
+        }
         // With an overscan, what the viewport shows after the scrolling region (a footer)
         // is the picture's end, the overscan further on in the window.
         if let anchored = localScroll?.anchoredFrom {

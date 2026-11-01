@@ -205,6 +205,8 @@ public struct LocalScroll {
     private var sent = 0.0
     private var correctionsLeft = 0
     private var reportedBias: Double?
+    /// The app's reported scroll range, in phone coordinates.
+    private var appBounds: ClosedRange<Double>?
     private var reportedEpoch: UInt64?
     public private(set) var interrupted = false
     private var composing = false
@@ -406,6 +408,7 @@ public struct LocalScroll {
         gainBaseline = nil
         reportedBias = nil
         reportedEpoch = nil
+        appBounds = nil
         unansweredSince = nil
         lastAppMotion = -.infinity
         lastTick = nil
@@ -511,7 +514,13 @@ public struct LocalScroll {
             offset = reported + bias
             region = measured
             holes = fixed
-            if let bounds { edges = (bounds.lowerBound + bias, bounds.upperBound + bias) }
+            if let bounds {
+                // The app stops at its range; with an overscan its enlarged viewport ends
+                // that much short of the content's end, which its picture still shows, so the
+                // phone scrolls on through the overscan to the content's real end.
+                appBounds = (bounds.lowerBound + bias) ... (bounds.upperBound + bias)
+                edges = (bounds.lowerBound + bias, bounds.upperBound + bias + Double(frame.overscan))
+            }
         }
         guard let i = frames.firstIndex(where: { $0.id == id }) else { return }
         // The first picture laid out with another overscan changes the viewport mapping.
@@ -530,8 +539,11 @@ public struct LocalScroll {
         noteCadence(frames[i].time)
         if !guessed { learn(from: frames[i], previous: before) } else { lastAppMotion = frame.time }
         if phase == .idle {
-            // At rest the app's picture is shown as it is: the phone is where the app is.
-            position = offset; requested = offset; wanted = offset; commanded = offset
+            // At rest the app's picture is shown as it is: the phone is where the app is,
+            // unless the app is at the end of its reported range and the phone rests further
+            // on, in the content its overscan shows.
+            if !restsInOverscan(app: offset) { position = offset; requested = offset; wanted = offset }
+            commanded = offset
         }
         prune()
     }
@@ -704,6 +716,8 @@ public struct LocalScroll {
                 : clampToEdges(phase == .bouncing ? springTarget : wanted)
         }
         if lost { target = requested }
+        // Past a reported range the app cannot go: the phone shows the rest from its overscan.
+        if let range = appBounds { target = min(max(target, range.lowerBound), range.upperBound) }
         if probe != nil { target = commanded }
         let isSilent = silent(at: time)
         if isSilent, let app = placedOffset, regionLength > 0 {
@@ -828,15 +842,16 @@ public struct LocalScroll {
         }
         let pending = frames.contains { !$0.placed }
         let tolerance = configuration.settleTolerance
-        let residual = app - position
-        if abs(residual) <= tolerance && abs(commanded - wanted) < 0.5 && !pending {
+        let residual = app - appGoal()
+        if abs(residual) <= tolerance && abs(commanded - appGoal()) < 0.5 && !pending {
             if abs(residual) >= 0.5 { note?("hand-back \(String(format: "%.1f", residual)) px from the phone's position") }
             handBack(at: app, time: time)
             return
         }
         // The app keeps its lead while a next flick may come, and the return to the phone's
         // position is sent before anything is judged.
-        guard time >= holdUntil, abs(commanded - wanted) < 0.5, abs(position - wanted) < 0.5 else { return }
+        guard time >= holdUntil, abs(commanded - min(max(wanted, appBounds?.lowerBound ?? -.infinity), appBounds?.upperBound ?? .infinity)) < 0.5,
+              abs(position - wanted) < 0.5 else { return }
         // Wait for what was sent to land before judging the app's position.
         guard time - lastSend > 2 * latency + 0.05, time - (frames.last?.time ?? -.infinity) > 0.05 || !pending else { return }
         learnGain(app: app)
@@ -861,11 +876,23 @@ public struct LocalScroll {
         unansweredSince = nil
     }
 
+    /// Whether the phone rests past the app's reported end, within the overscan its picture shows.
+    private func restsInOverscan(app: Double) -> Bool {
+        guard let range = appBounds, overscan > 0, abs(app - range.upperBound) < 1 else { return false }
+        return position > app + 0.5 && position <= app + Double(overscan) + 0.5
+    }
+
+    /// Where the app should be for the phone's position: there, or its reported end.
+    private func appGoal() -> Double {
+        guard let range = appBounds else { return position }
+        return min(max(position, range.lowerBound), range.upperBound)
+    }
+
     private mutating func handBack(at app: Double, time: TimeInterval) {
         lastJudged = nil
         let travelled = app - (travelStart ?? app)
         learnGain(app: app)
-        position = app; requested = app; wanted = app; commanded = app
+        if restsInOverscan(app: app) { commanded = app } else { position = app; requested = app; wanted = app; commanded = app }
         phase = .idle
         if configuration.prefetch > 0, abs(travelled) >= 1 {
             prefetchAt = (time + configuration.prefetchDelay, travelled > 0 ? 1 : -1)
