@@ -5,7 +5,7 @@
 use crate::state::State;
 use crate::windows::Surface;
 use caboose_display_protocol::WindowKind;
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata, request_data_device_client_selection,
     set_data_device_selection,
@@ -58,16 +58,28 @@ impl State {
         let hinted = window.min_size().is_some() || window.max_size().is_some();
         let (size, held) = first_size(geo.size, area.size, hinted, parent.is_none());
         geo.size = size;
+        let positioned = window.size_hints().is_some_and(|h| h.position.is_some());
         geo.loc = match parent {
             Some(p) => {
                 let porigin = self.windows.logical_origin(p, &self.displays);
                 let psize = self.windows.get(p).map(|w| w.local_geometry().size).unwrap_or(area.size);
                 (porigin.x + (psize.w - geo.size.w) / 2, porigin.y + (psize.h - geo.size.h) / 2).into()
             }
-            None => area.loc,
+            None => first_position(geo, area, positioned),
         };
         (geo, held)
     }
+}
+
+/// A new X11 top-level's place on a display of `area`: where it asked to be when it gave a
+/// position (WM_NORMAL_HINTS, as Wine does for every window, and a splash centres itself),
+/// otherwise centred, and moved only as far as keeps it on the display.
+fn first_position(geo: Rectangle<i32, Logical>, area: Rectangle<i32, Logical>, positioned: bool) -> Point<i32, Logical> {
+    let place = |at: i32, size: i32, start: i32, extent: i32| {
+        let wanted = if positioned { at } else { start + (extent - size) / 2 };
+        wanted.clamp(start, start + (extent - size).max(0))
+    };
+    (place(geo.loc.x, geo.size.w, area.loc.x, area.size.w), place(geo.loc.y, geo.size.h, area.loc.y, area.size.h)).into()
 }
 
 /// A new X11 window's first size on a display of `area`: what it asked for, clamped to the
@@ -309,7 +321,7 @@ impl XwmHandler for State {
 
 #[cfg(test)]
 mod tests {
-    use super::{first_size, requested_geometry};
+    use super::{first_position, first_size, requested_geometry};
     use smithay::utils::{Logical, Rectangle, Size};
 
     fn size(w: i32, h: i32) -> Size<i32, Logical> {
@@ -323,6 +335,32 @@ mod tests {
         assert_eq!(first_size(desktop, size(311, 452), false, true), (desktop, Some(desktop)));
         // Larger on either axis is enough.
         assert_eq!(first_size(size(300, 500), size(311, 452), false, true), (size(300, 500), Some(size(300, 500))));
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn a_top_level_goes_where_it_asked_or_centred() {
+        let area = rect(0, 0, 669, 455);
+        // A Wine splash centred by the game: 600x338 at 369,286 on a 1338x911 screen at scale 2.
+        assert_eq!(first_position(rect(184, 143, 300, 169), area, true), (184, 143).into());
+        // A window that gave no position is centred.
+        assert_eq!(first_position(rect(0, 0, 300, 169), area, false), (184, 143).into());
+        // A full-screen window at the origin stays there.
+        assert_eq!(first_position(rect(0, 0, 669, 455), area, true), (0, 0).into());
+    }
+
+    #[test]
+    fn a_top_level_is_kept_on_its_display() {
+        let area = rect(100, 50, 669, 455);
+        // Off the far edges: moved back just far enough.
+        assert_eq!(first_position(rect(700, 600, 300, 169), area, true), (469, 336).into());
+        // Before the display's origin, or larger than it: at the origin.
+        assert_eq!(first_position(rect(-40, 10, 300, 169), area, true), (100, 50).into());
+        assert_eq!(first_position(rect(300, 300, 960, 540), area, true), (100, 50).into());
+        assert_eq!(first_position(rect(0, 0, 960, 540), area, false), (100, 50).into());
     }
 
     #[test]
