@@ -442,6 +442,12 @@ A container computer gets the same fence on its own Docker bridge network: `cabo
 the others, which Docker isolates from each other. `CABOOSE-CIN` hooks `INPUT` and
 `CABOOSE-CFWD` hooks `DOCKER-USER`, which Docker never rewrites.
 
+A container computer's tailnet companion ([network](network.md)) shares its bridge. One rule
+first in `DOCKER-USER`, commented `caboose-companion:<bridge>`, accepts traffic within the
+bridge from the companion's address to the computer's address; the host replaces it at each
+wake, because both addresses can change across restarts. The computer still opens nothing to
+the companion.
+
 On macOS, each VM has an independent user-space network at `10.0.2.15/24` with gateway
 `10.0.2.2`. Its fence rejects guest connections to the host and private/reserved ranges;
 `CABOOSE_GUEST_LAN=allow` does not enable LAN access on this backend. Display, files and
@@ -604,6 +610,15 @@ absolute path) starts a session running that program instead of a shell, with th
 environment, and answers `{ session }` for a client to attach to; the agent runner uses it
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
+
+**Loopback forwarder.** `guest/ports/caboose-ports.py` (`/opt/caboose/ports/`, started by
+`caboose-components-services` in the container) runs as `caboose` and holds no port of its
+own. While `/run/caboose/ports.json`, written by the host, is `{"forward": true}`, it
+listens on the computer's own IPv4 addresses for each TCP port that only loopback listens on
+(except 14600–14799 and the ephemeral range), and pipes each connection to the loopback
+server. HTTP requests arrive with `Host`, and a same-host `Origin` and `Referer`, set to
+`localhost:<port>`. The host writes `true` while the computer has an address of its own and
+its `forwardLoopback` setting is not `false` ([network](network.md)).
 
 **Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
 owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
@@ -878,6 +893,11 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_MAX_RUNNING` | `4` | microVM computers that may run at once; waking another waits for one to park |
 | `CABOOSE_PUBLIC_URL` | unset | Where phones reach the host from anywhere (an `http(s)` URL, optionally with a path, without credentials, query or fragment); first in `/v1/host/reach`, and the console auth base URL (auth defaults to loopback when unset) |
 | `CABOOSE_MDNS` | `on` | `off` stops the LAN advertisement ([Reachability](#reachability)) |
+| `CABOOSE_TAILNET` | `on` | `off` gives container computers no tailnet device of their own ([network](network.md)) |
+| `CABOOSE_TAILSCALE_AUTHKEY` | unset | A reusable, pre-authorized tagged auth key new computers join the tailnet with; unset, each computer's owner signs it in |
+| `CABOOSE_TAILSCALE_CLIENT_ID`, `_CLIENT_SECRET` | unset | A Tailscale OAuth client (Auth Keys and Devices: Core, write) that mints a single-use key per new computer and removes deleted ones; not with an auth key |
+| `CABOOSE_TAILSCALE_TAGS` | `tag:caboose` | Tags a keyed computer joins with, separated by commas |
+| `CABOOSE_TAILSCALE_IMAGE` | pinned | The companion's Tailscale image |
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
@@ -1017,6 +1037,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   request until its response completes. Control sockets marked `foreground=0` do not hold a
   lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
   `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
+- **Busy.** With no lease, a computer is still in use while a server another machine can
+  reach is running or another machine is connected to one ([network](network.md#not-idle-while-a-server-runs)).
+  It then neither freezes nor parks: the check runs when the idle timeout passes and every
+  minute after, and the computer parks one full idle timeout after it was last found busy. A
+  failed check counts as idle.
 - **Freeze.** On a microVM backend that supports resident pause, three seconds without a
   lease pauses the guest in memory. A new operation resumes it before guest access. The
   computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;
@@ -1239,7 +1264,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/computer` | Management status and settings. Never wakes or leases |
-| `PATCH` | `/v1/computer/settings` | Update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent` → management status |
+| `PATCH` | `/v1/computer/settings` | Update any of `name`, `memoryMb`, `vcpus`, `idleMs`, `defaultAgent`, `forwardLoopback` → management status |
 | `POST` | `/v1/computer/restart` | `{ "confirm": true }` (required) → management status after the computer and owner's display are ready again |
 
 Management status:
@@ -1247,20 +1272,24 @@ Management status:
 ```ts
 {
   state: "parked" | "waking" | "running" | "parking" | "restarting" | "error",
-  settings: { name: string, memoryMb: number, vcpus: number, idleMs: number, defaultAgent: string | null },
+  settings: { name: string, memoryMb: number, vcpus: number, idleMs: number, defaultAgent: string | null, forwardLoopback?: boolean },
   limits: { memoryMb: { min: 512, max: 65536 }, vcpus: { min: 1, max: 32 }, idleMs: { min: 60000, max: 86400000 } },
   activeResources: { memoryMb: number, vcpus: number } | null,
   restartRequired: boolean,
   clients: { display: number, control: number, terminal: number },
   tasks: { running: number, paused: number },
   capabilities: { restart: boolean, push: boolean },
-  lastError: string | null
+  lastError: string | null,
+  network: ComputerNetwork   // its own address and reachable servers; {} without one (network.md)
 }
 ```
 
 - `name` is 1–80 characters without control characters, trimmed on save. Numeric settings
   are integers within `limits`. `defaultAgent` is null or the id of an agent in the
   registry or installed in the computer; the first agent install sets it when it is null.
+  `forwardLoopback` is a boolean; unset means true ([network](network.md)).
+- `GET /v1/computer` reads the reachable servers again for `network.servers`, at most every
+  5 s, only while the computer runs.
 - Unknown fields or invalid values return 400 and change nothing. Settings are written to
   `caboose.json` before they take effect; the `CABOOSE_*` values are only the initial
   defaults.
@@ -3537,6 +3566,13 @@ it can enable Tailscale HTTPS and can continue to the console without pairing.
 - **Computers.** Each computer is fenced from every other (both computer subnets are always
   rejected; containers sit on separate bridge networks) and has its own disk and data
   directory.
+- **Tailnet devices.** A container computer's servers are reachable by whoever the tailnet's
+  policy lets reach its device, with each server's own authentication and nothing of
+  Caboose's in front ([network](network.md)). Caboose's own services (14600–14799) are never
+  forwarded. The computer cannot start connections into the tailnet, to its companion or
+  through it, and holds none of the device's keys. An auth key or OAuth client lives only in
+  the host's environment and reaches a companion on standard input; a minted key is
+  single-use and expires in five minutes.
 - **Display token.** A random per-wake token in `/run/caboose/display-token` (mode 0600,
   owned by `caboose`) authorizes the guest's display, file and terminal services. It reaches a
   client only inside an authenticated `/v1/session` response.
