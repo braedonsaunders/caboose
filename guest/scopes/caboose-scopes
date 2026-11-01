@@ -760,7 +760,10 @@ class Daemon:
         self.entries = Entries(self.home)
         self.scopes = {}
         self.next = 1
-        self.argv = {}       # (pid, start) -> {'argv', 'marks'}
+        # (pid, start, comm) -> {'argv', 'marks', 'flatpak', 'game'}. comm is in the key because
+        # a process seen between its fork and its exec still has its parent's command line and
+        # environment: once it execs, it is read again.
+        self.argv = {}
         self.samples = {}    # scope -> counters
         self.ticks = {}      # (pid, start) -> cpu ticks
         self.gpu = {}        # (pid, start) -> counters
@@ -917,7 +920,7 @@ class Daemon:
                 uid = core.parse_uid(status)
             except (ValueError, TypeError):
                 continue
-            key = (pid, start)
+            key = (pid, start, comm)
             keys[pid] = key
             if key not in self.argv:
                 unknown.append(pid)
@@ -1101,7 +1104,7 @@ class Daemon:
             status['ports'] = ports.get(key, [])
             entries.append(status)
         self.ticks = ticks_now
-        self.argv = {k: v for k, v in self.argv.items() if k in {(p, proc.start) for p, proc in procs.items()}}
+        self.argv = {k: v for k, v in self.argv.items() if k in {(p, proc.start, proc.comm) for p, proc in procs.items()}}
         self.gpu = {(e['pid'], e['start']): e for entries_ in gpu_now.values() for e in entries_}
         self.snapshot = {'version': core.VERSION, 'sampledAt': int(now * 1000), 'intervalMs': int(seconds * 1000),
                          'machine': self.machine(), 'apps': apps, 'services': entries}
