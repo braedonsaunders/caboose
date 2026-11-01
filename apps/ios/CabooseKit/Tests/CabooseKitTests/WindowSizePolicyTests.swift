@@ -33,6 +33,20 @@ struct WindowSizePolicyTests {
         #expect(WindowSizePolicy.fitting(.zero, minimum: fixed, maximum: nil, fullscreen: false) == nil)
     }
 
+    @Test func aWindowFillsAViewportItCanTakeTheShapeOf() {
+        let viewport = CGSize(width: 892, height: 818)
+        #expect(WindowSizePolicy.fills(viewport, minimum: nil, maximum: nil))
+        // Held larger by its minimum: laid out at the viewport's shape, grown, and shown scaled.
+        #expect(WindowSizePolicy.fills(viewport, minimum: CGSize(width: 1010, height: 600), maximum: nil))
+        // A maximum smaller than the viewport, or one that keeps it from the viewport's shape.
+        #expect(!WindowSizePolicy.fills(viewport, minimum: nil, maximum: CGSize(width: 400, height: 0)))
+        #expect(!WindowSizePolicy.fills(viewport, minimum: CGSize(width: 1010, height: 600),
+                                        maximum: CGSize(width: 1200, height: 700)))
+        let fixed = CGSize(width: 1010, height: 600)
+        #expect(!WindowSizePolicy.fills(viewport, minimum: fixed, maximum: fixed))
+        #expect(!WindowSizePolicy.fills(.zero, minimum: nil, maximum: nil))
+    }
+
     @Test func fittingIsIdempotentAtTheSharedSessionBoundary() {
         let minimum = CGSize(width: 862, height: 600)
         let target = WindowSizePolicy.fitting(CGRect(x: 0, y: 41, width: 500, height: 800),

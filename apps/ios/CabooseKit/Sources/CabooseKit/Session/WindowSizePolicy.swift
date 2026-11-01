@@ -12,6 +12,28 @@ public enum WindowSizePolicy {
                                fullscreen: Bool) -> CGRect? {
         guard let fallback = request(viewport, minimum: minimum, maximum: maximum,
                                      fullscreen: fullscreen) else { return nil }
+        let (smallest, largest) = factors(viewport.size, minimum: minimum, maximum: maximum)
+        guard smallest.isFinite, smallest <= largest else { return fallback }
+        let factor = min(largest, max(smallest, 1))
+        let size = CGSize(width: viewport.width * factor, height: viewport.height * factor)
+        guard size.width.isFinite, size.height.isFinite else { return fallback }
+        return request(CGRect(origin: viewport.origin, size: size), minimum: minimum,
+                       maximum: maximum, fullscreen: false)
+    }
+
+    /// Whether a window can fill `viewport` as `fitting` lays it out: at the viewport's own
+    /// size, or, held larger by its minimum size, at the viewport's shape grown to that
+    /// minimum and shown scaled down. A window whose maximum keeps it smaller than the
+    /// viewport, or from the viewport's shape, cannot.
+    public static func fills(_ viewport: CGSize, minimum: CGSize?, maximum: CGSize?) -> Bool {
+        guard viewport.width.isFinite, viewport.height.isFinite, viewport.width > 0, viewport.height > 0 else { return false }
+        let (smallest, largest) = factors(viewport, minimum: minimum, maximum: maximum)
+        return smallest.isFinite && max(1, smallest) <= largest
+    }
+
+    /// How far the viewport must grow (`smallest`, for the minimum) and may grow (`largest`,
+    /// for the maximum) at its own shape.
+    private static func factors(_ viewport: CGSize, minimum: CGSize?, maximum: CGSize?) -> (smallest: CGFloat, largest: CGFloat) {
         func lower(_ value: CGFloat?) -> CGFloat {
             value.flatMap { $0.isFinite && $0 > 0 ? max(1, $0.rounded(.up)) : nil } ?? 1
         }
@@ -21,14 +43,8 @@ public enum WindowSizePolicy {
         let minWidth = lower(minimum?.width), minHeight = lower(minimum?.height)
         let maxWidth = upper(maximum?.width, lower: minWidth)
         let maxHeight = upper(maximum?.height, lower: minHeight)
-        let smallest = max(minWidth / viewport.width, minHeight / viewport.height)
-        let largest = min(maxWidth / viewport.width, maxHeight / viewport.height)
-        guard smallest.isFinite, smallest <= largest else { return fallback }
-        let factor = min(largest, max(smallest, 1))
-        let size = CGSize(width: viewport.width * factor, height: viewport.height * factor)
-        guard size.width.isFinite, size.height.isFinite else { return fallback }
-        return request(CGRect(origin: viewport.origin, size: size), minimum: minimum,
-                       maximum: maximum, fullscreen: false)
+        return (max(minWidth / viewport.width, minHeight / viewport.height),
+                min(maxWidth / viewport.width, maxHeight / viewport.height))
     }
 
     /// A window that cannot grow to fill `area` (a fixed-size starter window, a capped
