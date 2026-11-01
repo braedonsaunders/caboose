@@ -22,6 +22,7 @@ final class DesktopModel {
         case minimize(Int)
         case zoom(Int)
         case launchpadButton
+        case panelButton
         case launcher(String)
         case launcherPage(Int)
         case content(Int, CGPoint)  // window id, point in window pixels
@@ -46,13 +47,66 @@ final class DesktopModel {
     var ui: CGFloat = 1
     /// Every window's title bar: its controls' places for drawing and for hit-testing.
     var titleBar: WindowTitleBar { WindowTitleBar(ui: ui, touch: directTouch) }
-    /// Laptop puts the dock below the hinge, outside the guest's display. Its windows keep
-    /// their title bars, and each shows in its snap, as a tile shows in its column.
+    /// Laptop puts an auto-hiding floating dock at the bottom of the upper screen, without
+    /// shrinking the guest's workArea. Its windows keep their title bars, and each shows in
+    /// its snap, as a tile shows in its column.
     var detachedChrome = false {
         didSet {
             guard detachedChrome != oldValue else { return }
             laptopFilled.removeAll()
             fill.reset()
+            laptopDockHovered = false
+            laptopDockPinned = false
+            panelPresented = false
+        }
+    }
+    /// In Laptop mode (`detachedChrome`), the floating dock at the bottom of the upper screen
+    /// stays hidden unless the pointer hovers near the bottom edge, a dock menu/popover is open,
+    /// or the user reveals it from the controller HUD.
+    private(set) var laptopDockHovered = false
+    var laptopDockPinned = false
+
+    var isDockVisible: Bool {
+        guard detachedChrome else { return true }
+        if launchpadOpen || menu.isOpen || panelPresented || laptopDockPinned || quickSwitch?.owner == .desktop {
+            return true
+        }
+        return laptopDockHovered
+    }
+
+    func toggleLaptopDock() {
+        if isDockVisible {
+            laptopDockPinned = false
+            launchpadOpen = false
+            panelPresented = false
+            closePointerMenu()
+            laptopDockHovered = false
+        } else {
+            laptopDockPinned = true
+        }
+    }
+
+    func updateLaptopDockHover() {
+        guard detachedChrome, size.height > 0 else {
+            laptopDockHovered = false
+            return
+        }
+        if let drag {
+            switch drag.hit {
+            case .titleBar, .resize:
+                laptopDockHovered = false
+                return
+            default:
+                break
+            }
+        }
+        let threshold: CGFloat = laptopDockHovered ? 88 * ui : 28 * ui
+        let hovering = cursor.y >= size.height - threshold
+        if hovering {
+            laptopDockHovered = true
+        } else if laptopDockHovered {
+            laptopDockHovered = false
+            laptopDockPinned = false
         }
     }
     /// The windows Laptop has filled its screen with since it opened: each once, so one the
@@ -194,12 +248,15 @@ final class DesktopModel {
     @ObservationIgnored var dockMenu: (@MainActor (String) -> [MenuItem])?
     @ObservationIgnored var desktopItemMenu: (@MainActor (String) -> [MenuItem])?
     @ObservationIgnored var desktopBackgroundMenu: (@MainActor () -> [MenuItem])?
+    @ObservationIgnored var panelMenu: (@MainActor () -> [MenuItem])?
     /// Launchpad: every app, in a grid over the desktop.
     var desktopItemFrames: [String: CGRect] = [:]
     var desktopMenuFrame: CGRect = .zero
     var openDesktopItem: ((String) -> Void)?
     var launchpadOpen = false
+    var panelPresented = false
     var launchpadButtonFrame: CGRect = .null
+    var panelButtonFrame: CGRect = .null
     var launcherFrames: [String: CGRect] = [:]
     var launcherPage = 0
     var launcherPageFrames: [Int: CGRect] = [:]
@@ -409,7 +466,9 @@ final class DesktopModel {
             if let item = quickSwitch?.item(at: point) { return .switchItem(item) }
             if quickSwitch?.staysAt(point) == true { return .switchStay }
         }
-        if detachedChrome || fullscreenWindow(in: windows) == nil {
+        let dockActive = detachedChrome ? isDockVisible : (fullscreenWindow(in: windows) == nil)
+        if dockActive {
+            if panelButtonFrame.contains(point) { return .panelButton }
             if launchpadButtonFrame.contains(point) { return .launchpadButton }
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
         }
@@ -450,6 +509,7 @@ final class DesktopModel {
     func move(by delta: CGPoint, session: (any DisplaySession)?) {
         let bounds = pointerArea ?? size
         cursor = CGPoint(x: min(max(0, cursor.x + delta.x), bounds.width), y: min(max(0, cursor.y + delta.y), bounds.height))
+        updateLaptopDockHover()
         guard let session else { return }
         if let drag {
             dragMoved(drag, session: session)
@@ -490,13 +550,25 @@ final class DesktopModel {
         menu.show(items, at: CGPoint(x: desktopMenuFrame.minX, y: desktopMenuFrame.maxY + 4))
     }
 
+    /// Laptop's far-right dock menu, drawn in the scene above the dock so the pointer
+    /// stays on top of it and can hover and click every row.
+    func showPanelMenu() {
+        guard let items = panelMenu?() else { return }
+        let anchor = panelButtonFrame.isNull
+            ? cursor
+            : CGPoint(x: panelButtonFrame.maxX, y: panelButtonFrame.minY - 6 * ui)
+        menu.show(items, at: anchor, above: true)
+    }
+
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
         // An open menu takes the click: a row chooses, anywhere else closes it, as on a Mac.
         if menu.isOpen {
             switch hit {
-            case .menuItem(let index): menu.choose(index)
+            case .menuItem(let index):
+                laptopDockPinned = false
+                menu.choose(index)
             case .menuStay: break
             default: closePointerMenu()
             }
@@ -504,6 +576,7 @@ final class DesktopModel {
         }
         switch hit {
         case .switchItem(let id):
+            laptopDockPinned = false
             quickSwitch?.choose(id)
             return
         case .switchStay:
@@ -527,9 +600,14 @@ final class DesktopModel {
             launcherPage = max(0, launcherPage + direction)
             return
         }
-        if launchpadOpen, hit != .launchpadButton {
+        if launchpadOpen, hit != .launchpadButton, hit != .panelButton {
             // Opening an app closes Launchpad once the app is in front (`AppModel.openOnDesktop`).
-            if case .launcher(let id) = hit { open(id) } else { launchpadOpen = false }
+            if case .launcher(let id) = hit {
+                laptopDockPinned = false
+                open(id)
+            } else {
+                launchpadOpen = false
+            }
             return
         }
         switch hit {
@@ -537,10 +615,24 @@ final class DesktopModel {
         case .desktopItem(let id):
             if button == 3 { _ = openPointerMenu(desktopItemMenu?(id)) } else { openDesktopItem?(id) }
         case .launchpadButton: launchpadOpen.toggle()
-        case .launcher(let id): open(id)
+        case .panelButton:
+            launchpadOpen = false
+            if detachedChrome {
+                showPanelMenu()
+            } else {
+                panelPresented.toggle()
+            }
+        case .launcher(let id):
+            laptopDockPinned = false
+            open(id)
         case .launcherPage: break
         case .dock(let id):
-            if button == 3 { _ = openPointerMenu(dockMenu?(id)) } else { open(id) }
+            if button == 3 {
+                _ = openPointerMenu(dockMenu?(id))
+            } else {
+                laptopDockPinned = false
+                open(id)
+            }
         case .close(let id): if let window = session.windows[id] { session.closeDiagnosed(window, context: .init(cursor: cursor)) }
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
@@ -548,13 +640,14 @@ final class DesktopModel {
         case .switchItem, .switchStay, .menuItem, .menuStay:
             break
         case .content(let id, let local):
+            laptopDockPinned = false
             guard let window = session.windows[id] else { return }
             if !window.isAuxiliary { raise(id) }
             focus(id, session)
             session.pointerMove(in: window, to: local)
             pointerClicks.click(in: window, session: session, at: local, button: button)
         case .none:
-            break
+            laptopDockPinned = false
         }
     }
 

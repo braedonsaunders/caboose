@@ -62,6 +62,9 @@ public struct TrackpadGestures {
         public var pinchDominance: CGFloat = 1.3
         public var workspaceSlop: CGFloat = 48
         public var workspaceDominance: CGFloat = 1.25
+        /// When true, three-finger swipes emit `.workspace(Direction)` instead of starting a
+        /// three-finger drag, so Laptop's lower panel can use 3- or 4-finger swipes interchangeably.
+        public var threeFingerSwipe = false
         public init() {}
     }
 
@@ -130,13 +133,14 @@ public struct TrackpadGestures {
         let origin = phaseOrigin ?? centroid
         let displacement = CGPoint(x: centroid.x - origin.x, y: centroid.y - origin.y)
 
-        if touches == 4 {
+        if touches == 4 || (touches == 3 && tuning.threeFingerSwipe) {
             guard !workspaceSent else { return [] }
+            let slop = touches == 3 ? min(tuning.workspaceSlop, 36) : tuning.workspaceSlop
             let x = abs(displacement.x), y = abs(displacement.y)
             let direction: Direction
-            if x >= tuning.workspaceSlop, x >= y * tuning.workspaceDominance {
+            if x >= slop, x >= y * tuning.workspaceDominance {
                 direction = displacement.x < 0 ? .left : .right
-            } else if y >= tuning.workspaceSlop, y >= x * tuning.workspaceDominance {
+            } else if y >= slop, y >= x * tuning.workspaceDominance {
                 direction = displacement.y < 0 ? .up : .down
             } else { return [] }
             workspaceSent = true
@@ -146,7 +150,7 @@ public struct TrackpadGestures {
             return twoFingerMovement(delta: delta, displacement: displacement, spread: valid(spread))
         }
         var actions: [Action] = []
-        if !dragging, (touches == 3 || dragArmed), phaseTravel >= tuning.dragSlop {
+        if !dragging, ((touches == 3 && !tuning.threeFingerSwipe) || dragArmed), phaseTravel >= tuning.dragSlop {
             dragArmed = false
             dragging = true
             consumed = true

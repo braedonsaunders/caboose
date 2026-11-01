@@ -51,20 +51,26 @@ struct OnScreenGamepadTests {
 
     @Test func everyTypeFitsEveryPadWithoutOverlaps() {
         for style in Pad.Style.allCases {
-            for size in Self.sizes {
-                for scale in [0.8, 1.0, 1.2] {
-                    let pad = layout(style, size) { $0.scale = scale }
-                    let bounds = CGRect(origin: .zero, size: size)
-                    let context = "\(style) \(size) \(scale)"
-                    #expect(!pad.items.isEmpty, "\(context)")
-                    #expect(bounds.contains(pad.hud), "\(context) hud \(pad.hud)")
-                    for item in pad.items {
-                        #expect(bounds.insetBy(dx: -0.5, dy: -0.5).contains(item.frame), "\(context) \(item.control) \(item.frame)")
-                        #expect(!item.frame.intersects(pad.hud), "\(context) \(item.control) under the strip")
-                    }
-                    for (index, item) in pad.items.enumerated() {
-                        for other in pad.items[(index + 1)...] {
-                            #expect(!overlap(item, other), "\(context) \(item.control) \(other.control)")
+            let modernLayouts: [Pad.ModernLayout] = style == .modern ? Pad.ModernLayout.allCases : [.bottomTriggers]
+            for modernLayout in modernLayouts {
+                for size in Self.sizes {
+                    for scale in [0.8, 1.0, 1.2] {
+                        let pad = layout(style, size) {
+                            $0.scale = scale
+                            $0.modernLayout = modernLayout
+                        }
+                        let bounds = CGRect(origin: .zero, size: size)
+                        let context = "\(style) \(modernLayout) \(size) \(scale)"
+                        #expect(!pad.items.isEmpty, "\(context)")
+                        #expect(bounds.contains(pad.hud), "\(context) hud \(pad.hud)")
+                        for item in pad.items {
+                            #expect(bounds.insetBy(dx: -0.5, dy: -0.5).contains(item.frame), "\(context) \(item.control) \(item.frame)")
+                            #expect(!item.frame.intersects(pad.hud), "\(context) \(item.control) under the strip")
+                        }
+                        for (index, item) in pad.items.enumerated() {
+                            for other in pad.items[(index + 1)...] {
+                                #expect(!overlap(item, other), "\(context) \(item.control) \(other.control)")
+                            }
                         }
                     }
                 }
@@ -94,8 +100,8 @@ struct OnScreenGamepadTests {
     }
 
     @Test func aPortraitPadStacksAndAWidePadSpreads() throws {
-        let portrait = layout(.modern, CGSize(width: 390, height: 760))
-        let wide = layout(.modern, phone)
+        let portrait = layout(.modern, CGSize(width: 390, height: 760)) { $0.modernLayout = .topTriggers }
+        let wide = layout(.modern, phone) { $0.modernLayout = .topTriggers }
         // Portrait puts the strip above the shoulders; a wide pad fits it between them.
         let portraitShoulder = try #require(portrait.item(.button(.leftShoulder))?.frame)
         let wideShoulder = try #require(wide.item(.button(.leftShoulder))?.frame)
@@ -121,13 +127,16 @@ struct OnScreenGamepadTests {
 
     @Test func controlsAreThumbSizedOnAPhone() throws {
         for style in Pad.Style.allCases {
-            for size in [phone, CGSize(width: 620, height: 290), CGSize(width: 390, height: 760)] {
-                let pad = layout(style, size)
-                for item in pad.items where item.cluster == .face {
-                    #expect(item.frame.width >= 38, "\(style) \(size) \(item.control) \(item.frame.width)")
+            let modernLayouts: [Pad.ModernLayout] = style == .modern ? Pad.ModernLayout.allCases : [.bottomTriggers]
+            for modernLayout in modernLayouts {
+                for size in [phone, CGSize(width: 620, height: 290), CGSize(width: 390, height: 760)] {
+                    let pad = layout(style, size) { $0.modernLayout = modernLayout }
+                    for item in pad.items where item.cluster == .face {
+                        #expect(item.frame.width >= 38, "\(style) \(modernLayout) \(size) \(item.control) \(item.frame.width)")
+                    }
+                    let dpad = try #require(pad.item(.dpad)?.frame)
+                    #expect(dpad.width >= 84, "\(style) \(modernLayout) \(size) d-pad \(dpad.width)")
                 }
-                let dpad = try #require(pad.item(.dpad)?.frame)
-                #expect(dpad.width >= 84, "\(style) \(size) d-pad \(dpad.width)")
             }
         }
     }
@@ -186,7 +195,10 @@ struct OnScreenGamepadTests {
     }
 
     @Test func shouldersChordInTheirSeamAndTriggersEaseOff() throws {
-        let pad = layout(.modern)
+        let pad = layout(.modern) {
+            $0.modernLayout = .topTriggers
+            $0.triggerAim = false
+        }
         let lt = try #require(pad.item(.button(.leftTrigger))?.frame), lb = try #require(pad.item(.button(.leftShoulder))?.frame)
         var tracker = Pad.Tracker()
         tracker.began(1, at: CGPoint(x: (lt.maxX + lb.minX) / 2, y: lt.midY), time: 0, in: pad, sticks: .floating)
@@ -205,13 +217,38 @@ struct OnScreenGamepadTests {
         #expect(tracker.state(in: pad)[.leftTrigger] == 1)
     }
 
+    @Test func stackedShouldersChordInVerticalSeamAndAimWhileHoldingTrigger() throws {
+        let pad = layout(.modern) {
+            $0.modernLayout = .bottomTriggers
+            $0.triggerAim = true
+        }
+        let rb = try #require(pad.item(.button(.rightShoulder))?.frame)
+        let rt = try #require(pad.item(.button(.rightTrigger))?.frame)
+        #expect(rt.midY > phone.height * 0.65)
+        var tracker = Pad.Tracker()
+        // Touching the vertical seam between RB and RT chords both.
+        tracker.began(1, at: CGPoint(x: rt.midX, y: (rb.maxY + rt.minY) / 2), time: 0, in: pad, sticks: .floating)
+        var state = tracker.state(in: pad)
+        #expect(state[.rightShoulder] == 1 && state[.rightTrigger] == 1)
+        tracker.ended(1, at: 0.1, in: pad)
+
+        // Pressing RT and dragging aims the right stick while keeping RT pulled at 1.0.
+        let origin = CGPoint(x: rt.midX, y: rt.midY)
+        tracker.began(2, at: origin, time: 0.2, in: pad, sticks: .floating)
+        #expect(tracker.state(in: pad)[.rightTrigger] == 1 && tracker.state(in: pad)[.rightX] == 0)
+        tracker.moved(2, to: CGPoint(x: origin.x + 80, y: origin.y - 40), in: pad, sticks: .floating)
+        state = tracker.state(in: pad)
+        #expect(state[.rightTrigger] == 1)
+        #expect(state[.rightX] > 0.5 && state[.rightY] < -0.2)
+    }
+
     @Test func aFloatingStickCentresUnderTheThumbAndFollowsIt() throws {
         let pad = layout(.modern)
         let zone = try #require(pad.zones[.leftStick])
         let stick = try #require(pad.item(.leftStick)?.frame)
         let radius = stick.width / 2
         // Somewhere on the left that is not a control.
-        let landing = CGPoint(x: zone.minX + 4, y: zone.maxY - 4)
+        let landing = CGPoint(x: zone.maxX - 16, y: zone.minY + 6)
         #expect(Pad.cluster(at: landing, in: pad, sticks: .floating) == .leftStick)
         #expect(Pad.cluster(at: landing, in: pad, sticks: .fixed) == nil)
         var tracker = Pad.Tracker()
@@ -404,6 +441,8 @@ struct OnScreenGamepadTests {
     @Test func storedSettingsSurviveAndBadOnesFallBack() {
         var settings = Pad.Settings()
         settings.choose(.retro, for: "fceux")
+        settings.chooseModernLayout(.shooter, for: "halo")
+        settings.triggerAim = false
         settings.labels = .playstation
         settings.sticks = .fixed
         settings.games = .keys
@@ -431,6 +470,10 @@ struct OnScreenGamepadTests {
         #expect(settings.style(for: "dosbox") == .arcade)
         settings.choose(.classic, for: nil)
         #expect(settings.style(for: "dosbox") == .classic && settings.style(for: "fceux") == .retro)
+        settings.chooseModernLayout(.shooter, for: "halo")
+        #expect(settings.modernLayout(for: "halo") == .shooter && settings.modernLayout(for: "other") == .shooter)
+        settings.chooseModernLayout(.thumbArc, for: nil)
+        #expect(settings.modernLayout(for: "halo") == .shooter && settings.modernLayout(for: "other") == .thumbArc)
     }
 
     @Test func buttonsAreLabelledLikeTheControllersTheyRecall() {

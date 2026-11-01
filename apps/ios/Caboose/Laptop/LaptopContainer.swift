@@ -21,7 +21,6 @@ struct LaptopContainer<Content: View>: View {
     /// The system keyboard, which only the custom keyboard's globe key opens, for emoji,
     /// dictation and other languages. It covers the controls while it shows.
     @State private var systemKeyboard = false
-    @State private var input: LaptopLayout.Input = .trackpad
     let isCard: Bool
     let content: (Bool) -> Content
     var activeChanged: (Bool) -> Void
@@ -31,6 +30,7 @@ struct LaptopContainer<Content: View>: View {
     }
 
     var body: some View {
+        @Bindable var model = model
         GeometryReader { proxy in
             let active = LaptopLayout.isActive(mode: mode,
                                                size: geometry.hostSize ?? proxy.size, division: geometry.physicalDivision,
@@ -47,15 +47,9 @@ struct LaptopContainer<Content: View>: View {
                         .environment(\.laptopInputOwned, active)
                 }
                 if active {
-                    VStack(spacing: 0) {
-                        if !isCard && !model.externalDisplayActive {
-                            Dock(desktop: model.desktop, compact: true, coordinateSpace: "laptop", interactive: true)
-                                .frame(maxWidth: .infinity).frame(height: 44)
-                        }
                     InputControls(placement: .laptop(compact: frames.controls.height < 280), isCard: isCard,
                                   enabled: scenePhase == .active && (isCard ? model.presentedWindowID != nil : model.presentedWindowID == nil && model.selectedTab == .desktop),
-                                  input: $input, systemKeyboard: $systemKeyboard)
-                    }
+                                  input: $model.laptopInput, systemKeyboard: $systemKeyboard)
                         .frame(width: frames.controls.width, height: max(1, frames.controls.height))
                         .clipped()
                         .offset(y: frames.controls.minY)
@@ -64,11 +58,11 @@ struct LaptopContainer<Content: View>: View {
             .coordinateSpace(name: "laptop")
             .overlay(alignment: .topLeading) {
                 if active && !isCard && !model.externalDisplayActive {
-                    // Below the hinge too: the taskbar's menus open from there.
                     ZStack(alignment: .topLeading) {
-                        // Inside where the pointer reaches: a taskbar menu opens upward.
+                        // Inside where the pointer reaches on the upper screen: a dock menu opens upward.
                         SceneMenuView(menu: model.desktop.menu, space: "laptop",
-                                      bounds: CGRect(origin: .zero, size: model.desktop.pointerArea ?? proxy.size))
+                                      bounds: CGRect(origin: .zero, size: model.desktop.pointerArea ?? upperScreen.size),
+                                      ui: max(0.84, model.desktop.ui))
                         if model.desktop.showsCursor {
                             Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
                                 .position(model.desktop.cursor).allowsHitTesting(false)
@@ -135,7 +129,7 @@ struct LaptopContainer<Content: View>: View {
         // Safe-area expansion belongs to the measured parent, never a clipped child.
         // Both native and custom side rails reserve width, not height. Only Desktop
         // uses the custom rail; app cards retain their own toolbar safe areas.
-        // Laptop owns the whole display and draws navigation below the hinge.
+        // Laptop owns the whole display and draws controls below the hinge.
         .ignoresSafeArea(.container, edges: layoutActive ? .all : (barEdge != nil || (!isCard && tabPlacement == .sidebar) ? [.top, .bottom] : []))
         // Neither Laptop nor Phone/Tablet shrinks the upper desktop when the keyboard appears;
         // the desktop stage slides above the keyboard instead of resizing remote windows.
@@ -143,7 +137,7 @@ struct LaptopContainer<Content: View>: View {
     }
     private func updatePointerArea(active: Bool, frames: LaptopLayout.Frames) {
         guard active, !isCard, !model.externalDisplayActive else { return }
-        model.desktop.pointerArea = CGSize(width: frames.controls.width, height: frames.controls.minY + min(44, frames.controls.height))
+        model.desktop.pointerArea = frames.screen.size
     }
 
 }
@@ -154,7 +148,11 @@ struct LaptopExternalOverview: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label("Desktop on your display", systemImage: "display").font(.headline)
+            HStack {
+                Label("Desktop on your display", systemImage: "display").font(.headline)
+                Spacer()
+                DesktopPanelButton(desktop: model.desktop)
+            }
             Text("Choose a window, then use the trackpad, keyboard or controller below.")
                 .font(.subheadline).foregroundStyle(.secondary)
             ScrollView(.horizontal) {

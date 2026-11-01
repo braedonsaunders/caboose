@@ -136,13 +136,22 @@ struct DesktopRailControls: View {
     var compact = false
 
     var body: some View {
+        @Bindable var model = model
         let layout = compact ? AnyLayout(HStackLayout(spacing: 8)) : AnyLayout(VStackLayout(spacing: 0))
         layout {
+            if model.laptopDesktopActive {
+                Menu {
+                    InputChoices(input: $model.laptopInput, gestureHelp: $model.laptopGestureHelp)
+                } label: {
+                    Image(systemName: model.laptopInput.symbol).frame(width: 56, height: 44)
+                }
+                .accessibilityLabel("Input")
+                .accessibilityValue(model.laptopInput.title)
+            }
             if model.phase == .ready {
                 Menu {
                     Button("AirPlay", systemImage: "airplay.video") { showAirPlay = true }
-                    if !model.externalDisplayActive, UIDevice.current.userInterfaceIdiom == .pad {
-                        @Bindable var model = model
+                    if !model.externalDisplayActive, !model.laptopDesktopActive, UIDevice.current.userInterfaceIdiom == .pad {
                         Picker("Arrangement", selection: $model.deviceDesktopStyle) {
                             Label("Tiled", systemImage: "rectangle.split.3x1").tag(AppModel.DeviceDesktopStyle.tiled)
                             Label("Free", systemImage: "macwindow.on.rectangle").tag(AppModel.DeviceDesktopStyle.free)
@@ -154,8 +163,10 @@ struct DesktopRailControls: View {
                     }
                 } label: { Image(systemName: "ellipsis").frame(width: 56, height: 44) }
                 .accessibilityLabel("Desktop controls")
-                Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
-                    .frame(width: 56, height: 44)
+                if !model.laptopDesktopActive {
+                    Button("Keyboard", systemImage: "keyboard") { model.keyboardVisible.toggle() }
+                        .frame(width: 56, height: 44)
+                }
             }
             Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                 .frame(width: 56, height: 44)
@@ -169,15 +180,36 @@ struct DesktopRailControls: View {
     }
 }
 
-/// A single bottom control owns the portrait presentation. The popover is attached to
-/// the button itself; its scrollable content is bounded, including with Dynamic Type.
+/// A single bottom control on the far right of the dock owns the portrait and Laptop
+/// controls presentation. In Laptop mode (`detachedChrome`), it opens `SceneMenu` inside the
+/// upper screen so the mouse pointer stays visible above it and can hover and click every row.
 struct DesktopPanelButton: View {
     @Environment(AppModel.self) private var model
+    var desktop: DesktopModel? = nil
     @State private var presented = false
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { desktop?.panelPresented ?? presented },
+            set: { value in
+                presented = value
+                desktop?.panelPresented = value
+            }
+        )
+    }
 
     var body: some View {
         Button {
-            presented.toggle()
+            if let desktop, desktop.detachedChrome {
+                desktop.launchpadOpen = false
+                if desktop.menu.isOpen {
+                    desktop.closePointerMenu()
+                } else {
+                    desktop.showPanelMenu()
+                }
+            } else {
+                isPresented.wrappedValue.toggle()
+            }
         } label: {
             Image(systemName: "slider.horizontal.3")
                 .font(.system(size: 17, weight: .semibold))
@@ -187,7 +219,7 @@ struct DesktopPanelButton: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Desktop controls and navigation")
         .accessibilityHint("Opens desktop controls and app navigation")
-        .popover(isPresented: $presented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+        .popover(isPresented: isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             ScrollView { panel }
                 .scrollBounceBehavior(.basedOnSize)
                 .frame(width: 72, height: 512)
@@ -195,8 +227,8 @@ struct DesktopPanelButton: View {
                 // than adapting it into a full-screen presentation.
                 .presentationCompactAdaptation(.popover)
         }
-        .onChange(of: model.selectedTab) { _, _ in presented = false }
-        .onDisappear { presented = false }
+        .onChange(of: model.selectedTab) { _, _ in isPresented.wrappedValue = false }
+        .onDisappear { isPresented.wrappedValue = false }
     }
 
     private var panel: some View {
@@ -204,14 +236,14 @@ struct DesktopPanelButton: View {
             DesktopRailControls()
             Divider().frame(width: 32).padding(.vertical, 4)
             ShellTabButtons(axis: .vertical, iconsOnly: true)
-            Button("Close desktop controls", systemImage: "chevron.down") { presented = false }
+            Button("Close desktop controls", systemImage: "chevron.down") { isPresented.wrappedValue = false }
                 .labelStyle(.iconOnly)
                 .frame(width: 56, height: 44)
                 .buttonStyle(.plain)
         }
         .padding(.vertical, 8)
         .frame(width: 72)
-        .accessibilityAction(.escape) { presented = false }
+        .accessibilityAction(.escape) { isPresented.wrappedValue = false }
     }
 }
 
@@ -240,15 +272,28 @@ private struct DesktopStage: View {
                     SwitchyardView(yard: model.yard)
                 } else {
                     ZStack {
-                        DesktopView(desktop: model.desktop, fillsScreen: false, showsDock: !portraitDesktop)
+                        DesktopView(desktop: model.desktop, fillsScreen: false, showsDock: !portraitDesktop && !model.desktop.detachedChrome)
                         DesktopTouchArea(desktop: model.desktop, keyboardVisible: model.keyboardVisible)
                             .allowsHitTesting(!model.desktop.launchpadOpen)
                         DesktopKeyCommands(desktop: model.desktop)
-                        if portraitDesktop, !model.desktop.detachedChrome,
-                           let session = model.session, model.desktop.fullscreenWindow(in: session.windows) == nil {
+                        if let session = model.session,
+                           model.desktop.detachedChrome || (portraitDesktop && model.desktop.fullscreenWindow(in: session.windows) == nil) {
+                            let dockVisible = !model.desktop.detachedChrome || model.desktop.isDockVisible
                             Dock(desktop: model.desktop, interactive: true)
+                                .opacity(dockVisible ? 1 : 0)
+                                .scaleEffect(dockVisible ? 1 : 0.96, anchor: .bottom)
+                                .allowsHitTesting(dockVisible)
+                                .animation(.snappy(duration: 0.18), value: dockVisible)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                .padding(.bottom, model.desktop.dockBottomInset)
+                                .padding(.bottom, model.desktop.detachedChrome ? 8 * model.desktop.ui : model.desktop.dockBottomInset)
+                        }
+                        if model.desktop.detachedChrome {
+                            SceneMenuView(menu: model.desktop.menu, space: "desktop", bounds: CGRect(origin: .zero, size: proxy.size), ui: model.desktop.ui)
+                            if model.desktop.showsCursor {
+                                Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
+                                    .position(model.desktop.cursor)
+                                    .allowsHitTesting(false)
+                            }
                         }
                     }
                     .coordinateSpace(name: "desktop")

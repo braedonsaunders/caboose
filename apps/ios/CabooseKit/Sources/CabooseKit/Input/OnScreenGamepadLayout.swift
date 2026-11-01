@@ -22,6 +22,8 @@ extension OnScreenGamepad {
     /// take, and where a floating stick may start.
     public struct Layout: Equatable, Sendable {
         public var style: Style
+        public var modernLayout: ModernLayout = .bottomTriggers
+        public var triggerAim = false
         public var size: CGSize
         public var items: [Item]
         /// The pad's own strip: the type menu, the destination caption and Customize.
@@ -45,11 +47,17 @@ extension OnScreenGamepad {
     /// gives larger controls wins. Controls hug the pad's sides, where thumbs are, and its
     /// bottom; extra width opens the middle. `settings.scale` grows or shrinks each group
     /// about its own centre.
-    public static func layout(in size: CGSize, style: Style, settings: Settings) -> Layout {
-        let empty = Layout(style: style, size: size, items: [], hud: .zero, zones: [:])
+    public static func layout(in size: CGSize, style: Style, settings: Settings, app: String? = nil) -> Layout {
+        let modernLayout = settings.modernLayout(for: app)
+        let triggerAim = style == .modern && settings.triggerAim
+        let empty = Layout(style: style, modernLayout: modernLayout, triggerAim: triggerAim,
+                           size: size, items: [], hud: .zero, zones: [:])
         guard size.width >= 80, size.height >= 80, size.width.isFinite, size.height.isFinite else { return empty }
         let scale = CGFloat(min(Settings.scaleRange.upperBound, max(Settings.scaleRange.lowerBound, settings.scale)))
-        let blueprints = [Blueprint.wide(style), Blueprint.tall(style)].compactMap { $0 }
+        let blueprints = [
+            Blueprint.wide(style, modernLayout: modernLayout),
+            Blueprint.tall(style, modernLayout: modernLayout),
+        ].compactMap { $0 }
         var best: (blueprint: Blueprint, unit: CGFloat, hudAbove: Bool)?
         for blueprint in blueprints {
             for hudAbove in blueprint.hudInRow ? [false, true] : [true] {
@@ -83,12 +91,16 @@ extension OnScreenGamepad {
 
         var zones: [Control: CGRect] = [:]
         if style.hasSticks {
-            let shoulders = items.filter { $0.cluster == .leftShoulders || $0.cluster == .rightShoulders }.map(\.frame.maxY).max() ?? top
-            let zoneTop = max(hud.maxY, shoulders) + 4
+            let topShoulders = items.filter {
+                ($0.cluster == .leftShoulders || $0.cluster == .rightShoulders)
+                    && $0.frame.maxY <= top + Blueprint.rowHeight * unit * 2.2
+            }.map(\.frame.maxY).max() ?? top
+            let zoneTop = max(hud.maxY, topShoulders) + 4
             zones[.leftStick] = CGRect(x: 0, y: zoneTop, width: size.width / 2, height: max(0, size.height - zoneTop))
             zones[.rightStick] = CGRect(x: size.width / 2, y: zoneTop, width: size.width / 2, height: max(0, size.height - zoneTop))
         }
-        return Layout(style: style, size: size, items: items, hud: hud, zones: zones)
+        return Layout(style: style, modernLayout: modernLayout, triggerAim: triggerAim,
+                      size: size, items: items, hud: hud, zones: zones)
     }
 
     /// The width free between the top row's left and right groups at `unit`.
@@ -168,17 +180,64 @@ extension OnScreenGamepad {
         static let rowY: CGFloat = 2.6
         static let rowHeight: CGFloat = 3.2
 
-        static func wide(_ style: Style) -> Blueprint {
+        static func wide(_ style: Style, modernLayout: ModernLayout = .bottomTriggers) -> Blueprint {
             switch style {
             case .modern:
-                return Blueprint(width: 48, height: 30, hudInRow: true, slots: shoulders(trigger: (4.4, 6.4), bumper: (13.2, 7.6)) + [
-                    stick(.leftStick, .leading, 8.6, 12, 11.2),
-                    circle(.dpad, .dpad, .leading, 17.4, 24.2, 9.2),
-                    stick(.rightStick, .trailing, 17.4, 24.2, 9.2),
-                    circle(.button(.home), .button(.home), .center, 0, 8.4, 3.6),
-                    pill(.select, .center, -5.2, 12.6, 4.4, 2.6),
-                    pill(.start, .center, 5.2, 12.6, 4.4, 2.6),
-                ] + diamond(.trailing, 8.6, 11.8, size: 11.4, button: 4.2))
+                switch modernLayout {
+                case .bottomTriggers:
+                    // Triggers and bumpers at the bottom corners under the thumbs; sticks and
+                    // face buttons above and beside them so thumbs never stretch to the top.
+                    return Blueprint(width: 48, height: 30, hudInRow: true, slots: [
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 5.2, 20.8, 6.0, 3.0),
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 5.2, 25.8, 6.4, 3.4),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 5.2, 20.8, 6.0, 3.0),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 5.2, 25.8, 6.4, 3.4),
+                        stick(.leftStick, .leading, 7.4, 10.6, 10.4),
+                        circle(.dpad, .dpad, .leading, 16.8, 23.4, 9.2),
+                        stick(.rightStick, .trailing, 16.8, 23.4, 9.2),
+                        circle(.button(.home), .button(.home), .center, 0, 7.6, 3.4),
+                        pill(.select, .center, -5.2, 7.6, 4.2, 2.4),
+                        pill(.start, .center, 5.2, 7.6, 4.2, 2.4),
+                    ] + diamond(.trailing, 7.8, 10.4, size: 11.2, button: 4.2))
+                case .thumbArc:
+                    // Triggers and bumpers curved along the inner thumb arc beside the sticks and diamond.
+                    return Blueprint(width: 48, height: 30, hudInRow: true, slots: [
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 18.0, 14.4, 5.8, 3.2),
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 18.8, 19.6, 5.4, 3.0),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 18.4, 14.4, 5.8, 3.2),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 19.0, 19.6, 5.4, 3.0),
+                        stick(.leftStick, .leading, 7.2, 12.0, 10.6),
+                        circle(.dpad, .dpad, .leading, 9.2, 24.5, 9.2),
+                        stick(.rightStick, .trailing, 9.2, 24.5, 9.2),
+                        circle(.button(.home), .button(.home), .center, 0, 7.4, 3.4),
+                        pill(.select, .center, -5.2, 7.4, 4.2, 2.4),
+                        pill(.start, .center, 5.2, 7.4, 4.2, 2.4),
+                    ] + diamond(.trailing, 7.8, 11.8, size: 11.2, button: 4.2))
+                case .shooter:
+                    // Symmetric upper sticks for primary movement + aiming, bottom-corner fire
+                    // triggers right under the thumbs, and lower-inner D-pad and face diamond.
+                    return Blueprint(width: 48, height: 30, hudInRow: true, slots: [
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 5.2, 20.8, 6.0, 3.0),
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 5.2, 25.8, 6.4, 3.4),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 5.2, 20.8, 6.0, 3.0),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 5.2, 25.8, 6.4, 3.4),
+                        stick(.leftStick, .leading, 7.4, 10.6, 10.4),
+                        stick(.rightStick, .trailing, 7.4, 10.6, 10.4),
+                        circle(.dpad, .dpad, .leading, 16.8, 23.4, 9.2),
+                        circle(.button(.home), .button(.home), .center, 0, 7.6, 3.4),
+                        pill(.select, .center, -5.2, 7.6, 4.2, 2.4),
+                        pill(.start, .center, 5.2, 7.6, 4.2, 2.4),
+                    ] + diamond(.trailing, 17.0, 23.2, size: 10.8, button: 4.2))
+                case .topTriggers:
+                    return Blueprint(width: 48, height: 30, hudInRow: true, slots: shoulders(trigger: (4.4, 6.4), bumper: (13.2, 7.6)) + [
+                        stick(.leftStick, .leading, 8.6, 12, 11.2),
+                        circle(.dpad, .dpad, .leading, 17.4, 24.2, 9.2),
+                        stick(.rightStick, .trailing, 17.4, 24.2, 9.2),
+                        circle(.button(.home), .button(.home), .center, 0, 8.4, 3.6),
+                        pill(.select, .center, -5.2, 12.6, 4.4, 2.6),
+                        pill(.start, .center, 5.2, 12.6, 4.4, 2.6),
+                    ] + diamond(.trailing, 8.6, 11.8, size: 11.4, button: 4.2))
+                }
             case .classic:
                 return Blueprint(width: 44, height: 30, hudInRow: true, slots: [
                     shoulder(.leftShoulder, .leftShoulders, .leading, 8.2, 12.4),
@@ -213,17 +272,59 @@ extension OnScreenGamepad {
             }
         }
 
-        static func tall(_ style: Style) -> Blueprint? {
+        static func tall(_ style: Style, modernLayout: ModernLayout = .bottomTriggers) -> Blueprint? {
             switch style {
             case .modern:
-                return Blueprint(width: 30, height: 36, hudInRow: false, slots: shoulders(trigger: (3.4, 5.2), bumper: (9.9, 6)) + [
-                    pill(.select, .center, -4.6, 7.4, 4.2, 2.6),
-                    circle(.button(.home), .button(.home), .center, 0, 7.4, 3.2),
-                    pill(.start, .center, 4.6, 7.4, 4.2, 2.6),
-                    stick(.leftStick, .leading, 8, 16, 11),
-                    circle(.dpad, .dpad, .leading, 8.6, 29.4, 10),
-                    stick(.rightStick, .trailing, 8.6, 29.4, 10),
-                ] + diamond(.trailing, 8, 16, size: 11, button: 4))
+                switch modernLayout {
+                case .bottomTriggers:
+                    return Blueprint(width: 30, height: 36, hudInRow: false, slots: [
+                        pill(.select, .center, -4.6, 3.2, 4.2, 2.4),
+                        circle(.button(.home), .button(.home), .center, 0, 3.2, 3.2),
+                        pill(.start, .center, 4.6, 3.2, 4.2, 2.4),
+                        stick(.leftStick, .leading, 7.8, 10.8, 10.4),
+                        circle(.dpad, .dpad, .leading, 8.2, 23.8, 9.6),
+                        stick(.rightStick, .trailing, 8.2, 23.8, 9.6),
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 3.4, 33.2, 5.2, 2.8),
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 9.8, 33.2, 5.8, 2.8),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 9.8, 33.2, 5.8, 2.8),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 3.4, 33.2, 5.2, 2.8),
+                    ] + diamond(.trailing, 7.8, 10.8, size: 10.4, button: 3.8))
+                case .thumbArc:
+                    return Blueprint(width: 30, height: 36, hudInRow: false, slots: [
+                        pill(.select, .center, -4.6, 3.2, 4.2, 2.4),
+                        circle(.button(.home), .button(.home), .center, 0, 3.2, 3.2),
+                        pill(.start, .center, 4.6, 3.2, 4.2, 2.4),
+                        stick(.leftStick, .leading, 7.8, 11.4, 10.6),
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 3.4, 20.6, 5.2, 3.0),
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 9.8, 20.6, 5.8, 3.0),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 9.8, 20.6, 5.8, 3.0),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 3.4, 20.6, 5.2, 3.0),
+                        circle(.dpad, .dpad, .leading, 8.2, 29.6, 9.8),
+                        stick(.rightStick, .trailing, 8.2, 29.6, 9.8),
+                    ] + diamond(.trailing, 7.8, 11.4, size: 10.8, button: 4.0))
+                case .shooter:
+                    return Blueprint(width: 30, height: 36, hudInRow: false, slots: [
+                        pill(.select, .center, -4.6, 3.2, 4.2, 2.4),
+                        circle(.button(.home), .button(.home), .center, 0, 3.2, 3.2),
+                        pill(.start, .center, 4.6, 3.2, 4.2, 2.4),
+                        stick(.leftStick, .leading, 7.8, 10.8, 10.4),
+                        stick(.rightStick, .trailing, 7.8, 10.8, 10.4),
+                        circle(.dpad, .dpad, .leading, 8.2, 23.8, 9.6),
+                        shoulderAt(.leftTrigger, .leftShoulders, .leading, 3.4, 33.2, 5.2, 2.8),
+                        shoulderAt(.leftShoulder, .leftShoulders, .leading, 9.8, 33.2, 5.8, 2.8),
+                        shoulderAt(.rightShoulder, .rightShoulders, .trailing, 9.8, 33.2, 5.8, 2.8),
+                        shoulderAt(.rightTrigger, .rightShoulders, .trailing, 3.4, 33.2, 5.2, 2.8),
+                    ] + diamond(.trailing, 8.0, 23.8, size: 9.8, button: 3.8))
+                case .topTriggers:
+                    return Blueprint(width: 30, height: 36, hudInRow: false, slots: shoulders(trigger: (3.4, 5.2), bumper: (9.9, 6)) + [
+                        pill(.select, .center, -4.6, 7.4, 4.2, 2.6),
+                        circle(.button(.home), .button(.home), .center, 0, 7.4, 3.2),
+                        pill(.start, .center, 4.6, 7.4, 4.2, 2.6),
+                        stick(.leftStick, .leading, 8, 16, 11),
+                        circle(.dpad, .dpad, .leading, 8.6, 29.4, 10),
+                        stick(.rightStick, .trailing, 8.6, 29.4, 10),
+                    ] + diamond(.trailing, 8, 16, size: 11, button: 4))
+                }
             case .classic:
                 return Blueprint(width: 30, height: 29, hudInRow: false, slots: [
                     shoulder(.leftShoulder, .leftShoulders, .leading, 7, 11.2),
@@ -260,6 +361,11 @@ extension OnScreenGamepad {
 
         private static func shoulder(_ button: GameGamepadState.Button, _ cluster: Cluster, _ anchor: Anchor, _ x: CGFloat, _ width: CGFloat) -> Slot {
             Slot(control: .button(button), cluster: cluster, anchor: anchor, x: x, y: rowY, width: width, height: rowHeight, shape: .capsule)
+        }
+
+        private static func shoulderAt(_ button: GameGamepadState.Button, _ cluster: Cluster, _ anchor: Anchor,
+                                       _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> Slot {
+            Slot(control: .button(button), cluster: cluster, anchor: anchor, x: x, y: y, width: width, height: height, shape: .capsule)
         }
 
         /// A trigger at each outer corner and a bumper inside it.

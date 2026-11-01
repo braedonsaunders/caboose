@@ -6,6 +6,8 @@ struct SceneMenuItem {
     var title: String
     var systemImage: String
     var destructive = false
+    var selected = false
+    var dividerBefore = false
     var perform: @MainActor () -> Void
 }
 
@@ -77,24 +79,39 @@ struct SceneMenuView: View {
 
     var body: some View {
         if let open = menu.open {
+            let dense = open.items.count > 8
+            let rowVerticalPadding: CGFloat = (dense ? 4.5 : 6) * ui
             ZStack(alignment: .topLeading) {
                 Color.black.opacity(0.001)
                     .frame(width: bounds.maxX, height: bounds.maxY)
                     .onTapGesture { menu.close() }
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(open.items.enumerated()), id: \.offset) { index, item in
+                        if item.dividerBefore && index > 0 {
+                            Divider()
+                                .padding(.vertical, 3 * ui)
+                                .padding(.horizontal, 6 * ui)
+                        }
                         let hot = menu.hovered == index
-                        Label(item.title, systemImage: item.systemImage)
-                            .font(.system(size: 14 * ui))
-                            .foregroundStyle(hot ? Color.white : item.destructive ? Color.red : Color.primary)
-                            .padding(.horizontal, 10 * ui)
-                            .padding(.vertical, 6 * ui)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(hot ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 6 * ui))
-                            .contentShape(Rectangle())
-                            .onTapGesture { menu.choose(index) }
-                            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(space)) } action: { menu.rows[index] = $0 }
-                            .accessibilityAddTraits(.isButton)
+                        HStack(spacing: 8 * ui) {
+                            Label(item.title, systemImage: item.systemImage)
+                                .font(.system(size: (dense ? 13 : 14) * ui, weight: item.selected ? .semibold : .regular))
+                            Spacer(minLength: 10 * ui)
+                            if item.selected {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 11 * ui, weight: .bold))
+                            }
+                        }
+                        .foregroundStyle(hot ? Color.white : item.destructive ? Color.red : Color.primary)
+                        .padding(.horizontal, 10 * ui)
+                        .padding(.vertical, rowVerticalPadding)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(hot ? Color.accentColor : (item.selected ? Color.primary.opacity(0.08) : .clear),
+                                    in: RoundedRectangle(cornerRadius: 6 * ui))
+                        .contentShape(Rectangle())
+                        .onTapGesture { menu.choose(index) }
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(space)) } action: { menu.rows[index] = $0 }
+                        .accessibilityAddTraits(item.selected ? [.isButton, .isSelected] : .isButton)
                     }
                 }
                 .padding(5 * ui)
@@ -114,11 +131,11 @@ struct SceneMenuView: View {
     /// Hangs from the anchor, then is moved back inside `bounds`.
     private func origin(_ open: SceneMenu.Open) -> CGSize {
         var x = open.anchor.x, y = open.above ? open.anchor.y - size.height : open.anchor.y
-        if x + size.width > bounds.maxX { x = open.anchor.x - size.width }
-        if y + size.height > bounds.maxY { y = open.anchor.y - size.height }
-        if y < bounds.minY { y = open.above ? open.anchor.y : bounds.minY }
-        x = min(max(bounds.minX, x), max(bounds.minX, bounds.maxX - size.width))
-        y = min(max(bounds.minY, y), max(bounds.minY, bounds.maxY - size.height))
+        if x + size.width > bounds.maxX - 6 { x = open.anchor.x - size.width }
+        if y + size.height > bounds.maxY - 6 { y = open.anchor.y - size.height }
+        if y < bounds.minY + 6 { y = bounds.minY + 6 }
+        x = min(max(bounds.minX + 6, x), max(bounds.minX + 6, bounds.maxX - size.width - 6))
+        y = min(max(bounds.minY + 6, y), max(bounds.minY + 6, bounds.maxY - size.height - 6))
         return CGSize(width: x, height: y)
     }
 }

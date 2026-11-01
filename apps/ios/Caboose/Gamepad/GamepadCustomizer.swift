@@ -12,6 +12,7 @@ struct GamepadCustomizer: View {
     @State private var settings = OnScreenGamepad.Settings()
 
     private var style: OnScreenGamepad.Style { settings.style(for: app) }
+    private var modernLayout: OnScreenGamepad.ModernLayout { settings.modernLayout(for: app) }
 
     var body: some View {
         NavigationStack {
@@ -19,7 +20,7 @@ struct GamepadCustomizer: View {
                 Section {
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                         ForEach(OnScreenGamepad.Style.allCases, id: \.self) { choice in
-                            StyleCard(style: choice, settings: settings, selected: choice == style) {
+                            StyleCard(style: choice, settings: settings, app: app, selected: choice == style) {
                                 settings.choose(choice, for: app)
                             }
                         }
@@ -29,6 +30,23 @@ struct GamepadCustomizer: View {
                     Text("Controller")
                 } footer: {
                     if let appName { Text("\(appName) keeps the controller chosen for it.") }
+                }
+
+                if style == .modern {
+                    Section {
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                            ForEach(OnScreenGamepad.ModernLayout.allCases, id: \.self) { choice in
+                                ModernLayoutCard(modernLayout: choice, settings: settings, selected: choice == modernLayout) {
+                                    settings.chooseModernLayout(choice, for: app)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    } header: {
+                        Text("Modern View")
+                    } footer: {
+                        Text("Places triggers and bumpers where your thumbs reach without stretching to the top of the screen.")
+                    }
                 }
 
                 Section {
@@ -41,6 +59,9 @@ struct GamepadCustomizer: View {
                         Picker("Sticks", selection: $settings.sticks) {
                             ForEach(OnScreenGamepad.StickMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
+                    }
+                    if style == .modern {
+                        Toggle("Aim while firing (drag RT / LT)", isOn: $settings.triggerAim)
                     }
                     LabeledContent("Size") {
                         Slider(value: $settings.scale, in: OnScreenGamepad.Settings.scaleRange)
@@ -105,6 +126,9 @@ struct GamepadCustomizer: View {
         if style.hasSticks {
             note += " Tap then press a stick to click it. A trigger pulls fully when touched; slide down to ease it off."
         }
+        if style == .modern {
+            note += " With Aim while firing on, dragging a thumb on RT or LT steers the right stick while keeping the trigger pulled."
+        }
         return note
     }
 
@@ -135,6 +159,7 @@ struct GamepadCustomizer: View {
 private struct StyleCard: View {
     let style: OnScreenGamepad.Style
     let settings: OnScreenGamepad.Settings
+    let app: String?
     let selected: Bool
     let choose: () -> Void
 
@@ -146,7 +171,7 @@ private struct StyleCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 GeometryReader { proxy in
                     let scale = proxy.size.width / Self.canvas.width
-                    GamepadFace(layout: OnScreenGamepad.layout(in: Self.canvas, style: style, settings: settings),
+                    GamepadFace(layout: OnScreenGamepad.layout(in: Self.canvas, style: style, settings: settings, app: app),
                                 state: GameGamepadState(), centers: [:], settings: settings)
                         .frame(width: Self.canvas.width, height: Self.canvas.height)
                         .scaleEffect(scale, anchor: .topLeading)
@@ -160,6 +185,49 @@ private struct StyleCard: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(selected ? Color.accentColor : .primary)
                 Text(style.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// A Modern controller view as a preview card: shows where RT/RB and LT/LB sit relative to
+/// the sticks, D-pad, and face buttons.
+private struct ModernLayoutCard: View {
+    let modernLayout: OnScreenGamepad.ModernLayout
+    let settings: OnScreenGamepad.Settings
+    let selected: Bool
+    let choose: () -> Void
+
+    private static let canvas = CGSize(width: 720, height: 340)
+
+    var body: some View {
+        var previewSettings = settings
+        let _ = {
+            previewSettings.modernLayout = modernLayout
+            previewSettings.appModernLayouts = [:]
+        }()
+        Button(action: choose) {
+            VStack(alignment: .leading, spacing: 6) {
+                GeometryReader { proxy in
+                    let scale = proxy.size.width / Self.canvas.width
+                    GamepadFace(layout: OnScreenGamepad.layout(in: Self.canvas, style: .modern, settings: previewSettings),
+                                state: GameGamepadState(), centers: [:], settings: previewSettings)
+                        .frame(width: Self.canvas.width, height: Self.canvas.height)
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                }
+                .aspectRatio(Self.canvas.width / Self.canvas.height, contentMode: .fit)
+                .background { GamepadBackdrop(style: .modern) }
+                .clipShape(.rect(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 2.5))
+                Label(modernLayout.title, systemImage: selected ? "checkmark.circle.fill" : modernLayout.symbol)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(selected ? Color.accentColor : .primary)
+                Text(modernLayout.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2, reservesSpace: true)
             }
             .contentShape(.rect)
         }

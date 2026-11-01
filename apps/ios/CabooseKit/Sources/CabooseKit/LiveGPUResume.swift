@@ -233,8 +233,8 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
     /// across the background that has heard nothing since is replaced rather than trusted.
     func resumeTransport() {
         let stale = condition.withLock { () -> LiveGPUResumeSocket? in
-            guard !ended, mode == .resumable, case .live = link, let socket, socket.silence > 2 else { return nil }
-            return socket
+            guard !ended, mode == .resumable, case .live = link, let current = self.socket, current.silence > 2 else { return nil }
+            return current
         }
         if let stale {
             Self.log("resume replaces a silent socket silence=\(Int(stale.silence))")

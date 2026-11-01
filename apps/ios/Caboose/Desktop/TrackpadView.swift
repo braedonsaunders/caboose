@@ -88,6 +88,8 @@ struct Trackpad: UIViewRepresentable {
     var inlineControls = false
     /// Laptop's system keyboard: shown without the key bar, which would land across the fold.
     var bareSystemKeyboard = false
+    var laptopMode = false
+    var onInputSwipe: ((Int) -> Void)? = nil
     var dismissInline: (() -> Void)? = nil
 
     func makeUIView(context: Context) -> TrackpadSurface {
@@ -97,6 +99,8 @@ struct Trackpad: UIViewRepresentable {
         view.target = target
         view.inputEnabled = enabled
         view.pointerEnabled = pointerEnabled
+        view.laptopMode = laptopMode
+        view.onInputSwipe = onInputSwipe
         return view
     }
 
@@ -106,6 +110,8 @@ struct Trackpad: UIViewRepresentable {
         view.target = target
         view.inlineKeyboardControls = inlineControls
         view.bareSystemKeyboard = bareSystemKeyboard
+        view.laptopMode = laptopMode
+        view.onInputSwipe = onInputSwipe
         view.dismissInline = dismissInline
         view.wantsKeyboard = (keyboardVisible || inlineControls) && enabled
         view.followField(purpose: model.session?.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
@@ -127,6 +133,10 @@ final class TrackpadSurface: RemoteTextInputView {
     weak var desktop: DesktopModel?
     weak var model: AppModel?
     var dismissInline: (() -> Void)?
+    var onInputSwipe: ((Int) -> Void)?
+    var laptopMode = false {
+        didSet { gestures.tuning.threeFingerSwipe = laptopMode }
+    }
     var wantsKeyboard = false
     var bareSystemKeyboard = false {
         didSet { if bareSystemKeyboard != oldValue, isFirstResponder { reloadInputViews() } }
@@ -355,6 +365,12 @@ final class TrackpadSurface: RemoteTextInputView {
     }
 
     private func performWorkspace(_ direction: TrackpadGestures.Direction) {
+        if laptopMode, (direction == .left || direction == .right) {
+            if let onInputSwipe {
+                onInputSwipe(direction == .left ? 1 : -1)
+            }
+            return
+        }
         guard let model, let session, session.state == .ready else { return }
         switch direction {
         case .up:
@@ -477,8 +493,8 @@ struct TrackpadGestureGuide: View {
                     Label("Move two fingers together to scroll in either direction.", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
                     Label("Pinch two fingers to zoom in apps that support Control–Plus and Control–Minus.", systemImage: "plus.magnifyingglass")
                 }
-                Section("Windows") {
-                    Label("Swipe four fingers left or right to switch windows.", systemImage: "macwindow.on.rectangle")
+                Section("Windows & Input") {
+                    Label("In Laptop mode, scrub three or four fingers left or right to slide between Trackpad, Keyboard, and Controller.", systemImage: "hand.draw.fill")
                     Label("Swipe four fingers up to choose a window; down to dismiss the chooser. From an app card, swipe up to return to Desktop.", systemImage: "square.stack.3d.up")
                 }
                 Section {

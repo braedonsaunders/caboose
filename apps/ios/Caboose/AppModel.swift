@@ -1480,16 +1480,25 @@ final class AppModel {
     /// This temporary arrangement never changes the owner's saved tablet preference.
     var terminalLaptopActive = false
     var laptopDesktopActive = false
+    /// Laptop's lower-panel input mode (Trackpad, Keyboard & Trackpad, Keyboard, or Gamepad),
+    /// switched from the far-right dock menu so the lower half stays edge-to-edge.
+    var laptopInput: LaptopLayout.Input = .trackpad
+    var laptopGestureHelp = false
     private var laptopNeedsInitialFit = false
 
     func setLaptopDesktop(_ active: Bool) {
         guard laptopDesktopActive != active else { return }
         laptopDesktopActive = active
-        if !active { laptopPhysicalPanelChanged(to: nil) }
+        if !active {
+            laptopPhysicalPanelChanged(to: nil)
+            laptopGestureHelp = false
+        }
         desktop.detachedChrome = active && !externalDisplayActive
         desktop.pointerArea = nil
         desktop.dockFrames.removeAll()
         desktop.launchpadButtonFrame = .zero
+        desktop.panelButtonFrame = .null
+        desktop.panelPresented = false
         laptopNeedsInitialFit = active && !externalDisplayActive
         if deviceDesktopActive { desktop.storageKey = freeDesktopKey(external: false).map { $0 + (active ? ".laptop" : "") } }
         placedWindowIDs.removeAll()

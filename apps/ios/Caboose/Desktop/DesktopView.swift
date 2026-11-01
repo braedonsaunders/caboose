@@ -75,6 +75,9 @@ struct DesktopView: View {
                 desktop.dockMenu = { [model, openWindow] id in
                     model.dockApps.first { $0.id == id }.map { DockAppActions.items($0, model: model, openWindow: openWindow) } ?? []
                 }
+                desktop.panelMenu = { [model] in
+                    DesktopPanelMenuItems.build(model: model)
+                }
             }
             .onAppear {
                 if !model.windowCardOwnsGeometry { desktop.size = proxy.size }
@@ -100,6 +103,79 @@ struct DesktopView: View {
         .ignoresSafeArea(edges: fillsScreen ? .all : [])
         .ignoresSafeArea(.keyboard)
         .clipped()
+    }
+}
+
+/// Builds the scene menu rows for Laptop's far-right dock button, so both the mouse cursor
+/// and direct finger taps can switch input views, open settings, or navigate tabs without
+/// presenting a UIKit popover that hides the cursor.
+@MainActor
+enum DesktopPanelMenuItems {
+    static func build(model: AppModel) -> [SceneMenuItem] {
+        var items: [SceneMenuItem] = []
+        for choice in LaptopLayout.Input.cycleOrder {
+            items.append(SceneMenuItem(
+                title: choice.title,
+                systemImage: choice.symbol,
+                selected: model.laptopInput == choice,
+                perform: { model.laptopInput = choice }
+            ))
+        }
+        items.append(SceneMenuItem(
+            title: "Trackpad Gestures",
+            systemImage: "hand.draw",
+            perform: { model.laptopGestureHelp = true }
+        ))
+        items.append(SceneMenuItem(
+            title: "Wallpaper",
+            systemImage: "photo.on.rectangle",
+            dividerBefore: true,
+            perform: { model.wallpaperPickerPresented = true }
+        ))
+        if WallpaperStore.shared.choice.usesLibrary {
+            items.append(SceneMenuItem(
+                title: "Next Wallpaper",
+                systemImage: "arrow.triangle.2.circlepath",
+                perform: { WallpaperStore.shared.next() }
+            ))
+        }
+        items.append(SceneMenuItem(
+            title: "Computer Settings",
+            systemImage: "gearshape",
+            perform: { model.settingsPresented = true }
+        ))
+        if model.runningAppsAvailable {
+            items.append(SceneMenuItem(
+                title: "Task Manager",
+                systemImage: "gauge.with.dots.needle.33percent",
+                perform: { model.taskManagerPresented = true }
+            ))
+        }
+        if model.phase == .ready {
+            items.append(SceneMenuItem(
+                title: "Park Computer",
+                systemImage: "moon.zzz",
+                perform: { Task { try? await model.parkComputer() } }
+            ))
+            if model.computerStatus?.capabilities.restart == true {
+                items.append(SceneMenuItem(
+                    title: "Restart…",
+                    systemImage: "arrow.clockwise",
+                    destructive: true,
+                    perform: { model.restartConfirmationPresented = true }
+                ))
+            }
+        }
+        let otherTabs = ShellTabButtons.tabs.filter { $0.tab != .desktop }
+        for (index, item) in otherTabs.enumerated() {
+            items.append(SceneMenuItem(
+                title: item.title,
+                systemImage: item.symbol,
+                dividerBefore: index == 0,
+                perform: { model.selectedTab = item.tab }
+            ))
+        }
+        return items
     }
 }
 
@@ -249,9 +325,10 @@ struct Dock: View {
 
     @ViewBuilder private var floatingDock: some View {
         let ui = desktop.ui
+        let showsPanelButton = portraitDesktop || desktop.detachedChrome
         HStack(spacing: 10 * ui) {
             // As many as fit: a phone held upright has room for fewer than a TV.
-            let fit = max(3, Int((desktop.size.width - (portraitDesktop ? 174 : 120) * ui) / (62 * ui)))
+            let fit = max(3, Int((desktop.size.width - (showsPanelButton ? 174 : 120) * ui) / (62 * ui)))
             ForEach(DockFit.visible(model.dockApps, fit: fit) { model.isRunning($0) }) { app in
                 let hot = desktop.hovered == .dock(app.id)
                 VStack(spacing: 3 * ui) {
@@ -289,7 +366,15 @@ struct Dock: View {
                 .padding(.bottom, 7 * ui)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.launchpadButtonFrame = $0 }
                 .onTapGesture { if interactive { desktop.launchpadOpen.toggle() } }
-            if portraitDesktop { DesktopPanelButton() }
+            if showsPanelButton {
+                let panelHot = desktop.hovered == .panelButton
+                DesktopPanelButton(desktop: desktop)
+                    .scaleEffect(panelHot ? 1.18 : 1, anchor: .bottom)
+                    .animation(.spring(duration: 0.22), value: panelHot)
+                    .padding(.bottom, 7 * ui)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.panelButtonFrame = $0 }
+                    .onDisappear { desktop.panelButtonFrame = .null }
+            }
         }
         .padding(.horizontal, 12 * ui)
         .padding(.vertical, 8 * ui)

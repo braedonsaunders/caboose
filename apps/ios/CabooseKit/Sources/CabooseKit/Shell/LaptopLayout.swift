@@ -7,6 +7,7 @@ import Foundation
 public enum LaptopLayout {
     public enum Input: String, CaseIterable, Sendable {
         case keyboard, trackpad, combo, gamepad
+        public static let cycleOrder: [Input] = [.trackpad, .combo, .keyboard, .gamepad]
         public var title: String {
             switch self {
             case .keyboard: "Keyboard"
@@ -26,6 +27,13 @@ public enum LaptopLayout {
         /// Whether Laptop's own keyboard and its header show; the system keyboard never does
         /// unless asked for.
         public var showsKeyboard: Bool { self == .keyboard || self == .combo }
+
+        /// Steps forward (`+1`, swipe left) or backward (`-1`, swipe right) through Laptop's input views.
+        public func stepped(by delta: Int) -> Input {
+            let order = Self.cycleOrder
+            guard let index = order.firstIndex(of: self) else { return .trackpad }
+            return order[(index + (delta % order.count) + order.count) % order.count]
+        }
     }
     public enum Mode: String, CaseIterable, Sendable { case automatic, tablet, laptop }
     public struct Frames: Equatable, Sendable {

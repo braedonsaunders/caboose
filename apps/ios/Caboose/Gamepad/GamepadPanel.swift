@@ -16,6 +16,8 @@ struct GamepadPanel: View {
     let enabled: Bool
     /// Leaves a pad that fills the screen; nil where the pad is one of Laptop's modes.
     var close: (() -> Void)? = nil
+    /// Switches Laptop's lower panel to another input mode directly from the pad's HUD.
+    var switchInput: ((LaptopLayout.Input) -> Void)? = nil
     @State private var driver = GamepadDriver()
     @State private var customizing = false
     /// Where each held stick is centred, for drawing a floating one under its thumb.
@@ -61,7 +63,7 @@ struct GamepadPanel: View {
         let app = current?.appClass?.instance
         let style = settings.style(for: app)
         GeometryReader { proxy in
-            let layout = OnScreenGamepad.layout(in: proxy.size, style: style, settings: settings)
+            let layout = OnScreenGamepad.layout(in: proxy.size, style: style, settings: settings, app: app)
             ZStack(alignment: .topLeading) {
                 GamepadFace(layout: layout, state: driver.state, centers: stickCenters, settings: settings)
                     .allowsHitTesting(false)
@@ -71,7 +73,7 @@ struct GamepadPanel: View {
                     driver.apply(state, to: target(), session: model.session, settings: settings, devices: model.devices)
                 }
                 hud(style: style, app: app, window: current, settings: settings)
-                    .frame(width: max(0, layout.hud.width), height: max(0, layout.hud.height))
+                    .frame(height: max(0, layout.hud.height))
                     .position(x: layout.hud.midX, y: layout.hud.midY)
             }
         }
@@ -108,8 +110,8 @@ struct GamepadPanel: View {
         }
     }
 
-    /// The pad's own strip: the controller type and Customize and, for a pad that fills the
-    /// screen, the way out.
+    /// The pad's own strip: the controller type, taskbar toggle in Laptop mode, Customize and,
+    /// for a pad that fills the screen, the way out.
     private func hud(style: OnScreenGamepad.Style, app: String?, window: RemoteWindow?, settings: OnScreenGamepad.Settings) -> some View {
         HStack(spacing: 2) {
             Menu {
@@ -123,11 +125,55 @@ struct GamepadPanel: View {
                     }
                 }
                 .pickerStyle(.inline)
+                if style == .modern {
+                    Divider()
+                    Picker("Modern View", selection: Binding(get: { settings.modernLayout(for: app) }, set: { choice in
+                        var next = settings
+                        next.chooseModernLayout(choice, for: app)
+                        stored = next.encoded
+                    })) {
+                        ForEach(OnScreenGamepad.ModernLayout.allCases, id: \.self) { choice in
+                            Label(choice.title, systemImage: choice.symbol).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                    Divider()
+                    Toggle(isOn: Binding(get: { settings.triggerAim }, set: { enabled in
+                        var next = settings
+                        next.triggerAim = enabled
+                        stored = next.encoded
+                    })) {
+                        Label("Aim While Firing", systemImage: "scope")
+                    }
+                }
+                if let switchInput {
+                    Divider()
+                    Section("Switch Input") {
+                        ForEach(LaptopLayout.Input.cycleOrder.filter { $0 != .gamepad }, id: \.self) { choice in
+                            Button {
+                                switchInput(choice)
+                            } label: {
+                                Label(choice.title, systemImage: choice.symbol)
+                            }
+                        }
+                    }
+                }
             } label: {
                 Image(systemName: style.symbol).frame(width: 40, height: 32).contentShape(.rect)
             }
             .accessibilityLabel("Controller type")
             .accessibilityValue(style.title)
+            if model.desktop.detachedChrome {
+                Button {
+                    model.desktop.toggleLaptopDock()
+                } label: {
+                    Image(systemName: model.desktop.isDockVisible ? "dock.rectangle" : "menubar.dock.rectangle")
+                        .foregroundStyle(model.desktop.isDockVisible ? Color.accentColor : Color.white.opacity(0.85))
+                        .frame(width: 40, height: 32)
+                        .contentShape(.rect)
+                }
+                .accessibilityLabel(model.desktop.isDockVisible ? "Hide Taskbar" : "Show Taskbar")
+            }
             Button("Customize Controller", systemImage: "slider.horizontal.3") { customizing = true }
                 .labelStyle(.iconOnly)
                 .frame(width: 40, height: 32)

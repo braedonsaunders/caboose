@@ -72,6 +72,47 @@ public enum OnScreenGamepad {
         public var takesLabels: Bool { self == .modern || self == .arcade }
     }
 
+    /// How a Modern controller places its triggers, bumpers, sticks and face buttons so two
+    /// thumbs on glass never have to stretch to the top edge to shoot or aim.
+    public enum ModernLayout: String, Codable, CaseIterable, Sendable {
+        /// Triggers and bumpers at the bottom outer corners right under the thumbs; sticks and
+        /// face buttons above and beside them.
+        case bottomTriggers
+        /// Triggers and bumpers curved along the inner thumb arc between the sticks and buttons.
+        case thumbArc
+        /// Twin upper sticks for aiming and moving, with oversized bottom triggers and lower buttons.
+        case shooter
+        /// Triggers and bumpers along the top edge, as on a console controller.
+        case topTriggers
+
+        public var title: String {
+            switch self {
+            case .bottomTriggers: "Bottom Triggers"
+            case .thumbArc: "Thumb Arc"
+            case .shooter: "Shooter"
+            case .topTriggers: "Top Triggers"
+            }
+        }
+
+        public var summary: String {
+            switch self {
+            case .bottomTriggers: "RT & LT at the bottom corners, right under your thumbs"
+            case .thumbArc: "Triggers and bumpers curved beside the sticks"
+            case .shooter: "Upper aim stick, bottom fire triggers and drag-to-aim"
+            case .topTriggers: "Classic top-edge triggers and bumpers"
+            }
+        }
+
+        public var symbol: String {
+            switch self {
+            case .bottomTriggers: "hand.point.up.braille.fill"
+            case .thumbArc: "arkit"
+            case .shooter: "scope"
+            case .topTriggers: "rectangle.topthird.inset.filled"
+            }
+        }
+    }
+
     /// The markings on a Modern or Arcade controller's buttons.
     public enum Labels: String, Codable, CaseIterable, Sendable {
         case xbox, playstation
@@ -240,6 +281,13 @@ public enum OnScreenGamepad {
         public var style: Style = .modern
         /// The type last chosen for each app, by its window class.
         public var appStyles: [String: Style] = [:]
+        /// The layout for a Modern controller when the app has no choice of its own.
+        public var modernLayout: ModernLayout = .bottomTriggers
+        /// The Modern layout last chosen for each app, by its window class.
+        public var appModernLayouts: [String: ModernLayout] = [:]
+        /// Dragging on RT or LT steers the right stick while holding the trigger at full pull,
+        /// so a single thumb can aim and shoot simultaneously.
+        public var triggerAim = true
         public var labels: Labels = .xbox
         public var sticks: StickMode = .floating
         /// The size of the controls, 0.8 to 1.2 of their fitted size.
@@ -278,6 +326,17 @@ public enum OnScreenGamepad {
             if let app, !app.isEmpty { appStyles[app] = style }
         }
 
+        /// The Modern layout the pad shows for `app`.
+        public func modernLayout(for app: String?) -> ModernLayout {
+            app.flatMap { appModernLayouts[$0] } ?? modernLayout
+        }
+
+        /// Chooses `layout` for `app`, and for apps with no choice of their own.
+        public mutating func chooseModernLayout(_ layout: ModernLayout, for app: String?) {
+            self.modernLayout = layout
+            if let app, !app.isEmpty { appModernLayouts[app] = layout }
+        }
+
         /// The settings stored as `data`, or the defaults when there are none or they are unreadable.
         public static func decode(_ data: Data?) -> Settings {
             data.flatMap { try? JSONDecoder().decode(Settings.self, from: $0) } ?? Settings()
@@ -295,6 +354,10 @@ public enum OnScreenGamepad {
             // An app whose stored type this version does not know falls back to the default.
             let stored: [String: String] = value(.appStyles, [:])
             appStyles = stored.compactMapValues(Style.init(rawValue:))
+            modernLayout = value(.modernLayout, defaults.modernLayout)
+            let storedLayouts: [String: String] = value(.appModernLayouts, [:])
+            appModernLayouts = storedLayouts.compactMapValues(ModernLayout.init(rawValue:))
+            triggerAim = value(.triggerAim, defaults.triggerAim)
             labels = value(.labels, defaults.labels)
             sticks = value(.sticks, defaults.sticks)
             scale = min(Self.scaleRange.upperBound, max(Self.scaleRange.lowerBound, value(.scale, defaults.scale)))

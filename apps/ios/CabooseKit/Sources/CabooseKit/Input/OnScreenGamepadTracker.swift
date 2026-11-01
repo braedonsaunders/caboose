@@ -8,8 +8,9 @@ extension OnScreenGamepad {
     /// shoulders it presses whatever is under it as it slides, and both buttons in the seam
     /// between neighbours. A floating stick centres where its finger lands, and its centre
     /// follows a finger that travels past the rim. A tap then a press on a stick clicks it
-    /// (L3, R3) for as long as that press lasts. A trigger pulls fully when touched and eases
-    /// off as its finger slides down.
+    /// (L3, R3) for as long as that press lasts. On triggers with `triggerAim` enabled,
+    /// dragging while holding RT or LT steers the right stick so one thumb can aim and shoot
+    /// simultaneously; otherwise sliding down a trigger eases it off.
     public struct Tracker: Sendable {
         struct Finger: Sendable {
             /// Nil once the pad has taken the finger's controls away; it then holds nothing.
@@ -17,10 +18,14 @@ extension OnScreenGamepad {
             var origin: CGPoint
             var point: CGPoint
             var began: TimeInterval
-            /// A stick's centre.
+            /// A stick's centre (or the virtual right-stick centre when aiming on a trigger).
             var center: CGPoint?
             /// Whether this press clicks its stick.
             var clicks = false
+            /// Buttons locked when a trigger press begins aiming the right stick.
+            var initialButtons: [GameGamepadState.Button] = []
+            /// Whether dragging this trigger finger is steering the right stick.
+            var aiming = false
         }
 
         private var fingers: [Int: Finger] = [:]
@@ -50,6 +55,12 @@ extension OnScreenGamepad {
                     finger.clicks = true
                 }
                 taps[cluster] = nil
+            } else if let cluster, cluster == .leftShoulders || cluster == .rightShoulders {
+                let pressed = OnScreenGamepad.pressed(in: cluster, at: point, items: layout.items(in: cluster))
+                finger.initialButtons = pressed
+                if layout.triggerAim, pressed.contains(.rightTrigger) || pressed.contains(.leftTrigger) {
+                    finger.center = point
+                }
             }
             fingers[id] = finger
         }
@@ -64,6 +75,21 @@ extension OnScreenGamepad {
                 let distance = hypot(dx, dy)
                 if distance > radius, radius > 0 {
                     finger.center = CGPoint(x: point.x - dx / distance * radius, y: point.y - dy / distance * radius)
+                }
+            } else if layout.triggerAim,
+                      finger.cluster == .leftShoulders || finger.cluster == .rightShoulders,
+                      let center = finger.center,
+                      let item = layout.item(.rightStick) {
+                if !finger.aiming, hypot(point.x - finger.origin.x, point.y - finger.origin.y) > 6 {
+                    finger.aiming = true
+                }
+                if finger.aiming {
+                    let radius = item.frame.width / 2
+                    let dx = point.x - center.x, dy = point.y - center.y
+                    let distance = hypot(dx, dy)
+                    if distance > radius, radius > 0 {
+                        finger.center = CGPoint(x: point.x - dx / distance * radius, y: point.y - dy / distance * radius)
+                    }
                 }
             }
             fingers[id] = finger
@@ -105,6 +131,7 @@ extension OnScreenGamepad {
         /// The controller's state with these fingers on `layout`.
         public func state(in layout: Layout) -> GameGamepadState {
             var state = GameGamepadState()
+            let rightStickHeldDirectly = fingers.values.contains { $0.cluster == .rightStick }
             for finger in fingers.values {
                 guard let cluster = finger.cluster else { continue }
                 switch cluster {
@@ -122,10 +149,23 @@ extension OnScreenGamepad {
                     state[left ? .leftY : .rightY] = axes.y
                     if finger.clicks { state[left ? .leftStick : .rightStick] = 1 }
                 case .face, .leftShoulders, .rightShoulders, .button:
+                    if finger.aiming, layout.triggerAim {
+                        for button in finger.initialButtons {
+                            state[button] = max(state[button], 1.0)
+                        }
+                        if !rightStickHeldDirectly, let center = finger.center, let item = layout.item(.rightStick) {
+                            let axes = OnScreenGamepad.stickAxes(CGVector(dx: finger.point.x - center.x, dy: finger.point.y - center.y),
+                                                                 radius: item.frame.width / 2)
+                            state[.rightX] = axes.x
+                            state[.rightY] = axes.y
+                        }
+                        continue
+                    }
                     for button in OnScreenGamepad.pressed(in: cluster, at: finger.point, items: layout.items(in: cluster)) {
                         var value = 1.0
                         // An arcade panel's triggers are buttons like the rest, rolled onto from above.
-                        if cluster == .leftShoulders || cluster == .rightShoulders,
+                        if !layout.triggerAim,
+                           cluster == .leftShoulders || cluster == .rightShoulders,
                            button == .leftTrigger || button == .rightTrigger,
                            let item = layout.item(.button(button)) {
                             value = OnScreenGamepad.triggerValue(slide: finger.point.y - finger.origin.y, height: item.frame.height)
@@ -192,7 +232,30 @@ extension OnScreenGamepad {
                                            dy: -max(item.frame.width, item.frame.height) * 0.75)
             return reach.contains(point) ? [pressed] : []
         case .leftShoulders, .rightShoulders:
-            // A row: the button across from the finger, both in the seam between two.
+            let vertical: Bool = {
+                guard items.count >= 2 else { return false }
+                let dx = abs(items[0].frame.midX - items[1].frame.midX)
+                let dy = abs(items[0].frame.midY - items[1].frame.midY)
+                return dy > dx
+            }()
+            if vertical {
+                let column = items.sorted { $0.frame.minY < $1.frame.minY }
+                guard let first = column.first, let last = column.last,
+                      point.y >= first.frame.minY - first.frame.height * 0.75,
+                      point.y <= last.frame.maxY + last.frame.height * 0.75,
+                      point.x >= min(first.frame.minX, last.frame.minX) - max(first.frame.width, last.frame.width) * 0.6,
+                      point.x <= max(first.frame.maxX, last.frame.maxX) + max(first.frame.width, last.frame.width) * 0.6 else { return [] }
+                var pressed: [GameGamepadState.Button] = []
+                for (index, item) in column.enumerated() {
+                    let low = index == 0 ? -CGFloat.infinity : (column[index - 1].frame.maxY + item.frame.minY) / 2
+                    let high = index == column.count - 1 ? CGFloat.infinity : (item.frame.maxY + column[index + 1].frame.minY) / 2
+                    let lowBand = index == 0 ? 0 : verticalSeam(column[index - 1], item)
+                    let highBand = index == column.count - 1 ? 0 : verticalSeam(item, column[index + 1])
+                    if point.y >= low - lowBand && point.y <= high + highBand, let button = button(item) { pressed.append(button) }
+                }
+                return pressed
+            }
+            // A horizontal row: the button across from the finger, both in the seam between two.
             let row = items.sorted { $0.frame.minX < $1.frame.minX }
             guard let first = row.first, let last = row.last,
                   point.x >= first.frame.minX - first.frame.width * 0.6, point.x <= last.frame.maxX + last.frame.width * 0.6 else { return [] }
@@ -232,6 +295,11 @@ extension OnScreenGamepad {
     /// Half the width of the seam between two buttons of a row in which both are pressed.
     private static func seam(_ a: Item, _ b: Item) -> CGFloat {
         max(0, b.frame.minX - a.frame.maxX) / 2 + min(a.frame.width, b.frame.width) * 0.15
+    }
+
+    /// Half the height of the seam between two stacked shoulder buttons in which both are pressed.
+    private static func verticalSeam(_ a: Item, _ b: Item) -> CGFloat {
+        max(0, b.frame.minY - a.frame.maxY) / 2 + min(a.frame.height, b.frame.height) * 0.18
     }
 
     // MARK: Response
