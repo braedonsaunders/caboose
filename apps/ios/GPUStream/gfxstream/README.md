@@ -26,7 +26,8 @@ SPIRV-Cross (multi-plane padding, and MSL type names such as `sampler` or `textu
 treated as reserved, since Zink names variables that way and a variable named like a type
 hides it from the Metal source) and MoltenVK (persistent Metal pipeline binaries, and
 events set when the GPU reaches `vkCmdSetEvent` rather than decided when the command buffer
-is encoded, so a host `vkResetEvent` that reaches the phone after the submit cannot leave
+is encoded, and every command buffer's encoder status requested so a failed one names its
+faulting encoder, so a host `vkResetEvent` that reaches the phone after the submit cannot leave
 the event reset for good), all applied to the MoltenVK build, and MoltenVK missing-layer
 queries, for the layer diagnostic. `provider-patches/tests/check-event-set-at-execution.c`
 checks the event patch against a macOS MoltenVK build (`cc -I<vulkan include> … -lvulkan`):
