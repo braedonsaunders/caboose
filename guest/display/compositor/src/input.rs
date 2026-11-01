@@ -14,7 +14,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use std::collections::{HashMap, HashSet};
 
 /// evdev button codes.
@@ -59,6 +59,26 @@ pub struct InputState {
 /// A finger scroll sequence ends when no sample has come for this long: the phone sends
 /// one every display refresh while the content moves.
 const SCROLL_STOP_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The rectangle a full-screen or maximized window takes, relative to its display, or none
+/// for an ordinary window. A full-screen window takes the display. A maximized one takes the
+/// geometry the client configured it to with that state, or the display when none was
+/// given (the app maximized itself, or its display changed).
+fn filled_rect(
+    fullscreen: bool,
+    maximized: bool,
+    kept: Option<Rectangle<i32, Logical>>,
+    display: Size<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    let whole = Rectangle::new((0, 0).into(), display);
+    if fullscreen {
+        Some(whole)
+    } else if maximized {
+        Some(kept.unwrap_or(whole))
+    } else {
+        None
+    }
+}
 
 /// One scroll sample as wl_pointer axis events: precise samples are finger scrolling in
 /// logical pixels, with no discrete steps; wheel clicks are 15 logical pixels and 120
@@ -411,6 +431,9 @@ impl State {
         if let Some(mx) = m.maximized {
             w.maximized = mx;
         }
+        if !w.maximized {
+            w.maximized_geometry = None;
+        }
         let display = self.displays.resolve(Some(w.display));
         let to_logical = |v: i32| (v as f64 / display.info.scale).round() as i32;
         let (fullscreen, maximized) = (w.fullscreen, w.maximized);
@@ -441,6 +464,14 @@ impl State {
         if fullscreen || maximized {
             w.overscan_size = None;
         }
+        // A maximized window takes the geometry configured with that state: Laptop lays a
+        // filled window out below its title bar, grown to its minimum size.
+        if maximized {
+            if let Some(g) = geometry {
+                w.maximized_geometry = Some(g);
+            }
+        }
+        let filled = filled_rect(fullscreen, maximized, w.maximized_geometry, display_size);
         if let Some(g) = geometry.as_mut() {
             w.overscan_size = None;
             w.shown = Some(g.size);
@@ -460,10 +491,13 @@ impl State {
                 if let Some(g) = geometry {
                     w.position = g.loc;
                 }
-                let size = if fullscreen || maximized { Some(display_size) } else { geometry.map(|g| g.size) };
-                if fullscreen || maximized {
-                    w.position = (0, 0).into();
-                }
+                let size = match filled {
+                    Some(rect) => {
+                        w.position = rect.loc;
+                        Some(rect.size)
+                    }
+                    None => geometry.map(|g| g.size),
+                };
                 let t = t.clone();
                 t.with_pending_state(|s| {
                     if let Some(size) = size {
@@ -486,11 +520,7 @@ impl State {
             }
             Surface::X11(x) => {
                 let x = x.clone();
-                let rect = if fullscreen || maximized {
-                    Some(smithay::utils::Rectangle::new(display_origin, display_size))
-                } else {
-                    geometry.map(|g| smithay::utils::Rectangle::new(display_origin + g.loc, g.size))
-                };
+                let rect = filled.or(geometry).map(|g| smithay::utils::Rectangle::new(display_origin + g.loc, g.size));
                 let _ = x.set_fullscreen(fullscreen);
                 let _ = x.set_maximized(maximized);
                 if let Some(rect) = rect {
@@ -546,8 +576,23 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::{scroll_axes, Axis, AxisSource, InputState};
+    use super::{filled_rect, scroll_axes, Axis, AxisSource, InputState};
     use caboose_display_protocol as proto;
+    use smithay::utils::Rectangle;
+
+    #[test]
+    fn a_maximized_window_takes_the_geometry_configured_with_it() {
+        let display = (1338, 911).into();
+        let whole = Rectangle::new((0, 0).into(), display);
+        // Laptop fills its screen below the title bar, grown to the window's minimum.
+        let laptop = Rectangle::new((0, 32).into(), (1010, 682).into());
+        assert_eq!(filled_rect(false, true, Some(laptop), display), Some(laptop));
+        // An app that maximized itself, or a changed display, takes the display.
+        assert_eq!(filled_rect(false, true, None, display), Some(whole));
+        // Full screen is always the display; an ordinary window has no fixed rectangle.
+        assert_eq!(filled_rect(true, true, Some(laptop), display), Some(whole));
+        assert_eq!(filled_rect(false, false, Some(laptop), display), None);
+    }
 
     #[test]
     fn precise_scroll_is_finger_pixels_without_discrete_steps() {

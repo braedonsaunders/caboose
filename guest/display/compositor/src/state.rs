@@ -677,6 +677,7 @@ impl State {
             stream: Stream::default(),
             fullscreen: false,
             maximized: false,
+            maximized_geometry: None,
             lineage: None,
             desktop_id: None,
             icon: None,

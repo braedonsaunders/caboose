@@ -47,6 +47,9 @@ pub struct Window {
     /// The configure the client asked for that the app has not yet matched.
     pub fullscreen: bool,
     pub maximized: bool,
+    /// The geometry the client configured a maximized window to, relative to its display:
+    /// none (the app maximized itself) takes the display's rectangle.
+    pub maximized_geometry: Option<Rectangle<i32, Logical>>,
     /// The owning process and its ancestors, once looked up (for video binding).
     pub lineage: Option<Vec<u32>>,
     /// The desktop entry a toplevel's process was launched from, once looked up (launch.rs).
