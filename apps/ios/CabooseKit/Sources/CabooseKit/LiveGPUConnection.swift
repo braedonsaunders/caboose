@@ -3,6 +3,10 @@ import Foundation
 public enum LiveGPUError: Error, Equatable, Sendable {
     case invalidEndpoint, invalidProtocol, compression, textMessage, messageTooLarge, overflow
     case notOpen, closed, missingNativeBinding, drainTimedOut
+    /// The host holds no executor for the resume credential (HTTP 410).
+    case resumeRefused
+    /// No pong from the host for longer than the relay's own silence limit.
+    case silent
 }
 
 /// One-shot transport. A reconnect always creates a new instance; no queued bytes survive it.
@@ -160,14 +164,21 @@ final class LiveGPUOutboundQueue {
 
 /// Dedicated live socket, independent of the display/replay transport. Events are ordered
 /// on a private network queue; consumers must admit and dispatch blocking work elsewhere.
-public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
+public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionWebSocketDelegate, @unchecked Sendable {
     public static let subprotocolName = "caboose.gpu.live.v1"
     /// Capabilities of this app's native decoder that a computer may use: it registers
     /// objects under Vulkan handles the guest assigns (patch 0026), including descriptor
     /// sets and command buffers (patch 0027), serves the completion feed (patch 0028), runs
     /// presents ordered behind device-stream ORDER marks, and keeps the computer's shader
-    /// modules to take later ones by hash (docs/gpu-live.md, "Shader cache").
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache"
+    /// modules to take later ones by hash (docs/gpu-live.md, "Shader cache"), and resumes
+    /// its executor on a new socket ("Resuming an executor").
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume"
+    static let resumeHeader = "X-Caboose-GPU-Resume"
+    /// A resume attempt waits this long for its upgrade; the next follows at once.
+    static let resumeTimeout: TimeInterval = 3
+    /// The host relay ends a phone silent for 3 s; one that hears no pong for as long has
+    /// lost the host, and a resumable executor reconnects instead of waiting on TCP.
+    static let silenceLimit: TimeInterval = 3
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
@@ -182,11 +193,35 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     /// even while delivery to a busy decoder holds back receiving (and so pong replies).
     private let pingQueue = DispatchQueue(label: "caboose.gpu.ping")
     private var pinger: DispatchSourceTimer?
+    private var lastPong = DispatchTime.now()
+    private var closeCode = URLSessionWebSocketTask.CloseCode.normalClosure
+    private let credentialLock = NSLock()
+    private var credential: String? // set on queue before .opened, under credentialLock
+    /// The host's resume credential from the upgrade response; nil when it issued none.
+    var resumeCredential: String? { credentialLock.withLock { credential } }
+    var queuedMessages: Int { budget.retained.count }
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
     public init(hostURL: URL, phoneToken: String) throws {
         request = try Self.makeRequest(hostURL: hostURL, phoneToken: phoneToken)
+    }
+
+    /// A socket for a validated request, resuming the host's executor when given its credential.
+    init(request: URLRequest, resumeCredential: String?) {
+        var request = request
+        if let resumeCredential, Self.validCredential(resumeCredential) {
+            request.setValue(resumeCredential, forHTTPHeaderField: Self.resumeHeader)
+            request.timeoutInterval = Self.resumeTimeout
+        }
+        self.request = request
+    }
+
+    /// 32 bytes in unpadded base64url.
+    static func validCredential(_ value: String) -> Bool {
+        value.utf8.count == 43 && value.utf8.allSatisfy { byte in
+            (0x41...0x5a).contains(byte) || (0x61...0x7a).contains(byte) || (0x30...0x39).contains(byte) || byte == 0x2d || byte == 0x5f
+        }
     }
 
     static func makeRequest(hostURL: URL, phoneToken: String) throws -> URLRequest {
@@ -259,6 +294,14 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
         queue.async { [self] in finish(nil) }
     }
 
+    func closeSuspended() {
+        budget.revoke()
+        queue.async { [self] in
+            closeCode = URLSessionWebSocketTask.CloseCode(rawValue: 4001) ?? .goingAway
+            finish(nil)
+        }
+    }
+
     private func pump() {
         guard !ended, budget.active, !outbound.isSending, let task,
               let batch = outbound.nextBatch() else { return }
@@ -278,6 +321,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
                 guard !ended, budget.active else { return }
                 switch result {
                 case .success(let message):
+                    lastPong = .now() // any message proves the host is there
                     do { event?(.bytes(try Self.binaryBytes(message))); receive() }
                     catch { finish(error) }
                 case .failure(let error): finish(error)
@@ -291,7 +335,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
         ended = true; ready = false; budget.revoke()
         pinger?.cancel(); pinger = nil
         outbound.discardPending()
-        task?.cancel(with: error == nil ? .normalClosure : .policyViolation, reason: nil)
+        task?.cancel(with: error == nil ? closeCode : .policyViolation, reason: nil)
         session?.invalidateAndCancel()
         task = nil; session = nil
         event?(.closed(error)); event = nil
@@ -303,10 +347,25 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
         do {
             let response = webSocketTask.response as? HTTPURLResponse
             try Self.validateUpgrade(selected: selected, extensions: response?.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
+            let issued = response?.value(forHTTPHeaderField: Self.resumeHeader).flatMap { Self.validCredential($0) ? $0 : nil }
+            credentialLock.withLock { credential = issued }
             ready = true; event?(.opened); receive()
+            lastPong = .now()
             let timer = DispatchSource.makeTimerSource(queue: pingQueue)
             timer.schedule(deadline: .now() + 1, repeating: 1)
-            timer.setEventHandler { [weak webSocketTask] in webSocketTask?.sendPing { _ in } }
+            timer.setEventHandler { [weak self, weak webSocketTask] in
+                guard let self, let webSocketTask else { return }
+                webSocketTask.sendPing { [weak self] error in
+                    guard let self, error == nil else { return }
+                    self.queue.async { self.lastPong = .now() }
+                }
+                self.queue.async {
+                    // Only a resumable executor acts on silence; others wait as before.
+                    guard self.resumeCredential != nil, !self.ended,
+                          DispatchTime.now().uptimeNanoseconds - self.lastPong.uptimeNanoseconds > UInt64(Self.silenceLimit * 1e9) else { return }
+                    self.finish(LiveGPUError.silent)
+                }
+            }
             timer.resume(); pinger = timer
         } catch { finish(error) }
     }
@@ -319,6 +378,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task === self.task else { return }
+        if !ready, (task.response as? HTTPURLResponse)?.statusCode == 410 {
+            finish(LiveGPUError.resumeRefused); return
+        }
         // Only didCloseWith(.normalClosure) proves a normal peer close.
         // Completion without that receipt cannot release an executor lease.
         finish(error ?? LiveGPUError.closed)
