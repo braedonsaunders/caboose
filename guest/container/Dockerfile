@@ -18,6 +18,16 @@ RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 COPY gpu/gbm /gbm
 RUN make -C /gbm BUILD=/out/gbm /out/gbm/vgem_gbm.so
 
+# Xwayland with DRI3 on the vgem render node (guest/xwayland).
+FROM debian:trixie-slim AS xwayland
+ENV DEBIAN_FRONTEND=noninteractive
+RUN printf 'deb-src https://deb.debian.org/debian trixie main\ndeb-src https://security.debian.org/debian-security trixie-security main\n' > /etc/apt/sources.list.d/src.list && \
+    apt-get update && apt-get build-dep -y xwayland && apt-get install -y --no-install-recommends dpkg-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY xwayland /xwayland
+ARG XWAYLAND_BUILD_JOBS=2
+RUN apt-get update && XWAYLAND_JOBS="$XWAYLAND_BUILD_JOBS" /xwayland/build.sh /out/xwayland && rm -rf /var/lib/apt/lists/*
+
 # The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
 FROM debian:trixie-slim AS gpu
 ENV DEBIAN_FRONTEND=noninteractive
@@ -129,6 +139,8 @@ RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
     install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so && \
     install -D -m 0644 /tmp/vgem_gbm.so "/usr/lib/$triplet/gbm/vgem_gbm.so" && rm /tmp/vgem_gbm.so
+COPY --from=xwayland /out/xwayland /tmp/xwayland
+RUN dpkg -i /tmp/xwayland/xwayland_*.deb && apt-mark hold xwayland && rm -rf /tmp/xwayland
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
 COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session

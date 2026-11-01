@@ -25,6 +25,9 @@ Vendor `0x7e` is not allocated in `drm_fourcc.h`; the vendor byte is below `0x80
 carries a modifier as two signed 32-bit attributes, and Chromium refuses a half that does
 not fit one.
 
+A linear NV12 or P010 buffer has one more page after its planes, where the VA-API driver
+that decodes into it writes the picture's identity ([gpu-media.md](gpu-media.md#surface-identity)).
+
 A caller that offers `CABOOSE_FORMAT_MOD_REMOTE` among its modifiers and does not ask for
 a CPU-visible layout (`GBM_BO_USE_LINEAR`, `GBM_BO_USE_WRITE`, `GBM_BO_USE_CURSOR`) gets a
 remote buffer; any other allocation is linear. A remote buffer cannot be mapped.
@@ -102,4 +105,5 @@ The `vgem` module ships with the WSL2 kernel and with distribution kernels and i
 with `modprobe vgem`; it creates buffers only on its primary node, so a process that
 allocates needs both nodes. Chromium skips render nodes whose driver is `vgem` when it
 looks for one, so it is started with `--render-node-override` naming the computer's
-render node.
+render node. X11 clients open the node through Xwayland's DRI3, which caboose-display enables
+on the seat that renders on the phone's GPU ([guest/xwayland](../guest/xwayland/README.md)).
