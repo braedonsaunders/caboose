@@ -22,7 +22,8 @@ was absent are affected. A device on the phone's GPU, or a CPU device made while
 executor existed, is left alone. Once lost, a device stays lost.
 
 Only processes that recover from device loss move, as `CABOOSE_GPU_ON_LOSS` says (the rule
-the phone's driver applies): `auto` moves Chromium-family GPU processes and Qt, `pause`
+the phone's driver applies): `auto` moves Chromium-family GPU processes (by `--type=gpu-process`,
+or `--type=zygote` for one forked from a zygote, as Steam's web views are) and Qt, `pause`
 moves nothing, and any other value moves every such device. A process that stays keeps its
 CPU device and is recorded as running on the CPU until relaunched: once a phone executor is
 available, the layer writes `placement/<pid>` beside the broker's socket (directory 0700),

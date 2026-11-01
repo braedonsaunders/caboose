@@ -19,6 +19,9 @@ int main() {
     assert(movesToPhone("restart", "vkcube", none));
     assert(!movesToPhone("pause", "chromium --type=gpu-process", none));
     assert(movesToPhone("auto", "steamwebhelper --type=gpu-process --x", none));
+    // Steam's GPU process, forked from its zygote, carries the zygote's command line.
+    assert(movesToPhone("auto", "steamwebhelper --type=zygote --no-zygote-sandbox --no-sandbox", none));
+    assert(!movesToPhone("pause", "steamwebhelper --type=zygote", none));
     assert(movesToPhone("auto", "qml6 a.qml", qt));
     assert(!movesToPhone("auto", "glxgears", none));
     assert(!movesToPhone("auto", "chromium --type=renderer", none));

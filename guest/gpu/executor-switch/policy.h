@@ -23,13 +23,16 @@ inline bool cpuImplementation(uint32_t vendor, int deviceType) {
 // recreates them on the phone. That suits processes that recover from device loss, which is
 // what CABOOSE_GPU_ON_LOSS says, as the phone's driver reads it: `pause` stays where it is;
 // `auto` moves Chromium-family GPU processes and Qt and leaves everything else; anything else,
-// including no value, moves.
+// including no value, moves. A GPU process forked from a Chromium zygote (Steam's web views,
+// started with --no-zygote-sandbox) keeps the zygote's command line, `--type=zygote`; of a
+// zygote's children only the GPU process creates Vulkan devices.
 inline bool movesToPhone(const char* mode, const std::string& commandLine,
                          const std::vector<std::string>& libraries) {
     if (!mode) return true;
     if (std::strcmp(mode, "pause") == 0) return false;
     if (std::strcmp(mode, "auto") != 0) return true;
     if (commandLine.find("--type=gpu-process") != std::string::npos) return true;
+    if (commandLine.find("--type=zygote") != std::string::npos) return true;
     for (const auto& library : libraries) {
         const auto slash = library.rfind('/');
         const std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
