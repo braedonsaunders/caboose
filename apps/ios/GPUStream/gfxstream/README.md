@@ -97,6 +97,25 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-completion-feed-test
 ```
 
+## Suspension
+
+`executor_gate.*` lets the phone suspend its executor before the app leaves the foreground
+([gpu-live.md](../../../../docs/gpu-live.md#suspending-an-executor)). Every decoder thread
+(`decode_connection.cpp`, including media streams) registers with the gate and passes it
+before each command; a thread waiting in a read, and a completion-feed stream, counts as
+idle. `caboose_gpu_runtime_suspend` closes the gate, waits until every registered thread is
+idle or parked before its next command, then waits every queue idle through
+`VkDecoderGlobalState::waitCabooseQueuesIdle`, each under its queue lock.
+`caboose_gpu_runtime_resume` opens it. A stopped process leaves the gate without running
+the command it was parked before. The portable fixture runs threads against the gate:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/executor_gate_test.cpp \
+  apps/ios/GPUStream/gfxstream/executor_gate.cpp -o /tmp/caboose-executor-gate-test
+/tmp/caboose-executor-gate-test
+```
+
 ## Shader cache
 
 `shader_store.{h,cpp}` is the phone's persistent SPIR-V store and the decoder's
@@ -257,15 +276,15 @@ Fixtures (`CABOOSE_GFXSTREAM_MEDIA_TESTS=ON` in a full configure, or directly):
 cd apps/ios/GPUStream/gfxstream
 c++ -std=c++17 -I. tests/media_wire_test.cpp -o /tmp/media-wire && /tmp/media-wire ../../../../guest/vaapi/tests/gpu-media-vectors.txt
 c++ -std=c++17 -I. tests/media_bitstream_test.cpp media_bitstream.cpp -o /tmp/media-bitstream && /tmp/media-bitstream
-c++ -std=c++17 -I. tests/media_session_test.cpp media_session.cpp media_registry.cpp -o /tmp/media-session && /tmp/media-session
+c++ -std=c++17 -I. tests/media_session_test.cpp media_session.cpp media_registry.cpp executor_gate.cpp -o /tmp/media-session && /tmp/media-session
 # macOS, real VideoToolbox; the AV1 and VP9 cases need tests/media_fixtures.sh (FFmpeg)
 sh tests/media_fixtures.sh /tmp/media-fixtures
 clang++ -std=c++17 -fobjc-arc -I. tests/media_videotoolbox_test.mm media_videotoolbox.mm media_bitstream.cpp \
-  media_session.cpp media_registry.cpp -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
+  media_session.cpp media_registry.cpp executor_gate.cpp -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
   -framework Foundation -o /tmp/media-vt && /tmp/media-vt /tmp/media-fixtures
 # macOS, real MoltenVK (Homebrew molten-vk and vulkan-loader)
 clang++ -std=c++17 -fobjc-arc -I. -I/opt/homebrew/include tests/media_copy_test.mm media_copy.mm \
-  media_videotoolbox.mm media_bitstream.cpp media_session.cpp media_registry.cpp -L/opt/homebrew/lib -lvulkan \
+  media_videotoolbox.mm media_bitstream.cpp media_session.cpp media_registry.cpp executor_gate.cpp -L/opt/homebrew/lib -lvulkan \
   -framework Metal -framework IOSurface -framework VideoToolbox -framework CoreMedia -framework CoreVideo \
   -framework Foundation -o /tmp/media-copy && /tmp/media-copy
 ```

@@ -5,6 +5,7 @@
 #include "socket_stream.h"
 #include "packet_framing.h"
 #include "completion_feed.h"
+#include "executor_gate.h"
 #include "shader_store.h"
 #include "frame_buffer.h"
 #include "gfxstream/host/features.h"
@@ -91,6 +92,9 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
     if (fd < 0 || max_packet < 8 || max_packet > 400u * 1024u * 1024u ||
         max_reply_buffer < 4096 || !thread_info.m_vkInfo || !thread_info.getProcessResources()) return EINVAL;
     SocketStream stream(fd, max_reply_buffer);
+    // Each command passes the suspension gate (docs/gpu-live.md, "Suspending an executor").
+    auto& gate = ExecutorGate::instance();
+    ExecutorGate::Thread gateThread(gate);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
     const bool auditTiming = gfxstream::host::FrameBuffer::getFB() &&
                              gfxstream::host::FrameBuffer::getFB()->getFeatures().CabooseMemoryAudit.enabled();
@@ -200,6 +204,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         }
                         continue;
                     }
+                    if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
                     if (executeLatch(contextId, pending.data(), declared) != 0) return finish(DecodeStage::framing, EPROTO);
                     pending.erase(pending.begin(), pending.begin() + declared);
                     decodedAny = true;
@@ -219,6 +224,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     }
                     if (!parseShaderInventoryPacket(pending.data(), declared))
                         return finish(DecodeStage::framing, EPROTO);
+                    if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
                     const auto store = currentShaderStore();
                     const auto reply = encodeShaderInventoryReply(store ? store->inventory() : std::vector<ShaderKey>{});
                     stream.writeFully(reply.data(), reply.size());
@@ -239,6 +245,8 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         }
                         continue;
                     }
+                    if (opcode != CompletionFeed::kFeedOpcode && !gate.pass(stop))
+                        return finish(DecodeStage::stopped, 0);
                     if (opcode == CompletionFeed::kOrderOpcode) {
                         uint64_t serial = 0;
                         if (!CompletionFeed::parseOrder(pending.data(), size, &serial))
@@ -261,6 +269,8 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     if (decodedAny || pending.size() != size ||
                         !CompletionFeed::parseFeed(pending.data(), size))
                         return finish(DecodeStage::framing, EPROTO);
+                    // The feed only writes records: it never holds a suspension back.
+                    ExecutorGate::Idle feedIdle(gate);
                     return finish(DecodeStage::stopped, completions->run(fd, stop));
                 }
             }
@@ -284,6 +294,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 }
                 continue;
             }
+            if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
             if (diagnostic) diagnostic->stage = DecodeStage::decoder;
             if (decoderEntries) ++*decoderEntries;
 #ifdef CABOOSE_GPU_MEMORY_AUDIT

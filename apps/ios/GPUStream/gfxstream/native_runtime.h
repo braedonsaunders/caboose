@@ -39,6 +39,14 @@ int caboose_gpu_runtime_run_counted(uint64_t token, int fd, size_t max_packet,
 // Blocks until the process's device stream has decoded ORDER mark `serial`, or
 // ECANCELED once it stops. Ordering only: never waits for GPU work.
 int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial);
+// Suspends every process's decoding (docs/gpu-live.md, "Suspending an executor"): each
+// command already running finishes, no further command starts, and then every queue is
+// waited idle. 0 once nothing runs on the GPU; ETIMEDOUT when a command is still running
+// after `timeout_ms` (the gate stays closed and it parks when it finishes); EIO when a
+// queue wait failed. Objects, memory and streams stay as they are.
+int caboose_gpu_runtime_suspend(uint32_t timeout_ms);
+// Lets decoding continue after suspend, also after one that timed out.
+int caboose_gpu_runtime_resume(void);
 // Stop revokes admission, signals upstream cleanup and shuts down its streams.
 int caboose_gpu_runtime_stop(uint64_t token);
 // Finish only after every run has returned. Blocks for upstream queued process
