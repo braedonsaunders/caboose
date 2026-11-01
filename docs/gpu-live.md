@@ -712,12 +712,18 @@ application is configured individually; each toolkit's own GPU path reaches the 
 
 The broker listens on its local socket only while a phone's executor is ready. With no
 phone the driver fails its Vulkan instance and the loader continues with the computer's
-drivers; GTK and Chromium draw with lavapipe.
+drivers, and the routing layer presents lavapipe as a virtual GPU named `Caboose GPU (no
+phone attached)`: applications that pick their rendering path once at launch take their GPU
+paths on it, so a computer started or relaunched without the phone draws the same way it
+will on the phone.
 Those applications draw on the computer and reach the phone as pictures, like every
 application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
-environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
-lavapipe device lose itself once a phone's executor is ready, and an application that
-recreates lost devices, as Chromium does, moves to the phone.
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes the
+lavapipe devices of processes that recover from device loss (Chromium-family GPU processes,
+including Steam's web views, and Qt) lose themselves once a phone's executor is ready, and
+they move to the phone. Every other process keeps its lavapipe device until it is relaunched
+and is listed in the running-apps API with `gpuPlacement: "cpu-until-relaunch"`, so the
+phone can offer to relaunch it on its GPU.
 
 When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
 `restart` reports device loss, `pause` holds the application until the phone returns.

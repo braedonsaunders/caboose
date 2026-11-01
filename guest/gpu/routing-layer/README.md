@@ -11,6 +11,13 @@ turns it off.
   lavapipe last, keeping the driver's order among equals. Applications that take the
   first device, and toolkits such as Zink that take the first suitable one, render on
   the phone whenever it is attached.
+- **CPU implementations without the phone.** While no phone is listed, a CPU implementation
+  is presented as a virtual GPU named `Caboose GPU (no phone attached)`, with driver name
+  `Caboose` (its driver ID stays true: Zink and ANGLE key workarounds on it). Applications
+  that choose their rendering path once at launch (Chromium's and Steam's GPU acceleration,
+  Firefox's WebRender, Zink, which refuses CPU devices) take their GPU paths and keep them;
+  the executor switch moves those that recover from device loss to the phone when it attaches.
+  `fossilize_replay`, kept off the phone, sees the CPU implementation as it is.
 - **CPU implementations beside the phone.** While the phone's GPU is listed, CPU
   implementations such as lavapipe are not, so applications that pick a device by their
   own rules, or judge the computer by every device they are offered (Steam turns its GPU
