@@ -196,6 +196,20 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         socket?.close()
     }
 
+    /// `suspendTransport` once every retained envelope is acknowledged, or after `timeout`.
+    func suspendTransport(afterAcknowledgement timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        func check() {
+            let waiting = condition.withLock { !ended && retainedHead < retained.count }
+            if waiting && Date() < deadline {
+                timers.asyncAfter(deadline: .now() + 0.05) { check() }
+            } else {
+                suspendTransport()
+            }
+        }
+        check()
+    }
+
     /// Ends the socket for the background with code 4001; the host holds the executor for its
     /// extended window. `resumeTransport` reconnects.
     func suspendTransport() {

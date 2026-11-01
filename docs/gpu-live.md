@@ -89,6 +89,10 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
 | 40 | ACK | Session, sequence 0 | Highest contiguous sequence received u64 |
 | 41 | RESUME | Session, sequence 0 | Highest contiguous sequence received u64, reserved u64 zero, 16-byte nonzero nonce |
+| 42 | EXECUTOR_SUSPEND | Session | Empty, phone to broker |
+| 43 | QUIESCE | Session | Empty, broker to phone |
+| 44 | QUIESCED | Session | Empty, phone to broker |
+| 45 | EXECUTOR_RESUME | Session | Mode u32 (0 in place), reserved u32 zero; phone to broker |
 
 Kinds 14 and 15 are reserved and rejected.
 
@@ -393,6 +397,35 @@ received. Neither the native executor nor the broker sees the gap. After 30 s wi
 splice, or a 410, the executor ends as after any lost transport. The phone prints
 `CABOOSE_GPU_RESUMED received=… sent=… replayed=…` after each splice.
 
+## Suspending an executor
+
+In a resumable session the phone suspends its executor in place when the app starts to leave
+the foreground (`willResignActive`), while iOS still runs its GPU work, and keeps every Vulkan
+object, memory allocation and surface through the background. First it closes the native
+suspension gate (`caboose_gpu_runtime_suspend`, [the adapter](../apps/ios/GPUStream/gfxstream/README.md#suspension)):
+each command already decoding finishes, no decoder starts another, and every queue is
+waited idle, so nothing reaches the GPU while the app is away. It then sends
+EXECUTOR_SUSPEND and holds every later process-scoped message, in order, without decoding
+it. The broker stops reading its guest streams at envelope boundaries, so guest processes
+block on their next call that needs the phone, and sends QUIESCE after what it had already
+read. The phone answers QUIESCED once every reply its decoders wrote has been handed to the
+transport, and sends nothing further until it resumes. Owner surface revocations wait for
+the resume too.
+
+In the background the phone closes its socket with code 4001 once the broker has
+acknowledged everything it sent, or after 2 s; the host holds a suspended executor for its
+extended window, as the relay describes. When the app is active again the phone resumes the
+socket ([Resuming an executor](#resuming-an-executor)), opens the gate, sends
+EXECUTOR_RESUME with mode 0, and decodes the messages it held. A suspension cancelled before
+QUIESCE arrives (a notification or Control Centre pull) decodes at once and sends
+EXECUTOR_RESUME right after its QUIESCED, so the broker always sees EXECUTOR_SUSPEND,
+QUIESCE, QUIESCED and EXECUTOR_RESUME in that order.
+
+A suspension whose commands do not finish within 1 s keeps its gate closed; those commands
+park when they end. A session that is not resumable, or a native runtime without the gate,
+drains its executor on backgrounding as before. If iOS ends the app while it is suspended,
+the hold expires and the executor is lost as after any lost transport.
+
 ## Window identity boundary
 
 The optional owner display hello field `gpu_live_epoch` is exactly 16 nonzero
@@ -597,10 +630,11 @@ reject. Already-in-transit query or present requests receive a local stale-owner
 error while retirement is pending. No successful retirement is inferred from the
 request being sent.
 
-App backgrounding requests bounded UIKit background time for graceful executor
-drain; expiration aborts local transport. iOS runs no GPU work in the background, so
-the executor always leaves then, even while the display connection stays open for
-sound. The host relay pings the phone every second and ends the relay after 3 s of
+App backgrounding suspends a resumable executor in place
+([Suspending an executor](#suspending-an-executor)). Any other executor is drained with
+bounded UIKit background time; expiration aborts local transport. iOS runs no GPU work in
+the background, so such an executor always leaves then, even while the display
+connection stays open for sound. The host relay pings the phone every second and ends the relay after 3 s of
 silence, so a phone that leaves without closing ends its executor within seconds.
 When the executor's streams end, every guest process using it sees
 `VK_ERROR_DEVICE_LOST` at once, with no waits and no aborts, and recreates its

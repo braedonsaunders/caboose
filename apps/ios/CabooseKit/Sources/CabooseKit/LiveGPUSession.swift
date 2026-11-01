@@ -99,6 +99,41 @@ public final class LiveGPUSession: @unchecked Sendable {
         cleanup.asyncAfter(deadline: .now() + drainTimeout, execute: deadline)
     }
 
+    /// Suspends the executor in place before the app leaves the foreground (docs/gpu-live.md,
+    /// "Suspending an executor"). `done(true)` once native decoding has stopped and the broker
+    /// was asked to hold; false when this executor cannot suspend (the computer does not
+    /// resume executors, or it is closing), so the caller drains it as before. `quiesced`
+    /// follows once the broker's hold is confirmed.
+    public func suspend(quiesced: @escaping @Sendable () -> Void, done: @escaping @Sendable (Bool) -> Void) {
+        lock.lock()
+        guard started, opened, !stopping, !draining,
+              (transport as? LiveGPUResumableTransport)?.negotiatedMode == .resumable,
+              let suspending = consumer as? LiveGPUSuspending else { lock.unlock(); done(false); return }
+        worker.async { [self] in
+            guard ingress.active else { done(false); return }
+            do { done(try suspending.suspend(quiesced: quiesced)) } catch { stop(error); done(false) }
+        }
+        lock.unlock()
+    }
+
+    /// Ends a suspension, also one whose QUIESCE has not arrived yet.
+    public func resume() {
+        lock.lock()
+        guard started, !stopping, let suspending = consumer as? LiveGPUSuspending else { lock.unlock(); return }
+        (transport as? LiveGPUResumableTransport)?.resumeTransport()
+        worker.async { [self] in
+            guard ingress.active else { return }
+            do { try suspending.resumeExecutor() } catch { stop(error) }
+        }
+        lock.unlock()
+    }
+
+    /// Closes a suspended executor's socket for the background (code 4001) once the broker
+    /// has acknowledged everything sent; the host holds the executor for its extended window.
+    public func suspendTransport() {
+        (transport as? LiveGPUResumableTransport)?.suspendTransport(afterAcknowledgement: 2)
+    }
+
     /// Owner-view invalidation joins the same bounded serial queue as peer input.
     /// It does not close the executor or infer native retirement.
     func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) {
