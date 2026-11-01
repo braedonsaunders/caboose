@@ -354,8 +354,10 @@ unresolved and inserted modules, and the archive's hits and misses since launch.
 With `0x8000`, the phone also keeps 4096-byte pieces of mapped memory a computer uploads, by
 the BLAKE3-256 of their bytes, so a later process names a piece it uploads again (the same
 image at the next launch) instead of sending it. The store is `uploads/` in the computer's
-directory beside `shaders/`: packs of 16384 slots, each the 32-byte key and the piece, with an
-in-memory index of key prefixes rebuilt when the app opens it. The budget is 1 GiB, at most 5% of
+directory beside `shaders/`: packs of a table of 16384 32-byte keys followed by 16384 4096-byte
+slots. A slot is written before its key, so an interrupted write leaves an empty slot, and a slot
+is checked against its key when it is read. Opening the store reads only the key tables (512 KiB
+a pack) into an in-memory index of key prefixes. The budget is 1 GiB, at most 5% of
 the free space; opening the store drops whole least recently used packs, and nothing is removed
 while the app runs.
 
