@@ -154,7 +154,7 @@ impl State {
         w.identified = true;
         w.icon = icon;
         if let Some(pid) = pid {
-            w.lineage = Some(crate::video::lineage(pid));
+            w.lineage = Some(crate::launch::lineage(pid));
         }
     }
 }

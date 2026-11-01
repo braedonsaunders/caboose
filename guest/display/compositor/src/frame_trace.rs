@@ -1,4 +1,4 @@
-//! When each window committed, when its pictures went to the client, and when input
+//! When each window committed, when the compositor presented its pictures, and when input
 //! arrived, in CLOCK_MONOTONIC microseconds: the seat's timeline for frame lab
 //! (guest/framelab), read through the control socket's `frames` request. Each ring keeps
 //! the newest [`RING`] entries, so a reader polling every few seconds misses nothing at
@@ -34,21 +34,19 @@ impl<T: Copy> Ring<T> {
     }
 }
 
-/// A picture sent to the client: when, the commit time of its content (its pts), its
-/// encoded bytes (frame or tiles), and whether it only
-/// sharpened content already sent.
+/// A picture the compositor rendered and asked the broker to show: when, the commit time
+/// of the newest content it holds, and the bytes its texture uploads copied.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Sent {
+pub struct Present {
     pub at_us: u64,
-    pub pts_us: u64,
+    pub commit_us: u64,
     pub bytes: u64,
-    pub refined: bool,
 }
 
 #[derive(Default, Debug)]
 pub struct WindowTrace {
     pub commits: Ring<u64>,
-    pub sent: Ring<Sent>,
+    pub presents: Ring<Present>,
 }
 
 /// Input from the client, by kind.

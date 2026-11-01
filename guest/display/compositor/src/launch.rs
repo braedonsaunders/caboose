@@ -64,6 +64,27 @@ pub fn read_environ(pid: u32) -> Option<Vec<u8>> {
     std::fs::read(format!("/proc/{pid}/environ")).ok()
 }
 
+/// The parent of a process, from /proc.
+fn parent(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// A process and its ancestors up to (not including) init.
+pub fn lineage(pid: u32) -> Vec<u32> {
+    let mut out = vec![pid];
+    let mut p = pid;
+    while let Some(pp) = parent(p) {
+        if pp <= 1 || out.contains(&pp) || out.len() > 64 {
+            break;
+        }
+        out.push(pp);
+        p = pp;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

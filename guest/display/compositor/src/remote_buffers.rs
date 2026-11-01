@@ -2,10 +2,12 @@
 //!
 //! A dma-buf with [`MOD_REMOTE`] holds no pixels: they are phone GPU memory that the
 //! process which rendered them registered with the GPU broker. The compositor accepts such
-//! a buffer without mapping it. When a toplevel commits one, the compositor asks the broker
-//! to show it in that window ([`crate::gpu_control::buffer_present`]) and keeps the
-//! client's buffer until the broker reports it released, as a GPU compositor would until
-//! scanout finished.
+//! a buffer without mapping it. Every picture reaches the phone as one: a window whose tree
+//! is one client buffer covering it presents that buffer, and every other window presents
+//! an image the compositor rendered into one of its own (render.rs). Either way the
+//! compositor asks the broker to show it ([`crate::gpu_control::buffer_present`]) and holds
+//! it until the broker reports it released, as a GPU compositor would until scanout
+//! finished.
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Format, Fourcc, Modifier};
 use smithay::backend::renderer::utils::Buffer;
@@ -64,27 +66,36 @@ pub fn pending_fence(dmabuf: &Dmabuf) -> Option<OwnedFd> {
     (unsafe { libc::poll(&mut ready, 1, 0) } == 0).then_some(fence)
 }
 
+/// What a present holds until the broker releases it.
+#[derive(Debug)]
+pub enum Held {
+    /// A client's buffer, released to the client when the hold ends.
+    Client { _buffer: Buffer },
+    /// One of the compositor's window images: the canvas it belongs to (render.rs) and its index there.
+    Own { canvas: u64, index: usize },
+}
+
 /// Remote buffers the broker has been asked to show, kept until it releases them.
 #[derive(Default)]
 pub struct Presents {
     next: u64,
-    outstanding: HashMap<u64, (u64, Buffer)>,
+    outstanding: HashMap<u64, (u64, Held)>,
     /// Per window, the one present waiting for its buffer's rendering to finish.
     fenced: HashMap<u64, (u64, smithay::reexports::calloop::RegistrationToken)>,
 }
 
 impl Presents {
-    /// Holds the client's buffer for a new present to `window`, returning its request ID.
-    pub fn begin(&mut self, window: u64, buffer: Buffer) -> u64 {
+    /// Holds a buffer for a new present to `window`, returning its request ID.
+    pub fn begin(&mut self, window: u64, held: Held) -> u64 {
         self.next += 1;
-        self.outstanding.insert(self.next, (window, buffer));
+        self.outstanding.insert(self.next, (window, held));
         self.next
     }
 
-    /// The broker released a present's buffer: dropping the last hold releases it to the
-    /// client. False for an unknown request.
-    pub fn released(&mut self, request: u64) -> bool {
-        self.outstanding.remove(&request).is_some()
+    /// The broker released a present's buffer: its window and what was held. Dropping a
+    /// client's hold releases the buffer to the client. None for an unknown request.
+    pub fn released(&mut self, request: u64) -> Option<(u64, Held)> {
+        self.outstanding.remove(&request)
     }
 
     /// Whether the window has a present the broker has not released: the only windows a
@@ -108,11 +119,11 @@ impl Presents {
         false
     }
 
-    /// Releases every held buffer, when the broker can no longer report releases, and
-    /// returns the fence waits to cancel.
-    pub fn release_all(&mut self) -> Vec<smithay::reexports::calloop::RegistrationToken> {
-        self.outstanding.clear();
-        self.fenced.drain().map(|(_, (_, token))| token).collect()
+    /// Releases every held buffer, when the broker can no longer report releases: the
+    /// fence waits to cancel, and what was held, by window.
+    pub fn release_all(&mut self) -> (Vec<smithay::reexports::calloop::RegistrationToken>, Vec<(u64, Held)>) {
+        let held = self.outstanding.drain().map(|(_, held)| held).collect();
+        (self.fenced.drain().map(|(_, (_, token))| token).collect(), held)
     }
 }
 
@@ -124,10 +135,25 @@ mod tests {
     fn a_present_holds_its_buffer_until_released() {
         let mut presents = Presents::default();
         assert!(!presents.presenting(7));
-        assert!(!presents.released(1));
-        assert!(presents.release_all().is_empty());
+        assert!(presents.released(1).is_none());
+        let (tokens, held) = presents.release_all();
+        assert!(tokens.is_empty() && held.is_empty());
         assert!(!presents.presenting(7));
         assert!(!presents.fence_signaled(7, 1));
+    }
+
+    #[test]
+    fn the_compositors_own_images_are_held_and_released_by_request() {
+        let mut presents = Presents::default();
+        let first = presents.begin(7, Held::Own { canvas: 1, index: 0 });
+        let second = presents.begin(8, Held::Own { canvas: 1, index: 1 });
+        assert!(presents.presenting(7) && presents.presenting(8));
+        assert!(matches!(presents.released(first), Some((7, Held::Own { canvas: 1, index: 0 }))));
+        assert!(!presents.presenting(7));
+        assert!(presents.released(first).is_none(), "a release is reported once");
+        let (_, held) = presents.release_all();
+        assert!(matches!(held.as_slice(), [(8, Held::Own { index: 1, .. })]));
+        assert!(presents.released(second).is_none());
     }
 
     #[test]

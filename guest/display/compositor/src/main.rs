@@ -1,6 +1,5 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
-mod atlas;
 mod audio;
 mod devices;
 mod clipboard;
@@ -9,7 +8,6 @@ mod control;
 mod dbus;
 mod displays;
 mod dnd;
-mod encode;
 mod frame_trace;
 mod game;
 #[allow(dead_code)] // Private live GPU remains disabled until its bridge is validated.
@@ -28,20 +26,18 @@ mod keymap;
 mod launch;
 mod net;
 mod pencil;
+mod picture;
 mod pipes;
-mod render;
-mod draw;
-mod scene;
+mod present;
 mod remote_buffers;
+mod render;
 mod render_node;
-mod scroll;
 mod session;
 mod state;
-mod stream;
 mod targets;
 mod text_input;
 mod transfers;
-mod video;
+mod upload;
 mod windows;
 mod x11_focus;
 mod x11_identity;
@@ -51,10 +47,7 @@ mod xdnd;
 mod x11_scale;
 mod xwm;
 
-use config::{Config, Parsed, RendererChoice};
-use encode::Encoders;
-use smithay::backend::renderer::pixman::PixmanRenderer;
-use smithay::backend::renderer::ImportDma;
+use config::{Config, Parsed};
 use smithay::input::keyboard::{xkb, XkbConfig};
 use smithay::reexports::calloop::channel::{channel, Event as ChannelEvent};
 use smithay::reexports::calloop::generic::Generic;
@@ -102,7 +95,7 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("CABOOSE_DISPLAY_LOG")
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,smithay=warn")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -119,6 +112,17 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // What applications inherit from the compositor's own environment, read before the
+    // compositor sets up its own GPU stack.
+    let _ = INHERITED.set(
+        PASSED_ENV.iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))).collect(),
+    );
+    let icd = std::path::Path::new(GPU_LIVE_ICD);
+    render::configure_process(
+        icd.is_file().then_some(icd),
+        config.private_gpu_stream.as_deref(),
+        config.private_gpu_surface.as_deref(),
+    );
     if let Err(e) = run(config) {
         eprintln!("caboose-display: {e}");
         std::process::exit(1);
@@ -135,22 +139,20 @@ fn exit_with(mode: &str, result: std::io::Result<()>) {
 /// udev's control socket, there when udevd runs.
 const UDEV_CONTROL: &str = "/run/udev/control";
 
-/// The compositor's own GPU selection, passed on so applications render the same way
-/// (Mesa's D3D12 driver on WSL, a VA-API driver choice).
+/// The GPU selection the compositor was started with, passed on so applications render the
+/// same way (Mesa's D3D12 driver on WSL, a VA-API driver choice).
 const PASSED_ENV: &[&str] = &["GALLIUM_DRIVER", "MESA_D3D12_DEFAULT_ADAPTER_NAME", "LIBVA_DRIVER_NAME"];
 
+/// [`PASSED_ENV`] as the compositor's environment had it at start.
+static INHERITED: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
 /// Whether the Caboose VA-API driver is installed where libva looks.
-fn passthrough_driver_installed() -> bool {
+fn va_driver_installed() -> bool {
     let dirs = std::env::var("LIBVA_DRIVERS_PATH").unwrap_or_else(|_| "/usr/lib/x86_64-linux-gnu/dri".into());
     dirs.split(':').any(|d| std::path::Path::new(d).join("caboose_drv_video.so").is_file())
 }
 
-fn launch_env(
-    config: &Config,
-    x_display: Option<u32>,
-    xauthority: Option<&std::path::Path>,
-    video_socket: Option<&std::path::Path>,
-) -> Vec<(String, String)> {
+fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::path::Path>) -> Vec<(String, String)> {
     let mut env = vec![("WAYLAND_DISPLAY".to_owned(), config.socket.clone())];
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         env.push(("XDG_RUNTIME_DIR".into(), dir));
@@ -161,7 +163,6 @@ fn launch_env(
             env.push(("XAUTHORITY".into(), a.display().to_string()));
         }
     }
-    let is_agent = std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") || !config.games;
     // Agent application state and IPC must follow its private home on every launch.
     // The owner keeps the existing environment contract.
     if std::env::var("CABOOSE_SEAT").as_deref() == Ok("agent") {
@@ -185,30 +186,13 @@ fn launch_env(
         }
         env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
-    if !is_agent && std::env::var("CABOOSE_WSI_AUTO_PROMOTE").as_deref() == Ok("1") {
-        env.push(("CABOOSE_WSI_AUTO_PROMOTE".into(), "1".into()));
-    }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Without udev (a container computer), SDL finds gamepads by watching /dev/input, as
     // it does in Flatpak and pressure-vessel sandboxes (docs/devices.md).
     if !std::path::Path::new(UDEV_CONTROL).exists() {
         env.push(("SDL_JOYSTICK_DISABLE_UDEV".into(), "1".into()));
     }
-    // Video passthrough: players decode through the Caboose VA-API driver, which hands the
-    // bitstream to this compositor. Only here: without the compositor's socket the driver
-    // does not initialise, so the variable must not leak into other sessions.
-    let passthrough = video_socket.filter(|_| passthrough_driver_installed());
-    if let Some(socket) = passthrough {
-        env.push(("LIBVA_DRIVER_NAME".into(), "caboose".into()));
-        env.push(("GST_VA_ALL_DRIVERS".into(), "1".into()));
-        env.push(("CABOOSE_VIDEO_SOCKET".into(), socket.display().to_string()));
-    }
-    env.extend(
-        PASSED_ENV
-            .iter()
-            .filter(|k| !(passthrough.is_some() && **k == "LIBVA_DRIVER_NAME"))
-            .filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), v))),
-    );
+    env.extend(INHERITED.get().cloned().unwrap_or_default());
     env
 }
 
@@ -249,7 +233,7 @@ const GPU_LIVE_REMOVED_ENV: &[&str] = &[];
 /// exist only while a phone's GPU is attached. Without one the driver fails its instance and the
 /// loader keeps the computer's own drivers, so applications draw on the computer and
 /// reach the phone as pictures.
-fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::path::Path) {
+fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::path::Path, va_installed: bool) {
     let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
         return;
     };
@@ -283,13 +267,20 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     env.push(("NODEVICE_SELECT".into(), "1".into()));
     env.push(("CABOOSE_GPU_ON_LOSS".into(), "auto".into()));
     env.extend(GPU_LIVE_TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    // Video decodes on the phone through the Caboose VA-API driver (docs/gpu-media.md),
+    // which reaches the phone through the broker's socket named above.
+    if va_installed {
+        env.retain(|(k, _)| k != "LIBVA_DRIVER_NAME" && k != "GST_VA_ALL_DRIVERS");
+        env.push(("LIBVA_DRIVER_NAME".into(), "caboose".into()));
+        env.push(("GST_VA_ALL_DRIVERS".into(), "1".into()));
+    }
 }
 
 /// Once the compositor (and Xwayland) are up: the env file for launchers, and the
 /// command to run, if any.
 fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::path::Path>) {
-    let mut env = launch_env(&state.config, x_display, xauthority, state.videos.socket.as_deref());
-    apply_gpu_live(&mut env, &state.config, std::path::Path::new(GPU_LIVE_ICD));
+    let mut env = launch_env(&state.config, x_display, xauthority);
+    apply_gpu_live(&mut env, &state.config, std::path::Path::new(GPU_LIVE_ICD), va_driver_installed());
     if let Some(audio) = &state.audio {
         // Applications play into the compositor's PulseAudio, whose sound goes to the phone.
         env.push(("PULSE_SERVER".into(), audio.server_address()));
@@ -297,18 +288,6 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.games.socket {
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
-    }
-    let mut preload: Vec<String> = Vec::new();
-    if let Some(socket) = &state.draw.socket {
-        // Draw-list recorders (guest/draw) find the compositor here (draw.rs). The cairo
-        // recorder is preloaded where installed: inert in processes without cairo, and idle
-        // until a client that draws draw lists asks.
-        env.push(("CABOOSE_DRAW_SOCKET".into(), socket.display().to_string()));
-        preload.extend(scroll::per_architecture(std::path::Path::new(draw::RECORDERS), draw::RECORDER));
-    }
-    if let Some(socket) = &state.scene.socket {
-        // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
-        env.push(("CABOOSE_SCENE_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(ibus) = &state.ibus {
         // Applications without text-input-v3 reach the phone's keyboard through IBus:
@@ -320,27 +299,6 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.control.socket {
         // The seat for local tools: windows, input and pictures (control.rs).
         env.push(("CABOOSE_DISPLAY_CONTROL".into(), socket.display().to_string()));
-    }
-    if let Some(socket) = &state.scroll.socket {
-        // Toolkit scroll reporters find the compositor here (scroll.rs).
-        env.push(("CABOOSE_SCROLL_SOCKET".into(), socket.display().to_string()));
-        // The toolkit reporters' preload libraries, inert in processes without their toolkit.
-        preload.extend(scroll::preload_libraries(std::path::Path::new(scroll::REPORTERS)));
-        // Electron applications load the Electron reporter into their main process.
-        if let Some(electron) = scroll::electron_reporter(std::path::Path::new(scroll::ELECTRON)) {
-            let mut options = format!("--require={electron}");
-            if let Some(existing) = std::env::var("NODE_OPTIONS").ok().filter(|v| !v.is_empty()) {
-                options = format!("{existing} {options}");
-            }
-            env.push(("NODE_OPTIONS".into(), options));
-        }
-    }
-    if !preload.is_empty() {
-        let mut value = preload.join(":");
-        if let Some(existing) = std::env::var("LD_PRELOAD").ok().filter(|v| !v.is_empty()) {
-            value = format!("{existing}:{value}");
-        }
-        env.push(("LD_PRELOAD".into(), value));
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may
@@ -360,6 +318,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     state.targets.env = env.clone();
     if let Some((program, args)) = state.config.command.split_first() {
         let mut command = std::process::Command::new(program);
+        // The compositor's own GPU settings stay its own.
+        for key in render::OWN_ENV {
+            command.env_remove(key);
+        }
         command.args(args).envs(env);
         match command.spawn() {
             Ok(mut child) => {
@@ -421,19 +383,6 @@ fn stop_on_signals(handle: &smithay::reexports::calloop::LoopHandle<'static, Sta
 
 fn run(config: Config) -> Result<(), String> {
     config.validate_private_gpu_seat(std::env::var_os("CABOOSE_SEAT").as_deref() == Some(std::ffi::OsStr::new("agent")))?;
-    let encoders = Encoders::probe(config.encoder, config.settings.clone());
-    if config.list_encoders {
-        for b in &encoders.backends {
-            println!("{}", b.describe());
-        }
-        return Ok(());
-    }
-    if encoders.backends.is_empty() {
-        return Err("no usable encoder".into());
-    }
-    for b in &encoders.backends {
-        tracing::info!("encoder: {}", b.describe());
-    }
     if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
         return Err("XDG_RUNTIME_DIR is not set".into());
     }
@@ -442,26 +391,33 @@ fn run(config: Config) -> Result<(), String> {
     let display: Display<State> = Display::new().map_err(|e| e.to_string())?;
     let dh = display.handle();
 
-    let renderer = match config.renderer {
-        RendererChoice::Pixman => render::Renderer::Pixman(PixmanRenderer::new().map_err(|e| format!("pixman: {e}"))?),
+    let render_node = render_node::find();
+    // The first renderer: on the computer's device until a phone executor is ready.
+    let gpu = match render::Gpu::new(render_node.as_ref().map(|(_, path)| path.as_path())) {
+        Ok(gpu) => {
+            tracing::info!("renderer 1: {}", gpu.name);
+            Some(gpu)
+        }
+        Err(e) => {
+            tracing::error!("no renderer: {e}");
+            None
+        }
     };
-    tracing::info!("renderer: {}", renderer.name());
 
     let compositor = CompositorState::new::<State>(&dh);
     let xdg_shell = XdgShellState::new::<State>(&dh);
     let shm = ShmState::new::<State>(&dh, vec![]);
     let mut dmabuf = DmabufState::new();
-    // linux-dmabuf: the pixman renderer maps linear dmabufs, so clients that allocate
-    // GPU buffers can hand them over without a copy into shm.
-    let render::Renderer::Pixman(r) = &renderer;
-    let mut formats: Vec<_> = r.dmabuf_formats().into_iter().collect();
+    // linux-dmabuf: the renderer imports what its device can sample, so clients that
+    // allocate GPU buffers hand them over without a copy into shm.
+    let mut formats: Vec<_> = gpu.as_ref().map(|g| g.dmabuf_formats()).unwrap_or_default();
     // With the phone GPU, clients may also hand over buffers whose pixels are on the phone.
     if config.private_gpu_stream.is_some() {
         formats.extend(remote_buffers::formats());
     }
     if !formats.is_empty() {
         // With a render node, its dma-buf feedback names it as the device to allocate on.
-        let feedback = render_node::find().and_then(|(device, path)| {
+        let feedback = render_node.clone().and_then(|(device, path)| {
             match DmabufFeedbackBuilder::new(device, formats.iter().copied()).build() {
                 Ok(feedback) => {
                     tracing::info!("render node: {}", path.display());
@@ -552,14 +508,6 @@ fn run(config: Config) -> Result<(), String> {
             }
         })
         .map_err(|e| e.to_string())?;
-    let (done_tx, done_rx) = channel();
-    handle
-        .insert_source(done_rx, |event, _, state: &mut State| {
-            if let ChannelEvent::Msg(done) = event {
-                state.on_encoded(done);
-            }
-        })
-        .map_err(|e| e.to_string())?;
     handle
         .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state: &mut State| {
             state.slow_tick();
@@ -631,19 +579,16 @@ fn run(config: Config) -> Result<(), String> {
         text_inputs,
         windows: Default::default(),
         displays,
-        renderer,
-        encoders,
+        gpu,
+        gpu_generation: 1,
+        next_canvas: 0,
+        render_node: render_node.map(|(_, path)| path),
         net,
         session: None,
-        done_tx,
         input,
         focus_history: Vec::new(),
-        videos: Default::default(),
         games: Default::default(),
-        scene: Default::default(),
-        draw: Default::default(),
         control: Default::default(),
-        scroll: Default::default(),
         targets: Default::default(),
         clipboard: clipboard::Clipboard::new(clip_tx),
         x11: None,
@@ -662,7 +607,6 @@ fn run(config: Config) -> Result<(), String> {
         stats: Default::default(),
         input_trace: Default::default(),
         cursor: None,
-        refine_timer: None,
     };
 
     if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
@@ -694,16 +638,6 @@ fn run(config: Config) -> Result<(), String> {
             None => tracing::info!("no phone devices: XDG_RUNTIME_DIR is not set"),
         }
     }
-    match video::server::socket_path() {
-        Some(path) => match video::server::Videos::listen(&path, &handle) {
-            Ok(v) => {
-                tracing::info!("video socket: {}", path.display());
-                state.videos = v;
-            }
-            Err(e) => tracing::warn!("no video passthrough: cannot listen on {}: {e}", path.display()),
-        },
-        None => tracing::info!("no video passthrough: XDG_RUNTIME_DIR is not set"),
-    }
     match game::socket_path().filter(|_| state.config.games) {
         Some(path) => match game::Games::listen(&path, &handle) {
             Ok(g) => {
@@ -713,17 +647,6 @@ fn run(config: Config) -> Result<(), String> {
             Err(e) => tracing::warn!("no game handoff: cannot listen on {}: {e}", path.display()),
         },
         None => tracing::info!("no game handoff"),
-    }
-    let is_owner_seat = state.config.games && std::env::var("CABOOSE_SEAT").as_deref() != Ok("agent");
-    match scene::socket_path().filter(|_| is_owner_seat) {
-        Some(path) => match scene::SceneServer::listen(&path, &handle) {
-            Ok(s) => {
-                tracing::info!("scene socket: {}", path.display());
-                state.scene = s;
-            }
-            Err(e) => tracing::warn!("no scene socket: cannot listen on {}: {e}", path.display()),
-        },
-        None => tracing::info!("no scene socket"),
     }
     let instance_dir = std::env::var_os("XDG_RUNTIME_DIR").map(|d| state.config.instance_dir(std::path::Path::new(&d)));
     if let Some(dir) = &instance_dir {
@@ -754,26 +677,10 @@ fn run(config: Config) -> Result<(), String> {
             }
             Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
         }
-        let path = dir.join("draw.sock");
-        match draw::DrawServer::listen(&path, &handle) {
-            Ok(d) => {
-                tracing::info!("draw socket: {}", path.display());
-                state.draw = d;
-            }
-            Err(e) => tracing::warn!("no draw socket: cannot listen on {}: {e}", path.display()),
-        }
-        let path = dir.join("scroll.sock");
-        match scroll::ScrollHub::listen(&path, &handle) {
-            Ok(hub) => {
-                tracing::info!("scroll socket: {}", path.display());
-                state.scroll = hub;
-            }
-            Err(e) => tracing::warn!("no scroll reports: cannot listen on {}: {e}", path.display()),
-        }
     }
     // On the seat that renders on the phone's GPU, Xwayland's DRI3 opens the render node
     // (guest/xwayland): X11 clients such as Chromium get their GBM device from it.
-    let dri3_node = state.config.private_gpu_stream.as_ref().and_then(|_| render_node::find()).map(|(_, path)| path);
+    let dri3_node = state.config.private_gpu_stream.as_ref().and_then(|_| state.render_node.clone());
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
         let dir = std::path::Path::new("/tmp/.X11-unix");
@@ -885,13 +792,12 @@ mod tests {
 
     #[test]
     fn applications_prefer_wayland_by_default() {
-        let env = launch_env(&config(&[]), Some(110), None, None);
+        let env = launch_env(&config(&[]), Some(110), None);
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
         assert_eq!(get(&env, "OZONE_PLATFORM"), Some("wayland"));
         assert_eq!(get(&env, "CHROMIUM_USER_FLAGS"), Some("--ozone-platform-hint=auto"));
-        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     #[test]
@@ -901,12 +807,10 @@ mod tests {
             &config(&["--socket", "wayland-caboose-agent", "--x-display", "101", "--no-games"]),
             Some(101),
             Some(auth),
-            None,
         );
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-agent"));
         assert_eq!(get(&env, "DISPLAY"), Some(":101"));
         assert_eq!(get(&env, "XAUTHORITY"), auth.to_str());
-        assert_eq!(get(&env, "CABOOSE_WSI_AUTO_PROMOTE"), None);
     }
 
     const GPU_ARGS: &[&str] = &[
@@ -926,7 +830,7 @@ mod tests {
             ("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned()),
             ("ELECTRON_OZONE_PLATFORM_HINT".to_owned(), "auto".to_owned()),
         ];
-        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd, false);
         assert_eq!(env.iter().filter(|(k, _)| k == "ELECTRON_OZONE_PLATFORM_HINT").count(), 1);
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
@@ -947,6 +851,12 @@ mod tests {
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("zink"), "OpenGL goes through Zink, never Mesa D3D12");
+        assert_eq!(get(&env, "LIBVA_DRIVER_NAME"), None, "no VA-API driver installed");
+        let mut env = vec![("LIBVA_DRIVER_NAME".to_owned(), "d3d12".to_owned())];
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd, true);
+        assert_eq!(env.iter().filter(|(k, _)| k == "LIBVA_DRIVER_NAME").count(), 1);
+        assert_eq!(get(&env, "LIBVA_DRIVER_NAME"), Some("caboose"), "video decodes on the phone");
+        assert_eq!(get(&env, "GST_VA_ALL_DRIVERS"), Some("1"));
         std::fs::remove_file(&icd).unwrap();
     }
 
@@ -955,9 +865,9 @@ mod tests {
         let icd = tempfile_icd();
         let before = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
         let mut env = before.clone();
-        apply_gpu_live(&mut env, &config(&[]), &icd);
+        apply_gpu_live(&mut env, &config(&[]), &icd, true);
         assert_eq!(env, before);
-        apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
+        apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"), true);
         assert_eq!(env, before);
         std::fs::remove_file(&icd).unwrap();
     }
@@ -969,11 +879,11 @@ mod tests {
         let icd = dir.join("icd.json");
         std::fs::write(&icd, "{}").unwrap();
         let mut env = Vec::new();
-        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd, false);
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str(), "only drivers that are installed");
         std::fs::write(dir.join("i386/icd.json"), "{}").unwrap();
         let mut env = Vec::new();
-        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd, false);
         let expected = format!("{}:{}", icd.display(), dir.join("i386/icd.json").display());
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), Some(expected.as_str()));
         std::fs::remove_dir_all(&dir).unwrap();
