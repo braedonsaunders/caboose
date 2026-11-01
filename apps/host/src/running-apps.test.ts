@@ -113,6 +113,8 @@ describe('services', () => {
     const parsed = parseRunningApps({ ...listing([{ ...app, ports: [{ protocol: 'tcp', address: '::', port: 3000 }, { protocol: 'sctp', address: 'x', port: 1 }] }]),
       services: [running, { ...running, state: 'sleepy' }, { ...running, id: 'other.service' }, running] })
     expect(parsed.apps[0]!.ports).toEqual([{ protocol: 'tcp', address: '::', port: 3000 }])
+    expect(parsed.apps[0]!.gpuPlacement).toBeNull()
+    expect(parseRunningApps(listing([{ ...app, gpuPlacement: 'cpu-until-relaunch' }, { ...app, id: 'app-x-9.scope', gpuPlacement: 'warp' }])).apps.map(a => a.gpuPlacement)).toEqual(['cpu-until-relaunch', null])
     expect(parsed.services.map(s => [s.name, s.state, s.ports.length])).toEqual([['postgres', 'active', 1]])
     expect(parseRunningApps(listing([app])).services).toEqual([])
   })

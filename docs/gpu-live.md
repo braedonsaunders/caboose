@@ -769,6 +769,11 @@ session. Counters only, no payloads, handles or names; the task manager's app sc
 ([architecture.md](architecture.md#guest-services)) sum them per app. The file is removed
 when the broker stops.
 
+The task manager also reads `placement/` in the same directory: one file per process, named
+by its pid as the process sees it (a Flatpak sandbox's own pid namespace), holding
+`<placement> <start>`. It matches a file to its process by pid and start time, else by start
+time alone, and ignores files that match nothing.
+
 The broker listens on its local socket only while a phone's executor is ready. With no
 phone the driver fails its Vulkan instance and the loader continues with the computer's
 drivers; GTK and Chromium draw with lavapipe.

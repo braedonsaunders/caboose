@@ -685,9 +685,11 @@ for 30 s) moves processes into scopes, first rule first:
 2. Children forked during a split and left in the scope it came from follow their parent.
 3. A phone terminal session (a child of the terminal service), or an agent task's runner,
    gets its own scope.
-4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
+4. In the session scope, a Flatpak application's sandboxes (by `/.flatpak-info`), with the
+   bubblewrap and `flatpak` processes that started them, join that application's scope.
+5. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
    `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
-5. A toplevel window whose process is in the session scope or a phone terminal session's
+6. A toplevel window whose process is in the session scope or a phone terminal session's
    scope, or in an app scope when the process runs on a terminal under a windowed process
    of that scope that is not on that terminal (a program run from a terminal app), takes
    its process tree into a scope of its own.
@@ -1448,6 +1450,7 @@ the host serves the guest's app scopes. These routes do not wake the computer.
     gpu: { streams: number, surfaces: number, toPhoneBytesPerSecond: number, fromPhoneBytesPerSecond: number } | null,
     processCount: number,
     ports: Array<{ protocol: "tcp" | "udp", address: string, port: number }>,   // its listening sockets; the session's are Caboose's own
+    gpuPlacement: "phone" | "cpu-until-relaunch" | null,   // "cpu-until-relaunch": a process kept a CPU Vulkan device after the phone attached
     processes: Array<{        // at most 256, busiest first
       pid: number, ppid: number,
       name: string,           // at most 64 characters
