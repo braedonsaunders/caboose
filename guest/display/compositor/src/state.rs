@@ -342,8 +342,11 @@ impl State {
             !crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
             return Vec::new();
         }
+        // Top-level windows, and override-redirect ones (menus, tooltips, dropdowns), which
+        // the phone shows as popups placed over their parent: every window an application
+        // draws in gets a phone surface, so none is ever presented by a copy back.
         let toplevels: Vec<(u32, u64)> = self.windows.iter().filter_map(|window| match &window.surface {
-            Surface::X11(x11) if window.parent.is_none() && !x11.is_override_redirect() && x11.alive() =>
+            Surface::X11(x11) if gpu_bindable_x11(window.parent.is_none(), x11.is_override_redirect(), x11.alive()) =>
                 Some((x11.window_id(), window.id)),
             _ => None,
         }).collect();
@@ -573,9 +576,11 @@ impl State {
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {
-                    // A window the phone placed keeps its geometry: CEF rebinding on every
-                    // swapchain recreate would otherwise resize it to the display each time.
-                    if self.windows.get(grant.window).is_some_and(|w| w.gpu_bind_follows_display()) {
+                    // A popup keeps the place and size its application gave it, and a window the
+                    // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
+                    // would otherwise resize it to the display each time.
+                    if self.windows.get(grant.window)
+                        .is_some_and(|window| window.kind != WindowKind::Popup && window.gpu_bind_follows_display()) {
                         self.configure_gpu_window_to_display(grant.window);
                     }
                     self.sync_windows();
@@ -984,9 +989,25 @@ fn is_explicit_buffer_detach(buffer: Option<&BufferAssignment>) -> bool {
     matches!(buffer, Some(BufferAssignment::Removed))
 }
 
+/// Whether an X11 window can be bound to a phone surface: a top-level window, or an
+/// override-redirect one (a menu, tooltip or dropdown, shown as a popup over its parent).
+fn gpu_bindable_x11(top_level: bool, override_redirect: bool, alive: bool) -> bool {
+    alive && (override_redirect || top_level)
+}
+
 #[cfg(test)]
 mod gpu_detach_tests {
-    use super::{is_explicit_buffer_detach, virtual_target_pixels, BufferAssignment};
+    use super::{gpu_bindable_x11, is_explicit_buffer_detach, virtual_target_pixels, BufferAssignment};
+
+    #[test]
+    fn popups_and_top_level_x11_windows_get_phone_surfaces() {
+        assert!(gpu_bindable_x11(true, false, true));
+        assert!(gpu_bindable_x11(false, true, true), "an override-redirect menu, tooltip or dropdown");
+        assert!(!gpu_bindable_x11(false, false, true), "a child window binds through its top-level window");
+        assert!(!gpu_bindable_x11(true, false, false));
+        assert!(!gpu_bindable_x11(false, true, false));
+    }
+
     #[test]
     fn only_explicit_null_buffer_is_a_detach() {
         assert!(!is_explicit_buffer_detach(None));
