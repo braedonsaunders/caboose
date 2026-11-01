@@ -87,6 +87,7 @@ expect_env QT_QPA_PLATFORM 'xcb;wayland'
 expect_env SDL_VIDEODRIVER x11,wayland
 expect_env MOZ_ENABLE_WAYLAND 0
 expect_env LIBGL_KOPPER_DRI2 1
+expect_env ZINK_DESCRIPTORS lazy
 ! grep -q "^MESA_LOADER_DRIVER_OVERRIDE=" "$out/display.env" || fail "launch environment forces a Mesa driver"
 expect_env MESA_GL_VERSION_OVERRIDE 4.5COMPAT
 expect_env CABOOSE_GPU_EXECUTOR_SWITCH 1

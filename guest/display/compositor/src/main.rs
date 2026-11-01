@@ -223,6 +223,9 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GALLIUM_DRIVER", "zink"),
     ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
     ("MESA_GLSL_VERSION_OVERRIDE", "450"),
+    // Zink settles its descriptor mode on a process's first device; one started without a
+    // phone would keep the CPU device's descriptor buffers and fail on the phone's GPU.
+    ("ZINK_DESCRIPTORS", render::ZINK_DESCRIPTORS),
 ];
 
 /// Launch-environment entries the GPU seat drops (none beyond those it replaces).
@@ -840,6 +843,7 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
         assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
+        assert_eq!(get(&env, "ZINK_DESCRIPTORS"), Some("lazy"));
         // Forcing Zink would leave OpenGL without a renderer when no phone is attached.
         assert_eq!(get(&env, "MESA_LOADER_DRIVER_OVERRIDE"), None);
         assert_eq!(get(&env, "MESA_GL_VERSION_OVERRIDE"), Some("4.5COMPAT"));

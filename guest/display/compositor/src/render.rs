@@ -170,6 +170,9 @@ impl Canvas {
     }
 }
 
+/// Zink's descriptor mode on every device: the phone's GPU has no descriptor buffers.
+pub const ZINK_DESCRIPTORS: &str = "lazy";
+
 /// A process-wide setting for the GPU stack, made before any thread starts: the process
 /// environment is read by Mesa and the Vulkan loader, not passed to them.
 pub fn configure_process(icd: Option<&std::path::Path>, stream: Option<&std::path::Path>, surface: Option<&std::path::Path>) {
@@ -177,6 +180,10 @@ pub fn configure_process(icd: Option<&std::path::Path>, stream: Option<&std::pat
     std::env::set_var("GALLIUM_DRIVER", "zink");
     std::env::set_var("CABOOSE_GPU_ROUTING", "1");
     std::env::set_var("NODEVICE_SELECT", "1");
+    // Zink settles its descriptor mode once per process, on its first device: the
+    // computer's CPU device, which has descriptor buffers, would fix it there and every
+    // later renderer on the phone's GPU, which has none, would fail.
+    std::env::set_var("ZINK_DESCRIPTORS", ZINK_DESCRIPTORS);
     if let (Some(icd), Some(stream), Some(surface)) = (icd, stream, surface) {
         std::env::set_var("VK_ADD_DRIVER_FILES", icd);
         std::env::set_var("CABOOSE_GFXSTREAM_SOCKET", stream);
