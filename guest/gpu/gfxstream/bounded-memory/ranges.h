@@ -41,9 +41,14 @@ struct Reservation {
     }
     ~Reservation() { budget.release(held); }
 };
+// Set while a thread flushes the coherent mappings it found before a submit: another
+// thread may unmap or free one of them meanwhile, which needs no flush any more.
+inline thread_local bool skipVanishedMappings = false;
 struct Range {
     uint64_t offset = 0, size = 0, mapBegin = 0, mapEnd = 0, allocation = 0, atom = 0;
     bool whole = false;
+    // The memory is no longer mapped and the caller allows that: nothing is sent for it.
+    bool vanished = false;
     uint8_t* base = nullptr; // allocation-relative shadow, never serialized
     std::shared_ptr<uint8_t> lifetime;
     size_t stagedOffset = 0;
@@ -66,7 +71,9 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     size_t total = 0;
     for (uint32_t i = 0; i < count; ++i) {
         auto& r = plan[i];
-        if (!lookup(i, r) || !r.base || !r.lifetime || !r.atom || r.offset % r.atom ||
+        if (!lookup(i, r)) return outOfHostMemory;
+        if (r.vanished) continue;
+        if (!r.base || !r.lifetime || !r.atom || r.offset % r.atom ||
             r.mapBegin > r.mapEnd || r.mapEnd > r.allocation || r.allocation > SIZE_MAX ||
             r.offset < r.mapBegin || r.offset >= r.mapEnd) return outOfHostMemory;
         if (r.whole) r.size = r.mapEnd - r.offset;
@@ -88,6 +95,7 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     }
     for (uint32_t i = 0; i < count; ++i) {
         const auto& r = plan[i];
+        if (r.vanished) continue;
         const uint64_t larger = std::max(r.atom, granule), smaller = std::min(r.atom, granule);
         const uint64_t step = smaller && larger % smaller == 0 && larger <= payloadBytes ? larger : r.atom;
         uint64_t done = 0;
@@ -103,6 +111,7 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     if (invalidate) {
         for (uint32_t i = 0; i < count; ++i) {
             const auto& r = plan[i];
+            if (r.vanished) continue;
             // Preserve original order, including overlapping ranges.
             std::memcpy(r.base + size_t(r.offset), staged.get() + r.stagedOffset, size_t(r.size));
         }

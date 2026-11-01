@@ -99,5 +99,16 @@ int main() {
     assert(transact(true,1,sharedGet,[&](uint32_t,uint64_t,uint64_t,uint8_t*){++emitted;return 0;},shared)==outOfHostMemory);
     {std::lock_guard<std::mutex> lock(mutex);release=true;}changed.notify_all();worker.join();
     assert(first==0 && !emitted && shared.used()==0 && processBudget.used()==0);
+    // A range whose memory vanished, when the caller allows it, is skipped; the rest are sent.
+    {
+        std::vector<std::pair<uint64_t, uint64_t>> sent;
+        assert(transact(false,2,[&](uint32_t i,Range& out){
+            if (i == 0) { out.vanished = true; return true; }
+            out=range(small,4096,0,2048); return true;
+        },[&](uint32_t i,uint64_t offset,uint64_t size,uint8_t*){ assert(i == 1); sent.emplace_back(offset,size); return 0; })==0);
+        assert(sent.size() == 1 && sent[0].second == 2048);
+        assert(transact(true,1,[&](uint32_t,Range& out){ out.vanished = true; return true; },
+                        [&](uint32_t,uint64_t,uint64_t,uint8_t*){ assert(false); return 0; })==0);
+    }
     std::puts("PASS bounded ranges: 32MiB flush/invalidate, atomic failure/overlap, mapping/atom/tail, metadata and concurrent budgets");
 }

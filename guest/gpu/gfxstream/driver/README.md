@@ -117,6 +117,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0045 dmabuf-imports-in-any-memory-type | A dma-buf import or export takes the dma-buf paths in any memory type instead of the mapped-memory shadow, which refused its chain: on a lavapipe decoder every type is host-visible |
 | 0046 queue-device | Each queue records its device, so media latches are written and completion watches carry their device |
 | 0047 upload-cache | With hello `0x8000`, whole 4096-byte pieces of a flushed range of at least 16 KiB go as the prefix of a piece the phone's upload store holds, or as bytes for it to store while the allowance lasts; the process asks for the store's prefixes once per executor (`../bounded-memory/upload_cache.h`, docs/gpu-live.md "Upload cache") |
+| 0048 coherent-flush-skips-released-mappings | The coherent mappings flushed before a submit skip one another thread unmapped or freed after they were found, instead of failing the submit (`../bounded-memory/ranges.h` `skipVanishedMappings`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
