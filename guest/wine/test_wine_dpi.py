@@ -58,6 +58,21 @@ class Registry(unittest.TestCase):
         self.assertEqual(out, text + '\n"LogPixels"=dword:00000060')
 
 
+class GameDesktop(unittest.TestCase):
+    def test_landscape_and_at_least_1920x1080(self):
+        self.assertEqual(wine_dpi.game_desktop((932, 1356)), (1920, 1080))
+        self.assertEqual(wine_dpi.game_desktop((1338, 911)), (1920, 1080))
+        self.assertEqual(wine_dpi.game_desktop((1290, 2796)), (2796, 1290))
+        self.assertEqual(wine_dpi.game_desktop((0, 0)), (1920, 1080))
+
+    def test_sections_are_matched_whole(self):
+        text = '[Software\\\\Wine\\\\Explorer\\\\Desktops] 1\n"Default"="800x600"\n'
+        out = wine_dpi.with_game_settings(text, (1920, 1080))
+        self.assertIn('[Software\\\\Wine\\\\Explorer\\\\Desktops] 1\n"Default"="1920x1080"\n', out)
+        self.assertIn('[Software\\\\Wine\\\\Explorer] 0\n"Desktop"="Default"\n', out)
+        self.assertEqual(wine_dpi.with_game_settings(out, (1920, 1080)), out)
+
+
 class Density(unittest.TestCase):
     def test_xft_dpi_to_log_pixels(self):
         self.assertEqual(wine_dpi.dpi_for(96 * 1024), 96)
@@ -90,12 +105,17 @@ class Prefixes(unittest.TestCase):
             self.assertEqual(found, [(wine, False), (tricks, False), (game, True), (other, True)])
             # A game prefix the display's DPI reached earlier goes back to 96.
             wine_dpi.apply(game, 192)
-            self.assertEqual(wine_dpi.apply_all(home, 288), [wine, tricks, game, other])
+            self.assertEqual(wine_dpi.apply_all(home, 288, (932, 1356)), [wine, tricks, game, other])
             for prefix in (wine, tricks):
-                self.assertIn('"LogPixels"=dword:00000120', (prefix / "user.reg").read_text())
+                text = (prefix / "user.reg").read_text()
+                self.assertIn('"LogPixels"=dword:00000120', text)
+                self.assertNotIn("Explorer", text)
             for prefix in (game, other):
-                self.assertIn('"LogPixels"=dword:00000060', (prefix / "user.reg").read_text())
-            self.assertEqual(wine_dpi.apply_all(home, 288), [])
+                text = (prefix / "user.reg").read_text()
+                self.assertIn('"LogPixels"=dword:00000060', text)
+                self.assertIn('[Software\\\\Wine\\\\Explorer] 0\n"Desktop"="Default"\n', text)
+                self.assertIn('[Software\\\\Wine\\\\Explorer\\\\Desktops] 0\n"Default"="1920x1080"\n', text)
+            self.assertEqual(wine_dpi.apply_all(home, 288, (932, 1356)), [])
 
     def test_keeps_the_file_mode(self):
         with tempfile.TemporaryDirectory() as home:

@@ -249,6 +249,11 @@ for byte.
   uses the same aspect-fit transform for presentation and input. Explicit fullscreen exit
   resumes ordinary window fitting. No application-specific or fixed minimum output mode
   is inferred from a small phone viewport.
+- A new X11 top-level gets the size it asked for, clamped to its display, except one with
+  no size hints that asks to be larger than the display (a Wine virtual desktop of a
+  fixed resolution): it keeps that size and its `min` is reported as that size, so the
+  phone shows it scaled to fit as a window held larger by its minimum. Shrinking it would
+  cut its picture, since the application keeps drawing at the size it chose.
 - An output mode/origin change reconfigures existing fullscreen and maximized windows
   through the common Wayland/X11 configure path, preserving their state flags. Removed
   outputs first remap to the primary output. Unchanged outputs and ordinary windows do
