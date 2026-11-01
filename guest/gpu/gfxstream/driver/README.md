@@ -145,6 +145,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 11 (`0x800`) | Swapchain images are the guest's own |
 | 12 (`0x1000`) | Query pools use guest-assigned handles (requires bit 7) |
 | 13 (`0x2000`) | Shader modules the phone keeps are named by hash (patch 0041) |
+| 14 (`0x4000`) | The executor resumes across a lost socket and suspends in the background: surface waits have no 10 s deadline (`../virtual-wsi/mesa_surface.inc`) |
 
 ## Runtime switches
 

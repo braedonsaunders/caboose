@@ -76,7 +76,15 @@ static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
 }
 static const bool peerGoneHook=[] { Client::peerGone=caboose::completion::executorEndedIfGone; return true; }();
 extern "C" int caboose_gfxstream_guest_images;
-static Client::Deadline deadline() { return std::chrono::steady_clock::now()+std::chrono::seconds(10); }
+extern "C" int caboose_gfxstream_executor_resume;
+// A surface call's deadline for the phone's reply. An executor that resumes and suspends
+// (hello feature 0x4000) may be away for as long as the host holds it; the broker then ends
+// the connection when it is lost for good, so the wait is bounded only by a day.
+static Client::Deadline deadline() {
+    return std::chrono::steady_clock::now()+(caboose_gfxstream_executor_resume==1
+        ? std::chrono::steady_clock::duration(std::chrono::hours(24))
+        : std::chrono::steady_clock::duration(std::chrono::seconds(10)));
+}
 // Native errno is not a fictional provider VkResult. This is the local WSI API's
 // surface-loss result; the control client retains the original native status.
 static VkResult apiStatus(Status s) {

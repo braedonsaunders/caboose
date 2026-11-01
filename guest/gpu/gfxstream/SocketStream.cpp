@@ -46,13 +46,17 @@ static constexpr unsigned char kHello[48] = {
 // (caboose-bounded-memory/completion_feed.h); 0x400 its presents are ordered behind
 // device-stream ORDER marks instead of a drain; 0x800 swapchain images are the guest's own;
 // 0x1000 it assigns query pool handles; 0x2000 it names shader modules the phone keeps by
-// hash (caboose-shader-cache/shader_cache.h). The broker replies with the features both
+// hash (caboose-shader-cache/shader_cache.h); 0x4000 the executor resumes across a lost
+// socket and suspends in the background, so waits for the phone have no deadline of their own
+// (the broker ends the streams when it is lost for good). The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
-                          kShaderCache = 0x2000;
+                          kShaderCache = 0x2000, kExecutorResume = 0x4000;
 static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                                       kGuestQueryPools | kShaderCache | kExecutorResume,
+                                   kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools,
@@ -93,6 +97,9 @@ int caboose_gfxstream_guest_query_pools = 0;
 // ones it holds (hello feature 0x2000; caboose-shader-cache/shader_cache.h).
 extern "C" int caboose_gfxstream_shader_cache;
 int caboose_gfxstream_shader_cache = 0;
+// 1 when the executor resumes and suspends instead of ending (hello feature 0x4000).
+extern "C" int caboose_gfxstream_executor_resume;
+int caboose_gfxstream_executor_resume = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -264,6 +271,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_guest_images = (features & kGuestImages) ? 1 : 0;
     caboose_gfxstream_guest_query_pools = (features & kGuestHandles) && (features & kGuestQueryPools) ? 1 : 0;
     caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
+    caboose_gfxstream_executor_resume = (features & kExecutorResume) ? 1 : 0;
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif
