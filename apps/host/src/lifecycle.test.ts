@@ -145,18 +145,29 @@ describe('computer lifecycle', () => {
     const check = vi.fn(async () => busy)
     computer.setBusyCheck(check)
     await computer.wake()
-    await vi.advanceTimersByTimeAsync(600_000)
-    expect(check).toHaveBeenCalledOnce()
-    expect(driver.park).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS * 5)
-    expect(check).toHaveBeenCalledTimes(6)
-    busy = false
+    // Checked every minute while it waits, not only at the deadline.
     await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS)
+    expect(check).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS * 20)
+    expect(check).toHaveBeenCalledTimes(21)
     expect(driver.park).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(600_000 - BUSY_RECHECK_MS - 1)
+    busy = false
+    await vi.advanceTimersByTimeAsync(600_000 - 1)
     expect(driver.park).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(driver.park).toHaveBeenCalledOnce()
+  })
+  it('does not park in a short gap between busy spells, as when a server restarts', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 600_000)
+    let checks = 0
+    // Steam listens for nine minutes, is restarted across the tenth check, then listens again.
+    computer.setBusyCheck(async () => ++checks !== 10)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS * 15)
+    expect(checks).toBe(15)
+    expect(driver.park).not.toHaveBeenCalled()
   })
   it('treats a failing busy check as idle', async () => {
     vi.useFakeTimers()
