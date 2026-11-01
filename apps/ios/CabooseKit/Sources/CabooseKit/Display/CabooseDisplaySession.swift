@@ -1371,9 +1371,13 @@ private final class Incoming: @unchecked Sendable {
                 pipelines[commit.window]?.sceneCommit(commit, fontCache: fontCache)
             case .drawOps(let stream, let ops):
                 drawLists?.ops(stream: stream, ops)
-            case .drawPresent(let window, let stream, let surface, _):
+            case .drawPresent(let window, let stream, let surface, let pts):
                 echo.drew(window)
-                drawLists?.present(stream: stream, surface: surface, on: pipelines[window])
+                if let drawLists {
+                    drawLists.present(stream: stream, surface: surface, ptsMicros: pts, on: pipelines[window])
+                } else {
+                    pipelines[window]?.drawn(nil, ptsMicros: pts)
+                }
             case .drawEnd(let stream):
                 drawLists?.end(stream: stream)
             case .videoFrame(let frame):
