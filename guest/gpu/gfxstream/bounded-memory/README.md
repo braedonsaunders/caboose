@@ -79,7 +79,8 @@ nothing aborts. Deferred replies the old connection owed are dropped. A later
 `caboose_gfxstream_reconnect_ended` in `SocketStream.cpp`). Tracking then starts afresh,
 and objects of the lost devices are asked about on the ended stream, which reports loss.
 
-With `CABOOSE_GPU_ON_LOSS=pause` (set per application by the launcher), every call that
+With `CABOOSE_GPU_ON_LOSS=pause`, or `auto` (the launch environment's value) in a process
+that is neither a Chromium-family GPU process nor a Qt application, every call that
 would report the loss first waits until the broker has a new executor: its socket
 reappears, as a socket made since the loss. Then it reports `VK_ERROR_DEVICE_LOST`, so
 the application recreates its device directly on the returned phone instead of moving to
