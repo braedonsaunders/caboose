@@ -734,10 +734,10 @@ impl State {
             if local.size.w <= 0 || local.size.h <= 0 {
                 continue;
             }
-            // X11 pictures are sent at logical size, as before X11 had the display's density:
-            // at device size their larger tile pictures slow X11 applications below the
-            // motion detector's rate, so scrolling never becomes a motion stream.
-            let scale = if w.surface.is_x11() { 1.0 } else { surface_scale(&root, display_scale) };
+            // Pictures keep the buffer's own density, X11 ones too, so the client shows
+            // every application's pixels one for one. Video pictures of X11 windows are sent
+            // at logical size: at device size they cost the video encoder its rate.
+            let scale = if w.surface.is_x11() && !atlas { 1.0 } else { surface_scale(&root, display_scale) };
             let pic_w = (local.size.w as f64 * scale).round().max(1.0) as i32;
             let pic_h = (local.size.h as f64 * scale).round().max(1.0) as i32;
             let rect = w.announced.as_ref().map(picture_rect).unwrap();
