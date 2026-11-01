@@ -5,7 +5,8 @@ import random
 import struct
 import unittest
 import zlib
-from live_compression import CONFIG, CONFIG_ZSTD_STREAM, MAX_DECODED, StreamCompressor, StreamDecompressor, compress_data
+from live_compression import (CONFIG, CONFIG_ZSTD_STREAM, MAX_DECODED, StreamCompressor, StreamDecompressor, compress_data,
+                              zstd_stream_config, zstd_stream_window)
 import live_zstd
 from live_protocol import Decoder, Envelope, Kind, ProtocolError, encode
 
@@ -57,7 +58,7 @@ class CompressionTests(unittest.TestCase):
             got=[]; parser=Decoder(IDENTITY,1)
             parser.feed(bytes.fromhex(vector['wire_hex']),got.append); parser.finish()
             self.assertEqual(got,[message])
-            for process,stream,payload in [(1,0,CONFIG),(0,1,CONFIG),(0,0,b''),(0,0,struct.pack('<II',3,65600)),(0,0,struct.pack('<II',2,65601)),(0,0,struct.pack('<II',1,65601))]:
+            for process,stream,payload in [(1,0,CONFIG),(0,1,CONFIG),(0,0,b''),(0,0,struct.pack('<II',3,65600)),(0,0,struct.pack('<II',2,65600)),(0,0,struct.pack('<IIII',2,65600,31,0)),(0,0,struct.pack('<IIII',2,65600,19,0)),(0,0,struct.pack('<IIII',2,65600,26,1)),(0,0,struct.pack('<IIII',2,65601,26,0)),(0,0,struct.pack('<IIII',1,65600,26,0)),(0,0,struct.pack('<II',1,65601))]:
                 with self.assertRaises(ProtocolError):
                     encode(Envelope(kind,IDENTITY,1,process,stream,1,payload))
                 wire=struct.pack('<4sHHII16sQQQQ',b'CGLV',1,kind,len(payload),0,IDENTITY,1,process,stream,1)+payload
@@ -130,8 +131,35 @@ class StreamCompressionTests(unittest.TestCase):
                     encode(Envelope(Kind.DATA, IDENTITY, 1, 2, 3, 1, b'x' * 65537))]:
             with self.assertRaises(ProtocolError): compressor.compress_data(raw)
 
-    def test_configuration(self):
-        self.assertEqual(CONFIG_ZSTD_STREAM, struct.pack('<II', 2, MAX_DECODED))
+    def test_configuration_names_the_window(self):
+        self.assertEqual(CONFIG_ZSTD_STREAM, struct.pack('<IIII', 2, MAX_DECODED, 27, 0))
+        for vector in STREAM_VECTORS['transport']['valid']:
+            config, ready = bytes.fromhex(vector['config_hex']), bytes.fromhex(vector['ready_hex'])
+            self.assertEqual(zstd_stream_window(config, ready), vector['window_log'])
+            for payload, kind in ((config, Kind.TRANSPORT_CONFIG), (ready, Kind.TRANSPORT_READY)):
+                encode(Envelope(kind, IDENTITY, 1, 0, 0, 1, payload))
+        for vector in STREAM_VECTORS['transport']['invalid']:
+            with self.subTest(vector=vector['name']):
+                self.assertIsNone(zstd_stream_window(bytes.fromhex(vector['config_hex']), bytes.fromhex(vector['ready_hex'])))
+
+    def test_a_larger_window_finds_what_repeats_far_back(self):
+        rng = random.Random(11)
+        image = rng.randbytes(60000)
+        filler = [rng.randbytes(65000) for _ in range(200)]  # 13 MB: beyond an 8 MiB window
+        sizes = {}
+        for window_log in (23, 26):
+            compressor, decoder = StreamCompressor(window_log=window_log), StreamDecompressor(window_log)
+            sequence, last = 1, 0
+            for payload in [image] + filler + [image]:
+                record = compressor.compress_data(encode(Envelope(Kind.DATA, IDENTITY, 1, 2, 3, sequence, payload)))
+                self.assertEqual(decoder.decompress(record)[64:], payload)
+                sequence, last = sequence + 1, len(record)
+            sizes[window_log] = last
+        self.assertGreater(sizes[23], 60000)
+        self.assertLess(sizes[26], 1000)
+        with self.assertRaises(ValueError):  # a 64 MiB stream on an 8 MiB decoder
+            StreamDecompressor(23).decompress(StreamCompressor(window_log=26).compress_data(
+                encode(Envelope(Kind.DATA, IDENTITY, 1, 2, 3, 1, image))))
 
 
 if __name__ == '__main__': unittest.main()

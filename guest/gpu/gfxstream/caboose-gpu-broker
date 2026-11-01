@@ -28,7 +28,8 @@ from ipc_handoff import receive_record
 import control_protocol
 import surface_local_protocol as surface_wire
 from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
-from live_compression import CONFIG as TRANSPORT_CONFIG, CONFIG_ZSTD_STREAM, StreamCompressor, compress_data
+from live_compression import (CONFIG as TRANSPORT_CONFIG, CONFIG_ZSTD_STREAM, StreamCompressor, compress_data,
+                              zstd_stream_window)
 import live_zstd
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, UNSEQUENCED, encode, is_surface
 
@@ -751,13 +752,19 @@ class Session:
                 self.session_ready.set()
             return
         if frame.kind == Kind.TRANSPORT_READY:
+            # Algorithm 2's READY names the window the phone takes, no larger than offered;
+            # any other configuration must come back exactly.
+            window_log = (zstd_stream_window(self.transport_config, frame.payload)
+                          if self.transport_config == CONFIG_ZSTD_STREAM else None)
             if (not self.transport_requested or self.deflate_enabled or self.stream_compressor is not None or
                     self.revoking or self.draining or self.failed or self.closing_ws or frame.process or
-                    frame.stream or frame.payload != self.transport_config):
+                    frame.stream or (window_log is None and frame.payload != self.transport_config) or
+                    (self.transport_config == CONFIG_ZSTD_STREAM and window_log is None)):
                 raise ValueError('unexpected transport receipt')
-            if self.transport_config == CONFIG_ZSTD_STREAM:
-                self.stream_compressor = StreamCompressor()
-                print('CABOOSE_GPU_TRANSPORT zstd-stream max_decoded=65600', file=sys.stderr, flush=True)
+            if window_log is not None:
+                self.stream_compressor = StreamCompressor(window_log=window_log)
+                print(f'CABOOSE_GPU_TRANSPORT zstd-stream window={1 << window_log} max_decoded=65600',
+                      file=sys.stderr, flush=True)
             else:
                 self.deflate_enabled = True
                 if self.progress_enabled:

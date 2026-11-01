@@ -84,8 +84,8 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 22 | SOURCE_RELEASED | Process | 48 bytes |
 | 23 | SURFACE_RETIRE | Process | 40 bytes |
 | 24 | SURFACE_RETIRED | Process | 56 bytes |
-| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1 or 2, maximum decoded record u32 = 65600 |
-| 38 | TRANSPORT_READY | Session | Exact matching configuration |
+| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1 or 2, maximum decoded record u32 = 65600; algorithm 2 adds window log u32 and reserved u32 zero |
+| 38 | TRANSPORT_READY | Session | The configuration; algorithm 2's with the window log the phone takes |
 | 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
 | 40 | ACK | Session, sequence 0 | Highest contiguous sequence received u64 |
 | 41 | RESUME | Session, sequence 0 | Highest contiguous sequence received u64, reserved u64 zero, 16-byte nonzero nonce |
@@ -121,9 +121,18 @@ remaining message, and the decoded bytes are exactly one CGLV DATA envelope with
 65536 payload bytes, whose identity, scope and sequence pass through the existing decoder
 unchanged. Control envelopes stay raw CGLV.
 
+Algorithm 2's configuration is 16 bytes: algorithm 2, 65600, a window log and a reserved
+zero. The broker's TRANSPORT_CONFIG names the largest window it compresses with (log 27,
+128 MiB); TRANSPORT_READY repeats the configuration with the window the phone takes, from
+log 20 up to the offer, and the broker compresses with that window. The phone takes 64 MiB,
+or 128 MiB when its app may use the increased memory limit and the device has the room: the
+decoder holds the whole window. A window beyond 8 MiB is compressed with zstd's long-distance
+matching, which finds content that repeats far back, such as an image uploaded again a minute
+later.
+
 With algorithm 2 every DATA envelope is a record, and the records of a session are one
-zstd stream (zstd 1.5 format, no dictionary, no checksum, window at most 8 MiB, window log
-23), started at TRANSPORT_READY: the broker compresses each envelope in sequence order and
+zstd stream (zstd 1.5 format, no dictionary, no checksum, the negotiated window), started at
+TRANSPORT_READY: the broker compresses each envelope in sequence order and
 flushes the stream at the end of each record, so a record decodes completely given every
 earlier record of the session, and none can be skipped. The phone feeds its decoder exactly
 the records it accepts, in sequence order, each once; a record must yield exactly
