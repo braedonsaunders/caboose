@@ -146,6 +146,21 @@ as `caboose-framelab: present window=W seq=S presented_ns=P now_ns=N`
 (`framelab_timing.h`). [Frame lab](../../../../guest/framelab/README.md) turns these into
 input-to-glass latency. Without the variable, device creation and presents are unchanged.
 
+## Images of another size
+
+A plain present whose image is not the bound window's size (a compositor buffer, an
+application that keeps its own resolution after its window changed size) is placed by
+`presentation_placement.h`: a window's overscan (the image lengthened along one axis)
+shows its top-left part unscaled; any other size is scaled by the GPU's sampler
+(`vkCmdBlitImage`, linear) to fit the window with its aspect ratio, centred, with black
+where it does not reach. The placement rule has a portable fixture:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/presentation_placement_test.cpp -o /tmp/caboose-placement-test
+/tmp/caboose-placement-test
+```
+
 ## Memory and proof boundary
 
 The decoder's non-direct flush/invalidate path carries actual mapped memory bytes.
