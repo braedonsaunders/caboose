@@ -31,7 +31,7 @@ OWNED = {
        for name in ('async_allocation.h', 'cb_staging.h', 'completion_feed.h', 'deferred_replies.h',
                     'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
                     'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h',
-                    'query_results.h', 'handles.h', 'upload_cache.h')},
+                    'query_results.h', 'handles.h', 'upload_cache.h', 'write_watch.h')},
     **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'
