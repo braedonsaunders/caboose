@@ -28,8 +28,10 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-/// The cairo recorder, where the image installs it (guest/draw/install.sh).
-pub const RECORDER: &str = "/opt/caboose/draw/lib/libcaboose-draw-cairo.so";
+/// Where the image installs the cairo recorder (guest/draw/install.sh): each architecture's
+/// build in `lib/MULTIARCH` below it, preloaded as `$LIB` (scroll::per_architecture).
+pub const RECORDERS: &str = "/opt/caboose/draw";
+pub const RECORDER: &str = "libcaboose-draw-cairo.so";
 /// Recorders connected at once.
 pub const MAX_CONNS: usize = 128;
 /// The largest single op accepted (an image of 4096 × 4096 pixels).

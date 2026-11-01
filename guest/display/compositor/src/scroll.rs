@@ -48,8 +48,28 @@ const MAX_QUEUED: usize = 1 << 20;
 const MAX_SCROLLERS: usize = 8;
 const MAX_FIXED: usize = 32;
 
-/// Where guest/scroll-reporter/install.sh puts the toolkit reporters' preload libraries.
-pub const REPORTERS: &str = "/opt/caboose/scroll-reporter/lib";
+/// Where guest/scroll-reporter/install.sh puts the toolkit reporters' preload libraries: each
+/// architecture's build in `lib/MULTIARCH` below it.
+pub const REPORTERS: &str = "/opt/caboose/scroll-reporter";
+
+/// The multiarch triplet of the compositor's own architecture, the directory of a preload
+/// library's build for it. A preload is named as `ROOT/$LIB/NAME`, which the dynamic loader
+/// expands to each process's own `lib/MULTIARCH` (Debian, the Freedesktop runtimes and Steam's
+/// runtime), so 32-bit processes load the i386 build where it is installed.
+pub const MULTIARCH: &str = if cfg!(target_arch = "x86_64") {
+    "x86_64-linux-gnu"
+} else if cfg!(target_arch = "aarch64") {
+    "aarch64-linux-gnu"
+} else {
+    "unknown-linux-gnu"
+};
+
+/// `ROOT/$LIB/NAME`, the preload of a library installed per architecture under `root`, when
+/// the build for the compositor's own architecture is installed.
+pub fn per_architecture(root: &Path, name: &str) -> Option<String> {
+    let text = root.to_str()?;
+    root.join("lib").join(MULTIARCH).join(name).is_file().then(|| format!("{text}/$LIB/{name}"))
+}
 
 /// Where install.sh puts the Electron reporter, loaded through NODE_OPTIONS.
 pub const ELECTRON: &str = "/opt/caboose/scroll-reporter/electron/main.js";
@@ -60,22 +80,19 @@ pub fn electron_reporter(path: &Path) -> Option<String> {
     (path.is_file() && !text.contains(char::is_whitespace)).then(|| text.to_owned())
 }
 
-/// The preload libraries in `dir`: `libcaboose-scroll-*.so`, sorted. A reporter loads
-/// anything else it needs itself.
-pub fn preload_libraries(dir: &Path) -> Vec<String> {
-    let mut found: Vec<String> = std::fs::read_dir(dir)
+/// The reporters' preloads under `root`: every `libcaboose-scroll-*.so` built for the
+/// compositor's architecture, as `ROOT/$LIB/NAME`, sorted. A reporter loads anything else it
+/// needs itself, from its own directory.
+pub fn preload_libraries(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join("lib").join(MULTIARCH))
         .into_iter()
         .flatten()
         .flatten()
-        .map(|e| e.path())
-        .filter(|p| {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-            name.starts_with("libcaboose-scroll-") && name.ends_with(".so") && !name.ends_with("-quick.so")
-        })
-        .filter_map(|p| p.to_str().map(str::to_owned))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name.starts_with("libcaboose-scroll-") && name.ends_with(".so") && !name.ends_with("-quick.so"))
         .collect();
-    found.sort();
-    found
+    names.sort();
+    names.iter().filter_map(|name| per_architecture(root, name)).collect()
 }
 
 /// One scroller as a reporter sent it, device pixels relative to its viewport.
@@ -681,15 +698,26 @@ mod tests {
 
     #[test]
     fn preloads_the_reporters_but_not_what_they_load() {
-        let dir = std::env::temp_dir().join(format!("caboose-scroll-preload-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let root = std::env::temp_dir().join(format!("caboose-scroll-preload-{}", std::process::id()));
+        let native = root.join("lib").join(MULTIARCH);
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::create_dir_all(root.join("lib/i386-linux-gnu")).unwrap();
         for name in ["libcaboose-scroll-gtk4.so", "libcaboose-scroll-gtk3.so", "libcaboose-scroll-qt6.so", "libcaboose-scroll-qt6-quick.so", "README"] {
-            std::fs::write(dir.join(name), b"").unwrap();
+            std::fs::write(native.join(name), b"").unwrap();
         }
-        let found = preload_libraries(&dir);
-        let names: Vec<&str> = found.iter().map(|p| p.rsplit('/').next().unwrap()).collect();
-        assert_eq!(names, ["libcaboose-scroll-gtk3.so", "libcaboose-scroll-gtk4.so", "libcaboose-scroll-qt6.so"]);
-        std::fs::remove_dir_all(dir).unwrap();
+        // Only the compositor's own architecture names the preloads.
+        std::fs::write(root.join("lib/i386-linux-gnu/libcaboose-scroll-gtk2.so"), b"").unwrap();
+        let found = preload_libraries(&root);
+        let at = root.display();
+        assert_eq!(
+            found,
+            [
+                format!("{at}/$LIB/libcaboose-scroll-gtk3.so"),
+                format!("{at}/$LIB/libcaboose-scroll-gtk4.so"),
+                format!("{at}/$LIB/libcaboose-scroll-qt6.so"),
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
         assert!(preload_libraries(Path::new("/nonexistent")).is_empty());
     }
 

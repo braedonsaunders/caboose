@@ -288,9 +288,7 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         // recorder is preloaded where installed: inert in processes without cairo, and idle
         // until a client that draws draw lists asks.
         env.push(("CABOOSE_DRAW_SOCKET".into(), socket.display().to_string()));
-        if std::path::Path::new(draw::RECORDER).is_file() {
-            preload.push(draw::RECORDER.to_owned());
-        }
+        preload.extend(scroll::per_architecture(std::path::Path::new(draw::RECORDERS), draw::RECORDER));
     }
     if let Some(socket) = &state.scene.socket {
         // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).

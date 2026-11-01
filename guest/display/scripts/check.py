@@ -17,6 +17,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import zlib
@@ -290,10 +291,14 @@ def with_scroll_server(command, helper=None, display="900x800@60x1", ruler_scale
             helper.wait()
 
 
+# The reporters' build directories are named by the compiler's multiarch triplet.
+MULTIARCH = sysconfig.get_config_var("MULTIARCH") or "x86_64-linux-gnu"
+
+
 def check_gtk_scroll_reports(version):
     """The GTK reporter (guest/scroll-reporter/gtk) in its check application, preloaded.
     CABOOSE_SCROLL_GTK names the directory guest/scroll-reporter/gtk/build.sh --check built."""
-    built = os.environ.get("CABOOSE_SCROLL_GTK") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "gtk", "out")
+    built = os.environ.get("CABOOSE_SCROLL_GTK") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "gtk", "out", MULTIARCH)
     command = ["env", f"LD_PRELOAD={built}/libcaboose-scroll-gtk{version}.so", f"{built}/scroll-ruler-gtk{version}"]
     return with_scroll_server(command)
 
@@ -301,7 +306,7 @@ def check_gtk_scroll_reports(version):
 def check_qt_scroll_reports():
     """The Qt Quick reporter (guest/scroll-reporter/qt) in its check application, preloaded.
     CABOOSE_SCROLL_QT names the directory guest/scroll-reporter/qt/build.sh --check built."""
-    built = os.environ.get("CABOOSE_SCROLL_QT") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "qt", "out")
+    built = os.environ.get("CABOOSE_SCROLL_QT") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "qt", "out", MULTIARCH)
     command = ["env", "QT_QPA_PLATFORM=wayland", f"LD_PRELOAD={built}/libcaboose-scroll-qt6.so", f"{built}/scroll-ruler-qt6"]
     return with_scroll_server(command)
 

@@ -90,14 +90,36 @@ size and scene rectangle through properties alone, without Qt's private headers.
 a QQuickItem of its own, drawn with scene graph rectangles over the window's content and
 updated in that same step. `scroll.target` moves `contentX`/`contentY`.
 
-`caboose-display` preloads every `libcaboose-scroll-*.so` in
-`/opt/caboose/scroll-reporter/lib` into the applications it launches, through its launch
-environment.
+`caboose-display` preloads every `libcaboose-scroll-*.so` built for its architecture
+(`/opt/caboose/scroll-reporter/lib/MULTIARCH`) into the applications it launches, through
+its launch environment, as `/opt/caboose/scroll-reporter/$LIB/NAME`.
+
+## 32-bit applications
+
+The dynamic loader expands `$LIB` to each process's own library directory, `lib/x86_64-linux-gnu`
+or `lib/i386-linux-gnu` on Debian, in the Freedesktop runtimes and in Steam's runtime, so a
+32-bit process loads the i386 builds. On x86-64 the image builds every reporter for i386 too:
+`build.sh` takes `CC`, `CXX` and `PKG_CONFIG`, and writes into `out/MULTIARCH` of the
+compiler's triplet:
+
+```sh
+CC=i686-linux-gnu-gcc CXX=i686-linux-gnu-g++ \
+  PKG_CONFIG="env PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config" \
+  gtk/build.sh
+```
+
+with Debian's i686 cross compilers and the toolkits' `:i386` development packages.
+`install.sh` refuses to install an architecture that lacks a preload the computer's own
+architecture has, since its processes would report the missing library.
+`check-preloads.sh` builds the image's preloads stage and starts a 64-bit and a 32-bit
+process with every preload: each must load its own architecture's build of each, with no
+complaint from the dynamic loader.
 
 ## Flatpak
 
 Flatpak applications see neither `/opt` nor the host's `LD_PRELOAD`. `install.sh` adds a
-system-wide override giving every Flatpak application the libraries read-only, the display
+system-wide override giving every Flatpak application the libraries read-only (preloaded by
+`$LIB`, as above), the display
 instances' sockets (`xdg-run/caboose-display`) and the preload. In a sandbox the reporters
 find their scroll socket from `WAYLAND_DISPLAY` when `CABOOSE_SCROLL_SOCKET` is not passed
 in, at the same path as on the host. Binding by process lineage works across the sandbox's
@@ -112,7 +134,7 @@ whether it connected and which windows have no Flickable.
 ### Install
 
 `install.sh` (as root, in the image build, after Chromium and Node) installs the GTK and Qt
-preload libraries when built (`guest/container/Dockerfile` builds them in a stage of its own)
+preload libraries when built (`guest/container/Dockerfile` builds them in its preloads stage, for i386 too on x86-64)
 and the extension to `/opt/caboose/scroll-reporter`, registers the native host for Debian's
 Chromium and links the extension into `/usr/share/chromium/extensions`, which Debian's
 launcher loads. `guest/container/Dockerfile` runs it.

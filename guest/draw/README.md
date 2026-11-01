@@ -62,16 +62,25 @@ calls cairo on. Calls cairo makes internally do not reach it, so each operation 
 
 ## Install
 
-`install.sh` (as root, in the image build, after `guest/scroll-reporter/install.sh`) puts the
-recorder in `/opt/caboose/draw/lib`, where caboose-display finds it and adds it to the
-`LD_PRELOAD` of the launch environment, and adds it to the system-wide Flatpak override's
-`LD_PRELOAD` beside the scroll reporters, with its directory read-only.
-`guest/container/Dockerfile` builds it in a stage of its own. Preloaded everywhere, it stays
-idle until a client that draws draw lists connects.
+`install.sh` (as root, in the image build, after `guest/scroll-reporter/install.sh`) puts each
+architecture's build of the recorder in `/opt/caboose/draw/lib/MULTIARCH`. caboose-display
+finds the build for its own architecture and adds `/opt/caboose/draw/$LIB/libcaboose-draw-cairo.so`
+to the `LD_PRELOAD` of the launch environment; `install.sh` adds the same entry to the
+system-wide Flatpak override's `LD_PRELOAD` beside the scroll reporters, with the directory
+read-only. `guest/container/Dockerfile` builds it in its preloads stage. Preloaded everywhere,
+it stays idle until a client that draws draw lists connects.
+
+### 32-bit applications
+
+The dynamic loader expands `$LIB` to each process's own library directory, `lib/x86_64-linux-gnu`
+or `lib/i386-linux-gnu` on Debian, in the Freedesktop runtimes and in Steam's runtime, so
+32-bit processes load the i386 build. On x86-64 the image builds it with
+`CC=i686-linux-gnu-gcc` and a `PKG_CONFIG` that reads the i386 libraries' `.pc` files;
+`../scroll-reporter/check-preloads.sh` checks that each architecture loads its own build.
 
 ## Build
 
-    guest/draw/build.sh [OUT]     # default guest/draw/build
+    guest/draw/build.sh [OUT]     # default guest/draw/build/MULTIARCH
 
 Needs a C compiler, `pkg-config` and the cairo, FreeType and wayland-client headers. The
 recorder links nothing but libc; the replayer links cairo.
