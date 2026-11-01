@@ -10,6 +10,10 @@
 #include <sys/stat.h>
 #include <thread>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <link.h>
+#include <string>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -358,10 +362,35 @@ inline void executorConnected() {
 // would report the loss first waits until a new executor is available, then reports it;
 // the application recreates its device on the returned phone. Otherwise loss is reported
 // at once (restart, the default).
+// "auto", the launch environment's value, is resolved for the process here, where only the
+// driver reads it (the environment is never changed: some applications trap setenv):
+// restart for a Chromium-family GPU process and for Qt, which recover from device loss,
+// pause for everything else.
+inline bool lossPolicyPauses(const char* mode, const std::string& commandLine,
+                             const std::vector<std::string>& libraries) {
+    if (!mode) return false;
+    if (std::strcmp(mode, "pause") == 0) return true;
+    if (std::strcmp(mode, "auto") != 0) return false;
+    if (commandLine.find("--type=gpu-process") != std::string::npos) return false;
+    for (const auto& library : libraries) {
+        const auto slash = library.rfind('/');
+        const std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
+        if (name.rfind("libQt5Gui.so", 0) == 0 || name.rfind("libQt6Gui.so", 0) == 0) return false;
+    }
+    return true;
+}
 inline bool pauseOnLoss() {
     static const bool pause = [] {
-        const char* mode = std::getenv("CABOOSE_GPU_ON_LOSS");
-        return mode && std::strcmp(mode, "pause") == 0;
+        std::ifstream file("/proc/self/cmdline", std::ios::binary);
+        std::string commandLine((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        for (char& c : commandLine) if (c == '\0') c = ' ';
+        std::vector<std::string> libraries;
+        dl_iterate_phdr([](dl_phdr_info* info, size_t, void* out) {
+            if (info->dlpi_name && *info->dlpi_name)
+                static_cast<std::vector<std::string>*>(out)->emplace_back(info->dlpi_name);
+            return 0;
+        }, &libraries);
+        return lossPolicyPauses(std::getenv("CABOOSE_GPU_ON_LOSS"), commandLine, libraries);
     }();
     return pause;
 }

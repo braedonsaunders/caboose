@@ -159,5 +159,15 @@ int main() {
     encodeFeed(feed);
     assert(watch[0] == 0x02 && watch[3] == 0x43 && watch[4] == 24 && watch[8] == 0x88 && watch[16] == 7);
     assert(feed[0] == 0x01 && feed[4] == 16 && feed[8] == 1);
+    // The loss policy: explicit values as given, "auto" per process.
+    const std::vector<std::string> none, qt{"/usr/lib/x86_64-linux-gnu/libQt6Gui.so.6"};
+    assert(!lossPolicyPauses(nullptr, "vkcube", none));
+    assert(lossPolicyPauses("pause", "chromium --type=gpu-process", qt));
+    assert(!lossPolicyPauses("restart", "vkcube", none));
+    assert(lossPolicyPauses("auto", "vkcube --wsi xcb", none));
+    assert(!lossPolicyPauses("auto", "/usr/lib/chromium/chromium --type=gpu-process --x", none));
+    assert(!lossPolicyPauses("auto", "qml6 t.qml", qt));
+    assert(!lossPolicyPauses("auto", "kp", {"libQt5Gui.so.5"}));
+    assert(!lossPolicyPauses("bogus", "vkcube", none));
     return 0;
 }
