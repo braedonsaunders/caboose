@@ -261,7 +261,9 @@ for byte.
 - A window configured `maximized: true` with a `geometry` takes that geometry and keeps it
   while it stays maximized; one maximized without a geometry (the application's own
   request) takes its display's rectangle. An X11 application's own configure request
-  sizes its window, except while it is maximized or fullscreen.
+  sizes its window, except while it is maximized or fullscreen, and moves it while the
+  client has not laid it out (given it a geometry), as any window manager lets a floating
+  window move itself.
 - An output mode/origin change reconfigures existing fullscreen and maximized windows
   through the common Wayland/X11 configure path, preserving their state flags; a maximized
   window takes the changed display's rectangle until the client configures it again. Removed

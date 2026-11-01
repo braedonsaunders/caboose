@@ -103,15 +103,16 @@ fn first_size(
 }
 
 /// What an X11 window's own configure request gets. Apps may size themselves, as a Wayland
-/// app may; only an unmanaged-looking window (one not yet a protocol window) moves itself,
-/// since a managed one stays where it was placed. A maximized or full-screen window keeps
-/// the size it was configured to as well: it is the compositor's (and the phone's) while
-/// that state lasts, so an app restoring a saved size cannot shrink it out of it.
+/// app may, and move themselves as under any window manager while `movable`: until the
+/// phone lays the window out (fills, snaps or places it), after which it stays where it was
+/// placed. A maximized or full-screen window keeps the size it was configured to as well:
+/// it is the compositor's (and the phone's) while that state lasts, so an app restoring a
+/// saved size cannot shrink it out of it.
 fn requested_geometry(
     current: Rectangle<i32, Logical>,
     (x, y): (Option<i32>, Option<i32>),
     (w, h): (Option<u32>, Option<u32>),
-    managed: bool,
+    movable: bool,
     locked: bool,
 ) -> Rectangle<i32, Logical> {
     let mut geo = current;
@@ -123,7 +124,7 @@ fn requested_geometry(
             geo.size.h = h as i32;
         }
     }
-    if !managed {
+    if movable && !locked {
         if let Some(x) = x {
             geo.loc.x = x;
         }
@@ -189,11 +190,13 @@ impl XwmHandler for State {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        let (managed, locked) = match self.windows.by_x11(&window).and_then(|id| self.windows.get(id)) {
-            Some(w) => (true, w.maximized || w.fullscreen),
-            None => (false, false),
+        // A window the phone has not laid out floats: it moves itself, as under any window
+        // manager. One the phone filled, snapped or placed stays where the phone put it.
+        let (movable, locked) = match self.windows.by_x11(&window).and_then(|id| self.windows.get(id)) {
+            Some(w) => (!w.placed, w.maximized || w.fullscreen),
+            None => (true, false),
         };
-        let _ = window.configure(requested_geometry(window.geometry(), (x, y), (w, h), managed, locked));
+        let _ = window.configure(requested_geometry(window.geometry(), (x, y), (w, h), movable, locked));
     }
 
     fn configure_notify(
@@ -377,18 +380,27 @@ mod tests {
     }
 
     #[test]
-    fn a_managed_window_sizes_itself_but_stays_in_place() {
+    fn a_placed_window_sizes_itself_but_stays_in_place() {
         let current = Rectangle::new((0, 0).into(), (669, 424).into());
-        let geo = requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), true, false);
+        let geo = requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), false, false);
         assert_eq!(geo, Rectangle::new((0, 0).into(), (535, 380).into()));
-        // Before it is a protocol window it places itself too.
-        let geo = requested_geometry(current, (Some(12), Some(5)), (None, Some(380)), false, false);
-        assert_eq!(geo, Rectangle::new((12, 5).into(), (669, 380).into()));
+    }
+
+    #[test]
+    fn a_floating_window_moves_itself() {
+        // A splash the app re-centres after creating it at the screen's size.
+        let current = Rectangle::new((0, 0).into(), (669, 456).into());
+        let geo = requested_geometry(current, (Some(185), Some(143)), (Some(300), Some(169)), true, false);
+        assert_eq!(geo, Rectangle::new((185, 143).into(), (300, 169).into()));
+        // Only what it asked for changes.
+        let geo = requested_geometry(current, (Some(12), None), (None, Some(380)), true, false);
+        assert_eq!(geo, Rectangle::new((12, 0).into(), (669, 380).into()));
     }
 
     #[test]
     fn a_maximized_window_keeps_its_configured_size() {
         let current = Rectangle::new((0, 0).into(), (669, 424).into());
         assert_eq!(requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), true, true), current);
+        assert_eq!(requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), false, true), current);
     }
 }
