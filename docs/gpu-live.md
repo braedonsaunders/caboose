@@ -726,8 +726,10 @@ The launch environment sets `auto`, which the routing layer resolves per process
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
 recover from device loss (GTK 4, Vulkan applications and games).
 
-OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan (`LIBGL_KOPPER_DRI2=1`,
-`MESA_LOADER_DRIVER_OVERRIDE=zink`, and no `GALLIUM_DRIVER`). Zink presents through the
+OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan, which Mesa tries before
+llvmpipe when no other driver serves the display (`LIBGL_KOPPER_DRI2=1`, and no
+`GALLIUM_DRIVER`). Zink is not forced: with no phone attached it finds no GPU and Mesa
+falls back to llvmpipe, where a forced Zink would leave OpenGL with no renderer at all. Zink presents through the
 driver's X11 windows (Kopper); without a DRM render node it cannot present through
 Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
 `QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick), `SDL_VIDEODRIVER=x11,wayland` and
@@ -736,8 +738,7 @@ custom border colours Zink needs for desktop OpenGL where the phone lacks them
 (`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
 for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and
 `MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
-and a shader that uses either feature fails to compile or draw. Without a phone Zink finds
-no GPU and Mesa draws with llvmpipe.
+and a shader that uses either feature fails to compile or draw.
 
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
