@@ -865,13 +865,14 @@ class Daemon:
         with self.lock:
             self.entries.refresh()
             session = f'{OWNER}/{core.SESSION}'
-            # The owner's processes started through `docker exec` arrive in init.scope.
+            # The owner's processes started through `docker exec` arrive in init.scope; other
+            # users' (the system bus's) stay there with root's.
             for pid in procs_of(INIT):
                 if pid == self.observer.pid:
                     continue
                 status = read(f'/proc/{pid}/status')
                 try:
-                    if status and core.parse_uid(status) != 0:
+                    if status and core.parse_uid(status) == self.uid:
                         move(pid, session)
                 except ValueError:
                     pass
