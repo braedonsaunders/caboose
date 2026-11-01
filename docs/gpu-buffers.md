@@ -60,7 +60,8 @@ fence attached to a one-page vgem object, and one waiter thread per process wait
 internal fences in order and signals each vgem fence. A fence or semaphore never
 submitted exports `-1`, the signaled payload. vgem signals a fence nobody signals after
 ten seconds. Without a render node the export waits for completion itself and returns
-`-1`. Imported sync files are waited on the CPU before the submission that waits them.
+`-1`. Imported sync files are waited on the CPU before the submission that waits them; that
+wait consumes the import, and the semaphore is the host's own again for its next signal.
 
 ## Presenting a buffer in a window
 

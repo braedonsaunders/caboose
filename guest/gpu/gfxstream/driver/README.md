@@ -123,6 +123,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0051 event-status-from-feed | `vkGetEventStatus` is answered from the completion tracker: events are followed from creation, host sets and resets, and the completed batches whose command buffers set or reset them; a batch that touches an event is watched even without a fence |
 | 0052 format-cache-and-async-events | `vkGetPhysicalDeviceFormatProperties2` with exactly a `VkFormatProperties3` chain (DXVK's, per view) is cached like one without; `vkSetEvent` and `vkResetEvent` are sent without waiting, their results checked with the deferred replies |
 | 0053 query-reserve-coherent-memprops-backoff | `DeferredReplies::reserve()` drains socket-ready replies (`FIONREAD`) and only the oldest half-budget prefix when full; coherent GPU writes recorded in command buffers invalidate only after their submission serial completes; physical-device memory and budget properties are served from cache; `QueryResults` holds 8192 entries and evicts completed entries first; `PollStall` backs off tight not-ready spin loops |
+| 0054 consume-imported-sync-files | In socket mode a wait takes an imported `SYNC_FD` payload off its semaphore and closes it once waited, and a signal drops an unwaited one, so a recycled semaphore is signalled on the phone before a sync file export waits it |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
