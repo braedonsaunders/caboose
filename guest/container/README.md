@@ -93,7 +93,7 @@ owner's session and printing begin on interactive promotion.
 | Command | What it does |
 | --- | --- |
 | `start-files` | Starts the file service as `caboose` and waits until port 14700 listens. |
-| `start` | Starts CUPS and configures the `iPhone` queue; starts the owner's session bus (`/run/user/1000/bus`), its notification monitor and endpoint, and the owner's Caboose Display: port 14600, Wayland socket `wayland-caboose-0`, Xwayland `:110`, its own PulseAudio, launch environment in `/run/caboose/display.env`. |
+| `start` | Starts CUPS and configures the `iPhone` queue; starts the owner's session bus (`/run/user/1000/bus`), its notification monitor and endpoint, and the owner's Caboose Display: port 14600, Wayland socket `wayland-caboose-0`, Xwayland `:110`, its own PulseAudio, launch environment in `/run/caboose/display.env`. Before the display it applies Steam's defaults (`guest/flatpak/caboose-steam-defaults`). |
 | `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, publishes its display variables to its session bus, then starts its accessibility bus. |
 | `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
