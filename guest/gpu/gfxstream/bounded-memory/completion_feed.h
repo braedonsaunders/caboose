@@ -112,12 +112,22 @@ public:
     // A submission's signal operations on `queue`, before it is sent. Returns the serial
     // to watch.
     uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
-                       uint64_t queue = 0, uint64_t device = 0) {
+                       uint64_t queue = 0, uint64_t device = 0, const std::vector<uint64_t>& commandBuffers = {}) {
         std::lock_guard<std::mutex> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
         watch.queue = queue;
         watch.device = device;
+        for (uint64_t cb : commandBuffers) {
+            auto found = commandEvents_.find(cb);
+            if (found == commandEvents_.end()) continue;
+            for (const auto& op : found->second) {
+                auto event = events_.find(op.first);
+                if (event == events_.end() || event->second.state == EventState::Untracked) continue;
+                ++event->second.pending;
+                watch.events.push_back(op);
+            }
+        }
         if (fence) {
             auto& state = fences_[fence];
             state.state = Fence::Pending;
@@ -178,6 +188,80 @@ public:
         it->second.value = std::max(it->second.value, value);
         changed_.notify_all();
     }
+    // --- Events ---------------------------------------------------------------------------
+    // A D3D11 event query is a VkEvent that a command buffer sets and the application polls
+    // (vkGetEventStatus). Every way an event changes is seen here: created reset, set or reset
+    // on the host, or set or reset by a submitted command buffer once its batch completes, so
+    // its state is known without asking the device.
+    void eventCreated(uint64_t event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_[event] = EventInfo{};
+    }
+    void eventDestroyed(uint64_t event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        events_.erase(event);
+    }
+    void eventHost(uint64_t event, bool set) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = events_.find(event);
+        if (it != events_.end() && it->second.state != EventState::Untracked)
+            it->second.state = set ? EventState::Set : EventState::Reset;
+        changed_.notify_all();
+    }
+    // Recording: a command buffer begun anew, an event set or reset in it, secondaries run in it.
+    void commandBufferBegun(uint64_t commandBuffer) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        commandEvents_.erase(commandBuffer);
+    }
+    void commandBufferEvent(uint64_t commandBuffer, uint64_t event, bool set) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& ops = commandEvents_[commandBuffer];
+        if (ops.size() < kMaxCommandEvents) ops.push_back({event, set});
+        else untrackLocked(event);  // too many to follow: asked on the device
+    }
+    void commandBufferExecutes(uint64_t primary, const uint64_t* secondaries, uint32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (uint32_t i = 0; i < count; ++i) {
+            auto found = commandEvents_.find(secondaries[i]);
+            if (found == commandEvents_.end()) continue;
+            const auto ops = found->second;
+            auto& into = commandEvents_[primary];
+            for (const auto& op : ops) {
+                if (into.size() < kMaxCommandEvents) into.push_back(op);
+                else untrackLocked(op.first);
+            }
+        }
+    }
+    void commandBufferFreed(uint64_t commandBuffer) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        commandEvents_.erase(commandBuffer);
+    }
+    // Whether any of these command buffers sets or resets an event: its batch needs a watch.
+    bool setsEvents(const std::vector<uint64_t>& commandBuffers) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (uint64_t cb : commandBuffers)
+            if (commandEvents_.count(cb)) return true;
+        return false;
+    }
+    // A batch whose completion nobody will report: the events it touches are asked on the device.
+    void eventsUntracked(const std::vector<uint64_t>& commandBuffers) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (uint64_t cb : commandBuffers) {
+            auto found = commandEvents_.find(cb);
+            if (found == commandEvents_.end()) continue;
+            for (const auto& op : found->second) untrackLocked(op.first);
+        }
+    }
+    // The event's state, or false when the device must be asked.
+    bool eventSet(uint64_t event, bool* set) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lost_) return false;
+        auto it = events_.find(event);
+        if (it == events_.end() || it->second.state == EventState::Untracked) return false;
+        *set = it->second.state == EventState::Set;
+        return true;
+    }
+
     // What the tracker knows of a fence or timeline, for a stalled poll's log line.
     std::string describeFence(uint64_t fence) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -217,6 +301,14 @@ public:
         if (it == watches_.end()) return;
         Watch watch = std::move(it->second);
         watches_.erase(it);
+        for (const auto& [event, set] : watch.events) {
+            auto found = events_.find(event);
+            if (found == events_.end()) continue;
+            if (found->second.pending) --found->second.pending;
+            if (status != kCompleted) found->second.state = EventState::Untracked;
+            else if (found->second.state != EventState::Untracked)
+                found->second.state = set ? EventState::Set : EventState::Reset;
+        }
         if (status == kDeviceLost) {
             if (watch.device) lostDevices_.insert(watch.device);
             else lost_ = true;
@@ -250,6 +342,7 @@ public:
         for (auto& [handle, state] : fences_)
             if (state.state == Fence::Pending) { state.state = Fence::Untracked; state.serial = 0; }
         for (auto& [handle, state] : semaphores_) state.tracked = false;
+        for (auto& [handle, state] : events_) state.state = EventState::Untracked;
         watches_.clear();
         lost_ = false;
         lostDevices_.clear();
@@ -323,7 +416,12 @@ private:
     struct Watch {
         uint64_t fence = 0, queue = 0, device = 0;
         std::vector<std::pair<uint64_t, uint64_t>> signals;
+        std::vector<std::pair<uint64_t, bool>> events;  // set (true) or reset, in order
     };
+    // An event's state as the process knows it: from the host's own sets and resets, and
+    // from the completed batches whose command buffers set or reset it.
+    enum class EventState { Reset, Set, Untracked };
+    struct EventInfo { EventState state = EventState::Reset; uint32_t pending = 0; };
 
     Answer fencesLocked(const uint64_t* fences, uint32_t count, bool all) {
         if (lost_) return Answer::DeviceLost;
@@ -355,6 +453,13 @@ private:
     std::unordered_map<uint64_t, FenceState> fences_;
     std::unordered_map<uint64_t, SemaphoreState> semaphores_;
     std::unordered_map<uint64_t, Watch> watches_;
+    static constexpr size_t kMaxCommandEvents = 256;
+    void untrackLocked(uint64_t event) {
+        auto it = events_.find(event);
+        if (it != events_.end()) it->second.state = EventState::Untracked;
+    }
+    std::unordered_map<uint64_t, EventInfo> events_;
+    std::unordered_map<uint64_t, std::vector<std::pair<uint64_t, bool>>> commandEvents_;
     uint64_t lastSerial_ = 0;
     bool lost_ = false;                         // a loss not tied to a known device
     std::unordered_set<uint64_t> lostDevices_;
@@ -489,9 +594,19 @@ inline void executorEndedIfGone() {
 // Encoder calls after the executor is gone: true when the call must not reach the
 // stream (it reports device loss without touching its outputs), after a paused
 // application's wait for a new executor.
-inline bool lostCall() {
+// A call that returns without the device once its executor is gone: its outputs are left
+// as the caller had them (a query reads as all zeros). Each kind of call says so once per
+// process, so an answer of zeros can be told from the device's.
+inline bool lostCall(const char* caller = __builtin_FUNCTION()) {
     if (!executorLost.load(std::memory_order_acquire)) return false;
     awaitExecutorReturn();
+    static std::mutex mutex;
+    static std::unordered_set<std::string> told;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (told.size() < 512 && told.insert(caller).second)
+            std::fprintf(stderr, "CABOOSE_GPU_LOST_CALL %s returned without the device (executor lost)\n", caller);
+    }
     return true;
 }
 inline void markExecutorLost() {

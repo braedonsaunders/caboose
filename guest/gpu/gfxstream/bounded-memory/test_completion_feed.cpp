@@ -181,5 +181,48 @@ int main() {
         assert(described.describeFence(0xbad).rfind("fence=unknown", 0) == 0);
         assert(described.describeSemaphore(0x5e).rfind("timeline=unknown", 0) == 0);
     }
+    // Events: known from host sets and resets and from completed batches that set them.
+    {
+        Tracker e;
+        bool set = true;
+        assert(!e.eventSet(0xe1, &set));  // never created here: asked on the device
+        e.eventCreated(0xe1);
+        assert(e.eventSet(0xe1, &set) && !set);
+        e.eventHost(0xe1, true);
+        assert(e.eventSet(0xe1, &set) && set);
+        e.eventHost(0xe1, false);
+        // A command buffer sets it: not set until the batch completes.
+        e.commandBufferBegun(0xc1);
+        e.commandBufferEvent(0xc1, 0xe1, true);
+        assert(e.setsEvents({0xc1}) && !e.setsEvents({0xc2}));
+        const uint64_t serial = e.submitted(0, {}, 0x9, 0x1, {0xc1});
+        assert(e.eventSet(0xe1, &set) && !set);
+        e.complete(serial, kCompleted);
+        assert(e.eventSet(0xe1, &set) && set);
+        // A secondary's operations run where it is executed; a reset in the batch resets it.
+        e.commandBufferBegun(0xc2);
+        e.commandBufferEvent(0xc2, 0xe1, false);
+        e.commandBufferBegun(0xc3);
+        e.commandBufferExecutes(0xc3, std::vector<uint64_t>{0xc2}.data(), 1);
+        e.complete(e.submitted(0, {}, 0x9, 0x1, {0xc3}), kCompleted);
+        assert(e.eventSet(0xe1, &set) && !set);
+        // Re-recording forgets the old operations.
+        e.commandBufferBegun(0xc1);
+        assert(!e.setsEvents({0xc1}));
+        // A batch reported lost, or one nobody watches, leaves the event to the device.
+        e.commandBufferEvent(0xc1, 0xe1, true);
+        e.complete(e.submitted(0, {}, 0x9, 0x1, {0xc1}), kDeviceLost);
+        assert(!e.eventSet(0xe1, &set));
+        e.eventCreated(0xe2);
+        e.commandBufferBegun(0xc4);
+        e.commandBufferEvent(0xc4, 0xe2, true);
+        e.eventsUntracked({0xc4});
+        assert(!e.eventSet(0xe2, &set));
+        // A new executor forgets what the old one's events were.
+        e.eventCreated(0xe3);
+        e.revive();
+        assert(!e.eventSet(0xe3, &set));
+        e.eventDestroyed(0xe3);
+    }
     return 0;
 }
