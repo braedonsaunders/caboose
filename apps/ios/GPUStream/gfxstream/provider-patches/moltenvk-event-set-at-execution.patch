@@ -1,0 +1,45 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSync.h b/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
+index e357299..f92730c 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
+@@ -510,6 +510,12 @@ public:
+ 
+ protected:
+ 	id<MTLSharedEvent> _mtlEvent;
++	// The highest value a command buffer was encoded to signal. A device set or reset is
++	// decided when the GPU reaches it, not when it is encoded: each takes a value far above
++	// everything so far, so a host set or reset in the meantime (each a step of 1) cannot
++	// reach it, and the device's change, which comes after, takes effect.
++	std::mutex _encodeLock;
++	uint64_t _encoded = 0;
+ };
+ 
+ 
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+index b15e6b8..f522c4d 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+@@ -327,10 +327,21 @@ void MVKEventNative::signal(bool status) {
+ 	}
+ }
+ 
++// A device set or reset always signals: the event's state when the command buffer is encoded
++// says nothing about its state when the GPU reaches the command (a host reset may come in
++// between). Metal values only rise, so the value is chosen far above any value a host set or
++// reset can reach before the GPU gets there.
++static constexpr uint64_t kMVKEventDeviceStep = 1ull << 32;
++
+ void MVKEventNative::encodeSignal(id<MTLCommandBuffer> mtlCmdBuff, bool status) {
+-	if (isSet() != status) {
+-		[mtlCmdBuff encodeSignalEvent: _mtlEvent value: _mtlEvent.signaledValue + 1];
++	uint64_t value;
++	{
++		std::lock_guard<std::mutex> lock(_encodeLock);
++		value = std::max<uint64_t>(_mtlEvent.signaledValue, _encoded) + kMVKEventDeviceStep;
++		if ((value & 1) != (status ? 1 : 0)) { value += 1; }
++		_encoded = value;
+ 	}
++	[mtlCmdBuff encodeSignalEvent: _mtlEvent value: value];
+ }
+ 
+ void MVKEventNative::encodeWait(id<MTLCommandBuffer> mtlCmdBuff) {
