@@ -20,6 +20,8 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 broker = importlib.util.module_from_spec(spec)
 loader.exec_module(broker)
 from live_protocol import Decoder, Envelope, Kind, encode
+from live_compression import StreamDecompressor
+import live_zstd
 from test_gpu_websocket import client_frame
 import control_protocol
 
@@ -1012,6 +1014,52 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(live_zstd.available(), 'libzstd 1.5 is not installed')
+    async def test_zstd_stream_for_a_phone_that_decodes_it(self):
+        for deflate in ('', '1'):
+            with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE': deflate}):
+                session = broker.Session(None, b'a'*16, 1, None, Writer(), indexed=True, features={'zstd-stream'})
+            try:
+                await session.message(Envelope(Kind.SESSION_READY, b'a'*16, 1, 0, 0, 1, broker.HELLO_V4))
+                self.assertFalse(session.session_ready.is_set())
+                wire, _ = session.pending.get_nowait()
+                got = []; Decoder(b'a'*16, 1).feed(wire[2:], got.append)
+                self.assertEqual((got[0].kind, got[0].payload), (Kind.TRANSPORT_CONFIG, broker.CONFIG_ZSTD_STREAM))
+                with self.assertRaises(ValueError):  # the DEFLATE configuration is not this one
+                    await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, broker.TRANSPORT_CONFIG))
+                await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, broker.CONFIG_ZSTD_STREAM))
+                self.assertTrue(session.session_ready.is_set())
+                self.assertFalse(session.deflate_enabled)
+                payloads = [b'abc' * 5000, os.urandom(65536), b'abc' * 5000]
+                for payload in payloads:
+                    session.send(Kind.DATA, 1, 1, payload)
+                session.send(Kind.FIN, 1, 1)
+                inflater, parser, envelopes = StreamDecompressor(), Decoder(b'a'*16, 1), []
+                parser.feed(encode(got[0]), lambda _: None)
+                sizes = []
+                while not session.pending.empty():
+                    wire, charge = session.pending.get_nowait()
+                    message = wire[{126: 4, 127: 10}.get(wire[1] & 127, 2):]
+                    self.assertGreaterEqual(charge, len(wire))
+                    self.assertLessEqual(charge, broker.DATA_CREDIT_BYTES)
+                    if message[:4] == b'CGLZ':
+                        sizes.append(len(message))
+                        message = inflater.decompress(message)
+                    parser.feed(message, envelopes.append)
+                self.assertEqual([e.payload for e in envelopes], payloads + [b''])
+                self.assertEqual(envelopes[-1].kind, Kind.FIN)
+                self.assertEqual(len(sizes), 3)
+                self.assertLess(sizes[2], 100)  # the third repeats the first, within the stream
+            finally: session.bindings.finish(session.binding_generation)
+
+    async def test_deflate_without_the_phones_zstd_stream(self):
+        with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE': '1'}), \
+                mock.patch.object(broker.live_zstd, 'available', return_value=False):
+            session = broker.Session(None, b'a'*16, 1, None, Writer(), indexed=True, features={'zstd-stream'})
+        try:
+            self.assertEqual(session.transport_config, broker.TRANSPORT_CONFIG)
+        finally: session.bindings.finish(session.binding_generation)
+
     async def test_exact_opt_in_requires_v4_and_actual_two_receipts(self):
         with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE': '1'}):
             with self.assertRaises(ValueError): broker.Session(None,b'a'*16,1,None,Writer())
@@ -1166,6 +1214,7 @@ class ProcessUsageTests(unittest.TestCase):
         session.failed = session.closing_ws = session.sender_stopped = False
         session.executor, session.generation, session.sequence = bytes(range(1, 17)), 1, 1
         session.deflate_enabled = False
+        session.stream_compressor = None
         session.frame_timing = broker.FrameTiming(False)
         session.progress_enabled = False
         session.enqueue_frame = lambda *args, **kwargs: None
