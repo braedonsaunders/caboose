@@ -611,16 +611,23 @@ guest, `guest/scene` provides:
 
 When the client advertises `draw: true` and the server includes `"draw"` in
 `ServerHello.features`, the server forwards what applications draw with cairo as draw lists
-(format: [draw.md](draw.md)). It sends them alongside Surface Atlas batches, which stay the
-window's picture until a client draws them.
+(format: [draw.md](draw.md)), and sends each window picture either as a `draw.present` or as a
+`surface.batch`, never both. A picture goes as `draw.present` when the application's recorder
+presented exactly the buffer the window committed, complete, and the window's picture is that
+whole buffer (no subsurfaces, crop or scaling, no motion stream, alpha or pending keyframe).
+Every other picture is a batch, and the first batch after `draw.present` pictures is a
+keyframe. Windows without a recorder (X11 windows, applications that do not draw with cairo)
+are batches throughout.
 
 - **`draw.ops`** carries the ops of one stream: one application process's recording since
   its `begin`. A stream's `draw.ops` payloads concatenate into its op stream; an op may
   continue from one payload into the next. Surface ids, images and glyphs belong to the
   stream.
 - **`draw.present`**: window `id` now shows surface `surface` of stream `stream`, picture
-  `pts_us`. The surface is the buffer the application committed, in buffer pixels; a client
-  shows it in place of the window's picture, scaled as the picture would be.
+  `pts_us`. The surface is the buffer the application committed, at the picture's pixels; a
+  client shows it as the window's picture and acknowledges it with `ack` like a batch
+  (`decoded_us: -1` and `request_keyframe` when it cannot draw it, which brings a keyframe
+  batch).
 - **`draw.end`**: the stream ended (its process exited, its recording was stopped or broke,
   or a new `begin` replaced it). Its surfaces, images and glyphs can go.
 

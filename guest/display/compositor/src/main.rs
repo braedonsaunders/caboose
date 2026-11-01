@@ -254,9 +254,15 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
     }
+    let mut preload: Vec<String> = Vec::new();
     if let Some(socket) = &state.draw.socket {
-        // Draw-list recorders (guest/draw) find the compositor here (draw.rs).
+        // Draw-list recorders (guest/draw) find the compositor here (draw.rs). The cairo
+        // recorder is preloaded where installed: inert in processes without cairo, and idle
+        // until a client that draws draw lists asks.
         env.push(("CABOOSE_DRAW_SOCKET".into(), socket.display().to_string()));
+        if std::path::Path::new(draw::RECORDER).is_file() {
+            preload.push(draw::RECORDER.to_owned());
+        }
     }
     if let Some(socket) = &state.scene.socket {
         // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
@@ -277,14 +283,7 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         // Toolkit scroll reporters find the compositor here (scroll.rs).
         env.push(("CABOOSE_SCROLL_SOCKET".into(), socket.display().to_string()));
         // The toolkit reporters' preload libraries, inert in processes without their toolkit.
-        let reporters = scroll::preload_libraries(std::path::Path::new(scroll::REPORTERS));
-        if !reporters.is_empty() {
-            let mut preload = reporters.join(":");
-            if let Some(existing) = std::env::var("LD_PRELOAD").ok().filter(|v| !v.is_empty()) {
-                preload = format!("{existing}:{preload}");
-            }
-            env.push(("LD_PRELOAD".into(), preload));
-        }
+        preload.extend(scroll::preload_libraries(std::path::Path::new(scroll::REPORTERS)));
         // Electron applications load the Electron reporter into their main process.
         if let Some(electron) = scroll::electron_reporter(std::path::Path::new(scroll::ELECTRON)) {
             let mut options = format!("--require={electron}");
@@ -293,6 +292,13 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
             }
             env.push(("NODE_OPTIONS".into(), options));
         }
+    }
+    if !preload.is_empty() {
+        let mut value = preload.join(":");
+        if let Some(existing) = std::env::var("LD_PRELOAD").ok().filter(|v| !v.is_empty()) {
+            value = format!("{existing}:{value}");
+        }
+        env.push(("LD_PRELOAD".into(), value));
     }
     if let Some(path) = &state.config.env_file {
         // KEY=VALUE lines, values single-quoted for sh. Written in place: the file may

@@ -10,6 +10,11 @@
 //! are dropped. Each (connection, generation) is one stream to the client. A `present` names a
 //! wl_surface by its protocol id, which, with the recorder's process, identifies the window.
 //!
+//! A window's frame goes to the client either as a draw list or as a Surface Atlas batch. It is
+//! a draw list (`draw.present` in place of the batch) when the recorder presented the very
+//! buffer the window committed, complete, and the window's picture is that whole buffer
+//! (session.rs). Otherwise the batch goes, and the first batch after draw lists is a keyframe.
+//!
 //! The recorder never waits on this socket (it drops recording rather than block), and the
 //! compositor drains it whether or not a client draws, so applications never stall.
 
@@ -23,6 +28,8 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
+/// The cairo recorder, where the image installs it (guest/draw/install.sh).
+pub const RECORDER: &str = "/opt/caboose/draw/lib/libcaboose-draw-cairo.so";
 /// Recorders connected at once.
 pub const MAX_CONNS: usize = 128;
 /// The largest single op accepted (an image of 4096 × 4096 pixels).
@@ -38,7 +45,7 @@ pub enum Piece {
     /// A stream started with this generation (`begin`).
     Begin(u32),
     /// A window buffer was committed to a wl_surface.
-    Present { surface: u32, wl_surface: u32 },
+    Present { surface: u32, wl_surface: u32, wl_buffer: u32, complete: bool },
 }
 
 /// Splits a recorder's byte stream into validated ops, separating `begin` and `present`.
@@ -83,9 +90,9 @@ impl Splitter {
                     self.at += whole.len();
                     return Some(Ok(Piece::Begin(generation)));
                 }
-                Some(Ok(Op::Present { surface, wl_surface })) => {
+                Some(Ok(Op::Present { surface, wl_surface, wl_buffer, complete })) => {
                     self.at += whole.len();
-                    return Some(Ok(Piece::Present { surface, wl_surface }));
+                    return Some(Ok(Piece::Present { surface, wl_surface, wl_buffer, complete }));
                 }
                 Some(Ok(_)) => {
                     ops.extend_from_slice(whole);
@@ -119,8 +126,19 @@ struct Recorder {
     token: Option<RegistrationToken>,
 }
 
+/// A window buffer a recorder presented, waiting for the window's next picture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    pub stream: u32,
+    pub surface: u32,
+    pub wl_buffer: u32,
+    pub complete: bool,
+}
+
 #[derive(Default)]
 pub struct DrawServer {
+    /// The latest present per window, taken by the window's next picture.
+    frames: HashMap<u64, Frame>,
     pub socket: Option<PathBuf>,
     recorders: HashMap<u64, Recorder>,
     next_conn: u64,
@@ -131,6 +149,17 @@ pub struct DrawServer {
 }
 
 impl DrawServer {
+    /// The frame `window` can show as a draw list: presented complete, of buffer `wl_buffer`.
+    pub fn take_frame(&mut self, window: u64, wl_buffer: u32) -> Option<Frame> {
+        let frame = self.frames.remove(&window)?;
+        (frame.complete && frame.wl_buffer == wl_buffer).then_some(frame)
+    }
+
+    /// Forgets a window's pending frame (it closed).
+    pub fn window_gone(&mut self, window: u64) {
+        self.frames.remove(&window);
+    }
+
     pub fn listen(path: &Path, handle: &LoopHandle<'static, State>) -> io::Result<Self> {
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
@@ -167,6 +196,7 @@ impl State {
     pub fn draw_session(&mut self, drawing: bool) {
         let server = &mut self.draw;
         server.drawing = drawing;
+        server.frames.clear();
         server.generation = server.generation.wrapping_add(1);
         let generation = server.generation;
         for r in server.recorders.values_mut() {
@@ -276,13 +306,41 @@ impl State {
                         self.net.send(conn, &Message::DrawOps(proto::DrawOps { stream, ops }));
                     }
                 }
-                Piece::Present { surface, wl_surface } => {
-                    let (Some(stream), Some(conn)) = (r.stream, session) else { continue };
+                Piece::Present { surface, wl_surface, wl_buffer, complete } => {
+                    let (Some(stream), Some(_)) = (r.stream, session) else { continue };
                     let pid = r.pid;
                     let Some(window) = self.draw_window(pid, wl_surface) else { continue };
-                    let pts_us = self.now_us();
-                    self.net.send(conn, &Message::DrawPresent(proto::DrawPresent { id: window, stream, surface, pts_us }));
+                    self.draw.frames.insert(window, Frame { stream, surface, wl_buffer, complete });
                 }
+            }
+        }
+    }
+
+    /// Reads what every recorder has sent so far, so a window's picture finds the present of
+    /// the commit it shows (the recorder writes it before committing).
+    pub fn pump_draw_recorders(&mut self) {
+        let ids: Vec<u64> = self.draw.recorders.keys().copied().collect();
+        let mut buf = vec![0u8; 256 * 1024];
+        for id in ids {
+            let mut closed = false;
+            loop {
+                let Some(r) = self.draw.recorders.get_mut(&id) else { break };
+                match r.out.read(&mut buf) {
+                    Ok(0) => {
+                        closed = true;
+                        break;
+                    }
+                    Ok(n) => r.splitter.push(&buf[..n]),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        closed = true;
+                        break;
+                    }
+                }
+            }
+            if !self.drain_draw_recorder(id) || closed {
+                self.drop_draw_recorder(id);
             }
         }
     }
@@ -329,7 +387,7 @@ mod tests {
         let target = op(draw::TARGET, &u32s(&[1]));
         stream.extend(&surface);
         stream.extend(&target);
-        stream.extend(op(draw::PRESENT, &u32s(&[1, 12])));
+        stream.extend(op(draw::PRESENT, &[u32s(&[1, 12, 40]), vec![1]].concat()));
         stream.extend(&target);
         for cut in 0..stream.len() {
             let mut s = Splitter::default();
@@ -353,7 +411,7 @@ mod tests {
                 [
                     Piece::Begin(4),
                     Piece::Ops([surface.clone(), target.clone()].concat()),
-                    Piece::Present { surface: 1, wl_surface: 12 },
+                    Piece::Present { surface: 1, wl_surface: 12, wl_buffer: 40, complete: true },
                     Piece::Ops(target.clone()),
                 ],
                 "cut at {cut}"

@@ -338,6 +338,8 @@ struct WindowStats {
     /// Tiles that did not decode or came before any picture.
     tile_errors: u64,
     surface_batches: u64,
+    /// Pictures drawn from draw lists (draw.present) in place of batches.
+    drawn: u64,
     atlas_copies: u64,
     atlas_fills: u64,
     atlas_refs: u64,
@@ -1164,10 +1166,14 @@ fn run(args: Args) -> Result<bool, String> {
                 Message::DrawPresent(p) => {
                     draw_presents += 1;
                     // A present op naming the window where the recorder named its wl_surface.
-                    let mut op = vec![0x30, 8, 0, 0, 0];
+                    let mut op = vec![0x30, 13, 0, 0, 0];
                     op.extend_from_slice(&p.surface.to_le_bytes());
                     op.extend_from_slice(&(p.id as u32).to_le_bytes());
+                    op.extend_from_slice(&[0, 0, 0, 0, 1]);
                     draw_append(p.stream, &op)?;
+                    // Acknowledged as a phone does once it has drawn the picture.
+                    windows.entry(p.id).or_default().drawn += 1;
+                    send(&mut ws, &Message::Ack { id: p.id, pts_us: p.pts_us, decoded_us: 0 })?;
                 }
                 Message::DrawEnd { .. } => {}
                 Message::Frame(f) => {
@@ -1537,7 +1543,7 @@ fn run(args: Args) -> Result<bool, String> {
                     .map(|c| c.as_str())
                     .unwrap_or(if w.surface_batches > 0 { "atlas" } else { "" });
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"drawn\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
                     w.title,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
@@ -1566,6 +1572,7 @@ fn run(args: Args) -> Result<bool, String> {
                     w.tile_bytes,
                     w.tile_errors,
                     w.surface_batches,
+                    w.drawn,
                     w.atlas_copies,
                     w.atlas_fills,
                     w.atlas_refs,

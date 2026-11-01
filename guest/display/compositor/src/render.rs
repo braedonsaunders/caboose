@@ -158,6 +158,8 @@ pub struct Direct {
     pub commit: CommitCounter,
     /// What changed since the commit asked for (all of it without one), picture pixels.
     pub damage: Vec<caboose_display_protocol::Rect>,
+    /// The picture is the whole buffer: no crop, the buffer's own size.
+    pub whole: bool,
 }
 
 /// Whether `surface` can be streamed straight from its buffer, cropped to the window
@@ -208,24 +210,25 @@ pub fn direct(
     }
     let origin = (local.loc.x * scale, local.loc.y * scale);
     let fits = smithay::wayland::shm::with_buffer_contents(&buffer, |_, len, data| {
-        matches!(data.format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888)
+        let fits = matches!(data.format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888)
             && origin.0 >= 0
             && origin.1 >= 0
             && origin.0 + size.w <= data.width
             && origin.1 + size.h <= data.height
             && data.width * 4 <= data.stride
-            && data.offset as usize + data.stride as usize * data.height as usize <= len
+            && data.offset as usize + data.stride as usize * data.height as usize <= len;
+        fits.then_some(origin == (0, 0) && size.w == data.width && size.h == data.height)
     });
-    if !matches!(fits, Ok(true)) {
+    let Ok(Some(whole)) = fits else {
         return None;
-    }
+    };
     let crop = Rectangle::<i32, smithay::utils::Buffer>::new(origin.into(), (size.w, size.h).into());
     let damage = damage
         .iter()
         .filter_map(|d| d.intersection(crop))
         .map(|r| caboose_display_protocol::Rect::new(r.loc.x - origin.0, r.loc.y - origin.1, r.size.w, r.size.h))
         .collect();
-    Some(Direct { buffer, origin, commit, damage })
+    Some(Direct { buffer, origin, commit, damage, whole })
 }
 
 /// Copies a direct window's damage from its buffer into `image`.
