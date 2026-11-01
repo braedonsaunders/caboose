@@ -172,7 +172,9 @@ if sys.argv[1] == 'desktop-shortcut':
 if sys.argv[1] in ('launch', 'action'):
     if sys.argv[1] == 'action' and len(sys.argv) != 4:
         raise SystemExit('Usage: action <id> <action>')
-    if os.environ.get('CABOOSE_GPU') == 'wsl':
+    # Mesa D3D12 on WSL, except on the seat that renders on the phone's GPU, where OpenGL
+    # goes through Zink (docs/gpu-live.md, "Applications").
+    if os.environ.get('CABOOSE_GPU') == 'wsl' and not os.environ.get('CABOOSE_GFXSTREAM_SOCKET'):
         os.environ.setdefault('GALLIUM_DRIVER', 'd3d12')
     # Craft's winit GUI must use X11, including Caboose Display's Xwayland DISPLAY.
     # Keep the driver's DISPLAY and XAUTHORITY; only remove Wayland selection hints.

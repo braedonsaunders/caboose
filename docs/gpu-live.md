@@ -706,7 +706,8 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | --- | --- |
 | Vulkan, Wayland or X11 | `VK_ADD_DRIVER_FILES` adds the driver to the computer's own; the routing layer (`guest/gpu/routing-layer`, enabled by `CABOOSE_GPU_ROUTING=1` in place of Mesa's device-select layer) lists the phone's GPU first and CPU renderers such as lavapipe last. `CABOOSE_GFXSTREAM_SOCKET` and `CABOOSE_GFXSTREAM_SURFACE_SOCKET` name the broker's sockets. |
 | GTK 4 | `GSK_RENDERER=vulkan`. |
-| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. |
+| Qt 6 Quick | `QSG_RHI_BACKEND=vulkan`. |
+| Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. The launcher (`apps/host/src/guest-apps.py`) starts an Electron binary with Chromium's switches for this seat: ANGLE on Vulkan, without the GPU sandbox. |
 | Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 The broker listens on its local socket only while a phone's executor is ready. With no
@@ -725,9 +726,18 @@ The launch environment sets `auto`, which the routing layer resolves per process
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
 recover from device loss (GTK 4, Vulkan applications and games).
 
-Some applications draw on the computer even with a phone attached: OpenGL
-applications, Qt Quick and Electron among them, because Zink (OpenGL on Vulkan) on the
-phone's GPU offers only OpenGL ES 2.0, the phone having no logic operations.
+OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan (`LIBGL_KOPPER_DRI2=1`,
+`MESA_LOADER_DRIVER_OVERRIDE=zink`, and no `GALLIUM_DRIVER`). Zink presents through the
+driver's X11 windows (Kopper); without a DRM render node it cannot present through
+Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
+`QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick), `SDL_VIDEODRIVER=x11,wayland` and
+`MOZ_ENABLE_WAYLAND=0` (Firefox's WebRender). The driver offers the logic operations and
+custom border colours Zink needs for desktop OpenGL where the phone lacks them
+(`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
+for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and
+`MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
+and a shader that uses either feature fails to compile or draw. Without a phone Zink finds
+no GPU and Mesa draws with llvmpipe.
 
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
