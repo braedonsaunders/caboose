@@ -34,8 +34,9 @@ enum cdl_op {
 };
 
 enum cdl_surface_kind {
-    CDL_SURFACE_CLEAR = 0,  /* created transparent: its content is exactly its recorded ops */
-    CDL_SURFACE_WINDOW = 1, /* a window's buffer: content the device already holds */
+    CDL_SURFACE_CLEAR = 0,   /* created transparent: its content is exactly its recorded ops */
+    CDL_SURFACE_WINDOW = 1,  /* a window's wl_shm buffer: created transparent, shown by PRESENT */
+    CDL_SURFACE_UNKNOWN = 2, /* drawn into without knowing what was there (an X11 window) */
 };
 
 enum cdl_source_kind {

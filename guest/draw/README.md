@@ -29,7 +29,9 @@ calls cairo on. Calls cairo makes internally do not reach it, so each operation 
   is *recorded*: its content is its ops, and the device holds it as an offscreen. A surface
   written directly (`cairo_image_surface_get_data`, `cairo_surface_mark_dirty`) or created over
   existing memory is *pixels*: used as a source, its pixels are sent once as a content-addressed
-  image.
+  image. A wl_shm buffer is the exception: toolkits allocate buffers from fresh, zeroed shared
+  memory, so a buffer is recorded like a surface created clear, and a toolkit copying its last
+  frame into the next buffer costs one op.
 - **Text** is sent as glyph outlines in em units, taken from the same face at 1024 units per em
   without hinting, so variations and synthetic bold or oblique come out as cairo draws them.
   Colour glyphs have no outlines and are recorded as `unsupported` regions.

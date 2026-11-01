@@ -43,7 +43,7 @@ the source's pixels for surfaces and images. `extend` is `0` none, `1` repeat, `
 
 | Op | Name | Payload |
 | --- | --- | --- |
-| `0x01` | `surface` | `id: u32`, `w: u32`, `h: u32`, `kind: u8`: `0` an offscreen created transparent, `1` a window's buffer (its content is the window's picture). Declared before its first use. `w` and `h` are `0` when unknown |
+| `0x01` | `surface` | `id: u32`, `w: u32`, `h: u32`, `kind: u8`: `0` an offscreen created transparent, `1` a window's wl_shm buffer (created transparent; `present` shows it), `2` a surface drawn into without knowing what was there before (an X11 window). Declared before its first use. `w` and `h` are `0` when unknown |
 | `0x02` | `free` | `id: u32` |
 | `0x03` | `target` | `id: u32`: the surface later drawing ops draw into |
 | `0x04` | `clip` | `n: u32`, then `n` items, intersected: `0` rectangle (`x, y, w, h` in the target's pixels) or `1` path (matrix, `rule: u8`, `antialias: u8`, path). `n = 0` is no clip. Applies to the current target until the next `clip` or `target` |
@@ -74,6 +74,8 @@ the source's pixels for surfaces and images. `extend` is `0` none, `1` repeat, `
 - **Resources.** `image` and `glyph` are sent once per stream, before the first op that uses
   them, and keyed by content: an image by the XXH64 (seed 0) of its pixels, a glyph by
   `XXH64(font as 8 bytes LE, seed = glyph)`.
-- **Surfaces.** Offscreens start transparent; a renderer holds each one at the same density as
-  the window. A window buffer's content is the window's current picture, which the renderer
-  already has.
+- **Surfaces.** Offscreens and wl_shm window buffers start transparent (toolkits allocate
+  buffers from fresh, zeroed shared memory); a renderer holds each one at the same density as
+  the window. A buffer used as a source (a toolkit copying its last frame into the next buffer)
+  is a `surface` source, so no pixels travel. A surface of kind `2` holds what was there before
+  its first recorded op, which only the computer has.

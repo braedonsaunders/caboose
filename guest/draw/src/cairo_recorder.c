@@ -380,7 +380,7 @@ static void surf_declare(cairo_surface_t *surface, surf_t *s) {
     cdl_u32(&out, s->id);
     cdl_u32(&out, (uint32_t)w);
     cdl_u32(&out, (uint32_t)h);
-    cdl_u8(&out, s->clear ? CDL_SURFACE_CLEAR : CDL_SURFACE_WINDOW);
+    cdl_u8(&out, s->window ? CDL_SURFACE_WINDOW : s->clear ? CDL_SURFACE_CLEAR : CDL_SURFACE_UNKNOWN);
     cdl_end(&out, at);
     s->declared = 1;
 }
@@ -1305,10 +1305,12 @@ EXPORT cairo_surface_t *cairo_image_surface_create_for_data(unsigned char *data,
         pthread_mutex_lock(&lock);
         surf_t *r = surf_get(s);
         if (r) {
-            /* Existing memory: what is in it is pixels, unless it is a window's buffer, whose
-             * content the device holds as the window's picture. */
-            r->pixels = 1;
+            /* Existing memory: what is in it is pixels, unless it is a window's buffer. A
+             * toolkit allocates those from fresh shared memory, which starts zeroed, so their
+             * content is exactly what is drawn into them, as for a surface created clear. */
+            r->pixels = !shared;
             if (shared) {
+                r->clear = 1;
                 r->window = 1;
                 r->shm_ino = ino;
                 r->shm_off = off;

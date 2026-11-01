@@ -286,7 +286,7 @@ static void replay_op(uint8_t op, rd *r, cairo_t **crp, surface_t **target) {
     switch (op) {
     case CDL_SURFACE: {
         uint32_t id = u32(r), w = u32(r), h = u32(r);
-        int window = u8(r) == CDL_SURFACE_WINDOW;
+        int window = u8(r) != CDL_SURFACE_CLEAR;
         if (surface_find(id) || nsurfaces == (int)(sizeof surfaces / sizeof surfaces[0])) break;
         surface_t *t = &surfaces[nsurfaces++];
         t->id = id;

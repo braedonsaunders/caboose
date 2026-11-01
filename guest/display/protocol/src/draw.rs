@@ -168,7 +168,9 @@ impl<'a> Glyphs<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op<'a> {
-    Surface { id: u32, w: u32, h: u32, window: bool },
+    /// `kind`: 0 an offscreen created transparent, 1 a window's wl_shm buffer (created
+    /// transparent, shown by `Present`), 2 drawn into without knowing what was there.
+    Surface { id: u32, w: u32, h: u32, kind: u8 },
     Free { id: u32 },
     Target { id: u32 },
     Clip(Vec<ClipItem<'a>>),
@@ -274,7 +276,7 @@ impl<'a> Cursor<'a> {
 fn decode(op: u8, payload: &[u8]) -> Option<Op<'_>> {
     let mut c = Cursor { b: payload, at: 0 };
     let op = match op {
-        SURFACE => Op::Surface { id: c.u32()?, w: c.u32()?, h: c.u32()?, window: c.u8()? == 1 },
+        SURFACE => Op::Surface { id: c.u32()?, w: c.u32()?, h: c.u32()?, kind: c.u8()? },
         FREE => Op::Free { id: c.u32()? },
         TARGET => Op::Target { id: c.u32()? },
         CLIP => {
@@ -467,7 +469,7 @@ mod tests {
         }));
         let ops: Vec<Op> = Reader::new(&s).collect::<Result<_, _>>().unwrap();
         assert_eq!(ops.len(), 8);
-        assert_eq!(ops[0], Op::Surface { id: 1, w: 400, h: 300, window: true });
+        assert_eq!(ops[0], Op::Surface { id: 1, w: 400, h: 300, kind: 1 });
         assert_eq!(ops[2], Op::Clip(vec![ClipItem::Rect([0.0, 0.0, 200.0, 100.0])]));
         let Op::Glyph { path, .. } = &ops[3] else { panic!() };
         let segs: Vec<_> = path.segments().collect();
