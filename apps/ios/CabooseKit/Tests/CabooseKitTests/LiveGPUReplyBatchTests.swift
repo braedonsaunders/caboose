@@ -110,17 +110,18 @@ final class LiveGPUReplyBatchTests: XCTestCase {
         XCTAssertEqual(budget.retained.bytes, 0)
         XCTAssertEqual(budget.retained.count, 0)
 
-        // 64 messages of 10 bytes each: all 64 coalesce into one 640-byte frame (+ 640 scratch).
-        for i in 0..<LiveGPUBudget.countLimit {
-            let small = Data(repeating: UInt8(i), count: 10)
+        // countLimit messages of 10 bytes each all coalesce into one frame (+ equal scratch).
+        let limit = LiveGPUBudget.countLimit
+        for i in 0..<limit {
+            let small = Data(repeating: UInt8(truncatingIfNeeded: i), count: 10)
             XCTAssertNil(budget.admit(small.count))
             queue.enqueue(small)
         }
-        guard let fullCountBatch = queue.nextBatch() else { return XCTFail("expected 64-record batch") }
-        XCTAssertEqual(fullCountBatch.count, LiveGPUBudget.countLimit)
-        XCTAssertEqual(fullCountBatch.originalBytes, 640)
-        XCTAssertEqual(fullCountBatch.scratchBytes, 640)
-        XCTAssertEqual(budget.retained.bytes, 1280)
+        guard let fullCountBatch = queue.nextBatch() else { return XCTFail("expected a full-count batch") }
+        XCTAssertEqual(fullCountBatch.count, limit)
+        XCTAssertEqual(fullCountBatch.originalBytes, 10 * limit)
+        XCTAssertEqual(fullCountBatch.scratchBytes, 10 * limit)
+        XCTAssertEqual(budget.retained.bytes, 20 * limit)
         XCTAssertEqual(budget.retained.count, LiveGPUBudget.countLimit)
         XCTAssertTrue(queue.isEmpty)
         XCTAssertTrue(queue.completeInFlight())
@@ -132,10 +133,11 @@ final class LiveGPUReplyBatchTests: XCTestCase {
         let budget = LiveGPUBudget()
         let queue = LiveGPUOutboundQueue(budget: budget)
 
-        // Admit 9 items of 100 KiB = 900 KiB. Two items (200 KiB <= 256 KiB messageLimit)
-        // can coalesce, but 200 KiB scratch exceeds remaining 124 KiB headroom (1024 KiB - 900 KiB).
+        // Admit 80 items of 100 KiB = 8000 KiB. Two items (200 KiB <= 256 KiB messageLimit)
+        // can coalesce, but 200 KiB scratch exceeds the remaining 192 KiB of the 8 MiB budget.
+        XCTAssertEqual(LiveGPUBudget.byteLimit, 8192 * 1024)
         let item = Data(repeating: 0x33, count: 100 * 1024)
-        for _ in 0..<9 {
+        for _ in 0..<80 {
             XCTAssertNil(budget.admit(item.count))
             queue.enqueue(item)
         }
@@ -144,27 +146,27 @@ final class LiveGPUReplyBatchTests: XCTestCase {
         XCTAssertEqual(fallback.count, 1)
         XCTAssertEqual(fallback.originalBytes, 100 * 1024)
         XCTAssertEqual(fallback.scratchBytes, 0)
-        XCTAssertEqual(budget.retained.bytes, 900 * 1024)
-        XCTAssertEqual(budget.retained.count, 9)
+        XCTAssertEqual(budget.retained.bytes, 8000 * 1024)
+        XCTAssertEqual(budget.retained.count, 80)
 
-        // Completing the first 100 KiB uncoalesced send leaves 800 KiB retained (224 KiB headroom),
-        // which immediately fits a 2-item (200 KiB) coalesced batch + 200 KiB scratch = 1000 KiB <= 1024 KiB.
+        // Completing the first 100 KiB uncoalesced send leaves 7900 KiB retained (292 KiB headroom),
+        // which immediately fits a 2-item (200 KiB) coalesced batch + 200 KiB scratch.
         XCTAssertTrue(queue.completeInFlight())
-        XCTAssertEqual(budget.retained.bytes, 800 * 1024)
-        XCTAssertEqual(budget.retained.count, 8)
+        XCTAssertEqual(budget.retained.bytes, 7900 * 1024)
+        XCTAssertEqual(budget.retained.count, 79)
 
         guard let coalesced = queue.nextBatch() else { return XCTFail("expected coalesced batch after first send freed headroom") }
         XCTAssertTrue(budget.active)
         XCTAssertEqual(coalesced.count, 2)
         XCTAssertEqual(coalesced.originalBytes, 200 * 1024)
         XCTAssertEqual(coalesced.scratchBytes, 200 * 1024)
-        XCTAssertEqual(budget.retained.bytes, 800 * 1024 + 200 * 1024)
-        XCTAssertEqual(budget.retained.count, 8)
-        XCTAssertEqual(queue.pendingCount, 6)
+        XCTAssertEqual(budget.retained.bytes, 7900 * 1024 + 200 * 1024)
+        XCTAssertEqual(budget.retained.count, 79)
+        XCTAssertEqual(queue.pendingCount, 77)
 
         XCTAssertTrue(queue.completeInFlight())
-        XCTAssertEqual(budget.retained.bytes, 600 * 1024)
-        XCTAssertEqual(budget.retained.count, 6)
+        XCTAssertEqual(budget.retained.bytes, 7700 * 1024)
+        XCTAssertEqual(budget.retained.count, 77)
 
         while let rest = queue.nextBatch() {
             XCTAssertTrue(rest.count >= 1)

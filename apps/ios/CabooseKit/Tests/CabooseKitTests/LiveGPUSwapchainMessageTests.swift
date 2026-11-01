@@ -37,7 +37,7 @@ final class LiveGPUSwapchainMessageTests: XCTestCase {
         let mutations: [(String, Int, UInt64, Int)] = [
             ("create",40,0,8),("create",80,0,4),("create",108,2,4),("create",112,1,4),
             ("created",60,0,4),("created",72,257,4),("create-error",48,5,8),
-            ("map",64,15,8),("map",52,1,4),("acquire",56,0,8),("acquire",80,2,4),
+            ("map",64,15,8),("map",52,2,4),("acquire",56,0,8),("acquire",80,2,4),
             ("acquired",60,0,4),("acquired",76,256,4),("acquire-not-ready",72,1,4),
             ("acquire-local-timeout",56,0,4),("acquire-local-timeout",80,0,4),
             ("acquired",80,1,4),("indexed-present",72,1000001002,4),("indexed-present",88,29,8),
