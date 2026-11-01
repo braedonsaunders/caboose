@@ -10,7 +10,10 @@ using namespace caboose::memory;
 int main() {
     uint64_t now = 0;
     std::vector<std::string> lines;
-    PollStall stall([&] { return now; }, [&](const std::string& line) { lines.push_back(line); });
+    std::vector<uint64_t> backoffs;
+    PollStall stall([&] { return now; },
+                    [&](const std::string& line) { lines.push_back(line); },
+                    [&](uint64_t polls) { backoffs.push_back(polls); });
     unsigned described = 0;
     auto describe = [&] { ++described; return std::string("state=pending"); };
 
@@ -31,6 +34,16 @@ int main() {
     stall.poll("vkGetFenceStatus", 0x10, false, describe);
     stall.poll("vkGetQueryPoolResults", 0x10, false, describe);
     assert(lines.size() == 2);
+
+    // Backoff receives consecutive poll counts after the first poll, and resets on ready.
+    backoffs.clear();
+    stall.poll("vkGetEventStatus", 0x30, false, describe);
+    assert(backoffs.empty());
+    stall.poll("vkGetEventStatus", 0x30, false, describe);
+    assert(backoffs.size() == 1 && backoffs[0] == 2);
+    stall.poll("vkGetEventStatus", 0x30, true, describe);
+    stall.poll("vkGetEventStatus", 0x30, false, describe);
+    assert(backoffs.size() == 1);
 
     // A value that keeps changing never stalls; one that stays the same does.
     lines.clear();

@@ -69,7 +69,8 @@ int main() {
     assert(table.reserve(&a, &first, 801, 1000) && first.next == 3 && table.pending() == 0);
 
     // The default bound lets commands run megabytes ahead while their replies stay small,
-    // and drains once the replies owed pass 64 KiB.
+    // and drains the oldest half once the replies owed pass 64 KiB, leaving newer replies
+    // in flight instead of stalling on the newest just-sent command.
     {
         DeferredReplies big;
         Stream results;
@@ -81,7 +82,19 @@ int main() {
         big.addCheckedResults(&a, many, 1024);                 // exactly 64 KiB of results owed
         assert(big.reserve(&a, &results, 64) && results.next == 1);
         big.addCheckedResult(&a, 64);                          // one more: past the reply bound
-        assert(big.reserve(&a, &results, 64) && results.next == many + 2 && big.pending() == 0);
+        assert(big.reserve(&a, &results, 64) && results.next == 1 + many / 2 + 1 && big.pending() == many / 2);
+        assert(big.drain(&a, &results) && results.next == many + 2 && big.pending() == 0);
+    }
+    // Non-blocking available() inside reserve() consumes already-arrived replies first,
+    // avoiding a blocking drain when enough bytes are sitting in the socket buffer.
+    {
+        DeferredReplies nonblock;
+        Stream results{{0, 0, 0, 0}};
+        nonblock.addCheckedResult(&a, 400);
+        nonblock.addCheckedResult(&a, 400);
+        nonblock.addCheckedResult(&a, 400);
+        assert(nonblock.reserve(&a, &results, 300, 1200, [] { return size_t(8); }));
+        assert(results.next == 2 && nonblock.pending() == 1);
     }
     table.add(&a, 1, 10);
     assert(table.drain(&a, &first) && first.next == 4);
@@ -164,6 +177,24 @@ int main() {
         assert(owner.singleEncoder(&first) && owner.singleEncoder(&first));
         assert(!owner.singleEncoder(&second));
         assert(!owner.singleEncoder(&first) && !owner.singleEncoder(&second));
+    }
+
+    // QueryResults holds up to 8192 active queries and prefers evicting completed ones
+    // before ever evicting an in-flight (!done) query.
+    {
+        QueryResults qr;
+        assert(QueryResults::kMaxEntries == 8192 && QueryResults::kMaxRecorded == 1024);
+        auto inFlight = std::make_shared<QueryReply>();
+        qr.requested({0x100, 0, 1, 8, 8, 0}, inFlight);
+        for (uint32_t i = 1; i < QueryResults::kMaxEntries; ++i) {
+            auto doneReply = std::make_shared<QueryReply>();
+            doneReply->done.store(true, std::memory_order_relaxed);
+            qr.requested({0x100, i, 1, 8, 8, 0}, std::move(doneReply));
+        }
+        auto extra = std::make_shared<QueryReply>();
+        qr.requested({0x100, uint32_t(QueryResults::kMaxEntries), 1, 8, 8, 0}, extra);
+        bool pending = false;
+        assert(qr.take({0x100, 0, 1, 8, 8, 0}, &pending) == nullptr && pending);
     }
     return 0;
 }

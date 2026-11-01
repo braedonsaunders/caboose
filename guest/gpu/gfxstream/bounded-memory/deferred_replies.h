@@ -60,6 +60,9 @@ inline thread_local bool sendingPrefetchedFenceWait = false;
 // Told how long each drain that had replies to read blocked, in microseconds.
 inline void (*drainObserver)(uint64_t us) = nullptr;
 
+// Returns the unread reply bytes sitting in `encoder`'s receive buffer without blocking.
+inline size_t (*availableObserver)(const void* encoder) = nullptr;
+
 // Pending replies and their commands' bytes per encoder, kept outside the
 // encoder so its layout, which other objects allocate, never changes. Callers
 // hold the encoder lock. A prefetched fence wait that succeeds records its
@@ -67,19 +70,72 @@ inline void (*drainObserver)(uint64_t us) = nullptr;
 // fence's generation discards prefetches that complete after such a change.
 class DeferredReplies {
 public:
-    // Before sending a deferred command of `bytes`, drain if it would exceed the limit.
-    template<class Stream>
+    // Before sending a deferred command of `bytes`, first consume any replies that have
+    // already arrived on the socket without blocking; if still past the bound, drain only
+    // the oldest prefix needed to bring the remaining queue within half the bound, rather
+    // than blocking on the newest just-sent command.
+    template<class Stream, class Available>
     bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
-                 uint64_t limit = deferredByteLimit) {
+                 uint64_t limit, Available available) {
         if (!total_.load(std::memory_order_relaxed)) return true;
+        auto fits = [&](const Entry& entry) {
+            return entry.bytes + bytes <= limit && entry.replyBytes <= deferredReplyByteLimit;
+        };
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto found = pending_.find(encoder);
-            if (found == pending_.end() ||
-                (found->second.bytes + bytes <= limit && found->second.replyBytes <= deferredReplyByteLimit))
-                return true;
+            if (found == pending_.end() || fits(found->second)) return true;
         }
-        return drain(encoder, stream);
+        if (!drainAvailable(encoder, stream, available)) return false;
+        std::vector<Reply> replies;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = pending_.find(encoder);
+            if (found == pending_.end() || fits(found->second)) return true;
+            auto& queued = found->second.replies;
+            const uint64_t targetBytes = limit / 2;
+            const uint64_t targetReplyBytes = deferredReplyByteLimit / 2;
+            uint64_t remBytes = found->second.bytes;
+            uint64_t remReplyBytes = found->second.replyBytes;
+            size_t count = 0;
+            while (count < queued.size() &&
+                   (count == 0 || remBytes + bytes > targetBytes || remReplyBytes > targetReplyBytes)) {
+                const uint64_t w = wireSize(queued[count]);
+                remBytes -= std::min(remBytes, queued[count].bytes);
+                remReplyBytes -= std::min(remReplyBytes, w);
+                ++count;
+            }
+            if (count == queued.size()) {
+                replies.swap(queued);
+                pending_.erase(found);
+            } else {
+                replies.assign(queued.begin(), queued.begin() + count);
+                queued.erase(queued.begin(), queued.begin() + count);
+                found->second.bytes = remBytes;
+                found->second.replyBytes = remReplyBytes;
+            }
+            total_.fetch_sub(replies.size(), std::memory_order_relaxed);
+        }
+        const auto started = std::chrono::steady_clock::now();
+        struct Observe {
+            std::chrono::steady_clock::time_point started;
+            ~Observe() {
+                if (drainObserver)
+                    drainObserver(std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started).count());
+            }
+        } observe{started};
+        for (const Reply& reply : replies)
+            if (!readReply(reply, stream)) return false;
+        return true;
+    }
+
+    template<class Stream>
+    bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
+                 uint64_t limit = deferredByteLimit) {
+        return reserve(encoder, stream, bytes, limit, [encoder]() -> size_t {
+            return availableObserver ? availableObserver(encoder) : 0;
+        });
     }
 
     void add(const void* encoder, uint32_t replies, uint64_t bytes) {

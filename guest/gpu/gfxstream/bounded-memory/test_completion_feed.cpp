@@ -19,6 +19,7 @@ int main() {
         assert(t.fencesSignaled(&g, 1, true) == Answer::Satisfied);
         // A watched submission is pending until its serial completes.
         const uint64_t s1 = t.submitted(f, {});
+        assert(!t.serialCompleted(s1));
         assert(t.fence(f) == Fence::Pending && t.pendingWatches() == 1);
         assert(t.waitFences(&f, 1, true, soon()) == Answer::NotYet);
         const uint64_t both[] = {f, g};
@@ -27,6 +28,7 @@ int main() {
         std::thread feed([&] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); t.complete(s1, kCompleted); });
         assert(t.waitFences(&f, 1, true, Tracker::Clock::now() + std::chrono::seconds(5)) == Answer::Satisfied);
         feed.join();
+        assert(t.serialCompleted(s1));
         assert(t.fencesSignaled(both, 2, true) == Answer::Satisfied && !t.pendingWatches());
         // A reset forgets the signal; a late record for an older submission is ignored.
         t.fenceReset(f);
