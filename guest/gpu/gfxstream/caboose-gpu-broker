@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 from collections import deque
 import errno
+import json
 import os
 from pathlib import Path
 import socket
@@ -332,6 +333,25 @@ class PresentTrace:
 PRESENT_TRACE = PresentTrace()
 
 
+def usage_record(processes):
+    """Each local process's GPU use, for the task manager (guest/scopes): its pid and start
+    time, live streams and surfaces, and the bytes it has sent to and received from the
+    phone. Counters only; no payloads, handles or names."""
+    return {'version': 1, 'processes': [
+        {'pid': p['pid'], 'start': p['start'], 'streams': len(p['streams']), 'surfaces': len(p['surfaces']),
+         'toPhoneBytes': p.get('to_phone', 0), 'fromPhoneBytes': p.get('from_phone', 0)}
+        for p in processes.values() if 'pid' in p]}
+
+
+def write_usage(path, record):
+    """Replaces the usage file atomically, readable by its owner only."""
+    temporary = path.with_name(path.name + '.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        json.dump(record, handle, separators=(',', ':'))
+    os.replace(temporary, path)
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -475,6 +495,9 @@ class Session:
             frame = server_frame(2, compress_data(data))
         self.enqueue_frame(frame, credit, charge=charge)
         self.sequence += 1
+        owner = self.processes.get(process) if kind == Kind.DATA else None
+        if owner is not None:
+            owner['to_phone'] = owner.get('to_phone', 0) + len(payload)
         if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
             self.frame_timing.data_bytes += len(payload)
             self.frame_timing.wire_data_bytes += len(frame)
@@ -510,6 +533,9 @@ class Session:
             if struct.unpack_from('<iIiI', frame.payload, 48) == (0, 1, 0, 0):
                 extent = struct.unpack_from('<II', frame.payload, 72)
         PRESENT_TRACE.stream(from_phone=len(frame.payload))
+        owner = self.processes.get(frame.process)
+        if owner is not None:
+            owner['from_phone'] = owner.get('from_phone', 0) + len(frame.payload)
         self.surface_progress("received_from_phone", frame.kind, extent)
         if frame.kind == Kind.SESSION_READY:
             if self.session_received or frame.payload != self.hello: raise ValueError('bad session receipt')
@@ -1004,6 +1030,7 @@ class Session:
                 if reply is None: raise ValueError('local hello mismatch')
                 if self.draining:
                     return
+                identity = (peer.pid, peer.start_ticks)
                 process_id, stream_id = self.bindings.bind(self.binding_generation, peer)
                 peer = None  # bindings owns it
             except (OSError, ValueError, PermissionError, RuntimeError, OverflowError,
@@ -1012,7 +1039,8 @@ class Session:
                 return
             process = self.processes.get(process_id)
             if process is None:
-                process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set(), 'surfaces': set()}
+                process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set(), 'surfaces': set(),
+                           'pid': identity[0], 'start': identity[1], 'to_phone': 0, 'from_phone': 0}
                 self.processes[process_id] = process
                 self.send(Kind.PROCESS_OPEN, process_id)
             if process['stopping']:
@@ -1423,8 +1451,11 @@ class Broker:
             task = asyncio.create_task(self.remote(stream))
             self.tasks.add(task); task.add_done_callback(self.tasks.discard)
         loop.add_reader(self.control.fileno(), ready)
+        usage = asyncio.create_task(self.publish_usage())
         try: await self.closing.wait()
         finally:
+            usage.cancel()
+            with contextlib.suppress(OSError): self.usage_path.unlink()
             loop.remove_reader(self.control.fileno()); self.control.close()
             for future in self.pending_binds.values():
                 if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
@@ -1432,6 +1463,24 @@ class Broker:
                 _done, pending = await asyncio.wait(tuple(self.tasks), timeout=10)
                 for task in pending: task.cancel()
                 if pending: await asyncio.gather(*pending, return_exceptions=True)
+
+    @property
+    def usage_path(self):
+        return Path(self.socket_path).parent / 'usage.json'
+
+    async def publish_usage(self):
+        """Once a second, the session's per-process GPU use beside the local socket, when it
+        changed (guest/scopes reads it as the owner's root daemon)."""
+        last = None
+        while True:
+            await asyncio.sleep(1)
+            record = usage_record(self.session.processes if self.session else {})
+            if record != last:
+                try:
+                    write_usage(self.usage_path, record)
+                    last = record
+                except OSError as error:
+                    print(f'CABOOSE_GPU_BROKER usage file: {error}', file=sys.stderr, flush=True)
 
     async def remote(self, stream):
         writer = server = None
