@@ -151,7 +151,8 @@ bool isPresented(VkPhysicalDevice device) {
     return presented.count(device) != 0;
 }
 
-constexpr VkDriverId kNoPhoneDriverID = VK_DRIVER_ID_MESA_GFXSTREAM;
+// VK_DRIVER_ID_MESA_GFXSTREAM, by value: headers before 1.4.313 lack the name.
+constexpr VkDriverId kNoPhoneDriverID = static_cast<VkDriverId>(29);
 
 void presentAsGpu(VkPhysicalDeviceProperties& properties) {
     properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;

@@ -119,6 +119,50 @@ class InstalledDriverTests(unittest.TestCase):
             self.assertEqual(manifest["layer"]["library_path"], "/usr/local/lib/caboose-gpu-live/libVkLayer_caboose_gpu_routing.so")
             self.assertEqual(manifest["layer"]["enable_environment"], {"CABOOSE_GPU_ROUTING": "1"})
 
+    def test_i386_builds_go_beside_the_64_bit_ones_for_32_bit_applications(self):
+        def elf(machine: int) -> bytes:
+            return b"\x7fELF" + bytes(14) + machine.to_bytes(2, "little") + bytes(44)
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-i386-") as temporary:
+            base = Path(temporary)
+            root = base / "root"
+            for name, machine in (("64", 62), ("32", 3)):
+                (base / name).mkdir()
+                (base / name / "libvulkan_gfxstream.so").write_bytes(elf(machine))
+                (base / name / "libVkLayer_caboose_gpu_routing.so").write_bytes(elf(machine) + b"routing")
+                # The computer's architecture does not matter: the library's own does.
+                installer.install_driver(base / name / "libvulkan_gfxstream.so", root, machine="x86_64")
+                installer.install_layer("routing", base / name / "libVkLayer_caboose_gpu_routing.so", root,
+                                        machine="x86_64")
+            live = root / "usr/local/lib/caboose-gpu-live"
+            self.assertEqual((live / "libvulkan_gfxstream.so").read_bytes(), elf(62))
+            self.assertEqual((live / "i386/libvulkan_gfxstream.so").read_bytes(), elf(3))
+            icd = json.loads((live / "i386/icd.json").read_text())
+            self.assertEqual(icd["ICD"]["library_path"], "/usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so")
+            manifests = root / "usr/local/share/vulkan/implicit_layer.d"
+            self.assertEqual(sorted(p.name for p in manifests.iterdir()),
+                             ["caboose_gpu_routing.json", "caboose_gpu_routing_32.json"])
+            layer = json.loads((manifests / "caboose_gpu_routing_32.json").read_text())["layer"]
+            self.assertEqual(layer["name"], "VK_LAYER_CABOOSE_gpu_routing_32")
+            self.assertEqual(layer["library_path"], "/usr/local/lib/caboose-gpu-live/i386/libVkLayer_caboose_gpu_routing.so")
+            self.assertEqual(layer["enable_environment"], {"CABOOSE_GPU_ROUTING": "1"})
+            self.assertEqual(json.loads((manifests / "caboose_gpu_routing.json").read_text())["layer"]["name"],
+                             "VK_LAYER_CABOOSE_gpu_routing")
+            gl32 = root / "var/lib/flatpak/extension/org.freedesktop.Platform.GL32.host/x86_64/1.4"
+            self.assertEqual((gl32 / "lib/libvulkan_gfxstream.so").read_bytes(), elf(3))
+            self.assertEqual(json.loads((gl32 / "vulkan/icd.d/caboose_gfxstream.json").read_text())["ICD"]["library_path"],
+                             "/usr/lib/i386-linux-gnu/GL/host/lib/libvulkan_gfxstream.so")
+            sandboxed = json.loads((gl32 / "vulkan/implicit_layer.d/caboose_gpu_routing_32.json").read_text())["layer"]
+            self.assertEqual(sandboxed["library_path"], "/usr/lib/i386-linux-gnu/GL/host/lib/libVkLayer_caboose_gpu_routing.so")
+            gl = root / "var/lib/flatpak/extension/org.freedesktop.Platform.GL.host/x86_64/1.4"
+            self.assertEqual((gl / "lib/libvulkan_gfxstream.so").read_bytes(), elf(62))
+
+    def test_refuses_a_library_of_an_unknown_architecture(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-arch-") as temporary:
+            base = Path(temporary)
+            (base / "driver").write_bytes(b"\x7fELF" + bytes(14) + (40).to_bytes(2, "little") + bytes(44))
+            with self.assertRaises(ValueError):
+                installer.install_driver(base / "driver", base / "root")
+
     def test_refuses_what_is_not_a_library(self):
         with tempfile.TemporaryDirectory(prefix="caboose-gpu-driver-") as temporary:
             base = Path(temporary)

@@ -737,9 +737,7 @@ GLX, which tries Zink before any software renderer, and `GALLIUM_DRIVER=zink` fo
 software path (Chromium's and CEF's ANGLE among its users), which otherwise prefers Mesa
 D3D12 (WSL's `/dev/dxg`) and llvmpipe. With no phone attached Zink renders on the CPU
 device the routing layer presents as a GPU, so OpenGL always has a renderer, and an
-application that recovers from device loss moves to the phone when it attaches. The
-routing and executor-switch layers are built for 64-bit processes only: a 32-bit OpenGL
-application sees lavapipe as a CPU device, which Zink refuses, and has no renderer. Zink presents through the
+application that recovers from device loss moves to the phone when it attaches. Zink presents through the
 driver's X11 windows (Kopper); without a DRM render node it cannot present through
 Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
 `QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick), `SDL_VIDEODRIVER=x11,wayland` and
@@ -750,10 +748,23 @@ for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT`
 `MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
 and a shader that uses either feature fails to compile or draw.
 
+32-bit applications take the same paths. The driver and both layers are also built for
+i386 (`gfxstream/driver/build.sh` writes `i386/libvulkan_gfxstream.so`; the layers build
+with `make CXX=i686-linux-gnu-g++`), and `install-live.py`, given those builds too, puts
+them in `/usr/local/lib/caboose-gpu-live/i386` with their own manifests; the launch
+environment names both drivers in `VK_ADD_DRIVER_FILES`, and each process's loader passes
+over the one of the other architecture. The i386 layers are named
+`VK_LAYER_CABOOSE_gpu_routing_32` and `VK_LAYER_CABOOSE_executor_switch_32`: the Vulkan
+loader keeps one layer of a name, whatever its library's architecture. Without the i386
+routing layer a 32-bit process would see lavapipe as a CPU device, which Zink refuses,
+and with `GALLIUM_DRIVER=zink` have no OpenGL renderer at all.
+
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
 extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
 runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and the i386 builds as `org.freedesktop.Platform.GL32.host`, for the runtime's 32-bit
+compatibility libraries,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
 override. The launch environment's variables pass into the sandbox unchanged;
 `PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,

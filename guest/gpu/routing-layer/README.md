@@ -37,7 +37,10 @@ make            # libVkLayer_caboose_gpu_routing.so and test_routing
 ./test_routing
 ```
 
-Both need a C++17 compiler and the Vulkan headers. `guest/gpu/install-live.py
+Both need a C++17 compiler and the Vulkan headers. `make CXX=i686-linux-gnu-g++` builds
+both for i386, for 32-bit applications (Debian's `g++-i686-linux-gnu`). `guest/gpu/install-live.py
 --routing-layer libVkLayer_caboose_gpu_routing.so` installs the layer with its implicit
-manifest, also into the Flatpak `host` GL extension. `guest/gpu/check-apps.sh` checks it
+manifest, also into the Flatpak `host` GL extension; given the i386 build as well, it
+installs that as `VK_LAYER_CABOOSE_gpu_routing_32` beside it and into the `host` GL32
+extension. `guest/gpu/check-apps.sh` checks it
 in a disposable seat container.
