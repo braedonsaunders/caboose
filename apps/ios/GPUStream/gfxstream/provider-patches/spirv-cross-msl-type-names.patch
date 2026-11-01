@@ -1,0 +1,35 @@
+diff --git a/spirv_msl.cpp b/spirv_msl.cpp
+index c5a9d433..da447b40 100644
+--- a/spirv_msl.cpp
++++ b/spirv_msl.cpp
+@@ -16551,6 +16551,30 @@ string CompilerMSL::ensure_valid_name(string name, string pfx)
+ const std::unordered_set<std::string> &CompilerMSL::get_reserved_keyword_set()
+ {
+ 	static const unordered_set<string> keywords = {
++		// Caboose: MSL type names. An identifier named like a type (a Zink texture variable
++		// called "sampler") hides that type for the rest of its scope, and the next use of the
++		// type, such as the combined sampler beside it in an argument buffer, fails to compile.
++		"sampler",
++		"texture",
++		"texture1d", "texture1d_array", "texture2d", "texture2d_array", "texture2d_ms", "texture2d_ms_array",
++		"texture3d", "texturecube", "texturecube_array", "texture_buffer",
++		"depth2d", "depth2d_array", "depth2d_ms", "depth2d_ms_array", "depthcube", "depthcube_array",
++		"array", "array_ref", "atomic", "atomic_int", "atomic_uint", "atomic_bool", "atomic_float",
++		"half", "half2", "half3", "half4", "float2", "float3", "float4",
++		"half2x2", "half2x3", "half2x4", "half3x2", "half3x3", "half3x4", "half4x2", "half4x3", "half4x4",
++		"float2x2", "float2x3", "float2x4", "float3x2", "float3x3", "float3x4", "float4x2", "float4x3", "float4x4",
++		"int2", "int3", "int4", "uint2", "uint3", "uint4", "short2", "short3", "short4",
++		"ushort2", "ushort3", "ushort4", "char2", "char3", "char4", "uchar2", "uchar3", "uchar4",
++		"bool2", "bool3", "bool4", "long2", "long3", "long4", "ulong2", "ulong3", "ulong4",
++		"packed_half2", "packed_half3", "packed_half4", "packed_float2", "packed_float3", "packed_float4",
++		"packed_int2", "packed_int3", "packed_int4", "packed_uint2", "packed_uint3", "packed_uint4",
++		"packed_short2", "packed_short3", "packed_short4", "packed_ushort2", "packed_ushort3", "packed_ushort4",
++		"packed_char2", "packed_char3", "packed_char4", "packed_uchar2", "packed_uchar3", "packed_uchar4",
++		"uchar", "ushort", "ulong", "size_t", "ptrdiff_t", "bfloat", "imageblock",
++		"thread", "threadgroup", "threadgroup_imageblock", "ray_data", "object_data",
++		"access", "visible_function_table", "intersection_function_table",
++		"primitive_acceleration_structure", "instance_acceleration_structure", "acceleration_structure",
++		"intersection_query", "intersector", "intersection_result", "ray", "metal",
+ 		"kernel",
+ 		"vertex",
+ 		"fragment",

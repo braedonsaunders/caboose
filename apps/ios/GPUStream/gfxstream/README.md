@@ -23,9 +23,14 @@ them by number. [`fork.env`](fork.env) pins the exact commit every build checks 
 SHA-256. A decoder change is a commit on a topic branch of the fork, merged into
 `caboose`, with `fork.env` and the profile hashes updated in the same Caboose pull
 request. [`provider-patches/`](provider-patches) holds the changes to other projects:
-SPIRV-Cross (multi-plane padding) and MoltenVK (persistent Metal pipeline binaries), both
+SPIRV-Cross (multi-plane padding, and MSL type names such as `sampler` or `texture2d`
+treated as reserved, since Zink names variables that way and a variable named like a type
+hides it from the Metal source) and MoltenVK (persistent Metal pipeline binaries), all
 applied to the MoltenVK build, and MoltenVK missing-layer queries, for the layer
-diagnostic. Its Mesa development
+diagnostic. `sh provider-patches/tests/check-msl-type-names.sh /path/to/spirv-cross` checks
+the type-name patch with a SPIRV-Cross command-line build: a shader whose variables, block
+and member are named `sampler`, `texture2d`, `array`, `float4` and `half` must convert to
+Metal source that compiles for iOS, with and without argument buffers. Its Mesa development
 dependency is `541c56aa3fd24027ed46ae350287d21dcd56c901`. The guest source checks
 are in [guest/gpu/gfxstream](../../../../guest/gpu/gfxstream/README.md).
 Matching opcode values does not establish compatible marshaling or execution.
