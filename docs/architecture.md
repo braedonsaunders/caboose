@@ -3076,7 +3076,9 @@ Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, connect the 
 authenticated host GPU endpoint. Each session selects the paired computer's GPU caches
 (`LiveGPUCacheRoot`, [gpu-live.md](gpu-live.md#shader-cache)) before its first process;
 signing out removes them. Backgrounding, computer switch and display
-takeover drain it; ordinary display reconnects preserve it. A normal broker close
+takeover drain it; ordinary display reconnects preserve it, and a lost GPU socket is
+resumed under the same executor when the computer offers it
+([gpu-live.md](gpu-live.md#resuming-an-executor)). A normal broker close
 after the native REVOKED receipt and successful cleanup is required before the
 app releases its owner reservation.
 

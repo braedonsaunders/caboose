@@ -39,7 +39,8 @@ public final class LiveGPUOwnerSession {
         }
         let cacheRoot = pairing.flatMap { try? LiveGPUCacheRoot.directory(pairing: $0) }
         let binding = try LiveGPUNativeBinding(presentationOwners: owners, cacheRoot: cacheRoot)
-        executor = try LiveGPUSession(transport: LiveGPUConnection(hostURL: hostURL, phoneToken: phoneToken),
+        // The transport resumes this executor across a lost socket when the computer offers it.
+        executor = try LiveGPUSession(transport: LiveGPUResumableTransport(hostURL: hostURL, phoneToken: phoneToken),
                                       nativeBinding: binding)
         presentationOwners = owners; self.onEnd = onEnd
         reference.owner = self

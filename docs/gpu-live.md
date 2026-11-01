@@ -87,6 +87,8 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1, maximum decoded record u32 = 65600 |
 | 38 | TRANSPORT_READY | Session | Exact matching configuration |
 | 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
+| 40 | ACK | Session, sequence 0 | Highest contiguous sequence received u64 |
+| 41 | RESUME | Session, sequence 0 | Highest contiguous sequence received u64, reserved u64 zero, 16-byte nonzero nonce |
 
 Kinds 14 and 15 are reserved and rejected.
 
@@ -163,8 +165,9 @@ wire fixtures do not initialize a provider or activate the driver.
 The phone app names the capabilities of its native decoder in the
 `X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
-`completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools` and
-`shader-cache`. The broker reads them from the authenticated upgrade request.
+`completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
+`shader-cache` and `executor-resume`. The broker reads them from the authenticated upgrade
+request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
 hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned handles),
@@ -352,6 +355,43 @@ reconnect (which may wait up to 5 s for that) is admitted as a new generation an
 by the same broker. Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
 as `CABOOSE_GPU_BROKER executor session ended: <reason>`.
+
+## Resuming an executor
+
+A phone that declares `executor-resume` keeps its executor across a lost socket. The host
+then returns `X-Caboose-GPU-Resume` in the upgrade response: 32 random bytes in unpadded
+base64url, bound to the computer, the phone credential and the executor, kept in host memory
+for the executor's lifetime. With the feature the broker's first envelope is ACK with value
+0, before SESSION. Only with both does the session resume; otherwise neither side sends kind
+40 or 41 and a lost socket ends the executor as before.
+
+ACK and RESUME carry sequence 0 and stand outside the directional sequence: they are never
+retained, retransmitted or passed to the envelope decoder. Every other envelope keeps its
+sequence, which now runs across sockets. In a resumable session each broker-to-phone
+WebSocket message is exactly one whole envelope or one CGLZ record, and each phone-to-broker
+message is one or more whole envelopes.
+
+Each side acknowledges cumulatively with ACK once 64 KiB has arrived, or 50 ms after the
+first unacknowledged envelope. Each side retains every envelope it sent until the peer's ACK
+or RESUME covers it, at most 8 MiB and 2048 envelopes (the phone leaves 256 KiB and 64
+envelopes of that for its acknowledgements); a full window holds the sender back without
+ending the session. An acknowledgement below an earlier one or above the highest sequence
+sent ends the session.
+
+When the phone loses its socket (an error, an abnormal close, or no pong and no message for
+3 s), it reconnects at once and then every 250 ms for 30 s, each attempt with the same
+request plus `X-Caboose-GPU-Resume` and a 3 s upgrade deadline. The host splices a valid
+credential onto the executor it holds, ending the old phone socket if it still has one, and
+answers an unknown or expired credential with `410 Gone`, which ends the executor at once.
+The phone's first message on the new socket is RESUME alone, with the last sequence it
+received and a fresh nonce; it sends nothing else until the broker's answer. The broker
+answers with RESUME, alone in its message, carrying the last sequence it received and the
+same nonce, then retransmits what follows that sequence. The phone ignores every message
+before that answer, so nothing in flight across the splice is delivered twice, retransmits
+what follows the broker's value, and requires each later envelope to follow the last it
+received. Neither the native executor nor the broker sees the gap. After 30 s without a
+splice, or a 410, the executor ends as after any lost transport. The phone prints
+`CABOOSE_GPU_RESUMED received=… sent=… replayed=…` after each splice.
 
 ## Window identity boundary
 

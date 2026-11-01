@@ -8,7 +8,7 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "wss://example.com/v1/gpu")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "caboose.gpu.live.v1")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer phone")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles,guest-handle-arrays,completion-feed,ordered-present")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume")
         XCTAssertNil(request.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
         for url in ["https://example.com?executor=forged", "https://user@example.com", "https://example.com#fragment", "file:///tmp/gpu"] {
             XCTAssertThrowsError(try LiveGPUConnection.makeRequest(hostURL: URL(string: url)!, phoneToken: "phone"))
@@ -32,15 +32,15 @@ final class LiveGPUTransportTests: XCTestCase {
 
     func testByteAndMessageCapsIncludeRunningWork() {
         let budget = LiveGPUBudget()
-        for _ in 0..<4 { XCTAssertNil(budget.admit(256 * 1024)) }
-        XCTAssertEqual(budget.retained.bytes, 1024 * 1024)
+        for _ in 0..<32 { XCTAssertNil(budget.admit(256 * 1024)) }
+        XCTAssertEqual(budget.retained.bytes, LiveGPUBudget.byteLimit)
         XCTAssertEqual(budget.admit(1), .overflow)
         XCTAssertFalse(budget.active)
         budget.release(256 * 1024)
         XCTAssertEqual(budget.admit(1), .closed)
-        XCTAssertEqual(budget.retained.bytes, 768 * 1024)
+        XCTAssertEqual(budget.retained.bytes, LiveGPUBudget.byteLimit - 256 * 1024)
         let count = LiveGPUBudget()
-        for _ in 0..<64 { XCTAssertNil(count.admit(0)) }
+        for _ in 0..<LiveGPUBudget.countLimit { XCTAssertNil(count.admit(0)) }
         XCTAssertEqual(count.admit(0), .overflow)
         let oversized = LiveGPUBudget()
         XCTAssertEqual(oversized.admit(256 * 1024 + 1), .messageTooLarge)
@@ -50,11 +50,11 @@ final class LiveGPUTransportTests: XCTestCase {
     func testConcurrentAdmissionCannotOverbookAndRevokeDoesNotFreeRetainedBytes() {
         let budget = LiveGPUBudget()
         DispatchQueue.concurrentPerform(iterations: 1000) { _ in _ = budget.admit(16 * 1024) }
-        XCTAssertEqual(budget.retained.count, 64)
-        XCTAssertEqual(budget.retained.bytes, 1024 * 1024)
+        XCTAssertEqual(budget.retained.count, 512)
+        XCTAssertEqual(budget.retained.bytes, LiveGPUBudget.byteLimit)
         budget.revoke()
-        XCTAssertEqual(budget.retained.bytes, 1024 * 1024)
-        for _ in 0..<64 { budget.release(16 * 1024) }
+        XCTAssertEqual(budget.retained.bytes, LiveGPUBudget.byteLimit)
+        for _ in 0..<512 { budget.release(16 * 1024) }
         XCTAssertEqual(budget.retained.bytes, 0)
     }
 
@@ -182,7 +182,7 @@ final class LiveGPUTransportTests: XCTestCase {
         wait(for: [ready], timeout: 2)
         transport.emit(.bytes(Data(repeating: 1, count: 256 * 1024)))
         XCTAssertEqual(consumer.entered.wait(timeout: .now() + 2), .success)
-        for _ in 0..<4 { transport.emit(.bytes(Data(repeating: 1, count: 256 * 1024))) }
+        for _ in 0..<32 { transport.emit(.bytes(Data(repeating: 1, count: 256 * 1024))) }
         wait(for: [ended], timeout: 2)
         XCTAssertEqual(consumer.history.filter { $0 == "consume" }.count, 1)
         XCTAssertEqual(consumer.history.last, "finish")
