@@ -721,7 +721,7 @@ recreates lost devices, as Chromium does, moves to the phone.
 
 When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
 `restart` reports device loss, `pause` holds the application until the phone returns.
-The launch environment sets `auto`, which the routing layer resolves per process:
+The launch environment sets `auto`, which the driver resolves per process:
 `restart` for Chromium-family GPU processes (Chromium, Electron), which restart, and for
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
 recover from device loss (GTK 4, Vulkan applications and games).

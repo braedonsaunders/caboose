@@ -1,13 +1,10 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 //
 // VK_LAYER_CABOOSE_gpu_routing (README.md): lists the phone's GPU first among physical
-// devices, so applications that take the first device render on it, hides it from Steam's
-// pipeline pre-compiler, and settles the process's device-loss policy before the phone's
-// driver reads it.
+// devices, so applications that take the first device render on it, and hides it from
+// Steam's pipeline pre-compiler.
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
-
-#include <link.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -65,29 +62,6 @@ std::string commandLine() {
     return text;
 }
 
-std::vector<std::string> libraries() {
-    std::vector<std::string> names;
-    dl_iterate_phdr(
-        [](dl_phdr_info* info, size_t, void* out) {
-            if (info->dlpi_name && *info->dlpi_name)
-                static_cast<std::vector<std::string>*>(out)->emplace_back(info->dlpi_name);
-            return 0;
-        },
-        &names);
-    return names;
-}
-
-// Resolves CABOOSE_GPU_ON_LOSS=auto once, before any driver below creates an instance.
-void settleLossPolicy() {
-    static std::once_flag once;
-    std::call_once(once, [] {
-        const char* configured = std::getenv("CABOOSE_GPU_ON_LOSS");
-        if (!configured || std::strcmp(configured, "auto") != 0) return;
-        std::string policy = lossPolicy(configured, commandLine(), libraries());
-        if (!policy.empty()) setenv("CABOOSE_GPU_ON_LOSS", policy.c_str(), 1);
-    });
-}
-
 template <class Info>
 VkLayerInstanceCreateInfo* instanceLink(const Info* info) {
     for (auto* next = static_cast<const VkBaseInStructure*>(info->pNext); next; next = next->pNext) {
@@ -108,7 +82,6 @@ VkLayerDeviceCreateInfo* deviceLink(const VkDeviceCreateInfo* info) {
 
 VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo* info, const VkAllocationCallbacks* allocator,
                                               VkInstance* instance) {
-    settleLossPolicy();
     auto* link = instanceLink(info);
     if (!link || !link->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
     PFN_vkGetInstanceProcAddr next = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;

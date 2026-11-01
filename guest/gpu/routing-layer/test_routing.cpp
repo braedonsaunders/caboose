@@ -21,16 +21,5 @@ int main() {
     assert(!hidesPhone("/opt/fossilize_replay_wrapper --x"));
     assert(!hidesPhone(""));
 
-    const std::vector<std::string> none;
-    assert(lossPolicy(nullptr, "vkcube", none).empty());
-    assert(lossPolicy("restart", "vkcube", none) == "restart");
-    assert(lossPolicy("pause", "/usr/lib/chromium/chromium --type=gpu-process", none) == "pause");
-    assert(lossPolicy("auto", "/usr/lib/chromium/chromium --type=gpu-process --foo", none) == "restart");
-    assert(lossPolicy("auto", "/usr/share/code/code --type=gpu-process", none) == "restart");
-    assert(lossPolicy("auto", "/usr/lib/chromium/chromium --type=renderer", none) == "pause");
-    assert(lossPolicy("auto", "qml6 a.qml", {"/usr/lib/x86_64-linux-gnu/libQt6Gui.so.6"}) == "restart");
-    assert(lossPolicy("auto", "keepassxc", {"/usr/lib/x86_64-linux-gnu/libQt5Gui.so.5.15.15"}) == "restart");
-    assert(lossPolicy("auto", "glxgears", {"/usr/lib/x86_64-linux-gnu/libGLX_mesa.so.0"}) == "pause");
-    assert(lossPolicy("bogus", "glxgears", none).empty());
     std::puts("routing tests passed");
 }

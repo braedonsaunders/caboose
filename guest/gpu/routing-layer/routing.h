@@ -50,23 +50,4 @@ inline bool hidesPhone(const std::string& commandLine) {
     return program == "fossilize_replay";
 }
 
-// What the driver does when the phone's GPU goes away (CABOOSE_GPU_ON_LOSS): "restart"
-// reports device loss, which Chromium and Electron (their GPU process restarts) and Qt
-// (its scene graph recreates its renderer) recover from; "pause" holds the application
-// until the phone returns. "auto", the launch environment's value, is resolved here for
-// the process: restart when it is a Chromium-family GPU process or uses Qt.
-inline std::string lossPolicy(const char* configured, const std::string& commandLine,
-                              const std::vector<std::string>& libraries) {
-    std::string value = configured ? configured : "";
-    if (value == "restart" || value == "pause") return value;
-    if (value != "auto") return "";
-    if (commandLine.find("--type=gpu-process") != std::string::npos) return "restart";
-    for (const auto& library : libraries) {
-        auto slash = library.rfind('/');
-        std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
-        if (name.rfind("libQt5Gui.so", 0) == 0 || name.rfind("libQt6Gui.so", 0) == 0) return "restart";
-    }
-    return "pause";
-}
-
 }  // namespace caboose_routing

@@ -15,13 +15,6 @@ turns it off.
   pipelines for the driver's disk cache before the game starts, does not see the phone's
   GPU: the phone's driver keeps no cache on the computer, so that work would only cross the
   network and be discarded.
-- **Device-loss policy.** The phone's driver reads `CABOOSE_GPU_ON_LOSS`: `restart`
-  reports device loss when the phone goes away, `pause` holds the application until it
-  returns. The launch environment sets `auto`, which the layer resolves for its process
-  before the first instance reaches the driver: `restart` for a Chromium-family GPU
-  process (`--type=gpu-process`: Chromium, Electron), which restarts, and for processes
-  using Qt's GUI library, whose scene graph recreates its renderer; `pause` otherwise.
-  An explicit `restart` or `pause` is left alone.
 
 ## Build and test
 
