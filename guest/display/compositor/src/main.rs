@@ -198,12 +198,28 @@ fn launch_env(
 const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 
 /// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
-/// "Applications"). GTK 4 draws with Vulkan, not with OpenGL, which on Wayland would stay
-/// on the CPU without a DRM render node; Electron runs as an X11 client, where its input
-/// methods and windows behave as Chromium's do. OpenGL stays on the computer's renderer:
-/// Zink on the phone's GPU offers only OpenGL ES 2.0 (the phone has no logic operations),
-/// so desktop OpenGL contexts would fail.
-const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[("GSK_RENDERER", "vulkan"), ("ELECTRON_OZONE_PLATFORM_HINT", "x11")];
+/// "Applications"). GTK 4 and Qt 6 Quick draw with Vulkan; Electron runs as an X11 client,
+/// where its input methods and windows behave as Chromium's do. OpenGL reaches the phone
+/// through Zink, which presents through the driver's X11 windows (Kopper) but, without a DRM
+/// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games,
+/// Firefox) run as X11 clients. The phone has no geometry shaders or transform feedback, so
+/// Zink would offer only OpenGL 2.1; the version override offers what the computer's own
+/// renderer offers when no phone is attached, and only those two features are missing.
+const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
+    ("GSK_RENDERER", "vulkan"),
+    ("QSG_RHI_BACKEND", "vulkan"),
+    ("ELECTRON_OZONE_PLATFORM_HINT", "x11"),
+    ("QT_QPA_PLATFORM", "xcb;wayland"),
+    ("SDL_VIDEODRIVER", "x11,wayland"),
+    ("MOZ_ENABLE_WAYLAND", "0"),
+    ("LIBGL_KOPPER_DRI2", "1"),
+    ("MESA_LOADER_DRIVER_OVERRIDE", "zink"),
+    ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
+    ("MESA_GLSL_VERSION_OVERRIDE", "450"),
+];
+
+/// The seat's own renderer selection, which would keep OpenGL off Zink (Mesa D3D12 on WSL).
+const GPU_LIVE_REMOVED_ENV: &[&str] = &["GALLIUM_DRIVER"];
 
 /// On the seat that renders on the phone's GPU: every application's Vulkan loader also
 /// loads the phone's driver, which reaches the phone through the broker's sockets; they
@@ -219,7 +235,7 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
         return;
     }
     // The toolkit settings replace the seat's defaults.
-    env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k));
+    env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k) && !GPU_LIVE_REMOVED_ENV.contains(&k.as_str()));
     env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
@@ -855,15 +871,21 @@ mod tests {
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
-        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), None);
+        assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
+        assert_eq!(get(&env, "MESA_LOADER_DRIVER_OVERRIDE"), Some("zink"));
+        assert_eq!(get(&env, "MESA_GL_VERSION_OVERRIDE"), Some("4.5COMPAT"));
+        assert_eq!(get(&env, "QT_QPA_PLATFORM"), Some("xcb;wayland"));
+        assert_eq!(get(&env, "SDL_VIDEODRIVER"), Some("x11,wayland"));
+        assert_eq!(get(&env, "MOZ_ENABLE_WAYLAND"), Some("0"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
+        assert_eq!(get(&env, "QSG_RHI_BACKEND"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));
         assert_eq!(get(&env, "CABOOSE_GPU_ROUTING"), Some("1"));
         assert_eq!(get(&env, "NODEVICE_SELECT"), Some("1"));
         assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
-        assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("d3d12"), "OpenGL keeps the computer's renderer");
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), None, "OpenGL goes through Zink");
         std::fs::remove_file(&icd).unwrap();
     }
 
