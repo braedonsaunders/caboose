@@ -432,9 +432,6 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
     /// Applies `batch` in exact protocol order (`copies` -> `fills` -> `refs` -> `tiles`),
     /// executes `SurfaceCopy` blits on the GPU, and uploads only the coalesced dirty
     /// BGRA row-bands directly to `surface`.
-    /// The last batch geometry noted per window, for the profile.
-    private var notedShapes: [Int: String] = [:]
-
     public func applyAndUpload(_ batch: SurfaceBatch, cache: TileAtlasCache, to surface: WindowSurface) -> Bool {
         let w = Int(batch.size.width)
         let h = Int(batch.size.height)
@@ -443,15 +440,6 @@ public final class SurfaceAtlasRenderer: @unchecked Sendable {
         let targetW = Int(batch.rect.width.rounded(.up))
         let targetH = Int(batch.rect.height.rounded(.up))
         let isOneToOne = batch.rect.minX == 0 && batch.rect.minY == 0 && targetW == w && targetH == h
-        if LocalScrollProfile.enabled {
-            let shape = "\(batch.window) \(w)x\(h) rect \(Int(batch.rect.minX)),\(Int(batch.rect.minY)) \(targetW)x\(targetH) surface \(Int(surface.pixelSize.width))x\(Int(surface.pixelSize.height))"
-            lock.lock()
-            let changed = notedShapes[batch.window] != shape
-            notedShapes[batch.window] = shape
-            lock.unlock()
-            // Once per change of a window's batch geometry: where its pictures land in its surface.
-            if changed { LocalScrollProfile.note("atlas batch window=\(shape)\(batch.keyframe ? " keyframe" : "")") }
-        }
         if !isOneToOne {
             guard let image = apply(batch, cache: cache) else { return false }
             if batch.rect.minX == 0 && batch.rect.minY == 0 {

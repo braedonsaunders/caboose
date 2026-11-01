@@ -165,7 +165,7 @@ struct caboose_gpu_surface {
     uint64_t boxedDevice = 0, boxedQueue = 0;
     uint32_t queueFamily = 0;
     std::deque<InFlightFrame> frames;
-    // Presented-picture captures for phone-owned scrolling. The ring lives on `device`.
+    // Presented-picture captures for frame lab. The ring lives on `device`.
     std::unique_ptr<PresentationCaptureRing> capture;
     PresentationCaptureState captureState;
     caboose_gpu_capture_callback captureCallback = nullptr;
@@ -213,15 +213,15 @@ VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects&
                                        source.extent, kCaptureSlots, &ring);
         std::lock_guard<std::mutex> lock(s.mutex);
         if (r != VK_SUCCESS) {
-            // Once per surface: phone-owned scrolling of this window keeps the app's path.
-            fprintf(stderr, "caboose-scroll: gpu capture ring unavailable (VkResult %d); presenting without captures\n",
+            // Once per surface: this window presents without captures.
+            fprintf(stderr, "caboose-capture: gpu capture ring unavailable (VkResult %d); presenting without captures\n",
                     static_cast<int>(r));
             s.captureUnsupported = true;
             return VK_NULL_HANDLE;
         }
         s.capture = std::move(ring);
         s.captureState.reset(kCaptureSlots);
-        fprintf(stderr, "caboose-scroll: gpu capture ring ready %ux%u format %d\n",
+        fprintf(stderr, "caboose-capture: gpu capture ring ready %ux%u format %d\n",
                 source.extent.width, source.extent.height, static_cast<int>(source.format));
     }
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -229,7 +229,7 @@ VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects&
     if (slot < 0 && !s.captureBusyNoted) {
         // Once per surface: every slot is written or still lent to the compositor.
         s.captureBusyNoted = true;
-        fprintf(stderr, "caboose-scroll: gpu capture ring full at serial %llu\n", static_cast<unsigned long long>(serial));
+        fprintf(stderr, "caboose-capture: gpu capture ring full at serial %llu\n", static_cast<unsigned long long>(serial));
     }
     return slot < 0 ? VK_NULL_HANDLE : s.capture->images[static_cast<size_t>(slot)];
 }

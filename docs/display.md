@@ -680,8 +680,8 @@ application's changes to `_NET_WM_ICON` as `window.update`s.
 
 ### Overscan
 
-A client that shows only part of a window, panning inside the rest itself (phone-owned
-scrolling), asks for the window to be laid out larger than it shows: `configure.overscan`
+A client that shows only part of a window and pans inside the rest itself may ask for the
+window to be laid out larger than it shows: `configure.overscan`
 `[w, h]` is how much wider and taller than `geometry` to make it, in display pixels;
 `[0, 0]` ends it. It stays asked for across later configures until ended, and ends with
 the client's session. `geometry` keeps meaning what the client shows; a configure with
@@ -702,9 +702,9 @@ it as usual, and window-local input positions with `x >= w` or `y >= h` address 
 overscan. Popup and dialog geometry stays relative to the parent's geometry origin.
 
 Anything an application sizes to its window (a full-height hero, a pane that fills the
-window) grows by the overscan, so content below it moves once when the overscan begins;
-clients ask for overscan only while it pays: a window whose scroll region they have
-measured, while the user scrolls it.
+window) grows by the overscan, so content below it moves once when the overscan begins and
+again when it ends. The iOS app does not ask for overscan: it shows the application's
+picture as the application drew it, at the window's size.
 
 ### Direct content scroll units
 
@@ -816,152 +816,13 @@ nothing. `drag.end` says the application's drag ended and whether the client too
 Drags started by X11 applications stay within X11 (Xwayland and its window manager do
 not hand them to Wayland), so the client is not told of them.
 
-### Phone-owned scrolling
-
-Phone-owned scrolling is on unless the iOS app is launched with `CABOOSE_LOCAL_SCROLL=0`.
-With that, every pan scrolls the app remotely, as described under direct content scroll
-units, and no presented pictures are captured.
-
-A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
-the phone itself. That covers a window whose picture the phone draws (a card or tile) and
-a live GPU window whose presented pictures the phone captures
-([presented-picture capture](gpu-live.md#presented-picture-capture)). A window that takes native touch is covered too while
-its toolkit reporter names a scroller with a range: as UIScrollView delays content
-touches, a finger's first 150 ms are held back from the app. If it moves past the pan
-slop, the phone scrolls; if it stays still, lifts, or a second finger lands, the finger goes
-to the app as it went down, and the app gets its taps, presses, drags and pinches
-natively. Games and GPU streams are not covered. Over a live GPU layer, the phone draws its compositions in an
-overlay above the layer, and only while it owns the scroll. Compositions are drawn at the
-screen's own pixels, with pictures filtered as the layer would scale them. The content's
-fractional position is snapped to whole screen pixels, so motion advances evenly and text
-stays crisp. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
-uses it differently:
-
-- **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
-  deceleration, 0.998 per millisecond) move the content at display rate, 120 Hz on
-  ProMotion, from the first movement. The phone draws the window's captured pictures moved
-  to that position.
-- **The app is driven ahead.** Forwarded scroll aims the app where the phone will be once
-  the app's picture arrives: the position one measured input-to-picture latency ahead. That
-  target is exact during momentum and extrapolated from finger velocity while tracking.
-  While content moves fast, the target adds up to half the region more, fading below 1500
-  picture pixels per second. The content a flick brings into view is therefore already in a
-  captured picture. Earlier pictures cover the content behind it.
-- **Prefetch at rest.** 0.1 s after a scroll hands back, the phone drives the app 0.7 of
-  the scrolling region further in the scroll's direction and back. It shows the unchanged
-  picture throughout, so the next flick's first frames find their content captured. Other
-  input (a tap, a key) brings the app straight back.
-- **Every picture is measured.** Each captured picture gets line signatures on the GPU:
-  per row and per vertical band of about 40 pixels, the mean colour and the mean luma step
-  along the row. Horizontal scrolling uses the transpose. A coarse search of sampled
-  detailed cells, over the shifts the forwarded scroll makes possible, finds the rigid
-  motion relative to the previous picture. A full search follows only for an unexpected
-  jump, and it must be explained by much more of the picture. Cells explained only by
-  standing still bound the moving region. Toolbars, sticky headers, status bars, sidebars
-  and gutters are drawn from the newest picture, unmoved. Inside the region, blocks of 16
-  lines by one band whose detail stood still while the content moved are fixed overlays
-  (a floating button, a chat bubble). Up to four per picture are kept, drawn from the
-  newest picture where they are, and left out of every picture's scrolled content, so
-  they leave no copies behind. No application identity is used.
-- **Learning the window.** The measured placements give the app's latency (the 75th
-  percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
-  rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
-  finger one to one. A run in which three pictures in a row stood still while the forwarded
-  scroll kept moving one way was clamped at an end, so its gain is not learned.
-- **Ends of content.** The app may stop moving while it is still being driven, for twice
-  its latency plus 120 ms (or 1.5 times its longest recent stall). Pictures that do not
-  move and no pictures at all look alike at an end and in an app whose scrolling is busy
-  (a page decoding images). So the phone sends a 24-pixel step back, alone and behind its
-  own picture. Only an app held at its end can answer by moving back, in a picture measured
-  against the one before; that confirms the end. A picture that cannot be measured voids
-  the probe. An app that moves on was stalled, and one that does not answer within a second is
-  driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
-  that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
-  picture placed beyond an end removes it. A toolkit adapter's reported range stays. With an overscan, the
-  application's enlarged viewport stops one overscan short of the content's end, which its
-  picture still shows, so the phone's end is the reported range plus the overscan. The
-  application is driven no further than its range; past it the phone rests with the
-  picture moved, and taps there land on the content shown.
-- **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
-  driven at most 0.6 of the region per picture interval. While it has shown nothing for
-  two picture intervals (and 100 ms) of being driven, counted from its last picture or,
-  for an app at rest, from the first scroll sent since, its drive is capped half a region past its
-  last picture. It is never held, since an app that draws only when it scrolls would
-  otherwise stay silent.
-- **Nothing is guessed.** A measurement must explain at least half of the detail that
-  could reappear at its shift, judged on the overlap. A picture that cannot be measured
-  (a new page, a reflow, a jump past the overlap) is never placed by the forwarded scroll.
-  Composition ends for that run instead: the app's own picture shows, scrolled by the
-  finger and momentum without lead, until the scroll rests.
-- **Bounded reveal.** Content no captured picture covers shows in the colour of the
-  nearest captured edge. It may fill at most 40% of the region. Past that, the shown
-  position resists and catches up as pictures arrive, never slower than the gesture.
-- **Hand back.** When the phone comes to rest, the app is brought to the same position,
-  round after round at the newly learned gain, while the phone keeps drawing from its
-  captured pictures. Once the app's newest picture is within 1.5 picture pixels, the phone
-  draws the app's own picture again. The content never moves after the finger lets it
-  rest. The one exception is a native bounce: if a correction lands without the app
-  moving, the phone probes for an end, and only a confirmed end springs the content back
-  to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
-
-- **Resizes hold the picture.** When a window's drawable is about to change size (an
-  overscan enlarging or ending, a new scale) or a drawn window's overscan changes, the phone
-  keeps showing the picture on screen, unscaled, until the application has drawn the new
-  size and stopped drawing for 120 ms (0.6 s after its first picture of the new size at
-  most, 4 s in all, or until a gesture begins). A picture
-  of the old size is never shown stretched to the new one, nor a half-drawn one.
-  When a window's frame changes (a fold, a resize), what was measured of its old layout is
-  forgotten, and its pictures show as they arrive. A picture longer than the window's shape
-  (one of the older, larger size) is cut off at the window's shape, never squashed into it.
-- **Overscan windows.** While a window has been scrolled locally within the last 30
-  seconds and its scrolling region is measured, or within 30 seconds of a reporter's
-  `scroll.tree` naming a scroller with a range (so the first gesture already carries frame
-  tags), the phone asks for an overscan of one viewport along the scroll axis
-  (`configure.overscan`, with the whole picture kept within 4096 pixels). A report without a
-  range, such as one the overscan itself made fit, does not end it. A viewport that changes
-  by up to a quarter (a keyboard, a bar) keeps the overscan it has, since every change
-  re-lays out the app. It ends after 30 seconds with neither, and always when the window
-  leaves the screen or
-  changes, or when the app goes to the background. It asks and ends only at rest. Once
-  pictures of the enlarged window arrive (recognised by their shape against the announced
-  overscan), the phone shows them through the viewport, also at rest. The header and the
-  region's first lines show as they are, and what follows the region in the picture (a
-  footer, a status bar) is anchored at the viewport's end. Touches and the pointer on
-  that anchored part reach the window the overscan further on. A live GPU layer shows
-  its viewport top-left aligned, the rest clipped, until the phone composes over it.
-  Content a flick reveals below is already drawn; content above comes from the frame
-  history and from driving the app ahead.
-
-The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
-most six of them, chosen for the content they add near the current position. Video layers
-over the picture move with the scrolled content.
-
-One GPU pass draws the region: per pixel, the newest captured picture that covers it
-outside its fixed overlays, else the fill colour.
-
-- **Zoom.** Two fingers pinching a window whose reporter names a scroller and reports
-  `zoom_range` zoom it on the phone, as UIScrollView zooms. The picture on screen scales with the fingers at display
-  rate, with the content first under them staying under them. Past the page's
-  `zoom_range` the scale rubber-bands. On lift it settles in
-  0.3 s within the range about the fingers, with no edge of the content pulled inside the
-  viewport. The phone then sends `scroll.zoom` with the settled scale and the point a pure
-  scale to it keeps still, and keeps showing its composition until a picture whose report
-  has applied that seq at that scale arrives (1.5 s at most). Then it shows the app's
-  picture. A scroll in progress stops where it shows when a pinch begins. Windows that take
-  native touch get their pinches themselves.
-
-`CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
-`ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
-`LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
-exact scroll offset, region, range and fixed rectangles replaces measurement for that
-picture (`ScrollObservation.reported`); see [Scroll reports](#scroll-reports).
-
 ### Scroll reports
 
-An application's own scroll state, bound to the exact pictures that show it, replaces
-pixel measurement wherever a toolkit reporter runs. A picture whose report says the
-content is scrolled by `offset` shows exactly that content, whatever loaded, stuck or
-shifted on the page.
+A toolkit reporter gives a client an application's own scroll state, bound to the exact
+pictures that show it. A picture whose report says the content is scrolled by `offset`
+shows exactly that content, whatever loaded, stuck or shifted on the page. The server sends
+reports only to a client whose hello says `scroll: true`; the iOS app does not ask for
+them, and its pans reach the application as ordinary precise `pointer` scroll.
 
 **Reporters.** A reporter runs inside the application, in its toolkit: the Chromium
 extension (and the same script in Electron applications, loaded through `NODE_OPTIONS`), and
@@ -980,13 +841,10 @@ and `range` its largest offset (the smallest is 0). `fixed` are rectangles insid
 that do not move with the content: fixed elements, stuck sticky elements and the frame
 tag. `applied` is the last `scroll.target` `seq` the application had applied when it drew
 the frame, 0 for none. `epoch` changes when content moved in document coordinates, such
-as an image loading above the viewport or scroll anchoring. Pictures of two epochs are not
-placed against each other by their offsets. The phone anchors a new epoch's first picture
-where its own measurement against the previous picture puts it, or, when it cannot be
-measured, where the phone had driven the application to, as it does the first report. `tag` and `tag_rect` are present while the
-frame tag is drawn.
+as an image loading above the viewport or scroll anchoring: offsets of two epochs do not
+compare. `tag` and `tag_rect` are present while the frame tag is drawn.
 
-**Frame tag.** The application's pictures reach the phone on their own path (a video
+**Frame tag.** The application's pictures reach the client on their own path (a video
 `frame`, a GPU present), later than and independently of their `scroll.tree`. Only the
 picture can say which report it shows. While the window has bottom overscan with room for
 it, the reporter draws a tag on the first line of the 16-pixel grid (window-local) at or
@@ -1003,8 +861,7 @@ from 16 to 32, and start on the coding grid. A block's centre is then far from a
 fractional scale or the video coder blends, even in a GPU picture smaller than the window. `tag_rect` is where the 32 blocks are. A client samples
 each block's centre luma, thresholds at 128, and accepts the value only with the sync
 pattern and the check. It then places the picture by the `scroll.tree` with that `tag`
-and treats the tag as fixed content. A picture without a decodable tag, or whose tag names
-no report it holds, is placed by measurement. A report's frame number changes only when
+and treats the tag as fixed content. A report's frame number changes only when
 something it reports changes, so a picture drawn for another reason carries a tag whose
 report is still exact. `guest/display/vectors/scroll-tag/scroll-tag.json` pins the blocks of five
 values.
@@ -1014,16 +871,14 @@ pixels (display pixels; positive scrolls toward the end). The reporter applies i
 no gain, no animation, in the application's next frame, before that frame's report. Deltas
 rather than positions keep the application's own adjustments, such as scroll anchoring,
 and need no shared origin. A client that wants the content at offset `X` sends
-`X - (offset + Σ delta of the targets after applied)`. The phone places pictures by
-reports only while it drives the window with `scroll.target`. Scrolling that Chromium
+`X - (offset + Σ delta of the targets after applied)`. Scrolling that Chromium
 animates on its compositor thread, as a wheel scroll can, may show an offset before its
 frame's report.
 
 **Zoom.** A report's `zoom` is the page's visual scale (1 when absent). While it is not 1,
 the primary scroller's `offset` and `range` are in pixels of the zoomed content; fixed
 rectangles stay in window pixels. `zoom_range` is the scales the page allows; a reporter sends it when it applies
-`scroll.zoom`. A report at
-another zoom starts a new placement epoch on the phone, as `epoch` does.
+`scroll.zoom`. Offsets at two zooms do not compare, as across epochs.
 
 **`scroll.zoom`** (`0x99`): zoom window `id`'s page to the absolute `scale` about `focus`,
 a window-pixel point that stays still, which may lie outside the window. `seq` is the

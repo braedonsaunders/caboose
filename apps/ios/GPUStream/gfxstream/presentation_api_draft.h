@@ -105,7 +105,7 @@ void caboose_gpu_surface_capabilities_release(caboose_gpu_surface_capabilities* 
 caboose_gpu_submit_result caboose_gpu_surface_present(caboose_gpu_surface* surface,
     const caboose_gpu_present_info* present, caboose_gpu_present_callback callback, void* context);
 
-// Presented-picture capture for the phone's own compositing (phone-owned scrolling).
+// Presented-picture capture, for frame lab's pictures of live GPU windows.
 // With a callback set, each present also copies its source into one of three device-local
 // capture images when one is free, in the same submission. Once that copy's fence has
 // actually signaled, the callback receives the present serial, a token and the image's

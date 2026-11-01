@@ -830,8 +830,8 @@ app link checks do not establish physical presentation or game compatibility.
 
 ## Presented-picture capture
 
-The owner view's [phone-owned scrolling](display.md#phone-owned-scrolling) reads what a
-live GPU window presents. With a capture callback set (`caboose_gpu_surface_set_capture`),
+Frame lab (`CABOOSE_FRAMELAB=1`, `FrameLabPictures`) reads what a live GPU window presents;
+without it nothing is captured. With a capture callback set (`caboose_gpu_surface_set_capture`),
 each present's copy submission also copies the guest source into one of three device-local
 capture images on the presenting device. This happens only when a capture image is free,
 and it adds no wait. The images are created with `VK_EXT_metal_objects` export, and the
@@ -841,8 +841,8 @@ without captures.
 
 Once the copy fence has actually signaled, the frame worker passes the present serial, a
 token and the image's `MTLTexture` to the callback. The Swift surface hands the texture to
-its owner view on main. The view's scroll controller copies it into its own history
-texture and then releases the token (`caboose_gpu_surface_release_capture`). Until that
+frame lab, which copies it when the window is due, and then releases the token
+(`caboose_gpu_surface_release_capture`). Until that
 release, the slot is not written again. Tokens carry the ring's generation: a resized or
 reformatted picture gets a new ring once no copy writes the old one, and releases for the
 old ring are ignored. A copy whose fence outcome is unknown quarantines its slot. Retire

@@ -59,14 +59,6 @@ public protocol DisplaySession: AnyObject {
     /// `["fullscreen": false]`.
     func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool])
     func focus(_ window: RemoteWindow?)
-    /// Asks the app to lay `window` out `size` larger than its geometry (`.zero` ends it).
-    func requestOverscan(_ window: RemoteWindow, _ size: CGSize)
-    /// Scrolls `window`'s reported scroller by `delta` content pixels through its toolkit
-    /// reporter (`scroll.target`); false when the session cannot.
-    func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool
-    /// Zooms `window`'s page to the absolute `scale` about `focus` (window pixels) through its
-    /// toolkit reporter (`scroll.zoom`); the seq it was sent with, or nil when it cannot.
-    func scrollZoom(in window: RemoteWindow, scale: Double, focus: CGPoint) -> UInt64?
     func close(_ window: RemoteWindow)
     /// Asks for a full repaint.
     func refresh(_ window: RemoteWindow)
@@ -147,9 +139,6 @@ public extension DisplaySession {
     var textFieldLeft: (window: Int, at: TimeInterval)? { nil }
     var textFieldFocused: Bool { false }
     func pointerLook(in window: RemoteWindow, by delta: CGPoint) {}
-    func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {}
-    func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool { false }
-    func scrollZoom(in window: RemoteWindow, scale: Double, focus: CGPoint) -> UInt64? { nil }
     /// Leave application fullscreen (Escape also exits page/player fullscreen) and restore
     /// the shell's geometry. Available even when fullscreen metadata has not arrived yet.
     func exitFullscreen(_ window: RemoteWindow, frame: CGRect) {

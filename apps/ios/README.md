@@ -489,24 +489,9 @@ trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
 client inertia; native Wayland touch keeps the application's own fling behavior. A display
 stall drops old movement and momentum while continuing to accept the finger's new movement.
-Finger pans over a window picture the phone draws are phone-owned
-(`CabooseKit/Scroll`, [phone-owned scrolling](../../docs/display.md#phone-owned-scrolling)):
-the picture moves on the phone at display rate while the app follows. `swift test --filter
-LocalScrollReplayTests` replays real-speed flicks (slow drag, medium and fast flicks,
-repeated flicks) against simulated apps at 40, 80 and 150 ms latency. It prints blank-area
-percentiles, deviation from the native iOS trajectory, misplaced content, content jumps,
-time to hand back and the learned latency and gain, and it asserts the bar.
-`LocalScrollRendererTests` checks the GPU signature kernel against its CPU definition and
-that a measured composition redraws a scrolled picture pixel for pixel.
-`LocalScrollControllerTests` runs a flick end to end on the GPU against a window whose app
-scrolls as forwarded scroll arrives. On a device, `CABOOSE_SCROLL_PROFILE=1` writes
-`caboose-scroll:` lines to standard output and the `org.caboose` `scroll` log: each pan's
-decision (local on the video or GPU path, or the flags that kept it on the app's path),
-live GPU capture start, arrival and absence, and each gesture's summary (touch-to-glass
-latency, frame intervals, late frames, blank area, picture placement, the app's latency
-and gain), which is also appended to `Documents/scroll-profile.jsonl`. `CABOOSE_SCROLL_AUTOPAN=1` plays the standard gesture script (`CABOOSE_SCROLL_AUTOPAN_DELAY` seconds, default 20, after a locally scrolling window appears)
-through the same path. See
-`scripts/check-scroll.sh`.
+The phone shows only the newest picture the app drew. A pan over a window scrolls the
+app; the content moves when the app's next picture arrives, and nothing on the phone
+moves, stitches or predicts it.
 
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,

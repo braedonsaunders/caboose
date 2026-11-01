@@ -26,7 +26,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
         : !vk->vkBindImageMemory ? "vkBindImageMemory" : !memoryProperties ? "vkGetPhysicalDeviceMemoryProperties"
         : !deviceProc ? "vkGetDeviceProcAddr" : nullptr;
     if (missing) {
-        fprintf(stderr, "caboose-scroll: capture ring: no %s\n", missing);
+        fprintf(stderr, "caboose-capture: capture ring: no %s\n", missing);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     auto exportObjects = reinterpret_cast<PFN_vkExportMetalObjectsEXT>(deviceProc(device, "vkExportMetalObjectsEXT"));
@@ -35,7 +35,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
     auto getTexture = reinterpret_cast<GetTexture>(deviceProc(device, "vkGetMTLTextureMVK"));
     if (!getTexture) getTexture = reinterpret_cast<GetTexture>(get(instance, "vkGetMTLTextureMVK"));
     if (!exportObjects && !getTexture) {
-        fprintf(stderr, "caboose-scroll: capture ring: neither vkExportMetalObjectsEXT nor vkGetMTLTextureMVK on the presenting device\n");
+        fprintf(stderr, "caboose-capture: capture ring: neither vkExportMetalObjectsEXT nor vkGetMTLTextureMVK on the presenting device\n");
         return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
     std::unique_ptr<PresentationCaptureRing> ring(new (std::nothrow) PresentationCaptureRing());
@@ -63,7 +63,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
             VkImage image = VK_NULL_HANDLE;
             VkResult r = vk->vkCreateImage(device, &info, nullptr, &image);
             if (r != VK_SUCCESS) {
-                fprintf(stderr, "caboose-scroll: capture ring: vkCreateImage format %d %ux%u failed (%d)\n",
+                fprintf(stderr, "caboose-capture: capture ring: vkCreateImage format %d %ux%u failed (%d)\n",
                         static_cast<int>(format), extent.width, extent.height, static_cast<int>(r));
                 destroyCaptureRing(*ring); return r;
             }
@@ -76,7 +76,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
                     (properties.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) { type = t; break; }
             }
             if (type == UINT32_MAX) {
-                fprintf(stderr, "caboose-scroll: capture ring: no device-local memory type in 0x%x\n", requirements.memoryTypeBits);
+                fprintf(stderr, "caboose-capture: capture ring: no device-local memory type in 0x%x\n", requirements.memoryTypeBits);
                 destroyCaptureRing(*ring); return VK_ERROR_FEATURE_NOT_PRESENT;
             }
             VkMemoryAllocateInfo allocation{};
@@ -86,13 +86,13 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
             VkDeviceMemory memory = VK_NULL_HANDLE;
             r = vk->vkAllocateMemory(device, &allocation, nullptr, &memory);
             if (r != VK_SUCCESS) {
-                fprintf(stderr, "caboose-scroll: capture ring: vkAllocateMemory failed (%d)\n", static_cast<int>(r));
+                fprintf(stderr, "caboose-capture: capture ring: vkAllocateMemory failed (%d)\n", static_cast<int>(r));
                 destroyCaptureRing(*ring); return r;
             }
             ring->memory.push_back(memory);
             r = vk->vkBindImageMemory(device, image, memory, 0);
             if (r != VK_SUCCESS) {
-                fprintf(stderr, "caboose-scroll: capture ring: vkBindImageMemory failed (%d)\n", static_cast<int>(r));
+                fprintf(stderr, "caboose-capture: capture ring: vkBindImageMemory failed (%d)\n", static_cast<int>(r));
                 destroyCaptureRing(*ring); return r;
             }
             void* metal = nullptr;
@@ -109,7 +109,7 @@ VkResult createCaptureRing(gfxstream::host::vk::VulkanDispatch* vk, VkInstance i
             }
             if (!metal && getTexture) getTexture(image, &metal);
             if (!metal) {
-                fprintf(stderr, "caboose-scroll: capture ring: the presenting device exported no Metal texture\n");
+                fprintf(stderr, "caboose-capture: capture ring: the presenting device exported no Metal texture\n");
                 destroyCaptureRing(*ring); return VK_ERROR_EXTENSION_NOT_PRESENT;
             }
             ring->textures.push_back(metal);

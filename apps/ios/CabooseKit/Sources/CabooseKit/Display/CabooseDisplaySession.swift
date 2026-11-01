@@ -133,8 +133,6 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Geometry the phone asked for and the server has not confirmed yet, with when: updates
     /// still on their way from before it would otherwise snap a dragged window back.
     private var pendingGeometry: [Int: (geometry: CGRect, at: CFTimeInterval, display: DisplayInfo?)] = [:]
-    /// The overscan last asked for per window on this connection.
-    private var requestedOverscan: [Int: CGSize] = [:]
     /// Each window's last scroll input sequence number this connection (docs/display.md,
     /// "Input sequencing").
     private var scrollSeq: [Int: UInt64] = [:]
@@ -323,9 +321,7 @@ public final class CabooseDisplaySession: DisplaySession {
         sound?.stop()
         sound = nil
         pendingGeometry.removeAll()
-        requestedOverscan.removeAll()
         scrollSeq.removeAll()
-        for window in windows.values { window.scrollReports.forget() }
         if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
@@ -370,10 +366,6 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func send(_ message: ClientMessage) {
-        if LocalScrollProfile.enabled, case .configure(let window, let geometry, _, let fullscreen, let maximized, _, let overscan) = message,
-           geometry != nil || overscan != nil || fullscreen != nil || maximized != nil {
-            LocalScrollProfile.note("configure window=\(window)\(geometry.map { " geometry=\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "")\(overscan.map { " overscan=\(Int($0.width))x\(Int($0.height))" } ?? "")\(fullscreen.map { " fullscreen=\($0)" } ?? "")\(maximized.map { " maximized=\($0)" } ?? "")")
-        }
         stream?.send(DisplayFraming.encode(message.frame))
     }
 
@@ -382,7 +374,7 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
                     scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
-                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph, scroll: LocalScrollController.enabled,
+                    atlas: rendersSurfaceAtlas, scene: rendersSceneGraph,
                     targets: true, draw: DrawLists.enabled))
     }
 
@@ -401,8 +393,8 @@ public final class CabooseDisplaySession: DisplaySession {
             case .cursorNamed(let name):
                 cursorName = name.lowercased()
                 cursorSerial &+= 1
-            case .scrollTree(let tree):
-                windows[tree.window]?.scrollReports.record(tree)
+            case .scrollTree:
+                break // the phone does not ask for scroll reports (hello `scroll`)
             case .targets(let window, _, let targets):
                 windows[window]?.touchTargets = targets.filter { $0.kind != .windowControl }
                 let drawn = targets.filter { $0.kind == .windowControl }.map(\.rect)
@@ -458,8 +450,6 @@ public final class CabooseDisplaySession: DisplaySession {
                     latencyMs = Double(now - sent) / 1000
                     metrics.roundTrip(ms: Double(now - sent) / 1000)
                 }
-                LocalScrollProfile.note(String(format: "rtt sent=%.6f pong=%.6f rtt_ms=%.3f",
-                                               Double(sent) / 1_000_000, Double(now) / 1_000_000, Double(now) / 1000 - Double(sent) / 1000))
                 if let reconciling, reconciling.marker == sent { finishReconciling(reconciling.announced) }
             case .bye(let reason):
                 isReplaced = reason == "replaced"
@@ -638,9 +628,6 @@ public final class CabooseDisplaySession: DisplaySession {
             }
         }
         placement[fields.id] = entry
-        if LocalScrollProfile.enabled, fields.geometry != nil || fields.overscan != nil {
-            LocalScrollProfile.note("window.update id=\(fields.id)\(fields.geometry.map { " geometry=\(Int($0.minX)),\(Int($0.minY)) \(Int($0.width))x\(Int($0.height))" } ?? "")\(fields.overscan.map { " overscan=\(Int($0.width))x\(Int($0.height))" } ?? "")")
-        }
         apply(fields, to: window)
         if fields.geometry != nil || fields.parent != nil { place(window) }
     }
@@ -805,7 +792,6 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         if let fullscreen = fields.fullscreen { window.isFullscreen = fullscreen }
         if let alpha = fields.alpha { window.hasAlpha = alpha }
-        if let overscan = fields.overscan { window.overscan = overscan }
         if let size = fields.minimumSize { window.minimumSize = size }
         if let size = fields.maximumSize { window.maximumSize = size }
         if let icon = fields.icon, let source = CGImageSourceCreateWithData(icon as CFData, nil),
@@ -896,15 +882,6 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)
-    }
-
-    /// Asks the app to lay `window` out `size` larger than its geometry, right and below, so
-    /// its pictures hold content beyond what the phone shows; `.zero` ends it. The server
-    /// reports the overscan actually applied in `window.update`.
-    public func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {
-        guard state == .ready, window.game == nil, requestedOverscan[window.id, default: .zero] != size else { return }
-        requestedOverscan[window.id] = size
-        send(.configure(window: window.id, geometry: nil, overscan: size))
     }
 
     public func focus(_ window: RemoteWindow?) {
@@ -1066,21 +1043,6 @@ public final class CabooseDisplaySession: DisplaySession {
     private func nextScrollSeq(_ window: Int) -> UInt64 {
         let seq = scrollSeq[window, default: 0] + 1
         scrollSeq[window] = seq
-        return seq
-    }
-
-    public func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool {
-        guard state == .ready, window.game == nil, delta != .zero else { return state == .ready }
-        let seq = nextScrollSeq(window.id)
-        window.scrollReports.sent(seq: seq, delta: delta)
-        send(.scrollTarget(window: window.id, scroller: scroller, seq: seq, delta: delta))
-        return true
-    }
-
-    public func scrollZoom(in window: RemoteWindow, scale: Double, focus: CGPoint) -> UInt64? {
-        guard state == .ready, window.game == nil, scale > 0 else { return nil }
-        let seq = nextScrollSeq(window.id)
-        send(.scrollZoom(window: window.id, seq: seq, scale: scale, focus: focus))
         return seq
     }
 
