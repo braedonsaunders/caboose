@@ -246,7 +246,10 @@ bool keptOffPhone() {
         std::string program = commandLine.substr(0, commandLine.find(' '));
         const auto slash = program.rfind('/');
         if (slash != std::string::npos) program = program.substr(slash + 1);
-        return program == "fossilize_replay" || program == "steamwebhelper" ||
+        const std::string path = commandLine.substr(0, commandLine.find(' '));
+        const bool steamClient = program == "steam" &&
+            (path.find("/steamrt64/steam") != std::string::npos || path.find("/steamrt32/steam") != std::string::npos);
+        return program == "fossilize_replay" || program == "steamwebhelper" || steamClient ||
                commandLine.find(" -child-update-ui") != std::string::npos;
     }();
     return kept;
