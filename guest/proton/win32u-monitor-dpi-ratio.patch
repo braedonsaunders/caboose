@@ -1,0 +1,97 @@
+win32u: Reduce a monitor's raw DPI ratio instead of asserting on it.
+
+monitor_get_dpi() packs a source's physical size over its current size, times its DPI, into
+16 bits each. After a mode change the two sizes can share no factor: a phone turning from
+1338x911 to 932x1356 while an application runs gives 1356 * 96 over 911, and the assertion
+ends every process that then asks for a DPI (GE-Proton11-11, sysparams.c:2884). Upstream Wine
+replaced these assertions with a ratio type; this keeps Proton's packed form and halves both
+terms until they fit, which keeps the DPI within a fraction of a percent.
+
+Also unpack the fractional DPI with round_fractional_dpi() in get_monitor_dpi() (which backs
+NtUserGetDpiForMonitor / GetDpiForMonitor) and for raw_dpi in get_monitor_from_rect(), matching
+NtUserCallHwndParam_GetWinMonitorDpi, so callers receive an integer DPI rather than the packed
+(den << 16) | num bitfield.
+
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index e3e20c7..599b2a1 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2858,6 +2858,27 @@ static UINT gcd( UINT a, UINT b )
+     }
+ }
+ 
++/* num / den, reduced and where needed approximated so that each fits 16 bits, packed as
++ * monitor_get_dpi reports a DPI: den in the high half, 0 for a whole number. The sizes of a
++ * source before and after a mode change may share no factor (911 pixels high after 1356, a
++ * phone turning while an application runs), where an exact ratio does not fit; halving
++ * both terms keeps it within a fraction of a percent. */
++static UINT pack_dpi_ratio( UINT num, UINT den )
++{
++    UINT d;
++
++    if (!(d = gcd( num, den ))) return 0;
++    num /= d;
++    den /= d;
++    while (num >= 65536 || den >= 65536)
++    {
++        num = (num + 1) / 2;
++        den = (den + 1) / 2;
++    }
++    if (den == 1) den = 0;
++    return (den << 16) | num;
++}
++
+ /* display_lock must be held */
+ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UINT *dpi_x, UINT *dpi_y )
+ {
+@@ -2867,25 +2888,8 @@ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UIN
+     if (!source || !(dpi = source->dpi)) dpi = system_dpi;
+     if (source && type != MDT_EFFECTIVE_DPI)
+     {
+-        UINT num, den, d;
+-
+-        num = source->physical.dmPelsWidth;
+-        den = source->current.dmPelsWidth;
+-        d = gcd( num * dpi, den );
+-        assert( num * dpi / d < 65536 );
+-        assert( den / d < 65536 );
+-        den /= d;
+-        if (den == 1) den = 0;
+-        *dpi_x = (den << 16) | (num * dpi / d);
+-
+-        num = source->physical.dmPelsHeight;
+-        den = source->current.dmPelsHeight;
+-        d = gcd( num * dpi, den );
+-        assert( num * dpi / d < 65536 );
+-        assert( den / d < 65536 );
+-        den /= d;
+-        if (den == 1) den = 0;
+-        *dpi_y = (den << 16) | (num * dpi / d);
++        *dpi_x = pack_dpi_ratio( source->physical.dmPelsWidth * dpi, source->current.dmPelsWidth );
++        *dpi_y = pack_dpi_ratio( source->physical.dmPelsHeight * dpi, source->current.dmPelsHeight );
+         if (source->physical.dmPelsWidth * source->current.dmPelsHeight <=
+             source->physical.dmPelsHeight * source->current.dmPelsWidth)
+             dpi_ret = *dpi_x;
+@@ -3570,7 +3574,7 @@ static struct monitor *get_monitor_from_rect( RECT rect, UINT flags, UINT dpi, M
+         UINT density, raw_dpi, x, y;
+ 
+         if (!is_monitor_active( monitor ) || monitor->is_clone) continue;
+-        raw_dpi = monitor_get_dpi( monitor, MDT_RAW_DPI, &x, &y );
++        raw_dpi = round_fractional_dpi( monitor_get_dpi( monitor, MDT_RAW_DPI, &x, &y ) );
+         x = round_fractional_dpi( x );
+         y = round_fractional_dpi( y );
+         density = raw_dpi * raw_dpi / 96 / 96;
+@@ -3715,7 +3719,12 @@ static UINT get_monitor_dpi( HMONITOR handle, UINT type, UINT *x, UINT *y )
+     UINT dpi = system_dpi;
+ 
+     if (!lock_display_devices( FALSE )) return 0;
+-    if ((monitor = get_monitor_from_handle( handle ))) dpi = monitor_get_dpi( monitor, type, x, y );
++    if ((monitor = get_monitor_from_handle( handle )))
++    {
++        dpi = round_fractional_dpi( monitor_get_dpi( monitor, type, x, y ) );
++        *x = round_fractional_dpi( *x );
++        *y = round_fractional_dpi( *y );
++    }
+     unlock_display_devices();
+ 
+     return dpi;

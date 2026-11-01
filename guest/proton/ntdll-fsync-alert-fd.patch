@@ -1,0 +1,29 @@
+ntdll: Do not close alert_fd on thread exit when fsync is enabled.
+
+When fsync is enabled, get_inproc_alert_fd() stores the thread's fsync shared-memory index
+(reply->fsync_shm_idx) in ntdll_get_thread_data()->alert_fd (TEB+0x394 on x86_64, TEB+0x230 on
+i386) rather than a Unix file descriptor. pthread_exit_wrapper() unconditionally passed alert_fd
+to close(), closing whichever file descriptor in the process happened to match that shm index
+when an alertable-waiting thread exited.
+
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 1e59138..995f861 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -76,6 +76,7 @@
+ #include "wine/server.h"
+ #include "wine/debug.h"
+ #include "unix_private.h"
++#include "fsync.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(thread);
+ WINE_DECLARE_DEBUG_CHANNEL(seh);
+@@ -1118,7 +1119,7 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
+  */
+ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ {
+-    close( ntdll_get_thread_data()->alert_fd );
++    if (!do_fsync()) close( ntdll_get_thread_data()->alert_fd );
+     close( ntdll_get_thread_data()->wait_fd[0] );
+     close( ntdll_get_thread_data()->wait_fd[1] );
+     close( ntdll_get_thread_data()->reply_fd );

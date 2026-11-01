@@ -9,6 +9,12 @@ needing an update: at its next start Steam validates the files against the game'
 downloads what is missing or changed. Copies use copy_file_range, which shares blocks on a
 filesystem that can (XFS, Btrfs) and copies them otherwise.
 
+A real install also gets the Steamworks Common Redistributables the link never had, and
+Steam runs their install scripts before the game's next launch. Under Proton, DirectX's
+(DXSETUP.exe /silent, June 2010) has nothing to install, since Proton provides DirectX, and
+can wait forever; the game's Proton prefix is marked as having run it, as Steam records a
+finished step (HKLM\\Software\\Valve\\Steam\\Apps\\CommonRedist\\DirectX\\Jun2010, "dxsetup").
+
 usage: caboose-steam-adopt [--home HOME] [--keep-dlc ID,...] [--skip DIR,...] APPID
 
   --keep-dlc  record only the base depots and those of these DLC as installed, and ask for
@@ -114,6 +120,51 @@ def adopted_manifest(text, keep_dlc=None):
     return text
 
 
+# -- Proton prefix (system.reg) ----------------------------------------------------------
+
+DIRECTX_KEYS = ("Software\\\\Valve\\\\Steam\\\\Apps\\\\CommonRedist\\\\DirectX\\\\Jun2010",
+                "Software\\\\Wow6432Node\\\\Valve\\\\Steam\\\\Apps\\\\CommonRedist\\\\DirectX\\\\Jun2010")
+
+
+def with_registry_dword(text, key, name, number):
+    """A Wine registry file's `text` with `"name"=dword:number` in `[key]` (as escaped in
+    the file), the key made if missing."""
+    line = f'"{name}"=dword:{number:08x}'
+    lines = text.split("\n")
+    start = next((i for i, l in enumerate(lines) if l == f"[{key}]" or l.startswith(f"[{key}] ")), None)
+    if start is None:
+        tail = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return f"{text}{tail}[{key}]\n{line}\n"
+    end = start + 1
+    while end < len(lines) and lines[end].strip() and not lines[end].startswith("["):
+        end += 1
+    for i in range(start + 1, end):
+        if lines[i].startswith(f'"{name}"='):
+            lines[i] = line
+            return "\n".join(lines)
+    lines.insert(end, line)
+    return "\n".join(lines)
+
+
+def mark_redistributables(prefix):
+    """Records DirectX's Common Redistributable step as run in a Proton prefix, when it has
+    one; True if it changed."""
+    reg = Path(prefix) / "system.reg"
+    try:
+        text = reg.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return False
+    updated = text
+    for key in DIRECTX_KEYS:
+        updated = with_registry_dword(updated, key, "dxsetup", 1)
+    if updated == text:
+        return False
+    temporary = reg.with_name(".system.reg.adopt")
+    temporary.write_text(updated, encoding="utf-8", errors="surrogateescape")
+    temporary.replace(reg)
+    return True
+
+
 # -- Files --------------------------------------------------------------------------------
 
 def copy_file(source, target):
@@ -194,6 +245,7 @@ def adopt(home, appid, keep_dlc=None, skip=()):
     temporary = manifest.with_name(manifest.name + ".new")
     temporary.write_text(adopted_manifest(text, keep_dlc))
     temporary.replace(manifest)
+    mark_redistributables(steamapps / "compatdata" / str(appid) / "pfx")
     print(f"app {appid}: {game} is a real install; the link is {farm}; Steam validates it at its next start")
 
 
