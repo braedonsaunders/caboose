@@ -372,6 +372,25 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
     match batch_res {
         Ok((Some(batch), changed)) => {
             done.changed = changed;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                let damage = job.damage.as_deref().unwrap_or_default();
+                let area: i64 = damage.iter().map(|r| r.w as i64 * r.h as i64).sum();
+                tracing::debug!(
+                    "window {}: atlas batch {}x{}{}, damage {} rects {} px, {} copies {:?}, {} fills, {} refs, {} tiles {} bytes",
+                    job.window,
+                    width,
+                    height,
+                    if batch.keyframe { " keyframe" } else { "" },
+                    damage.len(),
+                    area,
+                    batch.copies.len(),
+                    batch.copies.iter().map(|c| (c.dy, c.rect.h)).collect::<Vec<_>>(),
+                    batch.fills.len(),
+                    batch.refs.len(),
+                    batch.tiles.len(),
+                    batch.tiles.iter().map(|t| t.data.len()).sum::<usize>(),
+                );
+            }
             done.surface_batch = Some((batch, thread_cpu_us().saturating_sub(cpu0), atlas_epoch));
         }
         Ok((None, changed)) => {
