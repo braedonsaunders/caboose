@@ -61,6 +61,8 @@ int main() {
 
     // The phone reports the loss, then its executor leaves (socket removed, streams end)
     // and a new one comes: the loss is held until the new executor's socket is there.
+    // Timed before the helper starts, which may run first under load.
+    start = Clock::now();
     std::thread departure([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         removeSocket();
@@ -68,7 +70,6 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         bindSocket();
     });
-    start = Clock::now();
     assert(heldLoss(-4) == -4);
     assert(since(start) >= 500);
     departure.join();
@@ -77,13 +78,14 @@ int main() {
     // The device stream ends before the broker removes the old socket.
     noteExecutorSocket();
     markExecutorLost();
+    // Timed before the helper starts, which may run first under load.
+    start = Clock::now();
     std::thread late([] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         removeSocket();
         std::this_thread::sleep_for(std::chrono::milliseconds(400));
         bindSocket();
     });
-    start = Clock::now();
     awaitExecutorReturn();
     assert(since(start) >= 500);
     late.join();
