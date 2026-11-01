@@ -87,10 +87,14 @@ class Prefixes(unittest.TestCase):
                 '"libraryfolders"\n{\n\t"0"\n\t{\n\t\t"path"\t\t"%s"\n\t}\n\t"1"\n\t{\n\t\t"path"\t\t"%s"\n\t}\n}\n'
                 % (steam, library))
             found = wine_dpi.prefixes(home)
-            self.assertEqual(found, [wine, tricks, game, other])
-            self.assertEqual(wine_dpi.apply_all(home, 288), found)
-            for prefix in found:
+            self.assertEqual(found, [(wine, False), (tricks, False), (game, True), (other, True)])
+            # A game prefix the display's DPI reached earlier goes back to 96.
+            wine_dpi.apply(game, 192)
+            self.assertEqual(wine_dpi.apply_all(home, 288), [wine, tricks, game, other])
+            for prefix in (wine, tricks):
                 self.assertIn('"LogPixels"=dword:00000120', (prefix / "user.reg").read_text())
+            for prefix in (game, other):
+                self.assertIn('"LogPixels"=dword:00000060', (prefix / "user.reg").read_text())
             self.assertEqual(wine_dpi.apply_all(home, 288), [])
 
     def test_keeps_the_file_mode(self):

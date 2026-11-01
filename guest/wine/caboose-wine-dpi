@@ -5,7 +5,8 @@ Wine takes its DPI from each prefix's registry, HKCU\\Control Panel\\Desktop\\Lo
 96 by default: not from X11. On a display at scale 3 every Wine window is a third of the
 size of the computer's other windows. This service follows the owner's display density
 (XSETTINGS Xft/DPI, which caboose-display publishes) and writes it as LogPixels into every
-Wine prefix it finds, when the density changes and as prefixes appear.
+Wine prefix it finds but Steam games', when the density changes and as prefixes appear.
+Steam games' Proton prefixes are kept at 96.
 
 usage: caboose-wine-dpi            the service (runs as the owner)
        caboose-wine-dpi --once DPI  set DPI in every prefix now and exit"""
@@ -44,21 +45,22 @@ def library_paths(steam_root):
 
 
 def prefixes(home):
-    """Every Wine prefix under `home`: ~/.wine, winetricks' and each Steam game's."""
+    """Every Wine prefix under `home`, as (prefix, is a Steam game's): ~/.wine, winetricks'
+    and each Steam game's Proton prefix."""
     home = Path(home)
-    candidates = [home / ".wine"]
-    candidates += sorted((home / ".local/share/wineprefixes").glob("*"))
+    candidates = [(home / ".wine", False)]
+    candidates += [(p, False) for p in sorted((home / ".local/share/wineprefixes").glob("*"))]
     for relative in STEAM_ROOTS:
         root = home / relative
         if not root.is_dir():
             continue
         for library in library_paths(root):
-            candidates += sorted((library / "steamapps" / "compatdata").glob("*/pfx"))
+            candidates += [(p, True) for p in sorted((library / "steamapps" / "compatdata").glob("*/pfx"))]
     seen, found = set(), []
-    for prefix in candidates:
+    for prefix, game in candidates:
         if (prefix / "user.reg").is_file() and prefix.resolve() not in seen:
             seen.add(prefix.resolve())
-            found.append(prefix)
+            found.append((prefix, game))
     return found
 
 
@@ -106,9 +108,15 @@ def apply(prefix, dpi):
 
 
 def apply_all(home, dpi):
-    changed = [prefix for prefix in prefixes(home) if apply(prefix, dpi)]
-    for prefix in changed:
-        print(f"LogPixels {dpi} in {prefix}", flush=True)
+    """`dpi` in every prefix but games', which keep 96: Wine shows a game that does not
+    declare itself DPI-aware a screen smaller by the DPI's factor, and games refuse to run
+    below their minimum resolution."""
+    changed = []
+    for prefix, game in prefixes(home):
+        value = 96 if game else dpi
+        if apply(prefix, value):
+            print(f"LogPixels {value} in {prefix}", flush=True)
+            changed.append(prefix)
     return changed
 
 

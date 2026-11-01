@@ -5,21 +5,22 @@ Wine takes its DPI from each prefix's registry (`HKCU\Control Panel\Desktop\LogP
 window, dialogs and launchers included, was a third of the size of the computer's other
 windows. `caboose-wine-dpi` follows the owner display's density, the XSETTINGS `Xft/DPI`
 that caboose-display publishes for X11 clients ([x11_scale.rs](../display/compositor/src/x11_scale.rs)),
-and writes it as `LogPixels` (96 × scale, at most 480) into every Wine prefix it finds:
+and writes it as `LogPixels` (96 × scale, at most 480) into `~/.wine` and winetricks'
+prefixes (`~/.local/share/wineprefixes/*`).
 
-- `~/.wine`;
-- winetricks' prefixes, `~/.local/share/wineprefixes/*`;
-- each Steam game's Proton prefix, `steamapps/compatdata/*/pfx`, in every library Steam's
-  `libraryfolders.vdf` names, for the Flatpak's Steam and native Steam.
+Steam games' Proton prefixes (`steamapps/compatdata/*/pfx`, in every library Steam's
+`libraryfolders.vdf` names, for the Flatpak's Steam and native Steam) are kept at 96. Wine
+shows a program that does not declare itself DPI-aware a screen smaller by the DPI's
+factor, and a game checks that screen against its minimum resolution: Halo: The Master
+Chief Collection refused to run on a 1338x911 display at 192 DPI, which it saw as 669x455.
 
 It writes when the density changes and checks every 10 s for new prefixes. A prefix gets
 the setting once Wine has made its `user.reg`, so a game's very first launch runs at 96 DPI.
 A running Wine keeps the value it read at start; a game the value changes under picks it up
 at its next launch.
 
-Wine scales the windows of programs that do not declare themselves DPI-aware: their
-dialogs become legible, and a full-screen game that does not declare it renders at the
-smaller resolution Wine gives it, scaled up.
+Wine scales the windows of programs that do not declare themselves DPI-aware, so their
+dialogs become legible.
 
 | File | Installed as | What it is |
 | --- | --- | --- |
