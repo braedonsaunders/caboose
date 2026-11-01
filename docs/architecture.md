@@ -538,7 +538,7 @@ also see as their root window's.
 
 | Request | Answer |
 | --- | --- |
-| `windows` | `{ windows: [{ id, parent, kind, title, app_id, pid, x11, rect: [x, y, w, h], surface: [x, y, w, h], display, scale, focused }], focused, bounds }`, bottom to top. `x11` is the X window of an Xwayland window, else null; `surface` is the root surface, client-side shadows included |
+| `windows` | `{ windows: [{ id, parent, kind, title, app_id, pid, desktop_id, x11, rect: [x, y, w, h], surface: [x, y, w, h], display, scale, focused }], focused, bounds }`, bottom to top. `desktop_id` is the desktop entry a toplevel's process was launched from, else null; `x11` is the X window of an Xwayland window, else null; `surface` is the root surface, client-side shadows included |
 | `focus ID` | Gives the window the keyboard |
 | `click X Y [BUTTON [COUNT]]`, `press X Y [BUTTON]`, `release X Y [BUTTON]`, `move X Y` | The seat's pointer, delivered to the topmost window at that position |
 | `scroll X Y DX DY` | Wheel clicks at that position |
@@ -546,6 +546,7 @@ also see as their root window's.
 | `type TEXT` | Text to the keyboard's window, through text-input-v3 where the application has it, else as key presses; `\n`, `\t` and `\\` are escapes |
 | `settle` | `{ ok: true, released: N }`: number of windows whose pending frame callbacks were released |
 | `screenshot [ID]` | `{ png: N, rect }` followed by N bytes: one window, or every window composed over the displays |
+| `close ID` | Asks the window to close, as its own close button would: `xdg_toplevel.close` for Wayland, `WM_DELETE_WINDOW` (else destroying the window) for X11, `popup_done` for a popup |
 | `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
 `guest/desktop-mcp/seat.py` is its client, as a library and a command.
