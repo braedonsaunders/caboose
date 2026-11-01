@@ -56,6 +56,7 @@ Caboose-owned sources to the paths the patches include them from:
 | `../dmabuf/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-dmabuf/` |
 | `../media/{gpu_media.h,media_import.h,media_import.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-media/` |
 | `../feature-emulation/{feature_emulation.h,d3d11_emulation.h,d3d11_tracker.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-features/` |
+| `../shader-cache/shader_cache.h` | `src/gfxstream/guest/vulkan_enc/caboose-shader-cache/` |
 
 Patches change upstream files only; a patch that touches an owned path is rejected. The
 owned sources are ordinary files with their own unit tests
@@ -108,6 +109,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0038 ignored-descriptor-pointers | A descriptor write's pointers its type does not use are cleared before it is marshalled: DXVK points all three at one union, and the encoder read a buffer offset as an image view and faulted holding its lock |
 | 0039 encoder-reentry | The encoder lock records its owner thread: a thread that takes the lock it already holds (an earlier call faulted while encoding, as Wine allows) prints `CABOOSE_GPU_ENCODER_REENTERED` and aborts instead of spinning forever |
 | 0040 kept-create-structures | `VkBufferUsageFlags2CreateInfoKHR`, `VkImageViewUsageCreateInfo`, `VkImageFormatListCreateInfo` and `VkImageStencilUsageCreateInfo` survive the chains buffer, image and image view creation rebuild, and a buffer's recorded usage is maintenance5's when given: ANGLE created usage-0 buffers once maintenance5 was offered |
+| 0041 shader-cache | With hello `0x2000`, a module the phone's shader store holds, or one this process already sent on its single device stream, is sent as a 48-byte token naming its BLAKE3 hash; the process asks for the store's keys once (`../shader-cache/shader_cache.h`, docs/gpu-live.md "Shader cache") |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -117,10 +119,10 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x7F0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3FF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
-supports. A broker that predates bits 8 to 10 closes the connection, and the driver
-reconnects offering `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+supports. A broker that predates a bit closes the connection, and the driver reconnects
+offering fewer: `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -137,6 +139,9 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 8 (`0x100`) | Also descriptor sets and command buffers (requires bit 7) |
 | 9 (`0x200`) | The device serves the completion feed |
 | 10 (`0x400`) | Presents are ordered behind device-stream marks (`SWAPCHAIN_PRESENT_ORDERED`) |
+| 11 (`0x800`) | Swapchain images are the guest's own |
+| 12 (`0x1000`) | Query pools use guest-assigned handles (requires bit 7) |
+| 13 (`0x2000`) | Shader modules the phone keeps are named by hash (patch 0041) |
 
 ## Runtime switches
 

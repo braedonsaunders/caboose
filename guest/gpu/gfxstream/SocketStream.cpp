@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
+#include "caboose-shader-cache/shader_cache.h"
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
 // echoes this after verifying its actual immutable features and source pins.
@@ -43,12 +44,17 @@ static constexpr unsigned char kHello[48] = {
 // 0x80 this process assigns its own handles for single-object creates and pipelines;
 // 0x100 also for descriptor sets and command buffers; 0x200 it runs a completion feed
 // (caboose-bounded-memory/completion_feed.h); 0x400 its presents are ordered behind
-// device-stream ORDER marks instead of a drain. The broker replies with the features both
+// device-stream ORDER marks instead of a drain; 0x800 swapchain images are the guest's own;
+// 0x1000 it assigns query pool handles; 0x2000 it names shader modules the phone keeps by
+// hash (caboose-shader-cache/shader_cache.h). The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
-                          kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000;
+                          kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
+                          kShaderCache = 0x2000;
 static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                                       kGuestQueryPools | kShaderCache,
+                                   kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent,
@@ -83,6 +89,10 @@ int caboose_gfxstream_guest_images = 0;
 // 1 when the guest also assigns query pool handles (hello feature 0x1000).
 extern "C" int caboose_gfxstream_guest_query_pools;
 int caboose_gfxstream_guest_query_pools = 0;
+// 1 when the phone keeps the shader modules this process sends and takes tokens for the
+// ones it holds (hello feature 0x2000; caboose-shader-cache/shader_cache.h).
+extern "C" int caboose_gfxstream_shader_cache;
+int caboose_gfxstream_shader_cache = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -253,6 +263,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_ordered_present = (features & kOrderedPresent) ? 1 : 0;
     caboose_gfxstream_guest_images = (features & kGuestImages) ? 1 : 0;
     caboose_gfxstream_guest_query_pools = (features & kGuestHandles) && (features & kGuestQueryPools) ? 1 : 0;
+    caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif
@@ -262,6 +273,8 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_device_fd = caboose_gfxstream_device_fd == -1 ? fd_ : -2;
     CabooseSocketStream* none = nullptr;
     if (firstStream.compare_exchange_strong(none, this)) firstPath = path;
+    // A new executor, perhaps another phone, holds its own shader modules.
+    caboose::shader_cache::known().reset();
     caboose::completion::executorConnected();
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)

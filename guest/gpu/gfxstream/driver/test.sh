@@ -17,6 +17,7 @@ run() {
 # The owned headers include each other and Vulkan's headers as they do in the Mesa tree.
 mkdir -p "$scratch/include"
 ln -sfn "$gfxstream/bounded-memory" "$scratch/include/caboose-bounded-memory"
+ln -sfn "$gfxstream/shader-cache" "$scratch/include/caboose-shader-cache"
 includes="-I$gfxstream/bounded-memory -I$scratch/include -I${CABOOSE_VULKAN_INCLUDE:-/work/mesa/include}"
 for test in "$gfxstream"/bounded-memory/test_*.cpp; do
     run "$(basename "$test" .cpp)" $includes "$test"
@@ -26,5 +27,17 @@ run test_indexed "$gfxstream/virtual-wsi/test_indexed.cpp" "$gfxstream/virtual-w
 run test_socket_stream $config -I"$gfxstream/fixtures/iostream" -I"$scratch/include" \
     "$gfxstream/test_socket_stream.cpp" "$gfxstream/SocketStream.cpp"
 run feature_emulation_test $includes "$gfxstream/feature-emulation/feature_emulation_test.cpp"
+# The shader cache's keys are Mesa's BLAKE3 (portable C, as the driver's build compiles it
+# without the x86 assembly), checked against the vectors the phone's store is tested with.
+blake3=${CABOOSE_MESA:-/work/mesa}/src/util/blake3
+for source in blake3.c blake3_dispatch.c blake3_portable.c; do
+    cc -O2 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0 \
+        -c "$blake3/$source" -o "$scratch/$source.o"
+done
+c++ $flags -I"$gfxstream/shader-cache" -I"$blake3" "$gfxstream/shader-cache/test_shader_cache.cpp" \
+    "$scratch"/blake3*.o -o "$scratch/test_shader_cache"
+"$scratch/test_shader_cache" "$gfxstream/shader-cache/vectors.json" >"$scratch/test_shader_cache.log" 2>&1 ||
+    { cat "$scratch/test_shader_cache.log" >&2; echo "FAIL test_shader_cache" >&2; exit 1; }
+echo "pass test_shader_cache"
 run d3d11_emulation_test -I"${CABOOSE_VULKAN_INCLUDE:-/work/mesa/include}" \
     "$gfxstream/feature-emulation/d3d11_emulation_test.cpp"

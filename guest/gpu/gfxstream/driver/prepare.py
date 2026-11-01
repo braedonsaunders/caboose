@@ -36,6 +36,7 @@ OWNED = {
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'
        for name in ('gpu_media.h', 'media_import.h', 'media_import.inc')},
+    'shader-cache/shader_cache.h': 'src/gfxstream/guest/vulkan_enc/caboose-shader-cache/shader_cache.h',
     'feature-emulation/feature_emulation.h':
         'src/gfxstream/guest/vulkan_enc/caboose-features/feature_emulation.h',
     'feature-emulation/d3d11_emulation.h':
