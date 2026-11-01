@@ -26,6 +26,8 @@ struct GamepadPanel: View {
     /// types into the window, for what no control is assigned (a game's Y/N question).
     @State private var quickKeys = false
     @State private var typing = false
+    /// What the fingers on the pad hold now, sent again when the connection comes back.
+    @State private var touches = GameGamepadState()
 
     private var settings: OnScreenGamepad.Settings { OnScreenGamepad.Settings.decode(stored) }
 
@@ -36,19 +38,24 @@ struct GamepadPanel: View {
         var window: ObjectIdentifier?
         var session: ObjectIdentifier?
         var game: ObjectIdentifier?
-        var live = false
     }
 
     private func destination(_ window: RemoteWindow?) -> Destination {
-        let session = model.session
-        return Destination(window: window.map(ObjectIdentifier.init), session: session.map { ObjectIdentifier($0 as AnyObject) },
-                           game: window?.game.map(ObjectIdentifier.init),
-                           live: window.map { window in session?.state == .ready && session?.windows[window.id] === window } ?? false)
+        Destination(window: window.map(ObjectIdentifier.init), session: model.session.map { ObjectIdentifier($0 as AnyObject) },
+                    game: window?.game.map(ObjectIdentifier.init))
+    }
+
+    /// The same window on a connection that dropped and came back (a display reconnect keeps
+    /// its windows): what was held is released while it is gone and pressed again once it is
+    /// back, with the pad's mode as it was, without the fingers having to let go.
+    private func live(_ window: RemoteWindow?) -> Bool {
+        window.map { window in model.session?.state == .ready && model.session?.windows[window.id] === window } ?? false
     }
 
     private func letGo() {
         driver.release()
         stickCenters = [:]
+        touches = GameGamepadState()
         ownership += 1
     }
 
@@ -64,6 +71,7 @@ struct GamepadPanel: View {
                     .allowsHitTesting(false)
                 GamepadTouchArea(layout: layout, sticks: settings.sticks, enabled: enabled && !customizing, ownership: ownership) { state, centers in
                     stickCenters = centers
+                    touches = state
                     driver.apply(state, to: target(), session: model.session, settings: settings, devices: model.devices)
                 }
                 GameKeyboard(active: $typing) { stroke in
@@ -90,6 +98,18 @@ struct GamepadPanel: View {
         }
         .onChange(of: enabled) { _, enabled in if !enabled { letGo() } }
         .onChange(of: destination(current)) { letGo() }
+        // A game opening or closing the pad's gamepad (also its reopening on a new connection)
+        // moves what the fingers hold to the other output now, not at their next move.
+        .onChange(of: model.devices.screenGamepadRead) {
+            if live(current) { driver.apply(touches, to: target(), session: model.session, settings: settings, devices: model.devices) }
+        }
+        .onChange(of: live(current)) { _, live in
+            if live {
+                driver.apply(touches, to: target(), session: model.session, settings: settings, devices: model.devices)
+            } else {
+                driver.release()
+            }
+        }
         .onChange(of: stored) { letGo() }
         .onChange(of: customizing) { _, open in if open { letGo() } }
         // The computer has a gamepad for the pad while it shows with the Linux controller output.

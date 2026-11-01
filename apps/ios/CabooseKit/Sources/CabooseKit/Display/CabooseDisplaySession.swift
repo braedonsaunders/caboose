@@ -519,6 +519,12 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.ping(micros: marker))
         for window in windows.values { applyCapabilities(window, xwayland: nil) }
         attachDevices()
+        // A resumed connection keeps its windows, but the computer starts it with nothing
+        // focused: keys (the on-screen controller's among them) would go nowhere while the
+        // phone still counts its window as focused. Focus it on the computer again.
+        if sameServer, let id = focusedWindow, windows[id] != nil {
+            send(.configure(window: id, geometry: nil, activated: true))
+        }
     }
 
     /// Offers the phone's hardware on this connection when its server accepts devices.
