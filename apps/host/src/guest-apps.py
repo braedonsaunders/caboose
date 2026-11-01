@@ -21,9 +21,23 @@ def entries():
             ident = str(path.relative_to(root)).replace('/', '-')
             if ident in found:
                 continue
+            # An entry whose TryExec program is gone is absent (Desktop Entry Specification), so
+            # a stale copy, such as one carried over in a home folder, never shadows an installed app.
+            if missing_program(path):
+                continue
             # Record hidden overrides, too, so a lower-priority entry stays hidden.
             found[ident] = path
     return found
+
+def missing_program(path):
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str
+    try:
+        parser.read(path, encoding='utf-8')
+        program = parser['Desktop Entry'].get('TryExec')
+    except (OSError, ValueError, KeyError, configparser.Error):
+        return False
+    return bool(program) and not shutil.which(program)
 
 def read(path):
     parser = configparser.ConfigParser(interpolation=None, strict=False)

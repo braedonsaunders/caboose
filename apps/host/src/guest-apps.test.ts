@@ -49,15 +49,16 @@ class Gio:
             return path
 `
 
-function fixture(entries: Record<string, string>) {
+function fixture(entries: Record<string, string>, overrides: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'caboose-apps-test-')); roots.push(root)
-  const applications = join(root, 'applications'), gi = join(root, 'gi')
-  mkdirSync(applications); mkdirSync(join(gi, 'repository'), { recursive: true })
+  const applications = join(root, 'applications'), personal = join(root, 'personal'), gi = join(root, 'gi')
+  mkdirSync(applications); mkdirSync(personal); mkdirSync(join(gi, 'repository'), { recursive: true })
+  for (const [name, body] of Object.entries(overrides)) writeFileSync(join(personal, name), body)
   writeFileSync(join(gi, '__init__.py'), 'def require_version(*args):\n    pass\n')
   writeFileSync(join(gi, 'repository', '__init__.py'), FAKE_GI)
   for (const [name, body] of Object.entries(entries)) writeFileSync(join(applications, name), body)
   const original = readFileSync(new URL('./guest-apps.py', import.meta.url), 'utf8')
-  const script = original.replace(/^ROOTS = .*$/m, `ROOTS = [pathlib.Path(${JSON.stringify(applications)})]`)
+  const script = original.replace(/^ROOTS = .*$/m, `ROOTS = [pathlib.Path(${JSON.stringify(personal)}), pathlib.Path(${JSON.stringify(applications)})]`)
   expect(script).not.toBe(original)
   const launches = join(root, 'launches.jsonl')
   const env = { ...process.env, PYTHONPATH: root, HOME: root, TEST_LAUNCHES: launches }
@@ -125,6 +126,17 @@ describe('guest-apps.py', () => {
     // A D-Bus activated application's action needs no Exec.
     expect(byId['portal.desktop']).toEqual([{ id: 'open', name: 'Open' }])
     expect(byId['plain.desktop']).toEqual([])
+  })
+
+  it('lists an installed entry that a personal copy with a missing TryExec program would shadow', () => {
+    const { run } = fixture(ENTRIES, {
+      'plain.desktop': '[Desktop Entry]\nType=Application\nName=Stale\nExec=/nonexistent/stale\nTryExec=/nonexistent/stale\n',
+      'firefox.desktop': '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nHidden=true\n',
+    })
+    const apps = JSON.parse(run('list', '0').stdout) as { id: string; name: string; exec: string }[]
+    // The stale copy is absent, so the installed entry shows; a Hidden copy still hides its entry.
+    expect(apps.find(app => app.id === 'plain.desktop')).toMatchObject({ name: 'Plain', exec: 'plain' })
+    expect(apps.find(app => app.id === 'firefox.desktop')).toBeUndefined()
   })
 
   it('launches a listed action through GLib, and refuses actions and entries it does not list', () => {
