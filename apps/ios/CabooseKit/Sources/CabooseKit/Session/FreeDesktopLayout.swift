@@ -55,27 +55,34 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public func snap(of id: Int) -> Snap? { places[id]?.snap }
 
     /// A window as `windowsToFill` judges it: its app class (nil until the computer says) and
-    /// smallest whole frame, in the work area's units.
+    /// its smallest and largest content (the window below its title bar), in the work area's
+    /// units; zero or nil on an axis means no limit.
     public struct FillCandidate: Equatable, Sendable {
         public var id: Int
         public var app: String?
         public var minimum: CGSize
+        public var maximum: CGSize?
         public var isAuxiliary: Bool
         public var isFullscreen: Bool
-        public init(id: Int, app: String?, minimum: CGSize = .zero, isAuxiliary: Bool = false, isFullscreen: Bool = false) {
-            self.id = id; self.app = app; self.minimum = minimum; self.isAuxiliary = isAuxiliary; self.isFullscreen = isFullscreen
+        public init(id: Int, app: String?, minimum: CGSize = .zero, maximum: CGSize? = nil,
+                    isAuxiliary: Bool = false, isFullscreen: Bool = false) {
+            self.id = id; self.app = app; self.minimum = minimum; self.maximum = maximum
+            self.isAuxiliary = isAuxiliary; self.isFullscreen = isFullscreen
         }
     }
 
     /// The windows to maximize so each fills `area` (Laptop's upper screen), by id: app
-    /// windows with a known class that are not maximized in their own place already and fit
-    /// `area` at their minimum size. Dialogs, full-screen windows and windows whose class has
-    /// not arrived are left alone; the last are filled once it does.
-    public func windowsToFill(_ windows: [FillCandidate], in area: CGRect) -> [Int] {
+    /// windows with a known class that are not maximized in their own place already, have not
+    /// been filled before (`filled`: one the owner restored stays restored), and take the
+    /// area as Laptop shows it (`accepts`, scaled). Dialogs, full-screen windows and windows
+    /// whose class has not arrived are left alone; the last are filled once it does.
+    public func windowsToFill(_ windows: [FillCandidate], in area: CGRect, titleBar: CGFloat = 0,
+                              filled: Set<Int> = []) -> [Int] {
         windows.filter { window in
-            !window.isAuxiliary && !window.isFullscreen && window.app != nil
+            !window.isAuxiliary && !window.isFullscreen && window.app != nil && !filled.contains(window.id)
                 && place(for: window.id, app: window.app)?.snap != .maximized
-                && window.minimum.width <= area.width && window.minimum.height <= area.height
+                && Self.accepts(.maximized, in: area, titleBar: titleBar, minimum: window.minimum,
+                                maximum: window.maximum, scaled: true)
         }.map(\.id).sorted()
     }
     public func isMinimized(_ id: Int, app: String?) -> Bool { place(for: id, app: app)?.minimized == true }
@@ -175,6 +182,21 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public static func allows(_ snap: Snap, in area: CGRect, minimum: CGSize) -> Bool {
         let frame = rect(for: snap, in: area)
         return minimum.width <= frame.width && minimum.height <= frame.height
+    }
+
+    /// Whether a window with this content `minimum` and `maximum` (below a `titleBar` tall
+    /// bar) can take the snap. Its whole frame at its minimum may fit the snap; or, where the
+    /// snap shows any picture fitted into it (`scaled`: Laptop), a window held larger by its
+    /// minimum size takes the snap's shape grown to that minimum (`WindowSizePolicy.fills`).
+    /// A window whose maximum keeps it from that shape cannot.
+    public static func accepts(_ snap: Snap, in area: CGRect, titleBar: CGFloat, minimum: CGSize?,
+                               maximum: CGSize?, scaled: Bool) -> Bool {
+        let chrome = CGSize(width: minimum?.width ?? 0, height: (minimum?.height ?? 0) + titleBar)
+        if allows(snap, in: area, minimum: chrome) { return true }
+        guard scaled else { return false }
+        let frame = rect(for: snap, in: area, minimum: chrome)
+        return WindowSizePolicy.fills(CGSize(width: frame.width, height: frame.height - titleBar),
+                                      minimum: minimum, maximum: maximum)
     }
 
     /// The snap a title bar dragged to `point` would take: a side edge snaps to that half,

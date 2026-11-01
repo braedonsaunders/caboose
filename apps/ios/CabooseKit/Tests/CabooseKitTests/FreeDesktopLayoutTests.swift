@@ -328,16 +328,39 @@ struct LaptopFillTests {
         #expect(layout.windowsToFill(windows, in: screen) == [3])
     }
 
-    @Test func dialogsFullScreenAndOversizedWindowsKeepTheirPlace() {
+    @Test func dialogsFullScreenAndOversizedFixedWindowsKeepTheirPlace() {
         let layout = FreeDesktopLayout()
+        let big = CGSize(width: 900, height: 200), tall = CGSize(width: 200, height: 600)
         let windows: [FreeDesktopLayout.FillCandidate] = [
             .init(id: 4, app: "gimp", isAuxiliary: true),
             .init(id: 5, app: "mpv", isFullscreen: true),
-            .init(id: 6, app: "big", minimum: CGSize(width: 900, height: 200)),
-            .init(id: 7, app: "tall", minimum: CGSize(width: 200, height: 600)),
+            .init(id: 6, app: "big", minimum: big, maximum: big),
+            .init(id: 7, app: "tall", minimum: tall, maximum: tall),
             .init(id: 8, app: "fits", minimum: CGSize(width: 680, height: 470)),
         ]
         #expect(layout.windowsToFill(windows, in: screen) == [8])
+    }
+
+    @Test func aResizableWindowHeldLargerByItsMinimumFillsAtTheScreensShape() {
+        // Steam's main window: a 505x300 minimum on a 446x441 screen under a 32-point bar.
+        let layout = FreeDesktopLayout(), screen = CGRect(x: 0, y: 0, width: 446, height: 441)
+        let steam = FreeDesktopLayout.FillCandidate(id: 3, app: "steam", minimum: CGSize(width: 505, height: 300))
+        #expect(layout.windowsToFill([steam], in: screen, titleBar: 32) == [3])
+        // Capped below the screen's shape: it cannot fill, and keeps its place.
+        var capped = steam
+        capped.maximum = CGSize(width: 600, height: 300)
+        #expect(layout.windowsToFill([capped], in: screen, titleBar: 32).isEmpty)
+    }
+
+    @Test func aRestoredWindowIsNotFilledAgain() {
+        var layout = FreeDesktopLayout()
+        let window = FreeDesktopLayout.FillCandidate(id: 1, app: "steam")
+        #expect(layout.windowsToFill([window], in: screen) == [1])
+        layout.setSnap(1, .maximized, current: .zero, in: screen, app: "steam")
+        // The green button restores it: the next pass leaves it where the owner put it.
+        layout.setSnap(1, nil, current: .zero, in: screen, app: "steam")
+        #expect(layout.windowsToFill([window], in: screen, filled: [1]).isEmpty)
+        #expect(layout.windowsToFill([window], in: screen) == [1])
     }
 
     @Test func aWindowFillsOnceItsClassArrives() {
@@ -349,5 +372,33 @@ struct LaptopFillTests {
         // Another app's maximized place under the same id does not count as this window's.
         layout.setSnap(9, .maximized, current: .zero, in: screen, app: "thunderbird")
         #expect(layout.windowsToFill([window], in: screen) == [9])
+    }
+}
+
+/// Which snaps a window can take, at its own size or (Laptop) scaled into the snap.
+struct SnapAcceptanceTests {
+    let area = CGRect(x: 0, y: 0, width: 446, height: 441)
+
+    @Test func aWindowLargerThanTheSnapTakesItOnlyWhereSnapsAreScaled() {
+        let minimum = CGSize(width: 505, height: 300)
+        #expect(!FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: minimum, maximum: nil, scaled: false))
+        #expect(FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: minimum, maximum: nil, scaled: true))
+        #expect(FreeDesktopLayout.accepts(.left, in: area, titleBar: 32, minimum: minimum, maximum: nil, scaled: true))
+    }
+
+    @Test func aWindowThatFitsTakesTheSnapEitherWay() {
+        let minimum = CGSize(width: 300, height: 200)
+        for scaled in [false, true] {
+            #expect(FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: minimum, maximum: nil, scaled: scaled))
+            #expect(FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: nil, maximum: nil, scaled: scaled))
+        }
+        // A small fixed-size window takes it too, and is centred in it as a compact card.
+        let fixed = CGSize(width: 200, height: 100)
+        #expect(FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: fixed, maximum: fixed, scaled: true))
+    }
+
+    @Test func aFixedWindowLargerThanTheSnapNeverTakesIt() {
+        let fixed = CGSize(width: 900, height: 600)
+        #expect(!FreeDesktopLayout.accepts(.maximized, in: area, titleBar: 32, minimum: fixed, maximum: fixed, scaled: true))
     }
 }
