@@ -9,6 +9,14 @@
 namespace gfxstream::host { struct RenderThreadInfo; }
 namespace caboose::gpuv2 {
 class CompletionFeed;
+// What a decoder thread is doing, for a process that does not stop: the opcode it last
+// started and its stage (1 decoding, 2 writing replies, 3 reading input, 4 parked).
+struct DecodeProgress {
+    std::atomic<uint32_t> opcode{0};
+    std::atomic<uint32_t> stage{0};
+};
+// The calling thread's progress record for the next decodeConnection, or null.
+DecodeProgress*& currentDecodeProgress();
 // Call only after the process-wide VkDecoderGlobalState has been initialized.
 // One call per guest encoder connection; all connections for a guest process
 // must share its real upstream ProcessResources. The caller retains fd and

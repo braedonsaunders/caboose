@@ -77,6 +77,10 @@ void printAggregateLine(const char* prefix, unsigned ordinal, uint64_t stream,
 namespace { thread_local DecodeDiagnostic testingDiagnostic; }
 DecodeDiagnostic lastDecodeDiagnosticForTesting() { return testingDiagnostic; }
 #endif
+DecodeProgress*& currentDecodeProgress() {
+    thread_local DecodeProgress* progress = nullptr;
+    return progress;
+}
 int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                      gfxstream::host::RenderThreadInfo& thread_info,
                      std::atomic_bool& stop, bool synchronousOnly, uint64_t* decoderEntries,
@@ -163,7 +167,13 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 std::memcpy(&diagnostic->declared, pending.data() + 4, 4);
             }
         };
+        DecodeProgress* progress = currentDecodeProgress();
+        auto passGate = [&] {
+            if (progress) progress->stage = 4;
+            return gate.pass(stop);
+        };
         auto readMore = [&](size_t request) -> bool {
+            if (progress) progress->stage = 3;
             const size_t old = pending.size();
             pending.resize(old + request);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -204,7 +214,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         }
                         continue;
                     }
-                    if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
+                    if (!passGate()) return finish(DecodeStage::stopped, 0);
                     if (executeLatch(contextId, pending.data(), declared) != 0) return finish(DecodeStage::framing, EPROTO);
                     pending.erase(pending.begin(), pending.begin() + declared);
                     decodedAny = true;
@@ -224,7 +234,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     }
                     if (!parseShaderInventoryPacket(pending.data(), declared))
                         return finish(DecodeStage::framing, EPROTO);
-                    if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
+                    if (!passGate()) return finish(DecodeStage::stopped, 0);
                     const auto store = currentShaderStore();
                     const auto reply = encodeShaderInventoryReply(store ? store->inventory() : std::vector<ShaderKey>{});
                     stream.writeFully(reply.data(), reply.size());
@@ -245,7 +255,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         }
                         continue;
                     }
-                    if (opcode != CompletionFeed::kFeedOpcode && !gate.pass(stop))
+                    if (opcode != CompletionFeed::kFeedOpcode && !passGate())
                         return finish(DecodeStage::stopped, 0);
                     if (opcode == CompletionFeed::kOrderOpcode) {
                         uint64_t serial = 0;
@@ -294,7 +304,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 }
                 continue;
             }
-            if (!gate.pass(stop)) return finish(DecodeStage::stopped, 0);
+            if (!passGate()) return finish(DecodeStage::stopped, 0);
             if (diagnostic) diagnostic->stage = DecodeStage::decoder;
             if (decoderEntries) ++*decoderEntries;
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -304,6 +314,12 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             }
             const auto decodeStart = auditTiming ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 #endif
+            if (progress) {
+                uint32_t op = 0;
+                if (frame.size >= 4) std::memcpy(&op, pending.data(), 4);
+                progress->opcode = op;
+                progress->stage = 1;
+            }
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -343,6 +359,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             const uint64_t flushStartUs = auditTiming ? steadyNowMicroseconds() : 0;
 #endif
+            if (progress) progress->stage = 2;
             const int flushResult = stream.flush();
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             if (auditTiming) {
