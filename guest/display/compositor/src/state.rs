@@ -114,7 +114,12 @@ pub struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _: ClientId) {}
-    fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
+    fn disconnected(&self, _: ClientId, reason: DisconnectReason) {
+        // A client the compositor cut off says why: it sees only a broken connection.
+        if let DisconnectReason::ProtocolError(error) = reason {
+            tracing::warn!("client disconnected: {error}");
+        }
+    }
 }
 
 /// Counters the control socket's `stats` and the exit log report.
@@ -699,7 +704,6 @@ impl State {
             desktop_id: None,
             icon: None,
             identified: false,
-            toplevel_icon: None,
             held_min: None,
         });
         self.assign_output(id);
@@ -839,22 +843,10 @@ impl State {
         w.desktop_id = Some(found);
     }
 
-    /// Converts a toplevel's xdg-toplevel-icon when its committed buffers changed.
-    fn read_toplevel_icon(&mut self, id: u64) {
-        let Some(w) = self.windows.get_mut(id) else { return };
-        let (Some(before), Surface::Toplevel(t)) = (&w.toplevel_icon, &w.surface) else { return };
-        let now = crate::icons::toplevel_icon_buffers(t.wl_surface());
-        if *before != now {
-            w.icon = crate::icons::from_toplevel_icon(&now);
-            w.toplevel_icon = Some(now);
-        }
-    }
-
     pub fn sync_windows(&mut self) {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         for id in self.windows.parent_first() {
             self.identify_x11(id);
-            self.read_toplevel_icon(id);
             self.find_desktop_id(id);
             let Some(w) = self.windows.get(id) else { continue };
             // A Vulkan application bound to its phone surface may never commit a buffer here:
@@ -1491,19 +1483,6 @@ smithay::delegate_fractional_scale!(State);
 smithay::delegate_cursor_shape!(State);
 smithay::delegate_tablet_manager!(State);
 smithay::delegate_xwayland_shell!(State);
-smithay::delegate_xdg_toplevel_icon!(State);
-
-impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for State {
-    /// Its buffers are read once committed, by the next sync (`read_toplevel_icon`).
-    fn set_icon(&mut self, _toplevel: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::XdgToplevel, surface: WlSurface) {
-        if let Some(id) = self.windows.by_surface(&surface) {
-            if let Some(w) = self.windows.get_mut(id) {
-                w.toplevel_icon.get_or_insert_with(Vec::new);
-            }
-        }
-    }
-}
-
 /// Whether a subsurface's buffer, at its position relative to its root surface, covers
 /// `geometry` (in the root's surface coordinates).
 pub(crate) fn covers_geometry(surface: &WlSurface, geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>) -> bool {

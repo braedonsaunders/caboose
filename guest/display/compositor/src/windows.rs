@@ -59,8 +59,6 @@ pub struct Window {
     pub icon: Option<Vec<u8>>,
     /// An X11 top-level's icon and creator have been read (x11_identity.rs).
     pub identified: bool,
-    /// A toplevel's xdg-toplevel-icon buffers last read, once its client has set one.
-    pub toplevel_icon: Option<Vec<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer>>,
     /// An X11 top-level without size hints that asked for a first size larger than its
     /// display (xwm.rs `first_size`): held at that size, its minimum and its maximum to the
     /// phone, which then keeps it at that size and shows it scaled to fit.

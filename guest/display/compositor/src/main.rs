@@ -35,6 +35,7 @@ mod render_node;
 mod session;
 mod state;
 mod targets;
+mod toplevel_icon;
 mod text_input;
 mod transfers;
 mod upload;
@@ -444,7 +445,7 @@ fn run(config: Config) -> Result<(), String> {
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
-    smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<State>(&dh).add_icon_size(128);
+    toplevel_icon::init(&dh);
     smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
     // Games lock the pointer and read relative motion for mouse look (input.rs).
     smithay::wayland::pointer_constraints::PointerConstraintsState::new::<State>(&dh);

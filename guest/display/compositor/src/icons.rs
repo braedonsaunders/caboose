@@ -2,10 +2,8 @@
 //! application offers (X11 `_NET_WM_ICON`, xdg-toplevel-icon buffers) that a client shows
 //! in its taskbar, as PNG.
 
-use smithay::reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm, wl_surface::WlSurface};
-use smithay::wayland::compositor::with_states;
+use smithay::reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
 use smithay::wayland::shm::with_buffer_contents;
-use smithay::wayland::xdg_toplevel_icon::ToplevelIconCachedState;
 
 /// The size a taskbar draws an icon at on a phone (52 points at 3x is 156 pixels).
 const WANTED: u32 = 128;
@@ -73,46 +71,39 @@ pub fn unpremultiply(p: u32) -> u32 {
     (a << 24) | (channel(16).min(255) << 16) | (channel(8).min(255) << 8) | channel(0).min(255)
 }
 
-/// What a toplevel's xdg-toplevel-icon is now: its buffers' identities, to see a change
-/// without reading pixels.
-pub fn toplevel_icon_buffers(surface: &WlSurface) -> Vec<WlBuffer> {
-    with_states(surface, |states| {
-        states.cached_state.get::<ToplevelIconCachedState>().current().buffers().iter().map(|(b, _)| b.clone()).collect()
+/// A copy of an xdg-toplevel-icon buffer's pixels: width, height and straight-alpha ARGB,
+/// or why the buffer cannot be an icon.
+pub fn read_shm_icon(buffer: &WlBuffer) -> Result<(u32, u32, Vec<u32>), &'static str> {
+    with_buffer_contents(buffer, |ptr, len, data| {
+        let (w, h, stride, offset) = (data.width, data.height, data.stride, data.offset);
+        if !matches!(data.format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888) {
+            return Err("the icon buffer must be ARGB8888 or XRGB8888");
+        }
+        if w <= 0 || w != h {
+            return Err("the icon buffer must be square");
+        }
+        if stride < w * 4 || offset < 0 || offset as usize + stride as usize * (h as usize - 1) + w as usize * 4 > len {
+            return Err("the icon buffer lies outside its pool");
+        }
+        // SAFETY: the pool maps `len` bytes at `ptr` for the duration of this call.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        let opaque = data.format == wl_shm::Format::Xrgb8888;
+        let mut argb = Vec::with_capacity((w * h) as usize);
+        for row in 0..h as usize {
+            let start = offset as usize + row * stride as usize;
+            for px in bytes[start..start + w as usize * 4].chunks_exact(4) {
+                let p = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
+                argb.push(if opaque { p | 0xff00_0000 } else { unpremultiply(p) });
+            }
+        }
+        Ok((w as u32, h as u32, argb))
     })
+    .map_err(|_| "the icon buffer must be backed by wl_shm")?
 }
 
-/// The icon a toplevel's xdg-toplevel-icon buffers give, as PNG. An icon given only by
-/// name is left to the client, which knows the computer's applications by `app_id`.
-pub fn from_toplevel_icon(buffers: &[WlBuffer]) -> Option<Vec<u8>> {
-    let mut pixels: Vec<(u32, u32, Vec<u32>)> = Vec::new();
-    for buffer in buffers {
-        let read = with_buffer_contents(buffer, |ptr, len, data| {
-            let (w, h, stride, offset) = (data.width, data.height, data.stride, data.offset);
-            if !matches!(data.format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888) || w <= 0 || h <= 0 || stride < w * 4 || offset < 0 {
-                return None;
-            }
-            let end = offset as usize + stride as usize * (h as usize - 1) + w as usize * 4;
-            if end > len {
-                return None;
-            }
-            // SAFETY: the pool maps `len` bytes at `ptr` for the duration of this call.
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-            let opaque = data.format == wl_shm::Format::Xrgb8888;
-            let mut argb = Vec::with_capacity((w * h) as usize);
-            for row in 0..h as usize {
-                let start = offset as usize + row * stride as usize;
-                for px in bytes[start..start + w as usize * 4].chunks_exact(4) {
-                    let p = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
-                    argb.push(if opaque { p | 0xff00_0000 } else { unpremultiply(p) });
-                }
-            }
-            Some((w as u32, h as u32, argb))
-        });
-        if let Ok(Some(image)) = read {
-            pixels.push(image);
-        }
-    }
-    let images: Vec<Image> = pixels.iter().map(|(width, height, argb)| Image { width: *width, height: *height, argb }).collect();
+/// The best of an icon's images (`best`), as PNG.
+pub fn png_of_images(images: &[(u32, u32, Vec<u32>)]) -> Option<Vec<u8>> {
+    let images: Vec<Image> = images.iter().map(|(width, height, argb)| Image { width: *width, height: *height, argb }).collect();
     png(best(&images)?)
 }
 
