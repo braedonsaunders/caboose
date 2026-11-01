@@ -219,7 +219,8 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
             body: .bind(window: 7, instance: 8, width: 800, height: 600))
         try frame(.surfaceBind, 3, process: 1, payload: bind.encoded())
         backend.resource.retirementError = ETIMEDOUT
-        XCTAssertThrowsError(try frame(.processStop, 4, process: 1))
+        try frame(.processStop, 4, process: 1)  // retirement runs off the worker
+        binding.waitForRetirements()
         XCTAssertEqual(runtime.finishes, 0)
         XCTAssertThrowsError(try binding.finish())
         XCTAssertEqual(runtime.finishes, 0)
@@ -293,6 +294,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(output.messages.last?.kind, .surfaceRetired)
         XCTAssertEqual(runtime.finishes, 0)
         try frame(.processStop, 5, process: 1)
+        binding.waitForRetirements()
         XCTAssertEqual(runtime.finishes, 1)
         try binding.finish()
         XCTAssertTrue(output.errors.isEmpty)

@@ -211,12 +211,14 @@ final class LiveGPUNativeBindingTests: XCTestCase {
     func testNativeErrorsAndRetirementFencePersist() throws {
         let runtime = LiveRuntimeProbe(); runtime.finishCode = EIO
         let binding = try LiveGPUNativeBinding(backend: runtime)
-        try binding.start(output: { _ in true }, failed: { _ in })
+        let output = LiveOutputProbe()
+        try binding.start(output: { _ in true }, failed: { output.fail($0) })
         try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
         try binding.consume(wire(.processOpen, sequence: 2, process: 1))
-        XCTAssertThrowsError(try binding.consume(wire(.processStop, sequence: 3, process: 1))) {
-            XCTAssertEqual($0 as? LiveGPUBindingError, .native(operation: "finish", code: EIO))
-        }
+        // Retirement runs off the worker; its failure fails the session.
+        try binding.consume(wire(.processStop, sequence: 3, process: 1))
+        binding.waitForRetirements()
+        XCTAssertEqual(output.lock.withLock { output.error } as? LiveGPUBindingError, .native(operation: "finish", code: EIO))
         XCTAssertThrowsError(try binding.finish()) {
             XCTAssertEqual($0 as? LiveGPUBindingError, .native(operation: "finish", code: EIO))
         }
@@ -257,6 +259,25 @@ final class LiveGPUNativeBindingTests: XCTestCase {
             XCTAssertEqual($0 as? LiveGPUBindingError, .outputRejected)
         }
         try binding.finish()
+    }
+    func testAProcessWhoseCleanupHangsDoesNotStopOthersOpening() throws {
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        runtime.cleanupGate = DispatchSemaphore(value: 0)
+        try binding.consume(wire(.processStop, sequence: 3, process: 1))
+        XCTAssertEqual(runtime.cleaning.wait(timeout: .now() + 2), .success)  // native finish is stuck
+        try binding.consume(wire(.processOpen, sequence: 4, process: 2))
+        XCTAssertEqual(try output.frames().filter { $0.kind == .processReady }.map(\.process), [1, 2])
+        XCTAssertFalse(try output.frames().contains { $0.kind == .processRetired })
+        runtime.cleanupGate?.signal()
+        binding.waitForRetirements()
+        XCTAssertEqual(try output.frames().filter { $0.kind == .processRetired }.map(\.process), [1])
+        runtime.cleanupGate = nil
+        try binding.revoke(); try binding.finish()
     }
     func testOpeningsArrivingOutOfOrderAreServed() throws {
         let runtime = LiveRuntimeProbe()
