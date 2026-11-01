@@ -838,6 +838,10 @@ fn run(config: Config) -> Result<(), String> {
                                     tracing::error!("X11 window icons and processes unavailable: {error}");
                                 }
                                 state.x11 = Some(x11sel::Access { display: display_number, cookie });
+                                input::xwayland::set_pixel_distance(
+                                    x11sel::Access { display: display_number, cookie },
+                                    state.x11_scale,
+                                );
                                 if state.gpu_grants.is_some() {
                                     match gpu_x11::X11Windows::connect(display_number, &cookie) {
                                         Ok(windows) => state.gpu_x11 = Some(windows),

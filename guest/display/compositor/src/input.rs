@@ -18,6 +18,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size};
 use std::collections::{HashMap, HashSet};
 
 mod scroll;
+pub(crate) mod xwayland;
 
 /// evdev button codes.
 const BTN_LEFT: u32 = 0x110;
