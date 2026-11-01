@@ -5,12 +5,13 @@
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py writer      # by name
 
 Each scenario starts the compositor with an application that draws on the CPU
-(LibreOffice Writer, a GTK 3 text view, xterm; on Wayland and on X11), connects the
-probe as the phone does (a 1179x2556 display at scale 3, Surface Atlas, hardware video
-decoders for video streams, scaled motion), maximizes the window and scrolls it as a
-trackpad does, a step every 16 ms for five seconds. It fails if any part of the window
-became a motion video stream, and prints the window's picture size, rate, bandwidth and
-latency, and the server's CPU.
+(LibreOffice Writer, a GTK 3 text view, Chromium in software on X11 as CEF applications such
+as Steam draw, xterm; on Wayland and on X11), connects the probe as the phone does (a
+1179x2556 display at scale 3, Surface Atlas, hardware video decoders for video streams,
+scaled motion), maximizes the window and scrolls it as a trackpad does, a step every 16 ms
+for five seconds (Chromium's page scrolls itself). It fails if any part of the window became
+a motion video stream, and prints the window's picture size, rate, bandwidth and latency,
+and the server's CPU.
 
 LibreOffice and the GTK text view need `libreoffice-writer libreoffice-gtk3` and
 `python3-gi gir1.2-gtk-3.0` in the container.
@@ -70,6 +71,9 @@ def scenarios(directory):
         "writer-x11": (["env", "SAL_USE_VCLPLUGIN=gen", *writer], 25),
         "gtk3-wayland": (["env", "GDK_BACKEND=wayland", "python3", view], 4),
         "gtk3-x11": (["env", "GDK_BACKEND=x11", "python3", view], 4),
+        # Chromium drawing in software on X11, as CEF applications (Steam) do.
+        "chromium-x11": (["chromium", "--ozone-platform=x11", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                          f"--user-data-dir={directory}/chromium", f"file://{check.HERE}/pages/autoscroll.html"], 8),
         "xterm": (["xterm", "-sl", "5000", "-geometry", "60x60", "-e", "sh", "-c", f"seq 1 {LINES * 4}; exec sleep 600"], 4),
     }
 
