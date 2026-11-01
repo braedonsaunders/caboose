@@ -54,6 +54,7 @@ install -Dm755 "$root/files/parked_quiesce.py" /opt/caboose/files/parked_quiesce
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
 install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
+install -Dm755 "$root/ports/caboose-ports.py" /opt/caboose/ports/caboose-ports.py
 install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
 install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
 install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py

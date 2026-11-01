@@ -18,6 +18,8 @@ it('validates partial settings without coercion or changing the original', () =>
   }
   expect(defaults.name).toBe('Caboose')
   expect(updateSettings(defaults, { defaultAgent: 'codex-acp' }, settingsLimits()).defaultAgent).toBe('codex-acp')
+  expect(updateSettings(defaults, { forwardLoopback: false }, settingsLimits()).forwardLoopback).toBe(false)
+  expect(() => updateSettings(defaults, { forwardLoopback: 'no' }, settingsLimits())).toThrow(/forwardLoopback/)
   expect(updateSettings({ ...defaults, defaultAgent: 'codex-acp' }, { defaultAgent: null }, settingsLimits()).defaultAgent).toBeNull()
 })
 

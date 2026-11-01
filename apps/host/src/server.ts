@@ -345,7 +345,20 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const guest = controller.guest()
     return guest ? networkBusy(await readNetworkActivity(guest), reachable()) : false
   })
-  controller.onNetworkChange?.(() => broadcastSettings())
+  /** What caboose-ports (guest/ports) was last told, so it is told again only on a change. */
+  let forwarding: boolean | undefined
+  async function syncForwarding(): Promise<void> {
+    const guest = controller.guest()
+    const forward = reachable() && settings.get().forwardLoopback !== false
+    if (!guest || computer.state !== 'running' || forward === forwarding) return
+    await guest.run('/bin/sh', ['-c', 'install -d -m 0755 /run/caboose && printf %s "$1" > /run/caboose/ports.json.tmp && chmod 0644 /run/caboose/ports.json.tmp && mv /run/caboose/ports.json.tmp /run/caboose/ports.json', 'sh', JSON.stringify({ forward })], 10_000)
+    forwarding = forward
+  }
+  computer.subscribe(state => { if (state !== 'running') forwarding = undefined; else void syncForwarding().catch(() => {}) })
+  controller.onNetworkChange?.(() => {
+    broadcastSettings()
+    void syncForwarding().catch(error => console.error('Could not tell the computer about its address:', error instanceof Error ? error.message : error))
+  })
   // Until the device is up (the owner may be signing it in), its state is read every 10 s; then every 5 minutes.
   let networkChecked = 0
   const networkPoll = setInterval(() => {
@@ -701,6 +714,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const updated = await settings.update(input)
       computer.setIdleMs(updated.idleMs)
       if (updated.name !== before && computer.state === 'running') void controller.renameNetwork?.()
+      if ('forwardLoopback' in input) void syncForwarding().catch(() => {})
       broadcastSettings()
       return json(response, 200, managementStatus())
     }

@@ -84,6 +84,7 @@ COPY keyring /tmp/bundle/keyring
 COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
+COPY ports /tmp/bundle/ports
 COPY notifications /tmp/bundle/notifications
 COPY phone /tmp/bundle/phone
 COPY devices /tmp/bundle/devices

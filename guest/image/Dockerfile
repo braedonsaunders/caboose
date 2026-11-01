@@ -35,6 +35,7 @@ COPY keyring /builder/keyring
 COPY container/caboose-session /builder/container/
 COPY files /builder/files
 COPY terminal /builder/terminal
+COPY ports /builder/ports
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 

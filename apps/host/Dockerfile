@@ -70,6 +70,7 @@ COPY guest/phone ./guest/phone
 COPY guest/devices ./guest/devices
 COPY guest/notifications ./guest/notifications
 COPY guest/terminal ./guest/terminal
+COPY guest/ports ./guest/ports
 COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/game ./guest/game

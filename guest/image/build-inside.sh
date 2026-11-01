@@ -47,6 +47,7 @@ cp -r /builder/keyring "$work/root/tmp/keyring"
 cp -r /builder/container "$work/root/tmp/container"
 cp -r /builder/files "$work/root/tmp/files"
 cp -r /builder/terminal "$work/root/tmp/terminal"
+cp -r /builder/ports "$work/root/tmp/ports"
 cp -r /builder/desktop-mcp "$work/root/tmp/desktop-mcp"
 cp -r /builder/display "$work/root/tmp/caboose-display"
 cp -r /builder/agentd "$work/root/tmp/agentd"
@@ -67,7 +68,7 @@ kernel=$(printf '%s\n' "$work/root"/boot/vmlinuz-* | sort -V | tail -1)
 if [[ $arch == arm64 ]] && gzip -t "$kernel" 2>/dev/null; then gzip -dc "$kernel" > "$work/vmlinux"
 else cp "$kernel" "$work/vmlinux"; fi
 rm -f "$work/root/usr/local/lib/libeatmydata.so.1" "$work/root/etc/dpkg/dpkg.cfg.d/99-caboose-build" "$work/root/etc/dpkg/dpkg.cfg.d/99-build-speed"
-rm -rf "$work/root/tmp/template" "$work/root/tmp/components" "$work/root/tmp/container" "$work/root/tmp/keyring" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/phone" "$work/root/tmp/devices" "$work/root/tmp/bridge" "$work/root/tmp/flatpak" "$work/root/tmp/game" "$work/root/tmp/gpu" "$work/root/tmp/apps" "$work/root/tmp/media-handoff"
+rm -rf "$work/root/tmp/template" "$work/root/tmp/components" "$work/root/tmp/container" "$work/root/tmp/keyring" "$work/root/tmp/notifications" "$work/root/tmp/desktop-mcp" "$work/root/tmp/caboose-display" "$work/root/tmp/agentd" "$work/root/tmp/files" "$work/root/tmp/terminal" "$work/root/tmp/ports" "$work/root/tmp/phone" "$work/root/tmp/devices" "$work/root/tmp/bridge" "$work/root/tmp/flatpak" "$work/root/tmp/game" "$work/root/tmp/gpu" "$work/root/tmp/apps" "$work/root/tmp/media-handoff"
 rm "$work/root/tmp/configure-guest.sh" "$work/root/tmp/apps.sh" "$work/root/tmp/desktop-apps.sh" "$work/root/tmp/desktop-apps.tsv"
 # Complete update work after the final /usr changes to avoid a slow first boot.
 chroot "$work/root" /sbin/ldconfig

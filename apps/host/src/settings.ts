@@ -9,6 +9,8 @@ export interface ComputerSettings {
   idleMs: number
   /** The ACP registry id a task runs when it names no agent; null until the owner picks one. */
   defaultAgent: string | null
+  /** Whether servers listening only on loopback are also reached on the computer's own address (docs/network.md); unset means on. */
+  forwardLoopback?: boolean
 }
 
 /** An ACP registry agent id. Whether it exists in the registry is checked by the caller. */
@@ -46,6 +48,9 @@ export function updateSettings(current: ComputerSettings, input: Record<string, 
         throw new SettingsInputError('defaultAgent must be an agent id from the registry, or null')
       }
       next.defaultAgent = value
+    } else if (key === 'forwardLoopback') {
+      if (typeof input.forwardLoopback !== 'boolean') throw new SettingsInputError('forwardLoopback must be true or false')
+      next.forwardLoopback = input.forwardLoopback
     } else if (key === 'memoryMb' || key === 'vcpus' || key === 'idleMs') {
       const value = input[key]
       const { min, max } = limits[key]
