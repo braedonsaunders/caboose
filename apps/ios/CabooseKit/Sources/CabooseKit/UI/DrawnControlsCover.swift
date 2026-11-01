@@ -97,7 +97,7 @@ final class DrawnControlsCover {
         }
         let renderer = SharedMetal.shared
         guard let buffer = renderer.device.makeBuffer(length: 4 * rows.count, options: .storageModeShared),
-              let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else { return }
+              let commands = renderer.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else { return }
         // Pixels are square: a picture of another height than the window keeps its scale.
         let sx = CGFloat(texture.width) / frame.width, sy = sx
         for (index, row) in rows.enumerated() {

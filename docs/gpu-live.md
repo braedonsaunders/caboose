@@ -821,6 +821,20 @@ and its last four submissions with their age, fence status, waits (`t<wanted>/no
 for a timeline semaphore, `b/signaled|unsignaled` for a binary one) and signals, semaphores
 and fences by their guest handles. While the stall lasts the report repeats every 30 s;
 `CABOOSE_GPU_QUEUE_RECOVERED` follows when the marker completes.
+
+When a submission first finds its device lost (Metal failed one of its command buffers, as
+with "Invalid Resource": a command buffer used a buffer, image or memory released before
+the GPU ran it), the phone prints `CABOOSE_GPU_DEVICE_LOST` with the device and queue, the
+same `CABOOSE_GPU_QUEUE` lines, each submission also listing its command buffers by guest
+handle (`cbs=`), and `CABOOSE_GPU_RELEASES`: the last 64 buffers, images and memory whose
+host objects were released, newest first, as `kind:handle:bytes@age`. MoltenVK asks Metal
+for each command buffer's encoder status, so its error lines name the faulting encoder
+(`Faulted`) and its kind of work. A lost device ends only its guest process; the phone's
+own window pictures never wait for a GPU that has stopped completing work (they are skipped
+and `CABOOSE_METAL_STALLED` is printed until it recovers). Over a window whose GPU is lost (a
+present reported its device lost) or not responding (a present has waited 2 s for the GPU
+to release its source), one line says so, "GPU lost" or "GPU not responding", until it
+recovers, with `CABOOSE_GPU_WINDOW_HEALTH window=… state=…` on each change.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 

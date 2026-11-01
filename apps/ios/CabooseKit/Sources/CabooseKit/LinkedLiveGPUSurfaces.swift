@@ -98,7 +98,7 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
 private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchecked Sendable {
     private var pointer: OpaquePointer?
     private let bind: caboose_gpu_surface_bind_info
-    private let lease: LiveGPULayerLease
+    let lease: LiveGPULayerLease
     private let owners: LiveGPUPresentationOwners
     // Native owns a raw callback context. Keep it alive independently of UI ARC
     // until successful GPU retirement and main detach; failure quarantines it.
@@ -286,6 +286,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
             if disposition == .rejected { callbacks.removeValue(forKey: request.serial) }
             else { callbacks = callbacks.filter { $0.key == request.serial } }
         }
+        if disposition != .rejected { lease.notePresented(request.serial) }
         return .init(status: Self.status(result), disposition: disposition)
     }
     private static func status(_ result: caboose_gpu_submit_result) -> LiveGPUSurfaceStatus {
@@ -293,6 +294,11 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
               vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil)
     }
     private func receive(serial: UInt64, kind: caboose_gpu_present_event, result: caboose_gpu_submit_result) {
+        switch kind {
+        case CABOOSE_GPU_SOURCE_RELEASED: lease.noteReleased(serial)
+        case CABOOSE_GPU_DEVICE_LOST: lease.noteDeviceLost()
+        default: break
+        }
         let callback = callbackLock.withLock { callbacks[serial] }
         guard let callback else { return }
         switch kind {
@@ -386,10 +392,16 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
         }
         let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
         if disposition == .rejected { _ = lock.withLock { callbacks.removeValue(forKey: request.serial) } }
+        else { parent.lease.notePresented(request.serial) }
         return .init(status: .init(nativeErrno: result.native_error,
             vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil), disposition: disposition)
     }
     private func receive(serial: UInt64, kind: caboose_gpu_present_event, result: caboose_gpu_submit_result) {
+        switch kind {
+        case CABOOSE_GPU_SOURCE_RELEASED: parent.lease.noteReleased(serial)
+        case CABOOSE_GPU_DEVICE_LOST: parent.lease.noteDeviceLost()
+        default: break
+        }
         // Copy the closure before releasing its dictionary entry. The raw native
         // context remains retained through successful swapchain/surface retirement.
         let callback = lock.withLock { callbacks[serial] }

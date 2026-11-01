@@ -5,13 +5,91 @@ import MetalPerformanceShaders
 import QuartzCore
 
 /// The Metal device and queue the phone's own drawing uses: snapshots, thumbnails and covers.
+///
+/// The main thread draws on `queue`, so nothing here may wait for a GPU that has stopped:
+/// after a GPU fault (a live GPU process's command buffer touching a released resource) the
+/// system can stop completing this process's command buffers. Metal then blocks
+/// `makeCommandBuffer()` once 64 are outstanding and a layer's `nextDrawable()` a second at a
+/// time, which would freeze the app. Command buffers come from `makeCommandBuffer()`, which
+/// refuses rather than waits once the GPU has stopped, and waits for one go through
+/// `commitAndWait(_:timeout:)`.
 public final class SharedMetal: @unchecked Sendable {
     public static let shared = SharedMetal()
 
     public let device: MTLDevice
     public let queue: MTLCommandQueue
 
-    private init() {
+    /// Command buffers made and not yet completed (or dropped uncommitted), oldest first.
+    private struct Flight { weak var commands: MTLCommandBuffer?; let made: CFTimeInterval }
+    private let flightLock = NSLock()
+    private var flights: [Flight] = []
+    private var refusing = false
+    private var errorsLogged = 0
+    static let maximumInFlight = 32
+    static let stalledAfter: CFTimeInterval = 2
+
+    /// Whether the GPU has stopped completing this queue's work: the oldest command buffer
+    /// committed and not yet completed was made 2 s ago, or 32 are outstanding.
+    public var isStalled: Bool {
+        flightLock.lock(); defer { flightLock.unlock() }
+        return stalledLocked(now: CACurrentMediaTime())
+    }
+
+    private func stalledLocked(now: CFTimeInterval) -> Bool {
+        flights.removeAll { flight in
+            guard let commands = flight.commands else { return true }
+            return commands.status == .completed || commands.status == .error
+        }
+        // One made but not yet committed waits for its caller, not for the GPU.
+        let running = flights.filter { $0.commands.map { $0.status == .committed || $0.status == .scheduled } == true }
+        return running.count >= Self.maximumInFlight || running.first.map { now - $0.made >= Self.stalledAfter } == true
+    }
+
+    /// A command buffer on `queue`, or nil without waiting while the GPU is stalled.
+    public func makeCommandBuffer() -> MTLCommandBuffer? {
+        let now = CACurrentMediaTime()
+        flightLock.lock()
+        if stalledLocked(now: now) {
+            let first = !refusing
+            refusing = true
+            let count = flights.count, age = flights.first.map { now - $0.made } ?? 0
+            flightLock.unlock()
+            if first { print("CABOOSE_METAL_STALLED queue=phone outstanding=\(count) oldest_ms=\(Int(age * 1000))") }
+            return nil
+        }
+        let recovered = refusing
+        refusing = false
+        flightLock.unlock()
+        if recovered { print("CABOOSE_METAL_RECOVERED queue=phone") }
+        guard let commands = queue.makeCommandBuffer() else { return nil }
+        commands.addCompletedHandler { [weak self] commands in
+            guard commands.status == .error, let self else { return }
+            self.flightLock.lock()
+            let report = self.errorsLogged < 16
+            self.errorsLogged += 1
+            self.flightLock.unlock()
+            if report {
+                let error = commands.error as NSError?
+                print("CABOOSE_METAL_ERROR queue=phone code=\(error?.code ?? 0) \(error?.localizedDescription ?? "")")
+            }
+        }
+        flightLock.lock()
+        flights.append(Flight(commands: commands, made: now))
+        flightLock.unlock()
+        return commands
+    }
+
+    /// Commits `commands` and waits up to `timeout` for the GPU to finish them: false when it
+    /// did not, or they failed.
+    public func commitAndWait(_ commands: MTLCommandBuffer, timeout: TimeInterval) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        commands.addCompletedHandler { _ in done.signal() }
+        commands.commit()
+        return done.wait(timeout: .now() + timeout) == .success && commands.status == .completed
+    }
+
+    /// `shared` is the app's; tests make their own, so stalling one disturbs no other.
+    init() {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             fatalError("Caboose requires Metal.")
         }
@@ -80,14 +158,14 @@ public final class WindowSnapshot: @unchecked Sendable {
         }
     }
 
-    /// Copies a presented frame, lent by the presenter: waits for the copy, so the frame can
-    /// be given back as soon as this returns. 8-bit sRGB frames keep their encoded values;
+    /// Copies a presented frame, lent by the presenter: waits for the copy (at most a second),
+    /// so the frame can be given back as soon as this returns. 8-bit sRGB frames keep their encoded values;
     /// other formats are converted. False when the frame was not copied.
     @discardableResult
     func store(copyOf source: MTLTexture, at now: CFTimeInterval = CACurrentMediaTime()) -> Bool {
         guard source.device === metal.device, source.width > 0, source.height > 0,
               let target = makeTexture(width: source.width, height: source.height),
-              let commands = metal.queue.makeCommandBuffer() else { return false }
+              let commands = metal.makeCommandBuffer() else { return false }
         let srgb = source.pixelFormat == .bgra8Unorm_srgb || source.pixelFormat == .rgba8Unorm_srgb
         guard let destination = srgb ? target.makeTextureView(pixelFormat: .bgra8Unorm_srgb) : target else { return false }
         if source.pixelFormat == destination.pixelFormat {
@@ -100,9 +178,8 @@ public final class WindowSnapshot: @unchecked Sendable {
             MPSImageBilinearScale(device: metal.device).encode(commandBuffer: commands, sourceTexture: source,
                                                                destinationTexture: destination)
         }
-        commands.commit()
-        commands.waitUntilCompleted()
-        guard commands.status == .completed else { return false }
+        // A GPU that has not copied it within a second has stopped: the frame is given back.
+        guard metal.commitAndWait(commands, timeout: 1) else { return false }
         replace(with: target, at: now)
         return true
     }
@@ -155,7 +232,7 @@ public final class WindowSnapshot: @unchecked Sendable {
     /// thread. The reduction is a GPU scale, so the CPU never reads the whole picture. Never
     /// scales up; nil for a window with no picture.
     public func snapshot(longEdgeAtMost longEdge: Int, completion: @escaping @Sendable (CGImage?) -> Void) {
-        guard longEdge > 0, let texture, let commands = metal.queue.makeCommandBuffer() else {
+        guard longEdge > 0, let texture, let commands = metal.makeCommandBuffer() else {
             completion(nil)
             return
         }
