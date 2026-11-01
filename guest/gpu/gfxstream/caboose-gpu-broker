@@ -389,6 +389,14 @@ class Session:
         self.wakeup = asyncio.Event()
         self.unacked_bytes = 0  # received since the last ACK sent
         self.ack_timer = None
+        # Executor suspension (docs/gpu-live.md, "Suspending an executor"): while the phone is
+        # suspended no guest stream or surface socket is read; `guest_reads` counts reads past
+        # the gate that have not reached the queue yet.
+        self.guest_open = asyncio.Event()
+        self.guest_open.set()
+        self.guest_reads = 0
+        self.guest_reads_done = asyncio.Event()
+        self.suspended = False
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
@@ -622,7 +630,49 @@ class Session:
         self.wakeup.set()
         print(f'CABOOSE_GPU_BROKER executor resumed: phone had {received}, sent again {len(self.retained)} envelopes', file=sys.stderr, flush=True)
 
+    async def suspend(self):
+        """EXECUTOR_SUSPEND: stop reading guest streams at envelope boundaries, then QUIESCE
+        after everything already read."""
+        if self.suspended: raise ValueError('EXECUTOR_SUSPEND while suspended')
+        self.suspended = True
+        self.guest_open.clear()
+        while self.guest_reads:
+            self.guest_reads_done.clear()
+            await self.guest_reads_done.wait()
+        self.send(Kind.QUIESCE)
+        print('CABOOSE_GPU_BROKER executor suspending: guest streams held', file=sys.stderr, flush=True)
+
+    def resume_executor(self, payload):
+        mode, reserved = struct.unpack('<II', payload)
+        if not self.suspended or mode not in (0, 1) or reserved: raise ValueError('unexpected EXECUTOR_RESUME')
+        self.suspended = False
+        self.guest_open.set()
+        print(f'CABOOSE_GPU_BROKER executor resumed {"in place" if mode == 0 else "from a snapshot"}', file=sys.stderr, flush=True)
+
+    async def guest_read(self):
+        """Waits while the executor is suspended; the caller then holds a read until read_done."""
+        await self.guest_open.wait()
+        self.guest_reads += 1
+
+    def read_done(self):
+        self.guest_reads -= 1
+        if not self.guest_reads: self.guest_reads_done.set()
+
     async def message(self, frame):
+        if frame.kind == Kind.EXECUTOR_SUSPEND and self.resumable:
+            self.received_sequenced(64)
+            # Not awaited here: the reader keeps taking the phone's ACKs while guest reads finish.
+            task = asyncio.create_task(self.suspend())
+            self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
+            return
+        if frame.kind in (Kind.QUIESCED, Kind.EXECUTOR_RESUME, Kind.SNAPSHOT_REFUSED, Kind.QUIESCE):
+            if not self.resumable or frame.kind == Kind.QUIESCE: raise ValueError('unexpected suspension control')
+            self.received_sequenced(64)
+            if frame.kind == Kind.EXECUTOR_RESUME: self.resume_executor(frame.payload)
+            elif frame.kind == Kind.SNAPSHOT_REFUSED:
+                print(f'CABOOSE_GPU_BROKER executor snapshot refused: reason {struct.unpack_from("<I", frame.payload)[0]}', file=sys.stderr, flush=True)
+            elif not self.suspended: raise ValueError('QUIESCED while not suspended')
+            return
         if frame.kind in UNSEQUENCED:
             if not self.resumable: raise ValueError('resume control without executor-resume')
             if frame.kind == Kind.ACK: self.acknowledge(struct.unpack('<Q', frame.payload)[0])
@@ -1172,19 +1222,23 @@ class Session:
                     async with asyncio.timeout(1):
                         await reader.wait_readable()
                     readable = True
-                    # Same task: no child-result handoff between reservation and assignment.
-                    async with asyncio.timeout(1):
-                        credit = await self.reserve_data()
-                    payload = await asyncio.wait_for(reader.read(DATA_READ_BYTES), 1)
-                    if not payload:
-                        # EOF authorizes no new bytes. Retain binding until native FIN
-                        # and actual retirement even if the creator has exited.
-                        self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
-                        stream['local_eof'] = True
-                        self.send(Kind.FIN, process_id, stream_id, credit=credit)
-                        break
-                    self.bindings.identity(self.binding_generation, stream_id)
-                    self.send(Kind.DATA, process_id, stream_id, payload, credit=credit)
+                    await self.guest_read()
+                    try:
+                        # Same task: no child-result handoff between reservation and assignment.
+                        async with asyncio.timeout(1):
+                            credit = await self.reserve_data()
+                        payload = await asyncio.wait_for(reader.read(DATA_READ_BYTES), 1)
+                        if not payload:
+                            # EOF authorizes no new bytes. Retain binding until native FIN
+                            # and actual retirement even if the creator has exited.
+                            self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
+                            stream['local_eof'] = True
+                            self.send(Kind.FIN, process_id, stream_id, credit=credit)
+                            break
+                        self.bindings.identity(self.binding_generation, stream_id)
+                        self.send(Kind.DATA, process_id, stream_id, payload, credit=credit)
+                    finally:
+                        self.read_done()
                 except asyncio.TimeoutError:
                     # Waiting for credit is not an idle peer read: EOF may be
                     # queued behind backpressure after a legitimate creator exit.
@@ -1412,6 +1466,8 @@ class Broker:
             session.maybe_send_surface_retire(key)
             while not session.draining:
                 verify_peer()
+                # A suspended executor's surfaces are not read either.
+                await session.guest_open.wait()
                 try: kind, body = await asyncio.wait_for(receive(), 1)
                 except asyncio.TimeoutError: continue
                 verify_peer()

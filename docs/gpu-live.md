@@ -384,6 +384,18 @@ skipped. Each splice is logged as `CABOOSE_GPU_BROKER executor resumed: phone ha
 M envelopes`. An ACK or RESUME in a session that is not resumable, or an acknowledgement below
 an earlier one or above the highest sequence sent, ends the session.
 
+## Suspending an executor
+
+In a resumable session the broker answers EXECUTOR_SUSPEND by closing a gate in front of every
+guest stream read and surface-socket read: reads already past it finish and reach the queue,
+then the broker sends QUIESCE, and guest processes block in their next call that needs the
+phone. It reopens the gate on EXECUTOR_RESUME (mode 0 in place, 1 from a snapshot), logs
+SNAPSHOT_REFUSED's reason, and refuses suspension controls in a session that is not resumable,
+a second EXECUTOR_SUSPEND, QUIESCED outside a suspension, or EXECUTOR_RESUME without one.
+Local processes keep their streams and bindings throughout; nothing is reported to the
+compositor, whose grants stay as they were, unless the relay's hold expires and the executor
+is lost.
+
 ## Window identity boundary
 
 The optional owner display hello field `gpu_live_epoch` is exactly 16 nonzero

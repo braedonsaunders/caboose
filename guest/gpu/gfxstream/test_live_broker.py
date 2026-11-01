@@ -1285,3 +1285,51 @@ class ExecutorResumeTests(unittest.IsolatedAsyncioTestCase):
                 await session.message(self.phone(Kind.ACK, 0, struct.pack('<Q', 0)))
         finally:
             session.bindings.finish(session.binding_generation)
+
+
+class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
+    """Executor suspension (docs/gpu-live.md, "Suspending an executor") on the broker's side."""
+    executor = b'a' * 16
+
+    def phone(self, kind, sequence, payload=b''):
+        return Envelope(kind, self.executor, 1, 0, 0, sequence, payload)
+
+    async def test_suspend_holds_guest_reads_quiesces_after_reads_in_flight_and_resumes(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True,
+                                 features={'executor-resume'})
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            # A guest read already past the gate when the phone suspends.
+            await session.guest_read()
+            await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 1))
+            for _ in range(10): await asyncio.sleep(0)
+            self.assertFalse(session.guest_open.is_set())
+            self.assertNotIn(Kind.QUIESCE, [k for k, _, _ in written_envelopes(session.writer.data)])
+            session.send(Kind.REVOKE)  # what that read sends goes before QUIESCE
+            session.read_done()
+            for _ in range(10): await asyncio.sleep(0)
+            kinds = [k for k, _, _ in written_envelopes(session.writer.data) if k != Kind.ACK]
+            self.assertEqual(kinds, [Kind.REVOKE, Kind.QUIESCE])
+            # A new guest read waits until the phone resumes.
+            waiting = asyncio.create_task(session.guest_read())
+            for _ in range(10): await asyncio.sleep(0)
+            self.assertFalse(waiting.done())
+            await session.message(self.phone(Kind.QUIESCED, 2))
+            await session.message(self.phone(Kind.EXECUTOR_RESUME, 3, struct.pack('<II', 0, 0)))
+            await asyncio.wait_for(waiting, 1)
+            session.read_done()
+            self.assertFalse(session.suspended)
+            with self.assertRaises(ValueError):
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 4, struct.pack('<II', 0, 0)))
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_suspension_controls_need_executor_resume(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features=set())
+        try:
+            with self.assertRaises(ValueError):
+                await session.message(self.phone(Kind.QUIESCED, 1))
+        finally:
+            session.bindings.finish(session.binding_generation)
