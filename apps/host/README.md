@@ -233,6 +233,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_TAILSCALE_CLIENT_ID`, `CABOOSE_TAILSCALE_CLIENT_SECRET` | unset | A Tailscale OAuth client (Auth Keys and Devices: Core, write) that mints a single-use key for each computer and removes deleted ones. |
 | `CABOOSE_TAILSCALE_TAGS` | `tag:caboose` | Tags for keyed devices, comma-separated; the tailnet policy must own them. |
 | `CABOOSE_TAILSCALE_IMAGE` | pinned | The companion's Tailscale image. |
+| `CABOOSE_LAN_INTERFACE`, `CABOOSE_LAN_MODE` | unset, `macvlan` | On a Linux host with its own Ethernet: each container computer's own DHCP address and `<name>.local` on that network ([docs/network.md](../../docs/network.md#its-own-address-on-the-home-network)). |
 | `CABOOSE_TRUSTED_PROXIES` | empty | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed: addresses or CIDR ranges separated by commas (loopback always is). List a proxy on another machine or in another container, or every client behind it shares one sign-in throttle. |
 | `CABOOSE_VMM_PATH` | `/usr/local/bin/cloud-hypervisor` | Cloud Hypervisor (microVM). |
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |

@@ -23,6 +23,9 @@ container services (`caboose-components-services`). It holds no port of its own.
 - **On and off.** It forwards only while `/run/caboose/ports.json` is `{"forward": true}`. The
   host writes it: true while the computer has an address of its own and its `forwardLoopback`
   setting is not off.
+- **Its name at home.** When the file also names `mdns` (the computer has `lan0`, an address on
+  the home network), it answers mDNS queries on `lan0` for `<mdns>.local` with that address,
+  sharing UDP 5353 with any other responder in the computer.
 - **Collisions.** While a port is forwarded, this service holds it on the computer's own
   address, so a program that then binds the same port on `0.0.0.0` fails with "address in use"
   until the loopback server stops. A port another program already holds on an external

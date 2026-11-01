@@ -82,6 +82,39 @@ owner's devices reach the computer. With tags, a policy that keeps it to the own
 
 `CABOOSE_TAILNET=off` turns companions off for the host; microVM computers have none.
 
+## Its own address on the home network
+
+On a Linux host with its own Ethernet, `CABOOSE_LAN_INTERFACE=<interface>` also gives every
+container computer an address on the home network, as if it were plugged into the same
+switch. Phones on the same Wi-Fi then reach it without Tailscale, and LAN discovery works.
+
+- **The interface.** The host makes a macvlan on that interface, with a stable locally
+  administered MAC derived from the computer, and moves it into the computer's network
+  namespace as `lan0`. `CABOOSE_LAN_MODE=ipvlan` uses ipvlan L2 instead, for parents that
+  refuse extra MACs (most Wi-Fi interfaces). Ipvlan devices share the parent's MAC, so the
+  DHCP server must tell them apart by client ID.
+- **The lease.** A helper container the host owns, named like the computer with `-lan`
+  appended, joins the computer's namespace with only NET_ADMIN and NET_RAW. It runs
+  BusyBox's DHCP client on `lan0`, sending the computer's name as its host name. The lease
+  sets only `lan0`'s address and subnet: the computer's default route and DNS stay on its
+  own bridge. The helper renews the lease while the computer is parked. After each wake the
+  host checks `lan0` is in the computer's namespace, and sets it up again after a restart.
+- **Its name.** `caboose-ports` answers mDNS on `lan0` for `<name>.local` (A records), so Safari
+  and apps on the same network find `dev-box.local`. The computer's own servers can
+  advertise their services over mDNS and SSDP too.
+- **The fence on lan0.** Caboose's ports (14600–14799) are closed on `lan0`. The computer
+  answers anything that reaches it and may send multicast and mDNS and SSDP replies, but it
+  starts no other connection on the LAN unless the host sets `CABOOSE_GUEST_LAN=allow`. The
+  rules are in the computer's namespace, which the computer cannot change, but root in the
+  computer can still send raw frames on `lan0`. Giving a computer a LAN address puts it on
+  the LAN, so only an operator can turn it on, for the whole host.
+- **Not on WSL or macOS.** WSL's mirrored networking and macOS share no Ethernet a
+  container can join, and the host refuses the setting there. Computers on those hosts use
+  their tailnet device.
+
+`network.lan` in the computer's status is `{ state: 'starting' | 'running' | 'error', address?,
+name?, error? }`, where `name` is `dev-box.local`.
+
 ## Servers that listen only on loopback
 
 Vite, Django, Rails, Jupyter and PostgreSQL listen on `127.0.0.1` or `::1` by default.
@@ -109,7 +142,8 @@ A computer parks after its idle time without leases. It is also kept awake (the 
 check, read from the computer's `/proc/net` tables) while either of these is true:
 
 - **A server another machine can reach is running:** a TCP listener, or a bound UDP socket,
-  on an address that is not loopback, while the computer has an address of its own.
+  on an address that is not loopback, while the computer has an address of its own (a
+  running tailnet device or home network address).
   Forwarded loopback servers count. Caboose's ports, the ephemeral range and discovery
   protocols (mDNS, SSDP, LLMNR, NetBIOS) do not.
 - **Another machine is connected:** an established TCP connection to one of the computer's
@@ -134,12 +168,14 @@ type ComputerNetwork = {
     loginUrl?: string,      // https://login.tailscale.com/a/…, while it needs sign-in
     error?: string,
   },
+  lan?: { state: 'starting' | 'running' | 'error', address?: string, name?: string, error?: string },
   // While it has an address: the servers another machine can reach, read at most every 5 s.
   servers?: Array<{ protocol: 'tcp' | 'udp', address: string, port: number }>,
 }
 ```
 
-The app's Computer settings has a **Network** section. It shows the name and IPv4 address,
+The app's Computer settings has a **Network** section. It shows the tailnet name and IPv4
+address, the home network name and address,
 the running servers (web servers open in Safari, others show `name:port` to copy into their
 app), the **Share Localhost Servers** switch, and the sign-in button while one is needed. A
 change is broadcast as `computer.settings` on the control socket.

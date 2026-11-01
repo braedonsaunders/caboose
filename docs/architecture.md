@@ -446,7 +446,8 @@ A container computer's tailnet companion ([network](network.md)) shares its brid
 first in `DOCKER-USER`, commented `caboose-companion:<bridge>`, accepts traffic within the
 bridge from the companion's address to the computer's address; the host replaces it at each
 wake, because both addresses can change across restarts. The computer still opens nothing to
-the companion.
+the companion. A computer with a home network address ([network](network.md#its-own-address-on-the-home-network))
+also has `lan0`, fenced by rules its host-owned helper installs in the computer's own namespace.
 
 On macOS, each VM has an independent user-space network at `10.0.2.15/24` with gateway
 `10.0.2.2`. Its fence rejects guest connections to the host and private/reserved ranges;
@@ -618,7 +619,8 @@ listens on the computer's own IPv4 addresses for each TCP port that only loopbac
 (except 14600–14799 and the ephemeral range), and pipes each connection to the loopback
 server. HTTP requests arrive with `Host`, and a same-host `Origin` and `Referer`, set to
 `localhost:<port>`. The host writes `true` while the computer has an address of its own and
-its `forwardLoopback` setting is not `false` ([network](network.md)).
+its `forwardLoopback` setting is not `false` ([network](network.md)). When the file also
+names `mdns`, it answers mDNS on `lan0` for `<mdns>.local` with `lan0`'s address.
 
 **Notifications.** `daemon.py` owns `org.freedesktop.Notifications` on each seat's bus. The
 owner's (`caboose-notification-daemon.service`, `daemon.py --owner`, running with the owner's
@@ -898,6 +900,8 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_TAILSCALE_CLIENT_ID`, `_CLIENT_SECRET` | unset | A Tailscale OAuth client (Auth Keys and Devices: Core, write) that mints a single-use key per new computer and removes deleted ones; not with an auth key |
 | `CABOOSE_TAILSCALE_TAGS` | `tag:caboose` | Tags a keyed computer joins with, separated by commas |
 | `CABOOSE_TAILSCALE_IMAGE` | pinned | The companion's Tailscale image |
+| `CABOOSE_LAN_INTERFACE` | unset | A Linux host's Ethernet interface on which each container computer gets its own address from the network's DHCP server ([network](network.md#its-own-address-on-the-home-network)); refused on WSL and macOS |
+| `CABOOSE_LAN_MODE` | `macvlan` | `ipvlan` for a parent that refuses extra MACs |
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks on a Linux host ([Shared storage](#shared-storage)) |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before shared storage passes its disk |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` (bundles: their own) | The `apps/host/disk` helper for shared storage and phone backups |
