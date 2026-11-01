@@ -42,8 +42,8 @@ wire contract, the Caboose Display Protocol.
   in `ClientHello` (even with `decoders: []`), the server skips per-window H.264/HEVC video
   encoding (`0x10` `frame`) and instead transmits atomic byte-perfect `surface.batch` (`0x23`)
   damage updates (Layer 0) and retained vector/glyph `scene.commit` (`0x26`) trees (Layer 1).
-  Hardware video (`video.*` passthrough and motion streams) remains reserved for actual video
-  media and high-churn motion regions.
+  Hardware video (`video.*` passthrough and motion streams) is reserved for actual video:
+  only tiles that look like video can make a motion stream (see `motion` streams below).
 - **Nothing runs while nothing changes.** Only damaged blocks are compared, and with no client
   connected the server does no per-window encoding work. In legacy video mode, only damaged
   16×16 blocks whose pixels really changed are converted and passed to the video encoder.
@@ -1119,7 +1119,10 @@ owner; thumbnails and inactive presentations do not take it from the visible win
 - **`motion` streams** are regions of a window that the server finds updating at video
   rates. A region qualifies once it has been a dense rectangle of at least 192×112
   picture pixels for a second, with most of its macroblocks changing in most pictures at
-  15 or more pictures a second. It is sent in the window stream's codec at the window
+  15 or more pictures a second. In Surface Atlas mode only new tiles that look like video
+  count as changes: more than 16 colours that LZ4 cannot halve. Scroll copies, fills, cached
+  tiles and drawn content (text, icons, chrome) never start a motion stream, so a scrolling
+  document stays lossless. It is sent in the window stream's codec at the window
   picture's pixel scale by default, to a client that lists that codec in `video_decoders` or advertises
   `scaled_motion`. With `scaled_motion`, a software-encoded region divisible by four is box-filtered to
   half width and height and `video.create.scaled` is true; `rect` and `clip` still use

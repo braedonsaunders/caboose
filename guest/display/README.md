@@ -15,6 +15,7 @@ This directory is a Cargo workspace:
 | `vectors/` | Golden vectors every client replays (see [vectors/README.md](vectors/README.md)) |
 | `scripts/check.py` | Scripted checks against real applications |
 | `scripts/profile.py` | Server CPU per update for Chromium at phone and TV sizes |
+| `scripts/atlas-cpu-windows.py` | CPU-drawn windows (LibreOffice, GTK 3, xterm) scrolled on a phone stay lossless atlas, never video |
 | `scripts/wsl-check.sh` | Chromium video at 1080p and 4K on a WSL2 GPU host, with libx264 and NVENC |
 | `systemd/`, `install.sh`, `caboose-display-ready` | Running it in a guest |
 | `Dockerfile`, `scripts/dev.sh` | The build and test environment |
@@ -152,7 +153,9 @@ property updates are reconciled on notifications, without a polling timer.
   seat).
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
-  15 fps or more, for a second, becomes a `motion` video stream. The window's encode
+  15 fps or more, for a second, becomes a `motion` video stream. With the Surface Atlas
+  only new tiles that look like video (more than 16 colours that LZ4 cannot halve) feed the
+  tracker, never scroll copies, fills, cached tiles or drawn content. The window's encode
   worker encodes that crop with its own encoder (no sharpening) and leaves it out of the
   window picture. A client advertising `scaled_motion` receives eligible software-encoded regions at half
   width and height with placement unchanged. Once the region has stopped looking like video for a second, a window
@@ -271,6 +274,15 @@ article, or leaves a caret blinking, and prints the server's CPU per picture and
 split by thread:
 
     guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
+
+`scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas,
+video decoders for video streams) to LibreOffice Writer, a GTK 3 text view and xterm, on
+Wayland and on X11, and scrolls each as a trackpad does for five seconds. It fails if any
+part of the window became a motion video stream, and prints the picture size, rate,
+bandwidth, latency and server CPU. LibreOffice needs `libreoffice-writer libreoffice-gtk3`
+in the container:
+
+    guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py [writer|gtk3|xterm|x11|wayland]
 
 `scripts/wsl-check.sh` runs on a WSL2 host with an NVIDIA GPU (`/dev/dxg`): in a
 disposable container it plays a 60 fps test video full-window in Chromium at 1080p and
