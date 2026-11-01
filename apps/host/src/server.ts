@@ -339,7 +339,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const location = new LocationShare(() => controller.guest())
   computer.setFreezeAllowed(() => !location.sharing)
   /** Whether another machine can reach the computer at an address of its own. */
-  function reachable(): boolean { return controller.network?.().tailnet?.state === 'running' }
+  function reachable(): boolean {
+    const network = controller.network?.()
+    return network?.tailnet?.state === 'running' || network?.lan?.state === 'running'
+  }
   // A server another machine can reach, or an outside connection, keeps the computer awake (docs/network.md).
   /** The servers another machine can reach, as last read; shown with the computer's address. */
   let servers: { list: NetworkServer[]; readAt: number } = { list: [], readAt: 0 }
@@ -363,13 +366,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     return guest ? networkBusy(await readServers(guest), reachable()) : false
   })
   /** What caboose-ports (guest/ports) was last told, so it is told again only on a change. */
-  let forwarding: boolean | undefined
+  let forwarding: string | undefined
   async function syncForwarding(): Promise<void> {
     const guest = controller.guest()
-    const forward = reachable() && settings.get().forwardLoopback !== false
-    if (!guest || computer.state !== 'running' || forward === forwarding) return
-    await guest.run('/bin/sh', ['-c', 'install -d -m 0755 /run/caboose && printf %s "$1" > /run/caboose/ports.json.tmp && chmod 0644 /run/caboose/ports.json.tmp && mv /run/caboose/ports.json.tmp /run/caboose/ports.json', 'sh', JSON.stringify({ forward })], 10_000)
-    forwarding = forward
+    const lan = controller.network?.().lan
+    const mdns = lan?.state === 'running' && lan.name ? lan.name.replace(/\.local$/, '') : undefined
+    const state = JSON.stringify({ forward: reachable() && settings.get().forwardLoopback !== false, ...(mdns ? { mdns } : {}) })
+    if (!guest || computer.state !== 'running' || state === forwarding) return
+    await guest.run('/bin/sh', ['-c', 'install -d -m 0755 /run/caboose && printf %s "$1" > /run/caboose/ports.json.tmp && chmod 0644 /run/caboose/ports.json.tmp && mv /run/caboose/ports.json.tmp /run/caboose/ports.json', 'sh', state], 10_000)
+    forwarding = state
   }
   computer.subscribe(state => { if (state !== 'running') forwarding = undefined; else void syncForwarding().catch(() => {}) })
   controller.onNetworkChange?.(() => {

@@ -3,6 +3,7 @@ import { publicUrl } from './reach.js'
 import { REGISTRY_URL } from './registry.js'
 import { parseTrustedProxies, type TrustedProxies } from './proxies.js'
 import { tailnetConfig, type TailnetConfig } from './tailnet.js'
+import { lanConfig, type LanConfig } from './lan.js'
 
 export interface Config {
   /** `CABOOSE_OWNER_TOKEN`; null means the host generates one in its state directory. */
@@ -51,6 +52,8 @@ export interface Config {
   trustedProxies: TrustedProxies
   /** `CABOOSE_TAILNET` and its credentials: each container computer's own tailnet device (docs/network.md). */
   tailnet?: TailnetConfig
+  /** `CABOOSE_LAN_INTERFACE`: each container computer's own address on the home network (docs/network.md). */
+  lan?: LanConfig
 }
 
 /** What `/v1/session` tells the app to speak on `/v1/display` (docs/architecture.md, docs/display.md). */
@@ -111,6 +114,7 @@ export function config(env: NodeJS.ProcessEnv): Config {
     parkedFiles,
     trustedProxies: parseTrustedProxies(env.CABOOSE_TRUSTED_PROXIES),
     tailnet: selectedRuntime === 'container' ? tailnetConfig(env) : { mode: 'off' },
+    lan: selectedRuntime === 'container' ? lanConfig(env) : { mode: 'off' },
   }
 }
 

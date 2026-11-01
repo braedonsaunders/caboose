@@ -7,7 +7,8 @@ other machine can reach. While the host says the computer has an address of its 
 TCP port that only a loopback address listens on, listens on the same port of each of the
 computer's other IPv4 addresses and pipes each connection to the loopback server. An HTTP
 request's Host, Origin and Referer are rewritten to http://localhost:<port>, so a dev server's
-own DNS-rebinding and CSRF checks see the request they expect. See docs/network.md.
+own DNS-rebinding and CSRF checks see the request they expect. On a computer with an address
+on the home network (lan0) it also answers mDNS for <name>.local. See docs/network.md.
 """
 import asyncio
 import fcntl
@@ -78,19 +79,19 @@ def forwardable(found, ours, ephemeral):
     return result
 
 
+def interface_address(name):
+    """An interface's IPv4 address, or None."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            packed = fcntl.ioctl(probe.fileno(), SIOCGIFADDR, struct.pack('256s', name.encode()[:15]))
+        except OSError:
+            return None
+    return socket.inet_ntoa(packed[20:24])
+
+
 def external_addresses():
     """The computer's IPv4 addresses on every interface but loopback."""
-    addresses = set()
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-        for _, name in socket.if_nameindex():
-            if name == 'lo':
-                continue
-            try:
-                packed = fcntl.ioctl(probe.fileno(), SIOCGIFADDR, struct.pack('256s', name.encode()[:15]))
-            except OSError:
-                continue
-            addresses.add(socket.inet_ntoa(packed[20:24]))
-    return addresses
+    return {address for _, name in socket.if_nameindex() if name != 'lo' and (address := interface_address(name))}
 
 
 def ephemeral_range():
@@ -102,12 +103,111 @@ def ephemeral_range():
         return 32768, 60999
 
 
-def enabled():
+def settings():
+    """The host's switch: {"forward": bool, "mdns": name on the home network, if it has one}."""
     try:
         with open(CONFIG) as file:
-            return json.load(file).get('forward') is True
-    except (OSError, ValueError, AttributeError):
-        return False
+            value = json.load(file)
+    except (OSError, ValueError):
+        return False, None
+    if not isinstance(value, dict):
+        return False, None
+    name = value.get('mdns')
+    return value.get('forward') is True, name if isinstance(name, str) and MDNS_LABEL.match(name) else None
+
+
+MDNS_GROUP, MDNS_PORT = '224.0.0.251', 5353
+MDNS_LABEL = re.compile(r'^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+LAN_INTERFACE = 'lan0'
+
+
+def read_name(packet, offset):
+    """A DNS name at offset, following compression pointers; returns (name, offset after it)."""
+    labels, end, jumps = [], None, 0
+    while True:
+        length = packet[offset]
+        if length & 0xC0 == 0xC0:
+            if jumps > 16:
+                raise ValueError('pointer loop')
+            if end is None:
+                end = offset + 2
+            offset, jumps = ((length & 0x3F) << 8) | packet[offset + 1], jumps + 1
+            continue
+        offset += 1
+        if length == 0:
+            return '.'.join(labels), end if end is not None else offset
+        labels.append(packet[offset:offset + length].decode('ascii', 'replace'))
+        offset += length
+
+
+def encode_name(name):
+    return b''.join(bytes([len(label)]) + label.encode() for label in name.split('.')) + b'\0'
+
+
+def mdns_answer(packet, name, address):
+    """The response to an mDNS query for name's A record (or ANY), or None.
+
+    Returns (record, unicast, query ID, question type): unicast when the query asked for it
+    (the QU bit). A query from a port other than 5353 (a one-shot resolver) is answered to its
+    sender with its ID and question.
+    """
+    if len(packet) < 12:
+        return None
+    ident, flags, questions = struct.unpack('!HHH', packet[:6])
+    if flags & 0x8000:
+        return None
+    offset, wanted = 12, name.lower()
+    for _ in range(questions):
+        qname, offset = read_name(packet, offset)
+        qtype, qclass = struct.unpack('!HH', packet[offset:offset + 4])
+        offset += 4
+        if qname.lower() == wanted and qtype in (1, 255) and qclass & 0x7FFF in (1, 255):
+            record = encode_name(name) + struct.pack('!HHIH', 1, 0x8001, 120, 4) + socket.inet_aton(address)
+            return record, bool(qclass & 0x8000), ident, qtype
+    return None
+
+
+class Responder(asyncio.DatagramProtocol):
+    """Answers for <name>.local on the home network, so phones there find the computer by name."""
+
+    def __init__(self, name, address):
+        self.name, self.address, self.transport = f'{name}.local', address, None
+
+    def connection_made(self, transport):
+        self.transport = transport
+        self.announce()
+
+    def announce(self):
+        record = encode_name(self.name) + struct.pack('!HHIH', 1, 0x8001, 120, 4) + socket.inet_aton(self.address)
+        self.transport.sendto(struct.pack('!HHHHHH', 0, 0x8400, 0, 1, 0, 0) + record, (MDNS_GROUP, MDNS_PORT))
+
+    def datagram_received(self, data, sender):
+        try:
+            answer = mdns_answer(data, self.name, self.address)
+        except (ValueError, IndexError, struct.error):
+            return
+        if not answer:
+            return
+        record, unicast, ident, qtype = answer
+        if sender[1] != MDNS_PORT:
+            question = encode_name(self.name) + struct.pack('!HH', qtype, 1)
+            self.transport.sendto(struct.pack('!HHHHHH', ident, 0x8400, 1, 1, 0, 0) + question + record, sender)
+        else:
+            self.transport.sendto(struct.pack('!HHHHHH', 0, 0x8400, 0, 1, 0, 0) + record, sender if unicast else (MDNS_GROUP, MDNS_PORT))
+
+
+def mdns_socket(address):
+    """UDP 5353 shared with any other responder in the computer, joined to the group on lan0."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if hasattr(socket, 'SO_REUSEPORT'):
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    sock.bind(('0.0.0.0', MDNS_PORT))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, socket.inet_aton(MDNS_GROUP) + socket.inet_aton(address))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(address))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    sock.setblocking(False)
+    return sock
 
 
 METHOD = re.compile(rb'^[A-Z]{3,10} [^\s]')
@@ -263,6 +363,7 @@ class Forwarder:
         self.servers = {}  # port -> list of asyncio servers
         self.targets = {}  # port -> loopback address to dial
         self.failed = {}  # port -> when listening on it last failed
+        self.mdns, self.mdns_key = None, None
 
     def own(self):
         return {port: {server.sockets[0].getsockname()[0] for server in servers if server.sockets} for port, servers in self.servers.items()}
@@ -301,9 +402,28 @@ class Forwarder:
         self.targets.pop(port, None)
         print(f'caboose-ports: stopped forwarding {port}', flush=True)
 
+    async def answer(self, name):
+        """Keeps the mDNS responder for name on lan0's current address, or stops it."""
+        address = interface_address(LAN_INTERFACE) if name else None
+        key = (name, address) if address else None
+        if key == self.mdns_key:
+            return
+        if self.mdns:
+            self.mdns.close()
+            self.mdns = None
+        self.mdns_key = key
+        if key:
+            try:
+                self.mdns, _ = await asyncio.get_running_loop().create_datagram_endpoint(lambda: Responder(name, address), sock=mdns_socket(address))
+                print(f'caboose-ports: answering for {name}.local at {address}', flush=True)
+            except OSError as error:
+                print(f'caboose-ports: cannot answer for {name}.local: {error}', file=sys.stderr, flush=True)
+
     async def step(self):
         wanted = {}
-        if enabled():
+        forward, mdns = settings()
+        await self.answer(mdns)
+        if forward:
             tables = []
             for name in ('tcp', 'tcp6'):
                 try:

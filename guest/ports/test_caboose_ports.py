@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for caboose-ports: socket tables, which ports it forwards, and the HTTP rewrite."""
 import asyncio
+import os
 import importlib.util
 import pathlib
 import unittest
@@ -66,6 +67,49 @@ class Rewrite(unittest.TestCase):
         self.assertTrue(ports.rewrite_head(b'GET / HTTP/1.1\r\nHost: a\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n', 1)[2])
         with self.assertRaises(ValueError):
             ports.rewrite_head(b'POST / HTTP/1.1\r\nHost: a\r\nContent-Length: -1\r\n\r\n', 1)
+
+
+def query(name, qtype=1, qclass=1, ident=0, flags=0):
+    import struct
+    return struct.pack('!HHHHHH', ident, flags, 1, 0, 0, 0) + ports.encode_name(name) + struct.pack('!HH', qtype, qclass)
+
+
+class Mdns(unittest.TestCase):
+    def test_answers_an_a_query_for_its_name_only(self):
+        record, unicast, ident, qtype = ports.mdns_answer(query('Dev-Box.local'), 'dev-box.local', '192.168.68.40')
+        self.assertEqual(record, ports.encode_name('dev-box.local') + bytes.fromhex('0001 8001 00000078 0004') + bytes([192, 168, 68, 40]))
+        self.assertEqual((unicast, ident, qtype), (False, 0, 1))
+        self.assertIsNone(ports.mdns_answer(query('other.local'), 'dev-box.local', '192.168.68.40'))
+        self.assertIsNone(ports.mdns_answer(query('dev-box.local', qtype=28), 'dev-box.local', '192.168.68.40'))
+        self.assertIsNone(ports.mdns_answer(query('dev-box.local', flags=0x8400), 'dev-box.local', '192.168.68.40'))
+
+    def test_honours_the_unicast_bit_and_any(self):
+        _, unicast, ident, qtype = ports.mdns_answer(query('dev-box.local', qtype=255, qclass=0x8001, ident=7), 'dev-box.local', '10.0.0.5')
+        self.assertEqual((unicast, ident, qtype), (True, 7, 255))
+
+    def test_follows_compression_and_refuses_loops(self):
+        packet = query('dev-box.local')
+        self.assertEqual(ports.read_name(packet + b'\xc0\x0c', len(packet)), ('dev-box.local', len(packet) + 2))
+        with self.assertRaises(ValueError):
+            ports.read_name(b'\0' * 12 + b'\xc0\x0c', 12)
+
+
+class Settings(unittest.TestCase):
+    def read(self, text):
+        import tempfile
+        with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as file:
+            file.write(text)
+        ports.CONFIG = file.name
+        try:
+            return ports.settings()
+        finally:
+            os.unlink(file.name)
+
+    def test_reads_the_hosts_switch(self):
+        self.assertEqual(self.read('{"forward": true, "mdns": "dev-box"}'), (True, 'dev-box'))
+        self.assertEqual(self.read('{"forward": "yes", "mdns": "Not A Label"}'), (False, None))
+        self.assertEqual(self.read('[]'), (False, None))
+        self.assertEqual(self.read('{'), (False, None))
 
 
 class Piping(unittest.IsolatedAsyncioTestCase):

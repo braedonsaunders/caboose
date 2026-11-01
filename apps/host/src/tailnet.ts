@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import type { Docker } from './container-driver.js'
 import { CABOOSE_PORTS, type NetworkServer } from './network-activity.js'
+import type { LanStatus } from './lan.js'
 
 /**
  * Each container computer as its own device on the owner's tailnet (docs/network.md). A
@@ -70,6 +71,8 @@ export interface TailnetStatus {
 /** Where other machines reach a computer (docs/network.md). */
 export interface ComputerNetwork {
   tailnet?: TailnetStatus
+  /** Its own address on the home network (lan.ts). */
+  lan?: LanStatus
   /** The servers another machine can reach on it, while it has an address of its own. */
   servers?: NetworkServer[]
 }

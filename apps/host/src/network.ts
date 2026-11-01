@@ -26,7 +26,7 @@ export function networkSlot(slot: number): NetworkSlot {
 
 // Host networking for the microVMs: a TAP device per computer, its guest's address, and the
 // fence that keeps every guest to the public internet. Commands run as root, or through `sudo -n`.
-async function privilegedOutput(command: string, args: string[]): Promise<string> {
+export async function privilegedOutput(command: string, args: string[]): Promise<string> {
   const executable = process.getuid?.() === 0 ? command : 'sudo'
   const arguments_ = executable === 'sudo' ? ['-n', command, ...args] : args
   const result = await exec(executable, arguments_, { timeout: 15_000, maxBuffer: 16 * 1024 * 1024 })
