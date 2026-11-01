@@ -3257,7 +3257,10 @@ Caboose's own processes apart, with CPU, memory, disk and GPU use (GPU only with
 GPU connection) and listening ports, polling `/v1/running-apps` every 2 s while it is
 shown. An app opens to its processes. Quit is offered while an app has windows; after a
 Quit, an app still running 5 s later is offered Force Quit. Force Quit and Kill All Processes
-confirm first. Services can be started, stopped, restarted, set to start with the computer,
+confirm first. An app with windows that still draws on the computer's CPU because it
+started before the phone attached (`gpuPlacement: "cpu-until-relaunch"`) is badged On CPU
+and offers Relaunch on Phone GPU: Quit, then, once it has ended (within 15 s), its desktop
+entry opens again. Services can be started, stopped, restarted, set to start with the computer,
 created from a form (the command split as shell words, without expansion), deleted (the
 owner's only) and their logs followed. The dock's Quit and Force Quit resolve the app from a
 fresh listing: the running apps holding the windows of the dock app's taskbar group, else the

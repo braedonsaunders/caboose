@@ -113,6 +113,32 @@ final class RunningAppsCenter {
         try? await refresh(model: model)
     }
 
+    /// Quits the app, waits up to 15 s for it to end, then opens its desktop entry again, so
+    /// it starts on the phone's GPU.
+    func relaunch(_ app: RunningApp, model: AppModel) async {
+        guard let host = model.host, let desktopID = app.desktopId,
+              let entry = model.apps.first(where: { TaskManager.sameDesktopID($0.id, desktopID) }) else { return }
+        let epoch = generation
+        busy.insert(app.id)
+        defer { if epoch == generation { busy.remove(app.id) } }
+        do {
+            _ = try await host.quitRunningApp(app.id)
+            for _ in 0..<30 {
+                try await Task.sleep(for: .milliseconds(500))
+                guard epoch == generation else { return }
+                try await refresh(model: model)
+                if listing?.apps.contains(where: { $0.id == app.id }) != true {
+                    try await host.launch(entry)
+                    return
+                }
+            }
+            failure = Failure(title: "\(app.name) Is Still Running",
+                              message: "It did not quit, so it was not reopened. Quit it (or Force Quit it), then open it again.")
+        } catch {
+            if epoch == generation { failure = Failure(title: "Couldn’t Relaunch \(app.name)", message: error.localizedDescription) }
+        }
+    }
+
     func end(_ kind: Confirmation.Kind, ids: [String], name: String, model: AppModel) async {
         guard let host = model.host, !ids.isEmpty else { return }
         let epoch = generation

@@ -273,4 +273,20 @@ struct RunningAppsTests {
         follow.forget("a")
         #expect(follow.due(listed: ["a"], now: start.addingTimeInterval(10)).isEmpty)
     }
+
+    @Test func gpuPlacementOffersARelaunchOnlyForAQuittableAppOnTheCPU() throws {
+        func decode(_ placement: String, windows: String = "[3]", desktop: String = "\"org.gnome.Maps.desktop\"") throws -> RunningApp {
+            try JSONDecoder().decode(RunningApp.self, from: Data(#"""
+            {"id": "app-org.gnome.Maps-4.scope", "kind": "app", "desktopId": \#(desktop), "name": "Maps", "origin": "launch",
+             "windows": \#(windows), "gpuPlacement": \#(placement)}
+            """#.utf8))
+        }
+        #expect(try decode("\"cpu-until-relaunch\"").gpuPlacement == .cpuUntilRelaunch)
+        #expect(try decode("\"cpu-until-relaunch\"").canRelaunchOnPhoneGPU)
+        #expect(try decode("\"phone\"").canRelaunchOnPhoneGPU == false)
+        #expect(try decode("\"warp\"").gpuPlacement == nil)
+        #expect(try decode("null").gpuPlacement == nil)
+        #expect(try decode("\"cpu-until-relaunch\"", windows: "[]").canRelaunchOnPhoneGPU == false)
+        #expect(try decode("\"cpu-until-relaunch\"", desktop: "null").canRelaunchOnPhoneGPU == false)
+    }
 }

@@ -180,7 +180,7 @@ private struct PresenceBadge: View {
         case .background: badge("Background")
         case .terminal: badge("Terminal")
         case .agent: badge("Agent")
-        case .windows, nil: EmptyView()
+        case .windows, nil: if app.gpuPlacement == .cpuUntilRelaunch { badge("On CPU") } else { EmptyView() }
         }
     }
 
@@ -253,6 +253,12 @@ private struct RunningAppActions: View {
                 if app.canQuit {
                     Button("Quit", systemImage: "xmark.circle") { Task { await center.quit(app, model: model) } }
                         .disabled(busy)
+                }
+                if app.canRelaunchOnPhoneGPU {
+                    Button("Relaunch on Phone GPU", systemImage: "arrow.clockwise.circle") {
+                        Task { await center.relaunch(app, model: model) }
+                    }
+                    .disabled(busy)
                 }
                 Button("Force Quit…", systemImage: "xmark.octagon") { confirm(.forceQuit) }
                     .disabled(busy)
