@@ -53,10 +53,14 @@ final class LiveGPUDrawableGeometryTests: XCTestCase {
         let placed = LiveGPUDrawableGeometry.placement(picture: CGSize(width: 600, height: 900), in: bounds, fill: false)
         XCTAssertEqual(placed, CGRect(x: 260, y: 20, width: 300, height: 450))
     }
-    func testFullScreenWindowIsFilledWhateverTheShape() {
+    func testFullScreenWindowFillsANearShapeAndLetterboxesAnotherShape() {
         let bounds = CGRect(x: 0, y: 0, width: 951, height: 669)
         XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1338, height: 911), in: bounds, fill: true), bounds)
-        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1920, height: 1080), in: bounds, fill: true), bounds)
+        // A 16:9 game on the unfolded screen keeps its shape, centred with bars, never stretched.
+        let wide = LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1920, height: 1080), in: bounds, fill: true)
+        XCTAssertEqual(wide.width, 951, accuracy: 0.5)
+        XCTAssertEqual(wide.height, 951 * 1080 / 1920, accuracy: 0.5)
+        XCTAssertEqual(wide.midY, bounds.midY, accuracy: 0.5)
     }
     func testMissingPictureOrBoundsFillsWithoutInventingAShape() {
         let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
