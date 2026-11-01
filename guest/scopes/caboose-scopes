@@ -1196,21 +1196,35 @@ class Daemon:
                     except OSError:
                         pass
             if not self.wait_empty(group, TERM_GRACE):
-                killed = True
-                write(group / 'cgroup.kill', '1')
+                killed = self.kill_group(group)
         else:
-            killed = True
-            write(group / 'cgroup.kill', '1')
+            killed = self.kill_group(group)
         return {'ended': self.wait_empty(group, KILL_WAIT), 'killed': killed}
 
     @staticmethod
-    def wait_empty(group, seconds):
+    def kill_group(group):
+        """Kills every process in the group; a group already removed has nothing left to kill."""
+        try:
+            write(group / 'cgroup.kill', '1')
+        except FileNotFoundError:
+            return False
+        return True
+
+    @staticmethod
+    def empty(group):
+        # The daemon removes a scope once its last process exits, so a vanished group is empty.
+        if not group.is_dir():
+            return True
+        return core.parse_keyed(read(group / 'cgroup.events', '') or '').get('populated') == 0
+
+    @classmethod
+    def wait_empty(cls, group, seconds):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            if core.parse_keyed(read(group / 'cgroup.events', '') or '').get('populated') == 0:
+            if cls.empty(group):
                 return True
             time.sleep(0.1)
-        return core.parse_keyed(read(group / 'cgroup.events', '') or '').get('populated') == 0
+        return cls.empty(group)
 
     def serve(self, connection):
         with connection:
