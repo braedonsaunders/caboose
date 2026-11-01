@@ -32,6 +32,11 @@ libraries do not change between builds. `compile.sh` runs in it with fixed paths
 (`/work/mesa`, `/work/build`), so the same repository commit produces a byte-identical
 library on any host.
 
+Its soname is `libvulkan_caboose_gfxstream.so`, not Mesa's: Mesa's packaged gfxstream
+manifest, on the computer and in Flatpak runtimes, names its library by the bare
+`libvulkan_gfxstream.so`, which the dynamic loader would resolve to this driver once loaded,
+and the Vulkan loader would list the phone's GPU twice.
+
 The library is linked against Debian 13's glibc, libstdc++ and `libwayland-client.so.0`,
 which the computer image provides. Applications select it through a Vulkan loader
 manifest (`../make_manifest.py`) and run with `CABOOSE_GFXSTREAM_SOCKET` set to the
