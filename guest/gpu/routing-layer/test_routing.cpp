@@ -32,5 +32,11 @@ int main() {
     assert(!hidesPhone("/opt/fossilize_replay_wrapper --x"));
     assert(!hidesPhone(""));
 
+    // Without the phone, lavapipe is presented as a GPU; not with it, nor where the phone is
+    // hidden by policy (fossilize_replay compiles for the device it really runs on).
+    assert(presentsCpuAsGpu({rank(0x10005, kCpu)}, false));
+    assert(!presentsCpuAsGpu({rank(0x10005, kCpu), rank(kPhoneVendor, kIntegrated)}, false));
+    assert(!presentsCpuAsGpu({rank(0x10005, kCpu)}, true));
+
     std::puts("routing tests passed");
 }

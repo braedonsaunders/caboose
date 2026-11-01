@@ -60,12 +60,35 @@ int main() {
     auto* before = new Device;
     for (int i = 0; i < 20; ++i) assert(before->frame() == VK_SUCCESS);
 
-    // An executor appears: within ~100 ms the device reports loss, and keeps reporting it.
+    const char* mode = std::getenv("CABOOSE_GPU_ON_LOSS");
+    const bool pausing = mode && std::strcmp(mode, "pause") == 0;
+    std::string placement = path;
+    placement = placement.substr(0, placement.rfind('/')) + "/placement/" + std::to_string(getpid());
+    unlink(placement.c_str());
     int listener = socket(AF_UNIX, SOCK_STREAM, 0);
     sockaddr_un address{}; address.sun_family = AF_UNIX;
     std::strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
     assert(bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 && listen(listener, 1) == 0);
     const auto appeared = std::chrono::steady_clock::now();
+    if (pausing) {
+        // A process that pauses on loss keeps its CPU device, and is recorded as staying.
+        while (std::chrono::steady_clock::now() - appeared < std::chrono::milliseconds(300)) {
+            assert(before->frame() == VK_SUCCESS);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        FILE* record = std::fopen(placement.c_str(), "r");
+        assert(record);
+        char line[64] = {};
+        assert(std::fgets(line, sizeof(line), record));
+        std::fclose(record);
+        assert(std::strncmp(line, "cpu-until-relaunch ", 19) == 0 && std::strtoull(line + 19, nullptr, 10) > 0);
+        delete before;
+        assert(access(placement.c_str(), F_OK) != 0);
+        close(listener); unlink(path);
+        vkDestroyInstance(instance, nullptr);
+        std::puts("executor switch: a pausing process kept its CPU device and was recorded until it ended it");
+        return 0;
+    }
     VkResult result = VK_SUCCESS;
     while ((result = before->frame()) == VK_SUCCESS) {
         assert(std::chrono::steady_clock::now() - appeared < std::chrono::milliseconds(500));

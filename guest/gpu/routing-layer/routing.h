@@ -41,6 +41,18 @@ inline void hideCpuBesidePhone(std::vector<int>& ranks) {
     for (int& r : ranks) if (r == rank(0, kCpu)) r = kHidden;
 }
 
+// While no phone is listed (it has not attached since the process started, or the process
+// is kept off it), a CPU implementation is presented as a virtual GPU under this name: apps
+// that decide their rendering path once at launch (Chromium's and Steam's GPU acceleration,
+// Firefox's WebRender, Zink, which refuses CPU devices) take their GPU paths, and those that
+// recover from device loss move to the phone when it attaches (the executor switch).
+inline constexpr const char* kNoPhoneName = "Caboose GPU (no phone attached)";
+inline constexpr const char* kNoPhoneDriverName = "Caboose";
+inline bool presentsCpuAsGpu(const std::vector<int>& ranks, bool phoneHidden) {
+    if (phoneHidden) return false;
+    return std::find(ranks.begin(), ranks.end(), rank(kPhoneVendor, 0)) == ranks.end();
+}
+
 // The order to list `ranks.size()` devices in: indexes into the driver's order, stable
 // among equal ranks.
 inline std::vector<size_t> order(const std::vector<int>& ranks) {

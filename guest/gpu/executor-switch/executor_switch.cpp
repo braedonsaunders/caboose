@@ -2,23 +2,34 @@
 //
 // VK_LAYER_CABOOSE_executor_switch (README.md). A Vulkan device created on a CPU
 // implementation while no phone executor was available is lost once one becomes
-// available, so the application recreates it and finds the phone's GPU.
+// available, in a process that recovers from device loss, so it recreates the device and
+// finds the phone's GPU; any other process keeps its device and is recorded as running on
+// the CPU until relaunched.
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include <link.h>
 #include <sys/stat.h>
+#include <unistd.h>
+
+#include "policy.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
+
+using namespace caboose_switch;
 
 // The executor's socket exists exactly while the broker has a ready executor.
 class Executor {
@@ -28,6 +39,7 @@ public:
         if (path && *path) path_ = path;
     }
     bool configured() const { return !path_.empty(); }
+    const std::string& path() const { return path_; }
     bool available() {
         if (path_.empty()) return false;
         // At most one check per 100 ms: the calls asking are per-frame.
@@ -49,6 +61,70 @@ private:
 };
 Executor& executor() {
     static Executor* instance = new Executor;  // never destroyed: calls may race exit
+    return *instance;
+}
+
+std::string readFile(const char* path) {
+    std::ifstream file(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+}
+
+// Whether this process moves to the phone when one attaches (policy.h), decided once.
+bool processMoves() {
+    static const bool moves = [] {
+        std::string commandLine = readFile("/proc/self/cmdline");
+        for (char& c : commandLine) if (c == '\0') c = ' ';
+        std::vector<std::string> libraries;
+        dl_iterate_phdr([](dl_phdr_info* info, size_t, void* out) {
+            if (info->dlpi_name && *info->dlpi_name)
+                static_cast<std::vector<std::string>*>(out)->emplace_back(info->dlpi_name);
+            return 0;
+        }, &libraries);
+        return movesToPhone(std::getenv("CABOOSE_GPU_ON_LOSS"), commandLine, libraries);
+    }();
+    return moves;
+}
+
+// The process's placement record, beside the broker's socket where the running-apps list
+// (and a Flatpak sandbox) sees it: present while the process keeps a CPU device after a
+// phone attached.
+class Placement {
+public:
+    void staying() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (written_ || !executor().configured()) return;
+        written_ = true;
+        const std::string& socket = executor().path();
+        const std::string directory = socket.substr(0, socket.rfind('/')) + "/placement";
+        mkdir(directory.c_str(), 0700);
+        file_ = directory + "/" + std::to_string(getpid());
+        const std::string temporary = directory + "/." + std::to_string(getpid()) + ".tmp";
+        const std::string line = placementLine(startTicks(readFile("/proc/self/stat")));
+        if (FILE* out = std::fopen(temporary.c_str(), "w")) {
+            const bool complete = std::fwrite(line.data(), 1, line.size(), out) == line.size();
+            if (std::fclose(out) == 0 && complete && std::rename(temporary.c_str(), file_.c_str()) == 0) {
+                std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: a phone executor is available; this process "
+                                     "stays on the CPU until relaunched\n");
+                return;
+            }
+            std::remove(temporary.c_str());
+        }
+        file_.clear();
+    }
+    void gone() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!file_.empty()) std::remove(file_.c_str());
+        file_.clear();
+        written_ = false;
+    }
+
+private:
+    std::mutex mutex_;
+    bool written_ = false;
+    std::string file_;
+};
+Placement& placement() {
+    static Placement* instance = new Placement;  // never destroyed: calls may race exit
     return *instance;
 }
 
@@ -78,6 +154,8 @@ struct DeviceData {
     PFN_vkQueueWaitIdle queueWaitIdle = nullptr;
     // Created on a CPU implementation while no executor existed.
     bool switchable = false;
+    // ... in a process that stays where it is when a phone attaches.
+    bool staying = false;
     std::atomic<bool> lost{false};
 };
 
@@ -100,6 +178,10 @@ DeviceData* deviceData(const void* handle) {
 bool lost(DeviceData& device) {
     if (device.lost.load(std::memory_order_relaxed)) return true;
     if (!device.switchable || !executor().available()) return false;
+    if (device.staying) {
+        placement().staying();
+        return false;
+    }
     if (!device.lost.exchange(true))
         std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: a phone executor is available; reporting device loss\n");
     return true;
@@ -176,13 +258,14 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     VkPhysicalDeviceProperties properties{};
     if (owner->properties) owner->properties(physical, &properties);
     // Decided before creation: a device made while the executor existed stays where it is.
-    const bool switchable = executor().configured() && properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU &&
-                            !executor().available();
+    const bool switchable = executor().configured() &&
+                            cpuImplementation(properties.vendorID, properties.deviceType) && !executor().available();
     VkResult result = create(physical, info, allocator, device);
     if (result != VK_SUCCESS) return result;
     auto data = std::make_unique<DeviceData>();
     data->next = next;
     data->switchable = switchable;
+    data->staying = switchable && !processMoves();
     data->destroy = load<PFN_vkDestroyDevice>(next, *device, "vkDestroyDevice");
     data->queueSubmit = load<PFN_vkQueueSubmit>(next, *device, "vkQueueSubmit");
     data->queueSubmit2 = load<PFN_vkQueueSubmit2>(next, *device, "vkQueueSubmit2");
@@ -210,6 +293,9 @@ VKAPI_ATTR void VKAPI_CALL DestroyDevice(VkDevice device, const VkAllocationCall
         if (found == devices.end()) return;
         destroy = found->second->destroy;
         devices.erase(found);
+        bool anyStaying = false;
+        for (const auto& entry : devices) anyStaying |= entry.second->staying;
+        if (!anyStaying) placement().gone();
     }
     if (destroy) destroy(device, allocator);
 }
