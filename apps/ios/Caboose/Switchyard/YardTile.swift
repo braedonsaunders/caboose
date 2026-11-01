@@ -18,10 +18,13 @@ struct YardTile: View {
 
     var body: some View {
         let radius = yard.metrics.cornerRadius
-        let available = yard.metrics.content(ofTile: rect).size
-        let natural = DesktopGeometry.surfaceSize(
-            natural: CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint),
-            available: available, locallyRendered: window.game != nil)
+        let tileContent = yard.metrics.content(ofTile: rect).size
+        let picture = CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint)
+        let card = window.game == nil ? DesktopGeometry.compactCard(
+            natural: picture, maximum: window.maximumSize.map { CGSize(width: $0.width / yard.pixelsPerPoint, height: $0.height / yard.pixelsPerPoint) },
+            available: tileContent, settling: yard.stretches(window.id), fullscreen: window.isFullscreen) : nil
+        let available = card ?? tileContent
+        let natural = DesktopGeometry.surfaceSize(natural: picture, available: available, locallyRendered: window.game != nil)
         let shown = DesktopGeometry.surfaceFrame(natural: natural, available: available, resizing: yard.stretches(window.id),
                                                   fullscreen: window.isFullscreen, keyboardResize: keyboardResize)
         VStack(spacing: 0) {
@@ -35,12 +38,14 @@ struct YardTile: View {
                 Color.black.opacity(focused ? 0 : 0.1).allowsHitTesting(false)
             }
         }
-        .frame(width: rect.width, height: rect.height)
+        .frame(width: card.map { $0.width } ?? rect.width, height: card.map { $0.height + rect.height - tileContent.height } ?? rect.height)
         .background(Color(white: 0.06))
         // Keep the system container inherited by both the concentric clip and the
         // title bar's corner-inset reader; a tile does not redefine screen geometry.
         .modifier(WindowFrameStyle(radius: radius))
         .shadow(color: .black.opacity(0.32), radius: 10, y: 4)
+        // A compact card sits in the middle of its tile, the desktop showing around it.
+        .frame(width: rect.width, height: rect.height)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(model.windowTitle(window))
     }
