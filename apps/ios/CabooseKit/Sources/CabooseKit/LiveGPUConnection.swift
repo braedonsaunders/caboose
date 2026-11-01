@@ -7,6 +7,8 @@ public enum LiveGPUError: Error, Equatable, Sendable {
     case resumeRefused
     /// No pong from the host for longer than the relay's own silence limit.
     case silent
+    /// Native cleanup had not returned in time; it goes on, and the executor counts as ended.
+    case cleanupTimedOut
 }
 
 /// One-shot transport. A reconnect always creates a new instance; no queued bytes survive it.
@@ -177,8 +179,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3
     /// The host relay ends a phone silent for 3 s; one that hears no pong for as long has
-    /// lost the host, and a resumable executor reconnects instead of waiting on TCP.
+    /// lost the host, and a resumable executor reconnects instead of waiting on TCP. Any other
+    /// executor ends after 10 s without one, so a socket that died silently cannot keep it.
     static let silenceLimit: TimeInterval = 3
+    static let plainSilenceLimit: TimeInterval = 10
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
@@ -365,9 +369,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
                     self.queue.async { self.lastPong = .now() }
                 }
                 self.queue.async {
-                    // Only a resumable executor acts on silence; others wait as before.
-                    guard self.resumeCredential != nil, !self.ended,
-                          DispatchTime.now().uptimeNanoseconds - self.lastPong.uptimeNanoseconds > UInt64(Self.silenceLimit * 1e9) else { return }
+                    let limit = self.resumeCredential != nil ? Self.silenceLimit : Self.plainSilenceLimit
+                    guard !self.ended,
+                          DispatchTime.now().uptimeNanoseconds - self.lastPong.uptimeNanoseconds > UInt64(limit * 1e9) else { return }
                     self.finish(LiveGPUError.silent)
                 }
             }

@@ -163,6 +163,31 @@ final class LiveGPUTransportTests: XCTestCase {
         }
     }
 
+    func testCleanupThatNeverReturnsStillEndsTheExecutorAsFailed() throws {
+        let transport = GPUTransportProbe()
+        let consumer = GPUConsumerProbe()
+        let gate = DispatchSemaphore(value: 0)
+        consumer.finishGate = gate
+        let session = try LiveGPUSession(transport: transport, nativeBinding: consumer, drainTimeout: 10, cleanupTimeout: 0.1)
+        let ready = expectation(description: "opened"), ended = expectation(description: "ended once")
+        session.start {
+            switch $0 {
+            case .transportOpened: ready.fulfill()
+            case .ended(let cause, let cleanup):
+                XCTAssertEqual(cause as? LiveGPUError, .closed)
+                XCTAssertEqual(cleanup as? LiveGPUError, .cleanupTimedOut)
+                ended.fulfill()
+            }
+        }
+        wait(for: [ready], timeout: 2)
+        transport.emit(.closed(LiveGPUError.closed))
+        wait(for: [ended], timeout: 2)
+        XCTAssertFalse(session.remoteRetirementCompleted)
+        // The cleanup returning later reports nothing more.
+        gate.signal()
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+
     func testIngressOverflowCancelsBlockedConsumerAndReportsCleanupFailure() throws {
         let transport = GPUTransportProbe()
         let consumer = GPUConsumerProbe()
@@ -224,5 +249,9 @@ private final class GPUConsumerProbe: LiveGPUByteConsumer, LiveGPURetirementRepo
     }
     func requestDrain() throws { record("drain"); drainEntered.signal() }
     func revoke() throws { record("revoke"); unblock.signal() }
-    func finish() throws { record("finish"); if let finishError { throw finishError } }
+    var finishGate: DispatchSemaphore?
+    func finish() throws {
+        record("finish"); finishGate?.wait()
+        if let finishError { throw finishError }
+    }
 }
