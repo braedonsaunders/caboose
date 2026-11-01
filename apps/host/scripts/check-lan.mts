@@ -10,7 +10,8 @@
 // container on it, and a client address for this check, so it runs on any Linux host,
 // WSL included. With --interface it uses the real network, whose DHCP server gives the lease;
 // then run check-network-client.mjs from a phone-side machine on that network with the name
-// it prints, and remove what it made with CABOOSE_CHECK_REMOVE=<suffix>. Needs Docker and
+// it prints, and remove what it made with CABOOSE_CHECK_REMOVE=<suffix>. The stand-in's DHCP
+// server is BusyBox's udhcpd (`busybox:1.37`, or CABOOSE_CHECK_DHCP_IMAGE). Needs Docker and
 // root or `sudo -n`. It touches only what it creates.
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
@@ -27,7 +28,7 @@ const argv = process.argv.slice(2)
 const real = argv.includes('--interface') ? argv[argv.indexOf('--interface') + 1] : undefined
 const suffix = process.env.CABOOSE_CHECK_REMOVE ?? randomBytes(3).toString('hex')
 const computer = `caboose-check-lan-${suffix}`, network = `caboose-checkl-${suffix}`, bridge = `cbchl${suffix}`
-const lanBridge = `cblt${suffix}`, serverLink = `cbls${suffix}`, clientLink = `cblc${suffix}`, dhcp = `caboose-check-dhcp-${suffix}`
+const lanBridge = `cblt${suffix}`, serverLink = `cbls${suffix}`, clientLink = `cblc${suffix}`, carrier = `cblv${suffix}`, dhcp = `caboose-check-dhcp-${suffix}`
 const image = process.env.CABOOSE_CHECK_IMAGE ?? 'caboose-computer:latest'
 const name = `caboose-lan-${suffix}`
 const ip = (args: string[]) => privilegedOutput('ip', args)
@@ -41,7 +42,7 @@ async function remove(): Promise<void> {
   for (const container of [computer, dhcp]) await docker(['rm', '-f', container], 60_000).catch(() => {})
   await docker(['network', 'rm', network], 30_000).catch(() => {})
   await unfenceBridge(bridge).catch(() => {})
-  for (const link of [clientLink, serverLink, lanBridge]) await ip(['link', 'del', link]).catch(() => {})
+  for (const link of [clientLink, serverLink, carrier, lanBridge]) await ip(['link', 'del', link]).catch(() => {})
 }
 if (process.env.CABOOSE_CHECK_REMOVE) { await remove(); console.log(`Removed ${computer}.`); process.exit(0) }
 
@@ -92,7 +93,11 @@ try {
     // The stand-in LAN: a bridge, a DHCP server on it, and this check's own address.
     await ip(['link', 'add', lanBridge, 'type', 'bridge'])
     await ip(['link', 'set', lanBridge, 'up'])
-    await docker(['run', '-d', '--name', dhcp, '--network', 'none', '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', '--entrypoint', '/bin/sh', helperImage, '-c',
+    // A bridge without a port has no carrier, and macvlans on it pass nothing: give it one.
+    await ip(['link', 'add', carrier, 'type', 'veth', 'peer', 'name', `${carrier}p`])
+    await ip(['link', 'set', carrier, 'master', lanBridge, 'up'])
+    await ip(['link', 'set', `${carrier}p`, 'up'])
+    await docker(['run', '-d', '--name', dhcp, '--network', 'none', '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', '--entrypoint', '/bin/sh', process.env.CABOOSE_CHECK_DHCP_IMAGE ?? 'busybox:1.37', '-c',
       'while ! ip link show lan >/dev/null 2>&1; do sleep 0.2; done; ip addr add 10.213.0.1/24 dev lan; ip link set lan up; printf "start 10.213.0.100\\nend 10.213.0.150\\ninterface lan\\nlease_file /tmp/leases\\noption subnet 255.255.255.0\\n" > /tmp/udhcpd.conf; touch /tmp/leases; exec udhcpd -f /tmp/udhcpd.conf'], 300_000)
     const pid = (await docker(['inspect', '-f', '{{.State.Pid}}', dhcp])).trim()
     await ip(['link', 'add', 'link', lanBridge, 'name', serverLink, 'type', 'macvlan', 'mode', 'bridge'])
@@ -145,5 +150,6 @@ try {
   passed = true
   console.log('Home network check passed.')
 } finally {
-  if (!real || !passed) await remove().catch(error => console.error('Cleanup failed:', error))
+  if (argv.includes('--keep')) console.log(`Kept. Remove with CABOOSE_CHECK_REMOVE=${suffix}.`)
+  else if (!real || !passed) await remove().catch(error => console.error('Cleanup failed:', error))
 }

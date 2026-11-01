@@ -8,7 +8,7 @@
 //
 // Needs Docker, /dev/net/tun, and root or `sudo -n` for the fence. The device joins the way the
 // host would (tailnet.ts): CABOOSE_TAILSCALE_AUTHKEY, an OAuth client, or a sign-in link this
-// check prints and waits ten minutes for. Then run check-network-client.mjs from another
+// check prints and waits 30 minutes for (CABOOSE_CHECK_SIGN_IN_MS). Then run check-network-client.mjs from another
 // tailnet machine with the name it prints; --keep leaves everything up for that, and a second
 // run with CABOOSE_CHECK_REMOVE=<suffix> removes it.
 import assert from 'node:assert/strict'
@@ -51,7 +51,7 @@ try {
 
   let status = await node.ensure()
   if (status.state === 'needs-login') console.log(`Sign the check's device in to your tailnet: ${status.loginUrl}`)
-  for (const deadline = Date.now() + 600_000; status.state !== 'running' && Date.now() < deadline;) {
+  for (const deadline = Date.now() + Number(process.env.CABOOSE_CHECK_SIGN_IN_MS ?? 1_800_000); status.state !== 'running' && Date.now() < deadline;) {
     assert.ok(status.state !== 'error', status.error)
     await new Promise(resolve => setTimeout(resolve, 3000))
     status = await node.refresh()

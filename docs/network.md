@@ -35,8 +35,8 @@ tailnet is named after the computer (`Dev Box` becomes `dev-box`), so its MagicD
   as its client. Caboose's
   own services, ports 14600–14799, are never forwarded.
 - **IPv6.** The device has a tailnet IPv6 address too, but only IPv4 reaches the computer.
-  The companion refuses IPv6 connections at once (TCP reset, ICMPv6 unreachable), so clients
-  that try IPv6 first fall back to IPv4 without waiting.
+  The companion forwards no IPv6 and listens on none, so its kernel refuses IPv6 at once and clients
+  that try it first fall back to IPv4 without waiting.
 - **Fence.** The computer can answer but can start nothing through the companion: not into
   the tailnet, not to the companion itself, and not on to the uplink. The companion's own
   rules drop everything else, and the computer gains no capability, device or credential.
@@ -141,10 +141,9 @@ workers and some browser APIs are unavailable on them.
 A computer parks after its idle time without leases. It is also kept awake (the lifecycle's busy
 check, read from the computer's `/proc/net` tables) while either of these is true:
 
-- **A server another machine can reach is running:** a TCP listener, or a bound UDP socket,
-  on an address that is not loopback, while the computer has an address of its own (a
-  running tailnet device or home network address).
-  Forwarded loopback servers count. Caboose's ports, the ephemeral range and discovery
+- **A server is running:** a TCP listener, or a bound UDP socket, on an address that is not
+  loopback, whether or not the computer has an address of its own yet. Loopback servers
+  that caboose-ports forwards count. Caboose's ports, the ephemeral range and discovery
   protocols (mDNS, SSDP, LLMNR, NetBIOS) do not.
 - **Another machine is connected:** an established TCP connection to one of the computer's
   servers from an address that is not loopback.

@@ -1103,8 +1103,8 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   request until its response completes. Control sockets marked `foreground=0` do not hold a
   lease; unmarked sockets retain the foreground behavior for compatibility. HTTP polling of
   `/v1/computer` holds no lease, so leaving the web console open does not keep it awake.
-- **Busy.** With no lease, a computer is still in use while a server another machine can
-  reach is running or another machine is connected to one ([network](network.md#not-idle-while-a-server-runs)).
+- **Busy.** With no lease, a computer is still in use while a server runs (a listener on an
+  address that is not loopback) or another machine is connected to one ([network](network.md#not-idle-while-a-server-runs)).
   It then neither freezes nor parks: the check runs when the idle timeout passes and every
   minute after, and the computer parks one full idle timeout after it was last found busy. A
   failed check counts as idle. A running managed service also keeps a container computer

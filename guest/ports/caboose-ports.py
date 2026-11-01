@@ -360,13 +360,13 @@ class Prefixed:
 
 class Forwarder:
     def __init__(self):
-        self.servers = {}  # port -> list of asyncio servers
+        self.servers = {}  # port -> {external address: asyncio server}
         self.targets = {}  # port -> loopback address to dial
-        self.failed = {}  # port -> when listening on it last failed
+        self.failed = {}  # (port, address) -> when listening there last failed
         self.mdns, self.mdns_key = None, None
 
     def own(self):
-        return {port: {server.sockets[0].getsockname()[0] for server in servers if server.sockets} for port, servers in self.servers.items()}
+        return {port: set(servers) for port, servers in self.servers.items()}
 
     async def handle(self, port, client_reader, client_writer):
         target = self.targets.get(port)
@@ -383,24 +383,28 @@ class Forwarder:
             for writer in (server_writer, client_writer):
                 writer.close()
 
-    async def open(self, port, addresses):
-        servers = []
-        for address in sorted(addresses):
-            try:
-                server = await asyncio.start_server(lambda r, w, port=port: self.handle(port, r, w), address, port, reuse_address=True)
-            except OSError as error:
-                print(f'caboose-ports: cannot forward {address}:{port}: {error}', file=sys.stderr, flush=True)
-                continue
-            servers.append(server)
-        if servers:
-            self.servers[port] = servers
-            print(f'caboose-ports: forwarding {port}', flush=True)
+    async def listen(self, port, address):
+        """Listens on one external address for a forwarded port; a failure is retried later."""
+        if time.monotonic() - self.failed.get((port, address), -RETRY_SECONDS) < RETRY_SECONDS:
+            return
+        try:
+            server = await asyncio.start_server(lambda r, w, port=port: self.handle(port, r, w), address, port, reuse_address=True)
+        except OSError as error:
+            self.failed[(port, address)] = time.monotonic()
+            print(f'caboose-ports: cannot forward {address}:{port}: {error}', file=sys.stderr, flush=True)
+            return
+        self.servers.setdefault(port, {})[address] = server
+        print(f'caboose-ports: forwarding {address}:{port}', flush=True)
 
-    def close(self, port):
-        for server in self.servers.pop(port, []):
-            server.close()
-        self.targets.pop(port, None)
-        print(f'caboose-ports: stopped forwarding {port}', flush=True)
+    def close(self, port, address=None):
+        servers = self.servers.get(port, {})
+        for held in [address] if address else list(servers):
+            if held in servers:
+                servers.pop(held).close()
+        if not servers:
+            self.servers.pop(port, None)
+            self.targets.pop(port, None)
+        print(f'caboose-ports: stopped forwarding {address + ":" if address else ""}{port}', flush=True)
 
     async def answer(self, name):
         """Keeps the mDNS responder for name on lan0's current address, or stops it."""
@@ -436,12 +440,15 @@ class Forwarder:
         for port in list(self.servers):
             if port not in wanted:
                 self.close(port)
+        for port in set(self.targets) - set(wanted):
+            del self.targets[port]
         for port, target in wanted.items():
+            # Addresses come and go (lan0 arrives after a wake): follow them.
+            for address in set(self.servers.get(port, {})) - addresses:
+                self.close(port, address)
             self.targets[port] = target
-            if port not in self.servers and addresses and time.monotonic() - self.failed.get(port, -RETRY_SECONDS) >= RETRY_SECONDS:
-                await self.open(port, addresses)
-                if port not in self.servers:
-                    self.failed[port] = time.monotonic()
+            for address in sorted(addresses - set(self.servers.get(port, {}))):
+                await self.listen(port, address)
 
     async def run(self):
         while True:

@@ -4,6 +4,8 @@ import asyncio
 import os
 import importlib.util
 import pathlib
+import socket
+import sys
 import unittest
 
 spec = importlib.util.spec_from_file_location('caboose_ports', pathlib.Path(__file__).with_name('caboose-ports.py'))
@@ -139,7 +141,7 @@ class Piping(unittest.IsolatedAsyncioTestCase):
         async def respond(reader, writer, received):
             while data := await reader.read(65536):
                 received.extend(data)
-                if received.count(b'\r\n\r\n') >= 3 and received.endswith(b'\r\n\r\n'):
+                if b'GET /c ' in received and received.endswith(b'\r\n\r\n'):
                     break
             writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok')
             await writer.drain()
@@ -197,6 +199,47 @@ class Piping(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await reader.read(), b'')
         writer.close()
         self.servers = [front]
+
+
+class Following(unittest.IsolatedAsyncioTestCase):
+    """step() against a stand-in /proc/net and address list: forwards appear, follow new addresses, and stop."""
+
+    async def test_follows_the_servers_and_the_computers_addresses(self):
+        import tempfile
+        proc = tempfile.mkdtemp()
+        config = os.path.join(proc, 'ports.json')
+        with open(config, 'w') as file:
+            file.write('{"forward": true}')
+        probe = socket.socket()
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        tables = lambda listening: open(os.path.join(proc, 'tcp'), 'w').write(HEADER + (row(f'0100007F:{port:04X}') if listening else ''))
+        saved = (ports.PROC_NET, ports.CONFIG, ports.external_addresses, ports.ephemeral_range)
+        addresses = {'127.0.0.2'} if sys.platform == 'linux' else set()
+        ports.PROC_NET, ports.CONFIG, ports.ephemeral_range = proc, config, lambda: (60000, 60001)
+        ports.external_addresses = lambda: set(addresses)
+        forwarder = ports.Forwarder()
+        try:
+            tables(True)
+            await forwarder.step()
+            self.assertEqual(forwarder.targets, {port: '127.0.0.1'})
+            self.assertEqual(set(forwarder.servers.get(port, {})), addresses)
+            if sys.platform == 'linux':
+                addresses.add('127.0.0.3')
+                await forwarder.step()
+                self.assertEqual(set(forwarder.servers[port]), {'127.0.0.2', '127.0.0.3'})
+                addresses.discard('127.0.0.2')
+                await forwarder.step()
+                self.assertEqual(set(forwarder.servers[port]), {'127.0.0.3'})
+            tables(False)
+            await forwarder.step()
+            self.assertEqual((forwarder.servers, forwarder.targets), ({}, {}))
+        finally:
+            ports.PROC_NET, ports.CONFIG, ports.external_addresses, ports.ephemeral_range = saved
+            for servers in forwarder.servers.values():
+                for server in servers.values():
+                    server.close()
 
 
 if __name__ == '__main__':

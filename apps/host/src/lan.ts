@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Docker } from './container-driver.js'
 import { CABOOSE_PORTS } from './network-activity.js'
-import { TAILSCALE_IMAGE } from './tailnet.js'
+import { PICK_IPTABLES, TAILSCALE_IMAGE } from './tailnet.js'
 
 /**
  * A container computer's own address on the home network (docs/network.md): a macvlan (or
@@ -58,6 +58,7 @@ const RANGE = `${CABOOSE_PORTS.min}:${CABOOSE_PORTS.max}`
  * and SSDP replies); it starts nothing else on the LAN unless CABOOSE_LAN_OUT is "allow".
  */
 export const LAN_SCRIPT = `set -eu
+${PICK_IPTABLES}
 if ip link show "$CABOOSE_LINK" >/dev/null 2>&1; then
   ip link show lan0 >/dev/null 2>&1 && ip link del lan0
   ip link set "$CABOOSE_LINK" name lan0
