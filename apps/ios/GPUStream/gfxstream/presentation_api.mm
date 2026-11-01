@@ -197,6 +197,13 @@ constexpr uint32_t kCaptureSlots = 3;
 VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects& source, uint64_t serial) {
     {
         std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.captureCallback && s.capture && s.captureState.unused()) {
+            // Captures stopped and nothing holds the ring: a window captured now and then
+            // (a snapshot on demand) does not keep its images between captures.
+            destroyCaptureRing(*s.capture);
+            s.capture.reset();
+            s.captureState.reset(0);
+        }
         if (!s.captureCallback || s.captureUnsupported || !s.device) return VK_NULL_HANDLE;
         if (s.capture && (s.capture->device != source.device || s.capture->format != source.format ||
                           s.capture->extent.width != source.extent.width ||
