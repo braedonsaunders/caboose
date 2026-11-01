@@ -276,6 +276,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var compression: LiveGPUCompression.Algorithm? // guarded by lock for network admission
     private var compressedTransport: Bool { compression != nil }
     private var zstd: LiveGPUZstdStream? // worker only: the session's one zstd stream
+    /// The zstd window this phone takes, from the memory iOS still allows the app.
+    var zstdWindowLog: () -> UInt32 = {
+        #if os(iOS)
+        LiveGPUCompression.preferredWindowLog(available: os_proc_available_memory())
+        #else
+        26
+        #endif
+    }
     private var drainRequested = false
     private var drainSent = false
     private var peerRevoked = false
@@ -524,13 +532,17 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             if resumeAfterQuiesce { try finishResume() }
         case .transportConfig:
             guard let algorithm = LiveGPUCompression.algorithm(ofOffer: frame.payload), lastProcess == 0,
-                  !drainRequested, !lock.withLock({ compressedTransport }) else {
+                  !drainRequested, !lock.withLock({ compressedTransport }),
+                  let answer = LiveGPUCompression.answer(toOffer: frame.payload, windowLog: zstdWindowLog()) else {
                 throw LiveGPUBindingError.protocolViolation("unexpected compression negotiation")
             }
-            if algorithm == .zstdStream { zstd = try LiveGPUZstdStream() }
+            if let windowLog = answer.windowLog {
+                zstd = try LiveGPUZstdStream(windowLog: windowLog)
+                print("CABOOSE_GPU_COMPRESSION algorithm=2 window_log=\(windowLog)")
+            }
             // Publish the accounting mode before admitting the acknowledgement.
             lock.withLock { compression = algorithm }
-            try send(.transportReady, payload: frame.payload)
+            try send(.transportReady, payload: answer.payload)
         case .processOpen:
             // An opening the phone cannot honour is left unanswered and logged; the executor and
             // every other process go on (the broker ends the waiting process).

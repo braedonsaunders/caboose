@@ -8,15 +8,49 @@ import CabooseZstd
 enum LiveGPUCompression {
     enum Algorithm: UInt16 { case deflate = 1, zstdStream = 2 }
     static let offer = offer(.deflate) // algorithm 1, 65,600 bytes
-    static func offer(_ algorithm: Algorithm) -> Data { Data([UInt8(algorithm.rawValue), 0, 0, 0, 0x40, 0, 1, 0]) }
-    static func algorithm(ofOffer payload: Data) -> Algorithm? {
-        [Algorithm.deflate, .zstdStream].first { offer($0) == payload }
+    /// The windows algorithm 2 may negotiate, as base-2 logarithms (1 MiB to 1 GiB).
+    static let windowLogs: ClosedRange<UInt32> = 20...30
+    /// A TRANSPORT_CONFIG or TRANSPORT_READY payload: {1, 65600} for algorithm 1, and
+    /// {2, 65600, window log, 0} for algorithm 2, the broker's largest window in CONFIG and the
+    /// one the phone takes in READY.
+    static func offer(_ algorithm: Algorithm, windowLog: UInt32 = 27) -> Data {
+        var data = Data()
+        let fields: [UInt32] = algorithm == .deflate ? [1, 65_600] : [2, 65_600, windowLog, 0]
+        for var field in fields { field = field.littleEndian; withUnsafeBytes(of: &field) { data.append(contentsOf: $0) } }
+        return data
+    }
+    /// The algorithm and, for algorithm 2, the window of a valid payload.
+    static func configuration(ofOffer payload: Data) -> (algorithm: Algorithm, windowLog: UInt32?)? {
+        let fields = stride(from: 0, to: payload.count, by: 4).map { UInt32(number(payload, $0, min(4, payload.count - $0))) }
+        switch payload.count {
+        case 8 where fields == [1, 65_600]: return (.deflate, nil)
+        case 16 where fields[0] == 2 && fields[1] == 65_600 && windowLogs.contains(fields[2]) && fields[3] == 0:
+            return (.zstdStream, fields[2])
+        default: return nil
+        }
+    }
+    static func algorithm(ofOffer payload: Data) -> Algorithm? { configuration(ofOffer: payload)?.algorithm }
+    /// The phone's TRANSPORT_READY for a valid CONFIG: algorithm 1 echoed, algorithm 2 with the
+    /// window the phone takes, never more than offered. Nil for an offer it cannot meet.
+    static func answer(toOffer payload: Data, windowLog wanted: UInt32) -> (payload: Data, windowLog: UInt32?)? {
+        guard let (algorithm, offered) = configuration(ofOffer: payload) else { return nil }
+        guard let offered else { return (payload, nil) }
+        let taken = min(wanted, offered)
+        guard windowLogs.contains(taken) else { return nil }
+        return (offer(algorithm, windowLog: taken), taken)
+    }
+    /// The window the phone takes: 128 MiB (log 27) with room to spare, as with the
+    /// increased memory limit, otherwise 64 MiB (log 26), and 8 MiB when memory is short.
+    static func preferredWindowLog(available: Int) -> UInt32 {
+        if available >= 3 << 30 { return 27 }
+        if available >= 512 << 20 { return 26 }
+        return 23
     }
     static let maximumDecoded = 65_600
     static let magic = Data([0x43, 0x47, 0x4c, 0x5a])
 
     static func isCompressed(_ data: Data) -> Bool { data.prefix(4) == magic }
-    private static func number(_ data: Data, _ offset: Int, _ count: Int) -> Int {
+    static func number(_ data: Data, _ offset: Int, _ count: Int) -> Int {
         (0..<count).reduce(0) { $0 | Int(data[data.startIndex + offset + $1]) << ($1 * 8) }
     }
     /// The record's declared decoded size. A DEFLATE record must be smaller than what it
@@ -74,8 +108,9 @@ enum LiveGPUCompression {
 /// Serial worker only.
 final class LiveGPUZstdStream {
     private let stream: OpaquePointer
-    init() throws {
-        guard let stream = caboose_zstd_stream_create() else { throw LiveGPUBindingError.system(operation: "zstd", code: ENOMEM) }
+    init(windowLog: UInt32) throws {
+        guard LiveGPUCompression.windowLogs.contains(windowLog) else { throw LiveGPUCompression.invalid() }
+        guard let stream = caboose_zstd_stream_create(Int32(windowLog)) else { throw LiveGPUBindingError.system(operation: "zstd", code: ENOMEM) }
         self.stream = stream
     }
     deinit { caboose_zstd_stream_free(stream) }
