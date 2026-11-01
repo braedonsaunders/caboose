@@ -87,6 +87,9 @@ OPTIONS:
                            to FILE as a JSON line (t_us, id, serial, targets), and every
                            `text_focus` (t_us, id, editing)
     --check                exit 0 as soon as the server answers hello (readiness probe)
+    --verify-atlas SECS    SECS after connecting, ask for a keyframe of the window --actions
+                           are for and compare the picture rebuilt from every batch before
+                           it with the keyframe, pixel for pixel (`verify` in the report)
     --json                 print the report as one JSON line
 ";
 
@@ -117,6 +120,7 @@ struct Args {
     window: Option<u64>,
     check: bool,
     json: bool,
+    verify_atlas: Option<Duration>,
     scroll: bool,
     scroll_overscan: Option<i32>,
     scroll_drive: Option<f64>,
@@ -180,6 +184,7 @@ fn parse_args() -> Result<Args, String> {
         window: None,
         check: false,
         json: false,
+        verify_atlas: None,
         scroll: false,
         scroll_overscan: None,
         scroll_drive: None,
@@ -253,6 +258,9 @@ fn parse_args() -> Result<Args, String> {
             "--targets" => a.targets = Some(PathBuf::from(value()?)),
             "--ruler-scale" => a.ruler_scale = value()?.parse().map_err(|_| "bad --ruler-scale")?,
             "--json" => a.json = true,
+            "--verify-atlas" => {
+                a.verify_atlas = Some(Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --verify-atlas")?))
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);
@@ -465,6 +473,24 @@ impl AtlasSurface {
 
         Ok(())
     }
+}
+
+/// Pixels of `a` that differ from `b` (all of them when the sizes differ), and the 64×64
+/// tiles they are in.
+fn compare_surfaces(a: &AtlasSurface, b: &AtlasSurface) -> (u64, Vec<(u32, u32)>) {
+    if (a.width, a.height) != (b.width, b.height) {
+        return (b.width as u64 * b.height as u64, Vec::new());
+    }
+    let mut px = 0;
+    let mut tiles = std::collections::BTreeSet::new();
+    for (i, (p, q)) in a.rgba.chunks_exact(4).zip(b.rgba.chunks_exact(4)).enumerate() {
+        if p != q {
+            px += 1;
+            let (x, y) = (i as u32 % a.width, i as u32 / a.width);
+            tiles.insert((y / 64 * 64, x / 64 * 64));
+        }
+    }
+    (px, tiles.into_iter().map(|(y, x)| (x, y)).collect())
 }
 
 fn save_atlas_png(surf: &AtlasSurface, path: &std::path::Path) -> Result<(), String> {
@@ -939,6 +965,19 @@ fn run(args: Args) -> Result<bool, String> {
     let mut bye: Option<proto::ByeReason> = None;
     let mut scroll_check = scroll::ScrollCheck::default();
     let mut overscan_asked = false;
+    // Every byte the server sent, and when each scroll input went out, still waiting for
+    // the first picture committed after it.
+    let mut wire_bytes: u64 = 0;
+    // From the first scroll input to the last picture before the keyframe --verify-atlas
+    // asks for (or the end): the bytes the scrolling cost, and over how long.
+    let mut scroll_from: Option<(Instant, u64)> = None;
+    let mut scroll_until: Option<(Instant, u64)> = None;
+    let mut scrolls_unanswered: std::collections::VecDeque<u64> = Default::default();
+    let mut input_latency_us: Vec<u64> = Vec::new();
+    // --verify-atlas: asked for the keyframe; then what it found (differing pixels and the
+    // 64×64 tiles they are in).
+    let mut verify_asked = false;
+    let mut verify: Option<(u64, Vec<(u32, u32)>)> = None;
 
     'outer: while start.elapsed() < args.duration {
         if args.stall_after.is_some_and(|s| start.elapsed() >= s) {
@@ -964,6 +1003,10 @@ fn run(args: Args) -> Result<bool, String> {
                     if let Message::Ping { t_us } = m {
                         next_action = now + Duration::from_millis(t_us);
                         continue;
+                    }
+                    if matches!(&m, Message::Pointer(p) if p.scroll.is_some()) {
+                        scrolls_unanswered.push_back(monotonic_us());
+                        scroll_from.get_or_insert((Instant::now(), wire_bytes));
                     }
                     send(&mut ws, &m)?;
                 }
@@ -999,8 +1042,17 @@ fn run(args: Args) -> Result<bool, String> {
                 send(&mut ws, &Message::Ping { t_us: t })?;
             }
         }
+        if let (Some(at), Some(id), false) = (args.verify_atlas, target, verify_asked) {
+            if start.elapsed() >= at {
+                verify_asked = true;
+                send(&mut ws, &Message::RequestKeyframe { id })?;
+            }
+        }
         match ws.read() {
-            Ok(WsMessage::Binary(bytes)) => decoder_stream.push(&bytes),
+            Ok(WsMessage::Binary(bytes)) => {
+                wire_bytes += bytes.len() as u64;
+                decoder_stream.push(&bytes)
+            }
             Ok(WsMessage::Close(_)) => break,
             Ok(_) => {}
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
@@ -1119,12 +1171,35 @@ fn run(args: Args) -> Result<bool, String> {
                     if b.pts_us >= connected_us {
                         s.latency_us.push(received.saturating_sub(b.pts_us));
                     }
+                    if scroll_from.is_some() && !verify_asked && target == Some(b.id) {
+                        scroll_until = Some((Instant::now(), wire_bytes));
+                    }
+                    // The first picture committed after a scroll answers it (and any before it).
+                    if target == Some(b.id) && scrolls_unanswered.front().is_some_and(|t| *t <= b.pts_us) {
+                        let first = scrolls_unanswered[0];
+                        while scrolls_unanswered.front().is_some_and(|t| *t <= b.pts_us) {
+                            scrolls_unanswered.pop_front();
+                        }
+                        input_latency_us.push(received.saturating_sub(first));
+                    }
 
                     let surf = atlas_surfaces.entry(b.id).or_insert_with(|| AtlasSurface {
                         width: 0,
                         height: 0,
                         rgba: Vec::new(),
                     });
+                    if verify_asked && verify.is_none() && target == Some(b.id) && b.keyframe {
+                        // The keyframe alone, against everything applied before it.
+                        let mut fresh = AtlasSurface { width: 0, height: 0, rgba: Vec::new() };
+                        let mut scratch = HashMap::new();
+                        if fresh.apply_batch(&b, &mut scratch).is_ok() {
+                            verify = Some(compare_surfaces(surf, &fresh));
+                            if let Some(dir) = &args.save {
+                                let _ = save_atlas_png(surf, &dir.join(format!("window-{}-rebuilt.png", b.id)));
+                                let _ = save_atlas_png(&fresh, &dir.join(format!("window-{}-keyframe.png", b.id)));
+                            }
+                        }
+                    }
                     let ok = surf.apply_batch(&b, &mut atlas_cache).is_ok();
                     let decoded_us = if ok { t0.elapsed().as_micros() as i64 } else { -1 };
                     if decoded_us >= 0 {
@@ -1603,7 +1678,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"surface_batches\":{surface_batches},\"atlas_copies\":{atlas_copies},\"atlas_fills\":{atlas_fills},\"atlas_refs\":{atlas_refs},\"atlas_tiles\":{atlas_tiles},\"scene_fonts\":{scene_fonts},\"scene_commits\":{scene_commits},\"draw_bytes\":{draw_bytes},\"draw_presents\":{draw_presents},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"surface_batches\":{surface_batches},\"atlas_copies\":{atlas_copies},\"atlas_fills\":{atlas_fills},\"atlas_refs\":{atlas_refs},\"atlas_tiles\":{atlas_tiles},\"scene_fonts\":{scene_fonts},\"scene_commits\":{scene_commits},\"draw_bytes\":{draw_bytes},\"draw_presents\":{draw_presents},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{},\"wire_bytes\":{wire_bytes},\"wire_kbps\":{:.0},\"scroll_bytes\":{},\"scroll_seconds\":{:.2},\"input_pictures\":{},\"input_latency_ms_p50\":{:.2},\"input_latency_ms_p95\":{:.2},\"verify\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
                     "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",
@@ -1689,6 +1764,19 @@ fn run(args: Args) -> Result<bool, String> {
             sound.peak,
             sound.gaps,
             bye.map(|b| format!("\"{}\"", b.as_str())).unwrap_or("null".into()),
+            wire_bytes as f64 * 8.0 / 1000.0 / elapsed.max(0.001),
+            scroll_from.map_or(0, |(_, b)| scroll_until.map_or(wire_bytes, |(_, e)| e) - b),
+            scroll_from.map_or(0.0, |(t, _)| scroll_until.map_or(Instant::now(), |(e, _)| e).duration_since(t).as_secs_f64()),
+            input_latency_us.len(),
+            percentile(&input_latency_us, 0.5) / 1000.0,
+            percentile(&input_latency_us, 0.95) / 1000.0,
+            match &verify {
+                None => "null".to_owned(),
+                Some((px, tiles)) => format!(
+                    "{{\"diff_px\":{px},\"tiles\":[{}]}}",
+                    tiles.iter().take(200).map(|(x, y)| format!("[{x},{y}]")).collect::<Vec<_>>().join(",")
+                ),
+            },
         );
     } else {
         match &hello {

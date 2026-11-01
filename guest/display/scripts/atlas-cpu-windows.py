@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU-drawn windows on a phone: lossless atlas pictures.
+"""CPU-drawn windows on a phone: lossless atlas pictures, exact.
 
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py              # everything
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py writer      # by name
@@ -8,9 +8,10 @@ Each scenario starts the compositor with an application that draws on the CPU
 (LibreOffice Writer, a GTK 3 text view, Chromium in software on X11 as CEF applications such
 as Steam draw, xterm; on Wayland and on X11), connects the probe as the phone does (a
 1179x2556 display at scale 3, Surface Atlas), maximizes the window and scrolls it as a
-trackpad does, a step every 16 ms for five seconds (Chromium's page scrolls itself). It fails
-if the picture came as video, and prints the window's picture size, rate, bandwidth and
-latency, and the server's CPU.
+trackpad does, a step every 16 ms for five seconds (Chromium's page scrolls itself). Then it
+asks for a keyframe and fails if the picture rebuilt from every batch differs from it in any
+pixel, or if the picture came as video. It prints the window's picture size, rate, bandwidth
+and latency, and the server's CPU.
 
 LibreOffice and the GTK text view need `libreoffice-writer libreoffice-gtk3` and
 `python3-gi gir1.2-gtk-3.0` in the container.
@@ -78,7 +79,8 @@ def scenarios(directory):
 
 
 def run(name, command, settle_s):
-    mid = f"{WIDTH // 2},{HEIGHT // 2}"
+    # Window pixels: the middle of the maximized window at scale 3.
+    mid = f"{WIDTH * 3 // 2},{HEIGHT * 3 // 2}"
     steps = 5000 // 16
     actions = ["maximize", f"wait:{settle_s * 1000}"]
     # Down for half the time, back up for the other half: a reader flicking through.
@@ -88,7 +90,8 @@ def run(name, command, settle_s):
     def drive(proc, token):
         report = check.probe([
             "--token-file", token, "--display", PHONE, "--atlas", "--decoders", "hevc,h264", "--windows", "1",
-            "--server-pid", str(proc.pid), "--duration", str(settle_s + 9), "--actions", ";".join(actions),
+            "--server-pid", str(proc.pid), "--duration", str(settle_s + 12), "--actions", ";".join(actions),
+            "--verify-atlas", str(settle_s + 9),
         ])
         result["report"] = report
 
@@ -99,6 +102,9 @@ def run(name, command, settle_s):
           f"({w['atlas_copies']} copies, {w['atlas_tiles']} tiles, {w['atlas_refs']} refs), {w['fps']:.1f} fps, "
           f"{w['kbps']:.0f} kbit/s, latency p50 {w['latency_ms_p50']:.1f} ms p95 {w['latency_ms_p95']:.1f} ms, "
           f"server {report['server_cpu_pct']}% of a core")
+    verify = report["verify"]
+    if verify is None or verify["diff_px"]:
+        raise check.Failed(f"{name}: the rebuilt picture is not the keyframe's: {verify}")
     if w["codec"] != "atlas":
         raise check.Failed(f"{name}: the window picture came as {w['codec']} video")
 

@@ -277,12 +277,20 @@ split by thread:
     guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
 
 `scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas)
-to LibreOffice Writer, a GTK 3 text view and xterm, on Wayland and on X11, and scrolls each
-as a trackpad does for five seconds. It fails if the picture came as video, and prints the
-picture size, rate, bandwidth, latency and server CPU. LibreOffice needs
+to LibreOffice Writer, a GTK 3 text view, Chromium on X11 and xterm, on Wayland and on X11,
+and scrolls each as a trackpad does for five seconds. Then it asks for a keyframe and fails
+if the picture the probe rebuilt from every batch differs from it in any pixel; it prints
+the picture size, rate, bandwidth, latency and server CPU. LibreOffice needs
 `libreoffice-writer libreoffice-gtk3` in the container:
 
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py [writer|gtk3|xterm|x11|wayland]
+
+`scripts/atlas-scroll-exact.py` does the same for a store page (pages/store.html: a
+sidebar, a sticky header over a scrolled pane, photograph-like artwork) in Chromium on X11
+at scale 2, as Steam's client draws, and prints the latency from a scroll input to the
+first picture committed after it and the bytes per second the server sent:
+
+    guest/display/scripts/dev.sh python3 scripts/atlas-scroll-exact.py [--rounds N]
 
 `scripts/wsl-check.sh` runs on a WSL2 host with an NVIDIA GPU (`/dev/dxg`): in a
 disposable container it plays a 60 fps test video full-window in Chromium at 1080p and
