@@ -32,6 +32,9 @@ OPTIONS:
     --video-decoders LIST  codecs to accept as video.* streams [default: none]
     --atlas                request Surface Atlas batches (surface.batch / surface.reset)
     --scene                request Semantic Scene Graph commits (scene.font / scene.commit)
+    --draw DIR             take draw lists (hello draw: true): write each stream to
+                           DIR/stream-<n>.cdl, each draw.present in it as a present op
+                           naming the window, for caboose-draw-replay (guest/draw)
     --zero-video           advertise no window video decoders and enable --atlas
     --scaled-motion        accept half-resolution motion streams
     --audio                play the computer's sound (decoded and measured, not heard)
@@ -96,6 +99,7 @@ struct Args {
     video_decoders: Option<Vec<Codec>>,
     atlas: bool,
     scene: bool,
+    draw: Option<PathBuf>,
     scaled_motion: bool,
     audio: bool,
     wasm: bool,
@@ -160,6 +164,7 @@ fn parse_args() -> Result<Args, String> {
         video_decoders: None,
         atlas: false,
         scene: false,
+        draw: None,
         scaled_motion: false,
         audio: false,
         wasm: false,
@@ -204,6 +209,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--atlas" => a.atlas = true,
             "--scene" => a.scene = true,
+            "--draw" => a.draw = Some(PathBuf::from(value()?)),
             "--zero-video" => {
                 a.atlas = true;
                 a.decoders.clear();
@@ -875,6 +881,7 @@ fn run(args: Args) -> Result<bool, String> {
             clipboard_types: args.clipboard_types.clone(),
             atlas: args.atlas,
             scene: args.scene,
+            draw: args.draw.is_some(),
         }),
     )?;
 
@@ -893,6 +900,19 @@ fn run(args: Args) -> Result<bool, String> {
     let mut atlas_tiles = 0u64;
     let mut scene_fonts = 0u64;
     let mut scene_commits = 0u64;
+    let (mut draw_bytes, mut draw_presents) = (0u64, 0u64);
+    let mut draw_files: HashMap<u32, std::fs::File> = HashMap::new();
+    let mut draw_append = |stream: u32, bytes: &[u8]| -> Result<(), String> {
+        let Some(dir) = args.draw.as_ref() else { return Ok(()) };
+        use std::collections::hash_map::Entry;
+        let file = match draw_files.entry(stream) {
+            Entry::Occupied(f) => f.into_mut(),
+            Entry::Vacant(v) => v.insert(
+                std::fs::File::create(dir.join(format!("stream-{stream}.cdl"))).map_err(|e| e.to_string())?,
+            ),
+        };
+        file.write_all(bytes).map_err(|e| e.to_string())
+    };
     let mut hello: Option<proto::ServerHello> = None;
     let mut acted = false;
     let mut pending: std::collections::VecDeque<String> = args.actions.iter().cloned().collect();
@@ -1137,6 +1157,19 @@ fn run(args: Args) -> Result<bool, String> {
                 Message::SceneCommit(_) => {
                     scene_commits += 1;
                 }
+                Message::DrawOps(d) => {
+                    draw_bytes += d.ops.len() as u64;
+                    draw_append(d.stream, &d.ops)?;
+                }
+                Message::DrawPresent(p) => {
+                    draw_presents += 1;
+                    // A present op naming the window where the recorder named its wl_surface.
+                    let mut op = vec![0x30, 8, 0, 0, 0];
+                    op.extend_from_slice(&p.surface.to_le_bytes());
+                    op.extend_from_slice(&(p.id as u32).to_le_bytes());
+                    draw_append(p.stream, &op)?;
+                }
+                Message::DrawEnd { .. } => {}
                 Message::Frame(f) => {
                     let received = monotonic_us();
                     let s = windows.entry(f.id).or_default();
@@ -1546,7 +1579,7 @@ fn run(args: Args) -> Result<bool, String> {
             })
             .collect();
         println!(
-            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"surface_batches\":{surface_batches},\"atlas_copies\":{atlas_copies},\"atlas_fills\":{atlas_fills},\"atlas_refs\":{atlas_refs},\"atlas_tiles\":{atlas_tiles},\"scene_fonts\":{scene_fonts},\"scene_commits\":{scene_commits},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
+            "{{\"ok\":{ok},\"seconds\":{elapsed:.2},\"gpus\":[{}],\"games\":[{}],\"videos\":[{}],\"windows\":[{}],\"frames\":{total_frames},\"surface_batches\":{surface_batches},\"atlas_copies\":{atlas_copies},\"atlas_fills\":{atlas_fills},\"atlas_refs\":{atlas_refs},\"atlas_tiles\":{atlas_tiles},\"scene_fonts\":{scene_fonts},\"scene_commits\":{scene_commits},\"draw_bytes\":{draw_bytes},\"draw_presents\":{draw_presents},\"server_cpu_ms\":{},\"server_cpu_pct\":{},\"server_cpu_ms_per_frame\":{},\"rtt_ms\":{},\"text_input_events\":{text_input_events},\"text_inputs\":[{}],\"clipboard\":{},\"clipboard_entries\":[{}],\"dnd\":[{}],\"audio\":{{\"packets\":{},\"bytes\":{},\"decoded\":{},\"errors\":{},\"channels\":{},\"peak\":{:.3},\"gaps\":{}}},\"bye\":{}}}",
             gpus.iter()
                 .map(|(id, g)| format!(
                     "{{\"id\":{id},\"window\":{},\"bytes\":{},\"destroyed\":{},\"reason\":{}}}",

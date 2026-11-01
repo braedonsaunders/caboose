@@ -51,6 +51,8 @@ pub struct Session {
     pub atlas: bool,
     /// The client accepts retained vector & glyph `scene.font` and `scene.commit` updates.
     pub scene: bool,
+    /// The client draws draw lists (draw.rs).
+    pub draw: bool,
     /// Session-wide LRU cache of 64×64 RGBA8888 tile hashes held by the client.
     pub atlas_cache: Arc<Mutex<AtlasCacheTracker>>,
 }
@@ -182,6 +184,9 @@ impl State {
             a.stop_capture();
         }
         self.scene.reset_session();
+        if self.session.as_ref().is_some_and(|s| s.draw) {
+            self.draw_session(false);
+        }
         self.session = None;
         self.games_session_changed();
         self.targets_session_changed();
@@ -455,6 +460,7 @@ impl State {
         let targets = hello.targets && std::path::Path::new(crate::targets::PROVIDER).is_file();
         let atlas = hello.atlas;
         let scene = hello.scene;
+        let draw = hello.draw && self.draw.socket.is_some();
         self.net.send(
             conn,
             &Message::ServerHello(proto::ServerHello {
@@ -489,6 +495,9 @@ impl State {
                     }
                     if scene {
                         supported.push("scene".into());
+                    }
+                    if draw {
+                        supported.push("draw".into());
                     }
                     supported
                 },
@@ -526,8 +535,10 @@ impl State {
             clipboard_types,
             atlas,
             scene,
+            draw,
             atlas_cache: Arc::new(Mutex::new(AtlasCacheTracker::new())),
         });
+        self.draw_session(draw);
         self.games_session_changed();
         self.targets_session_changed();
         if audio {

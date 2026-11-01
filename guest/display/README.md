@@ -151,6 +151,11 @@ property updates are reconciled on notifications, without a polling timer.
   `device.open` and `device.close` when applications start and stop using a device, and
   writes `$XDG_RUNTIME_DIR/caboose-devices.json`. `--no-devices` turns it off (the agent
   seat).
+- **Draw lists** (`src/draw.rs`). Applications' cairo recorders (`guest/draw`) connect to
+  `draw.sock`; while a client that draws them is connected, each recorder is asked for a fresh
+  stream, which the compositor validates and forwards as `draw.ops`, naming each committed
+  window buffer's window in `draw.present` ([docs/draw.md](../../docs/draw.md)). Surface Atlas
+  batches go on alongside.
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. With the Surface Atlas

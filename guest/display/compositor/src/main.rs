@@ -30,6 +30,7 @@ mod net;
 mod pencil;
 mod pipes;
 mod render;
+mod draw;
 mod scene;
 mod remote_buffers;
 mod render_node;
@@ -252,6 +253,10 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
     if let Some(socket) = &state.games.socket {
         // Game handoff: caboose-game-run finds the compositor here (game.rs).
         env.push(("CABOOSE_GAME_SOCKET".into(), socket.display().to_string()));
+    }
+    if let Some(socket) = &state.draw.socket {
+        // Draw-list recorders (guest/draw) find the compositor here (draw.rs).
+        env.push(("CABOOSE_DRAW_SOCKET".into(), socket.display().to_string()));
     }
     if let Some(socket) = &state.scene.socket {
         // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
@@ -585,6 +590,7 @@ fn run(config: Config) -> Result<(), String> {
         videos: Default::default(),
         games: Default::default(),
         scene: Default::default(),
+        draw: Default::default(),
         control: Default::default(),
         scroll: Default::default(),
         targets: Default::default(),
@@ -696,6 +702,14 @@ fn run(config: Config) -> Result<(), String> {
                 state.ibus = Some(service);
             }
             Err(e) => tracing::warn!("no input-method service: cannot listen on {}: {e}", path.display()),
+        }
+        let path = dir.join("draw.sock");
+        match draw::DrawServer::listen(&path, &handle) {
+            Ok(d) => {
+                tracing::info!("draw socket: {}", path.display());
+                state.draw = d;
+            }
+            Err(e) => tracing::warn!("no draw socket: cannot listen on {}: {e}", path.display()),
         }
         let path = dir.join("scroll.sock");
         match scroll::ScrollHub::listen(&path, &handle) {
