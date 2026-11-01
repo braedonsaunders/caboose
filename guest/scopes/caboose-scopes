@@ -1,0 +1,793 @@
+#!/usr/bin/env python3
+"""caboose-scopes: every app the owner runs in a cgroup v2 scope of its own.
+
+    caboose-scopes setup                  make the hierarchy (root; safe to repeat)
+    caboose-scopes ensure [--restart]     start the daemon unless it runs (root)
+    caboose-scopes daemon                 keep the hierarchy (root)
+    caboose-scopes list                   the snapshot, as JSON
+    caboose-scopes quit|force-quit|kill SCOPE
+    caboose-scopes run DESKTOP_ID -- COMMAND [ARG...]
+
+The hierarchy, inside the container's own cgroup namespace:
+
+    /init.scope                     the container's init, root's services, `docker exec`
+    /owner.slice/session.scope      the owner's processes no app claims (Caboose's services)
+    /owner.slice/app-<key>-<n>.scope  one per app launch, game or split-off window
+
+The daemon runs as root, which alone moves processes between cgroups. A forked observer
+that has dropped to the owner reads what root may not in a container without
+CAP_SYS_PTRACE: the owner's command lines and launch environments, and the compositor's
+control socket, which serves only its own user. See README.md.
+"""
+import errno
+import json
+import os
+import pwd
+import re
+import shlex
+import signal
+import socket
+import struct
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import scopecore as core  # noqa: E402
+
+CGROUP = Path(os.environ.get('CABOOSE_SCOPES_CGROUP', '/sys/fs/cgroup'))
+INIT = 'init.scope'
+OWNER = 'owner.slice'
+RUN = Path('/run/caboose')
+SOCKET = RUN / 'scopes.sock'
+STATE = RUN / 'scopes' / 'state.json'
+PIDFILE = RUN / 'scopes.pid'
+DISPLAY_ENV = RUN / 'display.env'
+OWNER_USER = 'caboose'
+CONTROLLERS = ('memory', 'io', 'pids')
+# Sampling: every second while someone looks (a list in the last 30 s), else every 3 s.
+FAST, SLOW, WATCHED = 1.0, 3.0, 30.0
+TERM_GRACE, KILL_WAIT = 5.0, 2.0
+ROOTS = ['.local/share/applications', '/usr/local/share/applications',
+         '/var/lib/flatpak/exports/share/applications', '/usr/share/applications']
+PAGE = os.sysconf('SC_PAGE_SIZE')
+TICKS = os.sysconf('SC_CLK_TCK')
+
+
+class Unavailable(Exception):
+    """The container gives this computer no writable cgroup tree of its own."""
+
+
+class ScopeError(Exception):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+def owner():
+    entry = pwd.getpwnam(OWNER_USER)
+    return entry.pw_uid, entry.pw_gid, entry.pw_dir
+
+
+def read(path, default=None):
+    try:
+        return Path(path).read_text()
+    except (OSError, UnicodeDecodeError):
+        return default
+
+
+def write(path, value):
+    with open(path, 'w') as handle:
+        handle.write(value)
+
+
+def procs_of(group):
+    text = read(CGROUP / group / 'cgroup.procs', '')
+    return [int(line) for line in text.split() if line.isdigit()]
+
+
+def move(pid, group):
+    """Moves a process (all its threads) into a cgroup; False if it has gone."""
+    try:
+        write(CGROUP / group / 'cgroup.procs', str(pid))
+        return True
+    except OSError as error:
+        if error.errno in (errno.ESRCH, errno.ENOENT, errno.EINVAL):
+            return False
+        raise
+
+
+# -- Hierarchy --------------------------------------------------------------------------
+
+def setup():
+    """Makes the hierarchy and empties the namespace root into it. Safe to repeat."""
+    mounts = read('/proc/self/mounts', '')
+    entry = next((line.split() for line in mounts.splitlines() if line.split()[1:2] == [str(CGROUP)]), None)
+    if not entry or entry[2] != 'cgroup2':
+        raise Unavailable('no cgroup v2 hierarchy')
+    if 'rw' not in entry[3].split(','):
+        raise Unavailable('the cgroup hierarchy is read-only')
+    # Only a container's own namespace: under systemd (a microVM) the hierarchy is systemd's.
+    own = read('/proc/self/cgroup', '').strip()
+    if own not in ('0::/', f'0::/{INIT}') or (read('/proc/1/comm', '') or '').strip() == 'systemd':
+        raise Unavailable('not the root of a container cgroup namespace')
+    uid = owner()[0]
+    for group in (INIT, OWNER, f'{OWNER}/{core.SESSION}'):
+        (CGROUP / group).mkdir(exist_ok=True)
+    # Domain controllers need the namespace root empty: root's processes go to init.scope,
+    # the owner's to the session scope.
+    for _ in range(10):
+        pids = procs_of('.')
+        if not pids:
+            break
+        for pid in pids:
+            status = read(f'/proc/{pid}/status')
+            target = f'{OWNER}/{core.SESSION}' if status and core.parse_uid(status) == uid else INIT
+            move(pid, target)
+    available = set(read(CGROUP / 'cgroup.controllers', '').split())
+    wanted = ' '.join(f'+{name}' for name in CONTROLLERS if name in available)
+    if wanted:
+        for group in ('.', OWNER):
+            try:
+                write(CGROUP / group / 'cgroup.subtree_control', wanted)
+            except OSError as error:
+                # Busy while a process raced into the root; accounting then lacks memory/IO.
+                print(f'caboose-scopes: controllers for {group}: {error}', file=sys.stderr)
+
+
+# -- Observer -----------------------------------------------------------------------------
+
+def control_path():
+    for line in (read(DISPLAY_ENV, '') or '').splitlines():
+        key, _, value = line.partition('=')
+        if key == 'CABOOSE_DISPLAY_CONTROL':
+            try:
+                parts = shlex.split(value)
+            except ValueError:
+                return None
+            return parts[0] if parts else None
+    return None
+
+
+def control(request, timeout=3.0):
+    """One request to the owner's compositor; its JSON answer or None."""
+    path = control_path()
+    if not path:
+        return None
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(path)
+            sock.sendall(request.encode() + b'\n')
+            data = b''
+            while not data.endswith(b'\n') and len(data) < 8 << 20:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        answer = json.loads(data)
+        return answer if isinstance(answer, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def observe(request):
+    op = request.get('op')
+    if op == 'procs':
+        out = {}
+        for pid in request.get('pids', [])[:4096]:
+            argv = environ = None
+            try:
+                argv = [a.decode('utf-8', 'replace') for a in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')[:-1]][:64]
+            except OSError:
+                pass
+            try:
+                environ = Path(f'/proc/{pid}/environ').read_bytes()
+            except OSError:
+                pass
+            marks = core.launch_marks(environ) if environ else None
+            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None}
+        return out
+    if op == 'windows':
+        answer = control('windows')
+        windows = answer.get('windows') if answer and answer.get('ok') else None
+        return windows if isinstance(windows, list) else []
+    if op == 'close':
+        answer = control(f"close {int(request['id'])}")
+        return bool(answer and answer.get('ok'))
+    return None
+
+
+class Observer:
+    """A child, dropped to the owner, that reads for the root daemon."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pid = None
+        self.sock = None
+        self.reader = None
+
+    def start(self):
+        uid, gid, home = owner()
+        parent, child = socket.socketpair()
+        pid = os.fork()
+        if pid == 0:
+            parent.close()
+            try:
+                os.setgroups([])
+                os.setresgid(gid, gid, gid)
+                os.setresuid(uid, uid, uid)
+                os.environ['HOME'] = home
+                with child.makefile('rwb') as stream:
+                    for line in stream:
+                        try:
+                            answer = observe(json.loads(line))
+                        except Exception:  # noqa: BLE001 - one bad request must not end the observer
+                            answer = None
+                        stream.write(json.dumps(answer).encode() + b'\n')
+                        stream.flush()
+            finally:
+                os._exit(0)
+        child.close()
+        parent.settimeout(10)
+        self.pid, self.sock, self.reader = pid, parent, parent.makefile('rb')
+
+    def ask(self, request):
+        with self.lock:
+            for attempt in range(2):
+                try:
+                    if self.sock is None:
+                        self.start()
+                    self.sock.sendall(json.dumps(request).encode() + b'\n')
+                    line = self.reader.readline()
+                    if line:
+                        return json.loads(line)
+                except (OSError, ValueError):
+                    pass
+                self.stop()
+            return None
+
+    def stop(self):
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = self.reader = None
+        if self.pid:
+            try:
+                os.kill(self.pid, signal.SIGKILL)
+                os.waitpid(self.pid, 0)
+            except OSError:
+                pass
+            self.pid = None
+
+
+# -- Desktop entries -----------------------------------------------------------------------
+
+def entry_fields(path):
+    fields, section = {}, None
+    for line in (read(path, '') or '').splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            section = line
+        elif section == '[Desktop Entry]' and '=' in line:
+            key, _, value = line.partition('=')
+            fields.setdefault(key.strip(), value.strip())
+    return fields
+
+
+class Entries:
+    """The owner's installed desktop entries, as guest-apps.py lists them; reread when an
+    applications directory changes."""
+
+    def __init__(self, home):
+        self.roots = [Path(home) / r if not r.startswith('/') else Path(r) for r in ROOTS]
+        self.stamp = None
+        self.by_id = {}
+
+    def refresh(self):
+        stamp = tuple(os.stat(r).st_mtime_ns if r.is_dir() else 0 for r in self.roots)
+        if stamp == self.stamp:
+            return
+        self.stamp, found = stamp, {}
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            for path in sorted(root.rglob('*.desktop')):
+                ident = str(path.relative_to(root)).replace('/', '-')
+                if ident not in found:
+                    found[ident] = entry_fields(path)
+        self.by_id = found
+
+    def name(self, desktop_id):
+        return (self.by_id.get(desktop_id) or {}).get('Name') or None
+
+    def for_window(self, app_id):
+        """The entry a window class names: its StartupWMClass, or its id."""
+        if not app_id:
+            return None
+        lowered = app_id.lower()
+        for ident, fields in self.by_id.items():
+            if fields.get('StartupWMClass', '').lower() == lowered or core.scope_key(ident).lower() == lowered:
+                return ident
+        return None
+
+    def for_game(self, game):
+        needle = f'steam://rungameid/{game}'
+        for ident, fields in self.by_id.items():
+            exec_line = fields.get('Exec', '')
+            if needle in exec_line and not exec_line[exec_line.index(needle) + len(needle):][:1].isdigit():
+                return ident
+        return None
+
+
+# -- The daemon ---------------------------------------------------------------------------
+
+class Daemon:
+    def __init__(self):
+        self.uid, _, self.home = owner()
+        self.lock = threading.Lock()
+        self.observer = Observer()
+        self.entries = Entries(self.home)
+        self.scopes = {}
+        self.next = 1
+        self.argv = {}       # (pid, start) -> {'argv', 'marks'}
+        self.samples = {}    # scope -> counters
+        self.ticks = {}      # (pid, start) -> cpu ticks
+        self.gpu = {}        # (pid, start) -> counters
+        self.windows = []
+        self.membership = {}
+        self.snapshot = None
+        self.sampled = None
+        self.watched = 0.0
+        self.load()
+
+    # State survives a daemon restart; the cgroups themselves say which scopes exist.
+    def load(self):
+        try:
+            data = json.loads(read(STATE, '') or '{}')
+            self.scopes = {k: v for k, v in data.get('scopes', {}).items() if core.parse_scope_name(k) and isinstance(v, dict)}
+            self.next = int(data.get('next', 1))
+        except (ValueError, TypeError):
+            self.scopes, self.next = {}, 1
+
+    def save(self):
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        temporary = STATE.with_suffix('.tmp')
+        write(temporary, json.dumps({'next': self.next, 'scopes': self.scopes}))
+        os.replace(temporary, STATE)
+
+    def app_scopes(self):
+        try:
+            return sorted(p.name for p in (CGROUP / OWNER).iterdir() if p.is_dir() and core.parse_scope_name(p.name))
+        except OSError:
+            return []
+
+    def create(self, new, now):
+        number = self.next
+        names = set(self.app_scopes())
+        while core.scope_name(new.key, number) in names:
+            number += 1
+        self.next = number + 1
+        name = core.scope_name(new.key, number)
+        (CGROUP / OWNER / name).mkdir()
+        desktop_id = new.desktop_id
+        if new.game is not None:
+            desktop_id = desktop_id or self.entries.for_game(new.game)
+        elif desktop_id is None and new.app_id:
+            desktop_id = self.entries.for_window(new.app_id)
+        meta = {'origin': new.origin, 'desktopId': desktop_id, 'appId': new.app_id, 'game': new.game,
+                'source': new.source, 'createdAt': now, 'name': self.name_for(new, desktop_id)}
+        self.scopes[name] = meta
+        self.save()
+        return name
+
+    def name_for(self, new, desktop_id):
+        if new.game is not None:
+            for library in ('.local/share/Steam/steamapps', '.steam/steam/steamapps'):
+                name = core.acf_name(read(Path(self.home) / library / f'appmanifest_{new.game}.acf', '') or '')
+                if name:
+                    return name
+        if desktop_id and self.entries.name(desktop_id):
+            return self.entries.name(desktop_id)
+        if new.origin == 'terminal':
+            return 'Terminal session'
+        if new.game is not None:
+            return f'Steam game {new.game}'
+        return new.app_id or new.key
+
+    def move_tree(self, pids, target, source):
+        """Moves processes, then their children forked meanwhile and left in `source`."""
+        moved = {pid for pid in pids if move(pid, target)}
+        for _ in range(2):
+            stragglers = []
+            for proc in Path('/proc').iterdir():
+                if not proc.name.isdigit() or int(proc.name) in moved:
+                    continue
+                stat = read(proc / 'stat')
+                try:
+                    if stat and core.parse_stat(stat)[2] in moved and self.group_of(int(proc.name)) == source:
+                        stragglers.append(int(proc.name))
+                except ValueError:
+                    continue
+            if not stragglers:
+                break
+            moved.update(pid for pid in stragglers if move(pid, target))
+
+    @staticmethod
+    def group_of(pid):
+        line = read(f'/proc/{pid}/cgroup', '').strip()
+        return line[4:] if line.startswith('0::/') else None
+
+    def tick(self):
+        now = time.time()
+        with self.lock:
+            self.entries.refresh()
+            session = f'{OWNER}/{core.SESSION}'
+            # The owner's processes started through `docker exec` arrive in init.scope.
+            for pid in procs_of(INIT):
+                if pid == self.observer.pid:
+                    continue
+                status = read(f'/proc/{pid}/status')
+                try:
+                    if status and core.parse_uid(status) != 0:
+                        move(pid, session)
+                except ValueError:
+                    pass
+            answer = self.observer.ask({'op': 'windows'})
+            self.windows = [w for w in answer if isinstance(w, dict)] if isinstance(answer, list) else []
+            for _ in range(3):
+                membership = self.read_membership()
+                procs = self.read_procs(membership)
+                moves = core.classify(procs, membership, self.scopes, self.windows, now)
+                if not moves:
+                    break
+                for pids, target in moves:
+                    source = membership.get(pids[0])
+                    name = target if isinstance(target, str) else self.create(target, now)
+                    self.move_tree(pids, f'{OWNER}/{name}', f'{OWNER}/{source}')
+            else:
+                membership = self.read_membership()
+                procs = self.read_procs(membership)
+            self.membership = membership
+            self.reap(now)
+            self.sample(procs, membership, now)
+
+    def read_membership(self):
+        membership = {}
+        for name in [core.SESSION, *self.app_scopes()]:
+            for pid in procs_of(f'{OWNER}/{name}'):
+                membership[pid] = name
+        return membership
+
+    def read_procs(self, membership):
+        procs, unknown, keys = {}, [], {}
+        for pid in membership:
+            stat = read(f'/proc/{pid}/stat')
+            status = read(f'/proc/{pid}/status')
+            try:
+                comm, state, ppid, tty, ticks, start = core.parse_stat(stat)
+                uid = core.parse_uid(status)
+            except (ValueError, TypeError):
+                continue
+            key = (pid, start)
+            keys[pid] = key
+            if key not in self.argv:
+                unknown.append(pid)
+            procs[pid] = core.Proc(pid, ppid, uid, comm, tty=tty, state=state, ticks=ticks, start=start)
+        if unknown:
+            answer = self.observer.ask({'op': 'procs', 'pids': unknown}) or {}
+            for pid in unknown:
+                info = answer.get(str(pid)) if isinstance(answer, dict) else None
+                info = info if isinstance(info, dict) else {}
+                marks = info.get('marks')
+                self.argv[keys[pid]] = {'argv': info.get('argv') if isinstance(info.get('argv'), list) else None,
+                                       'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None}
+        live = set(keys.values())
+        self.argv = {k: v for k, v in self.argv.items() if k in live}
+        for pid, proc in procs.items():
+            info = self.argv.get(keys[pid], {})
+            proc.argv, proc.marks = info.get('argv'), info.get('marks')
+        return procs
+
+    def reap(self, now):
+        """Removes app scopes whose processes have all ended."""
+        changed = False
+        for name in self.app_scopes():
+            events = core.parse_keyed(read(CGROUP / OWNER / name / 'cgroup.events', '') or '')
+            if events.get('populated') == 0 and now - self.scopes.get(name, {}).get('createdAt', 0) > 1:
+                try:
+                    (CGROUP / OWNER / name).rmdir()
+                except OSError:
+                    continue
+                self.scopes.pop(name, None)
+                self.samples.pop(name, None)
+                changed = True
+        for name in [n for n in self.scopes if not (CGROUP / OWNER / n).is_dir()]:
+            self.scopes.pop(name)
+            changed = True
+        if changed:
+            self.save()
+
+    def gpu_entries(self):
+        path = Path('/run/user') / str(self.uid) / 'caboose-gpu' / 'usage.json'
+        try:
+            return core.parse_gpu_usage(json.loads(read(path, '') or 'null'))
+        except ValueError:
+            return []
+
+    def sample(self, procs, membership, now):
+        seconds = now - self.sampled if self.sampled else 0
+        self.sampled = now
+        gpu_now = {}
+        for entry in self.gpu_entries():
+            if entry['pid'] in procs and procs[entry['pid']].start == entry['start']:
+                gpu_now.setdefault(membership.get(entry['pid']), []).append(entry)
+        windows_by_pid = {}
+        for window in self.windows:
+            if isinstance(window, dict) and isinstance(window.get('pid'), int) and isinstance(window.get('id'), int) \
+                    and window.get('kind') in ('toplevel', 'dialog'):
+                windows_by_pid.setdefault(window['pid'], []).append(window['id'])
+        ticks_now, apps = {}, []
+        for name in [core.SESSION, *self.app_scopes()]:
+            group = CGROUP / OWNER / name
+            cpu = core.parse_keyed(read(group / 'cpu.stat', '') or '')
+            read_bytes, written = core.parse_io_stat(read(group / 'io.stat', '') or '')
+            current = read(group / 'memory.current', '')
+            memory = core.memory_in_use(int(current), core.parse_keyed(read(group / 'memory.stat', '') or '')) \
+                if current and current.strip().isdigit() else 0
+            counters = {'cpu_usec': cpu.get('usage_usec', 0), 'read': read_bytes, 'written': written, 'memory': memory}
+            previous = self.samples.get(name)
+            self.samples[name] = counters
+            members = [pid for pid, scope in membership.items() if scope == name and pid in procs]
+            processes, windows = [], []
+            for pid in members:
+                proc = procs[pid]
+                key = (pid, proc.start)
+                ticks_now[key] = proc.ticks
+                before = self.ticks.get(key)
+                cpu_percent = core.percent((proc.ticks - before) / TICKS, seconds) if before is not None else 0.0
+                statm = (read(f'/proc/{pid}/statm', '') or '').split()
+                rss = int(statm[1]) * PAGE if len(statm) > 1 and statm[1].isdigit() else 0
+                processes.append(core.process_entry(pid, proc.ppid, proc.comm, proc.argv, proc.state, cpu_percent, rss))
+                windows.extend(windows_by_pid.get(pid, []))
+            meta = self.scopes.get(name) or ({'origin': 'session', 'name': 'System', 'createdAt': 0} if name == core.SESSION else {})
+            gpu = core.gpu_usage(gpu_now.get(name, []), self.gpu, seconds) if name in gpu_now else None
+            apps.append(core.app_entry(name, meta, counters, previous, seconds, processes, windows, gpu))
+        self.ticks = ticks_now
+        self.gpu = {(e['pid'], e['start']): e for entries in gpu_now.values() for e in entries}
+        self.snapshot = {'version': core.VERSION, 'sampledAt': int(now * 1000), 'intervalMs': int(seconds * 1000),
+                         'machine': self.machine(), 'apps': apps}
+
+    @staticmethod
+    def machine():
+        cpus = len(os.sched_getaffinity(0))
+        limit = read(CGROUP / 'cpu.max', '') or ''
+        quota, _, period = limit.strip().partition(' ')
+        if quota.isdigit() and period.isdigit() and int(period):
+            cpus = max(1, min(cpus, -(-int(quota) // int(period))))
+        memory = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+        maximum = (read(CGROUP / 'memory.max', '') or '').strip()
+        if maximum.isdigit():
+            memory = min(memory, int(maximum))
+        return {'cpus': cpus, 'memoryBytes': memory}
+
+    # -- Requests --------------------------------------------------------------------------
+
+    def handle(self, request, peer_pid):
+        op = request.get('op')
+        if op == 'list':
+            self.watched = time.time()
+            if self.snapshot is None:
+                self.tick()
+            return self.snapshot
+        if op == 'scope':
+            desktop_id = request.get('desktopId')
+            if not core.valid_entry_id(desktop_id):
+                raise ScopeError('invalid', 'invalid desktop id')
+            with self.lock:
+                name = self.create(core.NewScope(core.scope_key(desktop_id), 'launch', desktop_id=desktop_id), time.time())
+                if not move(peer_pid, f'{OWNER}/{name}'):
+                    raise ScopeError('gone', 'the process has ended')
+            return {'scope': name}
+        scope = request.get('scope')
+        if op not in ('quit', 'force-quit', 'kill'):
+            raise ScopeError('invalid', 'unknown request')
+        if not isinstance(scope, str) or not core.valid_scope_id(scope):
+            raise ScopeError('invalid', 'invalid scope')
+        if scope == core.SESSION:
+            raise ScopeError('forbidden', "Caboose's own processes cannot be quit")
+        group = CGROUP / OWNER / scope
+        if not group.is_dir():
+            raise ScopeError('unknown', 'no such app')
+        if op == 'quit':
+            pids = set(procs_of(f'{OWNER}/{scope}'))
+            ids = [w['id'] for w in self.observer.ask({'op': 'windows'}) or []
+                   if isinstance(w, dict) and w.get('pid') in pids and isinstance(w.get('id'), int) and w.get('kind') in ('toplevel', 'dialog')]
+            if not ids:
+                raise ScopeError('no-windows', 'the app has no windows to close')
+            closed = sum(1 for i in ids if self.observer.ask({'op': 'close', 'id': i}))
+            return {'closed': closed}
+        killed = False
+        if op == 'force-quit':
+            for pid in procs_of(f'{OWNER}/{scope}'):
+                for number in (signal.SIGTERM, signal.SIGCONT):
+                    try:
+                        os.kill(pid, number)
+                    except OSError:
+                        pass
+            if not self.wait_empty(group, TERM_GRACE):
+                killed = True
+                write(group / 'cgroup.kill', '1')
+        else:
+            killed = True
+            write(group / 'cgroup.kill', '1')
+        return {'ended': self.wait_empty(group, KILL_WAIT), 'killed': killed}
+
+    @staticmethod
+    def wait_empty(group, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if core.parse_keyed(read(group / 'cgroup.events', '') or '').get('populated') == 0:
+                return True
+            time.sleep(0.1)
+        return core.parse_keyed(read(group / 'cgroup.events', '') or '').get('populated') == 0
+
+    def serve(self, connection):
+        with connection:
+            connection.settimeout(15)
+            try:
+                creds = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+                peer_pid, peer_uid, _ = struct.unpack('3i', creds)
+                if peer_uid not in (0, self.uid):
+                    return
+                line = connection.makefile('rb').readline(65536)
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ScopeError('invalid', 'a request is a JSON object')
+                answer = {'ok': True, 'result': self.handle(request, peer_pid)}
+            except ScopeError as error:
+                answer = {'ok': False, 'error': error.code, 'message': str(error)}
+            except (OSError, ValueError) as error:
+                answer = {'ok': False, 'error': 'failed', 'message': str(error)[:300]}
+            try:
+                connection.sendall(json.dumps(answer, separators=(',', ':')).encode() + b'\n')
+            except OSError:
+                pass
+
+    def run(self):
+        RUN.mkdir(parents=True, exist_ok=True)
+        try:
+            SOCKET.unlink()
+        except FileNotFoundError:
+            pass
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(SOCKET))
+        os.chmod(SOCKET, 0o666)
+        server.listen(16)
+
+        def accept():
+            while True:
+                connection, _ = server.accept()
+                threading.Thread(target=self.serve, args=(connection,), daemon=True).start()
+
+        threading.Thread(target=accept, daemon=True).start()
+        while True:
+            started = time.monotonic()
+            try:
+                self.tick()
+            except Exception as error:  # noqa: BLE001 - keep tracking whatever one tick met
+                print(f'caboose-scopes: {error!r}', file=sys.stderr, flush=True)
+            period = FAST if time.time() - self.watched < WATCHED else SLOW
+            time.sleep(max(0.1, period - (time.monotonic() - started)))
+
+
+# -- Starting --------------------------------------------------------------------------
+
+def running_daemon():
+    """The running daemon's pid, from its pid file, if that process is this daemon."""
+    try:
+        pid = int(PIDFILE.read_text().strip())
+        argv = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+    except (OSError, ValueError):
+        return None
+    script = os.fsencode(os.path.realpath(__file__))
+    return pid if script in [os.fsencode(os.path.realpath(a)) for a in argv if a] and b'daemon' in argv else None
+
+
+def ensure(restart):
+    """Starts the daemon unless it runs; with `restart`, replaces a running one (an update)."""
+    pid = running_daemon()
+    if pid and not restart:
+        return 0
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(50):
+            if running_daemon() != pid:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, signal.SIGKILL)
+    try:
+        setup()
+    except Unavailable as error:
+        print(f'caboose-scopes: app scopes are unavailable: {error}', file=sys.stderr)
+        return 3
+    RUN.mkdir(parents=True, exist_ok=True)
+    import subprocess
+    with open(RUN / 'scopes.log', 'ab') as log:
+        subprocess.Popen([sys.executable, os.path.realpath(__file__), 'daemon'], stdin=subprocess.DEVNULL, stdout=log,
+                         stderr=log, start_new_session=True, close_fds=True)
+    return 0
+
+
+# -- Client -------------------------------------------------------------------------------
+
+def request(body, timeout=15):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect(str(SOCKET))
+        sock.sendall(json.dumps(body).encode() + b'\n')
+        data = sock.makefile('rb').readline(64 << 20)
+    return json.loads(data)
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    command = argv[0]
+    if command == 'setup':
+        try:
+            setup()
+        except Unavailable as error:
+            print(f'caboose-scopes: {error}', file=sys.stderr)
+            return 3
+        return 0
+    if command == 'ensure':
+        return ensure(argv[1:] == ['--restart'])
+    if command == 'daemon':
+        try:
+            setup()
+        except Unavailable as error:
+            print(f'caboose-scopes: {error}', file=sys.stderr)
+            return 3
+        # One daemon: a second (a racing `ensure`) leaves, a replacement waits for the old one.
+        import fcntl
+        RUN.mkdir(parents=True, exist_ok=True)
+        lock = open(RUN / 'scopes.lock', 'w')
+        for _ in range(50):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                time.sleep(0.1)
+        else:
+            return 0
+        PIDFILE.write_text(f'{os.getpid()}\n')
+        Daemon().run()
+        return 0
+    if command == 'run':
+        if len(argv) < 4 or argv[2] != '--':
+            print('usage: caboose-scopes run DESKTOP_ID -- COMMAND [ARG...]', file=sys.stderr)
+            return 2
+        try:
+            request({'op': 'scope', 'desktopId': argv[1]})
+        except (OSError, ValueError):
+            pass  # Without the daemon the command still runs, unscoped.
+        os.execvp(argv[3], argv[3:])
+    if command in ('list', 'quit', 'force-quit', 'kill'):
+        body = {'op': command} if command == 'list' else {'op': command, 'scope': argv[1] if len(argv) > 1 else ''}
+        # One JSON answer on stdout, success or not, so a caller that sees only stdout on
+        # success (the host's `docker exec`) always reads why.
+        try:
+            answer = request(body)
+        except (OSError, ValueError) as error:
+            answer = {'ok': False, 'error': 'unavailable', 'message': f'caboose-scopes is not running: {error}'}
+        print(json.dumps(answer, separators=(',', ':')))
+        return 0
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

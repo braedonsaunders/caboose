@@ -649,6 +649,44 @@ location. See [native-bridge.md](native-bridge.md).
 `cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
 messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
+**App scopes.** `guest/scopes` (`caboose-scopes`, root, container computers) places every app
+the owner runs in a cgroup v2 scope of its own, so an app's whole process tree (helpers,
+Wine, pressure-vessel, Flatpak sandboxes) is accounted and ended together. Inside the
+container's cgroup namespace:
+
+| cgroup | Holds |
+| --- | --- |
+| `/init.scope` | The container's init, root's services and `docker exec` arrivals |
+| `/owner.slice/session.scope` | The owner's processes no app claims, Caboose's own services among them |
+| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a Steam game's `steam_app_<id>`, a window's class, or `caboose-terminal`, escaped as systemd escapes unit names |
+
+The memory, IO and pids controllers are enabled on both levels. The daemon moves the
+owner's processes out of `init.scope`, and once a second (every 3 s while nobody has listed
+for 30 s) moves processes into scopes, first rule first:
+
+1. Steam's game reaper (`reaper SteamLaunch AppId=N`) and its tree, into a scope for game N.
+2. Children forked during a split and left in the scope it came from follow their parent.
+3. A phone terminal session (a child of the terminal service) gets its own scope.
+4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
+   `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
+5. A toplevel window whose process is in the session scope or a phone terminal session's
+   scope, or in an app scope when the process runs on a terminal under a windowed process
+   of that scope that is not on that terminal (a program run from a terminal app), takes
+   its process tree into a scope of its own.
+
+Dock launches ask for their scope before the app starts (`guest-apps.py` sends the
+desktop id over `/run/caboose/scopes.sock`). Empty scopes are removed. Windows come from
+the owner display's control socket and belong to an app when their process (its `pid`
+there) is in its scope. GPU use comes from the private GPU broker's
+per-process counters ([gpu-live.md](gpu-live.md#applications)). Quit asks each of the app's
+windows to close (`xdg_toplevel.close`, `WM_DELETE_WINDOW`); Force Quit sends SIGTERM to
+every process of the scope and, after 5 s, kills the scope (`cgroup.kill`); Kill kills it at
+once. Caboose's session scope cannot be ended. The daemon needs a writable cgroup
+hierarchy: new containers are created with `--security-opt writable-cgroups=true`, and at
+each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup` writable in
+that container's mount namespace with a one-shot privileged helper. A microVM computer has
+no app scopes. See [guest/scopes](../guest/scopes/README.md).
+
 ### Catalog
 
 The Library is every application a computer can add: Caboose's curated entries

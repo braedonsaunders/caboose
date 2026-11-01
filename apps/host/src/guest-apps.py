@@ -178,6 +178,20 @@ def for_electron(entry, section):
     copy.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return copy
 
+def enter_scope(ident):
+    """Asks caboose-scopes (guest/scopes) to put this process in a new app scope, so the
+    launch and everything it starts are one app. Without the daemon (a microVM, an older
+    computer) the app still starts, unscoped."""
+    import socket
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(5)
+            sock.connect('/run/caboose/scopes.sock')
+            sock.sendall(json.dumps({'op': 'scope', 'desktopId': ident}).encode() + b'\n')
+            sock.makefile('rb').readline(4096)
+    except OSError:
+        pass
+
 if sys.argv[1] == 'desktop-shortcut':
     desktop_shortcut(sys.argv[2])
     sys.exit(0)
@@ -208,6 +222,7 @@ if sys.argv[1] in ('launch', 'action'):
     action = sys.argv[3] if sys.argv[1] == 'action' else None
     if action is not None and action not in {item['id'] for item in actions(section)}:
         raise SystemExit('Application action not found')
+    enter_scope(sys.argv[2])
     # GLib handles desktop field codes and does not interpret the Exec as shell; this is
     # what `gio launch` does, without needing the CLI (libglib2.0-bin) in the image.
     import gi

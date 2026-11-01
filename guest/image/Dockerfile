@@ -37,6 +37,7 @@ COPY files /builder/files
 COPY terminal /builder/terminal
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
+COPY scopes /builder/scopes
 
 COPY phone /builder/phone
 COPY devices /builder/devices

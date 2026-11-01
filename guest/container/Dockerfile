@@ -76,6 +76,7 @@ COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY notifications /tmp/bundle/notifications
+COPY scopes /tmp/bundle/scopes
 COPY phone /tmp/bundle/phone
 COPY devices /tmp/bundle/devices
 COPY bridge /tmp/bundle/bridge
