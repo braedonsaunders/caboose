@@ -179,11 +179,28 @@ DeviceData* deviceData(const void* handle) {
     auto queue = queues.find(key(handle));
     return queue == queues.end() ? nullptr : queue->second;
 }
-// A call for a device this layer did not create cannot be forwarded: said once, by name.
+// Instance-level lookups of the wrapped device functions return the next layer's
+// dispatching trampolines, which serve any device. A device this layer did not see created
+// (a driver that reaches it through vkGetInstanceProcAddr, past this layer's vkCreateDevice)
+// is served through them, unmanaged, instead of failing.
+std::mutex fallbackMutex;
+std::unordered_map<std::string, PFN_vkVoidFunction> fallbacks;
+void rememberFallback(const char* name, PFN_vkVoidFunction next) {
+    std::lock_guard<std::mutex> lock(fallbackMutex);
+    fallbacks.emplace(name, next);
+}
+template <class F>
+F fallback(const char* name) {
+    std::lock_guard<std::mutex> lock(fallbackMutex);
+    auto found = fallbacks.find(name);
+    return found == fallbacks.end() ? nullptr : reinterpret_cast<F>(found->second);
+}
+// Said once, by name: such a device does not move to the phone.
 void unknownDevice(const char* call) {
     static std::atomic<bool> said{false};
     if (!said.exchange(true))
-        std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: %s on a device or queue this layer did not create\n", call);
+        std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: %s on a device or queue this layer did not create; "
+                             "served unmanaged\n", call);
 }
 
 // True once the device must report loss: sticky, as device loss is.
@@ -317,22 +334,26 @@ VKAPI_ATTR void VKAPI_CALL DestroyDevice(VkDevice device, const VkAllocationCall
 }
 
 // Each wrapped call reports loss, or goes to the next layer. Queues share their device's key.
-#define FORWARD(handle, member, ...)                                        \
+#define FORWARD(handle, member, name, ...)                                  \
     DeviceData* data = deviceData(handle);                                  \
-    if (!data) unknownDevice(#member);                                      \
-    if (!data || !data->member) return VK_ERROR_INITIALIZATION_FAILED;      \
+    if (!data) {                                                            \
+        unknownDevice(#member);                                             \
+        auto next = fallback<decltype(DeviceData::member)>(name);           \
+        return next ? next(__VA_ARGS__) : VK_ERROR_INITIALIZATION_FAILED;   \
+    }                                                                       \
+    if (!data->member) return VK_ERROR_INITIALIZATION_FAILED;               \
     if (lost(*data)) return VK_ERROR_DEVICE_LOST;                           \
     return data->member(__VA_ARGS__)
 
 VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* submits, VkFence fence) {
-    FORWARD(queue, queueSubmit, queue, count, submits, fence);
+    FORWARD(queue, queueSubmit, "vkQueueSubmit", queue, count, submits, fence);
 }
 VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit2(VkQueue queue, uint32_t count, const VkSubmitInfo2* submits, VkFence fence) {
-    FORWARD(queue, queueSubmit2, queue, count, submits, fence);
+    FORWARD(queue, queueSubmit2, "vkQueueSubmit2", queue, count, submits, fence);
 }
 VKAPI_ATTR VkResult VKAPI_CALL QueueSubmit2KHR(VkQueue queue, uint32_t count, const VkSubmitInfo2* submits,
                                                VkFence fence) {
-    FORWARD(queue, queueSubmit2KHR, queue, count, submits, fence);
+    FORWARD(queue, queueSubmit2KHR, "vkQueueSubmit2KHR", queue, count, submits, fence);
 }
 void rememberQueue(DeviceData* data, VkQueue queue) {
     if (!queue || key(queue) == nullptr) return;
@@ -341,20 +362,34 @@ void rememberQueue(DeviceData* data, VkQueue queue) {
 }
 VKAPI_ATTR void VKAPI_CALL GetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue* queue) {
     DeviceData* data = deviceData(device);
-    if (!data || !data->getQueue) { unknownDevice("getQueue"); return; }
+    if (!data) {
+        unknownDevice("getQueue");
+        if (auto next = fallback<PFN_vkGetDeviceQueue>("vkGetDeviceQueue")) next(device, family, index, queue);
+        return;
+    }
+    if (!data->getQueue) return;
     data->getQueue(device, family, index, queue);
     if (queue) rememberQueue(data, *queue);
 }
 VKAPI_ATTR void VKAPI_CALL GetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* info, VkQueue* queue) {
     DeviceData* data = deviceData(device);
-    if (!data || !data->getQueue2) { unknownDevice("getQueue2"); return; }
+    if (!data) {
+        unknownDevice("getQueue2");
+        if (auto next = fallback<PFN_vkGetDeviceQueue2>("vkGetDeviceQueue2")) next(device, info, queue);
+        return;
+    }
+    if (!data->getQueue2) return;
     data->getQueue2(device, info, queue);
     if (queue) rememberQueue(data, *queue);
 }
 VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
     DeviceData* data = deviceData(queue);
-    if (!data) unknownDevice("queuePresent");
-    if (!data || !data->queuePresent) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!data) {
+        unknownDevice("queuePresent");
+        auto next = fallback<PFN_vkQueuePresentKHR>("vkQueuePresentKHR");
+        return next ? next(queue, info) : VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (!data->queuePresent) return VK_ERROR_INITIALIZATION_FAILED;
     if (lost(*data)) {
         if (info && info->pResults)
             for (uint32_t i = 0; i < info->swapchainCount; ++i) info->pResults[i] = VK_ERROR_DEVICE_LOST;
@@ -364,27 +399,27 @@ VKAPI_ATTR VkResult VKAPI_CALL QueuePresentKHR(VkQueue queue, const VkPresentInf
 }
 VKAPI_ATTR VkResult VKAPI_CALL AcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
                                                    VkSemaphore semaphore, VkFence fence, uint32_t* index) {
-    FORWARD(device, acquire, device, swapchain, timeout, semaphore, fence, index);
+    FORWARD(device, acquire, "vkAcquireNextImageKHR", device, swapchain, timeout, semaphore, fence, index);
 }
 VKAPI_ATTR VkResult VKAPI_CALL AcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* info,
                                                     uint32_t* index) {
-    FORWARD(device, acquire2, device, info, index);
+    FORWARD(device, acquire2, "vkAcquireNextImage2KHR", device, info, index);
 }
 VKAPI_ATTR VkResult VKAPI_CALL WaitForFences(VkDevice device, uint32_t count, const VkFence* fences, VkBool32 all,
                                              uint64_t timeout) {
-    FORWARD(device, waitForFences, device, count, fences, all, timeout);
+    FORWARD(device, waitForFences, "vkWaitForFences", device, count, fences, all, timeout);
 }
 VKAPI_ATTR VkResult VKAPI_CALL GetFenceStatus(VkDevice device, VkFence fence) {
-    FORWARD(device, fenceStatus, device, fence);
+    FORWARD(device, fenceStatus, "vkGetFenceStatus", device, fence);
 }
 VKAPI_ATTR VkResult VKAPI_CALL WaitSemaphores(VkDevice device, const VkSemaphoreWaitInfo* info, uint64_t timeout) {
-    FORWARD(device, waitSemaphores, device, info, timeout);
+    FORWARD(device, waitSemaphores, "vkWaitSemaphores", device, info, timeout);
 }
 VKAPI_ATTR VkResult VKAPI_CALL WaitSemaphoresKHR(VkDevice device, const VkSemaphoreWaitInfo* info, uint64_t timeout) {
-    FORWARD(device, waitSemaphoresKHR, device, info, timeout);
+    FORWARD(device, waitSemaphoresKHR, "vkWaitSemaphoresKHR", device, info, timeout);
 }
-VKAPI_ATTR VkResult VKAPI_CALL DeviceWaitIdle(VkDevice device) { FORWARD(device, deviceWaitIdle, device); }
-VKAPI_ATTR VkResult VKAPI_CALL QueueWaitIdle(VkQueue queue) { FORWARD(queue, queueWaitIdle, queue); }
+VKAPI_ATTR VkResult VKAPI_CALL DeviceWaitIdle(VkDevice device) { FORWARD(device, deviceWaitIdle, "vkDeviceWaitIdle", device); }
+VKAPI_ATTR VkResult VKAPI_CALL QueueWaitIdle(VkQueue queue) { FORWARD(queue, queueWaitIdle, "vkQueueWaitIdle", queue); }
 #undef FORWARD
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name);
@@ -432,7 +467,10 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance
     if (!data) return nullptr;
     PFN_vkVoidFunction next = data->next(instance, name);
     if (!next) return nullptr;
-    if (PFN_vkVoidFunction own = deviceFunction(name)) return own;
+    if (PFN_vkVoidFunction own = deviceFunction(name)) {
+        rememberFallback(name, next);
+        return own;
+    }
     return next;
 }
 

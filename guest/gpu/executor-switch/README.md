@@ -32,6 +32,11 @@ namespace), written to a temporary file and renamed. The running-apps list (`gue
 reports it as `gpuPlacement`. The record is removed when the process destroys its last such
 device.
 
+A device this layer did not see created (a driver that reaches the device functions through
+`vkGetInstanceProcAddr`, past this layer's `vkCreateDevice`) is served through the next
+layer's functions, unmanaged, and reported once on stderr as `CABOOSE_GPU_EXECUTOR_SWITCH:
+<call> on a device or queue this layer did not create; served unmanaged`.
+
 Wrapped calls: `vkQueueSubmit`, `vkQueueSubmit2(KHR)`, `vkQueuePresentKHR`,
 `vkAcquireNextImage(2)KHR`, `vkWaitForFences`, `vkGetFenceStatus`,
 `vkWaitSemaphores(KHR)`, `vkDeviceWaitIdle` and `vkQueueWaitIdle`. Everything else
