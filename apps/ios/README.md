@@ -1103,8 +1103,8 @@ screens. Dismiss it without parking or restarting when checking placement only.
 Laptop follows the fold: a partially folded horizontal hinge on iOS 27.1 and later selects
 it, and there is no manual layout choice. The upper area shows the app/desktop without the
 system toolbar. The lower-right control rail offers Keyboard, Trackpad, Keyboard & Trackpad
-or Gamepad from one input button showing the current input, then Windows (every app window,
-the front one checked), Computer settings, Go to (the app's tabs in tab-bar order) and power. Opening a window from the Laptop
+or Gamepad from one input button showing the current input, then Computer settings, Go to
+(the app's tabs in tab-bar order) and power. Opening a window from the Laptop
 desktop focuses it in that workspace, and every app window, Wayland or X11, fills the upper
 screen once (one whose minimum size is larger is laid out at the screen's shape grown to that
 minimum and shown scaled to fit; a fixed-size or capped one such as a starter window sits in its
@@ -1134,8 +1134,7 @@ workspace intact. Book posture and compact screens keep the ordinary layout.
 ### On-screen controller
 
 Laptop's Gamepad mode and a TV's Gamepad draw the same controller, aimed at the window the
-keyboard would type into. A strip at its top chooses the controller type, names where the pad
-goes ("Controller for …" or "Keys to …"), opens Customize and, filling the phone, leaves.
+keyboard would type into. A strip at its top chooses the controller type, opens Customize and, filling the phone, leaves.
 There are four types, each laid out and drawn as the controller it recalls:
 
 - **Modern**: offset twin sticks, a d-pad, A/B/X/Y, bumpers, analog triggers, View, Menu and
@@ -1168,10 +1167,7 @@ the arrow keys and the left stick W A S D; the right stick is the mouse, looking
 game's mouse look does, faster the further it is pushed, at the Look speed Customize sets;
 A Space, B Escape, Start Return). A key belongs to a button's place on the controller, so it
 carries across types; a button can also press keys together (Space and Return, Return and Y,
-Escape and N) for a game's menus and yes/no questions. The keyboard button in the pad's strip
-swaps its title for quick keys (Escape, Return, Y, N, Tab and the console's `` ` ``), each
-pressed and released at a tap, and a Type key that raises the system keyboard, whose
-characters, Return and Delete reach the window as key presses. With **Other
+Escape and N) for a game's menus and yes/no questions. With **Other
 windows get: Automatic** (the default) the pad is a gamepad on the computer
 (`gamepad-screen` in [phone hardware](../../docs/devices.md)) while a Steam or SDL game reads
 it, and keys otherwise; **A Linux controller** makes it the gamepad always and **Keys** never.

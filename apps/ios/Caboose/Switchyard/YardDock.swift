@@ -1,9 +1,9 @@
 import CabooseKit
 import SwiftUI
 
-/// The Desktop tab's dock: each app appears once, followed by Overview and All Apps.
+/// The Desktop tab's dock: each app appears once, followed by All Apps.
 /// Tapping opens or focuses the app; holding offers its window actions. A swipe up opens
-/// Overview. Holding Overview opens Quick Switch: slide to a window and release to select.
+/// Overview.
 struct YardDock: View {
     @Environment(AppModel.self) private var model
     @Environment(\.portraitDesktopChrome) private var portraitDesktop
@@ -18,7 +18,7 @@ struct YardDock: View {
         let columns = yard.layout.columns
         let apps = model.dockApps
         // Keep app icons full-sized; overflow scrolls without duplicating running apps.
-        let fixed: CGFloat = 2 * 34 + 1 + 3 * 10 + 24 + (portraitDesktop ? 54 : 0)
+        let fixed: CGFloat = 34 + 1 + 2 * 10 + 24 + (portraitDesktop ? 54 : 0)
         let appWidth = min(max(0, CGFloat(apps.count) * (icon + 10) - 10), max(icon, width - 32 - fixed))
         HStack(spacing: 10) {
             ScrollView(.horizontal) {
@@ -61,7 +61,6 @@ struct YardDock: View {
             .frame(width: appWidth, height: icon + 7 + DockLaunchFeedback.maximumLift)
             .padding(.top, -DockLaunchFeedback.maximumLift)
             Divider().frame(height: 34).overlay(.white.opacity(0.3))
-            OverviewControl(yard: yard, enabled: true)
             button("All Apps", "square.grid.3x3.fill") { withAnimation(.smooth(duration: 0.3)) { yard.launcherOpen = true } }
             if portraitDesktop { DesktopPanelButton() }
         }
@@ -73,9 +72,6 @@ struct YardDock: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 20).onEnded { value in
                 guard value.translation.height < -30, abs(value.translation.height) > abs(value.translation.width), !columns.isEmpty else { return }
-                // A finger that held Overview and slid up was choosing a window, not asking for Overview.
-                let switcher = model.quickSwitch
-                guard switcher.mode != .hold, Date().timeIntervalSince(switcher.holdEnded) > 0.4 else { return }
                 withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
             }
         )
@@ -102,64 +98,6 @@ struct YardDock: View {
         .buttonStyle(.plain)
         .foregroundStyle(.white)
         .accessibilityLabel(title)
-    }
-}
-
-/// Overview on the dock. A tap opens Overview. Held, it opens Quick Switch with nothing
-/// selected: sliding up selects the window level with the finger, and letting go goes to it;
-/// letting go off the strip, or the gesture being cancelled, stays. VoiceOver offers Switch
-/// Windows, which opens the strip to choose from, with Stay Here.
-private struct OverviewControl: View {
-    @Environment(AppModel.self) private var model
-    let yard: YardModel
-    let enabled: Bool
-    @GestureState private var held = false
-
-    var body: some View {
-        let switcher = model.quickSwitch
-        Image(systemName: "rectangle.on.rectangle")
-            .font(.system(size: 17, weight: .semibold))
-            .frame(width: 34, height: 34)
-            .background(.white.opacity(switcher.owner == .yard && switcher.mode == .hold ? 0.22 : 0), in: Circle())
-            .contentShape(Rectangle())
-            .foregroundStyle(.white.opacity(enabled ? 1 : 0.4))
-            .gesture(
-                LongPressGesture(minimumDuration: 0.35)
-                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
-                    .updating($held) { value, state, _ in
-                        if case .second(true, _) = value { state = true }
-                    }
-                    .onChanged { value in
-                        guard case .second(true, let drag) = value else { return }
-                        if !(switcher.owner == .yard && switcher.mode == .hold) {
-                            switcher.hold(recent: recent, desktop: yard.switchTarget())
-                        }
-                        if let drag { switcher.track(drag.location) }
-                    }
-                    .onEnded { _ in switcher.release() }
-                    .exclusively(before: TapGesture().onEnded { openOverview() }),
-                including: enabled ? .all : .none
-            )
-            // A hold the system took away (a call, a system gesture) stays where it was.
-            .onChange(of: held) { _, held in
-                if !held, switcher.owner == .yard, switcher.mode == .hold { switcher.cancel() }
-            }
-            .accessibilityElement()
-            .accessibilityLabel("Window Overview")
-            .accessibilityHint("Show open windows. Hold and slide up to switch windows.")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { openOverview() }
-            .accessibilityAction(named: "Switch Windows") {
-                switcher.present(recent: recent, desktop: yard.switchTarget())
-            }
-            .disabled(!enabled)
-    }
-
-    private var recent: [Int] { model.recentWindowIDs.filter { yard.layout.contains($0) } }
-
-    private func openOverview() {
-        guard enabled else { return }
-        withAnimation(.smooth(duration: 0.35)) { yard.overviewOpen = true }
     }
 }
 

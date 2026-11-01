@@ -22,10 +22,6 @@ struct GamepadPanel: View {
     @State private var stickCenters: [OnScreenGamepad.Control: CGPoint] = [:]
     /// Bumped to take every finger on the pad away from what it held.
     @State private var ownership = 0
-    /// The quick keys show in the strip in place of its title, and the system keyboard
-    /// types into the window, for what no control is assigned (a game's Y/N question).
-    @State private var quickKeys = false
-    @State private var typing = false
     /// What the fingers on the pad hold now, sent again when the connection comes back.
     @State private var touches = GameGamepadState()
 
@@ -74,14 +70,6 @@ struct GamepadPanel: View {
                     touches = state
                     driver.apply(state, to: target(), session: model.session, settings: settings, devices: model.devices)
                 }
-                GameKeyboard(active: $typing) { stroke in
-                    guard let window = target(), let session = model.session, session.state == .ready,
-                          session.windows[window.id] === window else { return }
-                    session.key(stroke, pressed: true, in: window)
-                    session.key(stroke, pressed: false, in: window)
-                }
-                .frame(width: 1, height: 1)
-                .allowsHitTesting(false)
                 hud(style: style, app: app, window: current, settings: settings)
                     .frame(width: max(0, layout.hud.width), height: max(0, layout.hud.height))
                     .position(x: layout.hud.midX, y: layout.hud.midY)
@@ -120,8 +108,8 @@ struct GamepadPanel: View {
         }
     }
 
-    /// The pad's own strip: the controller type, where the pad goes, Customize and, for a pad
-    /// that fills the screen, the way out.
+    /// The pad's own strip: the controller type and Customize and, for a pad that fills the
+    /// screen, the way out.
     private func hud(style: OnScreenGamepad.Style, app: String?, window: RemoteWindow?, settings: OnScreenGamepad.Settings) -> some View {
         HStack(spacing: 2) {
             Menu {
@@ -140,24 +128,6 @@ struct GamepadPanel: View {
             }
             .accessibilityLabel("Controller type")
             .accessibilityValue(style.title)
-            if quickKeys {
-                quickKeyStrip(window)
-            } else {
-                Text(driver.destination(of: window, settings: settings, name: window.map { model.appName(for: $0) },
-                                        linux: driver.drivesController(settings: settings, devices: model.devices)))
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .frame(maxWidth: .infinity)
-            }
-            Button(quickKeys ? "Hide Keys" : "Keys", systemImage: quickKeys ? "keyboard.chevron.compact.down" : "keyboard") {
-                quickKeys.toggle()
-                if !quickKeys { typing = false }
-            }
-                .labelStyle(.iconOnly)
-                .frame(width: 40, height: 32)
-                .contentShape(.rect)
             Button("Customize Controller", systemImage: "slider.horizontal.3") { customizing = true }
                 .labelStyle(.iconOnly)
                 .frame(width: 40, height: 32)
@@ -175,86 +145,6 @@ struct GamepadPanel: View {
         .padding(.horizontal, 4)
         .glassEffect(.regular, in: .capsule)
         .environment(\.colorScheme, .dark)
-    }
-}
-
-extension GamepadPanel {
-    /// Keys a game asks for that no control may have: its menus' answers and the console.
-    static let quickKeys: [(name: String, title: String)] = [
-        ("Escape", "esc"), ("Return", "⏎"), ("y", "Y"), ("n", "N"), ("Tab", "⇥"), ("`", "~"),
-    ]
-
-    /// Each key pressed and released at a tap, and the system keyboard for any other.
-    func quickKeyStrip(_ window: RemoteWindow?) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Self.quickKeys, id: \.name) { key in
-                Button(key.title) {
-                    guard let window, let session = model.session, session.state == .ready,
-                          session.windows[window.id] === window,
-                          let stroke = OnScreenGamepad.stroke(for: key.name) else { return }
-                    session.key(stroke, pressed: true, in: window)
-                    session.key(stroke, pressed: false, in: window)
-                    if settings.haptics { UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.8) }
-                }
-                .font(.caption.weight(.semibold))
-                .frame(minWidth: 26, maxWidth: .infinity, minHeight: 32)
-                .contentShape(.rect)
-                .accessibilityLabel("Press \(key.name)")
-            }
-            Button("Type", systemImage: "character.cursor.ibeam") { typing.toggle() }
-                .labelStyle(.iconOnly)
-                .frame(minWidth: 30, minHeight: 32)
-                .contentShape(.rect)
-                .accessibilityLabel(typing ? "Hide keyboard" : "Type with the keyboard")
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-/// The system keyboard for the pad: each character typed, Return and Delete become a key
-/// press in the window, as a hardware keyboard's would.
-private struct GameKeyboard: UIViewRepresentable {
-    @Binding var active: Bool
-    let press: (KeyStroke) -> Void
-
-    func makeUIView(context: Context) -> Field { Field() }
-
-    func updateUIView(_ field: Field, context: Context) {
-        field.press = press
-        field.ended = { active = false }
-        DispatchQueue.main.async {
-            guard field.window != nil else { return }
-            if active, !field.isFirstResponder { field.becomeFirstResponder() }
-            if !active, field.isFirstResponder { field.resignFirstResponder() }
-        }
-    }
-
-    final class Field: UIView, UIKeyInput {
-        var press: ((KeyStroke) -> Void)?
-        var ended: (() -> Void)?
-        var autocorrectionType: UITextAutocorrectionType = .no
-        var autocapitalizationType: UITextAutocapitalizationType = .none
-        var spellCheckingType: UITextSpellCheckingType = .no
-        var smartQuotesType: UITextSmartQuotesType = .no
-        override var canBecomeFirstResponder: Bool { true }
-        var hasText: Bool { true }
-
-        func insertText(_ text: String) {
-            for character in text {
-                let stroke = character == "\n" || character == "\r" ? Keysyms.special["Return"] : Keysyms.stroke(for: character)
-                if let stroke { press?(stroke) }
-            }
-        }
-
-        func deleteBackward() {
-            if let stroke = Keysyms.special["BackSpace"] { press?(stroke) }
-        }
-
-        override func resignFirstResponder() -> Bool {
-            let resigned = super.resignFirstResponder()
-            if resigned { ended?() }
-            return resigned
-        }
     }
 }
 

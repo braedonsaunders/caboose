@@ -117,7 +117,8 @@ struct ShellTabButtons: View {
     var body: some View {
         let layout = axis == .horizontal ? AnyLayout(HStackLayout(spacing: 2)) : AnyLayout(VStackLayout(spacing: 4))
         layout {
-            ForEach(Self.tabs, id: \.tab) { item in
+            // On the desktop its own tab is no way anywhere, so the bar offers only the others.
+            ForEach(Self.tabs.filter { model.selectedTab != .desktop || $0.tab != .desktop }, id: \.tab) { item in
                 button(item.tab, item.title, item.symbol)
             }
         }

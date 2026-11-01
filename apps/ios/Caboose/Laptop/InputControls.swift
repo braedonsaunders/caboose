@@ -154,7 +154,6 @@ struct InputControls: View {
                 Menu {
                     InputChoices(input: $input, gestureHelp: $gestureHelp)
                     Divider()
-                    Menu("Windows", systemImage: "macwindow.on.rectangle") { windowChoices }
                     computerActions
                     Divider()
                     navigationActions
@@ -167,14 +166,10 @@ struct InputControls: View {
                 }
                 .accessibilityLabel("Input")
                 .accessibilityValue(input.title)
-                Menu { windowChoices } label: {
-                    Image(systemName: "macwindow.on.rectangle").frame(width: 48, height: 44)
-                }
-                .accessibilityLabel("Windows")
                 Button("Computer", systemImage: "gearshape") { model.settingsPresented = true }
                     .frame(width: 48, height: 44)
                 Menu { navigationActions } label: {
-                    Image(systemName: "rectangle.bottomthird.inset.filled").frame(width: 48, height: 44)
+                    Image(systemName: "house").frame(width: 48, height: 44)
                 }
                 .accessibilityLabel("Go to")
                 .accessibilityHint("Home, Agents, Apps and the other tabs")
@@ -200,34 +195,6 @@ struct InputControls: View {
         ForEach(ShellTabButtons.tabs.filter { isCard || $0.tab != .desktop }, id: \.tab) { item in
             Button(item.title, systemImage: item.symbol) { leave(item.tab) }
         }
-    }
-
-    /// Every app window, the one in front checked; choosing one brings it forward.
-    @ViewBuilder private var windowChoices: some View {
-        let windows = model.workspaceWindows
-        if windows.isEmpty {
-            Text("No Open Windows")
-        } else {
-            let front = isCard ? model.presentedWindowID : model.session.flatMap { model.desktop.frontWindow(in: $0.windows)?.id }
-            Picker("Windows", selection: Binding(get: { front }, set: { id in id.map(select) })) {
-                ForEach(windows) { window in
-                    let app = model.appName(for: window)
-                    Label {
-                        Text(app)
-                        if !window.title.isEmpty && window.title != app { Text(window.title) }
-                    } icon: {
-                        if let icon = model.icon(for: window) { Image(uiImage: icon) } else { Image(systemName: "macwindow") }
-                    }
-                    .tag(Optional(window.id))
-                }
-            }
-            .pickerStyle(.inline)
-        }
-    }
-
-    private func select(_ id: Int) {
-        if isCard { model.presentedWindowID = id }
-        else { model.desktop.activate(id, session: model.session) }
     }
 
     private func followTextFocus(_ focused: Bool) {
