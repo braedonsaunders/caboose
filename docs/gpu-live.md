@@ -191,7 +191,12 @@ With `0x80`, a create command carries an output handle the process chose, with `
 in its top byte, a 24-bit per-process tag and a 32-bit counter. The decoder registers
 the object under that value instead of minting one, so the process continues without
 waiting for the reply; it reads the reply later and treats a refused or renamed handle
-as device loss. This covers device memory, fences, semaphores, buffers, images and
+as device loss. A graphics or compute pipeline the phone cannot compile under such handles
+is not refused: the decoder registers a stand-in under the same handle, with the same
+layout, render pass and dynamic state, that runs a trivial vertex stage with rasterization
+discarded (or an empty kernel), so that pipeline's draws and dispatches do nothing, and the
+phone prints `CABOOSE_GPU_STANDIN kind=… handle=… index=… error=…` beside the provider's
+compile error. Pipeline libraries are refused as before. This covers device memory, fences, semaphores, buffers, images and
 views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
 and pools, command pools, render passes, framebuffers and pipelines. With `0x100` it
 also covers descriptor sets and command buffers: the decoder registers the i-th created
