@@ -38,6 +38,10 @@ OWNED = {
        for name in ('gpu_media.h', 'media_import.h', 'media_import.inc')},
     'feature-emulation/feature_emulation.h':
         'src/gfxstream/guest/vulkan_enc/caboose-features/feature_emulation.h',
+    'feature-emulation/d3d11_emulation.h':
+        'src/gfxstream/guest/vulkan_enc/caboose-features/d3d11_emulation.h',
+    'feature-emulation/d3d11_tracker.inc':
+        'src/gfxstream/guest/vulkan_enc/caboose-features/d3d11_tracker.inc',
 }
 
 

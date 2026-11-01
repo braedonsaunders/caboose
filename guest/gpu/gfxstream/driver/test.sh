@@ -25,3 +25,5 @@ run test_client "$gfxstream/virtual-wsi/test_client.cpp" "$gfxstream/virtual-wsi
 run test_indexed "$gfxstream/virtual-wsi/test_indexed.cpp" "$gfxstream/virtual-wsi/client.cpp"
 run test_socket_stream $config -I"$gfxstream/fixtures/iostream" -I"$scratch/include" \
     "$gfxstream/test_socket_stream.cpp" "$gfxstream/SocketStream.cpp"
+run d3d11_emulation_test -I"${CABOOSE_VULKAN_INCLUDE:-/work/mesa/include}" \
+    "$gfxstream/feature-emulation/d3d11_emulation_test.cpp"

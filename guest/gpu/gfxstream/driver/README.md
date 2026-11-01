@@ -50,7 +50,7 @@ Caboose-owned sources to the paths the patches include them from:
 | `../bounded-memory/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/` |
 | `../dmabuf/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-dmabuf/` |
 | `../media/{gpu_media.h,media_import.h,media_import.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-media/` |
-| `../feature-emulation/feature_emulation.h` | `src/gfxstream/guest/vulkan_enc/caboose-features/` |
+| `../feature-emulation/{feature_emulation.h,d3d11_emulation.h,d3d11_tracker.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-features/` |
 
 Patches change upstream files only; a patch that touches an owned path is rejected. The
 owned sources are ordinary files with their own unit tests
@@ -99,6 +99,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0034 dma-buf-buffers | Phone-resident dma-bufs on the render node (`CABOOSE_FORMAT_MOD_REMOTE`, docs/gpu-buffers.md): import, export, registration with the broker for presentation, and sync-file export of fences and semaphores; LINEAR NV12/P010 dma-bufs of phone-decoded video are imported and filled by latch (docs/gpu-media.md) |
 | 0035 desktop-gl-features | `logicOp` and `VK_EXT_custom_border_color`, which Zink needs for desktop OpenGL, are offered when the phone's device lacks them and kept from it: a pipeline's logic operation is dropped, and a custom border colour becomes the nearest built-in one (`../feature-emulation/README.md`) |
 | 0036 modifier-lists-in-the-guest | On the socket transport both DRM format modifier lists are answered in the guest and never sent to the host, whose reply could desynchronise the stream; `vkGetPhysicalDeviceFormatProperties2KHR` takes the core entry point's path |
+| 0037 d3d11-features | What DXVK needs for Direct3D 11 and the phone's device lacks is offered and kept from it: `geometryShader` (a geometry pipeline draws nothing), `shaderCullDistance` (cull distances become private variables), `VK_EXT_depth_clip_enable` (depth clip becomes depth clamp) and `VK_EXT_robustness2` `nullDescriptor` and `robustBufferAccess2` (null resources become zeroed per-device stand-ins); `VK_KHR_maintenance5`, `VK_KHR_maintenance6` and `VK_KHR_load_store_op_none` pass through (`../feature-emulation/README.md`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
