@@ -1,0 +1,11 @@
+[Unit]
+Description=Wine at the display's density
+
+[Service]
+User=caboose
+ExecStart=/usr/bin/python3 -I /opt/caboose/wine/caboose-wine-dpi
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
