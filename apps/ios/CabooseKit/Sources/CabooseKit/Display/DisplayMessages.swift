@@ -40,6 +40,7 @@ public enum DisplayProtocol {
         case scrollTree = 0x27
         // Controls a finger may mean (docs/display.md, "Touch targets").
         case targets = 0x28
+        case textFocus = 0x29
         case clipboard = 0x30
         case notification = 0x31
         case dropStatus = 0x32
@@ -667,6 +668,8 @@ public enum ServerMessage: Sendable {
     case scrollTree(ScrollTree)
     /// A window's controls, replacing its previous list.
     case targets(window: Int, serial: UInt64, targets: [TouchTarget])
+    /// Whether the window's focus, as its accessibility tree reports it, takes typing.
+    case textFocus(window: Int, editing: Bool)
     case surfaceBatch(SurfaceBatch)
     case surfaceReset(epoch: UInt64)
     case sceneFont(SceneFontDescriptor)
@@ -736,6 +739,12 @@ public enum ServerMessage: Sendable {
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
         case .scrollTree: parsed = ScrollTree(body).map(ServerMessage.scrollTree)
+        case .textFocus:
+            if let window = body["id"]?.int, let editing = body["editing"]?.bool {
+                parsed = .textFocus(window: window, editing: editing)
+            } else {
+                parsed = nil
+            }
         case .targets:
             if let window = body["id"]?.int, let serial = body["serial"]?.uint64, let list = body["targets"]?.array {
                 let targets = list.compactMap { item in item.array.flatMap { TouchTarget(wire: $0.compactMap(\.double)) } }

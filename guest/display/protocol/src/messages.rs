@@ -920,6 +920,13 @@ pub enum Message {
     TextInput(TextInputState),
     ScrollTree(ScrollTree),
     Targets(Targets),
+    /// `text_focus` (0x29): whether window `id`'s focus, as its accessibility tree reports
+    /// it, is where typed text goes (a field, a cell being edited), or not (a button, a
+    /// spreadsheet's grid), whatever its input method state says.
+    TextFocus {
+        id: u64,
+        editing: bool,
+    },
     SurfaceBatch(SurfaceBatch),
     SurfaceReset {
         epoch: u64,
@@ -1120,6 +1127,7 @@ pub mod type_id {
     pub const TEXT_INPUT: u8 = 0x22;
     pub const SCROLL_TREE: u8 = 0x27;
     pub const TARGETS: u8 = 0x28;
+    pub const TEXT_FOCUS: u8 = 0x29;
     pub const SURFACE_BATCH: u8 = 0x23;
     pub const SURFACE_RESET: u8 = 0x24;
     pub const SCENE_FONT: u8 = 0x25;
@@ -1243,6 +1251,7 @@ impl Message {
             Message::TextInput(_) => TEXT_INPUT,
             Message::ScrollTree(_) => SCROLL_TREE,
             Message::Targets(_) => TARGETS,
+            Message::TextFocus { .. } => TEXT_FOCUS,
             Message::SurfaceBatch(_) => SURFACE_BATCH,
             Message::SurfaceReset { .. } => SURFACE_RESET,
             Message::SceneFont(_) => SCENE_FONT,
@@ -1481,6 +1490,7 @@ impl Message {
                 .put("serial", m.serial)
                 .put("targets", Value::Array(m.targets.iter().map(target_value).collect()))
                 .build(),
+            Message::TextFocus { id, editing } => MapBuilder::new().put("id", *id).put("editing", *editing).build(),
             Message::ScrollTarget(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("scroller", m.scroller)
@@ -1779,6 +1789,7 @@ impl Message {
                 serial: f.u64("serial")?,
                 targets: f.array("targets")?.iter().map(target_from).collect::<Result<_, _>>()?,
             }),
+            TEXT_FOCUS => Message::TextFocus { id: f.u64("id")?, editing: f.bool("editing")? },
             TILE => Message::Tile(Tile {
                 id: f.u64("id")?,
                 rect: f.rect("rect")?,
@@ -2126,6 +2137,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         TEXT_INPUT => "text_input",
         SCROLL_TREE => "scroll.tree",
         TARGETS => "targets",
+        TEXT_FOCUS => "text_focus",
         SURFACE_BATCH => "surface.batch",
         SURFACE_RESET => "surface.reset",
         SCENE_FONT => "scene.font",

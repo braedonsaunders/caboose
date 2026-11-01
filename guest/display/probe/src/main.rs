@@ -80,7 +80,8 @@ OPTIONS:
     --scroll-zoom S        after 120 drives, zoom the page to S with scroll.zoom and go on
     --scroll-zoom-focus F  the zoom's focus F of the scroller's height down [default: 0.5]
     --targets FILE         aim touches (hello targets: true): append every `targets` message
-                           to FILE as a JSON line (t_us, id, serial, targets)
+                           to FILE as a JSON line (t_us, id, serial, targets), and every
+                           `text_focus` (t_us, id, editing)
     --check                exit 0 as soon as the server answers hello (readiness probe)
     --json                 print the report as one JSON line
 ";
@@ -1263,6 +1264,16 @@ fn run(args: Args) -> Result<bool, String> {
                     text_inputs.push(t);
                 }
                 Message::ScrollTree(t) => scroll_check.tree(t),
+                Message::TextFocus { id, editing } => {
+                    if let Some(path) = &args.targets {
+                        let line = format!("{{\"t_us\":{},\"id\":{id},\"editing\":{editing}}}\n", monotonic_us());
+                        let written = std::fs::OpenOptions::new().create(true).append(true).open(path)
+                            .and_then(|mut f| f.write_all(line.as_bytes()));
+                        if let Err(e) = written {
+                            eprintln!("cannot write {}: {e}", path.display());
+                        }
+                    }
+                }
                 Message::Targets(t) => {
                     if let Some(path) = &args.targets {
                         let list: Vec<String> = t

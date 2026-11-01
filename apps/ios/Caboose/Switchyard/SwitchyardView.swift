@@ -20,6 +20,8 @@ struct SwitchyardView: View {
     @Environment(\.scenePhase) private var scenePhase
     @GestureState private var carryingCover = false
     @State private var askingAbout: RemoteWindow?
+    /// The workspace as last laid out without the software keyboard.
+    @State private var restingArea: CGSize?
 
     var body: some View {
         GeometryReader { proxy in
@@ -27,7 +29,11 @@ struct SwitchyardView: View {
             let bottom = DesktopChrome.dockBottomPadding(contentInset: proxy.safeAreaInsets.bottom,
                                                           windowInset: shellBottomInset,
                                                           verticalBar: verticalBar)
-            let area = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
+            let measured = DesktopChrome.workspaceSize(in: proxy.size, dockHeight: YardDock.height, bottomInset: bottom)
+            // The keyboard's safe area reaches the measurement even where the layout ignores
+            // it (it replaces the home indicator's inset): while it shows, the workspace keeps
+            // the size it had without it, so no window is configured to a new size and back.
+            let area = keyboard.visible ? (restingArea.flatMap { $0.width == measured.width ? $0 : nil } ?? measured) : measured
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
                     tracks(size: area)
@@ -66,6 +72,7 @@ struct SwitchyardView: View {
             .coordinateSpace(name: Self.space)
             .onAppear { yard.finishCarryGesture(); yard.screenSize = area }
             .onChange(of: area) { _, size in yard.screenSize = size }
+            .onChange(of: measured, initial: true) { _, size in if !keyboard.visible { restingArea = size } }
         }
         .ignoresSafeArea(.keyboard)
         .onDisappear { yard.cancelCarry() }

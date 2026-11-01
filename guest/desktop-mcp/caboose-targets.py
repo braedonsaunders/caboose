@@ -6,7 +6,9 @@
         "Touch targets"). Prints a JSON line whenever the focused window's targets change:
             {"window": ID, "targets": [[x, y, w, h, kind], ...]}
         and reads lines from caboose-display: "input ID" after the client's input to
-        window ID, which is when most controls change.
+        window ID, which is when most controls change. When the focused window's focus moves
+        into or out of something that takes typing, it prints
+            {"window": ID, "editing": true|false}
     caboose-targets.py snapshot [--method walk|collection] [--repeat N]
         One reading as a JSON line, with "ms" (how long it took) and "nodes" (how many
         accessibility objects it visited).
@@ -138,6 +140,20 @@ def caption_controls(tree, root, origin, window):
                 stack.append(child)
     tree.visited += visits
     return caption_row(candidates, window)
+WHOLE_WINDOW = ("ROOT_PANE", "FRAME", "WINDOW", "DIALOG", "APPLICATION")
+TEXT_ROLES = ("TEXT", "ENTRY", "PASSWORD_TEXT", "PARAGRAPH", "DOCUMENT_TEXT", "TERMINAL", "EDITBAR", "AUTOCOMPLETE")
+
+
+def takes_typing(Atspi, node):
+    """Whether `node`, focused, is where typed text goes: editable and a text, or editable
+    with lines (a spreadsheet's cell editor). An editable table is not: it starts editing
+    when typed into, which is a focus change of its own."""
+    states = node.get_state_set()
+    if not states.contains(Atspi.StateType.EDITABLE):
+        return False
+    if states.contains(Atspi.StateType.SINGLE_LINE) or states.contains(Atspi.StateType.MULTI_LINE):
+        return True
+    return node.get_role() in {getattr(Atspi.Role, name) for name in TEXT_ROLES if hasattr(Atspi.Role, name)}
 
 
 def role_kinds(Atspi):
@@ -283,6 +299,7 @@ class Server:
         self.due = None  # monotonic time of the next reading
         self.timer = None
         self.listeners = []
+        self.last_editing = None
 
     def run(self):
         GLib = self.GLib
@@ -318,7 +335,36 @@ class Server:
                 listener.register(name)
             except Exception:
                 continue
-        self.listeners.append(listener)
+        focus = Atspi.EventListener.new(self.focused)
+        try:
+            focus.register("object:state-changed:focused")
+        except Exception:
+            pass
+        self.listeners += [listener, focus]
+
+    def focused(self, event):
+        """Focus moved in some application: whether the focused window now edits text."""
+        if not event.detail1:
+            return
+        Atspi = self.reader.bus.Atspi
+        try:
+            # A window taking focus says nothing of where in it typing goes (LibreOffice
+            # focuses its root pane around entering a cell's editor).
+            if event.source.get_role() in {getattr(Atspi.Role, name) for name in WHOLE_WINDOW if hasattr(Atspi.Role, name)}:
+                return
+            editing = takes_typing(Atspi, event.source)
+            pid = event.source.get_application().get_process_id()
+            screen = a11y.make_screen(self.reader.display)
+            wid = screen.focused()
+        except Exception:
+            return
+        if not wid or screen.pid(wid) != pid:
+            return
+        out = {"window": wid, "editing": editing}
+        if out != self.last_editing:
+            self.last_editing = out
+            sys.stdout.write(json.dumps(out, separators=(",", ":")) + "\n")
+            sys.stdout.flush()
 
     def schedule(self, delay):
         now = time.monotonic()

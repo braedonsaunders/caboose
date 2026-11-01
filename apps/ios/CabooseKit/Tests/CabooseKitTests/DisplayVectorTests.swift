@@ -258,6 +258,7 @@ import Testing
         #expect(targets[4] == TouchTarget(rect: CGRect(x: -4, y: 120, width: 1179, height: 49), kind: .field))
         guard case .targets(7, 13, let none) = try server("targets-empty").first else { Issue.record("targets-empty"); return }
         #expect(none.isEmpty)
+        guard case .textFocus(7, true) = try server("text-focus").first else { Issue.record("text-focus"); return }
     }
 
     @Test func devices() throws {

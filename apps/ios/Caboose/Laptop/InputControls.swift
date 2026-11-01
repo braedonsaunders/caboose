@@ -17,6 +17,11 @@ struct InputControls: View {
     @Environment(AppModel.self) private var model
     @State private var surface = TrackpadSurface()
     @State private var gestureHelp = false
+    /// The Trackpad page raised to Keyboard & Trackpad while a text field has focus.
+    @State private var textFocus = TextFocusInput()
+    /// The next change of page is the text focus's, not the owner's.
+    @State private var focusMoved = false
+    @State private var focusLeaving: Task<Void, Never>?
     let placement: InputPlacement
     let isCard: Bool
     let enabled: Bool
@@ -76,7 +81,26 @@ struct InputControls: View {
                 .statusBarHidden()
                 .persistentSystemOverlays(.hidden)
         }
-        .onChange(of: input) { _, value in settle(value) }
+        .onChange(of: input) { _, value in
+            settle(value)
+            if focusMoved { focusMoved = false } else { textFocus.chose(value) }
+        }
+        // A text field taking focus on the computer (text-input-v3, IBus) raises the keyboard
+        // beside the trackpad; focus leaving it, for longer than moving to the next field
+        // takes, returns to the trackpad.
+        .onChange(of: model.session?.textFieldFocused ?? false) { _, focused in
+            focusLeaving?.cancel()
+            if focused { return followTextFocus(true) }
+            focusLeaving = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, model.session?.textFieldFocused != true else { return }
+                followTextFocus(false)
+            }
+        }
+        .onAppear {
+            // A click's own check covers apps that report no text input, by their cursor.
+            surface.textFocusAnswered = { wanted in if !wanted, model.session?.textFieldFocused != true { followTextFocus(false) } }
+        }
         .onChange(of: model.keyboardVisible) { _, visible in
             if systemKeyboard {
                 if !visible { closeSystemKeyboard() }
@@ -87,7 +111,7 @@ struct InputControls: View {
                 // A text field wants the keyboard: Laptop's own answers, beside the trackpad
                 // that focused the field. The system keyboard never opens by itself here.
                 model.keyboardVisible = false
-                if input == .trackpad { input = .combo }
+                followTextFocus(true)
             } else if input != .trackpad {
                 // On a display the system keyboard opens over the trackpad alone; the
                 // keyboards already type, and the gamepad has the screen.
@@ -204,6 +228,12 @@ struct InputControls: View {
     private func select(_ id: Int) {
         if isCard { model.presentedWindowID = id }
         else { model.desktop.activate(id, session: model.session) }
+    }
+
+    private func followTextFocus(_ focused: Bool) {
+        guard laptop, !systemKeyboard, let next = textFocus.focus(focused, current: input) else { return }
+        focusMoved = true
+        input = next
     }
 
     /// A new input: whatever the last one held ends, and the keyboards follow it.

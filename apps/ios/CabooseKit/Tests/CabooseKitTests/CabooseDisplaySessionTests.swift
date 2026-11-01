@@ -676,6 +676,26 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent[5].body["pressed"] == .bool(false))
     }
 
+    @Test func theAccessibleFocusDecidesWhereTypingGoes() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        // A spreadsheet keeps its input method on for the whole grid.
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])), (.textInput, ["id": 7, "enabled": true, "purpose": "normal"])])
+        try await until("text input") { session.textInput?.enabled == true }
+        session.focus(try #require(session.windows[7]))
+        #expect(session.textFieldFocused)
+        stream.server([(.textFocus, ["id": 7, "editing": false])])
+        try await until("grid focus") { session.accessibleFocus?.editing == false }
+        #expect(!session.textFieldFocused && session.cursorIsText == false)
+        // Double-clicking a cell moves focus into its editor; Enter moves it back.
+        stream.server([(.textFocus, ["id": 7, "editing": true])])
+        try await until("cell editor") { session.textFieldFocused }
+        #expect(session.cursorIsText == true && session.textFieldLeft == nil)
+        stream.server([(.textFocus, ["id": 7, "editing": false])])
+        try await until("left the cell") { !session.textFieldFocused }
+        #expect(session.textFieldLeft?.window == 7)
+    }
+
     @Test func compositionIsAPreeditUntilItsCommit() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])), (.textInput, ["id": 7, "enabled": true, "purpose": "normal"])])

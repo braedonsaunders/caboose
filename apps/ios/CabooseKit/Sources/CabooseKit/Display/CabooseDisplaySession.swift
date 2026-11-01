@@ -81,6 +81,14 @@ public final class CabooseDisplaySession: DisplaySession {
     /// The focused app's text-input-v3 state, where the server reports it.
     public private(set) var textInput: (window: Int, enabled: Bool, purpose: String?)?
     public private(set) var textFieldLeft: (window: Int, at: TimeInterval)?
+    /// What the focused window's accessibility tree last said of its focus: where it
+    /// reports, it decides, since an input method can stay on where nothing is being edited
+    /// (a spreadsheet's grid takes typing to start editing a cell).
+    public private(set) var accessibleFocus: (window: Int, editing: Bool)?
+    public var textFieldFocused: Bool {
+        if let focus = accessibleFocus, focus.window == focusedWindow ?? textInput?.window { return focus.editing }
+        return textInput?.enabled == true
+    }
     /// The focused field's text around the caret, as its app last reported it, bumped on each report.
     public private(set) var surroundingText: (window: Int, serial: Int, text: SurroundingText)?
 
@@ -399,6 +407,14 @@ public final class CabooseDisplaySession: DisplaySession {
                 windows[window]?.touchTargets = targets.filter { $0.kind != .windowControl }
                 let drawn = targets.filter { $0.kind == .windowControl }.map(\.rect)
                 if windows[window]?.drawnControls != drawn { windows[window]?.drawnControls = drawn }
+            case .textFocus(let window, let editing):
+                if accessibleFocus?.editing == true, !editing {
+                    textFieldLeft = (window, ProcessInfo.processInfo.systemUptime)
+                } else if editing {
+                    textFieldLeft = nil
+                }
+                if accessibleFocus?.window != window || accessibleFocus?.editing != editing { cursorSerial &+= 1 }
+                accessibleFocus = (window, editing)
             case .textInput(let window, let enabled, let purpose, let surrounding):
                 // Surrounding text arrives with every edit; only a change of field or state is news for the cursor.
                 // Focus leaving a field (Return in a search box, a tap elsewhere) turns its
@@ -1229,6 +1245,7 @@ public final class CabooseDisplaySession: DisplaySession {
     // MARK: Text focus
 
     public var cursorIsText: Bool? {
+        if let focus = accessibleFocus, focus.window == focusedWindow ?? textInput?.window { return focus.editing }
         if has("text-input-v3"), let textInput, focusedWindow == nil || textInput.window == focusedWindow {
             return textInput.enabled
         }

@@ -894,6 +894,7 @@ impl State {
 
     pub fn on_text_input_toggle(&mut self, toggle: Toggle) {
         let Some(id) = self.window_of_surface(&toggle.surface) else { return };
+        tracing::debug!("text input: window {id} {} ({:?})", if toggle.enabled { "on" } else { "off" }, toggle.purpose);
         if let Some(s) = self.session.as_ref().filter(|s| s.ready) {
             let conn = s.conn;
             self.net.send(

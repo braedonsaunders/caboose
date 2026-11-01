@@ -422,6 +422,11 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 ],
             }),
         ),
+        one(
+            "text-focus",
+            "Window 7's focus moved into a spreadsheet cell's editor.",
+            Message::TextFocus { id: 7, editing: true },
+        ),
         one("targets-empty", "Window 7 has no controls to aim at any more.", Message::Targets(Targets { id: 7, serial: 13, targets: vec![] })),
         one(
             "tile-png",

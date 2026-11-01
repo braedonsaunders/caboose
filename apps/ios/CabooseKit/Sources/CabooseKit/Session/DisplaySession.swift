@@ -136,6 +136,8 @@ public protocol DisplaySession: AnyObject {
     /// The focused window's text field was left (its app turned text input off), and when,
     /// on the system uptime clock; nil while a field has focus or none was left.
     var textFieldLeft: (window: Int, at: TimeInterval)? { get }
+    /// A text field on the computer has the keyboard: its app turned text input on.
+    var textFieldFocused: Bool { get }
     /// The display closed because another device took it over. Reconnecting on its own would
     /// take it back, so the app waits for the person to ask.
     var isReplaced: Bool { get }
@@ -143,6 +145,7 @@ public protocol DisplaySession: AnyObject {
 
 public extension DisplaySession {
     var textFieldLeft: (window: Int, at: TimeInterval)? { nil }
+    var textFieldFocused: Bool { false }
     func pointerLook(in window: RemoteWindow, by delta: CGPoint) {}
     func requestOverscan(_ window: RemoteWindow, _ size: CGSize) {}
     func scrollTarget(in window: RemoteWindow, scroller: Int, delta: CGPoint) -> Bool { false }

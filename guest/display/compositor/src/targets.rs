@@ -10,7 +10,8 @@
 //! {"window":ID,"targets":[[x,y,w,h,kind],…]}
 //! ```
 //!
-//! and reads `input ID` lines, written after the client's input to a window, when controls
+//! and `{"window":ID,"editing":B}` when the focused window's focus moves into or out of
+//! something that takes typing, which it passes on as `text_focus`; it reads `input ID` lines, written after the client's input to a window, when controls
 //! most often change. The compositor gives each control to the topmost window of the
 //! focused window's family (its popups, then itself) that holds its centre, converts it to
 //! that window's display pixels, and sends `targets` for each window whose list changed.
@@ -117,6 +118,12 @@ pub fn parse(line: &[u8]) -> Option<(u64, Vec<[f64; 5]>)> {
     Some((window, controls))
 }
 
+/// A provider line about focus: the focused window and whether its focus takes typing.
+pub fn parse_editing(line: &[u8]) -> Option<(u64, bool)> {
+    let v: Value = serde_json::from_slice(line).ok()?;
+    Some((v.get("window")?.as_u64()?, v.get("editing")?.as_bool()?))
+}
+
 impl State {
     fn targets_client(&self) -> Option<crate::net::ConnId> {
         self.session.as_ref().filter(|s| s.ready && s.targets).map(|s| s.conn)
@@ -201,6 +208,10 @@ impl State {
         for line in lines {
             if let Some((window, controls)) = parse(&line) {
                 self.targets_update(window, &controls);
+            } else if let Some((window, editing)) = parse_editing(&line) {
+                if let Some(conn) = self.targets_client() {
+                    self.net.send(conn, &Message::TextFocus { id: window, editing });
+                }
             }
         }
         true
@@ -282,6 +293,9 @@ mod tests {
         assert_eq!(controls, vec![[10.0, 20.0, 30.0, 40.0, 1.0], [0.0, 0.0, 5.0, 5.0, 129.0]]);
         assert!(parse(b"not json").is_none());
         assert!(parse(br#"{"window":null,"targets":[]}"#).is_none());
+        assert_eq!(parse_editing(br#"{"window":4,"editing":true}"#), Some((4, true)));
+        assert!(parse(br#"{"window":4,"editing":true}"#).is_none());
+        assert!(parse_editing(br#"{"window":4,"targets":[]}"#).is_none());
     }
 
     #[test]
