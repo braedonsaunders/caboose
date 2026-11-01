@@ -24,7 +24,8 @@ except ImportError:
     HAVE_WEBSOCKETS = False
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\0' * 16).decode()
-MODELS = [{'id': 'apple-foundation', 'name': 'Apple Foundation Model', 'contextSize': 4096, 'capabilities': ['tools', 'json'], 'ownedBy': 'apple'}]
+MODELS = [{'id': 'apple-foundation', 'name': 'Apple Foundation Model', 'contextSize': 4096, 'capabilities': ['tools', 'json'], 'ownedBy': 'apple'},
+          {'id': 'apple-embedding', 'name': 'Apple Embedding', 'contextSize': 256, 'capabilities': [], 'ownedBy': 'apple', 'type': 'embedding'}]
 
 
 class Translation(unittest.TestCase):
@@ -195,7 +196,7 @@ class Service(unittest.IsolatedAsyncioTestCase):
                     self.cancels.append(message['id'])
                     continue
                 self.requests.append(message['request'])
-                for event in answer(message['request']):
+                for event in (self.embed if message['type'] == 'embed' else answer)(message['request']):
                     if event == 'hang':
                         break
                     if event == 'close':
@@ -209,6 +210,13 @@ class Service(unittest.IsolatedAsyncioTestCase):
                 return
             await asyncio.sleep(0.01)
         self.fail('the phone never became present')
+
+    @staticmethod
+    def embed(request):
+        yield {'type': 'started'}
+        for index, text in reversed(list(enumerate(request['input']))):
+            yield {'type': 'vector', 'index': index, 'values': [0.6, 0.8, float(len(text))]}
+        yield {'type': 'done', 'finishReason': 'stop', 'usage': {'promptTokens': 7, 'completionTokens': 0}}
 
     @staticmethod
     def hello(request):
@@ -266,7 +274,7 @@ class Service(unittest.IsolatedAsyncioTestCase):
     async def test_models_and_tags(self):
         await self.connect(self.hello)
         _, _, body = await http(self.api_port, 'GET', '/v1/models')
-        self.assertEqual([m['id'] for m in json.loads(body)['data']], ['apple-foundation'])
+        self.assertEqual([m['id'] for m in json.loads(body)['data']], ['apple-foundation', 'apple-embedding'])
         _, _, body = await http(self.api_port, 'GET', '/api/tags')
         self.assertEqual(json.loads(body)['models'][0]['name'], 'apple-foundation')
         status, _, body = await http(self.api_port, 'POST', '/api/show', {'model': 'apple-foundation'})
@@ -283,6 +291,30 @@ class Service(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((lines[-1]['prompt_eval_count'], lines[-1]['eval_count']), (12, 4))
         status, _, body = await http(self.api_port, 'POST', '/api/generate', {'model': 'apple-foundation', 'prompt': 'hi', 'stream': False})
         self.assertEqual(json.loads(body)['response'], 'Hello from the phone')
+
+    async def test_embeddings(self):
+        await self.connect(self.hello)
+        status, _, body = await http(self.api_port, 'POST', '/v1/embeddings', {'model': 'apple-embedding', 'input': ['ab', 'abc']})
+        self.assertEqual(status, 200)
+        answer = json.loads(body)
+        self.assertEqual([d['embedding'] for d in answer['data']], [[0.6, 0.8, 2.0], [0.6, 0.8, 3.0]])
+        self.assertEqual((answer['model'], answer['usage']['prompt_tokens']), ('apple-embedding', 7))
+        self.assertEqual(self.requests[-1], {'model': 'apple-embedding', 'input': ['ab', 'abc']})
+        _, _, body = await http(self.api_port, 'POST', '/v1/embeddings', {'model': 'default', 'input': 'x', 'encoding_format': 'base64', 'dimensions': 2})
+        import struct
+        vector = struct.unpack('<2f', base64.b64decode(json.loads(body)['data'][0]['embedding']))
+        self.assertAlmostEqual(vector[0], 0.6, places=5)
+        _, _, body = await http(self.api_port, 'POST', '/api/embed', {'model': 'apple-embedding', 'input': 'hello'})
+        self.assertEqual(json.loads(body)['embeddings'], [[0.6, 0.8, 5.0]])
+        _, _, body = await http(self.api_port, 'POST', '/api/embeddings', {'model': 'apple-embedding', 'prompt': 'hi'})
+        self.assertEqual(json.loads(body)['embedding'], [0.6, 0.8, 2.0])
+        # A chat model does not embed, and an embedding model does not chat.
+        status, _, _ = await http(self.api_port, 'POST', '/v1/embeddings', {'model': 'apple-foundation', 'input': 'x'})
+        self.assertEqual(status, 404)
+        status, _, _ = await http(self.api_port, 'POST', '/v1/chat/completions', {'model': 'apple-embedding', 'messages': [{'role': 'user', 'content': 'hi'}]})
+        self.assertEqual(status, 404)
+        status, _, _ = await http(self.api_port, 'POST', '/v1/embeddings', {'model': 'apple-embedding', 'input': [1, 2, 3]})
+        self.assertEqual(status, 400)
 
     async def test_tool_calls(self):
         def tool(request):
@@ -404,6 +436,9 @@ class Service(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text, 'Hello from the phone')
         whole = await client.chat.completions.create(model='apple-foundation', messages=[{'role': 'user', 'content': 'hi'}])
         self.assertEqual(whole.choices[0].message.content, 'Hello from the phone')
+        # The client asks for base64 unless told otherwise.
+        embedded = await client.embeddings.create(model='apple-embedding', input=['ab', 'abcd'])
+        self.assertEqual([round(v, 4) for v in embedded.data[1].embedding], [0.6, 0.8, 4.0])
         await self.host.close()
         self.host = None
         bare = openai.AsyncOpenAI(base_url=f'http://localhost:{self.api_port}/v1', api_key='unused', max_retries=0)

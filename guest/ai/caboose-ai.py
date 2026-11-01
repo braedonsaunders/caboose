@@ -341,6 +341,44 @@ def parse_ollama_generate(body):
     return ollama_options(body, request), body.get('stream', True) is not False
 
 
+MAX_INPUTS = 256
+MAX_INPUT = 32_000
+
+
+def embedding_inputs(value):
+    """`input` of an embeddings request: a string or a list of strings."""
+    inputs = [value] if isinstance(value, str) else value
+    if not isinstance(inputs, list) or not inputs or len(inputs) > MAX_INPUTS or not all(isinstance(i, str) for i in inputs):
+        raise bad(f'input must be a string or a list of 1 to {MAX_INPUTS} strings (token arrays are not supported)')
+    if any(len(i) > MAX_INPUT for i in inputs):
+        raise bad(f'each input is at most {MAX_INPUT} characters')
+    return inputs
+
+
+def parse_openai_embeddings(body):
+    if not isinstance(body, dict) or not isinstance(body.get('model', ''), str):
+        raise bad('the body must be a JSON object with a model')
+    encoding = body.get('encoding_format', 'float')
+    if encoding not in ('float', 'base64'):
+        raise bad('encoding_format must be float or base64')
+    dimensions = integer(body.get('dimensions'), 'dimensions', 1, 8192)
+    return {'model': body.get('model', ''), 'input': embedding_inputs(body.get('input'))}, encoding, dimensions
+
+
+def shorten(vector, dimensions):
+    """A vector cut to `dimensions` and normalized again, as OpenAI's `dimensions` does."""
+    if dimensions is None or dimensions >= len(vector):
+        return vector
+    cut = vector[:dimensions]
+    norm = sum(v * v for v in cut) ** 0.5 or 1.0
+    return [v / norm for v in cut]
+
+
+def base64_vector(vector):
+    import struct
+    return base64.b64encode(struct.pack(f'<{len(vector)}f', *vector)).decode()
+
+
 # ---------------------------------------------------------------------------------------------
 # The phone, through the host's relay connection.
 
@@ -363,12 +401,17 @@ class Phone:
     def present(self):
         return self.connection is not None and bool(self.models)
 
-    def model(self, name):
-        if not self.models:
+    def model(self, name, kind='chat'):
+        """The phone's model of this kind (`chat` or `embedding`) by name; a default name picks its first."""
+        models = [m for m in self.models if m.get('type', 'chat') == kind]
+        if not models:
             return None
         if name in DEFAULT_MODELS:
-            return self.models[0]
-        return next((m for m in self.models if m['id'] == name), None)
+            return models[0]
+        return next((m for m in models if m['id'] == name), None)
+
+    def find(self, name):
+        return self.model(name, 'chat') or self.model(name, 'embedding') if name not in DEFAULT_MODELS else self.model(name)
 
     async def send(self, message):
         connection = self.connection
@@ -379,8 +422,8 @@ class Phone:
         except Exception:
             raise unavailable(PHONE_AWAY) from None
 
-    async def generate(self, request):
-        """Runs a request on the phone, yielding its events until `done`; raises ApiError."""
+    async def generate(self, request, kind='request'):
+        """Runs a request (`request`, or `embed`) on the phone, yielding its events until `done`; raises ApiError."""
         if not self.present:
             raise unavailable(PHONE_AWAY)
         if len(self.pending) >= MAX_PENDING:
@@ -389,7 +432,7 @@ class Phone:
         queue = asyncio.Queue()
         self.pending[rid] = queue
         try:
-            await self.send({'type': 'request', 'id': rid, 'request': request})
+            await self.send({'type': kind, 'id': rid, 'request': request})
             started = False
             while True:
                 try:
@@ -437,6 +480,10 @@ class Phone:
             if isinstance(message.get('toolCalls'), list):
                 event['toolCalls'] = [c for c in message['toolCalls'] if isinstance(c, dict) and isinstance(c.get('index'), int)]
             queue.put_nowait(event)
+        elif kind == 'vector':
+            values = message.get('values')
+            if isinstance(message.get('index'), int) and isinstance(values, list) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
+                queue.put_nowait({'type': 'vector', 'index': message['index'], 'values': [float(v) for v in values]})
         elif kind == 'done':
             usage = message.get('usage') if isinstance(message.get('usage'), dict) else {}
             queue.finished = True
@@ -599,6 +646,28 @@ async def fallback_generate(fallback, request):
         stop.set()
 
 
+async def fallback_embed(fallback, request):
+    """Embeddings from the fallback provider, as the phone's events."""
+    body = json.dumps({'model': fallback['model'] or request['model'], 'input': request['input']}).encode()
+    headers = {'Content-Type': 'application/json'}
+    if fallback['apiKey']:
+        headers['Authorization'] = f"Bearer {fallback['apiKey']}"
+
+    def call():
+        try:
+            with urllib.request.urlopen(urllib.request.Request(fallback['baseUrl'] + '/embeddings', data=body, headers=headers, method='POST'), timeout=IDLE_SECONDS) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise ApiError(HTTPStatus.BAD_GATEWAY, 'fallback_error', f'The fallback provider answered {error.code}: {error.read(2000).decode("utf-8", "replace")}', 'server_error') from None
+        except Exception as error:  # noqa: BLE001 - every failure is reported to the program
+            raise ApiError(HTTPStatus.BAD_GATEWAY, 'fallback_error', f'The fallback provider failed: {error}', 'server_error') from None
+    answer = await asyncio.to_thread(call)
+    for item in answer.get('data') or []:
+        yield {'type': 'vector', 'index': item.get('index', 0), 'values': [float(v) for v in item.get('embedding') or []]}
+    usage = answer.get('usage') or {}
+    yield {'type': 'done', 'finishReason': 'stop', 'usage': {'promptTokens': usage.get('prompt_tokens', 0), 'completionTokens': 0}}
+
+
 # ---------------------------------------------------------------------------------------------
 # Answers in each API's shape.
 
@@ -699,7 +768,7 @@ def ollama_final(model, collected, started, first, chat):
 
 
 def model_entry(model):
-    return {'id': model['id'], 'object': 'model', 'created': 0, 'owned_by': model.get('ownedBy', 'apple'),
+    return {'id': model['id'], 'object': 'model', 'created': 0, 'owned_by': model.get('ownedBy', 'apple'), 'type': model.get('type', 'chat'),
             'context_window': model['contextSize'], 'capabilities': model['capabilities'], 'name': model['name']}
 
 
@@ -827,19 +896,37 @@ class Server:
     def models(self):
         return list(self.phone.models) if self.phone.present else []
 
-    def backend(self, request):
+    def backend(self, request, kind='chat'):
         """Where a request runs: the phone's model, or the fallback provider. Raises ApiError."""
-        model = self.phone.model(request['model']) if self.phone.present else None
+        model = self.phone.model(request['model'], kind) if self.phone.present else None
         if model is not None:
-            return {**request, 'model': model['id']}, model['id'], self.phone.generate
+            relay = 'request' if kind == 'chat' else 'embed'
+            return {**request, 'model': model['id']}, model['id'], lambda r: self.phone.generate(r, relay)
         fallback = load_fallback(self.config)
         if fallback is not None:
             name = fallback['model'] or request['model']
-            return request, name, lambda r: fallback_generate(fallback, r)
+            return request, name, lambda r: (fallback_generate if kind == 'chat' else fallback_embed)(fallback, r)
         if self.phone.present:
-            names = ', '.join(m['id'] for m in self.phone.models)
-            raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', f"The phone has no model {request['model']!r}. Its models: {names}.")
+            names = ', '.join(m['id'] for m in self.phone.models if m.get('type', 'chat') == kind) or 'none'
+            raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', f"The phone has no {kind} model {request['model']!r}. Its {kind} models: {names}.")
         raise unavailable(PHONE_AWAY)
+
+    async def vectors(self, request):
+        """Runs an embeddings request: (model, vectors in input order, prompt tokens)."""
+        request, model, generate = self.backend(request, 'embedding')
+        vectors, tokens = {}, 0
+        events = generate(request)
+        try:
+            async for event in events:
+                if event['type'] == 'vector':
+                    vectors[event['index']] = event['values']
+                elif event['type'] == 'done':
+                    tokens = event['usage'].get('promptTokens', 0)
+        finally:
+            await events.aclose()
+        if sorted(vectors) != list(range(len(request['input']))):
+            raise ApiError(HTTPStatus.BAD_GATEWAY, 'incomplete', 'The phone did not embed every input.', 'server_error')
+        return model, [vectors[i] for i in range(len(request['input']))], tokens
 
     async def handle(self, reader, writer):
         try:
@@ -882,7 +969,7 @@ class Server:
         if method == 'GET' and path in ('/v1/models', '/models'):
             return await response.whole(200, {'object': 'list', 'data': [model_entry(m) for m in self.models()]})
         if method == 'GET' and path.startswith('/v1/models/'):
-            model = self.phone.model(path[len('/v1/models/'):]) if self.phone.present else None
+            model = self.phone.find(path[len('/v1/models/'):]) if self.phone.present else None
             if model is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', 'no such model')
             return await response.whole(200, model_entry(model))
@@ -891,7 +978,24 @@ class Server:
                                               'fallback': load_fallback(self.config) is not None})
         if method == 'POST' and path in ('/v1/chat/completions', '/chat/completions'):
             return await self.openai_chat(request, response)
-        if method == 'POST' and path in ('/v1/embeddings', '/v1/completions', '/v1/responses', '/api/embed', '/api/embeddings'):
+        if method == 'POST' and path in ('/v1/embeddings', '/embeddings'):
+            request_body, encoding, dimensions = parse_openai_embeddings(request.json())
+            model, vectors, tokens = await self.vectors(request_body)
+            data = [{'object': 'embedding', 'index': i, 'embedding': base64_vector(shorten(v, dimensions)) if encoding == 'base64' else shorten(v, dimensions)}
+                    for i, v in enumerate(vectors)]
+            return await response.whole(200, {'object': 'list', 'data': data, 'model': model, 'usage': {'prompt_tokens': tokens, 'total_tokens': tokens}})
+        if method == 'POST' and path in ('/api/embed', '/api/embeddings'):
+            body = request.json()
+            if not isinstance(body, dict):
+                raise bad('the body must be a JSON object')
+            legacy = path == '/api/embeddings'
+            started = time.monotonic()
+            model, vectors, tokens = await self.vectors({'model': str(body.get('model', '')), 'input': embedding_inputs(body.get('prompt') if legacy else body.get('input'))})
+            if legacy:
+                return await response.whole(200, {'embedding': vectors[0]})
+            return await response.whole(200, {'model': model, 'embeddings': vectors, 'total_duration': int((time.monotonic() - started) * 1e9),
+                                              'load_duration': 0, 'prompt_eval_count': tokens})
+        if method == 'POST' and path in ('/v1/completions', '/v1/responses'):
             raise ApiError(HTTPStatus.NOT_IMPLEMENTED, 'not_supported', f'{path} is not supported; use /v1/chat/completions or /api/chat')
         if method == 'GET' and path == '/api/version':
             return await response.whole(200, {'version': OLLAMA_VERSION})
@@ -901,13 +1005,14 @@ class Server:
             return await response.whole(200, {'models': [ollama_tag(m) | {'expires_at': ollama_time(), 'size_vram': 0} for m in self.models()]})
         if method == 'POST' and path == '/api/show':
             body = request.json()
-            model = self.phone.model(body.get('model', body.get('name', ''))) if self.phone.present else None
+            model = self.phone.find(body.get('model', body.get('name', ''))) if self.phone.present else None
             if model is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', 'no such model')
             tag = ollama_tag(model)
             return await response.whole(200, {'modelfile': '', 'parameters': '', 'template': '', 'details': tag['details'],
                                               'model_info': {'general.architecture': 'apple', f"{model['id']}.context_length": model['contextSize']},
-                                              'capabilities': ['completion'] + [c for c in ('tools', 'vision') if c in model['capabilities']]})
+                                              'capabilities': (['embedding'] if model.get('type') == 'embedding' else ['completion'])
+                                              + [c for c in ('tools', 'vision') if c in model['capabilities']]})
         if method == 'POST' and path == '/api/chat':
             body, stream = parse_ollama_chat(request.json())
             return await self.ollama(body, stream, response, chat=True)

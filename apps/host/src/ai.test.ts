@@ -63,6 +63,13 @@ describe('Caboose AI messages', () => {
       expect(() => parsePhoneMessage(bad), JSON.stringify(bad)).toThrow()
     }
     expect(parseGuestMessage({ type: 'cancel', id: ID })).toEqual({ type: 'cancel', id: ID })
+    expect(parseGuestMessage({ type: 'embed', id: ID, request: { model: 'apple-embedding', input: ['a', 'b'] } })).toEqual({ type: 'embed', id: ID, request: { model: 'apple-embedding', input: ['a', 'b'] } })
+    expect(() => parseGuestMessage({ type: 'embed', id: ID, request: { model: 'm', input: [1] } })).toThrow()
+    expect(parsePhoneMessage({ type: 'vector', id: ID, index: 1, values: [0.5, -0.25] })).toEqual({ type: 'vector', id: ID, index: 1, values: [0.5, -0.25] })
+    expect(() => parsePhoneMessage({ type: 'vector', id: ID, index: 999, values: [1] })).toThrow()
+    expect(() => parsePhoneMessage({ type: 'vector', id: ID, index: 0, values: ['x'] })).toThrow()
+    expect(parseAiModels([{ ...MODEL, id: 'apple-embedding', type: 'embedding' }])[0]?.type).toBe('embedding')
+    expect(() => parseAiModels([{ ...MODEL, type: 'image' }])).toThrow()
     expect(() => parseGuestMessage({ type: 'cancel', id: 'nope' })).toThrow()
   })
 })
