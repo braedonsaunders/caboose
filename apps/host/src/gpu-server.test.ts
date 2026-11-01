@@ -228,8 +228,7 @@ it('gives a resuming phone its parked executor back, and only with its own crede
   first.terminate()
   await new Promise(resolve => setTimeout(resolve, 100))
   expect(f.upstream.clients.size).toBe(1)
-  // A new executor is still refused; a wrong credential is gone.
-  expect(await refused(f.connect())).toBe(409)
+  // A wrong credential is gone.
   expect(await refused(f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': 'A'.repeat(43) }))).toBe(410)
   const resumed = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': credential as string })
   const resumedOpen = once(resumed, 'open')
@@ -267,4 +266,35 @@ it('keeps the guest side of a phone that closed as suspended', async () => {
   await new Promise(resolve => setTimeout(resolve, 300))
   expect(f.upstream.clients.size).toBe(1)
   expect([...f.upstream.clients][0]!.readyState).toBe(WebSocket.OPEN)
+})
+
+it('lets a fresh executor from the same phone replace its held one', async () => {
+  const f = await fixture()
+  const first = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-features': 'executor-resume' })
+  await once(first, 'open')
+  await vi.waitFor(() => expect(f.requests).toHaveLength(1))
+  first.terminate()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  expect(f.upstream.clients.size).toBe(1)
+  // The phone starts over without its credential: the held executor ends and the new one is admitted.
+  const fresh = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-features': 'executor-resume' })
+  await once(fresh, 'open')
+  await vi.waitFor(() => expect(f.requests).toHaveLength(2))
+  expect(f.requests[1]!.headers['x-caboose-gpu-executor']).not.toBe(f.requests[0]!.headers['x-caboose-gpu-executor'])
+  await vi.waitFor(() => expect(f.upstream.clients.size).toBe(1))
+  const reply = once(fresh, 'message'); fresh.send(Buffer.from([3])); expect((await reply)[0]).toEqual(Buffer.from([3]))
+})
+
+it('ends a parked relay when its guest side goes away', async () => {
+  const f = await fixture()
+  const first = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-features': 'executor-resume' })
+  await once(first, 'open')
+  await vi.waitFor(() => expect(f.upstream.clients.size).toBe(1))
+  first.terminate()
+  await new Promise(resolve => setTimeout(resolve, 100))
+  for (const guest of f.upstream.clients) guest.terminate()
+  // The reservation is free again: a new executor (without the credential) is admitted.
+  await new Promise(resolve => setTimeout(resolve, 200))
+  const next = f.connect()
+  await once(next, 'open')
 })

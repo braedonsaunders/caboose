@@ -87,8 +87,8 @@ export function relayGPU(client: WebSocket, options: {
 }
 
 /** The relay, which with `resumable` parks instead of ending when its phone side is lost:
- * it stops reading the guest side (the broker's retained envelopes are the only replay) and
- * keeps it open for GPU_RESUME_HOLD_MS, or GPU_SUSPEND_HOLD_MS after a phone that closed as
+ * it drops what the guest side sends (the broker's retained envelopes are the only replay)
+ * and keeps it open for GPU_RESUME_HOLD_MS, or GPU_SUSPEND_HOLD_MS after a phone that closed as
  * suspended, for `attach`. The guest side never sees the phone leave unless the hold expires;
  * then it is ended abruptly, as a lost executor. */
 export function startGPURelay(first: WebSocket, options: {
@@ -158,7 +158,9 @@ export function startGPURelay(first: WebSocket, options: {
       pending[1] = 0
       pendingMessages[1] = 0
       if (lost && lost.readyState !== WebSocket.CLOSED) lost.terminate()
-      upstream.pause()
+      // The guest side is still read, so a broker that ends (a display restart) ends the
+      // relay; what it sends meanwhile is dropped and sent again after a resume.
+      if (upstreamOpen) upstream.resume()
       if (holdTimer) clearTimeout(holdTimer)
       console.warn(`gpu relay ${options.executor}: parked for ${hold} ms: ${reason}`)
       holdTimer = setTimeout(() => stop(`no phone resumed within ${hold} ms`), hold)
@@ -188,7 +190,7 @@ export function startGPURelay(first: WebSocket, options: {
       } else stop(`guest closed (code ${code ?? 'none'})`)
     })
     upstream.on('message', (data: RawData, binary: boolean) => {
-      // Parsed after the relay paused for a lost phone: the broker sends it again on resume.
+      // Sent while no phone is attached: the broker sends it again after a resume.
       if (!phone) return
       forward(upstream, phone, 1, data, binary, generation)
     })

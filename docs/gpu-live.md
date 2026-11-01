@@ -364,9 +364,12 @@ gets no credential, and a lost socket ends its executor as before.
 
 The host's relay (`apps/host/src/gpu-relay.ts`) parks instead of ending when a resumable
 phone side is lost: a socket error, a close other than 1000, a failed send, or 3 s without a
-pong or a message. It stops reading the broker's side, so nothing is queued while parked and
-the broker's own window is the only replay, keeps that side open, and still counts the
-executor as the computer's one. It holds it for 30 s, or for 30 min after a phone that closed
+pong or a message. It keeps the broker's side open and still counts the executor as the
+computer's one; it goes on reading that side and drops what arrives, so the broker's own
+window is the only replay and a broker that ends (a display restart) ends the relay at once.
+A fresh executor upgrade, without the credential, from the phone the held executor belongs
+to replaces it: the held relay is ended and the new executor admitted. Another phone still
+gets `409 Conflict`. It holds it for 30 s, or for 30 min after a phone that closed
 with code 4001 (suspended) or that last sent EXECUTOR_SUSPEND without a later EXECUTOR_RESUME
 (iOS can suspend the app before its close); neither close is forwarded to the broker. The
 relay reads only the kinds of the whole envelopes in the phone's messages for that. A phone close with 1000

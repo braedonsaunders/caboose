@@ -195,7 +195,8 @@ it('parks a resumable relay when its phone is lost, without telling the guest, a
     const { client, upstream, relay } = resumable()
     client.peerClose(1006)
     expect(upstream.readyState).toBe(WebSocket.OPEN)
-    expect(upstream.paused).toBe(true)
+    // Still read, so a broker that ends is seen; what it sends meanwhile is dropped.
+    expect(upstream.paused).toBe(false)
     expect(upstream.closeCodes).toEqual([])
     // Messages the guest side had already parsed are dropped; the broker sends them again.
     upstream.emit('message', Buffer.from([7]), true)
@@ -313,4 +314,12 @@ it('holds a phone that suspended and then went silent for the extended hold', as
     await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS + 10)
     await relay.done
   } finally { vi.useRealTimers() }
+})
+
+it('ends a parked relay when the guest side ends (a broker or display restart)', async () => {
+  const { client, upstream, relay } = resumable()
+  client.peerClose(1006)
+  upstream.peerClose(1006)
+  await relay.done
+  expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
 })

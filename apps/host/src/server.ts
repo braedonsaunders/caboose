@@ -1205,6 +1205,19 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (url.search || offered.length !== 1 || offered[0] !== GPU_PROTOCOL) return refuse('400 Bad Request')
     const resumeHeader = request.headers['x-caboose-gpu-resume']
     if (resumeHeader !== undefined) return resumeGPU(request, socket, head, typeof resumeHeader === 'string' ? resumeHeader : '', principal, refuse)
+    // A fresh executor from the phone a held relay belongs to replaces it: the phone gave
+    // that executor up (the app restarted, or its resume ran out), so nothing will resume it.
+    const held = gpuResume
+    if (held && gpuReservation && held.phoneId === principal.phoneId && computer.acceptsConnections) {
+      console.warn('gpu relay: a new executor from its phone replaces the held one')
+      held.relay.end()
+      void Promise.race([held.relay.done, new Promise(resolve => setTimeout(resolve, 5_000))]).then(() => {
+        if (socket.destroyed) return
+        if (gpuReservation) return refuse('409 Conflict')
+        connectGPU(request, socket, head, url, principal)
+      })
+      return
+    }
     if (!computer.acceptsConnections || gpuReservation) return refuse('409 Conflict')
     const reservation = {}
     gpuReservation = reservation
