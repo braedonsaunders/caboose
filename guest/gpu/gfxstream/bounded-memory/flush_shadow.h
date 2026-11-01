@@ -93,6 +93,19 @@ public:
         forgetLocked(key);
     }
 
+    // The device wrote [begin, end) behind the guest's back: every block it touches
+    // is sent again until a flush or an invalidate makes it known once more.
+    void forgetRange(uint64_t key, uint64_t begin, uint64_t end) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto found = entries_.find(key);
+        if (found == entries_.end()) return;
+        std::vector<bool>& valid = found->second.valid;
+        const size_t last = valid.size();
+        for (size_t index = size_t(begin / shadowBlockBytes);
+             index < last && uint64_t(index) * shadowBlockBytes < end; ++index)
+            valid[index] = false;
+    }
+
 private:
     struct Entry {
         std::unique_ptr<uint8_t[]> bytes;

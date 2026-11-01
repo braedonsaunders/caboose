@@ -92,6 +92,21 @@ int main() {
     assert(shadow.emitChanged(2, other.data(), size, 19968, 512, fresh.sender(other)) == success);
     assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(19968 + 256), uint64_t(256)));
 
+    // A device write forgets the blocks it touches, even partly, and only those.
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.empty());
+    shadow.forgetRange(1, 300, 520);
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.size() == 1 && remote.sends[0] == std::make_pair(uint64_t(256), uint64_t(512)));
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.empty());
+    shadow.forgetRange(1, 0, ~uint64_t(0));
+    shadow.forgetRange(9, 0, size);
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.size() == 1 && remote.sends[0].second == size);
+
     // Forgetting resends in full; a failed send forgets too.
     remote.sends.clear();
     shadow.forget(1);
