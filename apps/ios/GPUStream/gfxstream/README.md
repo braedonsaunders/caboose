@@ -25,9 +25,14 @@ SHA-256. A decoder change is a commit on a topic branch of the fork, merged into
 request. [`provider-patches/`](provider-patches) holds the changes to other projects:
 SPIRV-Cross (multi-plane padding, and MSL type names such as `sampler` or `texture2d`
 treated as reserved, since Zink names variables that way and a variable named like a type
-hides it from the Metal source) and MoltenVK (persistent Metal pipeline binaries), all
-applied to the MoltenVK build, and MoltenVK missing-layer queries, for the layer
-diagnostic. `sh provider-patches/tests/check-msl-type-names.sh /path/to/spirv-cross` checks
+hides it from the Metal source) and MoltenVK (persistent Metal pipeline binaries, and
+events set when the GPU reaches `vkCmdSetEvent` rather than decided when the command buffer
+is encoded, so a host `vkResetEvent` that reaches the phone after the submit cannot leave
+the event reset for good), all applied to the MoltenVK build, and MoltenVK missing-layer
+queries, for the layer diagnostic. `provider-patches/tests/check-event-set-at-execution.c`
+checks the event patch against a macOS MoltenVK build (`cc -I<vulkan include> … -lvulkan`):
+it holds a submitted `vkCmdSetEvent` on a timeline wait until the host has reset the event
+and requires the event set once the GPU gets there; a stock MoltenVK 1.4.2 fails that case. `sh provider-patches/tests/check-msl-type-names.sh /path/to/spirv-cross` checks
 the type-name patch with a SPIRV-Cross command-line build: a shader whose variables, block
 and member are named `sampler`, `texture2d`, `array`, `float4` and `half` must convert to
 Metal source that compiles for iOS, with and without argument buffers. Its Mesa development
