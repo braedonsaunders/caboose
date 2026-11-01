@@ -38,8 +38,7 @@ else
     if [ -n "${WAYLAND_DISPLAY:-}" ]; then
       # Chromium's Wayland GPU path needs a DRM render node, which WSL does not have: its
       # GPU process fails over and presents fewer frames than software raster (measured
-      # on an RTX 4080: 41 against 52 fps for 1080p video). Video still reaches the phone
-      # through the VA-API passthrough driver.
+      # on an RTX 4080: 41 against 52 fps for 1080p video).
       CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"
     else
       CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"
