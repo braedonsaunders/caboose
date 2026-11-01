@@ -412,14 +412,29 @@ inline uint64_t socketInode() {
 #endif
     return (uint64_t(info.st_ino) * 1000003ull) ^ changed ^ 1;  // never 0
 }
+// How long a loss that may be the executor's departure is held before it is taken for
+// something else: the host relay ends a silent phone's executor within 3 s, and the broker
+// removes the executor's socket as it ends its streams.
+inline std::atomic<int> departureGraceMs{10000};
+// Waits until `done()` holds, at most the departure grace; whether it held.
+template <typename Done> inline bool withinDepartureGrace(Done done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(departureGraceMs.load());
+    for (;;) {
+        if (done()) return true;
+        if (std::chrono::steady_clock::now() >= end) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
 // The broker makes its socket when it has a ready executor and removes it when the
 // executor leaves.
 inline void awaitExecutorReturn() {
     if (!pauseOnLoss() || !executorLost.load(std::memory_order_acquire)) return;
     if (!std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return;
-    // The broker removes its socket before it ends an executor's streams: a socket still
-    // there at the loss means one stream failed while the executor stayed. Nothing returns.
-    if (lostSocketInode.load()) return;
+    // A device stream can end before the broker has removed the executor's socket. A
+    // socket that is still the same once the grace has passed means one stream failed
+    // while the executor stayed: nothing returns, and the loss is reported at once.
+    if (lostSocketInode.load() &&
+        !withinDepartureGrace([] { return socketInode() != lostSocketInode.load(); })) return;
     static std::atomic<bool> noted{false};
     if (!noted.exchange(true)) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_PAUSED until a phone executor returns\n");
     for (;;) {
@@ -451,6 +466,15 @@ inline void markExecutorLost() {
     lostSocketInode.store(socketInode());
     std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
     tracker().loseAll();
+}
+// A result the executor returned. VK_ERROR_DEVICE_LOST from a phone whose app is closing
+// arrives before its streams end; for a paused application it is held like the executor's
+// own departure when the executor leaves within the grace, and reported once a new one is
+// there. A loss while the executor stays is the device's own and is reported after the grace.
+template <typename Result> inline Result heldLoss(Result result) {
+    if (int32_t(result) != -4 || !pauseOnLoss() || !std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return result;
+    if (withinDepartureGrace([] { return executorLost.load(std::memory_order_acquire); })) awaitExecutorReturn();
+    return result;
 }
 
 }  // namespace caboose::completion
