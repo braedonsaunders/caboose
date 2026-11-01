@@ -732,10 +732,14 @@ The launch environment sets `auto`, which the driver resolves per process:
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
 recover from device loss (GTK 4, Vulkan applications and games).
 
-OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan, which Mesa tries before
-llvmpipe when no other driver serves the display (`LIBGL_KOPPER_DRI2=1`, and no
-`GALLIUM_DRIVER`). Zink is not forced: with no phone attached it finds no GPU and Mesa
-falls back to llvmpipe, where a forced Zink would leave OpenGL with no renderer at all. Zink presents through the
+OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan: `LIBGL_KOPPER_DRI2=1` for
+GLX, which tries Zink before any software renderer, and `GALLIUM_DRIVER=zink` for EGL's
+software path (Chromium's and CEF's ANGLE among its users), which otherwise prefers Mesa
+D3D12 (WSL's `/dev/dxg`) and llvmpipe. With no phone attached Zink renders on the CPU
+device the routing layer presents as a GPU, so OpenGL always has a renderer, and an
+application that recovers from device loss moves to the phone when it attaches. The
+routing and executor-switch layers are built for 64-bit processes only: a 32-bit OpenGL
+application sees lavapipe as a CPU device, which Zink refuses, and has no renderer. Zink presents through the
 driver's X11 windows (Kopper); without a DRM render node it cannot present through
 Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
 `QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick), `SDL_VIDEODRIVER=x11,wayland` and
