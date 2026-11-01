@@ -770,7 +770,11 @@ class Session:
             if surface is None or surface['process'] != frame.process or (
                     surface.get('replies') is None and surface.get('owner') is None and
                     not surface.get('disconnected')):
-                raise ValueError('unexpected surface response')
+                # A late or stale answer for a surface already retired here (the phone answers
+                # even a record for a grant it no longer holds) ends only itself.
+                print(f'CABOOSE_GPU_BROKER dropped a surface answer: kind {int(frame.kind)} process {frame.process} '
+                      f'grant {key[1].hex()} known={surface is not None}', file=sys.stderr, flush=True)
+                return
             if surface.get('replies') is not None:
                 try:
                     surface['verify_peer']()
