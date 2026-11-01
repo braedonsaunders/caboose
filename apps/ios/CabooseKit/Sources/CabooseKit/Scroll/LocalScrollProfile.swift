@@ -63,6 +63,8 @@ public final class LocalScrollProfile: @unchecked Sendable {
             pendingTouches.removeAll()
             return included
         }
+        // The simulator's drawables report no presentation.
+        #if !targetEnvironment(simulator)
         drawable.addPresentedHandler { [weak self] presentedDrawable in
             let time = presentedDrawable.presentedTime
             guard let self, time > 0 else { return }
@@ -71,6 +73,9 @@ public final class LocalScrollProfile: @unchecked Sendable {
                 for touch in touches { self.latencies.append(time - touch) }
             }
         }
+        #else
+        _ = touches
+        #endif
     }
 
     func refresh(at time: CFTimeInterval, composed didCompose: Bool, blank: Int, region: Int) {
