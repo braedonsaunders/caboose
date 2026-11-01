@@ -1219,12 +1219,11 @@ class Session:
             data = await self.reader.read(65536)
             if not data:
                 self.ws.eof(); self.decoder.finish(); raise ConnectionError('executor disconnected')
+            # One read is at most DATA_READ_BYTES, which bounds the frames it holds and the
+            # messages they carry. The phone sends many small frames (completion records,
+            # acknowledgements, replies), so a read may hold hundreds: never a reason to end.
             events = []
-            def collect_event(kind, payload):
-                if len(events) >= MAX_QUEUED_MESSAGES:
-                    raise BufferError('incoming WebSocket event limit')
-                events.append((kind, payload))
-            self.ws.feed(data, collect_event)
+            self.ws.feed(data, lambda kind, payload: events.append((kind, payload)))
             for kind, payload in events:
                 if kind == 'close': raise ConnectionError('executor closed')
                 if kind == 'ping':
@@ -1232,10 +1231,7 @@ class Session:
                         self.enqueue_frame(server_frame(10, payload))
                 if kind != 'binary': continue
                 messages = []
-                def collect(message):
-                    if len(messages) >= MAX_QUEUED_MESSAGES: raise BufferError('incoming queue full')
-                    messages.append(message)
-                self.decoder.feed(payload, collect)
+                self.decoder.feed(payload, messages.append)
                 for message in messages: await self.message(message)
 
     async def local(self, reader, writer):
