@@ -50,10 +50,11 @@ Caboose-owned sources to the paths the patches include them from:
 | `../bounded-memory/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/` |
 | `../dmabuf/*.h` | `src/gfxstream/guest/vulkan_enc/caboose-dmabuf/` |
 | `../media/{gpu_media.h,media_import.h,media_import.inc}` | `src/gfxstream/guest/vulkan_enc/caboose-media/` |
+| `../feature-emulation/feature_emulation.h` | `src/gfxstream/guest/vulkan_enc/caboose-features/` |
 
 Patches change upstream files only; a patch that touches an owned path is rejected. The
 owned sources are ordinary files with their own unit tests
-(`../bounded-memory/README.md`, `../virtual-wsi/README.md`).
+(`../bounded-memory/README.md`, `../virtual-wsi/README.md`, `../feature-emulation/README.md`).
 
 ## The patch series
 
@@ -96,6 +97,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0032 query-results | Query results without WAIT come from an earlier request instead of a round trip; with hello 0x1000 the guest assigns query pool handles |
 | 0033 robustness2 | `VK_EXT_robustness2`, which DXVK 2 requires, is offered when the phone's device has it; descriptor update templates accept its null buffers |
 | 0034 dma-buf-buffers | Phone-resident dma-bufs on the render node (`CABOOSE_FORMAT_MOD_REMOTE`, docs/gpu-buffers.md): import, export, registration with the broker for presentation, and sync-file export of fences and semaphores; LINEAR NV12/P010 dma-bufs of phone-decoded video are imported and filled by latch (docs/gpu-media.md) |
+| 0035 desktop-gl-features | `logicOp` and `VK_EXT_custom_border_color`, which Zink needs for desktop OpenGL, are offered when the phone's device lacks them and kept from it: a pipeline's logic operation is dropped, and a custom border colour becomes the nearest built-in one (`../feature-emulation/README.md`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
