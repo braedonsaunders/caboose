@@ -434,6 +434,9 @@ impl State {
         if !w.maximized {
             w.maximized_geometry = None;
         }
+        if m.geometry.is_some() {
+            w.placed = true;
+        }
         let display = self.displays.resolve(Some(w.display));
         let to_logical = |v: i32| (v as f64 / display.info.scale).round() as i32;
         let (fullscreen, maximized) = (w.fullscreen, w.maximized);

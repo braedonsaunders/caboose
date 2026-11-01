@@ -50,6 +50,8 @@ pub struct Window {
     /// The geometry the client configured a maximized window to, relative to its display:
     /// none (the app maximized itself) takes the display's rectangle.
     pub maximized_geometry: Option<Rectangle<i32, Logical>>,
+    /// The client has given the window a geometry: its size is the client's layout.
+    pub placed: bool,
     /// The owning process and its ancestors, once looked up (for video binding).
     pub lineage: Option<Vec<u32>>,
     /// The desktop entry a toplevel's process was launched from, once looked up (launch.rs).
@@ -152,6 +154,10 @@ fn size_px(d: &DisplayOutput, s: Size<i32, Logical>) -> Option<proto::Size> {
 }
 
 impl Window {
+    pub fn gpu_bind_follows_display(&self) -> bool {
+        gpu_bind_follows_display(self.fullscreen, self.placed)
+    }
+
     /// The overscan in effect: on each axis laid out with one, what the app's size has
     /// beyond the size it was configured to show, up to the overscan laid out. An app that
     /// sizes itself in steps (a terminal's character cells) gets part of it; one that
@@ -411,9 +417,27 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
     }
 }
 
+/// Whether binding a GPU surface configures a window to its display's size: a full-screen
+/// window, or one the client has not laid out. A window the client placed keeps its
+/// geometry (Laptop's maximized fill, a snap, a card), so an app that rebinds each time it
+/// recreates its swapchain, as CEF does, is not resized back and forth.
+pub fn gpu_bind_follows_display(fullscreen: bool, placed: bool) -> bool {
+    fullscreen || !placed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gpu_bind_leaves_a_placed_window_its_geometry() {
+        // A window the phone laid out (Steam's CEF window filling Laptop's screen at 1892
+        // wide on a 932-wide display) keeps that size through every swapchain rebind.
+        assert!(!gpu_bind_follows_display(false, true));
+        // Unplaced or full-screen windows take the display, as a GPU app needs.
+        assert!(gpu_bind_follows_display(false, false));
+        assert!(gpu_bind_follows_display(true, true));
+    }
 
     fn create() -> proto::WindowCreate {
         proto::WindowCreate {

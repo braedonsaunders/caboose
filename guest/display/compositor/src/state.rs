@@ -573,7 +573,11 @@ impl State {
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {
-                    self.configure_gpu_window_to_display(grant.window);
+                    // A window the phone placed keeps its geometry: CEF rebinding on every
+                    // swapchain recreate would otherwise resize it to the display each time.
+                    if self.windows.get(grant.window).is_some_and(|w| w.gpu_bind_follows_display()) {
+                        self.configure_gpu_window_to_display(grant.window);
+                    }
                     self.sync_windows();
                 }
                 if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
@@ -678,6 +682,7 @@ impl State {
             fullscreen: false,
             maximized: false,
             maximized_geometry: None,
+            placed: false,
             lineage: None,
             desktop_id: None,
             icon: None,

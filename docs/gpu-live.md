@@ -507,7 +507,9 @@ X11 `_NET_WM_PID` is not authority.
   the client that created the window (X-Resource `LocalClientPID`) must be the bound
   process, the broker's pidfd must identify that live process (PID, start time and
   owner), and the owner must be the compositor's user. The grant is the toplevel's
-  window, which is configured to the display's extent like a Wayland toplevel.
+  window. A bind configures a full-screen window, or one the client has not given a
+  geometry, to the display's extent; a window the client placed keeps its geometry, so
+  an application that rebinds each time it recreates its swapchain (CEF) is not resized.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
