@@ -47,6 +47,15 @@ public final class RemoteWindow: Identifiable {
     /// The controls a finger may mean, from the window's accessibility tree, in window
     /// pixels (`TouchAim`); empty when the computer lists none.
     public internal(set) var touchTargets: [TouchTarget] = []
+    /// The window controls the application draws itself (an Electron app's HTML minimize,
+    /// maximize and close), in window pixels: covered on screen and never clicked, since
+    /// Caboose's own controls are on every window.
+    public internal(set) var drawnControls: [CGRect] = []
+
+    /// Whether `point`, in window pixels, is on a control the application draws itself.
+    public func isOnDrawnControl(_ point: CGPoint) -> Bool {
+        drawnControls.contains { $0.insetBy(dx: -2, dy: -2).contains(point) }
+    }
     /// The window takes Apple Pencil as a tablet, with pressure and tilt.
     public internal(set) var acceptsPencil = false
     /// Videos playing in the window, lowest `z` first, drawn over its picture.

@@ -12,10 +12,12 @@ struct DockLaunchFeedback: ViewModifier {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: pending == nil || reduceMotion)) { tick in
             let elapsed = pending.map { max(0, tick.date.timeIntervalSince($0.started)) } ?? 0
             let lift = pending == nil || reduceMotion ? 0 : CGFloat(abs(sin(elapsed * .pi / 0.65))) * Self.maximumLift
-            content.offset(y: -lift)
+            // The wheel rides the bounce with the icon it covers.
+            content
                 .overlay {
                     if pending != nil { LaunchWheel() }
                 }
+                .offset(y: -lift)
         }
         .accessibilityValue(pending == nil ? "" : "Opening")
     }
