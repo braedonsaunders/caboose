@@ -34,8 +34,8 @@ def vectors():
     def record(body=body, version=version, algorithm=algorithm, decoded=decoded, compressed=None):
         return OUTER.pack(magic, version, algorithm, decoded, len(body) if compressed is None else compressed) + body
 
-    # A frame header asking for a 16 MiB window (window descriptor 0x70), above the limit.
-    wide = bytes.fromhex('28b52ffd') + bytes([0x00, 0x70]) + bytes.fromhex('010000')
+    # A frame header asking for a 2 GiB window (window descriptor 0xA8), above any phone's.
+    wide = bytes.fromhex('28b52ffd') + bytes([0x00, 0xA8]) + bytes.fromhex('010000')
     invalid = [
         ('truncated-header', first[:OUTER.size - 1]),
         ('wrong-version', record(version=2)),
