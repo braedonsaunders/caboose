@@ -1351,6 +1351,29 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)
 
+    async def test_waits_for_the_phone_do_not_run_out_while_it_is_suspended(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'executor-resume'})
+        try:
+            answer = asyncio.Event()
+            session.suspended = True
+            session.guest_open.clear()
+            waiting = asyncio.create_task(session.phone_answer(answer, 0.2))
+            await asyncio.sleep(0.5)  # longer than the timeout, but suspended
+            self.assertFalse(waiting.done())
+            session.suspended = False
+            session.guest_open.set()
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(waiting, 2)
+            # Answered while suspended: returns at once.
+            session.suspended = True
+            session.guest_open.clear()
+            waiting = asyncio.create_task(session.phone_answer(answer, 0.2))
+            await asyncio.sleep(0.05)
+            answer.set()
+            await asyncio.wait_for(waiting, 1)
+        finally:
+            session.bindings.finish(session.binding_generation)
+
     async def test_suspension_controls_need_executor_resume(self):
         session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features=set())
         try:

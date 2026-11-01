@@ -256,3 +256,15 @@ it('does not offer a resume credential to a phone that did not declare executor-
   await opened
   expect(await refused(f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-resume': 'A'.repeat(43) }))).toBe(410)
 })
+
+it('keeps the guest side of a phone that closed as suspended', async () => {
+  const f = await fixture()
+  const first = f.connect('/v1/gpu', GPU_PROTOCOL, { 'x-caboose-gpu-features': 'executor-resume' })
+  await once(first, 'open')
+  await vi.waitFor(() => expect(f.requests).toHaveLength(1))
+  const reply = once(first, 'message'); first.send(Buffer.from([1])); await reply
+  const closed = once(first, 'close'); first.close(4001); await closed
+  await new Promise(resolve => setTimeout(resolve, 300))
+  expect(f.upstream.clients.size).toBe(1)
+  expect([...f.upstream.clients][0]!.readyState).toBe(WebSocket.OPEN)
+})

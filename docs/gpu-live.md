@@ -392,7 +392,9 @@ then the broker sends QUIESCE, and guest processes block in their next call that
 phone. It reopens the gate on EXECUTOR_RESUME (mode 0 in place, 1 from a snapshot), logs
 SNAPSHOT_REFUSED's reason, and refuses suspension controls in a session that is not resumable,
 a second EXECUTOR_SUSPEND, QUIESCED outside a suspension, or EXECUTOR_RESUME without one.
-Local processes keep their streams and bindings throughout; nothing is reported to the
+The broker's own deadlines for the phone's answers (a process or stream opening, a stream's
+FIN, a process or surface retiring) count only time the executor is not suspended. Local
+processes keep their streams and bindings throughout; nothing is reported to the
 compositor, whose grants stay as they were, unless the relay's hold expires and the executor
 is lost.
 
