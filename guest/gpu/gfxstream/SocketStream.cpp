@@ -233,7 +233,8 @@ void CabooseSocketStream::invalidate() {
     if (fd_ >= 0 && !handshaking) caboose::completion::markExecutorLost();
 }
 namespace {
-// Processes kept off the phone entirely (guest/gpu/routing-layer, "keptOnComputer" and
+// Processes kept off the phone entirely (guest/gpu/routing-layer, "keptOnComputer": Steam's web
+// views and update window; and
 // fossilize_replay) do not reach it at all: Steam's update window holds the bootstrap's
 // single-instance pipe, so a phone that is slow to answer must never hold it up, and
 // fossilize_replay's pipelines would only cross the network to be discarded.
@@ -245,7 +246,8 @@ bool keptOffPhone() {
         std::string program = commandLine.substr(0, commandLine.find(' '));
         const auto slash = program.rfind('/');
         if (slash != std::string::npos) program = program.substr(slash + 1);
-        return program == "fossilize_replay" || commandLine.find(" -child-update-ui") != std::string::npos;
+        return program == "fossilize_replay" || program == "steamwebhelper" ||
+               commandLine.find(" -child-update-ui") != std::string::npos;
     }();
     return kept;
 }
