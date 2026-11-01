@@ -384,6 +384,48 @@ void testIgnoredDescriptorPointers() {
     assert(!inlineBlock.pImageInfo && !inlineBlock.pBufferInfo && !inlineBlock.pTexelBufferView);
 }
 
+void testKeptStructures() {
+    VkFormat formats[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB};
+    auto list = make<VkImageFormatListCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO);
+    list.viewFormatCount = 2;
+    list.pViewFormats = formats;
+    auto external = make<VkExternalMemoryImageCreateInfo>(VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, &list);
+    auto stencil = make<VkImageStencilUsageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO, &external);
+    stencil.stencilUsage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    std::vector<std::vector<uint8_t>> storage;
+    auto kept = keptStructures(&stencil, storage);
+    // The two the driver keeps, in order, unlinked; the one it handles itself is skipped.
+    assert(kept.size() == 2);
+    assert(kept[0]->sType == VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO && !kept[0]->pNext);
+    assert(reinterpret_cast<VkImageStencilUsageCreateInfo*>(kept[0])->stencilUsage == VK_IMAGE_USAGE_SAMPLED_BIT);
+    auto* listCopy = reinterpret_cast<VkImageFormatListCreateInfo*>(kept[1]);
+    assert(listCopy != &list && listCopy->viewFormatCount == 2 && listCopy->pViewFormats == formats && !listCopy->pNext);
+    assert(stencil.pNext == &external && external.pNext == &list);  // the application's chain stays
+    assert(keptStructures(nullptr, storage).empty());
+
+    auto usage2 = make<VkBufferUsageFlags2CreateInfoKHR>(VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR);
+    usage2.usage = VK_BUFFER_USAGE_2_VERTEX_BUFFER_BIT_KHR | VK_BUFFER_USAGE_2_TRANSFER_DST_BIT_KHR |
+                   (VkBufferUsageFlags2KHR(1) << 40);
+    auto buffer = make<VkBufferCreateInfo>(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &usage2);
+    buffer.usage = 0;  // ignored with maintenance5's structure
+    assert(bufferUsage(buffer) == (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+    buffer.pNext = nullptr;
+    buffer.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    assert(bufferUsage(buffer) == VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    buffer.pNext = &usage2;
+    assert(keptStructures(buffer.pNext, storage).size() == 1);
+
+    // Appended at the end of a rebuilt chain, after what the driver put there itself.
+    auto rebuilt = make<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+    auto own = make<VkExternalMemoryImageCreateInfo>(VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+    rebuilt.pNext = &own;
+    appendKeptStructures(&rebuilt, &stencil, storage);
+    auto* next = static_cast<const VkBaseInStructure*>(rebuilt.pNext);
+    assert(next == reinterpret_cast<const VkBaseInStructure*>(&own));
+    assert(next->pNext->sType == VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO);
+    assert(next->pNext->pNext->sType == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO && !next->pNext->pNext->pNext);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -393,5 +435,6 @@ int main(int argc, char** argv) {
     testNullDescriptors();
     testBindStatus();
     testIgnoredDescriptorPointers();
+    testKeptStructures();
     std::puts("d3d11 emulation tests passed");
 }

@@ -92,6 +92,72 @@ inline void clearIgnoredDescriptorPointers(VkWriteDescriptorSet& write) {
     }
 }
 
+// The driver rebuilds the pNext chains of buffer, image and image view creation from the
+// structures it handles itself, and dropped these, which change what is created:
+// maintenance5's buffer usage (an application may leave VkBufferCreateInfo::usage 0), a
+// view's narrower usage (an sRGB view of an image with storage usage), and an image's view
+// formats and stencil usage.
+inline constexpr VkStructureType kKeptCreateStructures[] = {
+    VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR,
+    VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+    VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+    VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO,
+};
+
+inline size_t keptStructSize(VkStructureType type) {
+    switch (type) {
+        case VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR:
+            return sizeof(VkBufferUsageFlags2CreateInfoKHR);
+        case VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO:
+            return sizeof(VkImageViewUsageCreateInfo);
+        case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
+            return sizeof(VkImageFormatListCreateInfo);
+        case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO:
+            return sizeof(VkImageStencilUsageCreateInfo);
+        default:
+            return 0;
+    }
+}
+
+// Copies, in `storage`, of the structures of `chain` the driver keeps, unlinked, for the
+// caller to append to the chain it rebuilds. A pointer a copy holds (a format list) still
+// points into the application's structure, which outlives the call.
+inline std::vector<VkBaseOutStructure*> keptStructures(const void* chain,
+                                                       std::vector<std::vector<uint8_t>>& storage) {
+    std::vector<VkBaseOutStructure*> kept;
+    for (auto* s = static_cast<const VkBaseInStructure*>(chain); s; s = s->pNext) {
+        size_t size = keptStructSize(s->sType);
+        if (!size) continue;
+        storage.emplace_back(reinterpret_cast<const uint8_t*>(s), reinterpret_cast<const uint8_t*>(s) + size);
+        auto* copy = reinterpret_cast<VkBaseOutStructure*>(storage.back().data());
+        copy->pNext = nullptr;
+        kept.push_back(copy);
+    }
+    return kept;
+}
+
+// Appends to `createInfo`'s rebuilt chain the copies, kept in `storage`, of the structures
+// of `appChain` the driver keeps.
+inline void appendKeptStructures(void* createInfo, const void* appChain,
+                                 std::vector<std::vector<uint8_t>>& storage) {
+    auto* tail = static_cast<VkBaseOutStructure*>(createInfo);
+    while (tail->pNext) tail = tail->pNext;
+    for (VkBaseOutStructure* kept : keptStructures(appChain, storage)) {
+        tail->pNext = kept;
+        tail = kept;
+    }
+}
+
+// The usage a buffer is created with: maintenance5's 64-bit usage when the application gives
+// one, which then replaces VkBufferCreateInfo::usage, narrowed to the flags that field holds.
+inline VkBufferUsageFlags bufferUsage(const VkBufferCreateInfo& info) {
+    for (auto* s = static_cast<const VkBaseInStructure*>(info.pNext); s; s = s->pNext)
+        if (s->sType == VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR)
+            return VkBufferUsageFlags(reinterpret_cast<const VkBufferUsageFlags2CreateInfoKHR*>(s)->usage &
+                                      0x7fffffffu);
+    return info.usage;
+}
+
 // ---------------------------------------------------------------------------------------
 // Null descriptors
 // ---------------------------------------------------------------------------------------
