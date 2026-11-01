@@ -23,6 +23,7 @@ function pairs(args: readonly string[]): string[] {
 }
 import { TailnetNode, dockerInputCli, tailnetHostname, type DockerInput, type TailnetStatus } from './tailnet.js'
 import { TERMINAL_PORT } from './terminal.js'
+import { AI_PORT } from './ai.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 
 /** The owner computer's own Docker network, so its bridge interface has a known name to fence. */
@@ -273,6 +274,8 @@ export function createContainerController(config: Config, dependencies: { docker
   let filesPortWarning: string | undefined
   /** Where the terminal service is reached: its loopback port, or the computer's bridge address. */
   let terminalUrl = `http://127.0.0.1:${place.ports.terminal}`
+  /** Caboose AI's relay port, on the computer's bridge address (it has no published port). */
+  let aiUrl: string | undefined
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
     try {
@@ -355,8 +358,13 @@ export function createContainerController(config: Config, dependencies: { docker
     const loopback = `http://127.0.0.1:${place.ports.terminal}`
     const mapping = await docker(['port', name, `${TERMINAL_PORT}/tcp`], 15_000).catch(() => '')
     if (mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.terminal}`)) return loopback
+    const address = await bridgeAddress()
+    return address ? `http://${address}:${TERMINAL_PORT}` : loopback
+  }
+
+  async function bridgeAddress(): Promise<string | undefined> {
     const address = (await docker(['inspect', '-f', `{{with index .NetworkSettings.Networks "${place.network}"}}{{.IPAddress}}{{end}}`, name], 15_000).catch(() => '')).trim()
-    return /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(address) ? `http://${address}:${TERMINAL_PORT}` : loopback
+    return /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(address) ? address : undefined
   }
 
   /** App scopes need a writable cgroup tree; a container created without one gets it remounted. */
@@ -410,6 +418,7 @@ export function createContainerController(config: Config, dependencies: { docker
     get agentDisplayUrl() { return `ws://127.0.0.1:${place.ports.agent}/` },
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
+    aiService: () => aiUrl && displayToken ? { url: aiUrl, token: displayToken } : undefined,
     async ensureAgentSeat() {
       await exec('root', '/usr/local/libexec/caboose-agent-seat', [], 180_000)
     },
@@ -475,6 +484,8 @@ export function createContainerController(config: Config, dependencies: { docker
         const mapping = await docker(['port', name, `${FILES_PORT}/tcp`], 15_000).catch(() => '')
         filesPortWarning = mapping.split(/\r?\n/).some(line => line.trim() === `127.0.0.1:${place.ports.files}`) ? undefined : 'Recreate the container to enable Files.'
         terminalUrl = await terminalAddress()
+        const bridge = await bridgeAddress()
+        aiUrl = bridge ? `http://${bridge}:${AI_PORT}` : undefined
 
         if (!displayToken) {
           displayToken = randomBytes(32).toString('hex')

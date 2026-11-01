@@ -11,6 +11,7 @@ import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, crea
 import type { Config } from './config.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
+import { AI_PORT } from './ai.js'
 import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
 import type { App, Controller, Session } from './server.js'
 import { guestLaunch } from './guest-apps.js'
@@ -235,6 +236,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     get agentDisplayUrl() { return endpoint(AGENT_DISPLAY_PORT, 'ws') },
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
     terminalService: () => ({ url: endpoint(TERMINAL_PORT, 'http'), token: displayToken }),
+    aiService: () => {
+      if (!displayToken) return undefined
+      try { return { url: endpoint(AI_PORT, 'http'), token: displayToken } } catch { return undefined }
+    },
     async ensureAgentSeat() {
       await command('/usr/local/libexec/caboose-agent-seat', [], 180_000)
     },
@@ -342,7 +347,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
         if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)
         if ((nativeMac || serviceVsock) && !relays.size) {
-          for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT]) {
+          for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT, AI_PORT]) {
             relays.set(port, await listenDeskPort(nativeMac ? desk : { connect: (target) => desk!.connect(target, { transport: 'vsock' }) }, port))
           }
         }
