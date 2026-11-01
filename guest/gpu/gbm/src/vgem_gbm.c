@@ -203,8 +203,10 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm, uint32_t width, uint32_t
     if (!bo) return NULL;
     bo->modifier = modifier;
     bo->size = caboose_format_layout(f, width, height, bo->strides, bo->offsets);
-    // vgem sizes a dumb object as pitch × height: ask for 4096-byte rows.
-    const uint64_t rows = (bo->size + 4095) / 4096;
+    // vgem sizes a dumb object as pitch × height: ask for 4096-byte rows. A linear video
+    // buffer (two planes) gets one more page after its planes, where the VA-API driver
+    // that decodes into it writes the picture's identity (docs/gpu-media.md).
+    const uint64_t rows = (bo->size + 4095) / 4096 + (f->planes == 2 && modifier == DRM_FORMAT_MOD_LINEAR);
     if (!bo->size || rows > UINT32_MAX) {
         bo_free(bo);
         errno = EINVAL;

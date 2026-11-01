@@ -136,6 +136,34 @@ static void remote_buffers(struct gbm_device *gbm) {
     gbm_bo_destroy(bo);
 }
 
+// A linear video buffer has one spare page after its planes for the VA-API driver's
+// picture identity (docs/gpu-media.md); a remote one, never mapped, has none.
+static void video_identity_page(struct gbm_device *gbm) {
+    const uint64_t linear = DRM_FORMAT_MOD_LINEAR, remote = CABOOSE_FORMAT_MOD_REMOTE;
+    struct gbm_bo *bo = gbm_bo_create_with_modifiers2(gbm, 854, 480, GBM_FORMAT_NV12, &linear, 1, GBM_BO_USE_RENDERING);
+    CHECK(bo);
+    if (!bo) return;
+    const uint64_t planes = 1024 * 480 + 1024 * 240;  // 854 bytes per row, aligned to 256
+    int fd = gbm_bo_get_fd(bo);
+    CHECK(lseek(fd, 0, SEEK_END) == (off_t)((planes + 4095) / 4096 * 4096 + 4096));
+    close(fd);
+    gbm_bo_destroy(bo);
+    bo = gbm_bo_create_with_modifiers2(gbm, 854, 480, GBM_FORMAT_NV12, &remote, 1, GBM_BO_USE_RENDERING);
+    CHECK(bo);
+    if (!bo) return;
+    fd = gbm_bo_get_fd(bo);
+    CHECK(lseek(fd, 0, SEEK_END) == (off_t)((planes + 4095) / 4096 * 4096));
+    close(fd);
+    gbm_bo_destroy(bo);
+    bo = gbm_bo_create_with_modifiers2(gbm, 64, 64, GBM_FORMAT_XRGB8888, &linear, 1, GBM_BO_USE_RENDERING);
+    CHECK(bo);
+    if (!bo) return;
+    fd = gbm_bo_get_fd(bo);
+    CHECK(lseek(fd, 0, SEEK_END) == 4096 * 4);
+    close(fd);
+    gbm_bo_destroy(bo);
+}
+
 static void planar_buffers(struct gbm_device *gbm) {
     const uint64_t remote = CABOOSE_FORMAT_MOD_REMOTE;
     struct gbm_bo *bo = gbm_bo_create_with_modifiers2(gbm, 1280, 721, GBM_FORMAT_NV12, &remote, 1, GBM_BO_USE_RENDERING);
@@ -200,6 +228,7 @@ int main(void) {
     linear_buffers(gbm);
     remote_buffers(gbm);
     planar_buffers(gbm);
+    video_identity_page(gbm);
     no_leaks(gbm);
     gbm_device_destroy(gbm);
     close(fd);

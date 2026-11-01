@@ -15,7 +15,9 @@ tightly stacked planes with rows aligned to 256 bytes.
 | `DRM_FORMAT_MOD_LINEAR` | the pixels, in ordinary shared memory | maps them |
 | `CABOOSE_FORMAT_MOD_REMOTE` (`0x7e00000000000001`) | none: the pixels are phone GPU memory | fails with `EINVAL` |
 
-A remote buffer's pages are never touched, so it costs no guest memory; its dma-buf still
+A linear NV12 or P010 buffer has one spare page after its planes, where the VA-API driver
+that decodes into it writes the picture's identity (docs/gpu-media.md). A remote buffer's
+pages are never touched, so it costs no guest memory; its dma-buf still
 has the nominal size, and its inode identifies it to the Caboose Vulkan driver and to
 caboose-display. `gbm_bo_create_with_modifiers` chooses remote when the caller offers it
 and does not ask for `GBM_BO_USE_LINEAR`, `GBM_BO_USE_WRITE` or `GBM_BO_USE_CURSOR`;
