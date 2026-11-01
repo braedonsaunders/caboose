@@ -373,7 +373,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, decoders: decoders, displays: displays, videoDecoders: videoDecoders.isEmpty ? nil : videoDecoders,
                     audioDecoders: playsAudio ? ["opus"] : nil, wasm: runsGames, gpu: rendersGPUStreams,
-                    scaledMotion: true, webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
+                    webview: runsGames, devices: devices != nil, clipboardTypes: ClipboardPolicy.clientTypes,
                     atlas: rendersSurfaceAtlas, scene: rendersSceneGraph,
                     targets: true, draw: DrawLists.enabled))
     }
@@ -669,8 +669,7 @@ public final class CabooseDisplaySession: DisplaySession {
         window.videoLayout &+= 1
     }
 
-    /// The server ended a video. It painted the region back into the window first, so the
-    /// video stays on screen until the window's picture `generation` has been shown (a second
+    /// The server ended a video. The video stays on screen until the window's picture `generation` has been shown (a second
     /// at most, for a window no view is showing).
     func retireVideo(_ id: Int, after generation: UInt64) {
         guard let video = videos.remove(id) else { return }

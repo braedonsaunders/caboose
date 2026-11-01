@@ -248,7 +248,7 @@ public struct LosslessTile: Sendable {
 /// Where a video stream comes from: the app's own bitstream through the Caboose VA-API driver,
 /// a Wayland video subsurface the compositor encodes, or a region detected as moving.
 public enum VideoSource: String, Sendable {
-    case passthrough, surface, motion
+    case passthrough, surface
 
     /// Live streams are shown as they decode; an app's own stream when the app presents a frame.
     public var isLive: Bool { self != .passthrough }
@@ -285,7 +285,6 @@ public struct VideoStreamFields: Sendable {
     public var codec: DisplayCodec?
     public var source: VideoSource?
     public var color: VideoColor?
-    public var scaled: Bool
 
     init?(_ body: CBOR) {
         guard let id = body["id"]?.int else { return nil }
@@ -297,7 +296,6 @@ public struct VideoStreamFields: Sendable {
         codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
         source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
         color = body["color"].flatMap(VideoColor.init)
-        scaled = body["scaled"]?.bool ?? false
     }
 }
 
@@ -969,7 +967,7 @@ public enum ClientMessage: Sendable {
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     /// `clipboardTypes`: what the client takes from the clipboard besides text; absent, text only.
     case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
+               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, webview: Bool = false,
                devices: Bool = false, clipboardTypes: [String]? = nil, atlas: Bool = false, scene: Bool = false,
                scroll: Bool = false, targets: Bool = false, draw: Bool = false)
     case vsync(display: Int, micros: UInt64)
@@ -1037,7 +1035,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let clipboardTypes, let atlas, let scene, let scroll, let targets, let draw):
+        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let webview, let devices, let clipboardTypes, let atlas, let scene, let scroll, let targets, let draw):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
@@ -1045,7 +1043,6 @@ public enum ClientMessage: Sendable {
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
                 ("gpu", gpu ? CBOR(true) : nil),
-                ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
                 ("scroll", scroll ? CBOR(true) : nil),

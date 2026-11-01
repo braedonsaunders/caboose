@@ -132,8 +132,7 @@ page playing a stream through it that is kept when its game ends as the app leav
 and taken over, unreloaded and reconnected, by the next announcement, while a paused page is
 not kept.
 The check uses port 18765 on loopback and an unchanged temporary package copy.
-Builds without MetalFX use the software motion upscaler. Select the full Xcode
-developer directory before running the check.
+Select the full Xcode developer directory before running the check.
 
 Against a real computer with a window open:
 
@@ -304,13 +303,11 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   from its own screen's display link, at 120 Hz on ProMotion
   (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server releases
   a window's frames on those ticks, so a window nobody sees costs nothing.
-- **Video in windows.** The app leaves passthrough streams to server decoding. It requests
-  half-resolution software-encoded motion streams and upscales them using MetalFX or vImage
-  on the CPU. If both fail, the video layer scales the decoded picture. Resize metadata retains the previous
+- **Video in windows.** The app leaves passthrough streams to server decoding and shows
+  `surface` streams over the window's picture. Resize metadata retains the previous
   picture's pixel basis until its replacement frame decodes.
   `VideoLayerGeometryTests` and `VideoSessionTests` cover geometry, negotiation and
-  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing,
-  and `scripts/check-scaled-motion.sh` checks scaled motion and device fallback.
+  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
   an explicit monotonic host/server anchor. Placement samples host time once against
@@ -1238,7 +1235,7 @@ Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests
 ## Media playback checks
 
 The app renders moving video inside the window stream by default. It does not negotiate
-separate motion or passthrough layers. Test an ordinary video page through resize,
+separate passthrough layers. Test an ordinary video page through resize,
 fullscreen/exit, minimize/restore and Laptop/Tablet transitions: one picture must move
 with its window. Audio packets play on a continuous sample timeline; test sustained
 speech/music, pause/resume and an audio-session interruption without choppy gaps.

@@ -484,9 +484,6 @@ import Testing
         "client-hello-gpu": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true),
-        "client-hello-scaled-motion": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], scaledMotion: true),
         "client-hello-draw": .hello(token: "f3a9c1d27e8b4a6f", decoders: [], displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], atlas: true, draw: true),

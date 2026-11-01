@@ -10,7 +10,7 @@ import Testing
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 500, height: 678),
                                   overrideRedirect: false, surface: surface)
         guard case .videoCreate(let fields) = VideoMessageTests.server(.videoCreate, [
-            "id": 1, "window": 7, "rect": [20, 200, 460, 240], "codec": "h264", "source": "motion"
+            "id": 1, "window": 7, "rect": [20, 200, 460, 240], "codec": "h264", "source": "surface"
         ]) else { Issue.record("video create"); return }
         let video = try #require(RemoteVideo(fields, send: { _ in }))
         window.videos = [video]

@@ -2710,11 +2710,8 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 The iOS app omits `video_decoders`. The compositor also requests local decode for
 every marker stream, including headless sessions, because the marker has no independent
 foreground alpha or occlusion provenance. Controls and subtitles are composed by the
-application over decoded pixels before the ordinary window/motion paths encode them. The iOS app
-requests half-resolution software-encoded motion streams and upscales them with MetalFX,
-or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
-decoded picture. PCM playback uses decoded sample durations to join adjacent
-packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+application over decoded pixels before the window's picture encodes them. PCM playback
+uses decoded sample durations to join adjacent packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
 payload. Excess or empty packets are rejected before dispatch, counted as
 `ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
