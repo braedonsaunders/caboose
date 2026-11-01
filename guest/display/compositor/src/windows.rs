@@ -71,7 +71,8 @@ pub struct Window {
     /// asked for: an overscan change keeps it, even before the app has committed it.
     pub shown: Option<Size<i32, Logical>>,
     /// An X11 top-level without size hints that asked for a first size larger than its
-    /// display (xwm.rs `first_size`): held at that size, and its minimum to the phone.
+    /// display (xwm.rs `first_size`): held at that size, its minimum and its maximum to the
+    /// phone, which then keeps it at that size and shows it scaled to fit.
     pub held_min: Option<Size<i32, Logical>>,
 }
 
@@ -177,7 +178,7 @@ impl Window {
     pub fn max_size(&self) -> Size<i32, Logical> {
         match &self.surface {
             Surface::Toplevel(t) => min_max(t.wl_surface()).1,
-            Surface::X11(x) => x.max_size().unwrap_or_default(),
+            Surface::X11(x) => x.max_size().or(self.held_min).unwrap_or_default(),
             Surface::Popup(_) => (0, 0).into(),
         }
     }
@@ -355,7 +356,7 @@ impl Windows {
                 x.title(),
                 x.class(),
                 x.min_size().or(w.held_min).and_then(|s| size_px(d, s)),
-                x.max_size().and_then(|s| size_px(d, s)),
+                x.max_size().or(w.held_min).and_then(|s| size_px(d, s)),
                 x.is_fullscreen(),
             ),
         };
