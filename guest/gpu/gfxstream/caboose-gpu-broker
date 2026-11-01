@@ -28,7 +28,8 @@ from ipc_handoff import receive_record
 import control_protocol
 import surface_local_protocol as surface_wire
 from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
-from live_compression import CONFIG as TRANSPORT_CONFIG, compress_data
+from live_compression import CONFIG as TRANSPORT_CONFIG, CONFIG_ZSTD_STREAM, StreamCompressor, compress_data
+import live_zstd
 from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, UNSEQUENCED, encode, is_surface
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
@@ -189,7 +190,9 @@ async def close_owned_writer(writer, *, abort, timeout=1):
 
 
 DATA_READ_BYTES = 65536
-DATA_CREDIT_BYTES = DATA_READ_BYTES + 64 + 10  # CGLV header + maximum WS header
+# CGLV header, maximum WS header, and what a zstd-stream record may add: its CGLZ header and
+# zstd's bound on incompressible input (ZSTD_compressBound(65600) - 65600 = 287).
+DATA_CREDIT_BYTES = DATA_READ_BYTES + 64 + 10 + 16 + 287
 CONTROL_HEADROOM_BYTES = 65536
 CONTROL_HEADROOM_MESSAGES = 8
 # An exited process whose surfaces have not retired this long after its last stream is stopped anyway.
@@ -385,6 +388,15 @@ class Session:
         self.hello = HELLO_V4 if indexed else HELLO
         # Phone capabilities that local processes may use; none outside indexed v4.
         self.features = frozenset(features) if indexed else frozenset()
+        # Broker-to-phone compression (docs/gpu-live.md, "Compressed commands"): one zstd
+        # stream for the session when the phone decodes it, else DEFLATE when asked for.
+        if 'zstd-stream' in self.features and live_zstd.available():
+            self.transport_config = CONFIG_ZSTD_STREAM
+        elif self.deflate_requested:
+            self.transport_config = TRANSPORT_CONFIG
+        else:
+            self.transport_config = None
+        self.stream_compressor = None
         # Executor resume: the phone's splices are invisible here but for its RESUME.
         self.resumable = 'executor-resume' in self.features
         self.decoder = EnvelopeDecoder(executor, generation, replay=self.resumable)
@@ -530,7 +542,13 @@ class Session:
         data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
         frame = server_frame(2, data)
         charge = len(frame)
-        if self.deflate_enabled and kind == Kind.DATA:
+        if self.stream_compressor is not None and kind == Kind.DATA:
+            # Every DATA continues the stream, so a refusal past this point ends the session
+            # (local streams fail it on any send error). An incompressible record is charged
+            # its own, larger size.
+            frame = server_frame(2, self.stream_compressor.compress_data(data))
+            charge = max(charge, len(frame))
+        elif self.deflate_enabled and kind == Kind.DATA:
             frame = server_frame(2, compress_data(data))
         self.enqueue_frame(frame, credit, charge=charge, sequence=self.sequence)
         self.sequence += 1
@@ -729,21 +747,25 @@ class Session:
         if frame.kind == Kind.SESSION_READY:
             if self.session_received or frame.payload != self.hello: raise ValueError('bad session receipt')
             self.session_received = True
-            if self.deflate_requested:
+            if self.transport_config is not None:
                 self.transport_requested = True
-                self.send(Kind.TRANSPORT_CONFIG, payload=TRANSPORT_CONFIG)
+                self.send(Kind.TRANSPORT_CONFIG, payload=self.transport_config)
             else:
                 self.session_ready.set()
             return
         if frame.kind == Kind.TRANSPORT_READY:
-            if (not self.transport_requested or self.deflate_enabled or self.revoking or
-                    self.draining or self.failed or self.closing_ws or frame.process or frame.stream or
-                    frame.payload != TRANSPORT_CONFIG):
+            if (not self.transport_requested or self.deflate_enabled or self.stream_compressor is not None or
+                    self.revoking or self.draining or self.failed or self.closing_ws or frame.process or
+                    frame.stream or frame.payload != self.transport_config):
                 raise ValueError('unexpected transport receipt')
-            self.deflate_enabled = True
-            if self.progress_enabled:
-                with contextlib.suppress(OSError):
-                    print('CABOOSE_GPU_TRANSPORT deflate=1 max_decoded=65600', file=sys.stderr, flush=True)
+            if self.transport_config == CONFIG_ZSTD_STREAM:
+                self.stream_compressor = StreamCompressor()
+                print('CABOOSE_GPU_TRANSPORT zstd-stream max_decoded=65600', file=sys.stderr, flush=True)
+            else:
+                self.deflate_enabled = True
+                if self.progress_enabled:
+                    with contextlib.suppress(OSError):
+                        print('CABOOSE_GPU_TRANSPORT deflate=1 max_decoded=65600', file=sys.stderr, flush=True)
             self.session_ready.set()
             return
         if not self.session_ready.is_set(): raise ValueError('session not ready')

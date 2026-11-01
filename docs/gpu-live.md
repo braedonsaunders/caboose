@@ -84,7 +84,7 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 22 | SOURCE_RELEASED | Process | 48 bytes |
 | 23 | SURFACE_RETIRE | Process | 40 bytes |
 | 24 | SURFACE_RETIRED | Process | 56 bytes |
-| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1, maximum decoded record u32 = 65600 |
+| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1 or 2, maximum decoded record u32 = 65600 |
 | 38 | TRANSPORT_READY | Session | Exact matching configuration |
 | 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
 | 40 | ACK | Session, sequence 0 | Highest contiguous sequence received u64 |
@@ -102,27 +102,45 @@ are monotonic and never reused within a generation. The initial admission limits
 are 16 active processes and 64 active streams; retirement releases capacity without
 resetting identity counters.
 
-### Optional bounded command compression
+### Compressed commands
 
-With `CABOOSE_PRIVATE_GPU_DEFLATE=1`, the indexed v4 broker sends TRANSPORT_CONFIG
-after SESSION_READY and waits for the exact TRANSPORT_READY before publishing
+The indexed v4 broker compresses what it sends the phone when the phone declares
+`zstd-stream` (algorithm 2) and the computer has libzstd 1.5, or, failing that, with
+`CABOOSE_PRIVATE_GPU_DEFLATE=1` (algorithm 1). It sends TRANSPORT_CONFIG with the
+algorithm after SESSION_READY and waits for the exact TRANSPORT_READY before publishing
 local sockets or reporting compositor readiness. Duplicate, unsolicited or late
 negotiation terminates the session. The Vulkan hello and native runtime mode do
-not change. The opt-in is invalid for older modes; without it, transport stays raw.
+not change. Older modes never compress; without either, transport stays raw.
 
 After this exchange, each broker-to-phone WebSocket message contains exactly one
 whole CGLV envelope or one CGLZ record. CGLZ uses a 16-byte little-endian header:
-`magic[4]="CGLZ", version:u16=1, algorithm:u16=1, decodedBytes:u32,
-compressedBytes:u32`, followed by one independent raw RFC 1951 DEFLATE stream.
-There is no shared dictionary. `decodedBytes` is 65 through 65600,
-`compressedBytes` exactly matches the remaining message, and the whole compressed
-record must be smaller than its decoded bytes. The decoded bytes must be exactly
-one CGLV DATA envelope with 1 through 65536 payload bytes. Its original identity,
-scope and sequence pass through the existing decoder unchanged. Control messages,
-concatenated envelopes, truncated streams, extra bytes after DEFLATE end-of-stream,
-and output-length mismatches are rejected. Ordinary DATA is used when compression
-does not reduce size. Phone replies remain raw, and WebSocket extensions remain
-forbidden on both hops.
+`magic[4]="CGLZ", version:u16=1, algorithm:u16, decodedBytes:u32,
+compressedBytes:u32`, the algorithm the session negotiated, followed by compressed bytes.
+In both, `decodedBytes` is 65 through 65600, `compressedBytes` exactly matches the
+remaining message, and the decoded bytes are exactly one CGLV DATA envelope with 1 through
+65536 payload bytes, whose identity, scope and sequence pass through the existing decoder
+unchanged. Control envelopes stay raw CGLV.
+
+With algorithm 2 every DATA envelope is a record, and the records of a session are one
+zstd stream (zstd 1.5 format, no dictionary, no checksum, window at most 8 MiB, window log
+23), started at TRANSPORT_READY: the broker compresses each envelope in sequence order and
+flushes the stream at the end of each record, so a record decodes completely given every
+earlier record of the session, and none can be skipped. The phone feeds its decoder exactly
+the records it accepts, in sequence order, each once; a record must yield exactly
+`decodedBytes` and leave the decoder at the start of the next block (expecting a 3-byte
+block header and holding none of it). A record may be larger than its envelope. The
+broker retains and resends records as the exact bytes it wrote, and the phone discards
+unread whatever arrives before the broker's RESUME, so after a splice the next record
+continues the stream where the phone's decoder stands. `guest/gpu/broker/live_zstd.py`
+binds the computer's libzstd; `live-zstd-stream-vectors.json` holds a record sequence and
+malformed first records.
+
+With algorithm 1 each record is one independent raw RFC 1951 DEFLATE stream, with no
+shared dictionary, and the whole record must be smaller than its decoded bytes; ordinary
+DATA is used when compression does not reduce size. Control messages, concatenated
+envelopes, truncated streams, extra bytes after the compressed data, and output-length
+mismatches are rejected under either algorithm. Phone replies remain raw, and WebSocket
+extensions remain forbidden on both hops.
 
 Phone-to-broker replies can concatenate a ready FIFO prefix of raw CGLV envelopes
 into one WebSocket message, preserving envelope sequences and stream order. The
@@ -134,8 +152,8 @@ the first record alone. Closing discards pending records but retains in-flight
 charges until their completion callback. These are logical retained-byte limits,
 not physical allocator or RSS limits.
 
-The broker charges the original uncompressed WebSocket frame until its send
-completes. Before queuing compressed work, the phone reserves the wire size plus
+The broker charges the original uncompressed WebSocket frame, or an algorithm 2 record
+larger than it, until its send completes. Before queuing compressed work, the phone reserves the wire size plus
 the declared decoded size plus one byte for bounded inflate output. The decoder
 separately retains its existing single bounded partial envelope. Admission uses
 the existing 1 MiB/64-message ingress limit; no limit is raised. Inflation runs
@@ -170,8 +188,8 @@ The phone app names the capabilities of its native decoder in the
 `X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
-`shader-cache` and `executor-resume`. The broker reads them from the authenticated upgrade
-request.
+`shader-cache`, `executor-resume` and `zstd-stream` ([Compressed commands](#compressed-commands)).
+The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
 hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned handles),

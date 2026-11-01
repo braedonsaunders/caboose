@@ -29,6 +29,12 @@ The JSON vector files pin bytes independently of WebSocket fragmentation. These
 codecs do not authenticate a process, validate generated Vulkan payloads, or
 establish native GPU completion.
 
+`live_compression.py` makes the broker's compressed DATA records (CGLZ): per-record DEFLATE
+(algorithm 1) and one zstd stream per session (algorithm 2), through `live_zstd.py`, a
+ctypes binding of the computer's libzstd 1.5. `live-compression-vectors.json` and
+`live-zstd-stream-vectors.json` (written by `make_zstd_stream_vectors.py`) are the
+phone's fixtures for them.
+
 `guest/gpu/install-live.py` installs the supervised broker into a private module
 directory and an isolated Python launcher at `/usr/local/libexec/caboose-gpu-broker`.
 Installation does not start a listener or enable an ICD. The installed-layout

@@ -145,7 +145,9 @@ def is_surface(kind):
 
 
 def _transport(kind, payload):
-    if kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY) and payload != struct.pack("<II", 1, 65600):
+    # Algorithm 1 is DEFLATE per record, 2 one zstd stream per session (live_compression.py).
+    if kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY) and payload not in (
+            struct.pack("<II", 1, 65600), struct.pack("<II", 2, 65600)):
         raise ProtocolError("invalid transport configuration")
 
 
