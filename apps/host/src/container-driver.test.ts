@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { config } from './config.js'
-import { containerPlacement, createContainerController, detectGpu, gpuArgs, phoneGpuArgs, withContainerPorts, type Docker } from './container-driver.js'
+import { cgroupRemountArgs, cgroupWritable, containerPlacement, createContainerController, detectGpu, gpuArgs, phoneGpuArgs, withContainerPorts, type Docker } from './container-driver.js'
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
@@ -60,6 +60,7 @@ describe('createContainerController', () => {
     const run = fake.calls.find(call => call[0] === 'run')!
     expect(run).toEqual(expect.arrayContaining(['--device', '/dev/dxg', 'CABOOSE_GPU=wsl', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
       '-p', '127.0.0.1:14700:14700', '-p', '127.0.0.1:14701:14701', '-p', '127.0.0.1:14600:14600', '-p', '127.0.0.1:14601:14601', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
+    expect(run.join(' ')).toContain('--security-opt writable-cgroups=true')
     expect(run.at(-1)).toBe('caboose-computer:gpu')
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
     expect(execs[0]).toContain('/run/caboose/display-token')
@@ -124,6 +125,34 @@ describe('createContainerController', () => {
     await controller.destroy!()
     expect(fake.calls).toContainEqual(['rm', '-f', 'caboose-owner-net'])
     expect(fake.calls).toContainEqual(['volume', 'rm', '-f', 'caboose-owner-net'])
+  })
+
+  it('makes an older container\'s read-only cgroup tree writable at wake, once', async () => {
+    const fake = fakeDocker('running')
+    let mounts = 'proc /proc proc rw 0 0\ncgroup /sys/fs/cgroup cgroup2 ro,nosuid,nodev,noexec,relatime,nsdelegate 0 0\n'
+    const helpers: string[][] = []
+    const docker: Docker = async (args, timeout) => {
+      if (args[0] === 'exec' && args.includes('/proc/self/mounts')) return mounts
+      if (args[0] === 'inspect' && args.includes('{{.Image}}')) return 'sha256:abc\n'
+      if (args[0] === 'run' && args.includes('--privileged')) { helpers.push(args); mounts = mounts.replace(' ro,', ' rw,'); return '' }
+      return fake.docker(args, timeout)
+    }
+    const controller = createContainerController(settings, { fence: async () => {}, docker, exists: () => false })
+    await controller.wake()
+    expect(helpers).toEqual([cgroupRemountArgs('caboose-owner', 'sha256:abc')])
+    expect(fake.calls.some(call => call[0] === 'run')).toBe(false)
+    await controller.park()
+    await controller.wake()
+    expect(helpers).toHaveLength(1)
+  })
+
+  it('reads whether the cgroup tree is writable, and remounts it in the computer\'s namespace', () => {
+    expect(cgroupWritable('cgroup /sys/fs/cgroup cgroup2 ro,nosuid,nsdelegate 0 0\n')).toBe(false)
+    expect(cgroupWritable('cgroup /sys/fs/cgroup cgroup2 rw,nosuid,nsdelegate 0 0\n')).toBe(true)
+    expect(cgroupWritable('cgroup /sys/fs/cgroup/cpu cgroup ro 0 0\n')).toBeNull()
+    expect(cgroupRemountArgs('caboose-owner', 'sha256:abc')).toEqual(['run', '--rm', '--privileged', '--pid', 'container:caboose-owner',
+      '--network', 'none', '--entrypoint', '/usr/bin/nsenter', 'sha256:abc', '--target', '1', '--mount', '--', '/bin/mount', '-o',
+      'remount,bind,rw', '/sys/fs/cgroup'])
   })
 
   it('reports a missing Files port mapping on an existing container', async () => {

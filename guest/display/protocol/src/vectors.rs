@@ -180,6 +180,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         overscan: None,
         desktop_id: None,
+        pid: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -197,6 +198,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         overscan: None,
         desktop_id: None,
+        pid: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -214,6 +216,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         overscan: None,
         desktop_id: None,
+        pid: None,
     };
 
     vec![
@@ -278,7 +281,22 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 title: "Game".into(),
                 app_id: "game-engine".into(),
                 desktop_id: Some("org.example.Game.desktop".into()),
-                ..xterm
+                ..xterm.clone()
+            }),
+        ),
+        one(
+            "window-create-unlisted",
+            "A Proton game Steam started: its WM_CLASS names no desktop entry, so it carries its process and its own icon (_NET_WM_ICON).",
+            Message::WindowCreate(WindowCreate {
+                id: 15,
+                title: "Halo: The Master Chief Collection".into(),
+                app_id: "steam_app_976730".into(),
+                icon: Some(media.png.clone()),
+                min: None,
+                max: None,
+                fullscreen: false,
+                pid: Some(2113),
+                ..xterm.clone()
             }),
         ),
         one(

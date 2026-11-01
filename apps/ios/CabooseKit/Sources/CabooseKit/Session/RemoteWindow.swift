@@ -12,6 +12,8 @@ public final class RemoteWindow: Identifiable {
     /// The desktop entry the computer launched this window's process from, when it knows:
     /// it names the app even when the window's class does not (a wrapper script, a game).
     public internal(set) var desktopID: String?
+    /// The process that owns the window, as the computer sees it, when it says.
+    public internal(set) var pid: Int?
     public internal(set) var isOverrideRedirect: Bool
     public internal(set) var transientFor: Int?
     public internal(set) var windowTypes: [String] = []

@@ -14,6 +14,8 @@ public enum LiveGPUBindingError: Error, Equatable, Sendable {
 /// Injectable only at the byte/runtime boundary. Production always uses the linked C API.
 protocol LiveGPURuntimeBackend: Sendable {
     func start() -> Int32
+    /// Selects the connected computer's persistent caches; nil keeps none.
+    func setCacheRoot(_ path: String?) -> Int32
     func open(_ token: inout UInt64) -> Int32
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32
     func stop(_ token: UInt64) -> Int32
@@ -45,6 +47,13 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
         #endif
     }()
     func start() -> Int32 { Self.startResult }
+    func setCacheRoot(_ path: String?) -> Int32 {
+        #if canImport(CabooseGPULive)
+        return caboose_gpu_runtime_set_cache_root(path)
+        #else
+        return ENODEV
+        #endif
+    }
     func open(_ token: inout UInt64) -> Int32 {
         #if canImport(CabooseGPULive)
         return caboose_gpu_runtime_open(&token)
@@ -211,6 +220,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private let surfaces: LiveGPUSurfaceController?
     private let maxPacket: Int
     private let maxReply: Int
+    private let cacheRoot: URL?
     private let lock = NSLock()
     private let outputLock = NSLock()
     private var cancelled = false
@@ -247,12 +257,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     /// Explicit owner-only construction. Ordinary display and agent sessions do
     /// not create presentation registries or acquire a Metal layer.
     public convenience init(presentationOwners: LiveGPUPresentationOwners,
+                            cacheRoot: URL? = nil,
                             maxPacket: Int = 16 * 1024 * 1024,
                             maxReplyBuffer: Int = 1024 * 1024) throws {
         #if canImport(CabooseGPULive)
         try self.init(backend: LinkedLiveGPURuntime(), maxPacket: maxPacket,
             maxReplyBuffer: maxReplyBuffer,
-            surfaces: LiveGPUSurfaceController(backend: LinkedLiveGPUSurfaces(owners: presentationOwners)))
+            surfaces: LiveGPUSurfaceController(backend: LinkedLiveGPUSurfaces(owners: presentationOwners)),
+            cacheRoot: cacheRoot)
         #else
         throw LiveGPUError.missingNativeBinding
         #endif
@@ -260,12 +272,13 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     #endif
     init(backend: LiveGPURuntimeBackend, maxPacket: Int = 16 * 1024 * 1024,
          maxReplyBuffer: Int = 1024 * 1024, executor: Data? = nil, generation: UInt64? = nil,
-         surfaces: LiveGPUSurfaceController? = nil) throws {
+         surfaces: LiveGPUSurfaceController? = nil, cacheRoot: URL? = nil) throws {
         guard (8...400 * 1024 * 1024).contains(maxPacket), (4096...1024 * 1024).contains(maxReplyBuffer) else {
             throw LiveGPUBindingError.protocolViolation("invalid native buffer limits")
         }
         self.backend = backend; self.maxPacket = maxPacket; maxReply = maxReplyBuffer
         self.surfaces = surfaces
+        self.cacheRoot = cacheRoot
         decoder = try LiveGPUEnvelopeDecoder(executor: executor, generation: generation)
     }
     public func start(output: @escaping @Sendable (Data) -> Bool,
@@ -350,6 +363,9 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             }
             let result = backend.start()
             guard result == 0 else { throw LiveGPUBindingError.native(operation: "start", code: result) }
+            // The caches are an optimisation: without them (a failure selects none) the
+            // computer sends every module.
+            _ = backend.setCacheRoot(cacheRoot?.path)
             identity = (frame.executor, frame.generation); negotiated = true
             try send(.sessionReady, payload: LiveGPUEnvelope.hello)
             try sendDrainIfReady()

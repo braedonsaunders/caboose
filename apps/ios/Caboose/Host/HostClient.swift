@@ -75,6 +75,8 @@ struct HostClient: Sendable {
         struct Capabilities: Decodable, Equatable, Sendable {
             var restart: Bool
             var push: Bool?
+            /// The computer has app scopes: `/v1/running-apps` lists and ends apps. Absent from hosts that predate it.
+            var runningApps: Bool?
         }
         struct Upgrade: Decodable, Equatable, Sendable {
             var state: String
@@ -217,7 +219,7 @@ struct HostClient: Sendable {
             return data
         case 401, 403:
             throw Failure.unauthorized
-        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path.hasPrefix("/v1/backup") || path.hasPrefix("/v1/commands") || path == "/v1/session/park":
+        case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path.hasPrefix("/v1/backup") || path.hasPrefix("/v1/commands") || path.hasPrefix("/v1/running-apps") || path.hasPrefix("/v1/services/") || path == "/v1/session/park":
             let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
             throw Failure.server(status, message)
         case 409:

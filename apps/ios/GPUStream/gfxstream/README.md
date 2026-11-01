@@ -22,9 +22,10 @@ them by number. [`fork.env`](fork.env) pins the exact commit every build checks 
 `generate-v4-profile.py --check --patched` verifies that checkout's decoder inputs by
 SHA-256. A decoder change is a commit on a topic branch of the fork, merged into
 `caboose`, with `fork.env` and the profile hashes updated in the same Caboose pull
-request. [`provider-patches/`](provider-patches) holds the two changes to other
-projects: SPIRV-Cross (multi-plane padding, applied to the MoltenVK build) and MoltenVK
-(missing-layer queries, for the layer diagnostic). Its Mesa development
+request. [`provider-patches/`](provider-patches) holds the changes to other projects:
+SPIRV-Cross (multi-plane padding) and MoltenVK (persistent Metal pipeline binaries), both
+applied to the MoltenVK build, and MoltenVK missing-layer queries, for the layer
+diagnostic. Its Mesa development
 dependency is `541c56aa3fd24027ed46ae350287d21dcd56c901`. The guest source checks
 are in [guest/gpu/gfxstream](../../../../guest/gpu/gfxstream/README.md).
 Matching opcode values does not establish compatible marshaling or execution.
@@ -95,6 +96,34 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
   apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
 /tmp/caboose-completion-feed-test
 ```
+
+## Shader cache
+
+`shader_store.{h,cpp}` is the phone's persistent SPIR-V store and the decoder's
+`vkCreateShaderModule` hooks; `decode_connection.cpp` answers `SHADER_INVENTORY`
+([docs/gpu-live.md](../../../../docs/gpu-live.md#shader-cache)). Keys are BLAKE3, from
+[`blake3/`](blake3). `caboose_gpu_runtime_set_cache_root` selects a computer's directory,
+for the store, the persistent pipeline cache and the Metal binary archive. The store's
+fixture checks its keys, tokens and inventory against the vectors the guest driver is
+tested with, persistence, recovery from damaged and interrupted files, eviction at open
+and the per-computer roots:
+
+```sh
+for f in blake3.c blake3_dispatch.c blake3_portable.c blake3_neon.c; do
+  cc -O2 -c apps/ios/GPUStream/gfxstream/blake3/$f -o /tmp/caboose-$f.o
+done
+c++ -std=c++17 -I apps/ios/GPUStream/gfxstream apps/ios/GPUStream/gfxstream/tests/shader_store_test.cpp \
+  apps/ios/GPUStream/gfxstream/shader_store.cpp /tmp/caboose-blake3*.o -o /tmp/caboose-shader-store-test
+/tmp/caboose-shader-store-test guest/gpu/gfxstream/shader-cache/vectors.json
+```
+
+`tests/pipeline_archive_check.sh` checks the MoltenVK binary archive on a Mac's GPU, with
+the patched provider built by the "MoltenVK Package (macOS only)" scheme: it creates 64
+distinct pipelines in four processes and requires that the archive is written, that the
+process loading it finds every pipeline there, and that loading it costs no more than
+Metal's own warm shader cache. On an M4 Pro a cold pipeline takes about 20 ms and a
+pipeline from either cache under 0.5 ms; the archive is the cache Caboose keeps, in
+Application Support, where iOS does not purge it.
 
 ## Process lifetime
 

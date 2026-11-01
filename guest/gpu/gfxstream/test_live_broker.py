@@ -346,9 +346,14 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Descriptor-set and command-buffer handles need guest handles themselves.
         self.assertEqual(negotiate(hello(0x1F0), frozenset({'guest-handle-arrays'})), hello(0x70))
         self.assertIsNone(negotiate(hello(0x170), everything))
+        # The shader cache stands alone: it is granted with or without guest handles.
+        self.assertEqual(negotiate(hello(0x2070), everything), hello(0x2070))
+        self.assertEqual(negotiate(hello(0x3FF0), frozenset({'shader-cache'})), hello(0x2070))
+        self.assertEqual(negotiate(hello(0x3FF0), everything - {'shader-cache'}), hello(0x1FF0))
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
+        self.assertIsNone(negotiate(hello(0x4070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
         self.assertIsNone(negotiate(broker.HELLO, everything))
         self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))
@@ -1131,6 +1136,39 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.retired_reported)
         self.assertEqual(len(sent),1)
         self.assertEqual(struct.unpack_from('<H',sent[0],6)[0],6)
+
+
+
+class ProcessUsageTests(unittest.TestCase):
+    def test_usage_is_counters_per_identified_process(self):
+        processes = {
+            1: {'pid': 40, 'start': 9, 'streams': {1, 2}, 'surfaces': {('a',)}, 'to_phone': 100, 'from_phone': 5, 'ready': object()},
+            2: {'streams': set(), 'surfaces': set()},
+        }
+        self.assertEqual(broker.usage_record(processes), {'version': 1, 'processes': [
+            {'pid': 40, 'start': 9, 'streams': 2, 'surfaces': 1, 'toPhoneBytes': 100, 'fromPhoneBytes': 5}]})
+
+    def test_usage_file_is_replaced_atomically_and_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'usage.json'
+            broker.write_usage(path, {'version': 1, 'processes': []})
+            broker.write_usage(path, {'version': 1, 'processes': [{'pid': 1}]})
+            self.assertEqual(json.loads(path.read_text()), {'version': 1, 'processes': [{'pid': 1}]})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ['usage.json'])
+
+    def test_session_counts_bytes_each_way_for_its_processes(self):
+        session = broker.Session.__new__(broker.Session)
+        session.processes = {3: {'to_phone': 0, 'from_phone': 0}}
+        session.failed = session.closing_ws = session.sender_stopped = False
+        session.executor, session.generation, session.sequence = bytes(range(1, 17)), 1, 1
+        session.deflate_enabled = False
+        session.frame_timing = broker.FrameTiming(False)
+        session.progress_enabled = False
+        session.enqueue_frame = lambda *args, **kwargs: None
+        session.send(Kind.DATA, 3, 1, b'abcd')
+        session.send(Kind.DATA, 7, 1, b'ignored')
+        self.assertEqual(session.processes[3]['to_phone'], 4)
 
 
 if __name__ == '__main__': unittest.main()

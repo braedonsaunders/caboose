@@ -24,8 +24,22 @@ if(APPLE)
     target_compile_definitions(caboose_gfxstream_abi INTERFACE
         VK_USE_PLATFORM_MACOS_MVK VK_USE_PLATFORM_METAL_EXT)
 endif()
+# BLAKE3 (blake3/README.md) keys the shader store. Portable C everywhere; NEON on arm64.
+add_library(caboose_blake3 STATIC blake3/blake3.c blake3/blake3_dispatch.c blake3/blake3_portable.c)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    target_sources(caboose_blake3 PRIVATE blake3/blake3_neon.c)
+    target_compile_definitions(caboose_blake3 PRIVATE BLAKE3_USE_NEON=1)
+else()
+    target_compile_definitions(caboose_blake3 PRIVATE BLAKE3_USE_NEON=0
+        BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512)
+endif()
+add_library(caboose_shader_store STATIC shader_store.cpp)
+target_compile_features(caboose_shader_store PRIVATE cxx_std_17)
+target_include_directories(caboose_shader_store PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(caboose_shader_store PRIVATE caboose_blake3)
 add_library(caboose_gfxstream_connection STATIC socket_stream.cpp packet_framing.cpp decode_connection.cpp completion_feed.cpp
     media_bitstream.cpp media_registry.cpp media_session.cpp)
+target_link_libraries(caboose_gfxstream_connection PUBLIC caboose_shader_store)
 # Phone-decoded video (docs/gpu-media.md): VideoToolbox decoders and the latch copy on
 # Apple platforms, which need the decoder's media latch accessor; elsewhere media streams
 # report no formats and latches leave their images as they were.
@@ -275,4 +289,8 @@ if(CABOOSE_GFXSTREAM_FRAMING_TESTS)
     target_include_directories(caboose_gpu_completion_feed_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     find_package(Threads REQUIRED)
     target_link_libraries(caboose_gpu_completion_feed_test PRIVATE Threads::Threads)
+    # Run with guest/gpu/gfxstream/shader-cache/vectors.json as its argument.
+    add_executable(caboose_gpu_shader_store_test tests/shader_store_test.cpp)
+    target_compile_features(caboose_gpu_shader_store_test PRIVATE cxx_std_17)
+    target_link_libraries(caboose_gpu_shader_store_test PRIVATE caboose_shader_store)
 endif()

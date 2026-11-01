@@ -30,6 +30,9 @@
 
 namespace caboose::gpuv2 {
 
+// Implemented with the shader store (shader_store.cpp): the connected computer's cache root.
+std::string cacheRoot();
+
 struct PipelineCacheStatsSnapshot {
     uint64_t loaded_from_disk_count = 0;
     uint64_t loaded_from_disk_bytes = 0;
@@ -138,6 +141,10 @@ public:
     }
 
     static std::string defaultCacheDirectory() {
+        // The app's cache root for the connected computer (shader_store.h), so one
+        // computer's pipelines never seed another's caches.
+        const std::string root = cacheRoot();
+        if (!root.empty()) return root + "/pipeline";
         if (const char* envDir = std::getenv("CABOOSE_GPU_PIPELINE_CACHE_DIR")) {
             if (*envDir) return std::string(envDir);
         }

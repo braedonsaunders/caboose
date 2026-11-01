@@ -17,7 +17,7 @@ checks; pure policy tests do not establish live app behavior.
 | `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
 | `Draw/` | CabooseDraw: draws applications' draw lists ([docs/draw.md](../../docs/draw.md)) with Skia on Metal, behind a C API; built with Skia from source by `scripts/build-draw.sh` into `CabooseKit/Frameworks/CabooseDraw.xcframework` (see [Draw/README.md](Draw/README.md)). CabooseKit's `Draw/DrawRenderer` and `Draw/DrawLists` use it whenever it is linked. |
 | `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
-| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents. |
+| `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents, the Task Manager (`Tasks/`). |
 | `Caboose/Devices/` | Computer settings' hardware section (`DeviceSettings`: which devices each computer may use) and the indicator shown while a computer app uses the camera, microphone or motion. |
 | `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, libghostty's surface in the Caboose look and the key row above the keyboard. |
@@ -826,6 +826,53 @@ same iCloud Drive vault can restore it too.
 The same sheet shows the progress and any failure of a guest component update the host
 runs at wake. A container created without the Files port mapping shows that it must be
 recreated to enable Files. The display stays usable while an update runs.
+
+## Task Manager
+
+On a computer whose host lists running apps (`capabilities.runningApps` in the management
+status; see Running apps and App scopes in `docs/architecture.md`), **Task Manager** opens
+from the lifecycle menu in every tab's toolbar, the Laptop and device-desktop controls, the
+iPad rail's page-controls menu, and any held dock or taskbar app. Elsewhere it is absent.
+
+It lists every app the computer runs, by CPU, memory or name, with its icon, live CPU,
+memory, disk and (when it draws through the GPU path) GPU traffic, and the whole computer's
+CPU and memory against its cores and memory. An app with no windows, such as Steam closed to
+its tray, is marked Background; a terminal session from the phone is marked Terminal and an
+agent task Agent. Listening ports show as chips (`TCP 8080`). Caboose's own processes are
+listed apart, under System, and cannot be ended. An app opens to its processes
+(name, PID, state, CPU, memory); tap one for its command, or hold it to copy the command or
+PID. Swipe an app, hold it, or open it for Quit (only when it has windows), Force Quit and
+Kill All Processes; the last two ask first. An app still listed five seconds after Quit is
+offered Force Quit. The host's refusals are shown as it words them. The list is read every
+two seconds while it is on screen and the app is active, never otherwise.
+
+Services (`/v1/services`) are listed between the apps and System: failed first, then running,
+then stopped, each with a status dot, its error when it failed or is restarting, its ports,
+and its live use while it runs. Swipe or hold one for Start, Stop and Restart; hold it or
+open it for Start with Computer, View Log (the last 500 lines, read every two seconds while
+shown, following the end until paused) and, for the owner's own services, Delete, which asks
+first. New Service defines one of the owner's services: a name, a command split into words
+as a shell would (quotes and backslashes, no expansion), an optional working directory and
+environment, a restart policy, Start with Computer, and Start Now.
+
+A held dock or taskbar app also offers Quit and Force Quit when it is running; each reads
+a fresh listing and acts on the app's scopes, found by its windows and then by its desktop
+entry. The shell refreshes the last listing when windows open or close, so an app that keeps
+running without windows stays in the dock, marked running, until it ends.
+
+Decoding, sorting, formatting, the dock join, the Quit follow-up, the route encoding, port
+labels, service names and the command splitting are unit-tested:
+`cd CabooseKit && swift test --filter 'RunningAppsTests|RunningServicesTests|DockMenuTests'`.
+
+Task Manager check on a device: open Steam, close its window (it stays in the tray) and
+confirm Steam stays in the dock with a running dot and is listed as Background. Hold it in
+the dock, choose Force Quit, confirm, and check that it leaves the list and the dock. Open
+Firefox, choose Quit from its row and confirm it ends; open a dialog that blocks closing,
+Quit again, and confirm Force Quit is offered after five seconds. Confirm Caboose's row has
+no actions, and that a microVM computer shows no Task Manager anywhere. Create a service
+running `python3 -m http.server 8080` with Start Now, confirm it shows Running with
+`TCP 8080` and its log fills in; Stop, Restart and turn Start with Computer off and on; create
+one running `false`, confirm it fails with the reason in red, and Delete both.
 
 ## Device checks
 

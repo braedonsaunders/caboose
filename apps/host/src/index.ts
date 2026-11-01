@@ -43,6 +43,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn, spawnSync } from 'node:child_process'
 import { fstatSync, statSync } from 'node:fs'
+import { ServiceMemory } from './running-apps.js'
 
 const deployment = config(process.env)
 const clustered = process.env.CABOOSE_CLUSTER === 'on'
@@ -148,11 +149,12 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
     ? createContainerController(deployment, { identity, settings: () => settings.get() })
     : createController(runtimeConfig, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
+  const serviceMemory = deployment.runtime === 'container' ? await ServiceMemory.open(join(dir, 'services.json')) : undefined
   const commands = await CommandStore.open(join(dir, 'commands'))
   const paths = vmPaths(runtimeRoot, record.id, deployment.vmTemplate)
   const snapshotPath = paths.snapshot
   const computerStorage = cluster ? undefined : storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
-  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), ...(serviceMemory ? { serviceMemory } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)

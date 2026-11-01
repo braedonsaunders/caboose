@@ -164,9 +164,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUTransport, URLSessionWebS
     public static let subprotocolName = "caboose.gpu.live.v1"
     /// Capabilities of this app's native decoder that a computer may use: it registers
     /// objects under Vulkan handles the guest assigns (patch 0026), including descriptor
-    /// sets and command buffers (patch 0027), serves the completion feed (patch 0028), and
-    /// runs presents ordered behind device-stream ORDER marks.
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools"
+    /// sets and command buffers (patch 0027), serves the completion feed (patch 0028), runs
+    /// presents ordered behind device-stream ORDER marks, and keeps the computer's shader
+    /// modules to take later ones by hash (docs/gpu-live.md, "Shader cache").
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache"
     private let request: URLRequest
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()

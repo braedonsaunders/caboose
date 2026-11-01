@@ -16,6 +16,10 @@ extern "C" {
 // Versioned symbol prevents an older package from negotiating live v4 while
 // initializing the incompatible non-WSI provider mode. Requires exact v4/0x70.
 int caboose_gpu_live_start_v4(void);
+// Selects the connected computer's persistent shader and pipeline caches under the
+// absolute directory `root` (docs/gpu-live.md, "Shader cache"), or none for NULL or on
+// failure. Call before opening its processes; returns 0 or an errno.
+int caboose_gpu_runtime_set_cache_root(const char* root);
 int caboose_gpu_runtime_open(uint64_t* token);
 // Blocking, ordered raw decoder connection. The caller retains the descriptor.
 int caboose_gpu_runtime_run(uint64_t token, int fd, size_t max_packet, size_t max_reply_buffer);

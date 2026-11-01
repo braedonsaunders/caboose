@@ -209,8 +209,14 @@ start_printing() {
   /usr/local/libexec/caboose-phone-printer-setup
 }
 
+# App scopes (guest/scopes) before the owner's apps start, so their launches get scopes.
+app_scopes() {
+  [ -x /usr/local/bin/caboose-scopes ] || return 0
+  /usr/local/bin/caboose-scopes ensure || echo 'App scopes are unavailable' >&2
+}
+
 case ${1:-} in
-  start) start_printing || echo "Printing unavailable" >&2; start_owner ;;
+  start) start_printing || echo "Printing unavailable" >&2; app_scopes; start_owner ;;
   ready) seat_ready 14600 /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
   start-agent) start_agent; seat_ready 14601 /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
   start-files)

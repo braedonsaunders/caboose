@@ -1,0 +1,223 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+index 7eae64c..deb4bb3 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+@@ -3089,6 +3089,127 @@ MVKPipelineCache::~MVKPipelineCache() {
+ }
+ 
+ 
++#pragma mark -
++#pragma mark Caboose persistent pipeline binaries
++
++// Caboose: a Metal binary archive at a path the app selects keeps compiled pipeline
++// binaries across launches. Each pipeline is first looked up in it alone
++// (MTLPipelineOptionFailOnBinaryArchiveMiss), synchronously on MoltenVK's compile queue;
++// a miss compiles as usual and adds the
++// pipeline's functions to the archive on a serial queue, which also writes the archive
++// back after every kCabooseArchiveSaveInterval additions and on request. An archive that
++// cannot be loaded (another OS or GPU, a damaged file) is replaced by an empty one.
++static mutex _cabooseArchiveLock;
++static string _cabooseArchivePath;
++static string _cabooseArchiveOpenedPath;
++static id<MTLBinaryArchive> _cabooseArchive = nil;		// retained
++static id<MTLDevice> _cabooseArchiveDevice = nil;		// not retained; identity only
++static uint32_t _cabooseArchiveUnsaved = 0;
++static const uint32_t kCabooseArchiveSaveInterval = 16;
++static atomic<uint64_t> _cabooseArchiveHits{0};
++static atomic<uint64_t> _cabooseArchiveMisses{0};
++
++static dispatch_queue_t cabooseArchiveQueue() {
++	static dispatch_queue_t queue = dispatch_queue_create("org.caboose.moltenvk.binary-archive", DISPATCH_QUEUE_SERIAL);
++	return queue;
++}
++
++// Retained archive for mtlDev, or nil when none is selected.
++static id<MTLBinaryArchive> cabooseArchiveFor(id<MTLDevice> mtlDev) {
++	lock_guard<mutex> lock(_cabooseArchiveLock);
++	if (_cabooseArchivePath.empty()) { return nil; }
++	if (_cabooseArchive && _cabooseArchiveDevice == mtlDev && _cabooseArchiveOpenedPath == _cabooseArchivePath) {
++		return [_cabooseArchive retain];
++	}
++	[_cabooseArchive release];
++	_cabooseArchive = nil;
++	_cabooseArchiveUnsaved = 0;
++	@autoreleasepool {
++		NSURL* url = [NSURL fileURLWithPath: @(_cabooseArchivePath.c_str())];
++		MTLBinaryArchiveDescriptor* desc = [[MTLBinaryArchiveDescriptor new] autorelease];
++		NSError* error = nil;
++		if ([NSFileManager.defaultManager fileExistsAtPath: url.path]) {
++			desc.url = url;
++			_cabooseArchive = [mtlDev newBinaryArchiveWithDescriptor: desc error: &error];
++			if ( !_cabooseArchive ) { [NSFileManager.defaultManager removeItemAtURL: url error: nil]; }
++		}
++		if ( !_cabooseArchive ) {
++			desc.url = nil;
++			_cabooseArchive = [mtlDev newBinaryArchiveWithDescriptor: desc error: &error];
++		}
++	}
++	_cabooseArchiveDevice = mtlDev;
++	_cabooseArchiveOpenedPath = _cabooseArchivePath;
++	return [_cabooseArchive retain];
++}
++
++// On the archive queue. Writes the archive beside its path, then renames it into place.
++static bool cabooseArchiveSaveOnQueue() {
++	id<MTLBinaryArchive> archive = nil;
++	string path;
++	{
++		lock_guard<mutex> lock(_cabooseArchiveLock);
++		if ( !_cabooseArchive || !_cabooseArchiveUnsaved || _cabooseArchiveOpenedPath != _cabooseArchivePath ) { return true; }
++		archive = [_cabooseArchive retain];
++		path = _cabooseArchiveOpenedPath;
++		_cabooseArchiveUnsaved = 0;
++	}
++	bool saved = false;
++	@autoreleasepool {
++		NSString* target = @(path.c_str());
++		NSString* temp = [target stringByAppendingFormat: @".%d.tmp", getpid()];
++		[NSFileManager.defaultManager createDirectoryAtPath: target.stringByDeletingLastPathComponent
++								withIntermediateDirectories: YES attributes: nil error: nil];
++		NSError* error = nil;
++		saved = [archive serializeToURL: [NSURL fileURLWithPath: temp] error: &error] &&
++				rename(temp.UTF8String, target.UTF8String) == 0;
++		if ( !saved ) { unlink(temp.UTF8String); }
++	}
++	[archive release];
++	return saved;
++}
++
++// Adds a pipeline's functions to the archive in the background; descriptor is retained.
++static void cabooseArchiveAdd(id<MTLBinaryArchive> archive, id descriptor, bool isCompute) {
++	[archive retain];
++	[descriptor retain];
++	dispatch_async(cabooseArchiveQueue(), ^{
++		NSError* error = nil;
++		bool added = isCompute
++			? [archive addComputePipelineFunctionsWithDescriptor: (MTLComputePipelineDescriptor*)descriptor error: &error]
++			: [archive addRenderPipelineFunctionsWithDescriptor: (MTLRenderPipelineDescriptor*)descriptor error: &error];
++		bool save = false;
++		if (added) {
++			lock_guard<mutex> lock(_cabooseArchiveLock);
++			save = archive == _cabooseArchive && ++_cabooseArchiveUnsaved >= kCabooseArchiveSaveInterval;
++		}
++		if (save) { cabooseArchiveSaveOnQueue(); }
++		[descriptor release];
++		[archive release];
++	});
++}
++
++// Selects the archive file, or none for NULL. Unsaved additions to the previous one are written first.
++extern "C" MVK_PUBLIC_SYMBOL void mvkCabooseSetPipelineArchivePath(const char* path) {
++	dispatch_sync(cabooseArchiveQueue(), ^{ cabooseArchiveSaveOnQueue(); });
++	lock_guard<mutex> lock(_cabooseArchiveLock);
++	_cabooseArchivePath = path ? path : "";
++}
++
++// Pipelines found in the archive and pipelines compiled because they were not, since launch.
++extern "C" MVK_PUBLIC_SYMBOL void mvkCabooseGetPipelineArchiveStats(uint64_t* hits, uint64_t* misses) {
++	if (hits) { *hits = _cabooseArchiveHits.load(); }
++	if (misses) { *misses = _cabooseArchiveMisses.load(); }
++}
++
++// Writes unsaved additions now; true when nothing failed.
++extern "C" MVK_PUBLIC_SYMBOL bool mvkCabooseSavePipelineArchive(void) {
++	__block bool saved = true;
++	dispatch_sync(cabooseArchiveQueue(), ^{ saved = cabooseArchiveSaveOnQueue(); });
++	return saved;
++}
++
++
+ #pragma mark -
+ #pragma mark MVKRenderPipelineCompiler
+ 
+@@ -3097,13 +3218,37 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
+ 
+ 	compile(lock, ^{
+ 		auto mtlDev = getMTLDevice();
++		id<MTLBinaryArchive> archive = cabooseArchiveFor(mtlDev);
++		if ( !archive ) {
++			@synchronized (mtlDev) {
++				[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++										   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
++											   bool isLate = compileComplete(ps, error);
++											   if (isLate) { destroy(); }
++										   }];
++			}
++			return;
++		}
++		// On this compile queue, so the lookup and a compile after a miss can be synchronous.
++		mtlRPLDesc.binaryArchives = @[archive];
++		NSError* error = nil;
++		id<MTLRenderPipelineState> ps = nil;
+ 		@synchronized (mtlDev) {
+-			[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
+-									   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
+-										   bool isLate = compileComplete(ps, error);
+-										   if (isLate) { destroy(); }
+-									   }];
++			ps = [mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++													  options: MTLPipelineOptionFailOnBinaryArchiveMiss
++												   reflection: nil
++														error: &error];
++			(ps ? _cabooseArchiveHits : _cabooseArchiveMisses)++;
++			if ( !ps ) {
++				error = nil;
++				ps = [mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc error: &error];
++				if (ps) { cabooseArchiveAdd(archive, mtlRPLDesc, false); }
++			}
+ 		}
++		bool isLate = compileComplete(ps, error);
++		[ps release];
++		[archive release];
++		if (isLate) { destroy(); }
+ 	});
+ 
+ 	return [_mtlRenderPipelineState retain];
+@@ -3131,14 +3276,41 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
+ 
+ 	compile(lock, ^{
+ 		auto mtlDev = getMTLDevice();
++		id<MTLBinaryArchive> archive = cabooseArchiveFor(mtlDev);
++		if ( !archive ) {
++			@synchronized (mtlDev) {
++				[mtlDev newComputePipelineStateWithDescriptor: plDesc
++													  options: MTLPipelineOptionNone
++											completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
++												bool isLate = compileComplete(ps, error);
++												if (isLate) { destroy(); }
++											}];
++			}
++			return;
++		}
++		// On this compile queue, as for render pipelines.
++		plDesc.binaryArchives = @[archive];
++		NSError* error = nil;
++		id<MTLComputePipelineState> ps = nil;
+ 		@synchronized (mtlDev) {
+-			[mtlDev newComputePipelineStateWithDescriptor: plDesc
+-												  options: MTLPipelineOptionNone
+-										completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
+-											bool isLate = compileComplete(ps, error);
+-											if (isLate) { destroy(); }
+-										}];
++			ps = [mtlDev newComputePipelineStateWithDescriptor: plDesc
++													   options: MTLPipelineOptionFailOnBinaryArchiveMiss
++													reflection: nil
++														 error: &error];
++			(ps ? _cabooseArchiveHits : _cabooseArchiveMisses)++;
++			if ( !ps ) {
++				error = nil;
++				ps = [mtlDev newComputePipelineStateWithDescriptor: plDesc
++														   options: MTLPipelineOptionNone
++														reflection: nil
++															 error: &error];
++				if (ps) { cabooseArchiveAdd(archive, plDesc, true); }
++			}
+ 		}
++		bool isLate = compileComplete(ps, error);
++		[ps release];
++		[archive release];
++		if (isLate) { destroy(); }
+ 	});
+ 
+ 	return [_mtlComputePipelineState retain];

@@ -1,0 +1,10 @@
+{
+ "_comment": "Shader cache wire vectors (docs/gpu-live.md, Shader cache). Inputs are bytes i % 251 of the given length; hashes are BLAKE3-256 (official test vectors). Checked by the phone decoder's and the guest driver's unit tests.",
+ "blake3_0": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+ "blake3_1024": "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7",
+ "blake3_8192": "aae792484c8efe4f19e2ca7d371d8c467ffb10748d8a5a1ae579948f718a2a63",
+ "token_1024": "4342534d01000000000400000000000042214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7",
+ "inventory_packet": "10fe4243100000000100000000000000",
+ "inventory_reply_empty": "0000000000000000",
+ "inventory_reply_1024_8192": "020000000000000042214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7aae792484c8efe4f19e2ca7d371d8c467ffb10748d8a5a1ae579948f718a2a63"
+}

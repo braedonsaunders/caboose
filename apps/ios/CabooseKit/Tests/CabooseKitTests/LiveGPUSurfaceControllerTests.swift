@@ -35,6 +35,7 @@ private final class TestSurfaceResource: LiveGPUSurfaceResource, @unchecked Send
 private final class SurfaceRuntime: LiveGPURuntimeBackend, @unchecked Sendable {
     var finishes = 0
     func start() -> Int32 { 0 }
+    func setCacheRoot(_ path: String?) -> Int32 { 0 }
     func open(_ token: inout UInt64) -> Int32 { token = 99; return 0 }
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32 { 0 }
     func stop(_ token: UInt64) -> Int32 { 0 }

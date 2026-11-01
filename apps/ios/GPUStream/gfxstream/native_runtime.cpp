@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "native_runtime.h"
 #include "caboose_pipeline_cache.h"
+#include "shader_store.h"
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 #include "memory_audit.h"
 #endif
@@ -10,9 +11,11 @@
 #include "gfxstream/host/features.h"
 #include "vulkan_dispatch.h"
 #include <cerrno>
+#include <cstdio>
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <string>
 
 namespace {
 std::mutex mutex;
@@ -115,6 +118,21 @@ extern "C" int caboose_gpu_runtime_start_v4(PFN_vkGetInstanceProcAddr get,
     return startRuntime(get, resolve, 2);
 }
 #endif
+// The patched MoltenVK's persistent Metal pipeline binaries
+// (provider-patches/moltenvk-pipeline-binary-archive.patch). Weak, so a provider without
+// them, such as a desktop reference build, keeps only the shader and pipeline caches.
+extern "C" void mvkCabooseSetPipelineArchivePath(const char* path) __attribute__((weak));
+extern "C" bool mvkCabooseSavePipelineArchive(void) __attribute__((weak));
+extern "C" void mvkCabooseGetPipelineArchiveStats(uint64_t* hits, uint64_t* misses) __attribute__((weak));
+extern "C" int caboose_gpu_runtime_set_cache_root(const char* root) {
+    const int result = caboose::gpuv2::setShaderStoreRoot(root);
+    if (mvkCabooseSetPipelineArchivePath) {
+        const std::string selected = caboose::gpuv2::cacheRoot();
+        mvkCabooseSetPipelineArchivePath(selected.empty() ? nullptr
+                                         : (selected + "/pipeline/metal-binary-archive.bin").c_str());
+    }
+    return result;
+}
 extern "C" int caboose_gpu_runtime_open(uint64_t* token) {
     if (!token) return EINVAL;
     *token = 0;
@@ -213,5 +231,21 @@ extern "C" int caboose_gpu_runtime_finish(uint64_t token) {
     // upstream barrier waits through that queued cleanup, without holding the
     // registry or runtime mutex; cleanup itself waits for render TLS to leave.
     gfxstream::host::FrameBuffer::getFB()->waitForAllPendingCleanups();
+    // The process's pipelines are compiled; keep their binaries for the next launch.
+    const bool archiveSaved = mvkCabooseSavePipelineArchive ? mvkCabooseSavePipelineArchive() : false;
+    // What the persistent caches saved since launch, for the device console.
+    uint64_t hits = 0, misses = 0;
+    if (mvkCabooseGetPipelineArchiveStats) mvkCabooseGetPipelineArchiveStats(&hits, &misses);
+    if (const auto store = caboose::gpuv2::currentShaderStore()) {
+        const auto s = store->stats();
+        std::fprintf(stderr,
+            "CABOOSE_GPU_CACHES shaders=%llu shader_bytes=%llu resolved=%llu resolved_bytes=%llu "
+            "unresolved=%llu inserted=%llu write_failures=%llu pipeline_hits=%llu pipeline_misses=%llu "
+            "archive_saved=%d\n",
+            (unsigned long long)s.entries, (unsigned long long)s.bytes, (unsigned long long)s.resolved,
+            (unsigned long long)s.resolvedBytes, (unsigned long long)s.unresolved,
+            (unsigned long long)s.inserted, (unsigned long long)s.writeFailures,
+            (unsigned long long)hits, (unsigned long long)misses, archiveSaved ? 1 : 0);
+    }
     return 0;
 }

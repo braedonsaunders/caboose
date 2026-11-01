@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds and packages CabooseGPULive.xcframework from source: MoltenVK 1.4.2 with the
-# SPIRV-Cross patch in GPUStream/gfxstream/provider-patches, and the gfxstream fork at
+# MoltenVK and SPIRV-Cross patches in GPUStream/gfxstream/provider-patches, and the gfxstream fork at
 # the commit pinned in GPUStream/gfxstream/fork.env, verified against the v4 profile.
 #
 #   sh apps/ios/scripts/build-live-gpu.sh OUTPUT_DIR
@@ -21,9 +21,18 @@ N=${CABOOSE_NATIVE_ROOT:-$HOME/Library/Caches/caboose-native}
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}  # the CLT linker rejects the iPhoneOS SDK
 mkdir -p "$N/src" "$OUT"
 
-# 1. MoltenVK 1.4.2 and its pinned SPIRV-Cross with the multi-plane padding patch.
+# 1. MoltenVK 1.4.2 with persistent Metal pipeline binaries, and its pinned SPIRV-Cross with
+# the multi-plane padding patch. A provider built from other patches is rebuilt.
+PROVIDER_PATCHES=$(cat "$A/provider-patches/spirv-cross-multiplane-padding.patch" \
+  "$A/provider-patches/moltenvk-pipeline-binary-archive.patch" | shasum -a 256 | cut -d' ' -f1)
+if [ "$(cat "$N/moltenvk/provider-patches.sha256" 2>/dev/null)" != "$PROVIDER_PATCHES" ]; then
+  rm -rf "$N/moltenvk" "$N/src/moltenvk" "$N/src/spirv-cross"
+fi
 if [ ! -f "$N/moltenvk/libMoltenVK-ios-arm64.a" ]; then
-  [ -d "$N/src/moltenvk" ] || git clone -q --depth 1 --branch v1.4.2 https://github.com/KhronosGroup/MoltenVK.git "$N/src/moltenvk"
+  if [ ! -d "$N/src/moltenvk" ]; then
+    git clone -q --depth 1 --branch v1.4.2 https://github.com/KhronosGroup/MoltenVK.git "$N/src/moltenvk"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-pipeline-binary-archive.patch"
+  fi
   if [ ! -d "$N/src/spirv-cross" ]; then
     git clone -q --filter=blob:none --no-checkout https://github.com/KhronosGroup/SPIRV-Cross.git "$N/src/spirv-cross"
     git -C "$N/src/spirv-cross" checkout -q "$(cat "$N/src/moltenvk/ExternalRevisions/SPIRV-Cross_repo_revision")"
@@ -37,6 +46,7 @@ if [ ! -f "$N/moltenvk/libMoltenVK-ios-arm64.a" ]; then
   mkdir -p "$N/moltenvk"
   cp "$N/src/moltenvk/Package/Release/MoltenVK/static/MoltenVK.xcframework/ios-arm64/libMoltenVK.a" \
     "$N/moltenvk/libMoltenVK-ios-arm64.a"
+  echo "$PROVIDER_PATCHES" > "$N/moltenvk/provider-patches.sha256"
 fi
 # 2. Vulkan-Headers at MoltenVK's pin.
 if [ ! -f "$N/vulkan-headers/registry/vk.xml" ]; then

@@ -5,6 +5,7 @@
 #include "socket_stream.h"
 #include "packet_framing.h"
 #include "completion_feed.h"
+#include "shader_store.h"
 #include "frame_buffer.h"
 #include "gfxstream/host/features.h"
 #include "render_thread_info.h"
@@ -183,7 +184,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
-            // Caboose completion feed commands and video LATCH packets are not Vulkan commands:
+            // Caboose completion feed, shader inventory and video LATCH packets are not Vulkan commands:
             // they are handled here, in stream order, never by the decoder.
             if (pending.size() >= 8) {
                 uint32_t opcode = 0, declared = 0;
@@ -200,6 +201,28 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         continue;
                     }
                     if (executeLatch(contextId, pending.data(), declared) != 0) return finish(DecodeStage::framing, EPROTO);
+                    pending.erase(pending.begin(), pending.begin() + declared);
+                    decodedAny = true;
+                    continue;
+                }
+                // SHADER_INVENTORY: the keys of the modules the phone's store holds, so the
+                // process can name them by token (docs/gpu-live.md, "Shader cache").
+                if (opcode == kShaderInventoryOpcode) {
+                    if (declared != kShaderInventoryPacketBytes) return finish(DecodeStage::framing, EPROTO);
+                    if (pending.size() < declared) {
+                        if (!readMore(declared - pending.size())) {
+                            if (stop) return finish(DecodeStage::stopped, 0);
+                            if (stream.error()) return finish(DecodeStage::input, stream.error());
+                            return finish(DecodeStage::eof, EPROTO);
+                        }
+                        continue;
+                    }
+                    if (!parseShaderInventoryPacket(pending.data(), declared))
+                        return finish(DecodeStage::framing, EPROTO);
+                    const auto store = currentShaderStore();
+                    const auto reply = encodeShaderInventoryReply(store ? store->inventory() : std::vector<ShaderKey>{});
+                    stream.writeFully(reply.data(), reply.size());
+                    if (stream.error()) return finish(DecodeStage::flush, stream.error());
                     pending.erase(pending.begin(), pending.begin() + declared);
                     decodedAny = true;
                     continue;
