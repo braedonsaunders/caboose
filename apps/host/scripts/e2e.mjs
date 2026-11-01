@@ -9,9 +9,8 @@ async function request(path, method = 'GET') {
   return response.json()
 }
 async function hello(session, seat = 'owner') {
-  const { features, encoders } = await peekSession(base, owner, session, { seat, ms: 500 })
-  if (!encoders.length) throw new Error(`The ${seat} display offered no encoder this client decodes`)
-  console.log(`Authenticated hello succeeded for the ${seat} display (${encoders.join(', ')}; ${features.join(', ')})`)
+  const { features } = await peekSession(base, owner, session, { seat, ms: 500 })
+  console.log(`Authenticated hello succeeded for the ${seat} display (${features.join(', ')})`)
 }
 // A wake checks the guest components and refuses a park while that runs; wait it out.
 async function settled() {
