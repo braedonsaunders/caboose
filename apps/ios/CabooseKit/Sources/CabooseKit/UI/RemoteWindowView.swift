@@ -556,6 +556,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// When this window's scrolling region was last known, kept so a reset of the scroll
     /// model (a resize, a lost run) does not flap the overscan off and on.
     private var regionKnownAt: CFTimeInterval = -.infinity
+    /// When a reporter last named a scroller with a range for this window, and along which axis.
+    private var reportedScroller: (window: ObjectIdentifier, axis: ScrollAxis, at: CFTimeInterval)?
 
     private func move(to point: CGPoint) {
         guard let window = remoteWindow, let session else { return }
@@ -1092,9 +1094,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if localScroll.model.region != nil { regionKnownAt = now }
         // A reporter's scroller says the window scrolls before any gesture: its first gesture
         // then already has the overscan, and so the tags that place its pictures.
-        let reported: ScrollAxis? = window.scrollReports.latest?.scrollers.first.flatMap {
+        let key = ObjectIdentifier(window)
+        if let axis: ScrollAxis = window.scrollReports.latest?.scrollers.first.flatMap({
             $0.range.y > 0 ? .vertical : $0.range.x > 0 ? .horizontal : nil
+        }) {
+            reportedScroller = (key, axis, now)
         }
+        // A report without a range (a page between loads, or one the overscan itself made fit)
+        // does not end it: the reporter's word stands for 30 s, as a gesture's does.
+        let reported = reportedScroller.flatMap { $0.window == key && now - $0.at < 30 ? $0.axis : nil }
         let measured = now - lastLocalScroll < 30 && now - regionKnownAt < 30
         var wanted = CGSize.zero
         if !window.isFullscreen, let axis = measured ? localScroll.model.axis : reported {
@@ -1104,8 +1112,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             if axis == .vertical { wanted.height = step(window.frame.height) }
             else { wanted.width = step(window.frame.width) }
         }
-        let key = ObjectIdentifier(window)
         let asked = overscanAsked?.window == key ? overscanAsked!.size : .zero
+        // A viewport that changed a little (a keyboard, a bar) keeps the overscan it has:
+        // every change re-lays out the app and redraws it.
+        if wanted != .zero, asked != .zero, (wanted.width > 0) == (asked.width > 0) {
+            let had = max(asked.width, asked.height), want = max(wanted.width, wanted.height)
+            let extent = asked.width > 0 ? window.frame.width : window.frame.height
+            if abs(want - had) <= 0.25 * had, extent + had <= 4096 { wanted = asked }
+        }
         guard wanted != asked else { return }
         LocalScrollProfile.note("overscan \(wanted == .zero ? "shrink" : asked == .zero ? "enlarge" : "change") request window=\(window.id) \(Int(wanted.width))x\(Int(wanted.height)) (frame \(Int(window.frame.width))x\(Int(window.frame.height)))")
         session.requestOverscan(window, wanted)
