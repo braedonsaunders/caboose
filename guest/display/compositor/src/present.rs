@@ -32,6 +32,8 @@ use std::time::{Duration, Instant};
 const FENCE_POLL: Duration = Duration::from_millis(1);
 /// A frame whose GPU work has not finished by then is dropped unshown.
 const FENCE_LIMIT: Duration = Duration::from_secs(5);
+/// The shortest time between two remakes of the renderer after failed renders.
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 
 /// The render scale of a window's root surface: buffer pixels per logical pixel, clamped
 /// to [1, display scale]. A window's picture keeps its buffer's own density, so its pixels
@@ -103,6 +105,7 @@ impl State {
             return;
         }
         let owner_displays = self.session.as_ref().map(|s| s.owner_displays.clone()).unwrap_or_default();
+        let mut failed = false;
         for id in self.windows.ids() {
             if self.game_shown(id) || self.gpu_grants.as_ref().is_some_and(|g| g.client_surface(id)) {
                 continue;
@@ -172,8 +175,36 @@ impl State {
                 Err(e) => {
                     tracing::warn!("window {id}: render failed: {e}");
                     w.picture.dirty = false;
+                    failed = true;
                 }
             }
+        }
+        if failed {
+            self.renderer_failed();
+        }
+    }
+
+    /// A render failed. Its device may be lost (the phone abandons a GPU that stops
+    /// responding, while its executor stays), and then every later render fails too: the
+    /// renderer is made again, which draws every window again, at most once per
+    /// `RECOVERY_INTERVAL`.
+    fn renderer_failed(&mut self) {
+        if self.gpu_recovery_pending {
+            return;
+        }
+        let wait = self.gpu_recovered_at.map_or(Duration::ZERO, |at| RECOVERY_INTERVAL.saturating_sub(at.elapsed()));
+        self.gpu_recovery_pending = true;
+        let recover = |state: &mut State| {
+            state.gpu_recovery_pending = false;
+            state.gpu_recovered_at = Some(Instant::now());
+            tracing::warn!("a render failed: making the renderer again");
+            state.rebuild_gpu();
+        };
+        if self.handle.insert_source(Timer::from_duration(wait), move |_, _, state: &mut State| {
+            recover(state);
+            TimeoutAction::Drop
+        }).is_err() {
+            self.gpu_recovery_pending = false;
         }
     }
 

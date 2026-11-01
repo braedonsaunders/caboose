@@ -190,6 +190,10 @@ pub struct State {
     /// The GPU renderer, made again whenever the phone's executor comes or goes.
     pub gpu: Option<crate::render::Gpu>,
     pub gpu_generation: u64,
+    /// When the renderer was last made again after a failed render, and whether doing
+    /// so again is already scheduled (present.rs `renderer_failed`).
+    pub gpu_recovered_at: Option<std::time::Instant>,
+    pub gpu_recovery_pending: bool,
     /// The last canvas serial given out (render.rs `Canvas`).
     pub next_canvas: u64,
     /// The computer's vgem render node, when it has one.
