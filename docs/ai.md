@@ -203,10 +203,12 @@ How a request runs on Foundation Models:
 - **Tools.** The program's tools are the session's tools, and the program runs them. When the
   model calls tools, the request ends with the calls (`tool_calls`), ids `call_…`. The
   session waits up to 120 seconds for the program's next request carrying their results
-  (`tool` messages with those ids) and then continues the same turn. A result that arrives
-  later starts a new session of the turn in which a repeated call with the same arguments
-  gets that result at once. `toolChoice` `none` offers no tools, `required` and `{ name }`
-  require a call (iOS 27).
+  (`tool` messages with those ids) and then continues the same turn. Results that arrive
+  later, or for a turn the phone no longer has, are written into a new session's transcript
+  after the user's message and its calls, and the model answers from them. `toolChoice`
+  `none` offers no tools; `required` and `{ name }` require a call (iOS 27) and end the turn
+  with it, since a session that must call a tool calls one after every result: the
+  program's next request, with its own `toolChoice`, continues.
 - **Refusals.** A guardrail or refusal ends the answer with `content_filter`. Other failures
   are errors: `context_length_exceeded`, `rate_limited` (429), `unsupported_language`,
   `model_unavailable` (503), `model_error` (500).

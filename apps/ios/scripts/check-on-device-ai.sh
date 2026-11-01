@@ -6,7 +6,7 @@
 #
 #   scripts/check-on-device-ai.sh <device id> [probe,probe…|none] [mlx-model,…] > results.jsonl
 #
-# Probes: info tokens throughput prefill context session guided tools vision reasoning
+# Probes: info tokens throughput prefill context session guided tools toolReplay vision reasoning
 # concurrency pcc (all of them by default). MLX models (downloaded from Hugging Face on the
 # phone): qwen3-0.6b qwen3-1.7b qwen3-4b qwen3.5-2b llama3.2-1b llama3.2-3b gemma3-1b
 # gemma4-e2b gemma4-e4b smollm3-3b lfm2-1.2b. Each result is one JSON line on standard output.
