@@ -78,6 +78,32 @@ class Manifest(unittest.TestCase):
                 adopt.blocks(text)
 
 
+class Redistributables(unittest.TestCase):
+    def test_directx_is_recorded_as_run_in_both_registry_views(self):
+        text = '[Software\\\\Valve\\\\Steam\\\\Apps\\\\976730] 1\n"InstallCount"=dword:00000001\n'
+        for key in adopt.DIRECTX_KEYS:
+            text = adopt.with_registry_dword(text, key, "dxsetup", 1)
+        self.assertIn('[Software\\\\Wow6432Node\\\\Valve\\\\Steam\\\\Apps\\\\CommonRedist\\\\DirectX\\\\Jun2010]\n"dxsetup"=dword:00000001', text)
+        self.assertIn('[Software\\\\Valve\\\\Steam\\\\Apps\\\\CommonRedist\\\\DirectX\\\\Jun2010]\n"dxsetup"=dword:00000001', text)
+        self.assertIn('"InstallCount"=dword:00000001', text)
+
+    def test_an_existing_value_is_replaced_and_marking_twice_changes_nothing(self):
+        key = adopt.DIRECTX_KEYS[1]
+        text = f'[{key}] 1\n#time=1\n"dxsetup"=dword:00000000\n\n[Other] 1\n"x"=dword:00000002\n'
+        once = adopt.with_registry_dword(text, key, "dxsetup", 1)
+        self.assertIn('"dxsetup"=dword:00000001', once)
+        self.assertNotIn('"dxsetup"=dword:00000000', once)
+        self.assertEqual(adopt.with_registry_dword(once, key, "dxsetup", 1), once)
+        self.assertIn('[Other] 1\n"x"=dword:00000002', once)
+
+    def test_a_prefix_is_marked_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "system.reg").write_text("WINE REGISTRY Version 2\n")
+            self.assertTrue(adopt.mark_redistributables(d))
+            self.assertFalse(adopt.mark_redistributables(d))
+            self.assertFalse(adopt.mark_redistributables(Path(d) / "missing"))
+
+
 class Adopt(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
