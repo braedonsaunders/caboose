@@ -1,8 +1,9 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 //
 // VK_LAYER_CABOOSE_gpu_routing (README.md): lists the phone's GPU first among physical
-// devices, so applications that take the first device render on it, and settles the
-// process's device-loss policy before the phone's driver reads it.
+// devices, so applications that take the first device render on it, hides it from Steam's
+// pipeline pre-compiler, and settles the process's device-loss policy before the phone's
+// driver reads it.
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
@@ -141,10 +142,32 @@ VKAPI_ATTR void VKAPI_CALL DestroyInstance(VkInstance instance, const VkAllocati
     destroy(instance, allocator);
 }
 
+// The rank of a device this process does not see.
+constexpr int kHidden = -1;
+
+bool processHidesPhone() {
+    static const bool hides = hidesPhone(commandLine());
+    return hides;
+}
+
 int deviceRank(InstanceData& data, VkPhysicalDevice device) {
     VkPhysicalDeviceProperties properties{};
     data.properties(device, &properties);
+    if (properties.vendorID == kPhoneVendor && processHidesPhone()) return kHidden;
     return rank(properties.vendorID, properties.deviceType);
+}
+
+// Drops the hidden devices from `all` and their ranks.
+template <class T>
+void dropHidden(std::vector<T>& all, std::vector<int>& ranks) {
+    size_t kept = 0;
+    for (size_t i = 0; i < all.size(); ++i) {
+        if (ranks[i] == kHidden) continue;
+        all[kept] = all[i];
+        ranks[kept++] = ranks[i];
+    }
+    all.resize(kept);
+    ranks.resize(kept);
 }
 
 // Copies `all` in routing order into the caller's array, with the enumeration contract.
@@ -173,6 +196,7 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumeratePhysicalDevices(VkInstance instance, uin
     all.resize(total);
     std::vector<int> ranks;
     for (auto device : all) ranks.push_back(deviceRank(*data, device));
+    dropHidden(all, ranks);
     return answer(all, ranks, count, out);
 }
 
@@ -189,6 +213,8 @@ VkResult enumerateGroups(PFN_vkEnumeratePhysicalDeviceGroups next, InstanceData&
     all.resize(total);
     std::vector<int> ranks;
     for (auto& group : all) ranks.push_back(group.physicalDeviceCount ? deviceRank(data, group.physicalDevices[0]) : 5);
+    dropHidden(all, ranks);
+    total = static_cast<uint32_t>(all.size());
     if (!out) {
         *count = total;
         return VK_SUCCESS;

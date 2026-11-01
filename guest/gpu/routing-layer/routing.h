@@ -38,6 +38,18 @@ inline std::vector<size_t> order(const std::vector<int>& ranks) {
     return indexes;
 }
 
+// Whether the process is kept off the phone's GPU entirely. Steam's fossilize_replay
+// compiles a game's recorded pipelines ahead of its launch, hundreds of thousands of them on
+// as many threads as the computer has, for the driver's on-disk cache. The phone's driver
+// keeps no cache on the computer, so on the phone that work would only be sent across the
+// network and thrown away.
+inline bool hidesPhone(const std::string& commandLine) {
+    std::string program = commandLine.substr(0, commandLine.find(' '));
+    auto slash = program.rfind('/');
+    if (slash != std::string::npos) program = program.substr(slash + 1);
+    return program == "fossilize_replay";
+}
+
 // What the driver does when the phone's GPU goes away (CABOOSE_GPU_ON_LOSS): "restart"
 // reports device loss, which Chromium and Electron (their GPU process restarts) and Qt
 // (its scene graph recreates its renderer) recover from; "pause" holds the application
