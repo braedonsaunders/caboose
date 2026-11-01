@@ -12,6 +12,8 @@ protocol LiveGPUResumeSocket: LiveGPUTransport {
     func closeSuspended()
     /// Ends this socket as lost, reporting `error`.
     func close(abnormally error: Error)
+    /// Seconds since the host was last heard on this socket (a pong or a message).
+    var silence: TimeInterval { get }
 }
 
 /// The resume envelopes of docs/gpu-live.md ("Resuming an executor"): ACK and RESUME live
@@ -219,6 +221,7 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
     func suspendTransport() {
         let socket = condition.withLock { () -> LiveGPUResumeSocket? in
             guard !ended, mode == .resumable else { return nil }
+            Self.log("suspend close 4001")
             link = .suspended
             defer { self.socket = nil }
             return self.socket
@@ -226,11 +229,22 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         socket?.closeSuspended()
     }
 
-    /// Reconnects a suspended transport, or one still trying to resume, at once.
+    /// Reconnects a suspended transport, or one still trying to resume, at once. A socket kept
+    /// across the background that has heard nothing since is replaced rather than trusted.
     func resumeTransport() {
+        let stale = condition.withLock { () -> LiveGPUResumeSocket? in
+            guard !ended, mode == .resumable, case .live = link, let socket, socket.silence > 2 else { return nil }
+            return socket
+        }
+        if let stale {
+            Self.log("resume replaces a silent socket silence=\(Int(stale.silence))")
+            stale.close(abnormally: LiveGPUError.silent)
+            return
+        }
         let socket = condition.withLock { () -> LiveGPUResumeSocket? in
             guard !ended, mode == .resumable, self.socket == nil else { return nil }
             if case .suspended = link {} else if case .lost = link {} else { return nil }
+            Self.log("resume requested link=\(link)")
             lostAt = Date(); attempts = 0
             return openSocketLocked()
         }
@@ -239,7 +253,14 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
 
     // MARK: Sockets
 
+    /// One line per transport event on standard output, for device diagnostics.
+    static func log(_ text: String) {
+        print("CABOOSE_GPU_TRANSPORT \(text)")
+        fflush(stdout)
+    }
+
     private func openSocketLocked() -> LiveGPUResumeSocket {
+        if mode == .resumable { Self.log("connect resume attempt=\(attempts) received=\(received) sent=\(sentSequence)") }
         let socket = connect(mode == .resumable ? credential : nil)
         self.socket = socket
         link = .connecting
@@ -264,6 +285,7 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         switch incoming {
         case .opened:
             if let credential = source.resumeCredential { self.credential = credential }
+            Self.log("opened mode=\(mode) credential=\(source.resumeCredential != nil ? 1 : 0)")
             if mode == .resumable {
                 // The splice is complete only when the broker answers this RESUME.
                 let nonce = LiveGPUResumeWire.nonce()
@@ -292,6 +314,7 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
             catch { failLocked(error); deliveries = []; condition.unlock(); finishUpward(error); return }
         case .closed(let error):
             socket = nil
+            Self.log("closed mode=\(mode) link=\(link) error=\(error.map { String(describing: $0) } ?? "none")")
             if mode == .resumable, error != nil {
                 if let refusal = error as? LiveGPUError, refusal == .resumeRefused {
                     ended = true; condition.broadcast()
@@ -348,9 +371,11 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
                LiveGPUResumeWire.value(LiveGPUResumeWire.payload(message)) == 0 {
                 mode = .resumable
                 identity = (header.executor, header.generation)
+                Self.log("resumable")
                 return
             }
             mode = .plain
+            Self.log("plain credential=\(credential != nil ? 1 : 0)")
             deliveries.append(.bytes(message)); return
         case .resumable: break
         }
@@ -453,6 +478,7 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
 
     private func failLocked(_ error: Error) {
         guard !ended else { return }
+        Self.log("failed error=\(error)")
         ended = true; condition.broadcast()
         let socket = self.socket
         self.socket = nil

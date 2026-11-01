@@ -9,6 +9,9 @@ struct CabooseApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        #if DEBUG
+        ConsoleCapture.start()
+        #endif
         #if DEBUG && canImport(CabooseGPUStream)
         if ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPABILITIES"] == "1" {
             Task.detached(priority: .utility) {

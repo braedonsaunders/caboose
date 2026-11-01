@@ -197,13 +197,23 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// even while delivery to a busy decoder holds back receiving (and so pong replies).
     private let pingQueue = DispatchQueue(label: "caboose.gpu.ping")
     private var pinger: DispatchSourceTimer?
-    private var lastPong = DispatchTime.now()
     private var closeCode = URLSessionWebSocketTask.CloseCode.normalClosure
+    /// A resume attempt: its upgrade must complete within `resumeTimeout`. The request's own
+    /// timeout stays as it is, since URLSession also applies it to an open socket's idle time.
+    private var resuming = false
     private let credentialLock = NSLock()
     private var credential: String? // set on queue before .opened, under credentialLock
     /// The host's resume credential from the upgrade response; nil when it issued none.
     var resumeCredential: String? { credentialLock.withLock { credential } }
     var queuedMessages: Int { budget.retained.count }
+    /// Seconds since the host was last heard, counting time the phone slept (a locked screen).
+    var silence: TimeInterval {
+        let heard = credentialLock.withLock { heardAt }
+        return Double(Self.clock() &- heard) / 1e9
+    }
+    private var heardAt = LiveGPUConnection.clock() // under credentialLock
+    private func heard() { credentialLock.withLock { heardAt = Self.clock() } }
+    private static func clock() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC) }
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
@@ -216,7 +226,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         var request = request
         if let resumeCredential, Self.validCredential(resumeCredential) {
             request.setValue(resumeCredential, forHTTPHeaderField: Self.resumeHeader)
-            request.timeoutInterval = Self.resumeTimeout
+            resuming = true
         }
         self.request = request
     }
@@ -275,6 +285,13 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
             task.maximumMessageSize = LiveGPUBudget.messageLimit
             self.session = session; self.task = task
             task.resume()
+            if resuming {
+                queue.asyncAfter(deadline: .now() + Self.resumeTimeout) { [weak self] in
+                    guard let self, !self.ended, !self.ready else { return }
+                    LiveGPUResumableTransport.log("socket upgrade deadline")
+                    self.finish(LiveGPUError.silent)
+                }
+            }
             // Receive starts only after exact subprotocol validation.
         }
     }
@@ -330,7 +347,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
                 guard !ended, budget.active else { return }
                 switch result {
                 case .success(let message):
-                    lastPong = .now() // any message proves the host is there
+                    heard() // any message proves the host is there
                     do { event?(.bytes(try Self.binaryBytes(message))); receive() }
                     catch { finish(error) }
                 case .failure(let error): finish(error)
@@ -359,19 +376,20 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
             let issued = response?.value(forHTTPHeaderField: Self.resumeHeader).flatMap { Self.validCredential($0) ? $0 : nil }
             credentialLock.withLock { credential = issued }
             ready = true; event?(.opened); receive()
-            lastPong = .now()
+            heard()
             let timer = DispatchSource.makeTimerSource(queue: pingQueue)
             timer.schedule(deadline: .now() + 1, repeating: 1)
             timer.setEventHandler { [weak self, weak webSocketTask] in
                 guard let self, let webSocketTask else { return }
                 webSocketTask.sendPing { [weak self] error in
                     guard let self, error == nil else { return }
-                    self.queue.async { self.lastPong = .now() }
+                    self.heard()
                 }
                 self.queue.async {
                     let limit = self.resumeCredential != nil ? Self.silenceLimit : Self.plainSilenceLimit
                     guard !self.ended,
-                          DispatchTime.now().uptimeNanoseconds - self.lastPong.uptimeNanoseconds > UInt64(limit * 1e9) else { return }
+                          self.silence > limit else { return }
+                    LiveGPUResumableTransport.log("socket silent limit=\(limit)")
                     self.finish(LiveGPUError.silent)
                 }
             }
@@ -382,11 +400,13 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                            didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         guard webSocketTask === task else { return }
+        LiveGPUResumableTransport.log("socket peer close code=\(closeCode.rawValue)")
         finish(closeCode == .normalClosure ? nil : LiveGPUError.closed)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task === self.task else { return }
+        LiveGPUResumableTransport.log("socket completed ready=\(ready ? 1 : 0) status=\((task.response as? HTTPURLResponse)?.statusCode ?? 0) error=\(error.map { String(describing: $0) } ?? "none")")
         if !ready, (task.response as? HTTPURLResponse)?.statusCode == 410 {
             finish(LiveGPUError.resumeRefused); return
         }
