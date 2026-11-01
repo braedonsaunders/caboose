@@ -658,7 +658,7 @@ container's cgroup namespace:
 | --- | --- |
 | `/init.scope` | The container's init, root's services and `docker exec` arrivals |
 | `/owner.slice/session.scope` | The owner's processes no app claims, Caboose's own services among them |
-| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a Steam game's `steam_app_<id>`, a window's class, or `caboose-terminal`, escaped as systemd escapes unit names |
+| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a Steam game's `steam_app_<id>`, a window's class, `caboose-terminal` or `caboose-agent`, escaped as systemd escapes unit names |
 
 The memory, IO and pids controllers are enabled on both levels. The daemon moves the
 owner's processes out of `init.scope`, and once a second (every 3 s while nobody has listed
@@ -666,7 +666,8 @@ for 30 s) moves processes into scopes, first rule first:
 
 1. Steam's game reaper (`reaper SteamLaunch AppId=N`) and its tree, into a scope for game N.
 2. Children forked during a split and left in the scope it came from follow their parent.
-3. A phone terminal session (a child of the terminal service) gets its own scope.
+3. A phone terminal session (a child of the terminal service), or an agent task's runner,
+   gets its own scope.
 4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
    `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
 5. A toplevel window whose process is in the session scope or a phone terminal session's
@@ -1401,7 +1402,7 @@ the host serves the guest's app scopes. These routes do not wake the computer.
     kind: "app" | "session",
     desktopId: string | null, // the desktop entry it was launched from or matched to
     name: string,             // the entry's Name, a Steam game's name, else a window class; at most 200 characters
-    origin: "launch" | "window" | "game" | "terminal" | "session",
+    origin: "launch" | "window" | "game" | "terminal" | "agent" | "session",
     startedAt: number,        // Unix ms the scope was made; 0 for the session
     windows: number[],        // the owner display's window ids (toplevels and dialogs) of its processes
     cpuPercent: number,       // of one CPU, over intervalMs

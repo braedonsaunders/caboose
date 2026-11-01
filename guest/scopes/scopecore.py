@@ -192,6 +192,16 @@ def terminal_service(argv):
         os.path.basename(argv[1]) == 'caboose-terminal.py'
 
 
+def agent_runner(argv):
+    """Whether a process is one of Caboose's agent task runners (`caboose-agentd.mjs run`)."""
+    if not argv:
+        return False
+    for index, arg in enumerate(argv[:-1]):
+        if os.path.basename(arg) == 'caboose-agentd.mjs' and argv[index + 1] == 'run':
+            return True
+    return False
+
+
 def acf_name(text):
     """The game's name from a Steam appmanifest_<id>.acf."""
     match = re.search(r'^\s*"name"\s+"((?:[^"\\]|\\.)*)"', text, re.MULTILINE)
@@ -264,7 +274,8 @@ def classify(procs, membership, scopes, windows, now):
     1. Steam's reaper for game N, outside a scope for game N: its tree becomes game N's.
     2. A child of a scope made in the last few seconds by a split, left behind in the scope
        it was split from: it follows its parent.
-    3. A phone terminal session (a child of the terminal service): its own scope.
+    3. A phone terminal session (a child of the terminal service), or an agent task's runner
+       (`caboose-agentd.mjs run`) in the session scope: its own scope.
     4. In the session scope, processes a launch marked: one scope per launch.
     5. A toplevel window whose process is in the session scope or a phone terminal session's
        scope, or in an app scope when the process runs on a terminal under a process of that
@@ -308,6 +319,10 @@ def classify(procs, membership, scopes, windows, now):
         if pid in taken or membership.get(pid) != SESSION or parent is None or not terminal_service(parent.argv):
             continue
         move(subtree(pid, children, membership), NewScope('caboose-terminal', 'terminal', source=SESSION))
+    for pid in sorted(procs):
+        if pid in taken or membership.get(pid) != SESSION or not agent_runner(procs[pid].argv):
+            continue
+        move(subtree(pid, children, membership), NewScope('caboose-agent', 'agent', source=SESSION))
 
     # 4. Launch marks in the session scope.
     launches = {}
@@ -331,7 +346,7 @@ def classify(procs, membership, scopes, windows, now):
         scope = membership.get(pid)
         if pid in taken or scope is None:
             continue
-        if scope != SESSION and scopes.get(scope, {}).get('origin') != 'terminal':
+        if scope != SESSION and scopes.get(scope, {}).get('origin') not in ('terminal', 'agent'):
             tty = procs[pid].tty
             above = [a for a in ancestors(pid, procs) if membership.get(a) == scope]
             if not tty or not any(a in owners and procs[a].tty != tty for a in above):

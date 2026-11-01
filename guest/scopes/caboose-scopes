@@ -831,6 +831,8 @@ class Daemon:
             return self.entries.name(desktop_id)
         if new.origin == 'terminal':
             return 'Terminal session'
+        if new.origin == 'agent':
+            return 'Agent task'
         if new.game is not None:
             return f'Steam game {new.game}'
         return new.app_id or new.key

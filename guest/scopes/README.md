@@ -34,8 +34,8 @@ cgroup v2):
 ```
 
 `<key>` is the desktop id without `.desktop` (`steam`), `steam_app_<id>` for a Steam game,
-a window's class for a window that arrived without a launch, or `caboose-terminal` for a
-phone terminal session; it is escaped as `systemd-escape` escapes unit names
+a window's class for a window that arrived without a launch, `caboose-terminal` for a
+phone terminal session, or `caboose-agent` for an agent task; it is escaped as `systemd-escape` escapes unit names
 (`firefox-esr` becomes `firefox\x2desr`). `<n>` counts up for the daemon's lifetime and
 across its restarts. The memory, IO and pids controllers are enabled on `/` and
 `/owner.slice`; CPU time comes from every cgroup's `cpu.stat` without the CPU controller,
@@ -70,7 +70,9 @@ matching rule wins (`scopecore.classify`):
    named from `steamapps/appmanifest_N.acf`.
 2. Children forked while a split was being made, left in the scope it came from, follow
    their parent for 5 s.
-3. A phone terminal session (a child of `caboose-terminal.py`): a scope of its own.
+3. A phone terminal session (a child of `caboose-terminal.py`), or an agent task's runner
+   (`caboose-agentd.mjs run`) in the session scope, with everything the agent starts: a
+   scope of its own.
 4. In the session scope, processes a launch marked through their environment
    (`CABOOSE_DESKTOP_ID`, else GLib's `GIO_LAUNCHED_DESKTOP_FILE`, with
    `GIO_LAUNCHED_DESKTOP_FILE_PID`): one scope per launch. This adopts apps that started

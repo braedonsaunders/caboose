@@ -132,6 +132,12 @@ class Classify(unittest.TestCase):
         self.assertEqual(moves, [([6, 7], NewScope('caboose-terminal', 'terminal', source=SESSION)),
                                  ([8], NewScope('caboose-terminal', 'terminal', source=SESSION))])
 
+    def test_agent_tasks_get_scopes_with_what_they_start(self):
+        procs = [Proc(9, 1, argv=['node', '/opt/caboose/agentd/caboose-agentd.mjs', 'run', 'task']), Proc(10, 9, comm='claude'),
+                 Proc(11, 10, comm='npm'), Proc(12, 1, argv=['node', '/opt/caboose/agentd/caboose-agentd.mjs', 'serve'])]
+        moves = self.classify(procs, {9: SESSION, 10: SESSION, 11: SESSION, 12: SESSION})
+        self.assertEqual(moves, [([9, 10, 11], NewScope('caboose-agent', 'agent', source=SESSION))])
+
     def test_marked_launches_in_the_session_are_adopted_per_launch(self):
         procs = [Proc(30, 1, marks=('steam.desktop', 30)), Proc(31, 30), Proc(32, 1, marks=('steam.desktop', 30)),
                  Proc(40, 1, marks=('org.gnome.Calculator.desktop', None)), Proc(50, 1)]
