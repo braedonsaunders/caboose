@@ -151,6 +151,8 @@ bool isPresented(VkPhysicalDevice device) {
     return presented.count(device) != 0;
 }
 
+constexpr VkDriverId kNoPhoneDriverID = VK_DRIVER_ID_MESA_GFXSTREAM;
+
 void presentAsGpu(VkPhysicalDeviceProperties& properties) {
     properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
     std::snprintf(properties.deviceName, sizeof(properties.deviceName), "%s", kNoPhoneName);
@@ -162,20 +164,27 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice device, 
     data->properties(device, out);
     if (out && isPresented(device)) presentAsGpu(*out);
 }
-// The driver's name too, which renderer strings carry (ANGLE's, so Chromium's); its driver ID
-// stays true, as Zink and ANGLE key their workarounds on it.
+// The driver's name and ID too: renderer strings carry the name (ANGLE's, so Chromium's), and
+// Steam judges its web views' GPU acceleration by the ID (lavapipe's turns it off for good).
+// The ID is gfxstream's, which Zink keys no workarounds on; it then treats lavapipe as an
+// ordinary GPU (no lavapipe-specific optimisations, and signed vertex-buffer offsets offered
+// where device-address commands are).
 void properties2(PFN_vkGetPhysicalDeviceProperties2 next, VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
     if (!next) return;
     next(device, out);
     if (!out || !isPresented(device)) return;
     presentAsGpu(out->properties);
     for (auto* item = static_cast<VkBaseOutStructure*>(out->pNext); item; item = item->pNext) {
-        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES)
-            std::snprintf(reinterpret_cast<VkPhysicalDeviceDriverProperties*>(item)->driverName, VK_MAX_DRIVER_NAME_SIZE,
-                          "%s", kNoPhoneDriverName);
-        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES)
-            std::snprintf(reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(item)->driverName, VK_MAX_DRIVER_NAME_SIZE,
-                          "%s", kNoPhoneDriverName);
+        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES) {
+            auto* driver = reinterpret_cast<VkPhysicalDeviceDriverProperties*>(item);
+            std::snprintf(driver->driverName, VK_MAX_DRIVER_NAME_SIZE, "%s", kNoPhoneDriverName);
+            driver->driverID = kNoPhoneDriverID;
+        }
+        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES) {
+            auto* v12 = reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(item);
+            std::snprintf(v12->driverName, VK_MAX_DRIVER_NAME_SIZE, "%s", kNoPhoneDriverName);
+            v12->driverID = kNoPhoneDriverID;
+        }
     }
 }
 VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
