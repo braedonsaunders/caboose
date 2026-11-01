@@ -81,7 +81,7 @@ time.sleep(600)' >/dev/null &
 game=$(wait_app 'Steam game 999999' 'app["id"] if app["origin"] == "game" and app["processCount"] >= 2 else ""') || fail 'the game was not split off'
 launcher=$(wait_app caboose-steam-check.desktop 'app["id"]') || fail 'the launcher lost its scope'
 started+=("$game" "$launcher")
-[[ "$(app caboose-steam-check.desktop '" ".join(p["command"] for p in app["processes"])')" != *'sleep 602'* ]] ||
+[ -z "$(app caboose-steam-check.desktop '" ".join(p["command"] for p in app["processes"] if p["name"] != "python3")')" ] ||
   fail 'the game tree stayed with its launcher'
 pass "game split into $game"
 
