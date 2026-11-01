@@ -103,6 +103,7 @@ public final class LiveGPUOwnerSession {
                 guard let self else { return }
                 if self.suspension == .suspending { self.suspension = suspended ? .suspended : .none }
                 Self.log.info("Owner executor suspend: \(suspended, privacy: .public)")
+                print("CABOOSE_GPU_OWNER suspend=\(suspended ? 1 : 0)"); fflush(stdout)
                 completion(suspended)
             }
         })
@@ -110,6 +111,7 @@ public final class LiveGPUOwnerSession {
     private func quiesced() {
         guard suspension == .suspended || suspension == .suspending else { return }
         suspension = .quiesced
+        print("CABOOSE_GPU_OWNER quiesced background=\(closesTransportWhenQuiesced ? 1 : 0)"); fflush(stdout)
         if closesTransportWhenQuiesced { executor.suspendTransport() }
     }
     /// In the background: closes the suspended executor's socket once the broker holds it, so
@@ -123,6 +125,7 @@ public final class LiveGPUOwnerSession {
         guard suspension != .none else { return }
         suspension = .none; closesTransportWhenQuiesced = false
         Self.log.info("Owner executor resumed")
+        print("CABOOSE_GPU_OWNER resume"); fflush(stdout)
         executor.resume()
     }
     public func close() {

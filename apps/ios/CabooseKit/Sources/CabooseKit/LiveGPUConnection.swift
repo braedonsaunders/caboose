@@ -372,6 +372,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
                     let limit = self.resumeCredential != nil ? Self.silenceLimit : Self.plainSilenceLimit
                     guard !self.ended,
                           DispatchTime.now().uptimeNanoseconds - self.lastPong.uptimeNanoseconds > UInt64(limit * 1e9) else { return }
+                    LiveGPUResumableTransport.log("socket silent limit=\(limit)")
                     self.finish(LiveGPUError.silent)
                 }
             }
@@ -382,11 +383,13 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
                            didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         guard webSocketTask === task else { return }
+        LiveGPUResumableTransport.log("socket peer close code=\(closeCode.rawValue)")
         finish(closeCode == .normalClosure ? nil : LiveGPUError.closed)
     }
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard task === self.task else { return }
+        LiveGPUResumableTransport.log("socket completed ready=\(ready ? 1 : 0) status=\((task.response as? HTTPURLResponse)?.statusCode ?? 0) error=\(error.map { String(describing: $0) } ?? "none")")
         if !ready, (task.response as? HTTPURLResponse)?.statusCode == 410 {
             finish(LiveGPUError.resumeRefused); return
         }
