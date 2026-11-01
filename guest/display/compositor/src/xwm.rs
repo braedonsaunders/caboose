@@ -5,7 +5,7 @@
 use crate::state::State;
 use crate::windows::Surface;
 use caboose_display_protocol::WindowKind;
-use smithay::utils::{Logical, Rectangle};
+use smithay::utils::{Logical, Rectangle, Size};
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata, request_data_device_client_selection,
     set_data_device_selection,
@@ -46,17 +46,18 @@ impl State {
     }
 
     /// Places a new managed window on its display: dialogs centred over their parent,
-    /// everything else at the display origin, at the size it asked for (clamped to the
-    /// display).
-    fn place_x11(&self, window: &X11Surface, parent: Option<u64>) -> Rectangle<i32, Logical> {
+    /// everything else at the display origin, at its first size (`first_size`). Returns the
+    /// geometry, and the size it is held at when it is larger than the display.
+    fn place_x11(&self, window: &X11Surface, parent: Option<u64>) -> (Rectangle<i32, Logical>, Option<Size<i32, Logical>>) {
         let display = match parent.and_then(|p| self.windows.get(p)) {
             Some(p) => self.displays.resolve(Some(p.display)),
             None => self.displays.primary(),
         };
         let area = display.logical_rect();
         let mut geo = window.geometry();
-        geo.size.w = geo.size.w.clamp(1, area.size.w);
-        geo.size.h = geo.size.h.clamp(1, area.size.h);
+        let hinted = window.min_size().is_some() || window.max_size().is_some();
+        let (size, held) = first_size(geo.size, area.size, hinted, parent.is_none());
+        geo.size = size;
         geo.loc = match parent {
             Some(p) => {
                 let porigin = self.windows.logical_origin(p, &self.displays);
@@ -65,8 +66,28 @@ impl State {
             }
             None => area.loc,
         };
-        geo
+        (geo, held)
     }
+}
+
+/// A new X11 window's first size on a display of `area`: what it asked for, clamped to the
+/// display, except a top-level without size hints that asked to be larger. That one, a
+/// Wine virtual desktop of a fixed resolution, keeps its size and is held at it: the
+/// phone gets it as the window's minimum and shows it scaled to fit, as a window held
+/// larger by its minimum size. Shrinking it would cut its picture, since the app keeps
+/// drawing at the size it chose.
+fn first_size(
+    requested: Size<i32, Logical>,
+    area: Size<i32, Logical>,
+    hinted: bool,
+    toplevel: bool,
+) -> (Size<i32, Logical>, Option<Size<i32, Logical>>) {
+    let larger = requested.w > area.w || requested.h > area.h;
+    if toplevel && !hinted && larger {
+        let size = Size::from((requested.w.max(1), requested.h.max(1)));
+        return (size, Some(size));
+    }
+    ((requested.w.clamp(1, area.w), requested.h.clamp(1, area.h)).into(), None)
 }
 
 /// What an X11 window's own configure request gets. Apps may size themselves, as a Wayland
@@ -115,10 +136,13 @@ impl XwmHandler for State {
             return;
         }
         let parent = window.is_transient_for().and_then(|_| self.x11_owner(&window));
-        let geo = self.place_x11(&window, parent);
+        let (geo, held) = self.place_x11(&window, parent);
         let _ = window.configure(geo);
         let kind = if parent.is_some() { WindowKind::Dialog } else { WindowKind::Toplevel };
         let id = self.add_window(Surface::X11(window), kind, parent);
+        if let Some(w) = self.windows.get_mut(id) {
+            w.held_min = held;
+        }
         self.focus_window(id);
     }
 
@@ -285,8 +309,34 @@ impl XwmHandler for State {
 
 #[cfg(test)]
 mod tests {
-    use super::requested_geometry;
-    use smithay::utils::Rectangle;
+    use super::{first_size, requested_geometry};
+    use smithay::utils::{Logical, Rectangle, Size};
+
+    fn size(w: i32, h: i32) -> Size<i32, Logical> {
+        (w, h).into()
+    }
+
+    #[test]
+    fn a_top_level_without_hints_larger_than_its_display_is_held_at_its_size() {
+        // A 1920x1080 Wine desktop on a portrait phone at scale 3 (311x452 logical).
+        let desktop = size(640, 360);
+        assert_eq!(first_size(desktop, size(311, 452), false, true), (desktop, Some(desktop)));
+        // Larger on either axis is enough.
+        assert_eq!(first_size(size(300, 500), size(311, 452), false, true), (size(300, 500), Some(size(300, 500))));
+    }
+
+    #[test]
+    fn other_first_sizes_are_clamped_to_the_display() {
+        let area = size(311, 452);
+        // Within the display: as asked, not held.
+        assert_eq!(first_size(size(200, 100), area, false, true), (size(200, 100), None));
+        // With size hints, the phone has the app's own minimum to work with.
+        assert_eq!(first_size(size(640, 360), area, true, true), (size(311, 360), None));
+        // A dialog stays within the display.
+        assert_eq!(first_size(size(640, 360), area, false, false), (size(311, 360), None));
+        // Nothing is ever empty.
+        assert_eq!(first_size(size(0, 0), area, false, true), (size(1, 1), None));
+    }
 
     #[test]
     fn a_managed_window_sizes_itself_but_stays_in_place() {

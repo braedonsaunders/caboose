@@ -70,6 +70,9 @@ pub struct Window {
     /// The size last configured for the client to show, while an overscan is or was
     /// asked for: an overscan change keeps it, even before the app has committed it.
     pub shown: Option<Size<i32, Logical>>,
+    /// An X11 top-level without size hints that asked for a first size larger than its
+    /// display (xwm.rs `first_size`): held at that size, and its minimum to the phone.
+    pub held_min: Option<Size<i32, Logical>>,
 }
 
 /// The largest picture, per axis, an overscan may make: what the encoders take.
@@ -159,7 +162,7 @@ impl Window {
     pub fn min_size(&self) -> Size<i32, Logical> {
         match &self.surface {
             Surface::Toplevel(t) => min_max(t.wl_surface()).0,
-            Surface::X11(x) => x.min_size().unwrap_or_default(),
+            Surface::X11(x) => x.min_size().or(self.held_min).unwrap_or_default(),
             Surface::Popup(_) => (0, 0).into(),
         }
     }
@@ -351,7 +354,7 @@ impl Windows {
             Surface::X11(x) => (
                 x.title(),
                 x.class(),
-                x.min_size().and_then(|s| size_px(d, s)),
+                x.min_size().or(w.held_min).and_then(|s| size_px(d, s)),
                 x.max_size().and_then(|s| size_px(d, s)),
                 x.is_fullscreen(),
             ),

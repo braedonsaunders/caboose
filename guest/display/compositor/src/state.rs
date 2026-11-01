@@ -687,6 +687,7 @@ impl State {
             overscan: (0, 0).into(),
             overscan_size: None,
             shown: None,
+            held_min: None,
         });
         self.assign_output(id);
         if kind == WindowKind::Toplevel {
