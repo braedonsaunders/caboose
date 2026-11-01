@@ -146,7 +146,7 @@ class Phone:
         self.messages = []
         self.cond = threading.Condition()
         self.closed = False
-        self.send("hello", {"version": 0, "token": token, "decoders": ["h264", "hevc"],
+        self.send("hello", {"version": 0, "token": token,
                             "displays": [{"id": 1, "width": 1179, "height": 2556, "scale": 3.0,
                                           "refresh_hz": 60.0, "hdr": False}],
                             "devices": True})

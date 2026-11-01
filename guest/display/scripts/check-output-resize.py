@@ -225,7 +225,7 @@ def main():
         return dict(id=id, width=width, height=height, scale=1.0, refresh_hz=60.0, hdr=False)
     deadline = time.monotonic() + 18
     try:
-        send(0x81, dict(version=0, token=Path(args.token_file).read_text().strip(), decoders=['h264'],
+        send(0x81, dict(version=0, token=Path(args.token_file).read_text().strip(),
                         displays=[output(0, 1200, 800)]))
         reader.start()
         initial_deadline = min(deadline, time.monotonic() + 10)
