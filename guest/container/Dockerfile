@@ -38,6 +38,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scroll-reporter /scroll-reporter
 RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh
 
+# The cairo draw-list recorder's preload library (guest/draw).
+FROM debian:trixie-slim AS draw-recorder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc libc6-dev binutils pkg-config libcairo2-dev libfreetype-dev libfontconfig-dev libwayland-dev && \
+    rm -rf /var/lib/apt/lists/*
+COPY draw /draw
+RUN /draw/build.sh /draw/build
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -90,6 +99,9 @@ COPY scroll-reporter /tmp/scroll-reporter
 COPY --from=scroll-reporters /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
 COPY --from=scroll-reporters /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
 RUN /tmp/scroll-reporter/install.sh && rm -rf /tmp/scroll-reporter
+COPY draw /tmp/draw
+COPY --from=draw-recorder /draw/build /tmp/draw/build
+RUN /tmp/draw/install.sh && rm -rf /tmp/draw
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \

@@ -60,6 +60,15 @@ calls cairo on. Calls cairo makes internally do not reach it, so each operation 
 | `CABOOSE_DRAW_CAPTURE` | Append the draw lists to this file instead; `%p` becomes the process id |
 | `CABOOSE_DRAW_PIXELS=1` | After each `present`, also write the pixels the application drew (`pixels` op), for checking |
 
+## Install
+
+`install.sh` (as root, in the image build, after `guest/scroll-reporter/install.sh`) puts the
+recorder in `/opt/caboose/draw/lib`, where caboose-display finds it and adds it to the
+`LD_PRELOAD` of the launch environment, and adds it to the system-wide Flatpak override's
+`LD_PRELOAD` beside the scroll reporters, with its directory read-only.
+`guest/container/Dockerfile` builds it in a stage of its own. Preloaded everywhere, it stays
+idle until a client that draws draw lists connects.
+
 ## Build
 
     guest/draw/build.sh [OUT]     # default guest/draw/build

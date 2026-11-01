@@ -457,13 +457,13 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "draw-ops",
             "Draw-list ops of stream 3: a 64x32 window buffer declared (surface, kind 1), made the target, \
-             and presented to wl_surface 12 (docs/draw.md).",
+             and presented, complete, as wl_buffer 40 on wl_surface 12 (docs/draw.md).",
             Message::DrawOps(DrawOps {
                 stream: 3,
                 ops: vec![
                     0x01, 13, 0, 0, 0, 1, 0, 0, 0, 64, 0, 0, 0, 32, 0, 0, 0, 1, // surface 1, 64x32, window
                     0x03, 4, 0, 0, 0, 1, 0, 0, 0, // target 1
-                    0x30, 8, 0, 0, 0, 1, 0, 0, 0, 12, 0, 0, 0, // present 1 on wl_surface 12
+                    0x30, 13, 0, 0, 0, 1, 0, 0, 0, 12, 0, 0, 0, 40, 0, 0, 0, 1, // present 1 (wl_buffer 40, complete) on wl_surface 12
                 ],
             }),
         ),

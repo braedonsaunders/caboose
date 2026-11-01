@@ -32,10 +32,11 @@ the package's `.build`.
 
 ## Use
 
-With the framework linked, `CABOOSE_DRAW=1` in the app's environment makes the display
-session ask for draw lists (`draw` in the hello) and show each window's `draw.present` as its
-picture, drawn at the picture's own pixels. Surface Atlas batches for the same windows go on
-applying to the same picture.
+With the framework linked, the display session always asks for draw lists (`draw` in the
+hello). The computer sends each window picture as a `draw.present` where an application's
+recorder covers it completely, and as a Surface Atlas batch everywhere else; the session shows
+either as the window's picture and acknowledges both. A picture it cannot draw is acknowledged
+as failed with a keyframe request, which brings a batch.
 
 ## Test
 

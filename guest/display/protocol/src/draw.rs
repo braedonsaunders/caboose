@@ -183,7 +183,8 @@ pub enum Op<'a> {
     Unsupported { reason: u32, rect: [f32; 4] },
     Image { hash: u64, w: u32, h: u32, format: u8, pixels: &'a [u8] },
     Glyph { font: u64, glyph: u32, path: Path<'a> },
-    Present { surface: u32, wl_surface: u32 },
+    /// A window buffer was committed. `complete`: the stream holds all of the surface's content.
+    Present { surface: u32, wl_surface: u32, wl_buffer: u32, complete: bool },
     Pixels { surface: u32, w: u32, h: u32, rgba: &'a [u8] },
     /// A recording starts afresh: nothing before it in the stream is referred to after it.
     Begin { generation: u32 },
@@ -350,7 +351,7 @@ fn decode(op: u8, payload: &[u8]) -> Option<Op<'_>> {
             Op::Image { hash, w, h, format, pixels }
         }
         GLYPH => Op::Glyph { font: c.u64()?, glyph: c.u32()?, path: c.path()? },
-        PRESENT => Op::Present { surface: c.u32()?, wl_surface: c.u32()? },
+        PRESENT => Op::Present { surface: c.u32()?, wl_surface: c.u32()?, wl_buffer: c.u32()?, complete: c.u8()? == 1 },
         BEGIN => Op::Begin { generation: c.u32()? },
         PIXELS => {
             let surface = c.u32()?;
@@ -469,7 +470,7 @@ mod tests {
             w.u32(99);
         }));
         s.extend(op(PRESENT, |w| {
-            w.u32(1).u32(12);
+            w.u32(1).u32(12).u32(40).u8(1);
         }));
         let ops: Vec<Op> = Reader::new(&s).collect::<Result<_, _>>().unwrap();
         assert_eq!(ops.len(), 8);
@@ -487,7 +488,7 @@ mod tests {
         assert_eq!(*font, 7);
         assert_eq!(glyphs.iter().collect::<Vec<_>>(), [(36, 10.0, 20.0), (36, 18.0, 20.0)]);
         assert!(matches!(ops[6], Op::Unknown { op: 0x7F, .. }));
-        assert_eq!(ops[7], Op::Present { surface: 1, wl_surface: 12 });
+        assert_eq!(ops[7], Op::Present { surface: 1, wl_surface: 12, wl_buffer: 40, complete: true });
     }
 
     #[test]

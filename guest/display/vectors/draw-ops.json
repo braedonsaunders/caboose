@@ -1,8 +1,8 @@
 {
   "name": "draw-ops",
-  "description": "Draw-list ops of stream 3: a 64x32 window buffer declared (surface, kind 1), made the target, and presented to wl_surface 12 (docs/draw.md).",
+  "description": "Draw-list ops of stream 3: a 64x32 window buffer declared (surface, kind 1), made the target, and presented, complete, as wl_buffer 40 on wl_surface 12 (docs/draw.md).",
   "messages": [
-    {"direction": "server", "type": "draw.ops", "type_id": 42, "fields": {"ops": {"$bytes": "010d000000010000004000000020000000010304000000010000003008000000010000000c000000"}, "stream": 3}}
+    {"direction": "server", "type": "draw.ops", "type_id": 42, "fields": {"ops": {"$bytes": "010d00000001000000400000002000000001030400000001000000300d000000010000000c0000002800000001"}, "stream": 3}}
   ],
-  "hex": "2a37000000a2636f70735828010d000000010000004000000020000000010304000000010000003008000000010000000c0000006673747265616d03"
+  "hex": "2a3c000000a2636f7073582d010d00000001000000400000002000000001030400000001000000300d000000010000000c00000028000000016673747265616d03"
 }

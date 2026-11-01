@@ -154,8 +154,10 @@ property updates are reconciled on notifications, without a polling timer.
 - **Draw lists** (`src/draw.rs`). Applications' cairo recorders (`guest/draw`) connect to
   `draw.sock`; while a client that draws them is connected, each recorder is asked for a fresh
   stream, which the compositor validates and forwards as `draw.ops`, naming each committed
-  window buffer's window in `draw.present` ([docs/draw.md](../../docs/draw.md)). Surface Atlas
-  batches go on alongside.
+  window buffer's window ([docs/draw.md](../../docs/draw.md)). Each picture of a window goes as
+  `draw.present` when its recorder presented that very buffer, complete, and the picture is the
+  whole buffer; otherwise as a Surface Atlas batch, a keyframe after draw lists. The image
+  installs the recorder and the compositor preloads it into the applications it starts.
 - **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
   A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
   15 fps or more, for a second, becomes a `motion` video stream. With the Surface Atlas

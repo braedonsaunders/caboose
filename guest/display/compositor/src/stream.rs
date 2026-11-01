@@ -668,6 +668,8 @@ pub struct Stream {
     /// The last pts sent; pts strictly increase per window.
     pub last_pts: u64,
     pub need_keyframe: bool,
+    /// Pictures went as draw lists since the last batch: the next batch is a keyframe.
+    pub atlas_stale: bool,
     /// A picture is at the encoder.
     pub encoding: bool,
     /// pts of frames sent and not yet acknowledged.

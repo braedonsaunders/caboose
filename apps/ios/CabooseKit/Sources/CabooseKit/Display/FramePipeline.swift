@@ -233,13 +233,24 @@ final class FramePipeline: @unchecked Sendable {
         }
     }
 
-    /// A picture the phone drew from the window's draw lists (docs/draw.md).
-    func drawn(_ picture: MTLTexture) {
+    /// A picture the phone drew from the window's draw lists (docs/draw.md), acknowledged like
+    /// a batch; nil when it could not be drawn, which asks the computer for a keyframe batch.
+    func drawn(_ picture: MTLTexture?, ptsMicros: UInt64) {
+        let arrived = CACurrentMediaTime()
         queue.async { [self] in
             guard !isRetired else { return }
-            let shown = surface.show(drawn: picture)
-            if shown { showsLivePicture = true }
+            let start = DispatchTime.now().uptimeNanoseconds
+            let shown = picture.map { surface.show(drawn: $0) } ?? false
+            if shown {
+                showsLivePicture = true
+            } else {
+                requestKeyframe(now: start)
+            }
             DrawStatistics.shared.record("draw", failed: !shown)
+            let finished = CACurrentMediaTime()
+            metrics?.picture(window: windowID, waited: 0, took: finished - arrived, failed: !shown, at: finished)
+            let micros = Int((DispatchTime.now().uptimeNanoseconds - start) / 1000)
+            send(.ack(window: windowID, ptsMicros: ptsMicros, decodedMicros: shown ? micros : -1))
         }
     }
 

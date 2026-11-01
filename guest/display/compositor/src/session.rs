@@ -697,7 +697,12 @@ impl State {
         let backend = session.backend.clone();
         let atlas = session.atlas;
         let atlas_cache = session.atlas_cache.clone();
+        let (draw, conn) = (session.draw, session.conn);
         let generation = self.generation;
+        if draw {
+            // Presents are written before the commits they show: read them first.
+            self.pump_draw_recorders();
+        }
         let align = if atlas { 1 } else { backend.alignment() };
         let now_us = self.now_us();
         for id in self.windows.ids() {
@@ -767,6 +772,29 @@ impl State {
             if w.stream.rect != rect || w.stream.crop != Rect::new(0, 0, pic_w, pic_h) {
                 w.stream.end_motion();
                 w.stream.tracker = None;
+            }
+            // The client draws this picture from the application's draw list when the
+            // recorder presented exactly the buffer the window shows, complete, and the
+            // picture is that whole buffer; the batch is left out. A picture that must be a
+            // keyframe (a new client, a new size) goes as a batch, which sets its geometry.
+            if draw && !alpha && !w.stream.need_keyframe && w.stream.motion.is_none() {
+                use smithay::reexports::wayland_server::Resource;
+                let frame = crate::render::direct(&root, local, size, None)
+                    .filter(|d| d.whole)
+                    .and_then(|d| self.draw.take_frame(id, d.buffer.id().protocol_id()));
+                if let Some(frame) = frame {
+                    let pts_us = w.stream.next_pts();
+                    w.stream.in_flight.push_back(pts_us);
+                    w.stream.dirty = false;
+                    // The batches' picture did not see this one: the next batch is whole.
+                    w.stream.atlas_stale = true;
+                    self.stats.drawn += 1;
+                    self.net.send(
+                        conn,
+                        &Message::DrawPresent(proto::DrawPresent { id, stream: frame.stream, surface: frame.surface, pts_us }),
+                    );
+                    continue;
+                }
             }
             // A motion stream that ends: this picture puts its region back.
             let ending = w.stream.motion.as_ref().filter(|m| m.ending).map(|m| (m.id, m.rect));
@@ -874,7 +902,7 @@ impl State {
                         alpha,
                         atlas,
                         atlas_cache: atlas.then(|| atlas_cache.clone()),
-                        keyframe: w.stream.need_keyframe,
+                        keyframe: w.stream.need_keyframe || std::mem::take(&mut w.stream.atlas_stale),
                         refine: false,
                         damage,
                         rect,

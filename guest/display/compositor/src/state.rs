@@ -130,6 +130,8 @@ pub struct Stats {
     pub renders: u64,
     /// Renders that copied a shm buffer instead of composing.
     pub direct: u64,
+    /// Pictures sent as draw lists (draw.present) instead of batches.
+    pub drawn: u64,
     pub unchanged_renders: u64,
     /// Main-thread time spent rendering windows into their pictures.
     pub render_us: u64,
@@ -151,12 +153,13 @@ impl Stats {
     pub fn summary(&self) -> String {
         let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
+            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles + {} drawn by the client, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
             self.frames,
             self.refines,
             self.motion_frames,
             self.tile_pictures,
             self.tiles,
+            self.drawn,
             self.bytes / 1000,
             self.renders,
             self.direct,
@@ -729,6 +732,7 @@ impl State {
         self.video_window_gone(id);
         self.game_window_gone(id);
         self.scene_window_gone(id);
+        self.draw.window_gone(id);
         self.targets_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
