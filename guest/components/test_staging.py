@@ -63,6 +63,19 @@ class Staging(unittest.TestCase):
         missing = [name for name in MANIFEST if not covered(name, paths)]
         self.assertEqual(missing, [], f'{label} does not stage these manifest files')
 
+    def test_installers_copy_only_bundled_files(self):
+        # A component update stages only the manifest's files; an installer that copies one
+        # it does not list fails every update of an existing computer.
+        missing = []
+        for name in MANIFEST:
+            if not name.endswith('/install.sh') or name == 'components/install.sh':
+                continue
+            directory = posixpath.dirname(name)
+            for match in re.finditer(r'"\$here/([A-Za-z0-9._/-]+)"', (GUEST / name).read_text()):
+                if f'{directory}/{match.group(1)}' not in MANIFEST:
+                    missing.append(f'{directory}/{match.group(1)}')
+        self.assertEqual(missing, [], 'installers copy files the manifest does not list')
+
     def test_host_image(self):
         self.assert_staged('apps/host/Dockerfile', staged(REPO / 'apps/host/Dockerfile', 'guest/', './guest/'))
 
