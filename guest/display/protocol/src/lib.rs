@@ -9,6 +9,7 @@
 pub mod atlas;
 pub mod cbor;
 pub mod clipboard;
+pub mod draw;
 mod fields;
 mod messages;
 pub mod scroll_tag;

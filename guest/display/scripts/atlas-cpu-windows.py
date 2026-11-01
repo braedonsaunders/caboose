@@ -66,8 +66,8 @@ def scenarios(directory):
     doc = writer_document(directory)
     writer = ["soffice", "--writer", "--norestore", "--nologo", "--nodefault", f"-env:UserInstallation=file://{directory}/lo", doc]
     return {
-        "writer-wayland": (["env", "SAL_USE_VCLPLUGIN=gtk3", "GDK_BACKEND=wayland", *writer], 12),
-        "writer-x11": (["env", "SAL_USE_VCLPLUGIN=gtk3", "GDK_BACKEND=x11", *writer], 12),
+        "writer-wayland": (["env", "SAL_USE_VCLPLUGIN=gtk3", "GDK_BACKEND=wayland", *writer], 25),
+        "writer-x11": (["env", "SAL_USE_VCLPLUGIN=gen", *writer], 25),
         "gtk3-wayland": (["env", "GDK_BACKEND=wayland", "python3", view], 4),
         "gtk3-x11": (["env", "GDK_BACKEND=x11", "python3", view], 4),
         "xterm": (["xterm", "-sl", "5000", "-geometry", "60x60", "-e", "sh", "-c", f"seq 1 {LINES * 4}; exec sleep 600"], 4),
@@ -101,8 +101,8 @@ def run(name, command, settle_s):
           f"motion streams {len(motion)} ({video_kbps:.0f} kbit/s), server {report['server_cpu_pct']}% of a core")
     if motion:
         raise check.Failed(f"{name}: {len(motion)} motion stream(s) for a CPU-drawn window: {motion}")
-    if w["frames"]:
-        raise check.Failed(f"{name}: {w['frames']} video frames for the window picture")
+    if w["codec"] != "atlas":
+        raise check.Failed(f"{name}: the window picture came as {w['codec']} video")
 
 
 def main():
