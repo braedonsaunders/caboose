@@ -252,6 +252,7 @@ private final class ScriptedSocket: LiveGPUResumeSocket, @unchecked Sendable {
     let resumeCredential: String?
     init(credential: String?, failsOnOpen: Bool) { resumeCredential = credential; self.failsOnOpen = failsOnOpen }
     var queuedMessages: Int { 0 }
+    var silence: TimeInterval = 0
     var sent: [Data] { lock.withLock { messages } }
     var suspendedCloses: Int { lock.withLock { suspended } }
     func open(_ event: @escaping @Sendable (LiveGPUTransportEvent) -> Void) {

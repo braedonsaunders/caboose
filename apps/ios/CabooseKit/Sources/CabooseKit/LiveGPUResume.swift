@@ -12,6 +12,8 @@ protocol LiveGPUResumeSocket: LiveGPUTransport {
     func closeSuspended()
     /// Ends this socket as lost, reporting `error`.
     func close(abnormally error: Error)
+    /// Seconds since the host was last heard on this socket (a pong or a message).
+    var silence: TimeInterval { get }
 }
 
 /// The resume envelopes of docs/gpu-live.md ("Resuming an executor"): ACK and RESUME live
@@ -227,8 +229,18 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         socket?.closeSuspended()
     }
 
-    /// Reconnects a suspended transport, or one still trying to resume, at once.
+    /// Reconnects a suspended transport, or one still trying to resume, at once. A socket kept
+    /// across the background that has heard nothing since is replaced rather than trusted.
     func resumeTransport() {
+        let stale = condition.withLock { () -> LiveGPUResumeSocket? in
+            guard !ended, mode == .resumable, case .live = link, let socket, socket.silence > 2 else { return nil }
+            return socket
+        }
+        if let stale {
+            Self.log("resume replaces a silent socket silence=\(Int(stale.silence))")
+            stale.close(abnormally: LiveGPUError.silent)
+            return
+        }
         let socket = condition.withLock { () -> LiveGPUResumeSocket? in
             guard !ended, mode == .resumable, self.socket == nil else { return nil }
             if case .suspended = link {} else if case .lost = link {} else { return nil }
