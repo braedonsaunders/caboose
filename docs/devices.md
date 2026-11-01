@@ -42,7 +42,8 @@ supports and reports the rest to the phone as unavailable (`device.status` below
 
 | Needs | Kernel | microVM image | Container runtime |
 | --- | --- | --- | --- |
-| Controllers, motion evdev, buttons | `uinput` | Yes | No |
+| Controllers | `uinput`, `evdev` | Yes | Yes, made by the host ([below](#gamepads-in-container-computers)) |
+| Motion evdev, buttons | `uinput` | Yes | No |
 | Sensors (IIO), battery | `uhid`, `hid-sensor-hub` and the `hid-sensor-*` drivers, `industrialio` | Yes | No |
 | Cameras, depth | `videodev`, `v4l2loopback` | Yes (v4l2loopback built with DKMS) | No |
 | Microphone | none | Yes | Yes |
@@ -54,11 +55,54 @@ physical path `caboose/phone`. The image's udev rules give the `caboose` group
 `/dev/uinput`, `/dev/uhid` and `/dev/v4l2loopback`, and the event devices with that path
 (`guest/devices`).
 
-A container computer shares its host's kernel. Kernel input, UHID and camera devices
-are unavailable: the host does not pass its global `/dev/input`, `/dev/uinput`, `/dev/uhid`
-or `/dev/v4l2loopback` into computers. These interfaces do not isolate devices between
-tenants. Unavailable devices report errors in `device.status`; the microphone uses the
-computer's private PulseAudio and remains available.
+A container computer shares its host's kernel. The host does not pass its global
+`/dev/input`, `/dev/uinput`, `/dev/uhid` or `/dev/v4l2loopback` into computers: these
+interfaces do not isolate devices between tenants. Gamepads are made by the host instead
+(below); the motion evdev device, buttons, sensors, the battery and cameras are
+unavailable and report errors in `device.status`. The microphone uses the computer's
+private PulseAudio and remains available.
+
+### Gamepads in container computers
+
+The host makes each of the phone's controllers with its own uinput and puts only that
+pad's evdev node into the computer (`apps/host/src/host-pads.ts`,
+`guest/display/compositor/src/devices/host_pads.rs`):
+
+- **Isolation.** The computer is created allowed to open input devices
+  (`--device-cgroup-rule 'c 13:* rwm'`) and unable to make device nodes
+  (`--cap-drop MKNOD`), so it can open only the nodes the host makes in it, and never
+  uinput. The host makes each node with a privileged `docker exec` (`mknod`, mode 0600,
+  owned by `caboose`) before the hub hears of the pad, and removes it before the pad is
+  taken down, so a node never outlives its pad. At each link, when the computer parks and
+  when the link ends, the host empties the computer's `/dev/input`.
+- **The pads.** A sidecar container per computer, `<name>-pads`, runs the computer's own
+  image's `caboose-display --host-pads` with `/dev/uinput`, no capabilities, no network
+  and a read-only root. It makes at most four pads, each the gamepad of
+  [Input devices](#input-devices), and treats what the computer sends as untrusted.
+- **The link.** Once the owner display is up, the host runs
+  `caboose-display --pad-link` in the computer as `caboose`, which joins the hub's socket
+  (`$XDG_RUNTIME_DIR/caboose-pads.sock`, made by a hub that has no uinput) to the host, and
+  joins it to the sidecar. One JSON object per line: the hub asks
+  `{"add":ID,"name":…,"rumble":…}`, `{"state":ID,"buttons":N,"axes":[6]}` and
+  `{"remove":ID}`; the host answers `{"added":ID,"node":"/dev/input/eventN","dev":"13:M"}`,
+  `{"failed":ID,"error":…}` and `{"rumble":ID,"strong":…,"weak":…,"ms":…}`. The phone's
+  `device.gamepad` reaches the hub over the display connection as on a microVM. If the link
+  or sidecar ends, the host takes the pads down and links again; the hub asks for its pads
+  again on each link. Until a pad is linked, its `device.status` has no node and says why,
+  and the phone's pad presses keys.
+- **Applications.** The computer has no udev. SDL in the Steam Flatpak and in Steam's
+  pressure-vessel runtime finds controllers by watching `/dev/input` with inotify, as it
+  does in any sandbox; for applications outside a sandbox the owner display's launch
+  environment sets `SDL_JOYSTICK_DISABLE_UDEV=1` when `/run/udev/control` is absent. Wine
+  and Proton reach the pad through SDL and present it as an XInput controller. Opening and
+  closing the node is seen with inotify, as on a microVM, so `device.open` follows the game.
+- **Host requirements.** The host kernel's `uinput` and `evdev`; the Linux installer loads
+  both for the container runtime. A container created without the two options above has
+  no gamepads until it is recreated, and its pad presses keys.
+- **Limitation.** A pad is an input device of the host's kernel: a program on the host
+  that reads every input device (a desktop session's) sees it. If the host process stops
+  while a computer runs, the computer keeps its pads' nodes until the host links again; they
+  lead to no device, or to an input device the host gains in the meantime.
 
 ## Consent and lifetime
 
@@ -250,8 +294,8 @@ on a device that also has an input, so it declares a mute key, which is never pr
   so is the on-screen controller while it shows, unless Customize gives other windows
   **Keys** only. With **Automatic** (the default) the pad drives that gamepad while an
   application has it open (`device.open`, an SDL or Steam game) and presses keys otherwise;
-  with **A Linux controller** it always drives it. A computer without uinput (a container
-  computer) has no gamepad, and the pad presses keys.
+  with **A Linux controller** it always drives it. On a computer that cannot make gamepads
+  (a container computer without its host's pads) the pad presses keys.
   `device.rumble` plays through `GCController.haptics`, or Core Haptics for the on-screen
   controller.
 - **Action button.** The **Press Computer Action Key** App Intent sends a press and release
@@ -267,3 +311,5 @@ ffmpeg, PulseAudio with `parec`), that applications starting and stopping send
 `device.rumble`, and that disconnecting removes what it should
 ([guest/display](../guest/display/README.md#build-and-test)). The phone's side is covered by
 `DeviceTests` in CabooseKit and the device checks in [apps/ios/README.md](../apps/ios/README.md).
+On a container computer `--only gamepad` checks the host's pads end to end: the node the
+host made, opened as `caboose`, the phone's state arriving as events, and a rumble returning.

@@ -1176,7 +1176,7 @@ windows get: Automatic** (the default) the pad is a gamepad on the computer
 (`gamepad-screen` in [phone hardware](../../docs/devices.md)) while a Steam or SDL game reads
 it, and keys otherwise; **A Linux controller** makes it the gamepad always and **Keys** never.
 A rumble the computer plays shakes the phone. Without Controllers on in the computer's
-hardware settings, or on a container computer, which has no gamepads, it presses keys. Customize sets the type, markings, sticks, size, haptics and every key,
+hardware settings, or on a computer that cannot make gamepads, it presses keys. Customize sets the type, markings, sticks, size, haptics and every key,
 and remembers them; leaving the mode, a change of window, game, connection or settings,
 opening Customize or leaving the app releases everything held, and a finger still on the pad
 then controls nothing until it lifts. `CabooseKit/Input/OnScreenGamepad*.swift` holds the

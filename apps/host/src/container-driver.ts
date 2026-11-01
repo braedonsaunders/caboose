@@ -14,6 +14,7 @@ import type { ComputerSettings } from './settings.js'
 import { allowCompanion, fenceBridge, privilegedOutput, unfenceBridge } from './network.js'
 import { LanAddress } from './lan.js'
 import { specArgs, specFromInspect, type ContainerInspect, type ContainerSpec } from './container-spec.js'
+import { HostPads, allowsPads, inputDeviceArgs } from './host-pads.js'
 
 /** Flag and value pairs, so argument lists compare without regard to order. */
 function pairs(args: readonly string[]): string[] {
@@ -238,7 +239,7 @@ export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = 
   return [...userfaultfd, ...vgem]
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; spec?: () => ContainerSpec; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; spec?: () => ContainerSpec; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity; pads?: Pick<HostPads, 'start' | 'stop'> } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
@@ -276,6 +277,17 @@ export function createContainerController(config: Config, dependencies: { docker
   let terminalUrl = `http://127.0.0.1:${place.ports.terminal}`
   /** Caboose AI's relay port, on the computer's bridge address (it has no published port). */
   let aiUrl: string | undefined
+  /** The phone's gamepads, made on the host for a container created to take them. */
+  const pads = dependencies.pads ?? new HostPads({
+    computer: name, docker,
+    image: async () => (await docker(['inspect', '-f', '{{.Image}}', name], 15_000)).trim(),
+    ownerEnv: () => launchEnv,
+  })
+  async function startPads(): Promise<void> {
+    if (!(dependencies.exists ?? existsSync)('/dev/uinput')) return
+    const rules = await docker(['inspect', '-f', '{{json .HostConfig.DeviceCgroupRules}}', name], 15_000).catch(() => 'null')
+    if (allowsPads(rules)) pads.start()
+  }
 
   async function state(): Promise<'missing' | 'running' | 'paused' | 'stopped'> {
     try {
@@ -312,6 +324,8 @@ export function createContainerController(config: Config, dependencies: { docker
       ...securityArgs([...config.containerArgs, ...(spec().securityOpt ?? []).flatMap(option => ['--security-opt', option])]),
       // Its own cgroup tree, writable, for app scopes (guest/scopes).
       '--security-opt', 'writable-cgroups=true',
+      // The phone's gamepads, made by the host (host-pads.ts).
+      ...inputDeviceArgs(),
       // This computer's own folders, devices, environment and options (container-spec.ts).
       ...specArgs(spec(), providedArgs()),
       ...config.containerArgs,
@@ -396,6 +410,7 @@ export function createContainerController(config: Config, dependencies: { docker
     await exec('root', '/usr/local/bin/caboose-session', ['ready'], 240_000)
     launchEnv = parseEnvFile(await exec('root', '/bin/cat', [DISPLAY_ENV_PATH]))
     if (!launchEnv.length) throw new Error(`caboose-display wrote no launch environment to ${DISPLAY_ENV_PATH}`)
+    await startPads()
   }
   function session(): Session {
     const size = resources ?? { memoryMb: config.memoryMb, vcpus: config.vcpus }
@@ -502,6 +517,8 @@ export function createContainerController(config: Config, dependencies: { docker
     },
     async promote() { await ownerDisplay(); return session() },
     async park() {
+      // Pad nodes leave before the computer is frozen with them.
+      await pads.stop()
       if ((await state()) === 'running') await docker(['pause', name], 60_000)
       running = false
       launchEnv = []
@@ -516,6 +533,7 @@ export function createContainerController(config: Config, dependencies: { docker
           console.error(lastError)
         }
       }
+      await pads.stop()
       const current = await state()
       if (current === 'paused') await docker(['unpause', name], 60_000)
       if (current === 'running' || current === 'paused') await docker(['stop', '-t', '10', name], 120_000)
@@ -531,6 +549,7 @@ export function createContainerController(config: Config, dependencies: { docker
     },
     /** Deletes the computer: its container, its home and its network. Nothing of it is kept. */
     async destroy() {
+      await pads.stop()
       running = false
       launchEnv = []
       displayToken = ''

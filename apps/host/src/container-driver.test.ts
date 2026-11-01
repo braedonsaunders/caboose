@@ -61,6 +61,8 @@ describe('createContainerController', () => {
     expect(run).toEqual(expect.arrayContaining(['--device', '/dev/dxg', 'CABOOSE_GPU=wsl', '-v', '/srv/caboose/home:/home/caboose', '--memory', '6144m', '--cpus', '4',
       '-p', '127.0.0.1:14700:14700', '-p', '127.0.0.1:14701:14701', '-p', '127.0.0.1:14600:14600', '-p', '127.0.0.1:14601:14601', '--security-opt', 'seccomp=unconfined', 'caboose-computer:gpu']))
     expect(run.join(' ')).toContain('--security-opt writable-cgroups=true')
+    // Input devices only as the host makes them (host-pads.ts).
+    expect(run.join(' ')).toContain('--device-cgroup-rule c 13:* rwm --cap-drop MKNOD')
     expect(run.at(-1)).toBe('caboose-computer:gpu')
     const execs = fake.calls.filter(call => call[0] === 'exec').map(call => call.slice(4).join(' '))
     expect(execs[0]).toContain('/run/caboose/display-token')
@@ -253,7 +255,7 @@ describe('GPU selection', () => {
     expect(run).not.toContain('renderD128')
   })
 
-  it('does not expose shared host input devices to a computer', async () => {
+  it('lets a computer open only the input devices the host makes in it', async () => {
     const fake = fakeDocker('missing')
     const controller = createContainerController({ ...settings, gpu: 'none' }, {
       fence: async () => {}, docker: fake.docker, exists: () => true,
@@ -262,7 +264,34 @@ describe('GPU selection', () => {
     const run = fake.calls.find(call => call[0] === 'run')!
     expect(run).not.toContain('/dev/uinput')
     expect(run).not.toContain('/dev/input:/dev/input')
-    expect(run).not.toContain('c 13:* rmw')
+    expect(run).not.toContain('/dev/input')
+    // Input devices (major 13) only as nodes the host makes: the computer cannot make one.
+    expect(run.join(' ')).toContain('--device-cgroup-rule c 13:* rwm --cap-drop MKNOD')
+  })
+
+  it('links the host’s gamepads once the owner display is up, and takes them out before parking', async () => {
+    const fake = fakeDocker('missing')
+    const rules = fake.docker
+    const docker: Docker = async (args, timeout) => args.includes('{{json .HostConfig.DeviceCgroupRules}}') ? '["c 13:* rwm"]\n' : rules(args, timeout)
+    const events: string[] = []
+    const pads = { start: () => { events.push('start') }, stop: async () => { events.push('stop') } }
+    const controller = createContainerController({ ...settings, gpu: 'none' }, { fence: async () => {}, docker, exists: path => path === '/dev/uinput', pads })
+    await controller.wake()
+    expect(events).toEqual(['start'])
+    await controller.park()
+    expect(events).toEqual(['start', 'stop'])
+    expect(fake.calls.at(-1)?.[0]).toBe('pause')
+  })
+
+  it('gives no gamepads to a container created without the input rule, or on a host without uinput', async () => {
+    for (const [rules, uinput] of [['null', true], ['["c 13:* rwm"]', false]] as const) {
+      const fake = fakeDocker('running')
+      const docker: Docker = async (args, timeout) => args.includes('{{json .HostConfig.DeviceCgroupRules}}') ? rules : fake.docker(args, timeout)
+      const events: string[] = []
+      const controller = createContainerController({ ...settings, gpu: 'none' }, { fence: async () => {}, docker, exists: path => uinput && path === '/dev/uinput', pads: { start: () => { events.push('start') }, stop: async () => {} } })
+      await controller.wake()
+      expect(events).toEqual([])
+    }
   })
 
   it('uses a configured GPU over detection', async () => {

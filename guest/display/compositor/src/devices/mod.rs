@@ -6,6 +6,7 @@
 //! waits on, force-feedback uploads, pictures and sound) never holds up the compositor.
 
 mod camera;
+mod host_pads;
 mod mic;
 mod sys;
 mod uhid;
@@ -15,8 +16,9 @@ use caboose_display_protocol::{
     Device, DeviceBattery, DeviceKind, DeviceRumble, DeviceState, Message, MotionSensor,
 };
 use smithay::reexports::calloop::channel::Sender;
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,6 +49,25 @@ pub struct Config {
     pub state_dir: PathBuf,
     /// `$XDG_RUNTIME_DIR/caboose-devices.json`.
     pub status_file: PathBuf,
+    /// Where the host's link for gamepads connects on a computer without uinput
+    /// (`pads_socket`).
+    pub pads_socket: PathBuf,
+}
+
+/// The hub's socket for the host's gamepad link in `runtime_dir`.
+pub fn pads_socket(runtime_dir: &Path) -> PathBuf {
+    host_pads::socket_path(runtime_dir)
+}
+
+/// `caboose-display --host-pads`: a computer's gamepads, made on the host (host_pads.rs).
+pub fn serve_host_pads() -> io::Result<()> {
+    host_pads::serve()
+}
+
+/// `caboose-display --pad-link`: the host's link to the owner display's hub (host_pads.rs).
+pub fn pad_link() -> io::Result<()> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is not set"))?;
+    host_pads::link(&pads_socket(Path::new(&dir)))
 }
 
 enum Input {
@@ -148,12 +169,37 @@ enum Linux {
 /// A gamepad and whether an application holds its node open: the on-screen controller
 /// drives a game that reads it as a controller and presses keys in anything else.
 struct Pad {
-    device: uinput::Device,
+    device: PadDevice,
     /// inotify watch on the evdev node.
     watch: Option<i32>,
     open: bool,
     recheck: Option<Instant>,
 }
+
+/// A gamepad made with the computer's own uinput, or by its host (host_pads.rs).
+enum PadDevice {
+    Local(uinput::Device),
+    /// `node` once the host has made the pad and put its node in this computer.
+    Host { id: u32, name: String, rumble: bool, node: Option<PathBuf> },
+}
+
+impl PadDevice {
+    fn node(&mut self) -> Option<PathBuf> {
+        match self {
+            Self::Local(d) => d.node(),
+            Self::Host { node, .. } => node.clone(),
+        }
+    }
+}
+
+/// The host's link: its connection and what has arrived of the line being read.
+struct PadLink {
+    stream: UnixStream,
+    lines: host_pads::Lines,
+}
+
+/// Why a host pad has no node while the host is not linked.
+const NO_HOST_PADS: &str = "This computer has no uinput, and its host is not making its gamepads";
 
 struct Motion {
     evdev: Option<uinput::Device>,
@@ -215,6 +261,10 @@ struct State {
     lingering: Vec<u32>,
     /// When to look up nodes again and resend `device.status` if they changed.
     refresh: Vec<Instant>,
+    /// The host's gamepad link: its socket, and the connection once the host is linked.
+    pads_listener: Option<UnixListener>,
+    pads_link: Option<PadLink>,
+    next_pad: u32,
     last_status: Vec<DeviceState>,
     running: bool,
 }
@@ -227,9 +277,35 @@ fn kernel_error(what: &str, path: &str, e: &io::Error) -> String {
     }
 }
 
+/// Whether uinput is missing or closed to this computer, as in a container.
+fn no_uinput(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ENOENT) | Some(libc::ENODEV) | Some(libc::EACCES) | Some(libc::EPERM))
+}
+
+/// The socket the host's gamepad link connects to, replacing one an earlier display left.
+fn listen_for_host(path: &Path) -> Option<UnixListener> {
+    if Path::new(uinput::UINPUT).exists() && sys::open_rw(Path::new(uinput::UINPUT), true).is_ok() {
+        // This computer makes its own pads.
+        return None;
+    }
+    let _ = std::fs::remove_file(path);
+    match UnixListener::bind(path) {
+        Ok(l) => {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            let _ = l.set_nonblocking(true);
+            Some(l)
+        }
+        Err(e) => {
+            tracing::warn!("gamepads: cannot listen for the host on {}: {e}", path.display());
+            None
+        }
+    }
+}
+
 /// An inotify watch for opens and closes of a device's evdev node, once it exists.
-fn watch_node(inotify: Option<&OwnedFd>, device: &mut uinput::Device) -> Option<i32> {
-    let node = device.node()?;
+fn watch_node(inotify: Option<&OwnedFd>, node: Option<PathBuf>) -> Option<i32> {
+    let node = node?;
     let path = std::ffi::CString::new(node.as_os_str().as_encoded_bytes()).ok()?;
     let mask = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
     // SAFETY: a valid inotify descriptor and NUL-terminated path.
@@ -307,6 +383,7 @@ impl State {
         // SAFETY: inotify_init1 returns a new descriptor or -1.
         let inotify = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
         let inotify = (inotify >= 0).then(|| unsafe { OwnedFd::from_raw_fd(inotify) });
+        let pads_listener = listen_for_host(&config.pads_socket);
         Self {
             config,
             out,
@@ -318,6 +395,9 @@ impl State {
             inotify,
             lingering: Vec::new(),
             refresh: Vec::new(),
+            pads_listener,
+            pads_link: None,
+            next_pad: 1,
             last_status: Vec::new(),
             running: true,
         }
@@ -369,9 +449,15 @@ impl State {
         if let Some(i) = &self.inotify {
             add(i.as_raw_fd(), libc::POLLIN, Owner::Inotify);
         }
+        if let Some(l) = &self.pads_listener {
+            add(l.as_raw_fd(), libc::POLLIN, Owner::PadListener);
+        }
+        if let Some(l) = &self.pads_link {
+            add(l.stream.as_raw_fd(), libc::POLLIN, Owner::PadLink);
+        }
         for (i, e) in self.entries.iter().enumerate() {
             match &e.linux {
-                Linux::Gamepad(p) => add(p.device.raw_fd(), libc::POLLIN, Owner::Uinput(i)),
+                Linux::Gamepad(Pad { device: PadDevice::Local(d), .. }) => add(d.raw_fd(), libc::POLLIN, Owner::Uinput(i)),
                 Linux::Battery(d) => add(d.raw_fd(), libc::POLLIN, Owner::Uhid(i)),
                 Linux::Motion(m) => {
                     if let Some((d, _)) = &m.sensors {
@@ -398,9 +484,11 @@ impl State {
                 }
             }
             Owner::Inotify => self.inotify_ready(),
+            Owner::PadListener => self.host_connected(),
+            Owner::PadLink => self.host_ready(),
             Owner::Uinput(i) => {
-                let Some(Entry { linux: Linux::Gamepad(p), device, .. }) = self.entries.get_mut(i) else { return };
-                match p.device.service() {
+                let Some(Entry { linux: Linux::Gamepad(Pad { device: PadDevice::Local(d), .. }), device, .. }) = self.entries.get_mut(i) else { return };
+                match d.service() {
                     Ok(Some(r)) => {
                         let message = Message::DeviceRumble(DeviceRumble {
                             device: device.id.clone(),
@@ -498,13 +586,26 @@ impl State {
         }
         let d = entry.device.clone();
         let made = match d.kind {
-            DeviceKind::Gamepad => uinput::Device::create(&uinput::Spec::gamepad(&d.name, d.rumble == Some(true)))
-                .map(|device| {
-                    let mut pad = Pad { device, watch: None, open: false, recheck: None };
-                    pad.watch = watch_node(self.inotify.as_ref(), &mut pad.device);
-                    Linux::Gamepad(pad)
-                })
-                .map_err(|e| kernel_error("uinput", uinput::UINPUT, &e)),
+            DeviceKind::Gamepad => match uinput::Device::create(&uinput::Spec::gamepad(&d.name, d.rumble == Some(true))) {
+                Ok(device) => {
+                    let mut pad = Pad { device: PadDevice::Local(device), watch: None, open: false, recheck: None };
+                    pad.watch = watch_node(self.inotify.as_ref(), pad.device.node());
+                    Ok(Linux::Gamepad(pad))
+                }
+                // A container computer: its host makes the pad.
+                Err(e) if no_uinput(&e) => {
+                    let id = self.next_pad;
+                    self.next_pad = self.next_pad.checked_add(1).unwrap_or(1);
+                    let device = PadDevice::Host { id, name: d.name.clone(), rumble: d.rumble == Some(true), node: None };
+                    if self.pads_link.is_some() {
+                        self.to_host(&host_pads::Request::Add { id, name: d.name.clone(), rumble: d.rumble == Some(true) });
+                    } else {
+                        entry.error = Some(NO_HOST_PADS.into());
+                    }
+                    Ok(Linux::Gamepad(Pad { device, watch: None, open: false, recheck: None }))
+                }
+                Err(e) => Err(kernel_error("uinput", uinput::UINPUT, &e)),
+            },
             DeviceKind::Buttons => {
                 let keys = d.keys.clone().unwrap_or_default();
                 if keys.is_empty() {
@@ -572,7 +673,7 @@ impl State {
             return;
         }
         if let Some(evdev) = motion.evdev.as_mut() {
-            motion.watch = watch_node(self.inotify.as_ref(), evdev);
+            motion.watch = watch_node(self.inotify.as_ref(), evdev.node());
         }
     }
 
@@ -633,6 +734,9 @@ impl State {
                 // SAFETY: removing a watch this descriptor added.
                 unsafe { libc::inotify_rm_watch(i.as_raw_fd(), *wd) };
             }
+        }
+        if let Linux::Gamepad(Pad { device: PadDevice::Host { id, .. }, .. }) = &entry.linux {
+            self.to_host(&host_pads::Request::Remove { id: *id });
         }
         let nr = match &entry.linux {
             Linux::Camera(c) => Some(c.nr),
@@ -703,10 +807,18 @@ impl State {
                 }
             }
             Message::DeviceGamepad(m) => {
-                if let Some(Entry { linux: Linux::Gamepad(p), .. }) = self.entry(&m.device).map(|i| &self.entries[i]) {
-                    if let Err(e) = p.device.emit(&uinput::gamepad_events(m.buttons, &m.axes)) {
-                        tracing::debug!("gamepad {}: {e}", m.device);
+                let Some(i) = self.entry(&m.device) else { return };
+                match &self.entries[i].linux {
+                    Linux::Gamepad(Pad { device: PadDevice::Local(d), .. }) => {
+                        if let Err(e) = d.emit(&uinput::gamepad_events(m.buttons, &m.axes)) {
+                            tracing::debug!("gamepad {}: {e}", m.device);
+                        }
                     }
+                    Linux::Gamepad(Pad { device: PadDevice::Host { id, node: Some(_), .. }, .. }) => {
+                        let request = host_pads::Request::State { id: *id, buttons: m.buttons, axes: m.axes };
+                        self.to_host(&request);
+                    }
+                    _ => {}
                 }
             }
             Message::DeviceButton { device, key, pressed } => {
@@ -875,7 +987,7 @@ impl State {
             let Linux::Gamepad(p) = &mut self.entries[i].linux else { continue };
             if p.watch.is_none() {
                 // The node may have appeared after creation.
-                p.watch = watch_node(inotify, &mut p.device);
+                p.watch = watch_node(inotify, p.device.node());
             }
             let due = p.recheck.is_some_and(|t| t <= now) || (p.open && p.recheck.is_none());
             if !due {
@@ -927,13 +1039,132 @@ impl State {
         }
     }
 
+    // ---- the host's gamepads (host_pads.rs) ----
+
+    /// Sends the host a request; a link that cannot take it is closed, and the host links
+    /// again.
+    fn to_host(&mut self, request: &host_pads::Request) {
+        let Some(link) = &mut self.pads_link else { return };
+        if let Err(e) = link.stream.write_all(request.line().as_bytes()) {
+            tracing::info!("gamepads: the host's link failed: {e}");
+            self.host_gone();
+        }
+    }
+
+    /// The host linked (again): it is asked for every pad, and an earlier link is dropped.
+    fn host_connected(&mut self) {
+        let Some(listener) = &self.pads_listener else { return };
+        let Ok((stream, _)) = listener.accept() else { return };
+        if self.pads_link.is_some() {
+            self.host_gone();
+        }
+        // Reads follow poll; a write the host does not take within the timeout ends the link.
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+        tracing::info!("gamepads: the host linked");
+        self.pads_link = Some(PadLink { stream, lines: host_pads::Lines::default() });
+        let mut requests = Vec::new();
+        for e in &mut self.entries {
+            if let Linux::Gamepad(Pad { device: PadDevice::Host { id, name, rumble, .. }, .. }) = &e.linux {
+                requests.push(host_pads::Request::Add { id: *id, name: name.clone(), rumble: *rumble });
+                e.error = None;
+            }
+        }
+        for r in requests {
+            self.to_host(&r);
+        }
+        self.send_status();
+    }
+
+    fn host_ready(&mut self) {
+        let Some(link) = &mut self.pads_link else { return };
+        let mut buf = [0u8; 4096];
+        let lines = match (&link.stream).read(&mut buf) {
+            Ok(0) => {
+                tracing::info!("gamepads: the host's link ended");
+                self.host_gone();
+                return;
+            }
+            Ok(n) => link.lines.push(&buf[..n]),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted || e.kind() == io::ErrorKind::WouldBlock => return,
+            Err(e) => {
+                tracing::info!("gamepads: the host's link failed: {e}");
+                self.host_gone();
+                return;
+            }
+        };
+        for line in lines {
+            match host_pads::Reply::parse(&line) {
+                Some(reply) => self.host_reply(reply),
+                None => tracing::debug!("gamepads: the host sent {line:?}"),
+            }
+        }
+    }
+
+    fn host_pad(&self, wanted: u32) -> Option<usize> {
+        self.entries.iter().position(|e| matches!(&e.linux, Linux::Gamepad(Pad { device: PadDevice::Host { id, .. }, .. }) if *id == wanted))
+    }
+
+    fn host_reply(&mut self, reply: host_pads::Reply) {
+        match reply {
+            host_pads::Reply::Added { id, node: made } => {
+                let Some(i) = self.host_pad(id) else { return };
+                let inotify = self.inotify.as_ref();
+                let entry = &mut self.entries[i];
+                if let Linux::Gamepad(p) = &mut entry.linux {
+                    if let PadDevice::Host { node, .. } = &mut p.device {
+                        *node = Some(made.clone());
+                    }
+                    p.watch = watch_node(inotify, Some(made));
+                    p.recheck = Some(Instant::now() + RECHECK);
+                }
+                entry.error = None;
+                tracing::info!("gamepad {}: made by the host", entry.device.id);
+                self.send_status();
+            }
+            host_pads::Reply::Failed { id, error } => {
+                let Some(i) = self.host_pad(id) else { return };
+                tracing::info!("gamepad {}: the host cannot make it: {error}", self.entries[i].device.id);
+                self.entries[i].error = Some(error);
+                self.send_status();
+            }
+            host_pads::Reply::Rumble { id, rumble } => {
+                let Some(i) = self.host_pad(id) else { return };
+                let device = self.entries[i].device.id.clone();
+                self.send(Message::DeviceRumble(DeviceRumble { device, strong: rumble.strong, weak: rumble.weak, ms: rumble.ms }));
+            }
+        }
+    }
+
+    /// The host is no longer linked: its pads are gone until it links again.
+    fn host_gone(&mut self) {
+        self.pads_link = None;
+        for i in 0..self.entries.len() {
+            let inotify = self.inotify.as_ref();
+            let e = &mut self.entries[i];
+            let Linux::Gamepad(p) = &mut e.linux else { continue };
+            let PadDevice::Host { node, .. } = &mut p.device else { continue };
+            *node = None;
+            if let (Some(wd), Some(fd)) = (p.watch.take(), inotify) {
+                // SAFETY: removing a watch this descriptor added.
+                unsafe { libc::inotify_rm_watch(fd.as_raw_fd(), wd) };
+            }
+            e.error = Some(NO_HOST_PADS.into());
+            if p.open {
+                p.open = false;
+                self.usage_changed(i);
+            }
+        }
+        self.send_status();
+    }
+
     // ---- status ----
 
     fn nodes(entry: &mut Entry) -> Vec<String> {
         let uniq = uniq(&entry.device);
         match &mut entry.linux {
             Linux::None => vec![],
-            Linux::Gamepad(Pad { device: d, .. }) | Linux::Buttons(d) => d.node().map(|n| n.display().to_string()).into_iter().collect(),
+            Linux::Gamepad(Pad { device: d, .. }) => d.node().map(|n| n.display().to_string()).into_iter().collect(),
+            Linux::Buttons(d) => d.node().map(|n| n.display().to_string()).into_iter().collect(),
             Linux::Motion(m) => {
                 let mut nodes: Vec<String> =
                     m.evdev.as_mut().and_then(|d| d.node()).map(|n| n.display().to_string()).into_iter().collect();
@@ -1016,6 +1247,9 @@ impl State {
         for e in entries {
             self.destroy(e);
         }
+        if self.pads_listener.take().is_some() {
+            let _ = std::fs::remove_file(&self.config.pads_socket);
+        }
         for nr in std::mem::take(&mut self.lingering) {
             let _ = camera::remove(nr);
         }
@@ -1027,6 +1261,8 @@ impl State {
 enum Owner {
     Wake,
     Inotify,
+    PadListener,
+    PadLink,
     Uinput(usize),
     Uhid(usize),
     Video(usize),

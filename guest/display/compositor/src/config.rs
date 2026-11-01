@@ -47,6 +47,10 @@ OPTIONS:
                            [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
     --list-encoders        print the usable encoders and exit
+    --host-pads            on a container computer's host: make the gamepads its owner
+                           display asks for over standard input (docs/devices.md)
+    --pad-link             in a container computer: join the owner display's gamepad
+                           socket to standard input and output, for the host
     -h, --help             print this help
 
 A COMMAND after `--` is started once the compositor is ready, with WAYLAND_DISPLAY and
@@ -161,6 +165,8 @@ impl Config {
 pub enum Parsed {
     Run(Box<Config>),
     Help,
+    HostPads,
+    PadLink,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
@@ -225,6 +231,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             }
             "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),
+            "--host-pads" => return Ok(Parsed::HostPads),
+            "--pad-link" => return Ok(Parsed::PadLink),
             "--" => {
                 config.command = args.collect();
                 break;
@@ -251,7 +259,7 @@ mod tests {
     fn run(args: &[&str]) -> Config {
         match parse(args.iter().map(|s| s.to_string())).unwrap() {
             Parsed::Run(c) => *c,
-            Parsed::Help => panic!("help"),
+            _ => panic!("not a run"),
         }
     }
 

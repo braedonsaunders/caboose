@@ -113,6 +113,8 @@ fn main() {
             print!("{}", config::USAGE);
             return;
         }
+        Ok(Parsed::HostPads) => return exit_with("--host-pads", devices::serve_host_pads()),
+        Ok(Parsed::PadLink) => return exit_with("--pad-link", devices::pad_link()),
         Err(e) => {
             eprintln!("caboose-display: {e}\n\n{}", config::USAGE);
             std::process::exit(2);
@@ -123,6 +125,16 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+fn exit_with(mode: &str, result: std::io::Result<()>) {
+    if let Err(e) = result {
+        eprintln!("caboose-display {mode}: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// udev's control socket, there when udevd runs.
+const UDEV_CONTROL: &str = "/run/udev/control";
 
 /// The compositor's own GPU selection, passed on so applications render the same way
 /// (Mesa's D3D12 driver on WSL, a VA-API driver choice).
@@ -178,6 +190,11 @@ fn launch_env(
         env.push(("CABOOSE_WSI_AUTO_PROMOTE".into(), "1".into()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    // Without udev (a container computer), SDL finds gamepads by watching /dev/input, as
+    // it does in Flatpak and pressure-vessel sandboxes (docs/devices.md).
+    if !std::path::Path::new(UDEV_CONTROL).exists() {
+        env.push(("SDL_JOYSTICK_DISABLE_UDEV".into(), "1".into()));
+    }
     // Video passthrough: players decode through the Caboose VA-API driver, which hands the
     // bitstream to this compositor. Only here: without the compositor's socket the driver
     // does not initialise, so the variable must not leak into other sessions.
@@ -667,6 +684,7 @@ fn run(config: Config) -> Result<(), String> {
                     pulse_server: state.audio.as_ref().map(|a| a.server_address()),
                     state_dir: state.config.instance_dir(&runtime_dir),
                     status_file: runtime_dir.join("caboose-devices.json"),
+                    pads_socket: devices::pads_socket(&runtime_dir),
                 };
                 match devices::Hub::spawn(config, state.devices_tx.clone()) {
                     Ok(hub) => state.devices = Some(hub),
@@ -850,7 +868,7 @@ mod tests {
     fn config(args: &[&str]) -> Config {
         match config::parse(args.iter().map(|s| s.to_string())).unwrap() {
             Parsed::Run(c) => *c,
-            Parsed::Help => panic!("help"),
+            _ => panic!("not a run"),
         }
     }
 
