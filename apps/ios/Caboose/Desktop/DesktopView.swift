@@ -271,6 +271,9 @@ struct Dock: View {
                         .frame(width: 4 * ui, height: 4 * ui)
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
+                // A gone icon (a closed app, or an unlisted app whose id came from an earlier window) must not
+                // keep its slot: the hit test would find it before the icon now in its place.
+                .onDisappear { desktop.dockFrames[app.id] = nil }
                 .onTapGesture { if interactive { model.openOnDesktop(app) } }
                 .onLongPressGesture { if interactive { desktop.showDockMenu(app.id) } }
             }
@@ -319,6 +322,9 @@ struct Dock: View {
                 .accessibilityLabel(app.name)
                 .accessibilityAddTraits(.isButton)
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockFrames[app.id] = $0 }
+                // A gone icon (a closed app, or an unlisted app whose id came from an earlier window) must not
+                // keep its slot: the hit test would find it before the icon now in its place.
+                .onDisappear { desktop.dockFrames[app.id] = nil }
                 .onTapGesture { model.openOnDesktop(app) }
                 .onLongPressGesture { desktop.showDockMenu(app.id) }
             }
