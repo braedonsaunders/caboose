@@ -38,11 +38,13 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         }
         let runtime = LiveRuntimeProbe(), output = LiveOutputProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)
+        binding.zstdWindowLog = { 26 }
         try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
         try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
-        try binding.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer(.zstdStream)))
+        try binding.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer(.zstdStream, windowLog: 27)))
         XCTAssertEqual(try output.frames().last?.kind, .transportReady)
-        XCTAssertEqual(try output.frames().last?.payload, LiveGPUCompression.offer(.zstdStream))
+        // The phone takes the window it holds, here 64 MiB of the 128 MiB offered.
+        XCTAssertEqual(try output.frames().last?.payload, LiveGPUCompression.offer(.zstdStream, windowLog: 26))
         try binding.consume(wire(.processOpen, sequence: 3, process: 1))
         try binding.consume(wire(.streamOpen, sequence: 4, process: 1, stream: 1))
         for vector in vectors { try binding.consume(vector.record) }

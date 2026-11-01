@@ -4,12 +4,13 @@
 
 struct caboose_zstd_stream { ZSTD_DCtx* context; int failed; };
 
-caboose_zstd_stream* caboose_zstd_stream_create(void) {
+caboose_zstd_stream* caboose_zstd_stream_create(int window_log) {
+    if (window_log < 20 || window_log > 30) return NULL;
     caboose_zstd_stream* stream = (caboose_zstd_stream*)calloc(1, sizeof(*stream));
     if (!stream) return NULL;
     stream->context = ZSTD_createDCtx();
     if (!stream->context ||
-        ZSTD_isError(ZSTD_DCtx_setParameter(stream->context, ZSTD_d_windowLogMax, 23))) {
+        ZSTD_isError(ZSTD_DCtx_setParameter(stream->context, ZSTD_d_windowLogMax, window_log))) {
         caboose_zstd_stream_free(stream);
         return NULL;
     }

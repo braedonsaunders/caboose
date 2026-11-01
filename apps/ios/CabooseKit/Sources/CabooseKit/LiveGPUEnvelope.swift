@@ -48,7 +48,8 @@ struct LiveGPUEnvelope: Equatable {
         if kind.isSurface { try LiveGPUSurfaceMessage.validateLength(length, kind: kind); return }
         switch kind {
         case .session, .sessionReady: try require(length == 48)
-        case .transportConfig, .transportReady, .executorResume: try require(length == 8)
+        case .transportConfig, .transportReady: try require(length == 8 || length == 16)
+        case .executorResume: try require(length == 8)
         case .data: try require(length > 0)
         default: try require(length == 0)
         }
