@@ -1,8 +1,0 @@
-{
-  "name": "scroll-zoom",
-  "description": "Zoom window 7's page to 2.5 with window point (590, 1300) fixed, as the window's input 20.",
-  "messages": [
-    {"direction": "client", "type": "scroll.zoom", "type_id": 153, "fields": {"id": 7, "seq": 20, "focus": [{"$float": 590.0}, {"$float": 1300.0}], "scale": {"$float": 2.5}}}
-  ],
-  "hex": "9932000000a462696407637365711465666f63757382fb4082700000000000fb4094500000000000657363616c65fb4004000000000000"
-}
