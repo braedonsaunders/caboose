@@ -252,11 +252,11 @@ struct Dock: View {
         HStack(spacing: 10 * ui) {
             // As many as fit: a phone held upright has room for fewer than a TV.
             let fit = max(3, Int((desktop.size.width - (portraitDesktop ? 174 : 120) * ui) / (62 * ui)))
-            ForEach(model.dockApps.prefix(fit)) { app in
+            ForEach(DockFit.visible(model.dockApps, fit: fit) { model.isRunning($0) }) { app in
                 let hot = desktop.hovered == .dock(app.id)
                 VStack(spacing: 3 * ui) {
                     Group {
-                        if let icon = model.appIcons[app.id] {
+                        if let icon = model.dockIcon(app) {
                             Image(uiImage: icon).resizable().scaledToFit()
                         } else {
                             Image(systemName: "app.dashed").font(.largeTitle)
@@ -300,10 +300,10 @@ struct Dock: View {
     private var laptopTaskbar: some View {
         HStack(spacing: 0) {
             let fit = max(1, Int((desktop.size.width - 60) / 44))
-            ForEach(model.dockApps.prefix(fit)) { app in
+            ForEach(DockFit.visible(model.dockApps, fit: fit) { model.isRunning($0) }) { app in
                 ZStack(alignment: .bottom) {
                     Group {
-                        if let icon = model.appIcons[app.id] {
+                        if let icon = model.dockIcon(app) {
                             Image(uiImage: icon).resizable().scaledToFit()
                         } else { Image(systemName: "app.dashed").font(.title3) }
                     }
@@ -340,9 +340,7 @@ struct Dock: View {
         .onDisappear { desktop.dockFrames.removeAll(); desktop.launchpadButtonFrame = .zero }
     }
 
-    private func isRunning(_ app: HostClient.App) -> Bool {
-        model.appWindows.contains { model.matches($0, app) }
-    }
+    private func isRunning(_ app: HostClient.App) -> Bool { model.isRunning(app) }
 }
 
 struct Cursor: View {
@@ -383,7 +381,7 @@ struct Launchpad: View {
                     let hot = desktop.hovered == .launcher(app.id)
                     VStack(spacing: 8 * ui) {
                         Group {
-                            if let icon = model.appIcons[app.id] {
+                            if let icon = model.dockIcon(app) {
                                 Image(uiImage: icon).resizable().scaledToFit()
                             } else {
                                 Image(systemName: "app.dashed").font(.system(size: layout.icon * 0.6))

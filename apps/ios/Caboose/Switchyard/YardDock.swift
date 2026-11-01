@@ -27,7 +27,7 @@ struct YardDock: View {
                         // A tap goes to the app; holding it opens its menu above it, in the yard.
                         VStack(spacing: 3) {
                             Group {
-                                if let image = model.appIcons[app.id] {
+                                if let image = model.dockIcon(app) {
                                     Image(uiImage: image).resizable().scaledToFit()
                                 } else {
                                     Image(systemName: "app.dashed").font(.title2)
@@ -90,9 +90,7 @@ struct YardDock: View {
                        at: CGPoint(x: frame.minX, y: frame.minY - 6), above: true)
     }
 
-    private func isRunning(_ app: HostClient.App) -> Bool {
-        model.appWindows.contains { model.matches($0, app) }
-    }
+    private func isRunning(_ app: HostClient.App) -> Bool { model.isRunning(app) }
 
     private func button(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -185,10 +183,12 @@ struct DockAppActions: View {
     static func items(_ app: HostClient.App, model: AppModel, openWindow: OpenWindowAction) -> [DesktopModel.MenuItem] {
         let windows = model.appWindows.filter { model.matches($0, app) }
         let detached = model.detachedWindowIDs
-        let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
+        let unlisted = model.isUnlisted(app)
+        let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id }, pinnable: !unlisted,
                                        windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title, detached: detached.contains($0.id)) },
                                        windowScenes: model.supportsWindowScenes)
-        var items = [DesktopModel.MenuItem(title: "Add Shortcut to Desktop", systemImage: "plus.square") {
+        // An application no desktop entry claims has no entry to put on the desktop.
+        var items = unlisted ? [] : [DesktopModel.MenuItem(title: "Add Shortcut to Desktop", systemImage: "plus.square") {
             Task { await model.desktopFiles.addShortcut(app, model: model) }
         }]
         for action in actions {

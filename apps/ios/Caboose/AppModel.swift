@@ -83,6 +83,9 @@ final class AppModel {
     private(set) var computer: HostClient.Session.Computer?
     private(set) var apps: [HostClient.App] = []
     private(set) var appIcons: [String: UIImage] = [:]
+    /// Counts `apps` replacements, so the taskbar knows when to match its windows again.
+    @ObservationIgnored private var appsRevision = 0
+    @ObservationIgnored private var taskbarCache: (windows: [Taskbar.Window], apps: Int, taskbar: Taskbar)?
     private let appListCache = AppListCache()
     private var appsLoadedRevision: Int?
     /// The window shown full screen, if any.
@@ -1290,6 +1293,7 @@ final class AppModel {
 
     func applyApps(_ list: [HostClient.App]) {
         apps = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        appsRevision &+= 1
         var icons: [String: UIImage] = [:]
         for app in list {
             if let data = app.iconData, let image = UIImage(data: data) { icons[app.id] = image }
@@ -1331,10 +1335,37 @@ final class AppModel {
             let byCategory = category.isEmpty ? nil : main.first { $0.categories.contains(category) }
             if let app = byID ?? byCategory, !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
         }
-        for window in appWindows {
-            if let app = apps.first(where: { matches(window, $0) }), !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
+        // Then every application with a window, however it started, in the order they opened.
+        for group in taskbar.groups where !dock.contains(where: { $0.id == group.id }) {
+            if let id = group.entryID, let app = apps.first(where: { $0.id == id }) { dock.append(app) }
+            else { dock.append(HostClient.App(id: group.id, name: group.name, icon: "", categories: [], exec: "")) }
         }
-        return Array(dock.prefix(14))
+        return DockFit.visible(dock, fit: 14) { isRunning($0) }
+    }
+
+    /// The running applications, from the windows that exist (`Taskbar`).
+    var taskbar: Taskbar {
+        let windows = appWindows.map { window in
+            Taskbar.Window(id: window.id, title: window.title, instance: window.appClass?.instance, name: window.appClass?.name,
+                           desktopID: window.desktopID, pid: window.pid)
+        }
+        if let cache = taskbarCache, cache.apps == appsRevision, cache.windows == windows { return cache.taskbar }
+        let entries = apps.map { Taskbar.Entry(id: $0.id, name: $0.name, startupWMClass: $0.startupWMClass, exec: $0.exec) }
+        let taskbar = Taskbar(windows: windows, entries: entries)
+        taskbarCache = (windows, appsRevision, taskbar)
+        return taskbar
+    }
+
+    /// A dock app that is a window's application of its own, which no desktop entry claims.
+    func isUnlisted(_ app: HostClient.App) -> Bool { app.id.hasPrefix(Taskbar.unlistedPrefix) }
+
+    func isRunning(_ app: HostClient.App) -> Bool { taskbar.group(id: app.id) != nil }
+
+    /// A dock app's icon: its entry's, or for an application of its own, its window's.
+    func dockIcon(_ app: HostClient.App) -> UIImage? {
+        if let icon = appIcons[app.id] { return icon }
+        guard isUnlisted(app) else { return nil }
+        return taskbar.group(id: app.id)?.windows.lazy.compactMap { self.window($0)?.icon }.first.map { UIImage(cgImage: $0) }
     }
 
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.
@@ -1559,7 +1590,8 @@ final class AppModel {
     }
 
     private func launch(_ app: HostClient.App) {
-        guard let host, let token = dockLaunches.begin(app.id) else { return }
+        // An application of its own exists only through its windows; there is nothing to launch.
+        guard !isUnlisted(app), let host, let token = dockLaunches.begin(app.id) else { return }
         launching = app
         launchStartedAt = Date()
         let revision = connectionRevision
@@ -1602,12 +1634,18 @@ final class AppModel {
         open(app)
     }
 
+    /// Whether the window is one of the app's: the taskbar's grouping for the computer's own
+    /// apps and applications of their own; the window's identity for an app it does not list.
     func matches(_ window: RemoteWindow, _ app: HostClient.App) -> Bool {
-        AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass, launchedFrom: window.desktopID,
+        if isUnlisted(app) || apps.contains(where: { $0.id == app.id }), !window.isAuxiliary {
+            return taskbar.group(of: window.id)?.id == app.id
+        }
+        return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass, launchedFrom: window.desktopID,
                                   instance: window.appClass?.instance, name: window.appClass?.name)
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {
+        if let id = taskbar.group(of: window.id)?.entryID, let image = appIcons[id] { return image }
         // An app whose id is the window's class beats one that only shares a prefix with it
         // (Thunar's window is Thunar, not Thunar's Bulk Rename).
         let names = [window.appClass?.instance, window.appClass?.name].compactMap { $0?.lowercased() }

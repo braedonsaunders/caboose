@@ -2714,6 +2714,12 @@ the app card, and a detached view releases its layers.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
   each, with a dot for an open app; tapping focuses or opens it and holding exposes
   its window actions. Icons keep their size and scroll horizontally when they do not fit.
+  The running apps are the computer's windows, however they were started (Steam, a
+  terminal, a script, Wine), grouped by application (`CabooseKit/Shell/Taskbar`, matched as
+  [Windows and launches](display.md#windows-and-launches) describes); a window no desktop
+  entry claims appears as an application of its own with its window's icon, and closing
+  its last window removes it. A dock too narrow for every icon leaves out everyday apps
+  without windows first, never a running one.
   Overview shows every window (tap to go, swipe up to close), alongside All Apps. The side
   edges move along the track.
   ⌘⌥ with the arrows moves focus, with ⇧ moves the window, and R, F, ⇧F, W, O, A and
