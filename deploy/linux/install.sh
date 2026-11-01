@@ -215,16 +215,24 @@ else
   run mkdir -p "$images"
 fi
 
-# The computer's render node (docs/gpu-buffers.md): the kernel's vgem device, loaded now
-# and at every boot. Container computers get it; without it apps share no GPU buffers.
+# Kernel modules for container computers, loaded now and at every boot: the computer's
+# render node (docs/gpu-buffers.md), the kernel's vgem device, without which apps share no
+# GPU buffers; and uinput and evdev, with which the host makes the phone's gamepads for
+# computers (docs/devices.md).
 if [[ $runtime == container ]]; then
-  if modinfo vgem >/dev/null 2>&1; then
-    run modprobe vgem
-    if [[ $dry_run == 1 ]]; then echo "  would write /etc/modules-load.d/caboose.conf"
-    else echo vgem >/etc/modules-load.d/caboose.conf; fi
-  else
-    warn "this kernel has no vgem module: computers get no render node, so apps share no GPU buffers"
-  fi
+  modules=()
+  for module in vgem uinput evdev; do
+    if modinfo "$module" >/dev/null 2>&1; then
+      run modprobe "$module"
+      modules+=("$module")
+    elif [[ $module == vgem ]]; then
+      warn "this kernel has no vgem module: computers get no render node, so apps share no GPU buffers"
+    elif ! grep -qw "$module" /proc/modules 2>/dev/null && [[ ! -e /sys/module/$module ]]; then
+      warn "this kernel has no $module module: computers' gamepads press keys instead"
+    fi
+  done
+  if [[ $dry_run == 1 ]]; then echo "  would write /etc/modules-load.d/caboose.conf: ${modules[*]}"
+  else printf '%s\n' "${modules[@]}" >/etc/modules-load.d/caboose.conf; fi
 fi
 
 # Settings: written once, then only missing keys are added, so edits survive upgrades.

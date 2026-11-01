@@ -380,6 +380,14 @@ It also gets the host's `vgem` nodes, the computer's render node ([gpu-buffers.m
 likewise owned by the session user's group; the Linux installer loads `vgem` for the
 container runtime. A host whose only render node is `vgem` is detected as `none`.
 
+The container may open input devices (`--device-cgroup-rule 'c 13:* rwm'`) but cannot make
+device nodes (`--cap-drop MKNOD`): the only input nodes in it are the gamepads the host
+makes for it with the host's own uinput, in a sidecar container `<name>-pads`, linked to the
+owner display with `docker exec … caboose-display --pad-link`
+([devices](devices.md#gamepads-in-container-computers)). Docker cannot add a device rule to
+an existing container, so a container created without these options has no gamepads until
+it is recreated.
+
 The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
