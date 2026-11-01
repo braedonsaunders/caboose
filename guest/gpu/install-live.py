@@ -13,7 +13,7 @@ import tempfile
 
 MODULES = ("gpu_admission.py", "gpu_websocket.py", "ipc_handoff.py",
            "process_binding.py", "executor_lease.py", "control_protocol.py",
-           "surface_local_protocol.py")
+           "surface_local_protocol.py", "buffer_presentation.py")
 
 DRIVER_DIR = Path("usr/local/lib/caboose-gpu-live")
 DRIVER = "libvulkan_gfxstream.so"
