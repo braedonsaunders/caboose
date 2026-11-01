@@ -153,6 +153,8 @@ PY
 session_bus "$runtime/bus"
 owner_service files /opt/caboose/files/caboose-files.py 14700 'Caboose file service'
 owner_service terminal /opt/caboose/terminal/caboose-terminal.py 14701 'Caboose terminal service'
+# The phone's models at localhost:11434 (guest/ai); a computer without them still wakes.
+owner_service ai /opt/caboose/ai/caboose-ai.py 14702 'Caboose AI' || echo 'Caboose AI is unavailable' >&2
 # caboose-ports (guest/ports) puts loopback-only servers on the computer's own address while
 # the host says it has one. It holds no port of its own, so a running process is ready.
 ports_pid=$(owner_service_pid /opt/caboose/ports/caboose-ports.py)

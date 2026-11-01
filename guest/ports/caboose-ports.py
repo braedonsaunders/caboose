@@ -27,6 +27,8 @@ POLL_SECONDS = 0.5
 RETRY_SECONDS = 30
 # Caboose's own services (display, agent seat, files, terminal): only the host reaches them.
 CABOOSE_PORTS = range(14600, 14800)
+# Caboose AI (guest/ai) is the phone's models for this computer's own programs only.
+PRIVATE_PORTS = {11434}
 HEAD_LIMIT = 64 * 1024
 BUFFER = 64 * 1024
 SIOCGIFADDR = 0x8915
@@ -71,7 +73,7 @@ def forwardable(found, ours, ephemeral):
     """
     result = {}
     for port, addresses in found.items():
-        if port in CABOOSE_PORTS or ephemeral[0] <= port <= ephemeral[1]:
+        if port in CABOOSE_PORTS or port in PRIVATE_PORTS or ephemeral[0] <= port <= ephemeral[1]:
             continue
         server = addresses - ours.get(port, set())
         if server and all(is_loopback(address) for address in server):
