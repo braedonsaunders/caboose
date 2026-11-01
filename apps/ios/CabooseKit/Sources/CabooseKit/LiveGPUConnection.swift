@@ -173,8 +173,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// sets and command buffers (patch 0027), serves the completion feed (patch 0028), runs
     /// presents ordered behind device-stream ORDER marks, and keeps the computer's shader
     /// modules to take later ones by hash (docs/gpu-live.md, "Shader cache"), and resumes
-    /// its executor on a new socket ("Resuming an executor").
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume"
+    /// its executor on a new socket ("Resuming an executor"), and decodes commands sent as one
+    /// zstd stream ("Optional bounded command compression").
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream"
     static let resumeHeader = "X-Caboose-GPU-Resume"
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3

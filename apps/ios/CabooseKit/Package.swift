@@ -56,9 +56,12 @@ let package = Package(
         .library(name: "CabooseKit", targets: ["CabooseKit"]),
     ],
     targets: [
+        // The zstd stream decoder for live GPU commands (docs/gpu-live.md): zstd 1.5.7's
+        // single-file decompressor, built in through caboose_zstd.c.
+        .target(name: "CabooseZstd", exclude: ["vendor"]),
         .target(
             name: "CabooseKit",
-            dependencies: gpuDependencies + drawDependencies,
+            dependencies: ["CabooseZstd"] + gpuDependencies + drawDependencies,
             resources: [.process("Resources")],
             linkerSettings: [.linkedLibrary("z")] + (gpuStream || gpuLive ? gpuStreamLinking : []) + drawLinking),
         .testTarget(name: "CabooseKitTests", dependencies: ["CabooseKit"], exclude: ["Fixtures"]),

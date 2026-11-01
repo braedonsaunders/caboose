@@ -30,6 +30,41 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
     }
 
+    func testZstdStreamRecordsDecodeInOrderAndRawDataIsRefused() throws {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appending(path: "Fixtures/live-zstd-binding-vectors.json")
+        let vectors = try (JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [[String: String]]).map {
+            (envelope: hex($0["envelope"]!), record: hex($0["record"]!))
+        }
+        let runtime = LiveRuntimeProbe(), output = LiveOutputProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer(.zstdStream)))
+        XCTAssertEqual(try output.frames().last?.kind, .transportReady)
+        XCTAssertEqual(try output.frames().last?.payload, LiveGPUCompression.offer(.zstdStream))
+        try binding.consume(wire(.processOpen, sequence: 3, process: 1))
+        try binding.consume(wire(.streamOpen, sequence: 4, process: 1, stream: 1))
+        for vector in vectors { try binding.consume(vector.record) }
+        try binding.consume(wire(.fin, sequence: 9, process: 1, stream: 1))
+        XCTAssertTrue(output.waitForFINs(1))
+        try binding.consume(wire(.processStop, sequence: 10, process: 1))
+        try binding.consume(wire(.revoke, sequence: 11))
+        try binding.finish()
+        XCTAssertEqual(runtime.received[1], vectors.map { $0.envelope.dropFirst(64) }.reduce(Data(), +))
+        XCTAssertNil(output.error)
+
+        // On a zstd stream every DATA envelope is a record: a raw one is a protocol error.
+        let raw = try LiveGPUNativeBinding(backend: LiveRuntimeProbe())
+        try raw.start(output: { _ in true }, failed: { _ in })
+        try raw.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try raw.consume(wire(.transportConfig, sequence: 2, payload: LiveGPUCompression.offer(.zstdStream)))
+        try raw.consume(wire(.processOpen, sequence: 3, process: 1))
+        try raw.consume(wire(.streamOpen, sequence: 4, process: 1, stream: 1))
+        XCTAssertThrowsError(try raw.consume(vectors[0].envelope))
+        try? raw.revoke(); try? raw.finish()
+    }
+
     func testSessionSelectsTheComputersCacheRootBeforeAnyProcess() throws {
         for root in [URL(fileURLWithPath: "/tmp/caboose-gpu-cache/computer-a"), nil] {
             let runtime = LiveRuntimeProbe()
@@ -405,6 +440,11 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertEqual(try output.frames().map(\.kind), [.sessionReady, .processReady])
         XCTAssertThrowsError(try binding.consume(wire(.quiesce, sequence: 3)))
         try? binding.finish()
+    }
+
+    private func hex(_ text: String) -> Data {
+        let chars = Array(text.utf8)
+        return Data(stride(from: 0, to: chars.count, by: 2).map { UInt8(String(bytes: chars[$0..<$0 + 2], encoding: .utf8)!, radix: 16)! })
     }
 
     private func wire(_ kind: LiveGPUEnvelope.Kind, sequence: UInt64, process: UInt64 = 0,
