@@ -64,8 +64,8 @@ has geometry-shader handling for direct draws but explicitly rejects indirect an
 indirect geometry draws. The three cases remain separate; passing direct geometry is not
 proof of indirect support. This runner neither builds nor selects that fork automatically.
 
-Offscreen Mac results do not establish phone presentation, GFXReconstruct replay,
-Halo shader compatibility, or Vulkan conformance. Those require their own checks.
+Offscreen Mac results do not establish phone presentation, Halo shader compatibility,
+or Vulkan conformance. Those require their own checks.
 
 ## GPU feedback boundary
 
