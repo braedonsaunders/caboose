@@ -145,7 +145,8 @@ property updates are reconciled on notifications, without a polling timer.
   `--no-games` turns it off (the agent seat).
 - **Phone devices** ([docs/devices.md](../../docs/devices.md), `src/devices`). For a client
   whose hello says `devices: true`, a hub thread makes the phone's hardware the computer's:
-  gamepads, the motion device and buttons through uinput, the motion sensors (IIO) and
+  gamepads, the motion device and buttons through uinput (gamepads through the host's
+  uinput on a container computer, `--host-pads` and `--pad-link`), the motion sensors (IIO) and
   battery as HID devices through UHID, cameras and depth as v4l2loopback devices, and the
   microphone as a source in the display's PulseAudio. It tells the phone with
   `device.open` and `device.close` when applications start and stop using a device, and
