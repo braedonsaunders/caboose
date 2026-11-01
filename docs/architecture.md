@@ -1105,7 +1105,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   reach is running or another machine is connected to one ([network](network.md#not-idle-while-a-server-runs)).
   It then neither freezes nor parks: the check runs when the idle timeout passes and every
   minute after, and the computer parks one full idle timeout after it was last found busy. A
-  failed check counts as idle.
+  failed check counts as idle. A running managed service also keeps a container computer
+  busy.
+- **Autostart.** Five seconds after the host starts, it wakes, headless, every parked
+  computer it last saw with services that start with it (`services.json`), so they run
+  unattended after a host restart.
 - **Freeze.** On a microVM backend that supports resident pause, three seconds without a
   lease pauses the guest in memory. A new operation resumes it before guest access. The
   computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;

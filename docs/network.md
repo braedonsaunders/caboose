@@ -149,7 +149,8 @@ check, read from the computer's `/proc/net` tables) while either of these is tru
 - **Another machine is connected:** an established TCP connection to one of the computer's
   servers from an address that is not loopback.
 
-The check runs each time the idle timeout passes, then every minute while the computer is busy.
+A running managed service keeps it awake too, and after a host restart the host wakes a
+computer with services that start with it. The check runs each time the idle timeout passes, then every minute while the computer is busy.
 The computer parks one full idle timeout after the check last found it busy. A check that fails
 counts as idle. An open phone (a foreground control socket) already holds a lease. Servers keep
 running with the app closed and the phone off: nothing in their path is on the phone or in the

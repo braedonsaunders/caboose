@@ -362,9 +362,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     void readServers(guest).catch(() => {})
   }
   computer.subscribe(state => { if (state !== 'running' && servers.list.length) servers = { list: [], readAt: 0 } })
+  // So does a managed service (docs/architecture.md § Services): it is the computer's own work.
   computer.setBusyCheck(async () => {
     const guest = controller.guest()
-    return guest ? networkBusy(await readServers(guest), reachable()) : false
+    if (!guest) return false
+    if (networkBusy(await readServers(guest), reachable())) return true
+    if (controller.componentsMode !== 'container') return false
+    try { return (await serviceActivity(guest)).services.active > 0 } catch { return false }
   })
   /** What caboose-ports (guest/ports) was last told, so it is told again only on a change. */
   let forwarding: string | undefined
@@ -1366,6 +1370,8 @@ export function createCabooseServer(options: ComputerPieces & {
   /** How long a task's runner keeps its agent after a turn, waiting for a reply. */
   agentIdleMs?: number
   freezeParkMs?: number
+  /** How long after starting the host wakes computers whose services start with them (5 s). */
+  autostartDelayMs?: number
   /** How this host was started, for `GET /v1/host`. */
   host?: HostInfo
   /** The machine's memory, CPUs and disk, for `GET /v1/health`. */
@@ -1409,6 +1415,15 @@ export function createCabooseServer(options: ComputerPieces & {
   const owner = createComputerRuntime(OWNER_COMPUTER, options, shared)
   const runtimes = new Map<string, ComputerRuntime>([[OWNER_COMPUTER, owner]])
   for (const { record, pieces } of options.fleet?.existing ?? []) runtimes.set(record.id, createComputerRuntime(record.id, pieces, shared))
+  // A computer whose services start with it keeps running unattended: after the host starts,
+  // it wakes headless, and its running services keep it awake.
+  const autostart = setTimeout(() => {
+    for (const runtime of runtimes.values()) {
+      if (!runtime.autostartServices() || runtime.computer.state !== 'parked') continue
+      void runtime.computer.wake('headless').catch(error => console.error(`Could not start ${runtime.id} for its services:`, error instanceof Error ? error.message : error))
+    }
+  }, options.autostartDelayMs ?? 5000)
+  autostart.unref()
   const records = (): ComputerRecord[] => options.fleet?.computers.list() ?? [{ id: OWNER_COMPUTER, slot: 0, createdAt: null, tenantId: null, person: null }]
   const recordOf = (id: string) => records().find(c => c.id === id)
   const describe = (runtime: ComputerRuntime) => {
@@ -1880,6 +1895,7 @@ export function createCabooseServer(options: ComputerPieces & {
   })
 
   async function shutdown(): Promise<void> {
+    clearTimeout(autostart)
     usageStopped = true; clearInterval(usageTimer); await usageWork
     unsubscribeAuthorization?.()
     accountSockets.dispose()

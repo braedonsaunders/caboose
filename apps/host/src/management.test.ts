@@ -7,11 +7,12 @@ import { WebSocket } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createCabooseServer, type Controller, type Session } from './server.js'
 import { openSettings } from './settings.js'
+import { ServiceMemory } from './running-apps.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
 
-async function fixture(configure?: (controller: Controller) => void) {
+async function fixture(configure?: (controller: Controller) => void, extra: Partial<Parameters<typeof createCabooseServer>[0]> = {}) {
   const root = await mkdtemp(join(tmpdir(), 'caboose-management-'))
   cleanup.push(() => rm(root, { recursive: true, force: true }))
   const defaults = { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600000, defaultAgent: null }
@@ -33,7 +34,7 @@ async function fixture(configure?: (controller: Controller) => void) {
   await writeFile(join(webRoot, 'assets', 'app.js'), 'window.caboose=true;')
   await writeFile(join(root, 'private.txt'), 'private-host-data')
   await symlink(join(root, 'private.txt'), join(webRoot, 'leak.txt'))
-  const app = createCabooseServer({ token: 'owner', settings, controller, webRoot })
+  const app = createCabooseServer({ token: 'owner', settings, controller, webRoot, ...extra })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   cleanup.push(() => app.shutdown())
@@ -180,5 +181,31 @@ it('shows the computer’s own address and reachable servers, tells caboose-port
   await new Promise(resolve => setTimeout(resolve, 400))
   expect(app.computer.state).toBe('running')
   listening = false
+  await vi.waitFor(() => expect(app.computer.state).toBe('parked'))
+})
+
+it('wakes a computer whose services start with it after the host starts, headless, and keeps it awake while they run', async () => {
+  let active = 1
+  const guest = { run: vi.fn(async (command: string, args: string[]) => {
+    if (command === '/usr/local/bin/caboose-scopes' && args[0] === 'activity') return JSON.stringify({ ok: true, result: { services: { active, autostart: 1, failed: 0 }, listening: [] } })
+    return ''
+  }) }
+  let running = false
+  const root = await mkdtemp(join(tmpdir(), 'caboose-autostart-'))
+  cleanup.push(() => rm(root, { recursive: true, force: true }))
+  await writeFile(join(root, 'services.json'), '{"autostart":true}')
+  const { app, controller } = await fixture(controller => {
+    controller.componentsMode = 'container'
+    const wake = controller.wake
+    controller.wake = vi.fn(async mode => { running = true; return wake(mode) })
+    controller.park = vi.fn(async () => { running = false })
+    controller.guest = () => running ? guest : undefined
+  }, { serviceMemory: await ServiceMemory.open(join(root, 'services.json')), autostartDelayMs: 10 })
+  await vi.waitFor(() => expect(app.computer.state).toBe('running'))
+  expect(controller.wake).toHaveBeenCalledWith('headless')
+  app.computer.setIdleMs(100)
+  await new Promise(resolve => setTimeout(resolve, 400))
+  expect(app.computer.state).toBe('running')
+  active = 0
   await vi.waitFor(() => expect(app.computer.state).toBe('parked'))
 })
