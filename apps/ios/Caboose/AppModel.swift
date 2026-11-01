@@ -42,6 +42,8 @@ final class AppModel {
     let phone = PhoneHandoff()
     /// Linux portals, appearance, media controls and opt-in location for this computer.
     let bridge = NativeBridge()
+    /// The phone's models for the computer's programs (docs/ai.md).
+    let ai = PhoneAI()
     /// The phone's cameras, microphone, motion, controllers, buttons and battery as the
     /// computer's devices (docs/devices.md), offered on the owner's display connection.
     let devices: DeviceCenter = {
@@ -338,6 +340,7 @@ final class AppModel {
         runningApps.reset()
         phone.reset()
         bridge.reset()
+        ai.detach()
         agents = AgentCenter()
         catalog = CatalogCenter()
         mcp = McpCenter()
@@ -471,6 +474,7 @@ final class AppModel {
             openDisplay(host: host, display: wake.display, identity: identity)
             agents.detach()
             agents.attach(host: host)
+            ai.attach(host: host)
             PushCoordinator.shared.synchronize()
             LiveActivityCoordinator.shared.connected()
             catalog.attach(host)
@@ -572,6 +576,7 @@ final class AppModel {
         AgentAppPages.shared.parking { session?.disconnect() }
         session = nil
         agents.detach()
+        ai.detach()
         knownWindowIDs.removeAll()
         if case .ready = phase { phase = .waking }
     }
@@ -1248,6 +1253,7 @@ final class AppModel {
         session?.disconnect()
         session = nil
         agents.detach()
+        ai.detach()
         knownWindowIDs.removeAll()
     }
 

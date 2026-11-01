@@ -28,6 +28,7 @@ struct ComputerSettingsView: View {
                         ShortcutsSettingsSection()
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        PhoneAISettingsSection(ai: model.ai)
                         DeviceSettingsSection()
                         connectionAddressSection
                         Section {
@@ -45,6 +46,7 @@ struct ComputerSettingsView: View {
                         ShortcutsSettingsSection()
                         FilesSettingsSection()
                         NativeBridgeSettingsSection(bridge: model.bridge)
+                        PhoneAISettingsSection(ai: model.ai)
                         DeviceSettingsSection()
                         connectionAddressSection
                         Section { ProgressView() }
@@ -99,6 +101,7 @@ struct ComputerSettingsView: View {
             ShortcutsSettingsSection()
             FilesSettingsSection()
             NativeBridgeSettingsSection(bridge: model.bridge)
+            PhoneAISettingsSection(ai: model.ai)
             DeviceSettingsSection()
             connectionAddressSection
             if let network = status.network, network.tailnet != nil || network.lan != nil {
