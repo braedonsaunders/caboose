@@ -95,7 +95,7 @@ public:
     void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        entry.replies.push_back({0, 0, first, false, count, bytes, nullptr});
+        entry.replies.push_back({0, 0, first, false, count, bytes, nullptr, lastOpcode});
         entry.bytes += bytes;
         total_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -298,8 +298,8 @@ private:
                     return false;
                 }
                 if (created != reply.handle + i) {
-                    if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 "\n",
-                                 reply.handle + i, created);
+                    if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " got=0x%" PRIx64 " opcode=%u\n",
+                                 reply.handle + i, created, reply.opcode);
                     stream->invalidate();
                     return false;
                 }
@@ -312,8 +312,8 @@ private:
             if (createResult != 0) {
                 // The guest already handed these handles out; a device that refused or
                 // renamed them has diverged from the application's view: device loss.
-                if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 "\n",
-                             reply.handle, reply.count, createResult);
+                if (!lostQuietly()) std::fprintf(stderr, "CABOOSE_GUEST_HANDLE_FAILED handle=0x%" PRIx64 " count=%u result=%" PRId32 " opcode=%u\n",
+                             reply.handle, reply.count, createResult, reply.opcode);
                 stream->invalidate();
                 return false;
             }
@@ -345,6 +345,7 @@ private:
         uint64_t fence = 0; uint64_t generation = 0; uint64_t handle = 0; bool checked = false; uint32_t count = 1;
         uint64_t bytes = 0;
         std::shared_ptr<QueryReply> data;  // a data reply (addDataReply)
+        uint32_t opcode = 0;  // the create's call, for the log when the device refuses it
     };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0; };
     std::mutex mutex_;
