@@ -671,9 +671,9 @@ const BAND_MIN_ROWS: usize = 64;
 const BAND_MIN_INFORMATIVE: usize = 4;
 
 /// The longest run of rows that equal the previous picture's rows `dy` above or below, over
-/// the shifts with the most matching distinct rows: `(dy, first current row, rows)`. Copying
-/// rows that already equal the picture is exact, whatever else in the region did not move.
-/// `same(c, p)` compares current row `c` with previous row `p` byte for byte.
+/// the shifts with the most matching distinct rows: `(dy, first current row, rows)`. Every row
+/// of the band is compared byte for byte (`same(c, p)`, current row `c` against previous row
+/// `p`), so the copy is exact, whatever else in the region did not move.
 fn scroll_band(
     prev: &[u64],
     curr: &[u64],
@@ -711,7 +711,7 @@ fn scroll_band(
                 if len >= BAND_MIN_ROWS
                     && run_info >= BAND_MIN_INFORMATIVE
                     && best.is_none_or(|(_, _, l)| len > l)
-                    && (start..c_idx).step_by((len / 8).max(1)).all(|c| same(c, (c as i64 - dy as i64) as usize))
+                    && (start..c_idx).all(|c| same(c, (c as i64 - dy as i64) as usize))
                 {
                     best = Some((dy, start, len));
                 }

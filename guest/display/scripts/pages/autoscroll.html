@@ -16,8 +16,12 @@ addEventListener('DOMContentLoaded', () => {
     card.innerHTML = `<h2>Section ${i}</h2><p>The caboose rides at the end of the train. Its crew watches the cars ahead for hot boxes, shifted loads and dragging equipment, and signals the engineer when something is wrong. Car ${i} carries ${(i * 37) % 90 + 10} tons under seal ${String((i * 7919) % 100000).padStart(5, '0')}.</p>`;
     document.body.append(card);
   }
+  // ?stop=MS: come to rest after that long, for comparing the resting picture.
+  const stop = Number(new URLSearchParams(location.search).get('stop')) || Infinity;
+  const started = performance.now();
   let step = 12;
   function frame() {
+    if (performance.now() - started > stop) return;
     const before = scrollY;
     scrollBy(0, step);
     if (scrollY === before) step = -step;

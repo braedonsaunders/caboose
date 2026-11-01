@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """A GTK 3 window that draws what GTK applications draw: themed widgets, text in several
 fonts, an entry, a scrolled text view, icons, and a drawing area with gradients, dashes,
-arcs, curves and an image. It scrolls its text view a step every 30 ms, then quits."""
+arcs, curves and an image. It scrolls its text view a step every 30 ms (for SCROLL_FOR seconds,
+when set), then quits."""
 import math
+import os
 import sys
 
 import gi
@@ -107,7 +109,12 @@ win.show_all()
 ticks = [0]
 
 
+SCROLL_FOR = float(os.environ.get("SCROLL_FOR", "inf"))
+
+
 def tick():
+    if ticks[0] * 0.03 > SCROLL_FOR:
+        return False
     ticks[0] += 1
     adj = scroller.get_vadjustment()
     adj.set_value(adj.get_value() + 7)
