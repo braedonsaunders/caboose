@@ -20,13 +20,16 @@ inline bool cpuImplementation(uint32_t vendor, int deviceType) {
 }
 
 // Processes that render on the computer by design (the routing layer keeps the phone from
-// them): Steam's web views (steamwebhelper, every one of its processes), its update window
-// and fossilize_replay. Their CPU devices are neither lost nor recorded as waiting to move.
+// them): Steam's client and web views (steamwebhelper, every one of its processes), its
+// update window and fossilize_replay. Their CPU devices are neither lost nor recorded as waiting to move.
 inline bool keptOnComputer(const std::string& commandLine) {
     std::string program = commandLine.substr(0, commandLine.find(' '));
     const auto slash = program.rfind('/');
     if (slash != std::string::npos) program = program.substr(slash + 1);
-    return program == "steamwebhelper" || program == "fossilize_replay" ||
+    const std::string path = commandLine.substr(0, commandLine.find(' '));
+    const bool steamClient = program == "steam" &&
+        (path.find("/steamrt64/steam") != std::string::npos || path.find("/steamrt32/steam") != std::string::npos);
+    return program == "steamwebhelper" || program == "fossilize_replay" || steamClient ||
            commandLine.find(" -child-update-ui") != std::string::npos;
 }
 

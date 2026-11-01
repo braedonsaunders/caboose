@@ -31,7 +31,8 @@ int main() {
     assert(keptOnComputer("./steamwebhelper -nocrashdialog -lang=en_US"));
     assert(keptOnComputer("/s/steamrt64/steam -child-update-ui -child-update-ui-socket 9"));
     assert(keptOnComputer("fossilize_replay a.foz"));
-    assert(!keptOnComputer("/s/steamrt64/steam -srt-logger-opened"));
+    assert(keptOnComputer("/s/steamrt64/steam -srt-logger-opened"));
+    assert(!keptOnComputer("/usr/games/steam"));
     assert(!keptOnComputer("Z:\\MCC\\Binaries\\Win64\\MCC-Win64-Shipping.exe -no-eac"));
 
     assert(placementLine(123456) == "cpu-until-relaunch 123456\n");
