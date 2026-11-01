@@ -123,8 +123,7 @@ directory, port and Wayland socket), so it does not disturb the owner's display,
 that:
 
 1. a client that plays games (`--wasm`) gets `game.create` for the launcher's window with the
-   bundle's root, entry and saves, that window sends no picture, the native fallback does not
-   run, and closing the window from the client ends the launcher and destroys the game;
+   bundle's root, entry and saves, the native fallback does not run, and closing the window from the client ends the launcher and destroys the game;
 2. with a client that does not play games, the native fallback replaces the launcher;
 3. without `CABOOSE_GAME_SOCKET`, the native fallback replaces the launcher at once.
 
