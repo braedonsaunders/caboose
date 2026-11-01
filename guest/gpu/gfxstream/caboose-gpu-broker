@@ -29,7 +29,7 @@ import control_protocol
 import surface_local_protocol as surface_wire
 from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pid, process_start_ticks
 from live_compression import CONFIG as TRANSPORT_CONFIG, compress_data
-from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, encode, is_surface
+from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, UNSEQUENCED, encode, is_surface
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
@@ -63,6 +63,16 @@ def negotiate_hello(offered, phone_features):
     granted &= mask
     if not granted & 0x80: granted &= ~0x1100
     return HELLO_V4[:12] + struct.pack('<I', 0x70 | granted) + HELLO_V4[16:]
+
+
+# Executor resume (docs/gpu-live.md, "Resuming an executor"): sequenced envelopes sent to the
+# phone are kept until it acknowledges them, at most this many bytes and envelopes; a full
+# window holds the sender back. The phone is acknowledged after this many received bytes, or
+# this long after the first unacknowledged one.
+RESUME_WINDOW_BYTES = 8 * 1024 * 1024
+RESUME_WINDOW_MESSAGES = 2048
+ACK_BYTES = 64 * 1024
+ACK_DELAY = 0.05
 
 
 class IndexedSurface:
@@ -368,7 +378,17 @@ class Session:
         self.hello = HELLO_V4 if indexed else HELLO
         # Phone capabilities that local processes may use; none outside indexed v4.
         self.features = frozenset(features) if indexed else frozenset()
-        self.decoder = EnvelopeDecoder(executor, generation)
+        # Executor resume: the phone's splices are invisible here but for its RESUME.
+        self.resumable = 'executor-resume' in self.features
+        self.decoder = EnvelopeDecoder(executor, generation, replay=self.resumable)
+        self.retained = deque()  # (sequence, frame) written and not yet acknowledged
+        self.retained_bytes = 0
+        self.acknowledged = 0  # the highest sequence the phone acknowledged
+        self.urgent = deque()  # frames written before the queue: ACK, RESUME, retransmits
+        self.pending_sequences = deque()  # each queued frame's sequence (None: not sequenced)
+        self.wakeup = asyncio.Event()
+        self.unacked_bytes = 0  # received since the last ACK sent
+        self.ack_timer = None
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
@@ -473,7 +493,7 @@ class Session:
             self.credit_waiters.remove(waiter)
             self.capacity_changed.set()
 
-    def enqueue_frame(self, frame, credit=None, *, charge=None):
+    def enqueue_frame(self, frame, credit=None, *, charge=None, sequence=None):
         charge = len(frame) if charge is None else charge
         if charge < len(frame):
             raise RuntimeError("invalid queue charge")
@@ -485,8 +505,10 @@ class Session:
         if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
         self.pending.put_nowait((frame, charge))
+        self.pending_sequences.append(sequence)
         self.pending_bytes += charge
         self.pending_count += 1
+        self.wakeup.set()
 
     def send(self, kind, process=0, stream=0, payload=b'', *, credit=None):
         if self.failed or self.closing_ws or self.sender_stopped: raise ConnectionError('session failed or closing')
@@ -495,7 +517,7 @@ class Session:
         charge = len(frame)
         if self.deflate_enabled and kind == Kind.DATA:
             frame = server_frame(2, compress_data(data))
-        self.enqueue_frame(frame, credit, charge=charge)
+        self.enqueue_frame(frame, credit, charge=charge, sequence=self.sequence)
         self.sequence += 1
         owner = self.processes.get(process) if kind == Kind.DATA else None
         if owner is not None:
@@ -513,13 +535,45 @@ class Session:
         # The sender is the only WebSocket writer; join includes its drain.
         await asyncio.wait_for(self.pending.join(), 2)
 
+    def send_unsequenced(self, kind, payload):
+        """ACK and RESUME: outside the sequence, written ahead of the queue, never retained."""
+        data = encode(Envelope(kind, self.executor, self.generation, 0, 0, 0, payload))
+        self.urgent.append(server_frame(2, data))
+        self.wakeup.set()
+
+    def window_full(self):
+        return self.retained_bytes >= RESUME_WINDOW_BYTES or len(self.retained) >= RESUME_WINDOW_MESSAGES
+
+    async def write_urgent(self):
+        while self.urgent:
+            data = self.urgent.popleft()
+            self.writer.write(data)
+            await self.writer.drain()
+
     async def send_loop(self):
         try:
             while True:
-                data, charge = await self.pending.get()
+                await self.write_urgent()
+                if self.pending.empty():
+                    self.wakeup.clear()
+                    if self.urgent or not self.pending.empty(): continue
+                    await self.wakeup.wait()
+                    continue
+                data, charge = self.pending.get_nowait()
+                sequence = self.pending_sequences.popleft()
+                if self.resumable and sequence is not None:
+                    # A full window waits for the phone's acknowledgement, still writing
+                    # what must go first (a RESUME and its retransmits).
+                    while self.window_full():
+                        self.wakeup.clear()
+                        await self.write_urgent()
+                        if self.window_full(): await self.wakeup.wait()
                 self.writer.write(data)
                 PRESENT_TRACE.stream(to_phone=len(data))
                 await self.writer.drain()
+                if self.resumable and sequence is not None:
+                    self.retained.append((sequence, data))
+                    self.retained_bytes += len(data)
                 self.pending_bytes -= charge
                 self.pending_count -= 1
                 self.pending.task_done()
@@ -529,7 +583,52 @@ class Session:
             self.sender_stopped = True
             self.capacity_changed.set()
 
+    def acknowledge(self, value):
+        """The phone has every sequenced envelope up to `value`."""
+        if value < self.acknowledged or value >= self.sequence:
+            raise ValueError('acknowledgement out of range')
+        self.acknowledged = value
+        while self.retained and self.retained[0][0] <= value:
+            _, data = self.retained.popleft()
+            self.retained_bytes -= len(data)
+        self.wakeup.set()
+
+    def received_sequenced(self, size):
+        """Acknowledges the phone after ACK_BYTES, or ACK_DELAY after the first unacknowledged envelope."""
+        self.unacked_bytes += size
+        if self.unacked_bytes >= ACK_BYTES:
+            self.send_ack()
+        elif self.ack_timer is None:
+            self.ack_timer = asyncio.get_running_loop().call_later(ACK_DELAY, self.send_ack)
+
+    def send_ack(self):
+        if self.ack_timer is not None:
+            self.ack_timer.cancel()
+            self.ack_timer = None
+        self.unacked_bytes = 0
+        if not (self.failed or self.closing_ws or self.sender_stopped):
+            self.send_unsequenced(Kind.ACK, struct.pack('<Q', self.decoder.received))
+
+    def resume(self, payload):
+        """A spliced phone: answer its RESUME with ours, carrying its nonce, as one message, then
+        send again everything after what it last received, ahead of the queue."""
+        received, reserved, nonce = struct.unpack('<QQ16s', payload)
+        if reserved or nonce == bytes(16):
+            raise ValueError('invalid RESUME')
+        self.acknowledge(received)
+        self.send_unsequenced(Kind.RESUME, struct.pack('<QQ16s', self.decoder.received, 0, nonce))
+        self.urgent.extend(data for _, data in self.retained)
+        self.unacked_bytes = 0
+        self.wakeup.set()
+        print(f'CABOOSE_GPU_BROKER executor resumed: phone had {received}, sent again {len(self.retained)} envelopes', file=sys.stderr, flush=True)
+
     async def message(self, frame):
+        if frame.kind in UNSEQUENCED:
+            if not self.resumable: raise ValueError('resume control without executor-resume')
+            if frame.kind == Kind.ACK: self.acknowledge(struct.unpack('<Q', frame.payload)[0])
+            else: self.resume(frame.payload)
+            return
+        if self.resumable: self.received_sequenced(len(frame.payload) + 64)
         extent = None
         if frame.kind == Kind.SURFACE_CAPS and len(frame.payload) >= 128:
             if struct.unpack_from('<iIiI', frame.payload, 48) == (0, 1, 0, 0):
@@ -1509,6 +1608,8 @@ class Broker:
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
+            # With executor resume the broker's first envelope is ACK(0), before SESSION.
+            if session.resumable: session.send_unsequenced(Kind.ACK, struct.pack('<Q', 0))
             session.send(Kind.SESSION, payload=session.hello)
             ready_wait = asyncio.create_task(session.session_ready.wait())
             try:

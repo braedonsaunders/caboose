@@ -12,8 +12,14 @@ export const GPU_CLOSE_TIMEOUT_MS = 1000
 /** The phone is pinged this often; one silent this long has left (backgrounded, off the network). */
 export const GPU_HEARTBEAT_MS = 1000
 export const GPU_HEARTBEAT_TIMEOUT_MS = 3000
+/** With `executor-resume` (docs/gpu-live.md, "Resuming an executor"), how long a relay whose
+ * phone left keeps the guest side for it to come back: after a lost transport, and after a
+ * phone that closed as suspended (close code 4001). */
+export const GPU_RESUME_HOLD_MS = 30_000
+export const GPU_SUSPEND_HOLD_MS = 30 * 60_000
+export const GPU_SUSPENDED_CLOSE = 4001
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {
@@ -36,6 +42,16 @@ function size(data: RawData): number {
   return Array.isArray(data) ? data.reduce((sum, part) => sum + part.byteLength, 0) : data.byteLength
 }
 
+/** A running relay. `attach` splices a resuming phone onto it (`executor-resume`). */
+export interface GPURelay {
+  /** Settles once the guest side and the current phone side are both closed. */
+  done: Promise<void>
+  /** Takes `client` as the phone side, ending any previous one; false once the relay has ended. */
+  attach(client: WebSocket): boolean
+  /** Ends both sides abruptly (the computer parks, the phone is revoked). */
+  end(): void
+}
+
 /** Opaque live command/reply transport. A flushed send is not GPU completion.
  * Resolves only after both endpoints close, so the executor lease cannot be
  * reused while the previous upstream connection is still alive.
@@ -47,9 +63,25 @@ export function relayGPU(client: WebSocket, options: {
   executor: string
   features?: readonly string[]
 }): Promise<void> {
-  if (client.readyState !== WebSocket.OPEN) return Promise.resolve()
+  return startGPURelay(client, options).done
+}
+
+/** The relay, which with `resumable` parks instead of ending when its phone side is lost:
+ * it stops reading the guest side (the broker's retained envelopes are the only replay) and
+ * keeps it open for GPU_RESUME_HOLD_MS, or GPU_SUSPEND_HOLD_MS after a phone that closed as
+ * suspended, for `attach`. The guest side never sees the phone leave unless the hold expires;
+ * then it is ended abruptly, as a lost executor. */
+export function startGPURelay(first: WebSocket, options: {
+  displayURL: string
+  displayToken: string
+  computer: string
+  executor: string
+  features?: readonly string[]
+  resumable?: boolean
+}): GPURelay {
+  if (first.readyState !== WebSocket.OPEN) return { done: Promise.resolve(), attach: () => false, end: () => {} }
   const url = gpuUpstreamURL(options.displayURL)
-  client.pause()
+  first.pause()
   const upstream = new WebSocket(url, GPU_PROTOCOL, {
     maxPayload: GPU_MAX_MESSAGE,
     perMessageDeflate: false,
@@ -61,76 +93,151 @@ export function relayGPU(client: WebSocket, options: {
       ...(options.features?.length ? { 'x-caboose-gpu-features': options.features.join(',') } : {}),
     },
   })
-  return new Promise(resolve => {
-    let closed = 0
+  let attachPhone: (client: WebSocket) => boolean = () => false
+  let endRelay: () => void = () => {}
+  const done = new Promise<void>(resolve => {
+    let phone: WebSocket | undefined = first
+    // Each phone side gets a generation; callbacks of an earlier one are ignored.
+    let generation = 0
+    let upstreamOpen = false
     let closeTimer: ReturnType<typeof setTimeout> | undefined
-    const endpoints = [client, upstream]
+    let holdTimer: ReturnType<typeof setTimeout> | undefined
+    // Bytes and messages queued towards [guest, phone].
     const pending = [0, 0]
     const pendingMessages = [0, 0]
     let stopped = false
+    let settled = false
+    function settle(): void {
+      if (settled || upstream.readyState !== WebSocket.CLOSED || (phone && phone.readyState !== WebSocket.CLOSED)) return
+      settled = true
+      if (closeTimer) clearTimeout(closeTimer)
+      if (holdTimer) clearTimeout(holdTimer)
+      clearInterval(heartbeat)
+      resolve()
+    }
     // Every relay that ends early says why, in the host's log.
     function stop(reason: string): void {
       if (!stopped) {
         stopped = true
         console.warn(`gpu relay ${options.executor}: stopped: ${reason}`)
       }
-      for (const endpoint of endpoints) if (endpoint.readyState !== WebSocket.CLOSED) endpoint.terminate()
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined }
+      for (const endpoint of [phone, upstream]) if (endpoint && endpoint.readyState !== WebSocket.CLOSED) endpoint.terminate()
+      settle()
+    }
+    // The phone side is lost: a resumable relay keeps the guest side for a while.
+    function lose(reason: string, hold = GPU_RESUME_HOLD_MS): void {
+      if (stopped) return
+      if (!options.resumable) { stop(reason); return }
+      const lost = phone
+      phone = undefined
+      generation++
+      pending[1] = 0
+      pendingMessages[1] = 0
+      if (lost && lost.readyState !== WebSocket.CLOSED) lost.terminate()
+      upstream.pause()
+      if (holdTimer) clearTimeout(holdTimer)
+      console.warn(`gpu relay ${options.executor}: parked for ${hold} ms: ${reason}`)
+      holdTimer = setTimeout(() => stop(`no phone resumed within ${hold} ms`), hold)
+      settle()
     }
     // A phone that vanishes without closing would leave the guest's GPU clients waiting on
-    // it: silence ends the relay, and the broker then ends the executor's streams.
+    // it: silence loses the phone side.
     let heard = Date.now()
-    // The phone pings on its own while delivery to a busy decoder holds back its reading.
-    client.on('pong', () => { heard = Date.now() })
-    client.on('ping', () => { heard = Date.now() })
     const heartbeat = setInterval(() => {
-      if (client.readyState !== WebSocket.OPEN) return
+      if (!phone || phone.readyState !== WebSocket.OPEN) return
       // While the relay itself holds the phone back, its replies wait unread: not silence.
-      if (upstream.readyState !== WebSocket.OPEN || pendingMessages[0]! > 0) { heard = Date.now(); return }
-      if (Date.now() - heard > GPU_HEARTBEAT_TIMEOUT_MS) { stop(`phone silent for ${Date.now() - heard} ms`); return }
-      client.ping()
+      if (!upstreamOpen || pendingMessages[0]! > 0) { heard = Date.now(); return }
+      if (Date.now() - heard > GPU_HEARTBEAT_TIMEOUT_MS) { lose(`phone silent for ${Date.now() - heard} ms`); return }
+      phone.ping()
     }, GPU_HEARTBEAT_MS)
-    for (const [index, source] of endpoints.entries()) {
-      const destination = endpoints[1 - index]!
+    // Guest to phone.
+    upstream.on('error', (error: Error) => stop(`guest socket error: ${error.message}`))
+    upstream.once('close', (code: number) => {
+      // Preserve the broker's normal close after its native retirement exchange. Abrupt
+      // and error paths never manufacture that receipt.
+      if (code === 1000 && phone?.readyState === WebSocket.OPEN && !stopped) {
+        const destination = phone
+        closeTimer ??= setTimeout(() => stop('phone did not acknowledge close'), GPU_CLOSE_TIMEOUT_MS)
+        destination.resume() // a paused peer must be able to acknowledge Close
+        destination.close(1000)
+        settle()
+      } else stop(`guest closed (code ${code ?? 'none'})`)
+    })
+    upstream.on('message', (data: RawData, binary: boolean) => {
+      // Parsed after the relay paused for a lost phone: the broker sends it again on resume.
+      if (!phone) return
+      forward(upstream, phone, 1, data, binary, generation)
+    })
+    function forward(source: WebSocket, destination: WebSocket, index: 0 | 1, data: RawData, binary: boolean, at: number): void {
       const name = index === 0 ? 'phone' : 'guest'
-      source.on('error', (error: Error) => stop(`${name} socket error: ${error.message}`))
-      source.once('close', (code: number) => {
-        closed++
-        if (closed === 2) {
-          if (closeTimer) clearTimeout(closeTimer)
-          clearInterval(heartbeat)
-          resolve()
-          return
-        }
-        // Preserve the broker's normal close after its native retirement
-        // exchange. Abrupt/error paths never manufacture that receipt.
-        if (code === 1000 && destination.readyState === WebSocket.OPEN) {
-          closeTimer ??= setTimeout(() => stop(`${index === 0 ? 'guest' : 'phone'} did not acknowledge close`), GPU_CLOSE_TIMEOUT_MS)
-          destination.resume() // a paused peer must be able to acknowledge Close
-          destination.close(1000)
-        } else stop(`${name} closed (code ${code ?? 'none'})`)
-      })
-      source.on('message', (data: RawData, binary: boolean) => {
-        if (index === 0) heard = Date.now()
-        const bytes = size(data)
-        const refusal = !binary ? 'a text message' : bytes > GPU_MAX_MESSAGE ? `a ${bytes}-byte message` :
-          destination.readyState !== WebSocket.OPEN ? 'its peer is not open' :
-          pending[index]! + bytes > GPU_MAX_PENDING || pendingMessages[index]! >= GPU_MAX_PENDING_MESSAGES
-            ? `queue full (${pendingMessages[index]} messages, ${pending[index]} bytes)` : undefined
-        if (refusal) { stop(`${name} sent ${refusal}`); return }
-        source.pause()
-        pending[index]! += bytes
-        pendingMessages[index]!++
-        destination.send(data, { binary: true, compress: false }, error => {
-          pending[index]! -= bytes
-          pendingMessages[index]!--
-          if (error) stop(`send to ${index === 0 ? 'guest' : 'phone'} failed: ${error.message}`)
-          else if (pendingMessages[index] === 0 && source.readyState === WebSocket.OPEN) source.resume()
-        })
+      const bytes = size(data)
+      const refusal = !binary ? 'a text message' : bytes > GPU_MAX_MESSAGE ? `a ${bytes}-byte message` :
+        destination.readyState !== WebSocket.OPEN ? 'its peer is not open' :
+        pending[index]! + bytes > GPU_MAX_PENDING || pendingMessages[index]! >= GPU_MAX_PENDING_MESSAGES
+          ? `queue full (${pendingMessages[index]} messages, ${pending[index]} bytes)` : undefined
+      if (refusal) {
+        if (index === 1 && destination.readyState !== WebSocket.OPEN) lose(`phone side not open for a guest message`)
+        else stop(`${name} sent ${refusal}`)
+        return
+      }
+      source.pause()
+      pending[index]! += bytes
+      pendingMessages[index]!++
+      destination.send(data, { binary: true, compress: false }, error => {
+        if (index === 1 && at !== generation) return
+        pending[index]! -= bytes
+        pendingMessages[index]!--
+        if (error) {
+          if (index === 1) lose(`send to phone failed: ${error.message}`)
+          else stop(`send to guest failed: ${error.message}`)
+        } else if (pendingMessages[index] === 0 && source.readyState === WebSocket.OPEN && (index === 1 || phone === source)) source.resume()
       })
     }
+    function wire(client: WebSocket): void {
+      const at = generation
+      client.on('pong', () => { if (at === generation) heard = Date.now() })
+      client.on('ping', () => { if (at === generation) heard = Date.now() })
+      client.on('error', (error: Error) => { if (at === generation) lose(`phone socket error: ${error.message}`) })
+      client.once('close', (code: number) => {
+        if (at !== generation) { settle(); return }
+        if (code === 1000 && upstream.readyState === WebSocket.OPEN && !stopped) {
+          closeTimer ??= setTimeout(() => stop('guest did not acknowledge close'), GPU_CLOSE_TIMEOUT_MS)
+          upstream.resume()
+          upstream.close(1000)
+          settle()
+        } else if (code === GPU_SUSPENDED_CLOSE && options.resumable) lose('phone suspended', GPU_SUSPEND_HOLD_MS)
+        else lose(`phone closed (code ${code ?? 'none'})`)
+      })
+      client.on('message', (data: RawData, binary: boolean) => {
+        if (at !== generation) return
+        heard = Date.now()
+        forward(client, upstream, 0, data, binary, at)
+      })
+    }
+    wire(first)
+    endRelay = () => stop('ended by the host')
+    attachPhone = client => {
+      if (stopped || settled || closeTimer) return false
+      const previous = phone
+      generation++
+      pending[1] = 0
+      pendingMessages[1] = 0
+      if (previous && previous.readyState !== WebSocket.CLOSED) previous.terminate()
+      if (holdTimer) { clearTimeout(holdTimer); holdTimer = undefined }
+      phone = client
+      heard = Date.now()
+      wire(client)
+      console.warn(`gpu relay ${options.executor}: phone resumed`)
+      if (upstreamOpen) upstream.resume()
+      else client.pause()
+      return true
+    }
     upstream.once('open', () => {
-      if (upstream.protocol !== GPU_PROTOCOL || client.readyState !== WebSocket.OPEN) stop('the guest refused the protocol or the phone left')
-      else client.resume()
+      if (upstream.protocol !== GPU_PROTOCOL || !phone || phone.readyState !== WebSocket.OPEN) { stop('the guest refused the protocol or the phone left'); return }
+      upstreamOpen = true
+      phone.resume()
     })
   })
+  return { done, attach: client => attachPhone(client), end: () => endRelay() }
 }
