@@ -1,33 +1,29 @@
 import AVFoundation
-import CoreVideo
 import Foundation
 import QuartzCore
 import Testing
 @testable import CabooseKit
 
-/// The computer's sound against a real caboose-display whose page beeps once a second and
-/// flashes the whole window with each beep (the compositor's `sound` test page):
+/// The computer's sound against a real caboose-display whose page beeps once a second (the
+/// compositor's `sound` test page):
 ///
 ///     CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=… CABOOSE_SOUND_CHECK=1 \
 ///       swift test --filter LiveSound
 ///
 /// Plays the sound through the app's own player and clock (so decode errors, gaps and
-/// underruns are real), and measures each beep against its flash: on the server's clock (the
-/// computer's own sync) and as this client would show them (sound after the playout delay,
-/// window pictures on arrival).
+/// underruns are real), and finds each beep on the server's clock.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["CABOOSE_SOUND_CHECK"] != nil))
 struct LiveSoundTests {
     final class Recorder: @unchecked Sendable {
         let lock = NSLock()
         var audio: [(pts: Int64, arrival: Int64, data: Data, channels: Int)] = []
-        var frames: [(window: Int, pts: Int64, arrival: Int64, frame: EncodedFrame)] = []
         var windows: [Int: String] = [:]
         var ready = false
     }
 
     static func micros() -> Int64 { Int64(CACurrentMediaTime() * 1_000_000) }
 
-    @Test func soundPlaysAndLinesUpWithThePicture() async throws {
+    @Test func soundPlaysOnTheServerClock() async throws {
         let environment = ProcessInfo.processInfo.environment
         let url = try #require(environment["CABOOSE_DISPLAY_URL"].flatMap(URL.init(string:)))
         let seconds = Double(environment["CABOOSE_VIDEO_SECONDS"] ?? "") ?? 8
@@ -41,7 +37,7 @@ struct LiveSoundTests {
             switch event {
             case .opened:
                 stream.send(DisplayFraming.encode(ClientMessage.hello(
-                    token: environment["CABOOSE_DISPLAY_TOKEN"] ?? "", decoders: [.h264],
+                    token: environment["CABOOSE_DISPLAY_TOKEN"] ?? "",
                     displays: [DisplayInfo(id: 0, width: 2560, height: 1600, scale: 2, refreshHz: 120)],
                     audioDecoders: ["opus"]).frame))
             case .data(let data):
@@ -54,9 +50,6 @@ struct LiveSoundTests {
                     case .audio(let packet):
                         recorder.audio.append((Int64(packet.ptsMicros), arrival, packet.data, packet.channels))
                         player.play(packet)
-                    case .frame(let frame):
-                        recorder.frames.append((frame.window, Int64(frame.ptsMicros), arrival, frame))
-                        stream.send(DisplayFraming.encode(ClientMessage.ack(window: frame.window, ptsMicros: frame.ptsMicros, decodedMicros: 1000).frame))
                     default: break
                     }
                     recorder.lock.unlock()
@@ -98,49 +91,7 @@ struct LiveSoundTests {
                 lastLoud = time
             }
         }
-
-        // Flash starts on the server clock, from the decoded window pictures (centre brightness).
-        let page = recorder.windows.first { $0.value.lowercased().contains("sound") }?.key ?? 2
-        let video = H264Decoder(codec: .h264)
-        var flashes: [(pts: Int64, arrival: Int64)] = []
-        var lit = false
-        for entry in recorder.frames where entry.window == page && entry.frame.codec == .h264 {
-            guard let picture = try? video.decode(entry.frame.data) else { continue }
-            let bright = Self.brightness(picture) > 0.5
-            if bright, !lit { flashes.append((entry.pts, entry.arrival)) }
-            lit = bright
-        }
-        print("beeps at \(onsets.map { $0 / 1000 }) ms, flashes at \(flashes.map { $0.pts / 1000 }) ms (server clock)")
-
-        // Pair each flash with the nearest beep: the computer's own sync, and what this client
-        // shows (sound at its arrival + playout delay, the picture on arrival).
-        let anchorArrival = audio.first.map { $0.arrival - $0.pts } ?? 0
-        var source: [Int64] = [], shown: [Int64] = []
-        for flash in flashes {
-            guard let beep = onsets.min(by: { abs($0 - flash.pts) < abs($1 - flash.pts) }), abs(beep - flash.pts) < 500_000 else { continue }
-            source.append(beep - flash.pts)
-            shown.append((beep + anchorArrival + clock.delay) - flash.arrival)
-        }
-        print("sound after flash, server clock: \(source.map { $0 / 1000 }) ms")
-        print("sound after flash, as shown here: \(shown.map { $0 / 1000 }) ms")
-        #expect(!source.isEmpty)
-    }
-
-    /// Mean luma of the picture's centre, 0…1, from a BGRA or YUV buffer.
-    static func brightness(_ picture: CVPixelBuffer) -> Double {
-        CVPixelBufferLockBaseAddress(picture, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(picture, .readOnly) }
-        let width = CVPixelBufferGetWidth(picture), height = CVPixelBufferGetHeight(picture)
-        guard let base = CVPixelBufferGetBaseAddress(picture) else { return 0 }
-        let row = CVPixelBufferGetBytesPerRow(picture)
-        var total = 0.0, count = 0.0
-        for y in stride(from: height / 3, to: 2 * height / 3, by: 8) {
-            for x in stride(from: width / 3, to: 2 * width / 3, by: 8) {
-                let pixel = base.advanced(by: y * row + x * 4).assumingMemoryBound(to: UInt8.self)
-                total += (0.114 * Double(pixel[0]) + 0.587 * Double(pixel[1]) + 0.299 * Double(pixel[2])) / 255
-                count += 1
-            }
-        }
-        return count > 0 ? total / count : 0
+        print("beeps at \(onsets.map { $0 / 1000 }) ms (server clock)")
+        #expect(!onsets.isEmpty)
     }
 }

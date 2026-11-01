@@ -1,252 +1,564 @@
-//! Turns one window's surface tree into one picture.
+//! Renders each window's surface tree on the GPU, into images the phone shows.
 //!
-//! The compositor composites nothing across windows: each window (toplevel, popup or
-//! X11 window) is rendered alone, cropped to its window geometry, into its own buffer,
-//! with a per-window damage tracker so an unchanged window costs nothing. With the
-//! pixman renderer the buffer is the encoder's input image itself, so a software or
-//! NVENC encode reads the pixels where they were composed.
+//! The compositor is an OpenGL ES client of Mesa's Zink on the computer's Vulkan devices:
+//! the phone's GPU through the Caboose driver while a phone executor is attached, otherwise
+//! the computer's CPU implementation, which the routing layer presents as a GPU
+//! (guest/gpu/routing-layer). EGL runs on Mesa's software device, whose Gallium driver is
+//! Zink.
 //!
-//! Most windows are one surface with one wl_shm buffer that already is the picture.
-//! For those, [`direct_copy`] skips composition and copies just the client's damage
-//! from the shared memory into the image.
+//! With the phone's GPU, every window is rendered into its own phone-resident buffers
+//! (`CABOOSE_FORMAT_MOD_REMOTE`, allocated through the render node's GBM backend,
+//! guest/gpu/gbm), which the broker presents in the window (docs/gpu-buffers.md); a
+//! per-window damage tracker redraws only what changed. On the computer's own device the
+//! images are ordinary textures that nothing presents: the same rendering, with no phone
+//! to show it on.
+//!
+//! A wl_shm buffer becomes a texture through its own staging buffer, uploading only the
+//! client's damage (upload.rs). Client dma-bufs, phone-resident ones included, are
+//! imported as EGL images: their pixels never pass through the computer.
+//!
+//! Textures are sampled with nearest filtering when magnified: a window's picture is at
+//! its buffer's own density, so its pixels map one to one, and a subsurface of a lower
+//! density is scaled by whole pixels instead of blurred.
 
-use crate::encode::CpuImage;
+use crate::picture::Pool;
+use crate::remote_buffers::MOD_REMOTE;
+use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::allocator::{Fourcc, Modifier};
+use smithay::utils::DeviceFd;
+use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::element::surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement};
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::pixman::PixmanRenderer;
-use smithay::backend::renderer::utils::{with_renderer_surface_state, CommitCounter, RendererSurfaceStateUserData};
-use smithay::backend::renderer::{Bind, Color32F};
-use smithay::reexports::pixman;
-use smithay::reexports::wayland_server::protocol::wl_shm;
+use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
+use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::gles::format::{fourcc_to_gl_formats, gl_bpp};
+use smithay::backend::renderer::gles::{ffi, GlesRenderer, GlesTexture};
+use smithay::backend::renderer::sync::SyncPoint;
+use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
+use smithay::backend::renderer::{
+    Bind, Color32F, ExportMem, Offscreen, Renderer as _, Texture as _, TextureFilter,
+};
+use smithay::reexports::wayland_server::backend::ObjectId;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{Resource, Weak};
 use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
-use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+use smithay::wayland::compositor::{with_surface_tree_downward, SurfaceData, TraversalAction};
+use std::collections::HashMap;
 
-/// The renderer every window is drawn with.
-pub enum Renderer {
-    Pixman(PixmanRenderer),
+smithay::backend::renderer::element::render_elements! {
+    /// One surface of a window's tree.
+    pub WindowElement<=GlesRenderer>;
+    /// A client dma-buf or a single-pixel buffer, imported by Smithay.
+    Surface=WaylandSurfaceRenderElement<GlesRenderer>,
+    /// A wl_shm buffer, uploaded through its staging buffer.
+    Shm=TextureRenderElement<GlesTexture>,
 }
 
-impl Renderer {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Renderer::Pixman(_) => "pixman",
-        }
-    }
+/// Environment variables the compositor sets for its own GPU stack, never passed on.
+pub const OWN_ENV: &[&str] = &[
+    "GALLIUM_DRIVER",
+    "CABOOSE_GPU_ROUTING",
+    "NODEVICE_SELECT",
+    "VK_ADD_DRIVER_FILES",
+    "CABOOSE_GFXSTREAM_SOCKET",
+    "CABOOSE_GFXSTREAM_SURFACE_SOCKET",
+    "CABOOSE_GPU_ON_LOSS",
+];
+
+/// A surface's texture of its wl_shm buffer, and up to which commit it holds.
+struct ShmTexture {
+    texture: GlesTexture,
+    format: Fourcc,
+    size: (i32, i32),
+    seen: CommitCounter,
+    surface: Weak<WlSurface>,
 }
 
-/// What the stream gets back from a render.
+/// A client buffer's staging buffer, laid out as its shared memory is.
+struct Staging {
+    pbo: u32,
+    len: usize,
+    buffer: Weak<WlBuffer>,
+}
+
+/// The renderer: one EGL context and what lives in it.
+pub struct Gpu {
+    renderer: GlesRenderer,
+    allocator: Option<GbmAllocator<DeviceFd>>,
+    /// Window images can be phone-resident buffers, which the broker presents.
+    remote: bool,
+    /// The OpenGL renderer string, for the log.
+    pub name: String,
+    textures: HashMap<ObjectId, ShmTexture>,
+    staging: HashMap<ObjectId, Staging>,
+    /// Bytes copied into staging buffers, and texture uploads made.
+    pub uploaded_bytes: u64,
+    pub uploads: u64,
+}
+
+/// What rendering a window produced.
 pub enum Rendered {
-    /// Nothing changed since the last picture.
+    /// Every image is with the broker: the window waits for one to come back.
+    NoRoom,
+    /// Nothing changed.
     Unchanged,
-    /// A new picture in the stream's image; these rectangles (picture pixels) changed.
-    Picture(Vec<caboose_display_protocol::Rect>),
+    /// Image `index` holds the new frame once `sync` is reached.
+    Frame { index: usize, sync: SyncPoint, damaged_px: u64 },
+    /// A new frame in an image on the computer, which nothing presents.
+    Kept { damaged_px: u64 },
 }
 
-/// Per-window rendering state: the damage tracker for the current size and scale.
+/// A window's images and the damage tracker that knows what each holds.
 pub struct Canvas {
+    generation: u64,
+    /// Unique among the compositor's canvases: a release names the canvas it is for.
+    serial: u64,
     size: Size<i32, Physical>,
     scale: f64,
-    /// The picture keeps the window's alpha (a popup): the image is ARGB over
-    /// transparent instead of XRGB over black.
     alpha: bool,
     damage: OutputDamageTracker,
-    /// The image the damage tracker's history refers to. A different image (after a
-    /// resize, or a new one) starts from a full redraw.
-    image_id: u64,
-    age: usize,
+    pool: Pool<Image>,
+}
+
+/// A window image: a phone-resident buffer, or a texture on the computer's device.
+pub enum Image {
+    Remote(Dmabuf),
+    Local(GlesTexture),
+}
+
+impl std::fmt::Debug for Canvas {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Canvas")
+            .field("serial", &self.serial)
+            .field("size", &self.size)
+            .field("scale", &self.scale)
+            .field("alpha", &self.alpha)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Canvas {
-    pub fn new(size: Size<i32, Physical>, scale: f64, alpha: bool) -> Self {
+    pub fn new(generation: u64, serial: u64, size: Size<i32, Physical>, scale: f64, alpha: bool) -> Self {
         let damage = OutputDamageTracker::new(size, scale, Transform::Normal);
-        Self { size, scale, alpha, damage, image_id: 0, age: 0 }
+        Self { generation, serial, size, scale, alpha, damage, pool: Pool::default() }
     }
 
-    /// Forgets the image's history (it was written by something else), so the next
-    /// render redraws everything.
-    pub fn invalidate(&mut self) {
-        self.age = 0;
+    pub fn matches(&self, generation: u64, size: Size<i32, Physical>, scale: f64, alpha: bool) -> bool {
+        self.generation == generation && self.size == size && self.scale == scale && self.alpha == alpha
     }
 
-    pub fn matches(&self, size: Size<i32, Physical>, scale: f64, alpha: bool) -> bool {
-        self.size == size && self.scale == scale && self.alpha == alpha
+    pub fn serial(&self) -> u64 {
+        self.serial
     }
 
-    /// Renders `surface`'s tree, with the window geometry origin at `geometry_origin`
-    /// (surface-local logical coordinates), into `image`, whose top-left `size` region
-    /// receives the picture: XRGB over black, or premultiplied ARGB over transparent for
-    /// a canvas with alpha.
-    pub fn render(
-        &mut self,
-        renderer: &mut Renderer,
-        surface: &WlSurface,
-        geometry_origin: Point<i32, smithay::utils::Logical>,
-        image: &mut CpuImage,
-        image_id: u64,
-    ) -> Result<Rendered, String> {
-        if image.width < self.size.w as u32 || image.height < self.size.h as u32 {
-            return Err("image smaller than the canvas".into());
+    pub fn has_room(&self) -> bool {
+        self.pool.has_room()
+    }
+
+    pub fn release(&mut self, index: usize) {
+        self.pool.release(index);
+    }
+
+    /// The image's phone-resident buffer, if it is one.
+    pub fn remote_image(&self, index: usize) -> Option<&Dmabuf> {
+        match self.pool.image(index) {
+            Image::Remote(dmabuf) => Some(dmabuf),
+            Image::Local(_) => None,
         }
-        if image_id != self.image_id {
-            self.image_id = image_id;
-            self.age = 0;
-        }
-        let origin = geometry_origin.to_f64().to_physical(self.scale);
-        let location: Point<i32, Physical> = Point::<f64, Physical>::from((-origin.x, -origin.y)).to_i32_round();
-        match renderer {
-            Renderer::Pixman(r) => {
-                let elements: Vec<WaylandSurfaceRenderElement<PixmanRenderer>> =
-                    render_elements_from_surface_tree(r, surface, location, self.scale, 1.0, Kind::Unspecified);
-                let (format, clear) = if self.alpha {
-                    (pixman::FormatCode::A8R8G8B8, Color32F::TRANSPARENT)
+    }
+}
+
+/// A process-wide setting for the GPU stack, made before any thread starts: the process
+/// environment is read by Mesa and the Vulkan loader, not passed to them.
+pub fn configure_process(icd: Option<&std::path::Path>, stream: Option<&std::path::Path>, surface: Option<&std::path::Path>) {
+    // SAFETY (set_var): called from main before the compositor starts any thread.
+    std::env::set_var("GALLIUM_DRIVER", "zink");
+    std::env::set_var("CABOOSE_GPU_ROUTING", "1");
+    std::env::set_var("NODEVICE_SELECT", "1");
+    if let (Some(icd), Some(stream), Some(surface)) = (icd, stream, surface) {
+        std::env::set_var("VK_ADD_DRIVER_FILES", icd);
+        std::env::set_var("CABOOSE_GFXSTREAM_SOCKET", stream);
+        std::env::set_var("CABOOSE_GFXSTREAM_SURFACE_SOCKET", surface);
+        // The phone's departure is device loss here, never a pause: the compositor makes
+        // its renderer again and draws every window from the buffers it holds.
+        std::env::set_var("CABOOSE_GPU_ON_LOSS", "restart");
+    }
+}
+
+impl Gpu {
+    /// A new renderer on whatever device Zink finds first: the phone's GPU when an executor
+    /// is attached, else the computer's CPU device. `render_node` is the computer's vgem
+    /// node, on which phone-resident buffers are allocated.
+    pub fn new(render_node: Option<&std::path::Path>) -> Result<Gpu, String> {
+        let device = EGLDevice::enumerate()
+            .map_err(|e| format!("EGL devices: {e}"))?
+            .find(|d| d.is_software())
+            .ok_or("no EGL software device")?;
+        // SAFETY: the device is valid for the display's lifetime, which owns it.
+        let display = unsafe { EGLDisplay::new(device) }.map_err(|e| format!("EGL display: {e}"))?;
+        let context = EGLContext::new(&display).map_err(|e| format!("EGL context: {e}"))?;
+        // SAFETY: the context is new and current on no other thread.
+        let mut renderer = unsafe { GlesRenderer::new(context) }.map_err(|e| format!("OpenGL ES: {e}"))?;
+        renderer.upscale_filter(TextureFilter::Nearest).map_err(|e| e.to_string())?;
+        renderer.downscale_filter(TextureFilter::Linear).map_err(|e| e.to_string())?;
+        let name = renderer
+            .with_context(|gl| unsafe {
+                let s = gl.GetString(ffi::RENDERER);
+                if s.is_null() {
+                    String::new()
                 } else {
-                    (pixman::FormatCode::X8R8G8B8, Color32F::BLACK)
-                };
-                // SAFETY: the image's buffer outlives this pixman image, which is dropped
-                // at the end of this block, and nothing else touches the buffer meanwhile.
-                let mut target = unsafe {
-                    pixman::Image::from_raw_mut(
-                        format,
-                        self.size.w as usize,
-                        self.size.h as usize,
-                        image.data.as_mut_ptr() as *mut u32,
-                        image.stride,
-                        false,
-                    )
+                    std::ffi::CStr::from_ptr(s.cast()).to_string_lossy().into_owned()
                 }
-                .map_err(|_| "pixman could not wrap the image".to_string())?;
-                let mut framebuffer = r.bind(&mut target).map_err(|e| e.to_string())?;
-                let result = self
-                    .damage
-                    .render_output(r, &mut framebuffer, self.age, &elements, clear)
-                    .map_err(|e| format!("{e:?}"))?;
-                let damage: Vec<_> = result
-                    .damage
-                    .map(|d| {
-                        d.iter()
-                            .map(|r| caboose_display_protocol::Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                drop(framebuffer);
-                self.age = 1;
-                Ok(if damage.is_empty() { Rendered::Unchanged } else { Rendered::Picture(damage) })
+            })
+            .unwrap_or_default();
+        let remote_formats = [Fourcc::Argb8888, Fourcc::Xrgb8888].iter().all(|code| {
+            display.dmabuf_render_formats().iter().any(|f| f.code == *code && u64::from(f.modifier) == MOD_REMOTE)
+        });
+        let allocator = if remote_formats { render_node.and_then(open_allocator) } else { None };
+        let remote = allocator.is_some();
+        Ok(Gpu {
+            renderer,
+            allocator,
+            remote,
+            name,
+            textures: HashMap::new(),
+            staging: HashMap::new(),
+            uploaded_bytes: 0,
+            uploads: 0,
+        })
+    }
+
+    /// Whether window images are phone-resident, so there is something to present.
+    pub fn presents(&self) -> bool {
+        self.remote
+    }
+
+    /// The dma-buf formats clients may hand over for composition.
+    pub fn dmabuf_formats(&self) -> Vec<smithay::backend::allocator::Format> {
+        use smithay::backend::renderer::ImportDma;
+        self.renderer.dmabuf_formats().into_iter().collect()
+    }
+
+    pub fn import_dmabuf(&mut self, dmabuf: &Dmabuf) -> bool {
+        use smithay::backend::renderer::ImportDma;
+        self.renderer.import_dmabuf(dmabuf, None).is_ok()
+    }
+
+    /// Forgets the textures and staging buffers of surfaces and buffers that are gone.
+    pub fn prune(&mut self) {
+        self.textures.retain(|_, t| t.surface.upgrade().is_ok());
+        let dead: Vec<ObjectId> =
+            self.staging.iter().filter(|(_, s)| s.buffer.upgrade().is_err()).map(|(id, _)| id.clone()).collect();
+        for id in dead {
+            if let Some(staging) = self.staging.remove(&id) {
+                let pbo = staging.pbo;
+                let _ = self.renderer.with_context(|gl| unsafe { gl.DeleteBuffers(1, &pbo) });
             }
         }
     }
+
+    /// Renders `surface`'s tree, its window geometry origin at `origin` (surface-local
+    /// logical), into the next free image of `canvas`.
+    pub fn render(&mut self, canvas: &mut Canvas, surface: &WlSurface, origin: Point<i32, Logical>) -> Result<Rendered, String> {
+        let (size, alpha) = (canvas.size, canvas.alpha);
+        let (allocator, renderer) = (&mut self.allocator, &mut self.renderer);
+        let acquired = canvas.pool.acquire(|| match allocator.as_mut() {
+            Some(allocator) => allocate(allocator, size, alpha).map(Image::Remote),
+            None => renderer
+                .create_buffer(Fourcc::Abgr8888, (size.w, size.h).into())
+                .map(Image::Local)
+                .map_err(|e| format!("window image {}x{}: {e}", size.w, size.h)),
+        })?;
+        let Some((index, age)) = acquired else { return Ok(Rendered::NoRoom) };
+        let elements = self.elements(surface, origin, canvas.scale);
+        let clear = if alpha { Color32F::TRANSPARENT } else { Color32F::BLACK };
+        let result = (|| {
+            let mut target = match canvas.pool.image_mut(index) {
+                Image::Remote(dmabuf) => self.renderer.bind(dmabuf),
+                Image::Local(texture) => self.renderer.bind(texture),
+            }
+            .map_err(|e| format!("bind the window image: {e}"))?;
+            let rendered = canvas
+                .damage
+                .render_output(&mut self.renderer, &mut target, age, &elements, clear)
+                .map_err(|e| format!("render: {e:?}"))?;
+            let damaged_px = rendered
+                .damage
+                .map(|d| d.iter().map(|r| r.size.w.max(0) as u64 * r.size.h.max(0) as u64).sum())
+                .unwrap_or(0);
+            Ok::<_, String>((damaged_px, rendered.sync))
+        })();
+        match result {
+            Ok((0, _)) if age > 0 => {
+                canvas.pool.unchanged(index);
+                Ok(Rendered::Unchanged)
+            }
+            Ok((damaged_px, sync)) => {
+                canvas.pool.rendered(index);
+                Ok(Rendered::Frame { index, sync, damaged_px })
+            }
+            Err(e) => {
+                canvas.pool.forget(index);
+                Err(e)
+            }
+        }
+    }
+
+    /// A picture of `surface`'s tree at `scale`, cropped to the window geometry at `origin`
+    /// (surface-local logical), `size` physical pixels: RGBA, rows top to bottom.
+    pub fn capture(&mut self, surface: &WlSurface, origin: Point<i32, Logical>, size: Size<i32, Physical>, scale: f64) -> Result<Vec<u8>, String> {
+        let elements = self.elements(surface, origin, scale);
+        let buffer_size = Size::<i32, smithay::utils::Buffer>::from((size.w, size.h));
+        let mut texture: GlesTexture =
+            self.renderer.create_buffer(Fourcc::Abgr8888, buffer_size).map_err(|e| format!("picture texture: {e}"))?;
+        let mut target = self.renderer.bind(&mut texture).map_err(|e| format!("bind the picture: {e}"))?;
+        let mut damage = OutputDamageTracker::new(size, scale, Transform::Normal);
+        damage
+            .render_output(&mut self.renderer, &mut target, 0, &elements, Color32F::BLACK)
+            .map_err(|e| format!("render: {e:?}"))?
+            .sync
+            .wait()
+            .map_err(|_| "the picture's rendering was interrupted".to_string())?;
+        let mapping = self
+            .renderer
+            .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
+            .map_err(|e| format!("read the picture: {e}"))?;
+        drop(target);
+        // Smithay draws offscreen targets top row first, as it does a dma-buf for scanout,
+        // so the rows read back are already top to bottom.
+        let bytes = self.renderer.map_texture(&mapping).map_err(|e| format!("map the picture: {e}"))?;
+        let len = size.w as usize * 4 * size.h as usize;
+        bytes.get(..len).map(<[u8]>::to_vec).ok_or_else(|| "short picture".into())
+    }
+
+    /// The elements of a surface tree, topmost first, with the window geometry origin at
+    /// the picture's top left.
+    fn elements(&mut self, surface: &WlSurface, origin: Point<i32, Logical>, scale: f64) -> Vec<WindowElement> {
+        let start: Point<f64, Physical> = origin.to_f64().to_physical(scale).to_i32_round::<i32>().to_f64();
+        let start = Point::<f64, Physical>::from((-start.x, -start.y));
+        let mut out = Vec::new();
+        let Gpu { renderer, textures, staging, uploaded_bytes, uploads, .. } = self;
+        with_surface_tree_downward(
+            surface,
+            start,
+            |_, states, location| {
+                let view = states.data_map.get::<RendererSurfaceStateUserData>().and_then(|d| d.lock().unwrap().view());
+                match view {
+                    Some(view) => TraversalAction::DoChildren(*location + view.offset.to_f64().to_physical(scale)),
+                    None => TraversalAction::SkipChildren,
+                }
+            },
+            |surface, states, location| {
+                let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else { return };
+                let Some(view) = data.lock().unwrap().view() else { return };
+                let location = *location + view.offset.to_f64().to_physical(scale);
+                let shm = data
+                    .lock()
+                    .unwrap()
+                    .buffer()
+                    .is_some_and(|b| matches!(smithay::backend::renderer::buffer_type(b), Some(smithay::backend::renderer::BufferType::Shm)));
+                tracing::trace!(surface = ?surface.id(), ?location, shm, src = ?view.src, dst = ?view.dst, "window element");
+                if shm {
+                    match shm_element(renderer, textures, staging, surface, states, location) {
+                        Ok(Some((element, bytes))) => {
+                            *uploaded_bytes += bytes;
+                            *uploads += u64::from(bytes > 0);
+                            out.push(WindowElement::Shm(element));
+                        }
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!("shm upload: {e}"),
+                    }
+                    return;
+                }
+                match WaylandSurfaceRenderElement::from_surface(renderer, surface, states, location, 1.0, Kind::Unspecified) {
+                    Ok(Some(element)) => out.push(WindowElement::Surface(element)),
+                    Ok(None) => {}
+                    Err(e) => tracing::debug!("surface import: {e}"),
+                }
+            },
+            |_, _, _| true,
+        );
+        out
+    }
 }
 
-/// Where a directly streamed window is: what its last picture was taken into
-/// (`image_id`, or [`SHM_IN_PLACE`] when the encoder read the buffer in place) and up to
-/// which commit.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DirectState {
-    pub image_id: u64,
-    pub commit: CommitCounter,
+fn open_allocator(path: &std::path::Path) -> Option<GbmAllocator<DeviceFd>> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|e| tracing::warn!("render node {}: {e}", path.display()))
+        .ok()?;
+    let fd = DeviceFd::from(std::os::fd::OwnedFd::from(file));
+    let device = GbmDevice::new(fd).map_err(|e| tracing::warn!("GBM on {}: {e}", path.display())).ok()?;
+    Some(GbmAllocator::new(device, GbmBufferFlags::RENDERING))
 }
 
-/// `DirectState::image_id` for pictures the encoder read straight from the buffer.
-pub const SHM_IN_PLACE: u64 = u64::MAX;
-
-/// A window that is one surface with one XRGB/ARGB wl_shm buffer, unscaled and
-/// untransformed: its picture is the buffer's region at `origin`.
-pub struct Direct {
-    pub buffer: smithay::backend::renderer::utils::Buffer,
-    pub origin: (i32, i32),
-    pub commit: CommitCounter,
-    /// What changed since the commit asked for (all of it without one), picture pixels.
-    pub damage: Vec<caboose_display_protocol::Rect>,
-    /// The picture is the whole buffer: no crop, the buffer's own size.
-    pub whole: bool,
+/// A phone-resident buffer for a window image: ARGB for a window with alpha, else XRGB.
+fn allocate(allocator: &mut GbmAllocator<DeviceFd>, size: Size<i32, Physical>, alpha: bool) -> Result<Dmabuf, String> {
+    let fourcc = if alpha { Fourcc::Argb8888 } else { Fourcc::Xrgb8888 };
+    let buffer = allocator
+        .create_buffer_with_flags(size.w as u32, size.h as u32, fourcc, &[Modifier::from(MOD_REMOTE)], GbmBufferFlags::RENDERING)
+        .map_err(|e| format!("window image {}x{}: {e}", size.w, size.h))?;
+    let dmabuf = buffer.export().map_err(|e| format!("window image export: {e}"))?;
+    if !crate::remote_buffers::is_remote(&dmabuf) {
+        return Err("the GBM backend made a buffer that is not phone-resident".into());
+    }
+    Ok(dmabuf)
 }
 
-/// Whether `surface` can be streamed straight from its buffer, cropped to the window
-/// geometry `local` (surface-local logical) at `size`; `None` means it must be composed.
-pub fn direct(
+/// A wl_shm surface's element, its texture brought up to date through the buffer's staging
+/// buffer, and the bytes this upload copied.
+fn shm_element(
+    renderer: &mut GlesRenderer,
+    textures: &mut HashMap<ObjectId, ShmTexture>,
+    staging: &mut HashMap<ObjectId, Staging>,
     surface: &WlSurface,
-    local: Rectangle<i32, Logical>,
-    size: Size<i32, Physical>,
-    since: Option<CommitCounter>,
-) -> Option<Direct> {
-    // One surface with a buffer: subsurfaces need composition.
-    let mut with_buffers = 0;
-    with_surface_tree_downward(
-        surface,
-        (),
-        |_, _, _| TraversalAction::DoChildren(()),
-        |_, states, _| {
-            // The tree walk holds each surface's state; read it from there (taking the
-            // lock again through with_renderer_surface_state would deadlock).
-            let has_buffer = states
-                .data_map
-                .get::<RendererSurfaceStateUserData>()
-                .is_some_and(|d| d.lock().unwrap().buffer().is_some());
-            if has_buffer {
-                with_buffers += 1;
-            }
-        },
-        |_, _, _| true,
-    );
-    if with_buffers != 1 {
-        return None;
-    }
-    let (buffer, scale, commit, damage) = with_renderer_surface_state(surface, |r| {
-        let buffer = r.buffer()?.clone();
-        let view = r.view()?;
-        let logical = r.buffer_size()?;
-        // No viewport scaling or cropping, no transform.
-        let unscaled =
-            view.src == Rectangle::from_size(logical.to_f64()) && view.dst == logical && view.offset == (0, 0).into();
-        if !unscaled || r.buffer_transform() != Transform::Normal {
-            return None;
-        }
-        let damage: Vec<_> = r.damage_since(since).iter().copied().collect();
-        Some((buffer, r.buffer_scale(), r.current_commit(), damage))
-    })??;
-    if size.w != local.size.w * scale || size.h != local.size.h * scale {
-        return None; // the stream renders at another density
-    }
-    let origin = (local.loc.x * scale, local.loc.y * scale);
-    let fits = smithay::wayland::shm::with_buffer_contents(&buffer, |_, len, data| {
-        let fits = matches!(data.format, wl_shm::Format::Xrgb8888 | wl_shm::Format::Argb8888)
-            && origin.0 >= 0
-            && origin.1 >= 0
-            && origin.0 + size.w <= data.width
-            && origin.1 + size.h <= data.height
-            && data.width * 4 <= data.stride
-            && data.offset as usize + data.stride as usize * data.height as usize <= len;
-        fits.then_some(origin == (0, 0) && size.w == data.width && size.h == data.height)
-    });
-    let Ok(Some(whole)) = fits else {
-        return None;
+    states: &SurfaceData,
+    location: Point<f64, Physical>,
+) -> Result<Option<(TextureRenderElement<GlesTexture>, u64)>, String> {
+    let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else { return Ok(None) };
+    let data = data.lock().unwrap();
+    let (Some(buffer), Some(view)) = (data.buffer(), data.view()) else { return Ok(None) };
+    let buffer: &WlBuffer = buffer;
+    let surface_id = surface.id();
+    let commit = data.current_commit();
+    let known = textures.get(&surface_id).map(|t| (t.format, t.size, t.seen));
+    let damage = |seen: CommitCounter| -> Vec<(i32, i32, i32, i32)> {
+        data.damage_since(Some(seen)).iter().map(|r| (r.loc.x, r.loc.y, r.size.w, r.size.h)).collect()
     };
-    let crop = Rectangle::<i32, smithay::utils::Buffer>::new(origin.into(), (size.w, size.h).into());
-    let damage = damage
-        .iter()
-        .filter_map(|d| d.intersection(crop))
-        .map(|r| caboose_display_protocol::Rect::new(r.loc.x - origin.0, r.loc.y - origin.1, r.size.w, r.size.h))
-        .collect();
-    Some(Direct { buffer, origin, commit, damage, whole })
+    let result = smithay::wayland::shm::with_buffer_contents(buffer, |ptr, len, info| -> Result<(GlesTexture, u64, Fourcc), String> {
+        let fourcc = smithay::wayland::shm::shm_format_to_fourcc(info.format).ok_or("unsupported shm format")?;
+        let (internal, format, type_) = fourcc_to_gl_formats(fourcc).ok_or("unsupported shm format")?;
+        let bpp = gl_bpp(format, type_).ok_or("unsupported shm format")? / 8;
+        let (width, height, stride) = (info.width, info.height, info.stride as usize);
+        if width <= 0 || height <= 0 || stride % bpp != 0 {
+            return Err("unsupported shm layout".into());
+        }
+        let offset = info.offset as usize;
+        if offset + (height as usize - 1) * stride + width as usize * bpp > len {
+            return Err("shm buffer smaller than its layout".into());
+        }
+        // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr` for this
+        // closure and catches SIGBUS if the client truncates it.
+        let pixels = unsafe { std::slice::from_raw_parts(ptr.add(offset), len - offset) };
+        let reuse = known.filter(|(f, s, _)| *f == fourcc && *s == (width, height));
+        let rects = reuse.map(|(_, _, seen)| damage(seen));
+        let uploads = crate::upload::uploads(rects.as_deref(), width, height, stride, bpp);
+        let existing = reuse.and_then(|_| textures.get(&surface_id)).map(|t| t.texture.clone());
+        let pbo_len = (height as usize - 1) * stride + width as usize * bpp;
+        let buffer_id = buffer.id();
+        let old_pbo = staging.get(&buffer_id).filter(|s| s.len != pbo_len).map(|s| s.pbo);
+        let current_pbo = staging.get(&buffer_id).filter(|s| s.len == pbo_len).map(|s| s.pbo);
+        let mut copied = 0u64;
+        let (tex, pbo) = renderer
+            .with_context(|gl| unsafe {
+                if let Some(old) = old_pbo {
+                    gl.DeleteBuffers(1, &old);
+                }
+                let pbo = match current_pbo {
+                    Some(pbo) => {
+                        gl.BindBuffer(ffi::PIXEL_UNPACK_BUFFER, pbo);
+                        pbo
+                    }
+                    None => {
+                        let mut pbo = 0;
+                        gl.GenBuffers(1, &mut pbo);
+                        gl.BindBuffer(ffi::PIXEL_UNPACK_BUFFER, pbo);
+                        gl.BufferData(ffi::PIXEL_UNPACK_BUFFER, pbo_len as isize, std::ptr::null(), ffi::STREAM_DRAW);
+                        pbo
+                    }
+                };
+                let tex = match &existing {
+                    Some(t) => t.tex_id(),
+                    None => {
+                        let mut tex = 0;
+                        gl.GenTextures(1, &mut tex);
+                        gl.BindTexture(ffi::TEXTURE_2D, tex);
+                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+                        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                        gl.TexImage2D(ffi::TEXTURE_2D, 0, internal as i32, width, height, 0, format, type_, std::ptr::null());
+                        tex
+                    }
+                };
+                // Every rectangle into the staging buffer first, then every copy into the
+                // texture, so no mapping waits for a copy issued just before it.
+                let mut mapped_all = true;
+                for up in &uploads {
+                    let mapped = gl.MapBufferRange(
+                        ffi::PIXEL_UNPACK_BUFFER,
+                        up.offset as isize,
+                        up.len as isize,
+                        ffi::MAP_WRITE_BIT | ffi::MAP_FLUSH_EXPLICIT_BIT,
+                    );
+                    if mapped.is_null() {
+                        mapped_all = false;
+                        break;
+                    }
+                    let mapped = std::slice::from_raw_parts_mut(mapped.cast::<u8>(), up.len);
+                    crate::upload::copy_rows(up, pixels, stride, bpp, mapped);
+                    gl.FlushMappedBufferRange(ffi::PIXEL_UNPACK_BUFFER, 0, up.len as isize);
+                    gl.UnmapBuffer(ffi::PIXEL_UNPACK_BUFFER);
+                    copied += (up.w as usize * bpp * up.h as usize) as u64;
+                }
+                if mapped_all {
+                    gl.BindTexture(ffi::TEXTURE_2D, tex);
+                    gl.PixelStorei(ffi::UNPACK_ROW_LENGTH, (stride / bpp) as i32);
+                    for up in &uploads {
+                        gl.TexSubImage2D(ffi::TEXTURE_2D, 0, up.x, up.y, up.w, up.h, format, type_, up.offset as *const _);
+                    }
+                    gl.PixelStorei(ffi::UNPACK_ROW_LENGTH, 0);
+                }
+                gl.BindTexture(ffi::TEXTURE_2D, 0);
+                gl.BindBuffer(ffi::PIXEL_UNPACK_BUFFER, 0);
+                (mapped_all.then_some(tex), pbo)
+            })
+            .map_err(|e| format!("shm upload: {e}"))?;
+        staging.insert(buffer_id, Staging { pbo, len: pbo_len, buffer: buffer.downgrade() });
+        let tex = tex.ok_or("the staging buffer could not be mapped")?;
+        let texture = match existing {
+            Some(texture) => texture,
+            // SAFETY: `tex` is a texture of this renderer's context, owned from here on.
+            None => unsafe { GlesTexture::from_raw(renderer, Some(internal), !has_alpha(fourcc), tex, (width, height).into()) },
+        };
+        Ok((texture, copied, fourcc))
+    });
+    let (texture, copied, format) = match result {
+        Ok(Ok(done)) => done,
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(format!("shm buffer: {e:?}")),
+    };
+    textures.insert(
+        surface_id,
+        ShmTexture {
+            texture: texture.clone(),
+            format,
+            size: (texture.width() as i32, texture.height() as i32),
+            seen: commit,
+            surface: surface.downgrade(),
+        },
+    );
+    let element = TextureRenderElement::from_texture_with_damage(
+        Id::from_wayland_resource(surface),
+        renderer.context_id(),
+        location,
+        texture,
+        data.buffer_scale(),
+        data.buffer_transform(),
+        None,
+        Some(view.src),
+        Some(view.dst),
+        None,
+        data.damage(),
+        Kind::Unspecified,
+    );
+    Ok(Some((element, copied)))
 }
 
-/// Copies a direct window's damage from its buffer into `image`.
-pub fn copy_direct(d: &Direct, image: &mut CpuImage) -> Result<(), String> {
-    let copied = smithay::wayland::shm::with_buffer_contents(&d.buffer, |ptr, len, data| {
-        let stride = data.stride as usize;
-        // SAFETY: with_buffer_contents maps `len` bytes of the pool at `ptr` for the
-        // duration of this closure and catches SIGBUS if the client truncates it.
-        let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
-        let pixels = &pool[data.offset as usize..];
-        for r in &d.damage {
-            let (x0, w) = ((d.origin.0 + r.x) as usize, r.w as usize);
-            for row in r.y..r.y + r.h {
-                let src = (d.origin.1 + row) as usize * stride + x0 * 4;
-                let dst = row as usize * image.stride + r.x as usize * 4;
-                image.data[dst..dst + w * 4].copy_from_slice(&pixels[src..src + w * 4]);
-            }
-        }
-    });
-    copied.map_err(|e| format!("shm buffer: {e:?}"))
+fn has_alpha(fourcc: Fourcc) -> bool {
+    !matches!(fourcc, Fourcc::Xrgb8888 | Fourcc::Xbgr8888 | Fourcc::Xbgr2101010 | Fourcc::Xbgr16161616f)
 }

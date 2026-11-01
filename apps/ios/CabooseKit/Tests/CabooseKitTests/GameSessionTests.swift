@@ -49,7 +49,7 @@ import Testing
         let game = try #require(session.windows[7]?.game)
         #expect(game.descriptor == GameDescriptor(id: 1, window: 7, root: "Games/powder/web", entry: "index.html",
                                                   saves: [GameSave(mount: "/powder", path: ".local/share/The Powder Toy")]))
-        #expect(game.picture === session.windows[7]?.surface)
+        #expect(game.picture === session.windows[7]?.snapshot)
         #expect(session.windows[8]?.game == nil)
 
         resume.streams.last.server([(.gameDestroy, ["id": 2])]) // not this one
@@ -315,12 +315,12 @@ import Testing
     }
 
     @Test func theWaitForSavesIsBounded() async {
-        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot())
         game.savesFlusher = { try? await Task.sleep(for: .seconds(30)) }
         let start = Date()
         await game.flushSaves(within: 0.1)
         #expect(Date().timeIntervalSince(start) < 5)
-        await RemoteGame(GameDescriptor(id: 2, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface()).flushSaves(within: 5)
+        await RemoteGame(GameDescriptor(id: 2, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot()).flushSaves(within: 5)
     }
 
     @Test func gamesReachTheHostBehindTheDisplay() {
@@ -498,7 +498,7 @@ import Testing
     }
 
     @Test func aDeclineTheComputerDoesNotAnswerSaysSo() async throws {
-        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot())
         game.declineAnswerTime = .milliseconds(50)
         var asked: [String] = []
         game.onDecline = { asked.append($0) }
@@ -507,7 +507,7 @@ import Testing
         #expect(asked == ["why"])
         #expect(game.declineReason == "why")
 
-        let ended = RemoteGame(GameDescriptor(id: 2, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        let ended = RemoteGame(GameDescriptor(id: 2, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot())
         ended.end()
         ended.decline("late")
         #expect(ended.state == .running)
@@ -536,7 +536,7 @@ import Testing
     }
 
     @Test func theGamepadReachesTheLivePageOnChange() {
-        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot())
         var delivered: [GameGamepadState?] = []
         game.gamepadSink = { delivered.append($0) }
         var state = GameGamepadState()

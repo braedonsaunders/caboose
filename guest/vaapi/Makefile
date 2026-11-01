@@ -11,12 +11,12 @@ LIBS := $(shell pkg-config --libs libavcodec libavutil libdrm) -lpthread -lm
 BUILD ?= build
 DESTDIR ?=
 DRIDIR ?= $(shell pkg-config --variable=driverdir libva)
-SRC := src/driver.c src/surface.c src/sink.c src/gpu.c src/local.c src/bits.c src/marker.c \
+SRC := src/driver.c src/surface.c src/gpu.c src/local.c src/bits.c \
        src/h264.c src/hevc.c src/vp9.c src/av1.c
 OBJ := $(SRC:src/%.c=$(BUILD)/%.o)
 
 all: $(BUILD)/caboose_drv_video.so $(BUILD)/unit $(BUILD)/av1-state $(BUILD)/gpu-media $(BUILD)/cbva-capture \
-     $(BUILD)/cbva-detect $(BUILD)/cbva-phone $(BUILD)/libvulkan_gfxstream-stub.so
+     $(BUILD)/cbva-phone $(BUILD)/libvulkan_gfxstream-stub.so
 
 $(BUILD)/%.o: src/%.c src/*.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -c $< -o $@
@@ -24,8 +24,8 @@ $(BUILD)/%.o: src/%.c src/*.h | $(BUILD)
 $(BUILD)/caboose_drv_video.so: $(OBJ)
 	$(CC) $(LDFLAGS) -shared -Wl,--no-undefined -Wl,-z,defs -o $@ $(OBJ) $(LIBS)
 
-$(BUILD)/unit: tests/unit.c $(BUILD)/bits.o $(BUILD)/marker.o
-	$(CC) $(ALL_CFLAGS) -Isrc -o $@ $^ -lm
+$(BUILD)/unit: tests/unit.c $(BUILD)/bits.o
+	$(CC) $(ALL_CFLAGS) -Isrc -o $@ $^
 
 $(BUILD)/av1-state: tests/av1-state.c src/av1.c src/*.h $(BUILD)/bits.o
 	$(CC) $(ALL_CFLAGS) -Isrc -o $@ tests/av1-state.c $(BUILD)/bits.o
@@ -42,9 +42,6 @@ $(BUILD)/cbva-phone: tools/cbva-phone.c src/gpu_media.h src/proto.h | $(BUILD)
 # Loaded into a test player so the driver sees a Vulkan consumer (cb_gpu_consumer_present).
 $(BUILD)/libvulkan_gfxstream-stub.so: tests/consumer-stub.c | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -shared -o $@ $<
-
-$(BUILD)/cbva-detect: tools/cbva-detect.c $(BUILD)/marker.o
-	$(CC) $(ALL_CFLAGS) -Isrc -o $@ $^ -lm
 
 $(BUILD):
 	mkdir -p $(BUILD)

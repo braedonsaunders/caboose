@@ -96,8 +96,8 @@ public final class RemoteGame: Identifiable {
     /// The UI's surface, told when `state` changes.
     var stateSink: (() -> Void)?
     var resumeSink: (() -> Void)?
-    /// The window's picture, which a snapshot of the game seeds for Home and the window strip.
-    let picture: WindowSurface
+    /// The window's picture for thumbnails and Home, which snapshots of the game replace.
+    let picture: WindowSnapshot
     /// The UI's live surface for this game, if one was made.
     var surface: AnyObject?
     /// Writes the saves still waiting to go to the computer.
@@ -125,7 +125,7 @@ public final class RemoteGame: Identifiable {
         #endif
     }
 
-    init(_ descriptor: GameDescriptor, host: GameHostAccess?, picture: WindowSurface, webview: WebviewDescriptor? = nil) {
+    init(_ descriptor: GameDescriptor, host: GameHostAccess?, picture: WindowSnapshot, webview: WebviewDescriptor? = nil) {
         id = descriptor.id
         self.descriptor = descriptor
         self.webview = webview
@@ -232,10 +232,10 @@ public final class RemoteGame: Identifiable {
         inputSink?(events)
     }
 
-    /// Paints a snapshot of the game over the whole window picture.
+    /// A snapshot of the game becomes the window's picture.
     func seedPicture(_ image: CGImage) {
-        guard !isEnded, picture.pixelSize.width > 0, picture.pixelSize.height > 0 else { return }
-        picture.upload(image: image, into: CGRect(origin: .zero, size: picture.pixelSize))
+        guard !isEnded else { return }
+        picture.store(image: image)
     }
 }
 

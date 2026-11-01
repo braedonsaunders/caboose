@@ -154,7 +154,6 @@ struct LinuxWindowScene: View {
                     Button("Exit App Full Screen", systemImage: "arrow.down.right.and.arrow.up.left") {
                         model.session?.exitFullscreen(window, frame: DeviceViewport.guestFrame(size: contentSize, pixelsPerPoint: model.pixelsPerPoint))
                     }
-                    Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
                     Divider()
                     Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.close(window) }
                 }

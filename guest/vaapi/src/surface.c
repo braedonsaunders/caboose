@@ -9,7 +9,6 @@
  * what the planes mean, for a Vulkan driver in any process that imports it. */
 #define _GNU_SOURCE
 #include "cbva.h"
-#include "marker.h"
 
 #include <drm_fourcc.h>
 #include <errno.h>
@@ -20,7 +19,6 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <stdio.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <va/va_drmcommon.h>
 #include <xf86drm.h>
@@ -40,8 +38,16 @@ static void paint_initial(cb_surface *s)
                 row[x] = 512 << 6;
         }
     }
-    cb_mark_paint(s->map, s->pitch, s->width, s->height, s->bps, 63, 0, -1);
-    s->mark = 63 << 6;
+    if (s->bps == 1) {
+        memset(s->map, 16, (size_t)s->pitch * s->height);
+    } else {
+        for (size_t y = 0; y < s->height; y++) {
+            uint16_t *row = (uint16_t *)(s->map + y * s->pitch);
+            for (unsigned x = 0; x < s->pitch / 2; x++)
+                row[x] = 64 << 6;
+        }
+    }
+    s->pending = 1;
     cb_surface_end_cpu(s);
 }
 
@@ -126,13 +132,6 @@ VAStatus cb_surface_alloc(cb_driver *d, cb_surface *s, unsigned w, unsigned h, u
 identify:
     s->identity = cb_gm_identity_at(s->map, s->size);
     cb_surface_empty(d, s);
-    if (s->dmabuf >= 0) {
-        struct stat st;
-        if (fstat(s->dmabuf, &st) == 0) {
-            s->dev = st.st_dev;
-            s->ino = st.st_ino;
-        }
-    }
     paint_initial(s);
     return VA_STATUS_SUCCESS;
 fail:
@@ -196,11 +195,6 @@ VAStatus cb_surface_import(cb_driver *d, cb_surface *s, const VADRMPRIMESurfaceD
         s->identity = cb_gm_identity_at(s->map, s->size);
     if (s->identity)
         cb_surface_empty(d, s);
-    struct stat st;
-    if (fstat(s->dmabuf, &st) == 0) {
-        s->dev = st.st_dev;
-        s->ino = st.st_ino;
-    }
     paint_initial(s);
     return VA_STATUS_SUCCESS;
 }
@@ -254,31 +248,6 @@ void cb_surface_pixels(cb_driver *d, cb_surface *s)
 void cb_surface_empty(cb_driver *d, cb_surface *s)
 {
     identity_write(s, CB_GM_EMPTY, d->token, 0);
-}
-
-void cb_surface_mark(cb_surface *s, unsigned tag, uint32_t seq)
-{
-    int want = (int)((tag & 63) << 6 | (seq & 63));
-    if (s->mark == want)
-        return;
-    cb_surface_begin_cpu(s);
-    if (s->mark < 0) {
-        /* It held decoded pixels: restore neutral chroma and paint everything. */
-        if (s->bps == 1) {
-            memset(s->map + s->uv_offset, 128, (size_t)s->pitch * ((s->height + 1) / 2));
-        } else {
-            for (size_t y = 0; y < (s->height + 1) / 2; y++) {
-                uint16_t *row = (uint16_t *)(s->map + s->uv_offset + y * s->pitch);
-                for (unsigned x = 0; x < s->pitch / 2; x++)
-                    row[x] = 512 << 6;
-            }
-        }
-        cb_mark_paint(s->map, s->pitch, s->width, s->height, s->bps, tag, seq, -1);
-    } else {
-        cb_mark_paint(s->map, s->pitch, s->width, s->height, s->bps, tag, seq, s->mark);
-    }
-    s->mark = want;
-    cb_surface_end_cpu(s);
 }
 
 VAStatus cb_surface_export(cb_surface *s, uint32_t mem_type, uint32_t flags, void *descriptor)

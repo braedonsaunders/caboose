@@ -26,15 +26,18 @@
 //! type TEXT                    the rest of the line; `\n` and `\\` are escapes
 //! settle                       let every window draw now (frame callbacks), as if watched
 //! screenshot [ID]              a window, or the whole display: {"png":N,…} then N bytes
+//! stats                        the renderer and the pictures presented so far
 //! frames [SINCE]               what happened after SINCE (CLOCK_MONOTONIC µs, default 0):
-//!                              now_us; per window its commits and the pictures sent to the
-//!                              client as [at, pts, bytes, refined]; input from the client as
+//!                              now_us; per window its commits and the pictures it presented
+//!                              as [at, commit, upload bytes]; input from the client as
 //!                              [at, kind] (pointer, scroll, touch, key, text). Each list
 //!                              keeps the newest 1024 entries.
 //! ```
+//!
+//! Pictures are rendered by the compositor's renderer (render.rs) at one pixel per logical
+//! pixel and read back from its image: on the phone's GPU while one is attached, else on the
+//! computer's.
 
-use crate::encode::CpuImage;
-use crate::render::Canvas;
 use crate::state::{KeyboardFocus, State};
 use crate::windows::Surface;
 use caboose_display_protocol::{self as proto, buttons, WindowKind};
@@ -267,10 +270,12 @@ impl State {
             "windows" => Ok(self.control_windows()),
             "stats" => {
                 let s = &self.stats;
+                let (renderer, presents) =
+                    self.gpu.as_ref().map_or((String::new(), false), |g| (g.name.clone(), g.presents()));
                 Ok(format!(
-                    "{{\"frames\":{},\"bytes\":{},\"renders\":{},\"direct\":{},\"unchanged_renders\":{},\"render_us\":{},\"encode_cpu_us\":{},\"damaged_px\":{},\"picture_px\":{},\"motion_frames\":{},\"tile_pictures\":{},\"tiles\":{}}}\n",
-                    s.frames, s.bytes, s.renders, s.direct, s.unchanged_renders, s.render_us, s.encode_cpu_us,
-                    s.damaged_px, s.picture_px, s.motion_frames, s.tile_pictures, s.tiles
+                    "{{\"ok\":true,\"renderer\":{},\"phone_images\":{presents},\"renders\":{},\"unchanged_renders\":{},\"render_us\":{},\"damaged_px\":{},\"uploaded_bytes\":{},\"presents\":{},\"direct_presents\":{},\"unshown\":{}}}\n",
+                    json_str(&renderer), s.renders, s.unchanged_renders, s.render_us, s.damaged_px, s.uploaded_bytes,
+                    s.presents, s.direct_presents, s.unshown
                 )
                 .into_bytes())
             }
@@ -350,7 +355,7 @@ impl State {
                 let ids: Vec<u64> = self
                     .windows
                     .iter()
-                    .filter(|w| w.stream.callbacks_pending && w.stream.can_release_callbacks())
+                    .filter(|w| w.picture.callbacks_pending && w.picture.can_release_callbacks())
                     .map(|w| w.id)
                     .collect();
                 let released = ids.len();
@@ -523,16 +528,16 @@ impl State {
             .windows
             .ids()
             .into_iter()
-            .filter_map(|id| self.windows.get(id).map(|w| (id, &w.stream.trace)))
+            .filter_map(|id| self.windows.get(id).map(|w| (id, &w.picture.trace)))
             .map(|(id, trace)| {
                 let commits: Vec<String> = trace.commits.after(since, |t| *t).iter().map(u64::to_string).collect();
-                let sent: Vec<String> = trace
-                    .sent
-                    .after(since, |s| s.at_us)
+                let presents: Vec<String> = trace
+                    .presents
+                    .after(since, |p| p.at_us)
                     .iter()
-                    .map(|s| format!("[{},{},{},{}]", s.at_us, s.pts_us, s.bytes, s.refined))
+                    .map(|p| format!("[{},{},{}]", p.at_us, p.commit_us, p.bytes))
                     .collect();
-                format!("{{\"id\":{id},\"commits\":[{}],\"sent\":[{}]}}", commits.join(","), sent.join(","))
+                format!("{{\"id\":{id},\"commits\":[{}],\"presents\":[{}]}}", commits.join(","), presents.join(","))
             })
             .collect();
         let input: Vec<String> =
@@ -564,38 +569,42 @@ impl State {
         let (w, h) = (area.size.w.clamp(1, MAX_SHOT), area.size.h.clamp(1, MAX_SHOT));
         // RGB, dark grey where no window is.
         let mut rgb = vec![0x1e_u8; (w * h * 3) as usize];
+        let gpu = self.gpu.as_mut().ok_or("no renderer")?;
         for listed in stacked.iter().filter(|l| only.is_none_or(|id| id == l.id)) {
             let Some(win) = self.windows.get(listed.id) else { continue };
             let Some(root) = win.surface.wl_surface() else { continue };
             let local = win.local_geometry();
-            let size = (listed.rect.size.w, listed.rect.size.h).into();
-            let mut image = CpuImage::new(listed.rect.size.w as u32, listed.rect.size.h as u32);
-            let mut canvas = Canvas::new(size, 1.0, false);
-            if let Err(e) = canvas.render(&mut self.renderer, &root, local.loc, &mut image, 0) {
-                tracing::debug!("control: window {}: {e}", listed.id);
-                continue;
-            }
+            let size = (listed.rect.size.w.min(MAX_SHOT), listed.rect.size.h.min(MAX_SHOT));
+            let rgba = match gpu.capture(&root, local.loc, size.into(), 1.0) {
+                Ok(rgba) => rgba,
+                Err(e) => {
+                    tracing::debug!("control: window {}: {e}", listed.id);
+                    continue;
+                }
+            };
+            let popup = win.kind == WindowKind::Popup;
             let (dx, dy) = (listed.rect.loc.x - area.loc.x, listed.rect.loc.y - area.loc.y);
-            for row in 0..listed.rect.size.h {
+            for row in 0..size.1 {
                 let ty = dy + row;
                 if ty < 0 || ty >= h {
                     continue;
                 }
-                for col in 0..listed.rect.size.w {
+                for col in 0..size.0 {
                     let tx = dx + col;
                     if tx < 0 || tx >= w {
                         continue;
                     }
-                    let s = row as usize * image.stride + col as usize * 4;
+                    let s = (row * size.0 + col) as usize * 4;
                     let t = (ty * w + tx) as usize * 3;
-                    // X8R8G8B8 in memory is B, G, R, X.
-                    rgb[t] = image.data[s + 2];
-                    rgb[t + 1] = image.data[s + 1];
-                    rgb[t + 2] = image.data[s];
+                    // Premultiplied RGBA: a popup is laid over what is under it.
+                    let a = if popup { rgba[s + 3] as u32 } else { 255 };
+                    for c in 0..3 {
+                        rgb[t + c] = (rgba[s + c] as u32 + rgb[t + c] as u32 * (255 - a) / 255).min(255) as u8;
+                    }
                 }
             }
         }
-        let png = crate::stream::png(w as u32, h as u32, &rgb, false)?;
+        let png = png_rgb(w as u32, h as u32, &rgb)?;
         let mut out =
             format!("{{\"ok\":true,\"png\":{},\"rect\":[{},{},{},{}]}}\n", png.len(), area.loc.x, area.loc.y, w, h)
                 .into_bytes();
@@ -604,9 +613,29 @@ impl State {
     }
 }
 
+/// An RGB picture as a PNG, compressed for speed.
+fn png_rgb(w: u32, h: u32, pixels: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(pixels.len() / 4 + 64);
+    let mut encoder = png::Encoder::new(&mut out, w, h);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    encoder.write_header().and_then(|mut w| w.write_image_data(pixels)).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictures_are_rgb_pngs() {
+        let png = png_rgb(2, 1, &[255, 0, 0, 0, 0, 255]).unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut data = vec![0; reader.output_buffer_size()];
+        reader.next_frame(&mut data).unwrap();
+        assert_eq!(&data[..6], &[255, 0, 0, 0, 0, 255]);
+    }
 
     #[test]
     fn combos_parse_like_xdotool() {

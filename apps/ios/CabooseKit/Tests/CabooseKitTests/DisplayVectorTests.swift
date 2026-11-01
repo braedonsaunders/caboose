@@ -172,11 +172,12 @@ import Testing
         guard case .hello(let hello) = try server("server-hello").first else { Issue.record("not a hello"); return }
         #expect(hello.version == 0)
         #expect(hello.displays == [1, 2])
-        #expect(hello.encoders == ["hevc", "h264"])
-        #expect(hello.features == ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland"])
-        #expect(hello.epoch == nil)
+        #expect(hello.features == ["vsync", "touch", "text-input-v3", "cursor-named", "xwayland"])
+        #expect(hello.epoch == nil && hello.gpuLiveEpoch == nil)
         guard case .hello(let epoch) = try server("server-hello-epoch").first else { Issue.record("not a hello"); return }
-        #expect(epoch.epoch == "5f3a9c01d2e4b678" && epoch.displays == [1] && epoch.features == ["vsync", "ack"])
+        #expect(epoch.epoch == "5f3a9c01d2e4b678" && epoch.displays == [1] && epoch.features == ["vsync"])
+        guard case .hello(let live) = try server("server-hello-gpu-live").first else { Issue.record("not a hello"); return }
+        #expect(live.epoch == "5f3a9c01d2e4b678" && live.gpuLiveEpoch == Data(1 ... 16))
     }
 
     /// An epoch that is not short text cannot prove anything, so it reads as absent.
@@ -213,21 +214,6 @@ import Testing
 
         guard case .windowUpdate(let liberal) = try server("liberal-window-update").first else { Issue.record("liberal"); return }
         #expect(liberal.id == 7 && liberal.title == "x")
-        guard case .windowCreate(let tall) = try server("window-create-overscan").first else { Issue.record("overscan create"); return }
-        #expect(tall.geometry == CGRect(x: 0, y: 0, width: 1179, height: 2556) && tall.overscan == CGSize(width: 0, height: 2556))
-        guard case .windowUpdate(let applied) = try server("window-update-overscan").first,
-              case .windowUpdate(let ended) = try server("window-update-overscan-end").first else { Issue.record("overscan update"); return }
-        #expect(applied.overscan == CGSize(width: 0, height: 2556) && applied.geometry == nil)
-        #expect(ended.overscan == .zero)
-    }
-
-    @Test func pictures() throws {
-        guard case .frame(let frame) = try server("frame-hevc-keyframe-scaled").first else { Issue.record("frame"); return }
-        #expect(frame.window == 12 && frame.codec == .hevc && frame.keyframe && frame.ptsMicros == 4_294_967_296)
-        #expect(frame.rect == CGRect(x: 0, y: 0, width: 124, height: 120))
-        #expect(frame.crop == CGRect(x: 0, y: 0, width: 62, height: 60))
-        guard case .tile(let tile) = try server("tile-png").first else { Issue.record("tile"); return }
-        #expect(tile.window == 7 && tile.format == "png")
     }
 
     @Test func textAndCursor() throws {
@@ -242,17 +228,6 @@ import Testing
         #expect(name == "text")
         guard case .cursorImage(let id, let image, _) = try server("cursor-image").first else { Issue.record("image"); return }
         #expect(id == 7 && !image.isEmpty)
-    }
-
-    @Test func scrollTree() throws {
-        guard case .scrollTree(let tree) = try server("scroll-tree").first else { Issue.record("scroll.tree"); return }
-        #expect(tree.window == 7 && tree.tag == 0x03_2A10 && tree.tagRect == CGRect(x: 0, y: 2556, width: 384, height: 12))
-        #expect(tree.applied == 17 && tree.epoch == 2 && tree.scrollers.map(\.id) == [0, 4])
-        #expect(tree.scrollers[0].offset == CGPoint(x: 0, y: 2412.75) && tree.scrollers[0].range == CGPoint(x: 0, y: 18904.5))
-        #expect(tree.scrollers[0].fixed.count == 2 && tree.scrollers[1].fixed.isEmpty)
-        #expect(tree.zoom == 1 && tree.zoomRange == nil)
-        guard case .scrollTree(let zoomed) = try server("scroll-tree-zoomed").first else { Issue.record("zoomed"); return }
-        #expect(zoomed.zoom == 2.5 && zoomed.zoomRange == 1 ... 5 && zoomed.scrollers[0].offset == CGPoint(x: 1473.75, y: 6031.875))
     }
 
     @Test func targets() throws {
@@ -337,68 +312,6 @@ import Testing
         guard case .webviewDestroy(1) = try server("webview-destroy").first else { Issue.record("webview.destroy"); return }
     }
 
-    @Test func gpuStreams() throws {
-        guard case .gpuCreate(1, 7) = try server("gpu-create").first else { Issue.record("gpu.create"); return }
-        guard case .gpuData(1, 0, let data) = try server("gpu-data").first else { Issue.record("gpu.data"); return }
-        #expect(data == Data("GFXR".utf8) + Data(count: 12))
-        guard case .gpuDestroy(1, nil) = try server("gpu-destroy").first else { Issue.record("gpu.destroy"); return }
-        guard case .gpuDestroy(1, "spool-limit") = try server("gpu-destroy-spool-limit").first else { Issue.record("reason"); return }
-    }
-
-    @Test func surfaceAtlasAndSceneVectors() throws {
-        guard case .hello(let hello) = try server("server-hello-atlas").first else { Issue.record("server-hello-atlas"); return }
-        #expect(hello.encoders.isEmpty)
-        #expect(hello.features.contains("atlas") && hello.features.contains("scene"))
-        #expect(hello.epoch == "5f3a9c01d2e4b678")
-
-        guard case .surfaceBatch(let batch) = try server("surface-batch").first else { Issue.record("surface-batch"); return }
-        #expect(batch.window == 7 && batch.seq == 1 && batch.ptsMicros == 1_234_567_890)
-        #expect(batch.size == CGSize(width: 1179, height: 2556))
-        #expect(batch.rect == CGRect(x: 0, y: 0, width: 1179, height: 2556))
-        #expect(batch.keyframe)
-        #expect(batch.copies == [SurfaceCopy(dx: 0, dy: -64, rect: CGRect(x: 0, y: 0, width: 1179, height: 1920))])
-        #expect(batch.fills == [SurfaceFill(rect: CGRect(x: 0, y: 1920, width: 1179, height: 636), rgba: 0x1E1E_2EFF)])
-        #expect(batch.refs == [SurfaceTileRef(x: 0, y: 0, hash: 0x9E37_79B1_85EB_CA87)])
-        #expect(batch.tiles.count == 1)
-        #expect(batch.tiles[0].rect == CGRect(x: 64, y: 0, width: 64, height: 64))
-        #expect(batch.tiles[0].hash == 0xC2B2_AE3D_27D4_EB4F)
-        #expect(batch.tiles[0].format == .pal2Lz4)
-
-        guard case .surfaceReset(let epoch) = try server("surface-reset").first else { Issue.record("surface-reset"); return }
-        #expect(epoch == 2)
-
-        guard case .sceneFont(let font) = try server("scene-font").first else { Issue.record("scene-font"); return }
-        #expect(font.font == 0x85EB_CA77_C2B2_AE63 && font.index == 0 && font.family == "Inter")
-        #expect(font.data == Data([0x00, 0x01, 0x00, 0x00, 0x00, 0x0C, 0x00, 0x80, 0x00, 0x03, 0x00, 0x40]))
-
-        guard case .sceneCommit(let commit) = try server("scene-commit").first else { Issue.record("scene-commit"); return }
-        #expect(commit.window == 7 && commit.seq == 1 && commit.ptsMicros == 1_234_567_890)
-        #expect(commit.root == 1 && commit.reset)
-        #expect(commit.nodes.count == 3)
-        #expect(commit.nodes[0].id == 1 && commit.nodes[0].kind == .group && commit.nodes[0].children == [2, 3])
-        #expect(commit.nodes[1].id == 2 && commit.nodes[1].kind == .scroll && commit.nodes[1].scroll == CGRect(x: 0, y: 120, width: 1179, height: 7200))
-        #expect(commit.nodes[2].id == 3 && commit.nodes[2].kind == .glyphs && commit.nodes[2].font == 0x85EB_CA77_C2B2_AE63 && commit.nodes[2].size == 16)
-        #expect(commit.remove.isEmpty)
-    }
-
-    /// A stream's bytes arrive in order once; a repeat from the start (a resent stream) and
-    /// anything out of order are dropped, and what arrives before the replay starts is held.
-    @Test func aGPUStreamFeedKeepsOrder() {
-        let feed = GPUStreamFeed()
-        feed.receive(offset: 0, data: Data([1, 2]))
-        feed.receive(offset: 5, data: Data([9]))
-        final class Received { var chunks: [Data] = [] }
-        let received = Received()
-        feed.attach { data in received.chunks.append(data) }
-        feed.receive(offset: 2, data: Data([3]))
-        feed.receive(offset: 0, data: Data([1, 2]))
-        #expect(received.chunks == [Data([1, 2]), Data([3])])
-        #expect(feed.offset == 3)
-        feed.detach()
-        feed.receive(offset: 3, data: Data([4]))
-        #expect(received.chunks.count == 2)
-    }
-
     /// A game.create without its window, root or entry cannot be run; a save without both
     /// halves is left out.
     @Test func incompleteGamesAreMalformed() {
@@ -418,18 +331,16 @@ import Testing
     /// `wasm` is only ever sent as true; without it the hello is the one older servers know.
     @Test func helloSaysWasmOnlyWhenTrue() {
         let display = DisplayInfo(id: 1, width: 10, height: 10, scale: 1, refreshHz: 60)
-        let plain = ClientMessage.hello(token: "t", decoders: [.h264], displays: [display]).frame.body
+        let plain = ClientMessage.hello(token: "t", displays: [display]).frame.body
         #expect(plain["wasm"] == nil)
-        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: false).frame.body.encoded() == plain.encoded())
-        #expect(ClientMessage.hello(token: "t", decoders: [.h264], displays: [display], wasm: true).frame.body["wasm"] == .bool(true))
+        #expect(ClientMessage.hello(token: "t", displays: [display], wasm: false).frame.body.encoded() == plain.encoded())
+        #expect(ClientMessage.hello(token: "t", displays: [display], wasm: true).frame.body["wasm"] == .bool(true))
     }
 
     // MARK: Client messages, byte for byte
 
     static let clientMessages: [String: ClientMessage] = [
-        "ack": .ack(window: 7, ptsMicros: 1_234_567_890, decodedMicros: 2150),
-        "ack-decode-failed": .ack(window: 7, ptsMicros: 1_234_567_890, decodedMicros: -1),
-        "client-hello": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .av1, .h264], displays: [
+        "client-hello": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
             DisplayInfo(id: 2, width: 3840, height: 2160, scale: 2, refreshHz: 59.94, hdr: false),
         ]),
@@ -445,8 +356,6 @@ import Testing
                            data: Data("file:///home/caboose/.cache/caboose/transfers/0123456789abcdef0123456789abcdef/IMG_0001.jpeg\r\n".utf8)),
         ])!),
         "drag-take": .dragTake,
-        "configure-overscan": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 1179, height: 2556),
-                                         overscan: CGSize(width: 0, height: 2556)),
         "configure": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 2556, height: 1179), display: 1,
                                 maximized: true, activated: true),
         "displays": .displays([DisplayInfo(id: 1, width: 2556, height: 1179, scale: 3, refreshHz: 120, hdr: true)]),
@@ -458,15 +367,9 @@ import Testing
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
         "pointer-relative": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: nil, relative: CGPoint(x: 12.5, y: -3.25)),
-        "scroll-target": .scrollTarget(window: 7, scroller: 0, seq: 18, delta: CGPoint(x: 0, y: 37.25)),
-        "scroll-zoom": .scrollZoom(window: 7, seq: 20, scale: 2.5, focus: CGPoint(x: 590, y: 1300)),
-        "client-hello-scroll": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], audioDecoders: ["opus"], scroll: true),
-        "client-hello-targets": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+        "client-hello-targets": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], targets: true),
-        "request-keyframe": .requestKeyframe(window: 7),
         "text-commit": .text(commit: "naïve café 👍"),
         "text-preedit": .text(commit: nil, preedit: "にほん", cursor: (3, 3)),
         "text-replace": .text(commit: "the ", deleteBefore: 2),
@@ -475,42 +378,23 @@ import Testing
             TouchPoint(slot: 1, phase: .down, x: 700, y: 1200.75),
         ]),
         "vsync": .vsync(display: 1, micros: 5_000_008_333),
-        "client-hello-video": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+        "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264]),
-        "client-hello-audio": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"]),
-        "client-hello-gpu": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], gpu: true),
-        "client-hello-scaled-motion": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], scaledMotion: true),
-        "client-hello-draw": .hello(token: "f3a9c1d27e8b4a6f", decoders: [], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], atlas: true, draw: true),
-        "gpu-ack": .gpuAck(id: 1, offset: 65536),
+        ], audioDecoders: ["opus"]),
         "game-decline": .gameDecline(id: 1, reason: "the page is not cross-origin isolated"),
         "webview-decline": .webviewDecline(id: 1, reason: "web view failed"),
-        "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.h264], displays: [
+        "client-hello-webview": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], webview: true),
-        "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+        "client-hello-wasm": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], wasm: true),
-        "client-hello-clipboard": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+        ], audioDecoders: ["opus"], wasm: true),
+        "client-hello-clipboard": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], clipboardTypes: ["image/png", "image/jpeg", "text/uri-list"]),
-        "video-ack": .videoAck(video: 2, seq: 41),
-        "video-keyframe": .videoKeyframe(video: 1),
-        "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", decoders: [.hevc, .h264], displays: [
+        ], audioDecoders: ["opus"], clipboardTypes: ["image/png", "image/jpeg", "text/uri-list"]),
+        "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], devices: true),
-        "client-hello-atlas": .hello(token: "f3a9c1d27e8b4a6f", decoders: [], displays: [
-            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
-        ], videoDecoders: [.hevc, .h264], audioDecoders: ["opus"], atlas: true, scene: true),
-        "scene-scroll": .sceneScroll(window: 7, node: 2, sx: 0, sy: 240.5),
         "devices": .devices([
             DeviceDescriptor(id: "camera-back", kind: .camera, name: "iPhone Back Camera", position: .back, size: (1280, 720), fps: 30),
             DeviceDescriptor(id: "depth", kind: .depth, name: "iPhone Depth", position: .back, size: (256, 192), fps: 15),

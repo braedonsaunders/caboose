@@ -164,7 +164,7 @@ Switchyard (Desktop tab, no external display):
    clear of the sensor housing, home indicator and app content.
    Show/hide the keyboard and rotate/fold: the whole app fits above the keyboard
    and accessory row, and Hide Keyboard remains reachable. In Window Options,
-   check Ask Agent About This Window (when available), Redraw and Close Window.
+   check Ask Agent About This Window (when available) and Close Window.
    Enter Full Screen: native controls disappear and the viewport grows. Reveal them
    with the inward edge swipe (or the top handle); this preserves guest fullscreen.
    Exit App Full Screen is a separate action. VoiceOver can activate Show window controls,

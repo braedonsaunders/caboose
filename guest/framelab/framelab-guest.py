@@ -6,9 +6,9 @@
 
 Run as the seat's owner (caboose) inside the computer. Each app is launched with the
 seat's launch environment (--env, default /run/caboose/display.env) and measured through
-the compositor's control socket (its windows, `frames` timeline, injected input and
-screenshots), /proc (the app's CPU), the GPU broker's log (CABOOSE_GPU_PRESENT and
-CABOOSE_GPU_STREAM, switched on with $XDG_RUNTIME_DIR/caboose-gpu-present-trace for the
+the compositor's control socket (its windows, the `frames` timeline of their commits,
+injected input and screenshots), /proc (the app's CPU), the GPU broker's log
+(CABOOSE_GPU_PRESENT and CABOOSE_GPU_STREAM, switched on with $XDG_RUNTIME_DIR/caboose-gpu-present-trace for the
 run) and the app's own stderr (CABOOSE_READ_PROFILE). For apps marked `correctness`, the
 app is run once more with the phone's Vulkan driver disabled for the CPU reference
 picture. Writes DIR/<app>.run.json (raw), DIR/<app>.json (scorecard), the pictures and
@@ -275,10 +275,9 @@ class Run:
             return since
         for w in reply['windows']:
             if w['id'] in self.window_ids:
-                entry = self.windows.setdefault(str(w['id']), {'commits': [], 'sent': []})
+                entry = self.windows.setdefault(str(w['id']), {'commits': []})
                 # Compositor microseconds to nanoseconds, the clock every record uses.
                 entry['commits'] += [t * 1000 for t in w['commits']]
-                entry['sent'] += [[a * 1000, p * 1000, b, r] for a, p, b, r in w['sent']]
         return reply['now_us']
 
     def inject(self, step, window):
@@ -318,8 +317,10 @@ class Run:
                 raise FileNotFoundError(f"no desktop entry {app['desktop']}")
         else:
             command = [fill(a) for a in app['command']] + args
-        if not shutil.which(command[0], path=self.env.get('PATH', os.environ.get('PATH'))):
-            raise FileNotFoundError(f'{command[0]} is not installed')
+        # `requires` names the programs a shell command line launches.
+        for program in [command[0]] + app.get('requires', []):
+            if not shutil.which(program, path=self.env.get('PATH', os.environ.get('PATH'))):
+                raise FileNotFoundError(f'{program} is not installed')
         env = {**os.environ, **self.env, 'CABOOSE_READ_PROFILE': '1'}
         if self.reference:
             # The CPU reference: the same launch without the phone's Vulkan driver.
@@ -610,7 +611,7 @@ def main():
             cards.append(card)
             (out / f"{app['id']}.json").write_text(json.dumps(card, indent=2))
             emit('scorecard', app=app['id'], ok=card['ok'], path=card['path'], fps=card['pacing']['per_s'],
-                 stalls=card['stalls']['count'], error=card.get('error'))
+                 stalls=card['stalls']['count'], wire=card['wire'], error=card.get('error'))
     finally:
         flag.unlink(missing_ok=True)
         shutil.rmtree(work, ignore_errors=True)

@@ -6,7 +6,7 @@
  * Listens on SOCKET (the driver's $CABOOSE_GFXSTREAM_SOCKET), answers the broker
  * hello and HELLO with CAPS (all: H.264 at 8 bits and the other codecs at 10, up to
  * 8192x8192, as a phone reports them), and
- * writes what the driver sends to CAPTURE in the video socket's capture format,
+ * writes what the driver sends to CAPTURE in the capture format (proto.h),
  * so `cbva-capture split` turns it into elementary streams: OPEN as OPEN, UNIT as
  * FRAME, CLOSE as CLOSE, SURFACE_GONE as SURFACE_GONE. --fail-after sends FAIL 2
  * for a stream after N units, --replay-after asks once for a replay after N units.
@@ -174,7 +174,7 @@ static int handle(client *c, uint32_t type, const uint8_t *p, uint32_t len)
         head[6] = p[5];
         head[7] = p[6];
         memcpy(head + 8, p + 8, 4);
-        put_msg(CB_MSG_OPEN, head, sizeof(head), NULL, 0);
+        put_msg(CB_CAP_OPEN, head, sizeof(head), NULL, 0);
         return 0;
     }
     case CB_GM_UNIT: {
@@ -206,7 +206,7 @@ static int handle(client *c, uint32_t type, const uint8_t *p, uint32_t len)
         memcpy(head, p, 12);  /* stream, seq, surface */
         head[12] = (uint8_t)flags;
         memcpy(head + 24, p + 24, 4); /* w, h */
-        put_msg(CB_MSG_FRAME, head, sizeof(head), p + CB_GM_UNIT_HEAD, len - CB_GM_UNIT_HEAD);
+        put_msg(CB_CAP_FRAME, head, sizeof(head), p + CB_GM_UNIT_HEAD, len - CB_GM_UNIT_HEAD);
         uint8_t reply[8];
         cb_gm_le32(reply, id);
         if (replay_after && !s->replayed && s->units == replay_after) {
@@ -236,7 +236,7 @@ static int handle(client *c, uint32_t type, const uint8_t *p, uint32_t len)
         uint8_t head[5];
         memcpy(head, p, 4);
         head[4] = 0;
-        put_msg(CB_MSG_CLOSE, head, sizeof(head), NULL, 0);
+        put_msg(CB_CAP_CLOSE, head, sizeof(head), NULL, 0);
         return 0;
     }
     case CB_GM_SURFACE_GONE:
@@ -244,7 +244,7 @@ static int handle(client *c, uint32_t type, const uint8_t *p, uint32_t len)
             violation("malformed SURFACE_GONE", 0);
             return -1;
         }
-        put_msg(CB_MSG_SURFACE_GONE, p, 4, NULL, 0);
+        put_msg(CB_CAP_SURFACE_GONE, p, 4, NULL, 0);
         return 0;
     default:
         violation("unknown record", type);

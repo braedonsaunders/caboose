@@ -187,11 +187,6 @@ impl Net {
         self.gpu_router.as_ref().ok_or_else(|| io::Error::other("GPU router unavailable"))?.queue_control(bytes, revoke)
     }
 
-    /// Whether `id` is an open, non-closing WebSocket connection.
-    pub fn can_send(&self, id: ConnId) -> bool {
-        self.conns.get(&id).is_some_and(|c| matches!(c.socket, Socket::Open(_)) && c.closing.is_none())
-    }
-
     /// Queues one protocol message. Errors other than a full kernel buffer close the
     /// connection at the next service.
     pub fn send(&mut self, id: ConnId, message: &proto::Message) -> bool {

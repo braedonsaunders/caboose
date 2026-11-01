@@ -65,11 +65,6 @@ public final class LiveGPUPresentationOwners {
         }
     }
 
-    /// Whether a live GPU layer presents in `view`, over the picture the view draws itself.
-    func presents(in view: RemoteWindowView) -> Bool {
-        leases.values.contains { $0.isValid && $0.view === view }
-    }
-
     /// Whether the live GPU layer in `view` blends with what is behind the window.
     func presentsTranslucent(in view: RemoteWindowView) -> Bool {
         leases.values.contains { $0.isValid && $0.view === view && $0.translucent }
@@ -145,8 +140,7 @@ public final class LiveGPUPresentationOwners {
         // invalidating the bound surface; the guest recreates its swapchain at
         // the new extent via configurePresentationExtent, and a picture that keeps
         // another size is scaled to the window (LiveGPUDrawableGeometry.placement).
-        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: view.croppingOverscan ? window.frame.size : nil,
-                                                  fullscreen: window.isFullscreen)
+        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, fullscreen: window.isFullscreen)
     }
     /// The one eligible view showing the lease's window, preferring its current view.
     private func host(for lease: LiveGPULayerLease) -> RemoteWindowView? {
@@ -181,9 +175,9 @@ public final class LiveGPUPresentationOwners {
         invalidated(lease.identity)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
-        guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
+        guard view.remoteWindow?.game == nil,
               GamePresentation.hosts(interactive: view.isInteractive, desktop: view.hostsGame,
-            contentEnabled: view.showsVideo, hasConnection: (view.session ?? view.pacer) != nil,
+            contentEnabled: view.showsLiveContent, hasConnection: (view.session ?? view.pacer) != nil,
             onScreen: view.window != nil), let window = view.window, view.superview != nil else { return false }
         var ancestor: UIView? = view
         while let current = ancestor {
@@ -233,6 +227,8 @@ public final class LiveGPUPresentationOwners {
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
         LiveGPUMemoryAudit.ownerExtent(server: size, view: bounds)
         #endif
+        // Until its first present the layer shows nothing, over a blank view: never a picture
+        // from before.
         let content = LiveGPULayerView(frame: CGRect(origin: .zero, size: bounds), pixelExtent: size)
         content.isUserInteractionEnabled = false
         content.isOpaque = true
@@ -244,7 +240,9 @@ public final class LiveGPUPresentationOwners {
         layer.presentsWithTransaction = false
         view?.insertSubview(content, at: 0)
         let lease = LiveGPULayerLease(identity: identity, windowID: windowID,
-            windowIdentity: object, extent: size, view: view, content: content)
+            windowIdentity: object, extent: size, view: view, content: content, snapshot: window.snapshot)
+        // A window with alpha (a menu's shadow) shows what is behind it from the start.
+        lease.setTranslucent(window.hasAlpha)
         if view == nil {
             lease.parked = true
             #if DEBUG && canImport(CabooseGPUMemoryAudit)
@@ -310,28 +308,12 @@ private final class LiveGPULayerView: UIView {
         if code == 0 { applyDrawableExtent() }
         return code
     }
-    /// The window's viewport and overscan in server pixels: a picture of the enlarged
-    /// window (an overscan window) shows its viewport, top-left aligned, the rest clipped.
-    private var viewport: CGSize?
     /// A full-screen window's picture fills the view whatever its shape.
     private var fullscreen = false
-    /// `viewport`, while the window has an overscan, is the shape the view shows: a longer
-    /// drawable shows its viewport top-left aligned, the rest clipped, never scaled.
-    func fit(in target: CGRect, viewport: CGSize? = nil, fullscreen: Bool = false) {
+    func fit(in target: CGRect, fullscreen: Bool = false) {
         frame = target
-        clipsToBounds = viewport != nil
-        self.viewport = viewport
         self.fullscreen = fullscreen
         applyDrawableExtent()
-    }
-    /// The part of the drawable the view shows.
-    private var shownExtent: CGSize {
-        guard let viewport, viewport.width > 0, viewport.height > 0, pixelExtent.width > 0, pixelExtent.height > 0 else { return pixelExtent }
-        let tall = pixelExtent.width * viewport.height / viewport.width
-        if pixelExtent.height - tall > 2 { return CGSize(width: pixelExtent.width, height: tall) }
-        let wide = pixelExtent.height * viewport.width / viewport.height
-        if pixelExtent.width - wide > 2 { return CGSize(width: wide, height: pixelExtent.height) }
-        return pixelExtent
     }
     func applyDrawableExtent() {
         guard !configuringExtent, !extentQuarantined else { return }
@@ -342,13 +324,12 @@ private final class LiveGPULayerView: UIView {
         metal.bounds = CGRect(origin: .zero, size: pixelExtent)
         metal.contentsScale = 1
         metal.drawableSize = pixelExtent
-        let shown = shownExtent
+        let shown = pixelExtent
         // A picture of another shape than the window (an application keeping its own
         // resolution) fits it, or fills a full-screen window; the layer's GPU sampling scales it.
         let placed = LiveGPUDrawableGeometry.placement(picture: shown, in: bounds, fill: fullscreen)
         let scale = CGAffineTransform(scaleX: placed.width / shown.width, y: placed.height / shown.height)
-        // The shown part's top-left at the placement's, the rest of an overscan clipped.
-        metal.position = CGPoint(x: placed.minX + pixelExtent.width * scale.a / 2, y: placed.minY + pixelExtent.height * scale.d / 2)
+        metal.position = CGPoint(x: placed.midX, y: placed.midY)
         metal.setAffineTransform(scale)
         CATransaction.commit()
     }
@@ -375,13 +356,10 @@ final class LiveGPULayerLease: @unchecked Sendable {
     @MainActor func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
         guard isValid, let content = content as? LiveGPULayerView else { return ECANCELED }
         guard LiveGPUDrawableGeometry.extent(serverPixels: size, visibleBounds: content.bounds.size) != nil else { return EINVAL }
-        // The layer shows its last picture scaled to the new extent until the app presents at
-        // it: the view holds the picture on screen over it meanwhile.
-        if content.pixelExtent != size { view?.liveGPUExtentWillChange(from: content.pixelExtent, to: size) }
         return content.configurePresentationExtent(size, configure: configure)
     }
-    /// The window's current swapchain is premultiplied: its layer is not opaque, and the view
-    /// under it draws no picture of its own there.
+    /// The window's current swapchain is premultiplied: its layer is not opaque, and shows
+    /// what is behind the window.
     @MainActor private(set) var translucent = false
     @MainActor func setTranslucent(_ value: Bool) {
         guard isValid, translucent != value else { return }
@@ -397,10 +375,12 @@ final class LiveGPULayerLease: @unchecked Sendable {
     @discardableResult func invalidate() -> Bool { lock.withLock { let old = valid; valid = false; return old } }
     /// Out of view, still bound and still presenting (LiveGPUPresentationOwners).
     @MainActor var parked = false
+    /// The window's snapshot, which copies of this layer's presents replace.
+    let snapshot: WindowSnapshot
     @MainActor init(identity: LiveGPUSurfaceIdentity, windowID: UInt64, windowIdentity: ObjectIdentifier,
-                    extent: CGSize, view: RemoteWindowView?, content: UIView) {
+                    extent: CGSize, view: RemoteWindowView?, content: UIView, snapshot: WindowSnapshot) {
         self.identity = identity; self.windowID = windowID; self.windowIdentity = windowIdentity
-        self.currentExtent = extent; self.view = view; self.content = content
+        self.currentExtent = extent; self.view = view; self.content = content; self.snapshot = snapshot
     }
 }
 #endif

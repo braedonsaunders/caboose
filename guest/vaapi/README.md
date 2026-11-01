@@ -1,25 +1,18 @@
-# caboose_drv_video.so: the codec passthrough VA-API driver
+# caboose_drv_video.so: the Caboose VA-API driver
 
-A libva driver with bitstream reconstruction and local decode fallback. Players (Chromium, Firefox, mpv, VLC, GStreamer,
-FFmpeg) decode through it as through any hardware decoder; it rebuilds each picture's
-compressed bitstream from the VA buffers and sends it to caboose-display, which currently requests local decode for correct application composition. The surfaces the player gets back hold a
-marker that tells the compositor where on screen, and when, each frame is shown. When a
-stream cannot be passed through, the driver decodes it itself with libavcodec.
+A libva driver through which applications' video is decoded on the phone. Players
+(Chromium, Firefox, mpv, VLC, GStreamer, FFmpeg) decode through it as through any hardware
+decoder. It rebuilds each picture's compressed bitstream from the VA buffers. In a process
+whose windows the phone renders (the Caboose Vulkan driver is loaded and the GPU broker's
+phone decodes the format), it sends that bitstream to the phone over a media stream of the
+GPU broker, and each surface's identity page names the phone's picture, which the Vulkan
+driver latches into the image that samples the surface. Every other stream, and a stream
+the application reads back or the phone fails, is decoded by the driver itself with
+libavcodec into the application's surfaces.
 
-The contract with caboose-display (socket, marker, binding, fallback, limits) is
-[docs/codec-passthrough.md](../../docs/codec-passthrough.md); the design it serves is
-"Video, for every app" in [docs/display.md](../../docs/display.md). The driver is
-written in C and links libva, libdrm, libavcodec and libavutil.
-
-The compositor currently requests local decode for every stream because marker pixels
-cannot establish foreground alpha or occlusion. The experimental capture path remains
-available; codec advertisement does not enable production passthrough.
-
-In a process whose windows the phone renders (the Caboose Vulkan driver is loaded and the
-GPU broker's phone decodes the format), a stream is decoded on the phone instead: the
-driver sends the bitstream over a media stream of the GPU broker, and each surface's
-identity page names the phone's picture, which the Vulkan driver latches into the image
-that samples the surface. The contract is [docs/gpu-media.md](../../docs/gpu-media.md).
+The contract (when a stream is decoded on the phone, the media wire, surface identities,
+the latch, and the fallback to local decoding) is [docs/gpu-media.md](../../docs/gpu-media.md).
+The driver is written in C and links libva, libdrm, libavcodec and libavutil.
 
 ## Layout
 
@@ -28,19 +21,17 @@ that samples the surface. The contract is [docs/gpu-media.md](../../docs/gpu-med
 | `src/driver.c` | libva entry point and objects; streams, the key-frame buffer, the switch to local decoding |
 | `src/surface.c` | Surface memory (memfd exported through `/dev/udmabuf`, or a vgem buffer), identity pages, imported dmabufs, export descriptors |
 | `src/gpu.c`, `src/gpu_media.h` | The media connection to the phone; the wire, identity and latch layouts shared with the Vulkan driver |
-| `src/marker.c` | The marker painter and the reference detector (caboose-display carries a Rust port, `guest/display/compositor/src/video/marker.rs`) |
-| `src/sink.c`, `src/proto.h` | The video socket |
 | `src/h264.c`, `src/hevc.c`, `src/vp9.c`, `src/av1.c` | Bitstream rebuilders, one per codec; each file's header says what it rebuilds and what it refuses |
-| `src/local.c` | Local decoding (the fallback) with libavcodec |
+| `src/local.c` | Local decoding with libavcodec |
 | `src/bits.c` | Bit writer and reader, Exp-Golomb, NAL escaping |
-| `tools/cbva-capture.c` | `split` a capture into elementary streams; `serve` a stub caboose-display |
-| `tools/cbva-detect.c` | Run the detector on a screenshot |
-| `tools/cbva-phone.c` | A stand-in broker and phone for the media connection; writes what it receives as a capture |
+| `src/proto.h` | Codec ids and unit flags, and the capture format the test tools share |
+| `tools/cbva-phone.c` | A stand-in broker and phone for the media connection; checks the contract and writes what it receives as a capture |
+| `tools/cbva-capture.c` | `split` a capture into elementary streams |
 | `tests/gpu-media.c`, `tests/gpu-media-vectors.txt` | The media wire and identity page against golden vectors, and the identity's sequence lock under a concurrent writer |
 | `tests/av1-state.c` | Source-level AV1 OBU/reference-state checks, including a paused held picture requested after an older surface |
-| `tests/unit.c` | Unit tests: bit I/O, escaping, the marker code, the detector on synthetic screens |
+| `tests/unit.c` | Unit tests: bit I/O and escaping |
 | `tests/roundtrip.sh`, `tests/cases/` | Bit-exact round trips per codec through `ffmpeg -hwaccel vaapi` |
-| `tests/e2e.sh` | mpv, Chromium and GStreamer on a GPU, with the stub compositor and the detector |
+| `tests/consumer-stub.c` | A library named like the Vulkan driver, preloaded so a test player takes the phone path |
 
 ## Build
 
@@ -61,23 +52,21 @@ render nodes through. `make BUILD=dir` builds elsewhere.
 
 `make install` puts `caboose_drv_video.so` next to the system's VA drivers (libva's
 `driverdir`, `/usr/lib/x86_64-linux-gnu/dri` on Debian; `DESTDIR` is honoured), or point
-`LIBVA_DRIVERS_PATH` at the build directory. caboose-display sets
-`LIBVA_DRIVER_NAME=caboose`, `GST_VA_ALL_DRIVERS=1` (for GStreamer) and
-`CABOOSE_VIDEO_SOCKET` in the launch environment it writes, only when the driver is
-installed and its socket is listening. Each caboose-display instance has its own socket,
-so a player talks to the display it runs on. Both guest images build the driver with
+`LIBVA_DRIVERS_PATH` at the build directory. Both guest images build the driver with
 caboose-display and install it in `/usr/lib/x86_64-linux-gnu/dri`; the microVM image also
 loads the `udmabuf` module and gives the `caboose` group access to `/dev/udmabuf`, and the
-container gets `/dev/udmabuf` on `nvidia` and `dri` hosts that have it. Without a listening
-compositor the driver does not initialise, and players decode in software as they would
-without a hardware decoder.
+container gets `/dev/udmabuf` on `nvidia` and `dri` hosts that have it. A player uses the
+driver when its environment names it (`LIBVA_DRIVER_NAME=caboose`, and
+`GST_VA_ALL_DRIVERS=1` for GStreamer) and names the GPU broker's socket.
+
+At `vaInitialize` the driver opens the media connection to the phone. Without one it does
+not initialise, and players decode in software as they would without a hardware decoder;
+`CABOOSE_VA_MODE=decode` makes it initialise anyway and decode every stream locally.
 
 | Variable | Effect |
 | --- | --- |
-| `CABOOSE_VIDEO_SOCKET` | The compositor's socket (default `$XDG_RUNTIME_DIR/caboose-video.sock`) |
-| `CABOOSE_VA_SINK=path` | Write the socket's messages to a file instead (tests); `cbva-capture split` reads it |
-| `CABOOSE_VA_MODE=decode` | Decode every stream locally; initialises without a compositor |
-| `CABOOSE_GFXSTREAM_SOCKET` | The GPU broker's socket; with it the driver opens the media connection to the phone |
+| `CABOOSE_GFXSTREAM_SOCKET` | The GPU broker's socket; the driver opens the media connection to the phone through it |
+| `CABOOSE_VA_MODE=decode` | Decode every stream locally; initialises without a media connection |
 | `CABOOSE_VA_GPU=0` | Never decode on the phone |
 | `CABOOSE_VA_LOG=1` | Log streams, mode switches and refused bitstreams to stderr |
 
@@ -91,43 +80,36 @@ for a VA device; give it the node with `--hardware-video-device-path=/dev/dri/re
 ## Test
 
 ```sh
-guest/vaapi/scripts/dev.sh make check                        # unit tests + every round trip
-guest/vaapi/scripts/dev.sh tests/roundtrip.sh h264 vp9      # some codecs
-CABOOSE_VAAPI_DRI=1 guest/vaapi/scripts/dev.sh tests/e2e.sh # players, on a GPU
+guest/vaapi/scripts/dev.sh make check                    # unit tests + every round trip
+guest/vaapi/scripts/dev.sh tests/roundtrip.sh h264 vp9  # some codecs
+CBVA_CASES='av1-aom-realtime av1-aom-altref' guest/vaapi/scripts/dev.sh tests/roundtrip.sh av1
 ```
 
+`make check` runs `build/unit`, `build/av1-state` (the AV1 provisional sequence contract,
+on synthetic tile bytes: it checks headers and reference state and is not a decoder
+conformance test), `build/gpu-media` against the golden vectors, and every round trip.
+
 **Round trips** (`tests/cases/<codec>.cases`): each case encodes a reference clip with
-ffmpeg, then decodes it through the driver twice. With frames kept in VA surfaces, the
-rebuilt bitstream the driver forwards is decoded in software and must match the source
-decode bit for bit, frame for frame (for VP9 and AV1, every source frame must be present
-and the only extras are hidden frames the source never shows). With frames read back, the
-driver switches to local decoding at the first readback and the frames ffmpeg reads must
-match the source bit for bit. Both run headless on any machine, against a VA display on
-Xvfb.
+ffmpeg, then decodes it through the driver three times, against a VA display on Xvfb:
 
-**End to end** (`tests/e2e.sh`, needs a Mesa GPU render node): a headless Weston with the
-GL renderer, `cbva-capture serve` as the compositor, and
+- `phone`: frames kept in VA surfaces, with `tools/cbva-phone` as the phone and the
+  consumer stub preloaded. The rebuilt bitstream the phone receives is decoded in software
+  and must match the source decode bit for bit, frame for frame (for VP9 and AV1, every
+  source frame must be present and the only extras are hidden frames the source never
+  shows), and the phone must see no violation of the media contract.
+- `phone-rb`: frames read back with the phone connected. The first readback moves the
+  stream from the phone to local decoding, and the frames ffmpeg reads must match the
+  source bit for bit.
+- `local`: `CABOOSE_VA_MODE=decode`; the frames ffmpeg reads must match the source bit for
+  bit.
 
-- mpv `--hwdec=vaapi --vo=gpu`: frames flow, surfaces are exported as dmabufs, the
-  screenshot's marker gives the 960 x 540 video rectangle, and a `REPLAY` resends from a key
-  frame;
-- mpv `--hwdec=vaapi-copy`: the first readback switches the stream to local decoding and
-  the screen shows the real video;
-- mpv after a compositor `DECODE` at frame 30: the same, mid-stream;
-- Chromium playing a `<video>` in H.264, VP9, AV1 and HEVC: the marker gives the element's
-  800 x 450 rectangle, and what Chromium fed the driver decodes to the source's frames
-  exactly (with the sandbox on, using the guest's seccomp profile, as in the command at the top of
-  the script);
-- GStreamer `vah264dec`, `vah265dec`, `vavp9dec`, `vaav1dec`: passthrough exact with frames
-  in VA memory; and H.264 readback (frames downloaded to system memory) bit-exact through
-  local decoding.
-
+`CBVA_CASES` selects space-separated exact case names; a selection running no cases fails.
 The round trips cover:
 
 - **H.264:** Constrained Baseline, Main with CABAC, High with 8x8 transforms, 1080p (1088
   coded), 4 slices, weighted prediction, JVT scaling lists, a B-pyramid with 8 references,
-  interlaced MBAFF, High 10, and open GOP. x264 cannot produce field pictures, so PAFF is
-  not covered.
+  interlaced MBAFF, High 10 (decoded locally: the phone decodes H.264 at 8 bits), and open
+  GOP. x264 cannot produce field pictures, so PAFF is not covered.
 - **HEVC** (x265): default, closed and open GOP with CRA/RASL, Main 10, slices with WPP,
   1080p, no WPP, scaling lists, lossless, a tools mix (transform skip, SAO off, AMP, QP
   offsets), an odd size (crop), 6 references with an 8-frame pyramid, weighted prediction,
@@ -139,21 +121,17 @@ The round trips cover:
   intra block copy, error resilience, global motion, 128x128 superblocks with quantizer
   matrices and delta-q, lossless, superres, switch frames, and reference scaling.
 
-Each round trip also runs with `tools/cbva-phone` as the phone (`phone`: the units it
-receives decode to the source exactly and follow the media contract; `phone-rb`: a readback
-moves the stream from the phone to local decoding, exact as before). A stub library named
-like the Vulkan driver is preloaded so ffmpeg's streams take the phone path.
-
 For 10 s H.264 test clips at 20 Mb/s, the forwarded bitstream is about 0.02% larger than
 the source: the parameter sets sent in band.
 
 ## Limits
 
-See [docs/codec-passthrough.md, "Limits"](../../docs/codec-passthrough.md#limits): GPU-side
-readback (canvas, WebGL) is invisible to the driver and is the compositor's to catch;
-protected (hardware DRM) sessions are not offered; colour primaries, transfer and HDR
-metadata are not in VA; AV1 is forwarded one picture late; no `vaPutSurface` and no video
-processing entry point; export needs `/dev/udmabuf` or vgem; imported surfaces must be linear.
+- GPU-side readback (canvas, WebGL) is invisible to the driver.
+- Protected (hardware DRM) sessions are not offered.
+- Colour primaries, transfer and HDR metadata are not in VA.
+- There is no `vaPutSurface` and no video processing entry point.
+- Export needs `/dev/udmabuf` or vgem; imported surfaces must be linear.
+
 Bitstreams refused per codec (the app then decodes in software):
 
 - H.264: `pic_order_cnt_type` 1, slice groups (FMO), 4:2:2 and 4:4:4.
@@ -166,46 +144,17 @@ Bitstreams refused per codec (the app then decodes in software):
 
 Against the JCT-VC HEVC conformance bitstreams (run by hand, not part of `make check`:
 tiles, dependent slices, list modification, PCM, long-term references, EOS), 53 of 62
-pass through exactly. Of the rest, 4 change resolution and match once their contexts'
-streams are joined; 1 needs a crop; 3 (and a spliced stream) output extra pictures that
-`no_output_of_prior_pics_flag` would have dropped; and RPS_D differs in 5 of 68 frames,
-in libavcodec only (see `src/hevc.c`).
+rebuild exactly. Of the rest, 4 change resolution and match once their contexts' streams
+are joined; 1 needs a crop; 3 (and a spliced stream) output extra pictures that
+`no_output_of_prior_pics_flag` would have dropped; and RPS_D differs in 5 of 68 frames, in
+libavcodec only (see `src/hevc.c`).
 
 Behaviours to know:
 
-- Experimental AV1 passthrough holds pictures until the next one reveals their
-  `refresh_frame_flags`, so it can show the previous picture at pause. Local decode
-  supplies held pixels on sync/export/readback without refreshing reference slots;
-  requests for another sequence do not consume that provisional picture.
-- HEVC `no_output_of_prior_pics_flag` is cleared, so the client may decode pictures the app
-  never shows (the compositor never presents them); a CRA that the app treated as the start
-  of a sequence is sent as BLA.
-- Local decoding starts from the key frame before last that the driver kept. Pictures from
-  earlier GOPs that an app reads back late keep their marker, and so do the RASL pictures
-  of an HEVC CRA when the switch lands on it.
-
-### Bounded state and bitstream checks
-
-`make -j1 build/unit build/av1-state` and then `build/unit && build/av1-state`
-check marker/bit primitives and the AV1 provisional sequence contract. The AV1 fixture
-uses synthetic tile bytes and checks headers and reference state; it is not a decoder
-conformance test. `make check` also runs it before the codec roundtrips.
-`CBVA_CASES` selects space-separated exact case names for `tests/roundtrip.sh`;
-a selection running no cases fails. For example:
-
-```sh
-CBVA_CASES='av1-aom-realtime av1-aom-altref' tests/roundtrip.sh av1
-```
-
-Roundtrips compare software-decoded pixels and readback, including the final frame.
-They do not establish paused native VideoToolbox output or foreground composition.
-
-The source-owned [composition and pause fixture](tests/acceptance.md) covers the
-remaining visual/native acceptance gates and records the limits of automated checks.
-
-The hosted `Check video fallback and bitstreams` workflow builds this directory's
-Dockerfile (including FFmpeg and Xvfb) and runs `h264-cbp`, `hevc-default`,
-`av1-aom-realtime`, and `av1-aom-altref` with a 300-second test bound. Its admission job
-builds the compositor and probe from the checked source before exercising local-decode
-admission. The workflow is source-owned; a passing run is required evidence, not implied
-by the presence of its configuration.
+- AV1 pictures are sent to the phone one picture late: the driver holds a picture until the
+  next one reveals its `refresh_frame_flags`. Local decoding supplies a held picture's
+  pixels on sync, export or readback without refreshing reference slots; requests for
+  another sequence do not consume that provisional picture.
+- HEVC `no_output_of_prior_pics_flag` is cleared, so the phone may decode pictures the app
+  never shows; a CRA that the app treated as the start of a sequence is sent as BLA.
+- Local decoding after a switch starts from the key frame before last that the driver kept.

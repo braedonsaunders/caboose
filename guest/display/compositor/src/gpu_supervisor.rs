@@ -50,6 +50,10 @@ impl GpuSupervisor {
         // becomes fd 0 in the child and is closed in this process after spawn.
         let input = unsafe { Stdio::from_raw_fd(child_ipc.into_raw_fd()) };
         let mut command = Command::new(BROKER);
+        // The broker is not a client of the phone's GPU: the compositor's own settings stay its own.
+        for key in crate::render::OWN_ENV {
+            command.env_remove(key);
+        }
         command.arg("--control-fd=0").arg("--token-file").arg(token_file)
             .arg("--socket").arg(local_socket).arg("--surface-socket").arg(surface_socket).stdin(input);
         if indexed { command.arg("--private-indexed"); }

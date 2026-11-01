@@ -100,22 +100,19 @@ struct ConnectionDiagnosticsView: View {
             row("Round trip", samples: health.roundTrip)
             LabeledContent("Last data received", value: health.sinceLastReceive.map { seconds($0) + " ago" } ?? "—")
             LabeledContent("Receiving", value: health.receiveRate.map(bitRate) ?? "—")
-            LabeledContent("Pictures", value: health.picturesPerSecond.map { String(format: "%.0f per second", $0) } ?? "—")
-            row("Decode", samples: health.decode)
-            row("Waiting to decode", samples: health.decodeWait)
-            LabeledContent("Failed decodes", value: "\(health.decodeFailures)")
+            LabeledContent("Frames presented", value: health.picturesPerSecond.map { String(format: "%.0f per second", $0) } ?? "—")
             LabeledContent("Waiting to send", value: backlog)
             LabeledContent("Typing echo", value: health.typingEchoMs.map { "\($0) ms median" } ?? "—")
             if let waiting = health.keyAwaitingPicture, waiting >= 1 {
-                LabeledContent("Key without a picture", value: seconds(waiting))
+                LabeledContent("Key without a frame", value: seconds(waiting))
             }
             if let window = model.window(model.presentedWindowID), let session = model.session as? CabooseDisplaySession {
-                LabeledContent("This window's last picture", value: session.pictureAge(of: window).map { seconds($0) + " ago" } ?? "—")
+                LabeledContent("This window's last frame", value: session.pictureAge(of: window).map { seconds($0) + " ago" } ?? "—")
             }
         } header: {
             Text("This connection")
         } footer: {
-            Text("Round trip is a ping through the host to the computer's display and back. The computer's encode time and the one-way network delay are not measured: the two clocks are not shared.")
+            Text("Round trip is a ping through the host to the computer's display and back. The one-way network delay is not measured: the two clocks are not shared.")
         }
     }
 

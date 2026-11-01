@@ -117,7 +117,7 @@ export function reader() {
 /**
  * Connects to `url` (the host's /v1/display, `?seat=agent` for the agent seat), says hello
  * with the per-wake `token`, and collects windows for `ms` after the server's hello.
- * Resolves `{ features, encoders, windows: Map<id, { title, app_id, kind }> }`.
+ * Resolves `{ features, windows: Map<id, { title, app_id, kind }> }`.
  */
 export function peek(url, { token, headers = {}, ms = 2_000, timeoutMs = 60_000 }) {
   return new Promise((resolve, reject) => {
@@ -128,7 +128,7 @@ export function peek(url, { token, headers = {}, ms = 2_000, timeoutMs = 60_000 
     const fail = error => { clearTimeout(timer); ws.terminate(); reject(error) }
     const timer = setTimeout(() => fail(new Error(`no hello from ${url} within ${timeoutMs} ms`)), timeoutMs)
     ws.on('open', () => ws.send(frame(CLIENT_HELLO, {
-      version: 0, token, decoders: ['hevc', 'h264'],
+      version: 0, token,
       displays: [{ id: 1, width: 1920, height: 1080, scale: new Float(1), refresh_hz: new Float(60), hdr: false }],
     })))
     ws.on('message', data => {
@@ -136,7 +136,7 @@ export function peek(url, { token, headers = {}, ms = 2_000, timeoutMs = 60_000 
         if (type === BYE) return fail(new Error(`the display said bye: ${fields.reason}`))
         if (type === SERVER_HELLO && !hello) {
           hello = fields
-          setTimeout(() => { clearTimeout(timer); ws.close(); resolve({ features: hello.features ?? [], encoders: hello.encoders ?? [], windows }) }, ms)
+          setTimeout(() => { clearTimeout(timer); ws.close(); resolve({ features: hello.features ?? [], windows }) }, ms)
         }
         if (type === WINDOW_CREATE) windows.set(fields.id, { title: fields.title ?? '', app_id: fields.app_id ?? '', kind: fields.kind })
         if (type === WINDOW_UPDATE && windows.has(fields.id)) Object.assign(windows.get(fields.id), Object.fromEntries(['title', 'app_id'].filter(k => k in fields).map(k => [k, fields[k]])))

@@ -6,13 +6,10 @@
 //! payload is one canonical CBOR map. The stream is parsed as bytes; WebSocket message
 //! boundaries carry no meaning.
 
-pub mod atlas;
 pub mod cbor;
 pub mod clipboard;
-pub mod draw;
 mod fields;
 mod messages;
-pub mod scroll_tag;
 pub mod vectors;
 
 pub use messages::*;
@@ -174,16 +171,7 @@ mod tests {
     fn sample() -> Vec<Message> {
         vec![
             Message::Ping { t_us: 1 },
-            Message::Frame(Frame {
-                id: 3,
-                codec: Codec::H264,
-                keyframe: false,
-                pts_us: 99,
-                rect: Rect::new(0, 0, 10, 10),
-                crop: Rect::new(0, 0, 10, 10),
-                data: vec![0, 0, 0, 1, 0x41, 0x9a],
-                input_seq: None,
-            }),
+            Message::Cursor(Cursor { id: Some(3), image: vec![0x89, b'P', b'N', b'G'], hotspot: [1, 2] }),
             Message::Vsync { display: 1, t_us: 2 },
         ]
     }
@@ -216,7 +204,7 @@ mod tests {
     #[test]
     fn oversized_lengths_fail_the_stream() {
         let mut decoder = StreamDecoder::new();
-        decoder.push(&[0x10, 0xff, 0xff, 0xff, 0x7f]);
+        decoder.push(&[type_id::CURSOR, 0xff, 0xff, 0xff, 0x7f]);
         assert!(matches!(decoder.next_message(), Err(ProtocolError::TooLarge(_))));
     }
 
@@ -233,18 +221,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_enum_values_are_invalid_but_unknown_codecs_are_filtered() {
+    fn unknown_enum_values_are_invalid_and_unknown_keys_are_ignored() {
         let hello = cbor::Value::Map(vec![
             ("version".into(), cbor::Value::Int(0)),
             ("token".into(), cbor::Value::Text("t".into())),
-            (
-                "decoders".into(),
-                cbor::Value::Array(vec![cbor::Value::Text("vvc".into()), cbor::Value::Text("h264".into())]),
-            ),
             ("displays".into(), cbor::Value::Array(vec![])),
+            ("later".into(), cbor::Value::Bool(true)),
         ]);
         let m = Message::from_value(type_id::CLIENT_HELLO, &hello).unwrap().unwrap();
-        assert!(matches!(m, Message::ClientHello(ClientHello { ref decoders, .. }) if decoders == &[Codec::H264]));
+        assert!(matches!(m, Message::ClientHello(ClientHello { ref token, .. }) if token == "t"));
         let bye = cbor::Value::Map(vec![("reason".into(), cbor::Value::Text("later".into()))]);
         assert!(Message::from_value(type_id::BYE, &bye).is_err());
     }

@@ -117,7 +117,7 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 - **Caboose Display.** Caboose's own display server ([guest/display](guest/display),
   [docs/display.md](docs/display.md)): a headless Wayland compositor with Xwayland that
   streams each window on its own, paced by the phone's screen. Nothing runs while nothing
-  changes. Video-rate regions become their own motion streams, still text sharpens once,
+  changes. Window pictures stay lossless, scrolls go as exact copies, still text sharpens once,
   and the computer's sound goes as Opus in step with the pictures. Touch and the iOS
   keyboard (autocorrect, dictation, CJK) arrive as native Wayland input, and the
   clipboard works across the phone, Wayland and X11 apps. Players that decode through

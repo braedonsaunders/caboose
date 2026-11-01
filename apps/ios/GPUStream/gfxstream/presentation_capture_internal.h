@@ -6,7 +6,7 @@
 namespace gfxstream::host::vk { struct VulkanDispatch; }
 namespace caboose::gpuv2 {
 // Images on the presenting device that receive a copy of each presented picture, each also
-// a Metal texture the phone's scroll compositor reads (VK_EXT_metal_objects). The images are
+// a Metal texture frame lab reads (VK_EXT_metal_objects). The images are
 // never presented, sampled by Vulkan, or shared with the guest.
 struct PresentationCaptureRing {
     gfxstream::host::vk::VulkanDispatch* vk = nullptr;

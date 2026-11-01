@@ -7,7 +7,8 @@ import QuartzCore
 /// every window, so the app's are hidden under a patch of the colour just beside them, the
 /// title bar's own, and never receive a click.
 ///
-/// The colour is read from the window's picture, one pixel beside each row, on the GPU:
+/// The colour is read from the window's snapshot (`WindowSnapshot`, a copy of a frame its GPU
+/// layer presented), one pixel beside each row, on the GPU:
 /// a row against the right side samples left of it, one against the left side right of it.
 /// A colour is adopted only when two readings agree, so a picture caught mid-change never
 /// flashes a wrong patch.
@@ -94,10 +95,10 @@ final class DrawnControlsCover {
         case .rgba8Unorm, .rgba8Unorm_srgb: bgra = false
         default: return
         }
-        let renderer = SurfaceRenderer.shared
+        let renderer = SharedMetal.shared
         guard let buffer = renderer.device.makeBuffer(length: 4 * rows.count, options: .storageModeShared),
               let commands = renderer.queue.makeCommandBuffer(), let blit = commands.makeBlitCommandEncoder() else { return }
-        // Pixels are square; a picture taller than the window (an overscan) adds rows below.
+        // Pixels are square: a picture of another height than the window keeps its scale.
         let sx = CGFloat(texture.width) / frame.width, sy = sx
         for (index, row) in rows.enumerated() {
             let point = Self.samplePoint(of: row, windowWidth: frame.width)

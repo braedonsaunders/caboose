@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>finger-scroll:[]</title>
+<style>
+html { background: #182234; color: white; font: 20px sans-serif; }
+body { margin: 0; height: 40000px; background: repeating-linear-gradient(#182234 0 99px, #567 100px); }
+</style>
+<script>
+// Each burst of wheel events (a pan, a wheel notch), apart from the next by more than
+// 400 ms: how far the page scrolled, the wheel events and their delta, and how long the
+// page went on scrolling after the burst's last wheel event (an animation's tail).
+const bursts = [];
+let current = null;
+addEventListener('wheel', event => {
+  const now = performance.now();
+  if (!current || now - current.lastWheel > 400) {
+    // Scrolling runs ahead of passive wheel listeners: a burst starts where the last ended.
+    const from = bursts.length ? bursts[bursts.length - 1].to : 0;
+    current = {from, to: scrollY, wheels: 0, deltaY: 0, deltaMode: event.deltaMode, firstWheel: now, lastWheel: now, lastScroll: now};
+    bursts.push(current);
+  }
+  current.wheels++;
+  current.deltaY += event.deltaY;
+  current.lastWheel = now;
+}, {passive: true});
+addEventListener('scroll', () => {
+  if (!current) return;
+  current.to = scrollY;
+  current.lastScroll = performance.now();
+});
+setInterval(() => {
+  document.title = 'finger-scroll:' + JSON.stringify(bursts.map(b => ({
+    scrolled: b.to - b.from, wheels: b.wheels, deltaY: b.deltaY, deltaMode: b.deltaMode,
+    wheel_ms: Math.round(b.lastWheel - b.firstWheel), tail_ms: Math.round(Math.max(0, b.lastScroll - b.lastWheel)),
+  })));
+}, 40);
+</script>

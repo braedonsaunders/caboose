@@ -12,7 +12,7 @@ components.
 | Path | What |
 | --- | --- |
 | `build.sh` | Builds the builder image and runs it. Entry point. |
-| `Dockerfile` | The builder: a first stage compiles Caboose Display and the VA-API passthrough driver; the second has debootstrap and copies the guest components. |
+| `Dockerfile` | The builder: a first stage compiles Caboose Display and the Caboose VA-API driver; the second has debootstrap and copies the guest components. |
 | `build-inside.sh` | Inside the builder: partitions and formats the raw disk, runs debootstrap, chroots into `configure-guest.sh`, and extracts the kernel and initrd. |
 | `make-system-image.sh` | Packs a prepared root’s `/usr` and `/opt` into an LZ4HC-compressed EROFS image without modifying the root. |
 | `configure-guest.sh` | Inside the chroot: packages, the `caboose` user, every guest component, theme, fonts and boot configuration. |
@@ -95,7 +95,7 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   authority, Xwayland shim, PulseAudio socket and control socket under
   `/run/user/1000/caboose-display/<wayland socket>/`. As each display becomes ready, its
   unit starts that seat's accessibility bus (`a11y.py bus`).
-- **Video passthrough.** The Caboose VA-API driver ([`guest/vaapi`](../vaapi/README.md)) in
+- **Video decoding.** The Caboose VA-API driver ([`guest/vaapi`](../vaapi/README.md)) in
   `/usr/lib/<architecture-triplet>/dri/caboose_drv_video.so`. The image loads the `udmabuf` module
   at boot and gives `/dev/udmabuf` to the `caboose` group for the driver's decode surfaces; on
   a kernel without the module, GL players decode locally.

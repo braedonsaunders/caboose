@@ -6,16 +6,19 @@ use crate::keymap::{self, Keysyms};
 use crate::state::State;
 use crate::windows::Surface;
 use caboose_display_protocol::{self as proto, buttons, TouchPhase};
-use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
+use smithay::backend::input::{ButtonState, KeyState};
 use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::WindowSurfaceType;
 use smithay::input::keyboard::{FilterResult, Keycode};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent};
+use smithay::input::pointer::{ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent};
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
 use std::collections::{HashMap, HashSet};
+
+mod scroll;
+pub(crate) mod xwayland;
 
 /// evdev button codes.
 const BTN_LEFT: u32 = 0x110;
@@ -31,9 +34,6 @@ const BUTTONS: [(u32, u32); 5] = [
     (buttons::BACK, BTN_SIDE),
     (buttons::FORWARD, BTN_EXTRA),
 ];
-
-/// Logical pixels per wheel click, as libinput reports for a mouse wheel.
-const WHEEL_STEP: f64 = 15.0;
 
 /// A surface and its origin in the logical space.
 pub(crate) type Focus = (WlSurface, Point<f64, Logical>);
@@ -56,10 +56,6 @@ pub struct InputState {
     scroll_stop: Option<smithay::reexports::calloop::RegistrationToken>,
 }
 
-/// A finger scroll sequence ends when no sample has come for this long: the phone sends
-/// one every display refresh while the content moves.
-const SCROLL_STOP_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
-
 /// The rectangle a full-screen or maximized window takes, relative to its display, or none
 /// for an ordinary window. A full-screen window takes the display. A maximized one takes the
 /// geometry the client configured it to with that state, or the display when none was
@@ -77,19 +73,6 @@ fn filled_rect(
         Some(kept.unwrap_or(whole))
     } else {
         None
-    }
-}
-
-/// One scroll sample as wl_pointer axis events: precise samples are finger scrolling in
-/// logical pixels, with no discrete steps; wheel clicks are 15 logical pixels and 120
-/// value120 units each.
-fn scroll_axes(scroll: &proto::Scroll, display_scale: f64) -> (AxisSource, Vec<(Axis, f64, Option<i32>)>) {
-    let axes = [(Axis::Horizontal, scroll.dx), (Axis::Vertical, scroll.dy)];
-    if scroll.precise {
-        (AxisSource::Finger, axes.into_iter().filter(|(_, v)| *v != 0.0).map(|(a, v)| (a, v / display_scale, None)).collect())
-    } else {
-        (AxisSource::Wheel, axes.into_iter().filter(|(_, v)| *v != 0.0)
-            .map(|(a, v)| (a, v * WHEEL_STEP, Some((v * 120.0).round() as i32))).collect())
     }
 }
 
@@ -220,47 +203,13 @@ impl State {
         }
         self.input.pointer_buttons = m.buttons;
         if let Some(scroll) = &m.scroll {
-            if let (Some(seq), Some(w)) = (scroll.seq, self.windows.get_mut(m.id)) {
-                w.scroll_seq_delivered = w.scroll_seq_delivered.max(seq);
-            }
-            let (source, axes) = scroll_axes(scroll, display_scale);
-            let mut frame = AxisFrame::new(time).source(source);
-            for (axis, value, v120) in axes {
-                frame = frame.value(axis, value);
-                if let Some(v120) = v120 {
-                    frame = frame.v120(axis, v120);
-                }
-            }
-            pointer.axis(self, frame);
+            pointer.axis(self, scroll::axis_frame(scroll, display_scale, time));
             if scroll.precise {
                 self.arm_scroll_stop();
             }
         }
         // One sample is one wl_pointer.frame: Xwayland turns each frame into its events.
         pointer.frame(self);
-    }
-
-    /// (Re)starts the wait after which a finger scroll sequence gets its axis_stop, the
-    /// end Wayland clients use to finish a gesture (and start their own fling, if any).
-    fn arm_scroll_stop(&mut self) {
-        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-        if let Some(token) = self.input.scroll_stop.take() {
-            self.handle.remove(token);
-        }
-        let inserted = self.handle.insert_source(Timer::from_duration(SCROLL_STOP_AFTER), |_, _, state: &mut State| {
-            state.input.scroll_stop = None;
-            if let Some(pointer) = state.seat.get_pointer() {
-                let time = state.now_ms();
-                let frame = AxisFrame::new(time).source(AxisSource::Finger).stop(Axis::Vertical).stop(Axis::Horizontal);
-                pointer.axis(state, frame);
-                pointer.frame(state);
-                if let Err(e) = state.dh.flush_clients() {
-                    tracing::warn!("flushing Wayland clients: {e}");
-                }
-            }
-            TimeoutAction::Drop
-        });
-        self.input.scroll_stop = inserted.ok();
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
@@ -442,31 +391,12 @@ impl State {
         let (fullscreen, maximized) = (w.fullscreen, w.maximized);
         let display_size = display.logical_size();
         let display_origin = display.origin;
-        let mut geometry = m.geometry.map(|g| {
+        let geometry = m.geometry.map(|g| {
             smithay::utils::Rectangle::<i32, Logical>::new(
                 (to_logical(g.x), to_logical(g.y)).into(),
                 (to_logical(g.w).max(1), to_logical(g.h).max(1)).into(),
             )
         });
-        // Overscan (docs/display.md): lay the window out wider/taller than the geometry the
-        // client shows. It stays asked for until [0, 0]; fullscreen and maximized windows
-        // have a fixed size and get none.
-        let shown = w.shown.unwrap_or_else(|| w.shown_size());
-        if let Some(o) = m.overscan {
-            w.overscan = (to_logical(o.w.max(0)), to_logical(o.h.max(0))).into();
-            // Only the size changes: the window stays where it is.
-            let at = match &w.surface {
-                Surface::Toplevel(_) => Some(w.position),
-                Surface::X11(x) => Some(x.geometry().loc - display_origin),
-                Surface::Popup(_) => None,
-            };
-            if geometry.is_none() {
-                geometry = at.map(|at| smithay::utils::Rectangle::new(at, shown));
-            }
-        }
-        if fullscreen || maximized {
-            w.overscan_size = None;
-        }
         // A maximized window takes the geometry configured with that state: Laptop lays a
         // filled window out below its title bar, grown to its minimum size.
         if maximized {
@@ -475,18 +405,6 @@ impl State {
             }
         }
         let filled = filled_rect(fullscreen, maximized, w.maximized_geometry, display_size);
-        if let Some(g) = geometry.as_mut() {
-            w.overscan_size = None;
-            w.shown = Some(g.size);
-            if !fullscreen && !maximized && (w.overscan.w > 0 || w.overscan.h > 0) {
-                let limit = to_logical(crate::windows::OVERSCAN_MAX_PICTURE);
-                let (whole, applied) = crate::windows::overscan_layout(g.size, w.overscan, w.max_size(), limit);
-                if applied.w > 0 || applied.h > 0 {
-                    g.size = whole;
-                    w.overscan_size = Some(whole);
-                }
-            }
-        }
         let id = m.id;
         match &w.surface {
             Surface::Toplevel(t) => {
@@ -579,8 +497,7 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use super::{filled_rect, scroll_axes, Axis, AxisSource, InputState};
-    use caboose_display_protocol as proto;
+    use super::{filled_rect, InputState};
     use smithay::utils::Rectangle;
 
     #[test]
@@ -595,16 +512,6 @@ mod tests {
         // Full screen is always the display; an ordinary window has no fixed rectangle.
         assert_eq!(filled_rect(true, true, Some(laptop), display), Some(whole));
         assert_eq!(filled_rect(false, false, Some(laptop), display), None);
-    }
-
-    #[test]
-    fn precise_scroll_is_finger_pixels_without_discrete_steps() {
-        let (source, axes) = scroll_axes(&proto::Scroll { dx: 0.0, dy: 60.0, precise: true, seq: None }, 2.0);
-        assert_eq!(source, AxisSource::Finger);
-        assert_eq!(axes, vec![(Axis::Vertical, 30.0, None)]);
-        let (source, axes) = scroll_axes(&proto::Scroll { dx: -1.0, dy: 2.0, precise: false, seq: None }, 2.0);
-        assert_eq!(source, AxisSource::Wheel);
-        assert_eq!(axes, vec![(Axis::Horizontal, -15.0, Some(-120)), (Axis::Vertical, 30.0, Some(240))]);
     }
 
     #[test]

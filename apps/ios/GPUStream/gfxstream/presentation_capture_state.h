@@ -5,8 +5,8 @@
 
 namespace caboose::gpuv2 {
 // Ownership of a presented-picture capture ring. A slot is reserved for a present before its
-// copy is recorded, becomes lent to the phone's scroll compositor once the copy fence has
-// actually signaled, and is free again only when the compositor releases it. Tokens carry
+// copy is recorded, becomes lent to the capture's receiver (frame lab) once the copy fence has
+// actually signaled, and is free again only when the receiver releases it. Tokens carry
 // the ring generation, so a release for a ring that was replaced is ignored. A present finds
 // no slot while every slot is written or lent; it then presents without a capture.
 // Caller serializes all access. This tracks ownership; it performs no GPU work.
@@ -63,6 +63,11 @@ public:
     // No copy is in flight into the ring, so its images may be destroyed.
     bool idle() const {
         for (const auto& slot : slots_) if (slot.state == Writing || slot.state == Quarantined) return false;
+        return true;
+    }
+    // No slot is written, lent or of unknown outcome: nothing reads or writes the ring.
+    bool unused() const {
+        for (const auto& slot : slots_) if (slot.state != Free) return false;
         return true;
     }
     uint32_t token(uint32_t index) const { return ((generation_ & 0xffffff) << 8) | (index & 0xff); }

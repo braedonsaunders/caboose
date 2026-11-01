@@ -4,9 +4,9 @@ import Testing
 @testable import CabooseKit
 
 /// Connects to a real computer running caboose-display, through caboose-host exactly as the
-/// app does: wake, the relayed display, the hello with the wake token, the windows, and
-/// pictures decoded in hardware while vsync ticks at 120 Hz. The computer must have a window
-/// open (a terminal is enough):
+/// app does: wake, the relayed display, the hello with the wake token and the windows, while
+/// vsync ticks at 120 Hz. Pictures come through the GPU executor, not this connection. The
+/// computer must have a window open (a terminal is enough):
 ///
 ///     CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter LiveCabooseDisplay
 ///
@@ -14,8 +14,7 @@ import Testing
 ///
 ///     CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=… swift test --filter LiveCabooseDisplay
 ///
-/// Prints the server's encoders and features, each window, frames per second, failed
-/// decodes and the round trip. Skipped without either URL.
+/// Prints the server's features, each window and the round trip. Skipped without either URL.
 @Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["CABOOSE_HOST_URL"] != nil
     || ProcessInfo.processInfo.environment["CABOOSE_DISPLAY_URL"] != nil))
 @MainActor struct LiveCabooseDisplayTests {
@@ -56,7 +55,7 @@ import Testing
         session.connect()
         try await until("hello", timeout: 20) { session.state == .ready }
         let server = try #require(session.server)
-        print("encoders \(server.encoders), features \(server.features.sorted())")
+        print("features \(server.features.sorted()), GPU epoch \(server.gpuLiveEpoch != nil)")
         try await until("a window", timeout: 20) { !session.windows.isEmpty }
         for window in session.windows.values.sorted(by: { $0.id < $1.id }) {
             print("window \(window.id) \(window.appClass?.instance ?? "?") \"\(window.title)\" \(window.frame) touch=\(window.acceptsTouch)")
@@ -64,18 +63,12 @@ import Testing
 
         // Tick vsync as a 120 Hz screen would, so the server releases frames.
         let start = Date()
-        let generations = session.windows.mapValues(\.surface.generation)
-        let failedBefore = DrawStatistics.shared.snapshot.failed.values.reduce(0, +)
         while Date().timeIntervalSince(start) < seconds {
             session.displayWillRefresh(0, targetTimestamp: CACurrentMediaTime() + 1.0 / 120)
             try await Task.sleep(for: .milliseconds(8))
         }
-        let frames = session.windows.reduce(0) { $0 + Int($1.value.surface.generation - (generations[$1.key] ?? 0)) }
-        let failed = DrawStatistics.shared.snapshot.failed.values.reduce(0, +) - failedBefore
-        print(String(format: "pictures: %d in %.1f s = %.1f per second, %d failed, round trip %@ ms", frames, seconds,
-                     Double(frames) / seconds, failed, session.latencyMs.map { String(format: "%.1f", $0) } ?? "?"))
-        #expect(session.windows.values.allSatisfy { $0.surface.generation > 0 }, "every window got its keyframe")
-        #expect(failed == 0)
+        print("round trip \(session.latencyMs.map { String(format: "%.1f", $0) } ?? "?") ms")
+        #expect(session.state == .ready && !session.windows.isEmpty)
         session.disconnect()
     }
 
@@ -137,22 +130,6 @@ import Testing
             try await until("the composition committed", timeout: 5) { page.title == "touch|caboose!日本" }
         }
         print("text: \"\(page.title)\"")
-
-        // Keys into xterm, through Xwayland, and how fast its picture answers.
-        if let xterm = session.windows.values.first(where: { $0.appClass?.instance == "XTerm" || $0.title == "xterm" }) {
-            let before = xterm.surface.generation
-            for character in "echo caboose\r" {
-                for stroke in Keysyms.strokes(for: character) {
-                    session.key(stroke, pressed: true, in: xterm)
-                    session.key(stroke, pressed: false, in: xterm)
-                }
-                try await Task.sleep(for: .milliseconds(120))
-            }
-            try await Task.sleep(for: .milliseconds(500))
-            print("xterm pictures \(xterm.surface.generation - before), typing echo \(session.typingEchoMs.map { "\($0) ms" } ?? "?")")
-            #expect(xterm.surface.generation > before)
-        }
-        #expect(DrawStatistics.shared.snapshot.failed.isEmpty, "\(DrawStatistics.shared.snapshot.failed)")
     }
 
     private func until(_ what: String, timeout: TimeInterval, _ condition: () -> Bool) async throws {

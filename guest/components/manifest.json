@@ -99,8 +99,6 @@
   "gpu/gfxstream/control_protocol.py",
   "gpu/gfxstream/surface_local_protocol.py",
   "gpu/gfxstream/buffer_presentation.py",
-  "gpu/caboose-gpu-run",
-  "gpu/profile.json",
   "apps/install.sh",
   "apps/caboose-app",
   "apps/appcore.py",

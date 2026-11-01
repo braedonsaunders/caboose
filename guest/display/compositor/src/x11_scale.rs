@@ -29,6 +29,9 @@ impl State {
         let Some(data) = client.get_data::<XWaylandClientData>() else { return };
         data.compositor_state.set_client_scale(scale);
         self.x11_scale = scale;
+        if let Some(access) = &self.x11 {
+            crate::input::xwayland::set_pixel_distance(access.clone(), scale);
+        }
         tracing::info!("X11 at scale {scale}");
         if let Some(wm) = self.xwm.as_mut() {
             let settings = [("Xft/DPI".to_owned(), xft_dpi(scale).into())];

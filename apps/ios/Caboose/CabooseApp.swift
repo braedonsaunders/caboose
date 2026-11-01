@@ -12,24 +12,6 @@ struct CabooseApp: App {
         #if DEBUG
         ConsoleCapture.start()
         #endif
-        #if DEBUG && canImport(CabooseGPUStream)
-        if ProcessInfo.processInfo.environment["CABOOSE_GPU_CAPABILITIES"] == "1" {
-            Task.detached(priority: .utility) {
-                let directory = URL.cachesDirectory.appending(path: "CabooseDiagnostics", directoryHint: .isDirectory)
-                do {
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                    let output = directory.appending(path: "gpu-capabilities.json")
-                    if FileManager.default.fileExists(atPath: output.path) {
-                        try FileManager.default.removeItem(at: output)
-                    }
-                    let report = try GPUDeviceCapabilities.queryJSON()
-                    try report.write(to: output, options: .atomic)
-                } catch {
-                    NSLog("GPU capability diagnostic failed: %@", String(describing: error))
-                }
-            }
-        }
-        #endif
     }
 
     var body: some Scene {

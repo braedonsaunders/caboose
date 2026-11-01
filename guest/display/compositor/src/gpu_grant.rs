@@ -21,6 +21,8 @@ pub struct Grant {
     pub process: u64,
     pub peer: (u32, u32, u64, u32),
     pub generation: u64,
+    /// The bind's namespace (gpu_control.rs): a client's own surface, or a buffer window.
+    pub space: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +63,14 @@ impl Grants {
 
     pub fn active_window(&self, window: u64) -> bool {
         self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(_, phase)| *phase == GrantPhase::Active)
+    }
+
+    /// Whether an application draws the window straight into its phone surface (a Vulkan
+    /// swapchain bound to its Wayland surface or X11 window), so the compositor presents
+    /// nothing in it.
+    pub fn client_surface(&self, window: u64) -> bool {
+        self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(grant, phase)|
+            *phase == GrantPhase::Active && grant.space != crate::gpu_control::BUFFER_WINDOW)
     }
 
     pub fn ready(&mut self, executor: [u8; 16], generation: u64) -> io::Result<()> {
@@ -169,7 +179,7 @@ impl Grants {
 
     /// `matches` must be the complete compositor-derived set after pidfd and
     /// wl_surface object-ID validation. An ambiguous set never yields a grant.
-    pub fn bind(&mut self, process: u64, peer: (u32, u32, u64, u32), matches: &[u64]) -> io::Result<Grant> {
+    pub fn bind(&mut self, process: u64, space: u32, peer: (u32, u32, u64, u32), matches: &[u64]) -> io::Result<Grant> {
         if self.phase != Phase::Ready || process == 0 || matches.len() != 1 || matches[0] == 0 || self.windows.contains_key(&matches[0]) || self.windows.values().any(|(grant, _)| grant.peer == peer) {
             return Err(io::Error::other("surface unavailable or ambiguous"));
         }
@@ -179,7 +189,7 @@ impl Grants {
         if self.windows.values().any(|(grant, _)| grant.token == token) {
             return Err(io::Error::other("GPU grant repeated"));
         }
-        let grant = Grant { epoch: self.epoch, token, window: matches[0], process, peer, generation: self.next_surface_generation };
+        let grant = Grant { epoch: self.epoch, token, window: matches[0], process, peer, generation: self.next_surface_generation, space };
         self.windows.insert(grant.window, (grant, GrantPhase::Active));
         Ok(grant)
     }
@@ -213,7 +223,7 @@ mod tests {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
         assert!(!grants.active_window(7));
-        let grant = grants.bind(1, (1, 2, 3, 4), &[7]).unwrap();
+        let grant = grants.bind(1, 0, (1, 2, 3, 4), &[7]).unwrap();
         assert!(grants.active_window(7));
         assert!(grants.request_revoke(grant.epoch, grant.token, grant.generation + 1).is_err());
         assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), Some(grant));
@@ -228,16 +238,16 @@ mod tests {
     fn ambiguous_wayland_connections_cannot_receive_a_grant() {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
-        assert!(grants.bind(1, (1000, 42, 123, 17), &[7, 8]).is_err());
-        assert!(grants.bind(1, (1000, 42, 123, 17), &[]).is_err());
-        let grant = grants.bind(1, (1000, 42, 123, 17), &[7]).unwrap();
-        assert!(grants.bind(1, (1000, 42, 123, 17), &[7]).is_err());
+        assert!(grants.bind(1, 0, (1000, 42, 123, 17), &[7, 8]).is_err());
+        assert!(grants.bind(1, 0, (1000, 42, 123, 17), &[]).is_err());
+        let grant = grants.bind(1, 0, (1000, 42, 123, 17), &[7]).unwrap();
+        assert!(grants.bind(1, 0, (1000, 42, 123, 17), &[7]).is_err());
         assert_eq!(grants.begin_revoke(7), Some(grant));
-        assert!(grants.bind(1, (1000, 42, 123, 17), &[7]).is_err());
+        assert!(grants.bind(1, 0, (1000, 42, 123, 17), &[7]).is_err());
         grants.revoke_sent(grant).unwrap();
-        assert!(grants.bind(1, (1000, 42, 123, 17), &[7]).is_err());
+        assert!(grants.bind(1, 0, (1000, 42, 123, 17), &[7]).is_err());
         grants.surface_retired(grant).unwrap();
-        let next = grants.bind(1, (1000, 42, 123, 17), &[7]).unwrap();
+        let next = grants.bind(1, 0, (1000, 42, 123, 17), &[7]).unwrap();
         assert!(next.generation > grant.generation);
     }
     #[test]
@@ -260,7 +270,7 @@ mod tests {
         assert_eq!(candidates, [7, 8]);
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
-        assert!(grants.bind(1, peer, &candidates).is_err());
+        assert!(grants.bind(1, 0, peer, &candidates).is_err());
     }
 
     #[test]
@@ -268,12 +278,12 @@ mod tests {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
         let peer = (1000, 42, 123, 17);
-        let grant = grants.bind(1, peer, &[7]).unwrap();
+        let grant = grants.bind(1, 0, peer, &[7]).unwrap();
         grants.begin_revoke(7).unwrap();
         grants.surface_retired_by_identity(grant.epoch, grant.token, grant.generation).unwrap();
-        assert!(grants.bind(1, peer, &[7]).is_err());
+        assert!(grants.bind(1, 0, peer, &[7]).is_err());
         grants.revoke_sent(grant).unwrap();
-        assert!(grants.bind(1, peer, &[7]).is_ok());
+        assert!(grants.bind(1, 0, peer, &[7]).is_ok());
     }
 
     #[test]
@@ -295,7 +305,7 @@ mod tests {
         assert!(grants.epoch_if_ready().is_none());
         grants.ready([1; 16], 1).unwrap();
         let old = grants.epoch_if_ready().unwrap();
-        let grant = grants.bind(1, (1000, 42, 123, 17), &[7]).unwrap();
+        let grant = grants.bind(1, 0, (1000, 42, 123, 17), &[7]).unwrap();
         assert_eq!(grants.lost([1; 16], 1).unwrap(), vec![grant]);
         assert!(grants.epoch_if_ready().is_none());
         assert!(grants.ready([2; 16], 2).is_err());
@@ -318,8 +328,8 @@ mod tests {
         let mut grants = Grants::new().unwrap();
         grants.ready([1; 16], 1).unwrap();
         let peer = (1000, 42, 123, 17);
-        let sent = grants.bind(1, peer, &[7]).unwrap();
-        let queued = grants.bind(1, (1000, 43, 124, 18), &[8]).unwrap();
+        let sent = grants.bind(1, 0, peer, &[7]).unwrap();
+        let queued = grants.bind(1, 0, (1000, 43, 124, 18), &[8]).unwrap();
         assert_eq!(grants.lost([1; 16], 1).unwrap().len(), 2);
         grants.revoke_sent(sent).unwrap();
         grants.retired([1; 16], 1).unwrap();
@@ -330,11 +340,27 @@ mod tests {
         grants.revoke_sent(queued).unwrap();
         grants.surface_retired_by_identity(sent.epoch, sent.token, sent.generation).unwrap();
         // The same windows bind again under the new executor.
-        let again = grants.bind(1, peer, &[7]).unwrap();
+        let again = grants.bind(1, 0, peer, &[7]).unwrap();
         assert_ne!(again.epoch, sent.epoch);
         assert!(grants.active_window(7));
         // A grant of the current epoch must still be known.
         assert!(grants.surface_retired_by_identity(again.epoch, [9; 16], again.generation).is_err());
         assert!(grants.revoke_sent(Grant { token: [9; 16], ..again }).is_err());
+    }
+
+    #[test]
+    fn buffer_windows_of_one_process_are_granted_side_by_side() {
+        use crate::gpu_control::{BUFFER_WINDOW, X11_WINDOW};
+        let mut grants = Grants::new().unwrap();
+        grants.ready([1; 16], 1).unwrap();
+        // The compositor presents a toplevel and its popup: one process, two windows.
+        let own = std::process::id();
+        grants.bind(1, BUFFER_WINDOW, (1000, own, 5, 7), &[7]).unwrap();
+        grants.bind(1, BUFFER_WINDOW, (1000, own, 5, 8), &[8]).unwrap();
+        assert!(grants.active_window(7) && grants.active_window(8));
+        // The compositor presents in its buffer windows; a swapchain draws its own.
+        assert!(!grants.client_surface(7) && !grants.client_surface(8));
+        grants.bind(1, X11_WINDOW, (1000, 42, 6, 0x400001), &[9]).unwrap();
+        assert!(grants.client_surface(9));
     }
 }

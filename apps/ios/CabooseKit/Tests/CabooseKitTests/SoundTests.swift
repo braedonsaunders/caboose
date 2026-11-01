@@ -79,8 +79,6 @@ import Testing
             let pts = first + Int64(index) * 20_000
             #expect(clock.now == pts - PlayoutDelay.initial)
             #expect(clock.place(audio: pts) == .play)
-            #expect(clock.time(for: pts) == CMTime(value: pts, timescale: 1_000_000))
-            #expect(clock.time(for: pts - PlayoutDelay.initial - 1) == nil)
         }
         #expect(clock.delay == PlayoutDelay.initial)
         clock.stop()
@@ -119,7 +117,6 @@ import Testing
         #expect(clock.delay == PlayoutDelay.initial)
         clock.stop()
         #expect(clock.now == nil)
-        #expect(clock.time(for: 6_520_000) == nil)
         #expect(clock.place(audio: 6_540_000) == .start(6_540_000 - PlayoutDelay.initial))
     }
 
@@ -325,33 +322,6 @@ enum Tone {
         #expect(player.renderer.status == .rendering, "\(String(describing: player.renderer.error))")
         player.stop()
     }
-
-    @Test func picturesAreTimedOnTheClockWhileSoundPlays() async throws {
-        let clock = MediaClock()
-        #expect(clock.time(for: 1) == nil) // stopped: pictures show at once
-        if case .start(let time) = clock.place(audio: 10_000_000) { clock.start(at: time) }
-        let now = try #require(clock.now)
-        #expect(clock.time(for: now + 50_000) == CMTime(value: now + 50_000, timescale: 1_000_000))
-        #expect(clock.time(for: now - 50_000) == nil) // late: at once
-
-        // A live video stream on the running clock still reaches the screen.
-        guard case .videoCreate(let fields) = VideoMessageTests.server(.videoCreate, [
-            "id": 3, "window": 7, "rect": [0, 0, 64, 64], "codec": "h264", "source": "surface",
-        ]) else { Issue.record("create"); return }
-        let video = try #require(RemoteVideo(fields, clock: clock, send: { _ in }))
-        var parser = DisplayFrameParser()
-        guard case .frame(let keyframe)? = try parser.append(try DisplayVectorTests.vector("frame-h264-keyframe").wire).first.map(ServerMessage.init) else {
-            Issue.record("keyframe"); return
-        }
-        let pts = UInt64((clock.now ?? 0) + 60_000)
-        video.frame(VideoFrame(video: 3, seq: 0, keyframe: true, ptsMicros: pts, data: keyframe.data))
-        video.flush()
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(video.layer.sampleBufferRenderer.status == .rendering, "\(String(describing: video.layer.sampleBufferRenderer.error))")
-        #expect(video.layer.isReadyForDisplay)
-        video.close()
-        clock.stop()
-    }
 }
 
 @MainActor @Suite(.serialized) struct SoundSessionTests {
@@ -456,7 +426,6 @@ enum Tone {
         clock.start(at: 880_000)
         host += 20_000
         #expect(clock.now == 900_000)
-        #expect(clock.time(for: 1_020_000) == CMTime(value: 1_020_000, timescale: 1_000_000))
         let ordinary = clock.place(audio: 1_020_000)
         #expect(ordinary == .play && rates == [1])
         host += 300_000
@@ -464,7 +433,7 @@ enum Tone {
         #expect(rebuffer == .restart(900_000))
         clock.start(at: 900_000)
         clock.stop(reason: .sessionStop)
-        #expect(clock.now == nil && clock.time(for: 1_040_000) == nil)
+        #expect(clock.now == nil)
         let resume = clock.place(audio: 2_000_000)
         #expect(resume == .start(1_860_000))
         clock.start(at: 1_860_000)

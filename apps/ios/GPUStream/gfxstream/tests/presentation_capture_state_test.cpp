@@ -7,6 +7,7 @@ int main() {
     assert(s.reserve(1) == -1); // no ring yet
     s.reset(2);
     assert(s.idle());
+    assert(s.unused());
     assert(s.reserve(0) == -1); // serials are nonzero
     assert(s.reserve(1) == 0);
     assert(s.reserve(1) == -1); // one capture per present
@@ -16,6 +17,7 @@ int main() {
     uint32_t first = 0, second = 0;
     assert(s.complete(1, &first));
     assert(!s.complete(1, &first)); // completion is reported once
+    assert(!s.unused()); // a lent slot is still read
     assert(s.abort(2)); // never submitted
     assert(!s.complete(2, &second));
     assert(s.idle());
@@ -38,5 +40,6 @@ int main() {
     assert(s.complete(7, &third));
     assert((third >> 8) != (second >> 8));
     assert(s.release(third));
+    assert(s.unused());
     assert(!s.release(0xffffffffu));
 }

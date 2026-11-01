@@ -111,10 +111,9 @@ seat_ready() {
 }
 
 # A caboose-display instance (docs/display.md). Its launch environment goes to ENVFILE once
-# it is ready, and video passthrough uses VIDEO_SOCKET; extra arguments select the instance
-# (port, sockets, X display).
+# it is ready; extra arguments select the instance (port, sockets, X display).
 start_display() {
-  local name=$1 port=$2 bus=$3 envfile=$4 video_socket=$5; shift 5
+  local name=$1 port=$2 bus=$3 envfile=$4; shift 4
   if [ -s "$envfile" ] && caboose-display-ready 1 "$port" "$envfile" >/dev/null 2>&1; then return; fi
   install -d -m 0755 /run/caboose
   # The broker refuses sockets a stopped display left; no display serves them now.
@@ -131,7 +130,7 @@ start_display() {
   # The redirect below is opened by this root shell, so the log must already be caboose's.
   touch "$log" && chown caboose:caboose "$log"
   runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" CABOOSE_VIDEO_SOCKET="$video_socket" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" \
     "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
 }
 
@@ -172,7 +171,7 @@ start_owner() {
   session_bus "$bus"
   # The owner's endpoint owns the D-Bus name and records the owner's notifications.
   notification_endpoint caboose-notification-daemon "$bus" /opt/caboose/notifications/daemon.py --owner
-  # The VA-API passthrough driver exports decode surfaces through /dev/udmabuf (passed in
+  # The Caboose VA-API driver exports decode surfaces through /dev/udmabuf (passed in
   # on hosts with a render node); this container's node is the session user's to use.
   if [ -e /dev/udmabuf ]; then chgrp caboose /dev/udmabuf && chmod 0660 /dev/udmabuf; fi
   # The phone-GPU driver tracks stores to mapped memory through /dev/userfaultfd (passed
@@ -189,8 +188,7 @@ start_owner() {
   if [ -x /usr/local/libexec/caboose-steam-defaults ]; then
     runuser -u caboose -- env HOME="$CABOOSE_HOME" /usr/local/libexec/caboose-steam-defaults || true
   fi
-  start_display caboose-display 14600 "$bus" /run/caboose/display.env "$XDG_RUNTIME_DIR/caboose-video.sock" \
-    $(phone_gpu_args)
+  start_display caboose-display 14600 "$bus" /run/caboose/display.env $(phone_gpu_args)
   bridge_daemon "$bus"
 }
 
@@ -199,7 +197,7 @@ start_agent() {
   session_bus "$bus"
   notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
   # Agents see and drive its apps through its control socket; it plays no sound.
-  start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/caboose-video-agent.sock" \
+  start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env \
     --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices
 }
 

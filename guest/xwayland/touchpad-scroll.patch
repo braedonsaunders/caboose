@@ -1,0 +1,340 @@
+Description: Finger scrolling as a touchpad's smooth scrolling
+ Scrolling the compositor marks with axis_source finger comes from a new
+ "xwayland-touchpad" slave device of X input type TOUCHPAD, with the motion of
+ the same frames, as XI2.1 smooth scroll valuators in X pixels. One increment is
+ the device's "Xwayland Scroll Pixel Distance" (CARD32, 120 until the compositor
+ sets it). Clients that read the device type (Chromium) scroll by the pixels sent
+ rather than animating wheel steps. Scroll events that would follow another
+ device's, and each finger sequence, start with an event that moves the scroll
+ valuators by nothing, so clients that reset their baseline when the core pointer
+ switches devices or enters a window lose no delta. Wheel and value120 scrolling
+ stays on the pointer device.
+Forwarded: not-needed
+---
+--- a/hw/xwayland/xwayland-input.h
++++ b/hw/xwayland/xwayland-input.h
+@@ -57,6 +57,7 @@
+     DeviceIntPtr pointer;
+     DeviceIntPtr relative_pointer;
+     DeviceIntPtr pointer_gestures;
++    DeviceIntPtr touchpad;
+     DeviceIntPtr keyboard;
+     DeviceIntPtr touch;
+     DeviceIntPtr stylus;
+@@ -119,8 +120,14 @@
+         Bool has_horizontal_scroll;
+         Bool has_vertical_scroll_v120;
+         Bool has_horizontal_scroll_v120;
++        Bool has_axis_source;
++        uint32_t axis_source;
+     } pending_pointer_event;
+ 
++    /* A finger scroll sequence is under way on the touchpad device: it ends with
++     * axis_stop or with a frame that is not finger scrolling. */
++    Bool finger_scrolling;
++
+     struct xorg_list tablets;
+     struct xorg_list tablet_tools;
+     struct xorg_list tablet_pads;
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -27,6 +27,7 @@
+ #include <xwayland-config.h>
+ 
+ #include <linux/input.h>
++#include <X11/Xatom.h>
+ #include <sys/mman.h>
+ 
+ #include <inputstr.h>
+@@ -296,7 +297,97 @@
+ #undef NAXES
+ }
+ 
++/* Caboose: finger scrolling (wl_pointer axis_source finger) comes from this device. Its X
++ * input type is TOUCHPAD, so clients take its smooth scroll valuators for a touchpad's
++ * precise scrolling rather than a wheel's. The scroll valuators count the compositor's
++ * axis value (X pixels), and one increment is the device's XWL_SCROLL_PIXEL_DISTANCE
++ * property of them, 120 unless the compositor sets it. Chromium scrolls 120 of its
++ * pixels per increment, so at a distance of 120 times the X screen's scale a pan moves
++ * its content as far as the finger moved. The X server emulates a core button 4-7
++ * click per increment. */
++#define XWL_SCROLL_PIXEL_DISTANCE "Xwayland Scroll Pixel Distance"
++#define XWL_TOUCHPAD_SCROLL_INCREMENT 120
++
+ static int
++xwl_touchpad_proc(DeviceIntPtr device, int what)
++{
++#define NAXES 4
++    Atom axes_labels[NAXES] = { 0 };
++
++    switch (what) {
++    case DEVICE_INIT:
++        device->public.on = FALSE;
++
++        axes_labels[0] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_X);
++        axes_labels[1] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_Y);
++        axes_labels[2] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_HSCROLL);
++        axes_labels[3] = XIGetKnownProperty(AXIS_LABEL_PROP_REL_VSCROLL);
++
++        if (!init_pointer_buttons(device))
++            return BadValue;
++
++        if (!InitValuatorClassDeviceStruct(device, NAXES, axes_labels,
++                                           GetMotionHistorySize(), Relative))
++            return BadValue;
++
++        InitValuatorAxisStruct(device, 0, axes_labels[0],
++                               NO_AXIS_LIMITS, NO_AXIS_LIMITS, 0, 0, 0, Relative);
++        InitValuatorAxisStruct(device, 1, axes_labels[1],
++                               NO_AXIS_LIMITS, NO_AXIS_LIMITS, 0, 0, 0, Relative);
++        InitValuatorAxisStruct(device, 2, axes_labels[2],
++                               NO_AXIS_LIMITS, NO_AXIS_LIMITS, 0, 0, 0, Relative);
++        InitValuatorAxisStruct(device, 3, axes_labels[3],
++                               NO_AXIS_LIMITS, NO_AXIS_LIMITS, 0, 0, 0, Relative);
++
++        SetScrollValuator(device, 2, SCROLL_TYPE_HORIZONTAL,
++                          XWL_TOUCHPAD_SCROLL_INCREMENT, SCROLL_FLAG_NONE);
++        SetScrollValuator(device, 3, SCROLL_TYPE_VERTICAL,
++                          XWL_TOUCHPAD_SCROLL_INCREMENT, SCROLL_FLAG_PREFERRED);
++
++        if (!InitPtrFeedbackClassDeviceStruct(device, xwl_pointer_control))
++            return BadValue;
++
++        return Success;
++
++    case DEVICE_ON:
++        device->public.on = TRUE;
++        return Success;
++
++    case DEVICE_OFF:
++    case DEVICE_CLOSE:
++        device->public.on = FALSE;
++        return Success;
++    }
++
++    return BadMatch;
++
++#undef NAXES
++}
++
++/* XWL_SCROLL_PIXEL_DISTANCE: one CARD32, X pixels of finger scrolling per increment. */
++static int
++xwl_touchpad_set_property(DeviceIntPtr device, Atom property,
++                          XIPropertyValuePtr prop, BOOL checkonly)
++{
++    uint32_t distance;
++
++    if (property != MakeAtom(XWL_SCROLL_PIXEL_DISTANCE,
++                             strlen(XWL_SCROLL_PIXEL_DISTANCE), TRUE))
++        return Success;
++    if (prop->format != 32 || prop->size != 1 || prop->type != XA_CARDINAL)
++        return BadMatch;
++    distance = *(uint32_t *) prop->data;
++    if (distance == 0 || distance > 100000)
++        return BadValue;
++    if (checkonly)
++        return Success;
++
++    SetScrollValuator(device, 2, SCROLL_TYPE_HORIZONTAL, distance, SCROLL_FLAG_NONE);
++    SetScrollValuator(device, 3, SCROLL_TYPE_VERTICAL, distance, SCROLL_FLAG_PREFERRED);
++    return Success;
++}
++
++static int
+ xwl_pointer_proc_pointer_gestures(DeviceIntPtr device, int what)
+ {
+ #define NTOUCHPOINTS 20
+@@ -654,6 +745,20 @@
+                                             dx_unaccel, dy_unaccel);
+ }
+ 
++/* Whether the pending frame is finger scrolling: axis events with axis_source finger and
++ * no discrete steps, or the axis_stop that ends them. */
++static Bool
++is_finger_scroll(struct xwl_seat *xwl_seat)
++{
++    return xwl_seat->touchpad &&
++        xwl_seat->pending_pointer_event.has_axis_source &&
++        xwl_seat->pending_pointer_event.axis_source == WL_POINTER_AXIS_SOURCE_FINGER &&
++        (xwl_seat->pending_pointer_event.has_vertical_scroll ||
++         xwl_seat->pending_pointer_event.has_horizontal_scroll) &&
++        !xwl_seat->pending_pointer_event.has_vertical_scroll_v120 &&
++        !xwl_seat->pending_pointer_event.has_horizontal_scroll_v120;
++}
++
+ static void
+ dispatch_absolute_motion(struct xwl_seat *xwl_seat)
+ {
+@@ -688,6 +793,11 @@
+          flags = POINTER_ABSOLUTE | POINTER_SCREEN;
+          device = xwl_seat->pointer;
+     }
++    /* The motion of a finger scrolling frame, here and in dispatch_relative_motion, comes
++     * from the device the scrolling does, so the core pointer does not switch devices
++     * (which resets clients' scroll baselines) on every frame of a pan. */
++    if (is_finger_scroll(xwl_seat))
++        device = xwl_seat->touchpad;
+ 
+     QueuePointerEvents(device, MotionNotify, 0, flags, &mask);
+ }
+@@ -716,8 +826,65 @@
+     valuator_mask_set_unaccelerated(&mask, 0, event_dx, event_dx_unaccel);
+     valuator_mask_set_unaccelerated(&mask, 1, event_dy, event_dy_unaccel);
+ 
+-    QueuePointerEvents(xwl_seat->relative_pointer, MotionNotify, 0,
+-                       POINTER_RAWONLY, &mask);
++    QueuePointerEvents(is_finger_scroll(xwl_seat) ? xwl_seat->touchpad
++                                                  : xwl_seat->relative_pointer,
++                       MotionNotify, 0, POINTER_RAWONLY, &mask);
++}
++
++/* XI2 clients turn scroll valuators' absolute positions into deltas from the last event
++ * of the same device, and forget that position when the core pointer switches devices or
++ * enters a window; the first event after that scrolls nothing. An event that moves the
++ * scroll valuators (2 and 3 on every pointer device here) by nothing gives them the
++ * position, so the next delta counts. */
++static void
++prime_scroll_valuators(DeviceIntPtr device)
++{
++    ValuatorMask mask;
++
++    valuator_mask_zero(&mask);
++    valuator_mask_set_double(&mask, 2, 0.0);
++    valuator_mask_set_double(&mask, 3, 0.0);
++    QueuePointerEvents(device, MotionNotify, 0, POINTER_RELATIVE, &mask);
++}
++
++/* Whether scroll events from `device` would follow events of another device of the
++ * core pointer, which switches it and resets clients' scroll baselines. */
++static Bool
++switches_slave(DeviceIntPtr device)
++{
++    DeviceIntPtr master = GetMaster(device, MASTER_POINTER);
++
++    return master && master->lastSlave != device;
++}
++
++/* Finger scrolling as smooth scroll valuators of the touchpad device, in surface pixels.
++ * A sequence starts with prime_scroll_valuators, as the pointer may have entered a
++ * window (or switched devices) with the frame's motion. */
++static void
++dispatch_finger_scroll(struct xwl_seat *xwl_seat)
++{
++    DeviceIntPtr touchpad = xwl_seat->touchpad;
++    Bool vertical = xwl_seat->pending_pointer_event.has_vertical_scroll;
++    Bool horizontal = xwl_seat->pending_pointer_event.has_horizontal_scroll;
++    double dy = wl_fixed_to_double(xwl_seat->pending_pointer_event.scroll_dy);
++    double dx = wl_fixed_to_double(xwl_seat->pending_pointer_event.scroll_dx);
++    ValuatorMask mask;
++
++    if (!xwl_seat->finger_scrolling || switches_slave(touchpad)) {
++        if (dx == 0.0 && dy == 0.0)
++            return; /* the stop of a sequence that delivered nothing */
++        prime_scroll_valuators(touchpad);
++    }
++
++    valuator_mask_zero(&mask);
++    if (horizontal)
++        valuator_mask_set_double(&mask, 2, dx);
++    if (vertical)
++        valuator_mask_set_double(&mask, 3, dy);
++    QueuePointerEvents(touchpad, MotionNotify, 0, POINTER_RELATIVE, &mask);
++
++    /* axis_stop is a zero value: the sequence ends. */
++    xwl_seat->finger_scrolling = dx != 0.0 || dy != 0.0;
+ }
+ 
+ static void
+@@ -745,6 +912,9 @@
+                                  SCROLL_AXIS_HORIZ,
+                                  wl_fixed_to_double(dx) / divisor);
+ 
++    /* After finger scrolling, the wheel's first click would otherwise scroll nothing. */
++    if (switches_slave(get_pointer_device(xwl_seat)))
++        prime_scroll_valuators(get_pointer_device(xwl_seat));
+     QueuePointerEvents(get_pointer_device(xwl_seat),
+                        MotionNotify, 0, POINTER_RELATIVE, &mask);
+ }
+@@ -766,11 +936,21 @@
+             dispatch_absolute_motion(xwl_seat);
+     }
+ 
+-    if (xwl_seat->pending_pointer_event.has_vertical_scroll ||
+-        xwl_seat->pending_pointer_event.has_horizontal_scroll ||
+-        xwl_seat->pending_pointer_event.has_vertical_scroll_v120 ||
+-        xwl_seat->pending_pointer_event.has_horizontal_scroll_v120)
+-        dispatch_scroll_motion(xwl_seat);
++    if (is_finger_scroll(xwl_seat))
++        dispatch_finger_scroll(xwl_seat);
++    else {
++        if (has_relative || has_absolute ||
++            xwl_seat->pending_pointer_event.has_vertical_scroll ||
++            xwl_seat->pending_pointer_event.has_horizontal_scroll ||
++            xwl_seat->pending_pointer_event.has_vertical_scroll_v120 ||
++            xwl_seat->pending_pointer_event.has_horizontal_scroll_v120)
++            xwl_seat->finger_scrolling = FALSE;
++        if (xwl_seat->pending_pointer_event.has_vertical_scroll ||
++            xwl_seat->pending_pointer_event.has_horizontal_scroll ||
++            xwl_seat->pending_pointer_event.has_vertical_scroll_v120 ||
++            xwl_seat->pending_pointer_event.has_horizontal_scroll_v120)
++            dispatch_scroll_motion(xwl_seat);
++    }
+ 
+     xwl_seat->pending_pointer_event.has_absolute = FALSE;
+     xwl_seat->pending_pointer_event.has_relative = FALSE;
+@@ -778,6 +958,7 @@
+     xwl_seat->pending_pointer_event.has_horizontal_scroll = FALSE;
+     xwl_seat->pending_pointer_event.has_vertical_scroll_v120 = FALSE;
+     xwl_seat->pending_pointer_event.has_horizontal_scroll_v120 = FALSE;
++    xwl_seat->pending_pointer_event.has_axis_source = FALSE;
+ }
+ 
+ static void
+@@ -861,6 +1042,10 @@
+ static void
+ pointer_handle_axis_source(void *data, struct wl_pointer *wl_pointer, uint32_t axis_source)
+ {
++    struct xwl_seat *xwl_seat = data;
++
++    xwl_seat->pending_pointer_event.has_axis_source = TRUE;
++    xwl_seat->pending_pointer_event.axis_source = axis_source;
+ }
+ 
+ static void
+@@ -1709,6 +1894,26 @@
+         ActivateDevice(xwl_seat->pointer, TRUE);
+     }
+     enable_device(xwl_seat, xwl_seat->pointer);
++
++    if (xwl_seat->touchpad == NULL) {
++        xwl_seat->touchpad =
++            add_device(xwl_seat, "xwayland-touchpad", xwl_touchpad_proc);
++        xwl_seat->touchpad->xinput_type =
++            MakeAtom(XI_TOUCHPAD, strlen(XI_TOUCHPAD), TRUE);
++        ActivateDevice(xwl_seat->touchpad, TRUE);
++        {
++            uint32_t distance = XWL_TOUCHPAD_SCROLL_INCREMENT;
++            Atom atom = MakeAtom(XWL_SCROLL_PIXEL_DISTANCE,
++                                 strlen(XWL_SCROLL_PIXEL_DISTANCE), TRUE);
++
++            XIChangeDeviceProperty(xwl_seat->touchpad, atom, XA_CARDINAL, 32,
++                                   PropModeReplace, 1, &distance, FALSE);
++            XISetDevicePropertyDeletable(xwl_seat->touchpad, atom, FALSE);
++            XIRegisterPropertyHandler(xwl_seat->touchpad,
++                                      xwl_touchpad_set_property, NULL, NULL);
++        }
++    }
++    enable_device(xwl_seat, xwl_seat->touchpad);
+ }
+ 
+ static void
+@@ -1719,6 +1924,9 @@
+ 
+     if (xwl_seat->pointer)
+         disable_device(xwl_seat->pointer);
++    if (xwl_seat->touchpad)
++        disable_device(xwl_seat->touchpad);
++    xwl_seat->finger_scrolling = FALSE;
+ }
+ 
+ static void

@@ -1,22 +1,20 @@
 # Caboose Display
 
-Caboose's display server: a headless Wayland compositor that streams every window as its
-own encoded video, for the phone and TV to show as native surfaces. The computer runs two
-instances, one for the owner and one for agents. The design, the deployment and the wire
-contract are [docs/display.md](../../docs/display.md).
+Caboose's display server: a headless Wayland compositor that renders every window on the
+phone's GPU and presents it as its own phone-resident image, for the phone and TV to show
+as native surfaces. The computer runs two instances, one for the owner and one for agents.
+The design, the deployment and the wire contract are [docs/display.md](../../docs/display.md).
 
 This directory is a Cargo workspace:
 
 | Path | What |
 | --- | --- |
 | `protocol/` | `caboose-display-protocol`: Caboose Display Protocol v0. Framing, the canonical CBOR codec, every message, and the golden vector set. No dependencies |
-| `compositor/` | `caboose-display`: the compositor and stream server |
-| `probe/` | `caboose-display-probe`: a headless client that decodes every window and reports fps, latency and server CPU; also the readiness check |
+| `compositor/` | `caboose-display`: the compositor |
+| `probe/` | `caboose-display-probe`: a headless client that drives windows and reports windows, input, clipboard, drag and drop, sound and server CPU; also the readiness check |
 | `vectors/` | Golden vectors every client replays (see [vectors/README.md](vectors/README.md)) |
 | `scripts/check.py` | Scripted checks against real applications |
-| `scripts/profile.py` | Server CPU per update for Chromium at phone and TV sizes |
-| `scripts/atlas-cpu-windows.py` | CPU-drawn windows (LibreOffice, GTK 3, xterm) scrolled on a phone stay lossless atlas, never video |
-| `scripts/wsl-check.sh` | Chromium video at 1080p and 4K on a WSL2 GPU host, with libx264 and NVENC |
+| `scripts/gpu-windows-check.sh` | Checks the GPU compositor's window pictures and wire costs against foot, xterm, GTK 3 and Wine |
 | `systemd/`, `install.sh`, `caboose-display-ready` | Running it in a guest |
 | `Dockerfile`, `scripts/dev.sh` | The build and test environment |
 
@@ -25,62 +23,36 @@ This directory is a Cargo workspace:
 - **Wayland and X11 applications.** A headless [Smithay](https://github.com/Smithay/smithay)
   compositor with xdg-shell (toplevels and popups), xdg-decoration (applications are told
   the phone draws the frame, so they draw no title bar of their own), viewporter,
-  fractional scale, cursor-shape, linux-dmabuf and wl_shm. Linear dma-bufs are mapped like
-  shared memory; with the computer's render node, the dma-buf feedback names it, and with
-  the phone GPU, phone-resident buffers are shown through the GPU stream
-  ([docs/gpu-buffers.md](../../docs/gpu-buffers.md)). Xwayland runs
-  with a window manager, so X11 applications are windows too, with a per-boot
+  fractional scale, cursor-shape, linux-dmabuf and wl_shm. With the computer's render
+  node (`vgem`), dma-buf feedback names it and phone-resident buffers (`MOD_REMOTE`) are
+  shown directly through the GPU stream ([docs/gpu-buffers.md](../../docs/gpu-buffers.md)).
+  Xwayland runs with a window manager, so X11 applications are windows too, with a per-boot
   MIT-MAGIC-COOKIE in an Xauthority file.
-- **One stream per window.** Every toplevel, dialog, popup and X11 window is announced
-  with `window.create` and streamed on its own. The compositor composes nothing across
-  windows: each window's surface tree (with its subsurfaces) is rendered alone, cropped to
-  its window geometry, at the buffer's own density. `window.create` carries no `icon`
-  (Smithay 0.7 supports neither xdg-toplevel-icon-v1 nor `_NET_WM_ICON`); the phone takes
-  a window's icon from the computer's app list by its `app_id` or class.
+- **One GPU image per window** (`src/render.rs`, `src/present.rs`, `src/picture.rs`,
+  `src/upload.rs`). Every toplevel, dialog, popup and X11 window is announced with
+  `window.create`. The compositor composes nothing across windows:
+  - A window whose tree is a single phone-resident client buffer covering its geometry
+    presents that buffer directly (`State::present_remote_buffer`).
+  - A window whose application renders into its own phone Vulkan swapchain presents on its
+    own surface.
+  - Every other window (wl_shm, subsurfaces, popups, X11 windows) is composed by the
+    compositor as an OpenGL ES client on Zink over the Caboose Vulkan ICD into double-buffered
+    `MOD_REMOTE` GBM images at the buffer's own density, and presented with `BUFFER_PRESENT`
+    under the compositor's own PID. On the agent seat or when no phone executor is attached,
+    the routing layer presents the computer's CPU Vulkan device (lavapipe) and the compositor
+    renders into ordinary textures for `control.sock` screenshots. When the executor changes,
+    the compositor rebuilds its renderer and repaints every window from its client buffers.
 - **Popups keep their alpha.** A popup (an xdg popup, or an X11 override-redirect menu or
-  tooltip) is announced with `alpha: true`, composed on a transparent canvas (never read
-  in place from its buffer) and sent only as lossless RGBA PNG tiles from its own tiler
-  (`src/encode/alpha.rs`): the whole picture first and on `request_keyframe`, the changed
-  16×16 blocks after that, never a frame, sharpening, motion stream or marker detection.
-- **Cheap when nothing changes, and when little does.** A window that is one surface with
-  one wl_shm buffer (most windows: terminals, Chromium, X11 apps) is not composed at all:
-  the encoder reads the client's buffer in place, holding it until it is done, and only the
-  client's own damage is looked at (a picture that needs encoder padding is copied, damage
-  only). Other windows are rendered damage-tracked, straight into the encoder's input
-  image. After ten seconds without an encode job, a worker releases its encoders if no
-  refinement is pending; the next picture recreates them with keyframes. The image is
-  retained for damage-tracked rendering. The encoder keeps the previous picture and compares the damaged 16×16 blocks
-  against it, converts only the blocks that really changed (applications often damage a
-  whole widget for a blinking caret), and tells libx264 which macroblocks changed so it
-  skips the rest. One picture per window is at the encoder at a time and the newest
-  content wins; stale pictures are never queued.
-- **Paced by the client.** Frame callbacks are released on the client's `vsync` and only
-  while fewer than two of the window's frames are unacknowledged, so applications draw at
-  the rate the link and the screen can show. A window whose display sends no vsync gets
-  frame callbacks once a second.
-- **Encoders.** libx264 (default for software: H.264 at one QP for every picture,
-  `ultrafast`, zero latency, keyframes only on request), libx265, and NVENC (`h264_nvenc`,
-  `hevc_nvenc`, `av1_nvenc`) from system memory, all through libavcodec behind one
-  `Encoder` trait. Each is probed at start-up by encoding a test picture; only working
-  ones are offered, hardware first. `--list-encoders` prints them.
-- **Tiles.** A change of at most `--tile-max-px` (64K) pixels in at most 32 runs, which
-  is typing, a caret or a small widget, goes as lossless PNG tiles of the changed
-  blocks instead of a picture, with no x264 pass. The comparison shadow becomes "what
-  the client shows", and tiled areas are marked stale for the encoder. The next picture
-  codes them, and a sharpening picture codes them directly at the sharpening QP. A window
-  updating more than 7 times in 500 ms (an animation, not typing) gets pictures, which
-  video coding keeps far smaller. A damage report with no real change sends nothing.
-  Software encoders only; `--tile-max-px 0` turns tiles off.
-- **Sharpening.** Pictures are coded at `--crf` (23), which keeps updates small but
-  leaves text soft. An area of a window that has not changed for `--refine-after` (300 ms)
-  is coded once more at `--refine-qp` (12): it rides along in the next picture the window
-  sends anyway (a caret blink, the next keystroke), or, if the window has gone quiet, in
-  one extra picture of the same content. libx264 then skips those macroblocks, so they
-  stay sharp until they change again. An area that changes again soon after it was
-  sharpened (a blinking caret) waits twice as long each time, up to 16×, so blinking
-  costs no extra pictures. libx264 runs in CRF mode with `qcomp=1`, so every P picture
-  gets the same QP while AQ, which the per-macroblock QP offsets need, stays on. libx264
-  only; `--refine-qp 0` turns it off.
+  tooltip) is announced with `alpha: true` and rendered into its own transparent image
+  with premultiplied alpha.
+- **Damage-only uploads.** Each `wl_shm` buffer has its own GPU staging buffer laid out
+  with the buffer's stride (`src/upload.rs`). An update copies only the client's damaged
+  rectangles into the staging buffer before uploading those rectangles to the texture, so
+  the driver's changed-block flush sends only the blocks that differ from that buffer's
+  previous upload.
+- **Paced by the client.** Frame callbacks are released on the client's `vsync` while the
+  window's image pool has room, so applications draw at the rate the screen can show. A
+  window whose display sends no vsync gets frame callbacks once a second.
 - **Input.** Pointer (buttons as a pressed set, precise and wheel scrolling), multitouch
   (`wl_touch`, one frame per message), keys by keysym (mapped to the keymap, with the
   modifiers a level needs), and text: commits and pre-edit text go to the focused surface
@@ -124,24 +96,20 @@ property updates are reconciled on notifications, without a polling timer.
   clock; silence stops being sent after a second, and nothing records with no listener.
   `--no-audio` turns it off.
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
-  one. Window ids survive reconnects and every window restarts with a keyframe. A client
-  that sends nothing for `--client-timeout` (30 s) is closed.
-- **Video passthrough** ([docs/codec-passthrough.md](../../docs/codec-passthrough.md)). The
-  compositor listens on the video socket (`$CABOOSE_VIDEO_SOCKET`, default
-  `$XDG_RUNTIME_DIR/caboose-video.sock`) for the Caboose VA-API driver
-  ([guest/vaapi](../vaapi/README.md)), which offers each player's reconstructed bitstream. Every `OPEN` receives local-decode mode, including when no client is
-  connected or the client advertises the codec: flattened marker pixels cannot prove
-  foreground alpha or occlusion. Applications compose controls and subtitles over real
-  decoded pixels, carried by the ordinary window/motion paths. Marker recognition and
-  stream machinery remain available as experimental source; no alpha mask is inferred.
-  Launched applications get `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
+  one. Window ids survive reconnects. A client that sends nothing for `--client-timeout`
+  (30 s) is closed.
+- **Video decoding** ([docs/gpu-media.md](../../docs/gpu-media.md),
+  [guest/vaapi](../vaapi/README.md)). Launched applications get `LIBVA_DRIVER_NAME=caboose`
+  when the Caboose VA-API driver is installed: on the GPU seat it decodes on the phone
+  through the GPU stream and latches into the application's Vulkan image, and otherwise it
+  decodes on the computer into the application's own surfaces.
 - **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
   compositor listens on the game socket (`$CABOOSE_GAME_SOCKET`, default
   `$XDG_RUNTIME_DIR/caboose-game.sock`) for `caboose-game-run`
   ([guest/game](../game/README.md)), binds each launcher to the toplevel its process made
   (SO_PEERCRED), and tells it whether the connected client runs games. A client whose hello
   says `wasm: true` gets `game.create` after the window's `window.create` and
-  `game.destroy` when the game ends, and the window sends it no pictures meanwhile.
+  `game.destroy` when the game ends, and the window presents no pictures meanwhile.
   `--no-games` turns it off (the agent seat).
 - **Phone devices** ([docs/devices.md](../../docs/devices.md), `src/devices`). For a client
   whose hello says `devices: true`, a hub thread makes the phone's hardware the computer's:
@@ -152,31 +120,10 @@ property updates are reconciled on notifications, without a polling timer.
   `device.open` and `device.close` when applications start and stop using a device, and
   writes `$XDG_RUNTIME_DIR/caboose-devices.json`. `--no-devices` turns it off (the agent
   seat).
-- **Draw lists** (`src/draw.rs`). Applications' cairo recorders (`guest/draw`) connect to
-  `draw.sock`; while a client that draws them is connected, each recorder is asked for a fresh
-  stream, which the compositor validates and forwards as `draw.ops`, naming each committed
-  window buffer's window ([docs/draw.md](../../docs/draw.md)). Each picture of a window goes as
-  `draw.present` when its recorder presented that very buffer, complete, and the picture is the
-  whole buffer; otherwise as a Surface Atlas batch, a keyframe after draw lists. The image
-  installs the recorder and the compositor preloads it into the applications it starts.
-- **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
-  A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
-  15 fps or more, for a second, becomes a `motion` video stream. With the Surface Atlas
-  only new tiles that look like video (more than 16 colours that LZ4 cannot halve) feed the
-  tracker, never scroll copies, fills, cached tiles or drawn content. The window's encode
-  worker encodes that crop with its own encoder (no sharpening) and leaves it out of the
-  window picture. A client advertising `scaled_motion` receives eligible software-encoded regions at half
-  width and height with placement unchanged. Once the region has stopped looking like video for a second, a window
-  picture repaints it and the stream ends. Only for a client that lists the stream's codec
-  in `video_decoders` or advertising `scaled_motion`; `--no-motion` turns it off.
 
-Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
-memory and the compositor offers no YUV formats; tiles of opaque windows come only from
-the software encoders; the clipboard carries text, PNG and JPEG images and files, not rich
-text or other image types; cursors are sent by name, not as images; window icons are not
-sent; notifications are not sent
-on the display protocol; and characters that are not on the keymap cannot be typed into
-X11 applications.
+Limitations: the clipboard carries text, PNG and JPEG images and files, not rich text or
+other image types; notifications are not sent on the display protocol; and characters that
+are not on the keymap cannot be typed into X11 applications without IBus support.
 
 ## Build and test
 
@@ -218,26 +165,18 @@ probe. Every check asserts on what arrived, not on a picture:
 | `wayland-terminal` | text typed from the client reaches weston-terminal exactly (key fallback) |
 | `x11-terminal` | the same through Xwayland into xterm |
 | `taskbar` | an X11 window a shell started, with a class no desktop entry has and a `_NET_WM_PID` from another namespace, reports the X server's PID for its process and its `_NET_WM_ICON`, and its icon change follows as an update (`scripts/x11-icon-window.py`) |
-| `shm-animation` | an animating client is paced on vsync at ≥ 55 fps |
-| `hevc` | a client that decodes only HEVC gets x265 |
-| `two-windows` | two applications stream as two windows |
-| `chromium` | Chromium as a native Wayland client animates at ≥ 55 fps |
+| `two-windows` | two applications are announced as two windows |
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
 | `chromium-touch-fling` | a timed native finger swipe scrolls a real Chromium page, then continues after release without client-generated wheel events |
-| `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
-| `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
-| `encoder-eviction` | a quiet Chromium window changes after encoder eviction; its new keyframe decodes on the same connection |
+| `reconnect` | window ids survive a reconnect |
 | `replace` | a second client takes over; the first gets `bye(replaced)` |
-| `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-stream): the next client streams normally, and the server's threads and memory are back where they were |
-| `takeover` | six clients take the display from each other in turn: each starts with a keyframe, each one replaced gets `bye(replaced)` |
-| `resize-streaming` | Chromium animates while the client resizes its window ten times: every size starts with a keyframe, nothing fails to decode, the last size sticks |
-| `app-crash` | two of three applications (one an X11 app) are killed mid-stream: their windows go, the survivor keeps streaming, the next client gets it |
+| `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-session): the next client is served as usual, and the server's threads and memory are back where they were |
+| `takeover` | six clients take the display from each other in turn: each is told of the window, each one replaced gets `bye(replaced)` |
+| `app-crash` | two of three applications (one an X11 app) are killed: their windows go, the survivor stays, the next client gets it |
 | `stalled-client` | a client stops reading while sound plays: memory does not grow, the server closes it after `--client-timeout`, the next client is served |
-| `popup` | a `<select>` list is its own popup window with the page as parent |
+| `popup` | a `<select>` list is its own popup window with the page as parent, with alpha over an opaque toplevel |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
-| `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
-| `passthrough` | `video-admission.py` opens all four driver codecs before/during an advertising probe session and requires local-decode mode; no owner windows or media |
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
@@ -248,10 +187,6 @@ probe. Every check asserts on what arrived, not on a picture:
 | `drag-out` | a pointer drag of a Chromium page's draggable text that the phone takes: the phone is told of it, receives the text, and the release drops nothing on the page |
 | `clipboard-files` | a file manager's copy (`x-special/gnome-copied-files`) reaches the phone as a `text/uri-list`; a file the phone uploaded to the transfer area pastes as both lists, and a file outside it is refused |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
-| `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
-| `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
-| `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
-| `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 `scripts/check-devices.py` checks the phone's devices ([docs/devices.md](../../docs/devices.md))
@@ -276,30 +211,33 @@ sudo python3 check-devices.py --only microphone   # a container computer
 | `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
 | `disconnect` | closing the connection removes the gamepad and the battery |
 
-`scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
-the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
-(3840×2160 at 2×) and maximises the window, as the app does. It then types, scrolls an
-article, or leaves a caret blinking, and prints the server's CPU per picture and its
-split by thread:
+`scripts/check-finger-scroll.py` checks finger scrolling through Xwayland
+([docs/input.md](../../docs/input.md)). It runs Chromium on X11 at scale 2 (a
+1338×1902 display) with pages/finger-scroll.html and pans twice, ten precise scrolls of
+40 window pixels 16 ms apart (the probe's `wheel:` action), then turns a mouse wheel one
+click (`notch:`). It fails unless each pan scrolls the page 200 CSS pixels (within 5%)
+and stops with the finger (within 50 ms), and the click scrolls an animated step. It
+needs the computer's Xwayland ([guest/xwayland](../xwayland/README.md)); `--step` and
+`--samples` change the pan:
 
-    guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
+    guest/display/scripts/dev.sh python3 scripts/check-finger-scroll.py [--step PX] [--samples N]
 
-`scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas,
-video decoders for video streams) to LibreOffice Writer, a GTK 3 text view and xterm, on
-Wayland and on X11, and scrolls each as a trackpad does for five seconds. It fails if any
-part of the window became a motion video stream, and prints the picture size, rate,
-bandwidth, latency and server CPU. LibreOffice needs `libreoffice-writer libreoffice-gtk3`
-in the container:
+### Checking the pictures
 
-    guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py [writer|gtk3|xterm|x11|wayland]
+`scripts/gpu-windows-check.sh` runs in a disposable container of a computer image, on the
+computer's own Vulkan device (lavapipe, presented as a GPU by the routing layer), without
+a phone:
 
-`scripts/wsl-check.sh` runs on a WSL2 host with an NVIDIA GPU (`/dev/dxg`): in a
-disposable container it plays a 60 fps test video full-window in Chromium at 1080p and
-4K, streamed with libx264 and with NVENC, and prints the probe's report and the server's
-CPU summary. The encoder alone is benchmarked by
-`cargo test -p caboose-display bench_text -- --ignored --nocapture`. Recorded results,
-with the hardware they were measured on, are in
-[docs/display.md, "Measurements"](../../docs/display.md#measurements).
+    guest/display/scripts/gpu-windows-check.sh IMAGE BIN LIBS [OUT]
+
+It starts `caboose-display` and `caboose-display-probe`, opens `foot` (Wayland `wl_shm`),
+`xterm` (X11 core), `scripts/gtk-reference.py` (an odd-sized 300×161 GTK 3 window that
+also renders itself offscreen to a reference PNG) and `wine winver` (after `wineboot -i`),
+takes each window's picture through `control.sock` (`screenshot`), and checks pixel-for-pixel
+equality (`differing_px == 0` against GTK's offscreen reference and X11's `import -window`
+for `xterm` and `wine`, and bounded glyph damage for `foot`), zero renders/uploads/presents
+over 5 s of idle, and per-glyph damage and uploaded bytes across 20 typed characters in
+`foot` and `xterm`.
 
 Two scripted checks outside this directory exercise both instances together:
 `guest/desktop-mcp/check-a11y.sh` runs the owner's display and the agent seat in Docker
@@ -357,27 +295,14 @@ summary.
 | `--private-gpu-stream-socket PATH` | disabled | Owner-only private live GPU stream socket; requires the surface socket option |
 | `--private-gpu-surface-socket PATH` | disabled | Owner-only private live GPU surface socket; requires the stream socket option |
 | `--private-gpu-indexed` | disabled | Select private indexed v4 transport; requires both private GPU sockets |
-| `--gpu-spool-limit BYTES` | `2147483648` | The most of one GPU stream kept on disk; a stream that outgrows it ends |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
-| `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |
-| `--always-compose` | | Compose every window instead of reading single-buffer windows in place (for comparisons) |
-| `--no-motion` | | Keep regions that update at video rates in the window picture |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |
-| `--encoder KIND` | `auto` | `auto`, `software` or `nvenc` |
-| `--crf N` | `23` | Encoder quality, lower is better |
-| `--preset NAME` | `ultrafast` | x264 preset |
-| `--refine-qp N` | `12` | QP for sharpening quiet areas (H.264 software); `0` turns it off |
-| `--refine-after MS` | `300` | How long an area must be quiet before it is sharpened |
-| `--tile-max-px N` | `65536` | Largest change sent as lossless tiles (software encoders); `0` turns tiles off |
-| `--encoder-threads N` | `0` | Threads per software encoder; `0` is 1 up to 2560×1600 and 2 above |
 | `--display WxH@HZxS` | `1920x1080@60x1` | The display used before a client connects |
-| `--list-encoders` | | Print the usable encoders and exit |
 
 | Variable | Effect |
 | --- | --- |
-| `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket, the default video socket and the instance's state directory |
-| `CABOOSE_VIDEO_SOCKET` | The video passthrough socket (default `$XDG_RUNTIME_DIR/caboose-video.sock`) |
+| `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket and the instance's state directory |
 | `CABOOSE_GAME_SOCKET` | The game socket (default `$XDG_RUNTIME_DIR/caboose-game.sock`) |
 | `LIBVA_DRIVERS_PATH` | Where to look for `caboose_drv_video.so` (default `/usr/lib/x86_64-linux-gnu/dri`) |
 | `CABOOSE_DISPLAY_LOG` | A `tracing` filter (`info`, `caboose_display=debug`, …) |
@@ -391,17 +316,16 @@ The probe connects like the phone:
 
 ```sh
 caboose-display-probe --token-file /run/caboose/display-token --duration 10 \
-  --display 1179x2556@120x3 --save /tmp/out --server-pid "$(pidof -s caboose-display)"
+  --display 1179x2556@120x3 --server-pid "$(pidof -s caboose-display)"
 caboose-display-probe --check --url ws://127.0.0.1:14601/ --token-file /run/caboose/display-token
 ```
 
-`--url` selects the instance (default `ws://127.0.0.1:14600/`). `--save` writes each
-window's stream and last decoded picture (PNG); `--type`, `--click` and `--touch` send
-input once a window shows, and `--actions` replays a sequence of keys, text, taps and
-clicks (`--window` picks the window, and `close` closes it); `--decoders`,
-`--video-decoders`, `--audio` and `--wasm` set what the probe announces, and with `--wasm`
-the report lists the games handed to it; `--json` prints a machine-readable report; `--check` exits 0 as
-soon as the server answers a hello. `caboose-display-probe --help` lists every option.
+`--url` selects the instance (default `ws://127.0.0.1:14600/`). `--type`, `--click` and
+`--touch` send input once a window shows, and `--actions` replays a sequence of keys,
+text, taps and clicks (`--window` picks the window, and `close` closes it); `--audio` and
+`--wasm` set what the probe announces, and with `--wasm` the report lists the games handed
+to it; `--json` prints a machine-readable report; `--check` exits 0 as soon as the server
+answers a hello. `caboose-display-probe --help` lists every option.
 
 ## Control socket
 
@@ -567,8 +491,8 @@ sums/mode and actual `scrollY`. On a fresh private seat for each run, compare
 calibration, then repeat at scales 1 and 3. Subtract the `wheel` snapshot from `precise`
 for both DOM deltas and content displacement. The X11 and native Wayland results are
 reported separately; acceptance requires movement, not a universal pixel gain.
-The [phone unit trace](../../docs/display.md#direct-content-scroll-units) describes
-how to map the measured content distance back through a presented surface. Retain
+[docs/input.md](../../docs/input.md#scrolling) gives the distance each client scrolls
+for precise and wheel input. Retain
 image digest, compositor hash and Chromium version alongside results. This fixture
 uses protocol pointer input; native `wl_touch` scrolling remains a separate device check.
 
@@ -601,31 +525,6 @@ The pure `DesktopGeometryTests`/`FullscreenGeometryTests` and iOS hosted
 `DesktopSurfaceLayoutTests` check ordinary top fitting, fullscreen centering during
 rotation/settling, and consistent input, popup and text-drop geometry. These are
 presentation checks; they do not establish a scroll-delivery fix.
-
-### Internal marker regression
-
-The production `passthrough` check verifies local-decode admission. The historical
-marker binding/forwarding check is retained separately in
-`scripts/check-marker-binding.py`. It is explicitly opt-in and requires
-`CABOOSE_DISPLAY_BIN` pointing to compositor and probe binaries built together from
-pinned legacy source `7f3b94796bcc1e691ac39a5754048fe26ddd158f`. Record both binary
-SHA-256 hashes with the run and use a disposable fixture environment; this is not a
-production launch recipe:
-
-```sh
-CABOOSE_DISPLAY_BIN=/path/to/isolated/test-binaries python3 scripts/check-marker-binding.py --legacy-marker-binding
-```
-
-It intentionally fails against the current production admission policy; it adds no
-runtime override to the compositor. Source tests in `video::marker` and `video::tests`
-cover marker detection, geometry, internal binding fields, decode order and the
-reconnect presentation fence without accepting a production passthrough stream.
-
-`.github/workflows/check-video.yml` builds the declared display test image, tests video
-internals, builds compositor/probe from the checked source, then runs admission with
-those exact binaries. Its separate VAAPI job builds `guest/vaapi/Dockerfile`, which
-includes FFmpeg and Xvfb, and runs state tests plus four selected codec roundtrips.
-These hosted software checks do not establish native phone decode or overlay correctness.
 
 Device checks accept `--token-file` and `--display-env` for isolated test instances,
 and `--expect-no-devices` verifies the agent seat omits capability and ignores offers.

@@ -265,7 +265,7 @@ struct DesktopWindow: View {
                 .background(.regularMaterial)
             }
             RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint,
-                                pacer: model.session, showsVideo: model.desktopActive && !model.yardActive)
+                                pacer: model.session, showsLiveContent: model.desktopActive && !model.yardActive)
                 .frame(width: surface.width, height: surface.height)
                 .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint, presentedSize: surface.size))
         }
@@ -288,7 +288,7 @@ struct RemoteWindowSurface: UIViewRepresentable {
     let window: RemoteWindow
     let pixelsPerPoint: CGFloat
     var pacer: (any DisplaySession)?
-    var showsVideo = true
+    var showsLiveContent = true
 
     func makeUIView(context: Context) -> RemoteWindowView {
         let view = RemoteWindowView(session: nil, window: window)
@@ -303,7 +303,7 @@ struct RemoteWindowSurface: UIViewRepresentable {
     private func update(_ view: RemoteWindowView) {
         view.pacer = pacer
         view.pixelsPerPoint = pixelsPerPoint
-        view.showsVideo = showsVideo
+        view.showsLiveContent = showsLiveContent
         if view.remoteWindow !== window { view.attach(window) }
         // DesktopModel already supplies the rendered/input rectangle. Do not fit a
         // newer remote size again inside potentially older parent layout bounds.

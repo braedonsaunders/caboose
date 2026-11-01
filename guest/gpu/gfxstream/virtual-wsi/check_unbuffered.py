@@ -142,7 +142,7 @@ async def main(args):
             if probe.returncode: raise RuntimeError('owner probe failed: ' + stderr.decode(errors='replace'))
             report = json.loads(stdout.decode().strip().splitlines()[-1])
             matches = [w for w in report['windows'] if w['id'] == bound_window]
-            if len(matches) != 1 or matches[0]['geometry'][2:] != [800, 600] or matches[0]['frames'] != 0:
+            if len(matches) != 1 or matches[0]['geometry'][2:] != [800, 600]:
                 raise RuntimeError('unbuffered WindowCreate mismatch: ' + repr(matches))
             # Only the exact child of our compositor is signalled.
             children = Path(f'/proc/{compositor.pid}/task/{compositor.pid}/children').read_text().split()
@@ -155,7 +155,7 @@ async def main(args):
             out, err = await asyncio.wait_for(reconnect.communicate(), 10)
             if reconnect.returncode: raise RuntimeError('ordinary display reconnect failed: ' + err.decode(errors='replace'))
             result = {'status': 'PASS', 'executor': 'fake', 'window': bound_window,
-                      'geometry': matches[0]['geometry'], 'frames': matches[0]['frames'],
+                      'geometry': matches[0]['geometry'],
                       'configure': configs, 'reconnect': out.decode(errors='replace').strip()}
             (output / 'result.json').write_text(json.dumps(result) + '\n')
             print(json.dumps(result))

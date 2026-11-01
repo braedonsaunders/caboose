@@ -491,6 +491,10 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
 
+Each display's input system delivers the phone's pointer, touch, Pencil, keys and text to
+its applications as Wayland seat events and, through Xwayland, XInput 2
+([input.md](input.md)).
+
 Agent GUI applications use a separate persistent home and XDG profile directories under
 `~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
 are independent of owner applications. No owner profile snapshot or sign-in import occurs.
@@ -2132,8 +2136,8 @@ composition; marker-based passthrough is fenced because it cannot preserve arbit
 foreground alpha and occlusion.
 
 Popups advertise alpha and use lossless RGBA PNG tiles over a transparent canvas,
-including the first picture and keyframe requests. They have no codec frames,
-sharpening or motion stream. The app keeps their layer and newly resized backing
+including the first picture and keyframe requests. They have no codec frames
+or sharpening. The app keeps their layer and newly resized backing
 pixels transparent, preserving rounded corners and shadows over underlying windows.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
@@ -2697,7 +2701,7 @@ feedback), legacy per-window video with acknowledgements and keyframe recovery, 
 layered into windows, Opus sound on the server timeline, and vsync pacing. Audio uses an
 explicit server/host clock anchor, cleared on interruption. Placement samples host time once
 against the requested anchor; renderer timebase updates never drive backlog recovery. Live
-window and motion pictures present immediately, while passthrough video shares the audio
+window pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses the Surface Atlas LZ4 micro-codec and `XXH64` tile cache
 for `surface.batch`, CoreText and Metal for `scene.commit` vector/glyph trees,
@@ -2710,11 +2714,8 @@ CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 The iOS app omits `video_decoders`. The compositor also requests local decode for
 every marker stream, including headless sessions, because the marker has no independent
 foreground alpha or occlusion provenance. Controls and subtitles are composed by the
-application over decoded pixels before the ordinary window/motion paths encode them. The iOS app
-requests half-resolution software-encoded motion streams and upscales them with MetalFX,
-or vImage on the CPU when MetalFX is unavailable. If both fail, the video layer scales the
-decoded picture. PCM playback uses decoded sample durations to join adjacent
-packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
+application over decoded pixels before the window's picture encodes them. PCM playback
+uses decoded sample durations to join adjacent packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
 payload. Excess or empty packets are rejected before dispatch, counted as
 `ingress_rejected` in the five-second audio log. This adds no waiting or preroll.
@@ -3357,13 +3358,11 @@ and restores its dock.
   content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
   phone trackpad. Direct content pans map local points through the presented surface to
-  guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
-  scrolling and dedicated phone trackpads retain their existing gain. This calibrates
-  the Xwayland/Chromium reference response; other applications retain their own scroll
-  interpretation (see [scroll units](display.md#direct-content-scroll-units)). Finger
-  pans over a window picture the phone draws are phone-owned: the phone moves captured
-  pictures at display rate with iOS momentum, drives the app ahead of itself, and hands
-  back to the app's picture at rest (see [phone-owned scrolling](display.md#phone-owned-scrolling)).
+  guest pixels, then apply a 1/12 gain to tracking and inertia; hardware scrolling and
+  dedicated phone trackpads do not. Applications take precise scrolling as a finger's
+  ([input.md](input.md#scrolling)). The phone
+  shows only the newest picture the app drew: a pan scrolls the app, and the content moves
+  when the app's next picture arrives.
   A new touch, context action, target change, detach or app backgrounding
   stops client inertia. Card and free-desktop scroll delivery is fenced to the original
   connection and geometry. Changing the finger count during an emulated pan cancels

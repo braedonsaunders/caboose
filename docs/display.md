@@ -24,7 +24,7 @@ wire contract, the Caboose Display Protocol.
    │   and 120 Hz client-predicted scroll sync (scene.scroll, 0x9A)
    ├ legacy/fallback video encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
    ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
-   ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
+   ├ video: codec passthrough (the VA-API driver), as its own stream
    ├ games & 3D: WebAssembly games handed off to the client, and Vulkan / Zink GPU streams
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
    ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
@@ -42,8 +42,9 @@ wire contract, the Caboose Display Protocol.
   in `ClientHello` (even with `decoders: []`), the server skips per-window H.264/HEVC video
   encoding (`0x10` `frame`) and instead transmits atomic byte-perfect `surface.batch` (`0x23`)
   damage updates (Layer 0) and retained vector/glyph `scene.commit` (`0x26`) trees (Layer 1).
-  Hardware video (`video.*` passthrough and motion streams) is reserved for actual video:
-  only tiles that look like video can make a motion stream (see `motion` streams below).
+  Nothing of a window's own drawing becomes video: animation and video drawn into a window
+  stay lossless tiles and scroll copies in its picture. Video reaches the client as its own
+  stream only through codec passthrough or a GPU stream.
 - **Nothing runs while nothing changes.** Only damaged blocks are compared, and with no client
   connected the server does no per-window encoding work. In legacy video mode, only damaged
   16×16 blocks whose pixels really changed are converted and passed to the video encoder.
@@ -164,15 +165,14 @@ window's own picture.
    frame, so the application's own audio sync holds. It gives the original quality at
    almost no server CPU. The driver, its socket, and the on-screen marker that binds a
    stream to its window are specified in [codec-passthrough.md](codec-passthrough.md).
-2. **Detected motion.** A region of a window that updates at video rates is encoded as
-   its own `motion` stream, at the size it is shown on the client, and left out of the
-   window's pictures. This covers X11 players, canvas animation, and video that does not
-   decode through VA.
+2. **The window picture.** Video an application decodes and draws itself (X11 players,
+   canvas animation, video that does not decode through VA) stays in the window's own
+   picture. No part of a window is sent as video.
 
 Players that decode on the CPU through VA (mpv, GStreamer, FFmpeg) pass through wherever
 the driver runs. Chromium and Firefox decode through VA only with a working GPU process,
 which needs a DRM render node; on WSL2 and on hosts without a GPU their video stays in the
-window picture or becomes a `motion` stream. VA carries no HDR metadata, and AV1 is
+window picture. VA carries no HDR metadata, and AV1 is
 forwarded one picture late (see [guest/vaapi](../guest/vaapi/README.md)).
 
 The protocol also defines `surface` streams, for applications that present video on its
@@ -380,7 +380,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes`, `input_seq?: uint` ([Input sequencing](#input-sequencing)) |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
-| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
+| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
 | `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
 | `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
 | `0x15` | `video.destroy` | `id` |
@@ -425,7 +425,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool`, `draw?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool`, `draw?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -630,7 +630,7 @@ When the client advertises `draw: true` and the server includes `"draw"` in
 (format: [draw.md](draw.md)), and sends each window picture either as a `draw.present` or as a
 `surface.batch`, never both. A picture goes as `draw.present` when the application's recorder
 presented exactly the buffer the window committed, complete, and the window's picture is that
-whole buffer (no subsurfaces, crop or scaling, no motion stream, alpha or pending keyframe).
+whole buffer (no subsurfaces, crop or scaling, alpha or pending keyframe).
 Every other picture is a batch, and the first batch after `draw.present` pictures is a
 keyframe. Windows without a recorder (X11 windows, applications that do not draw with cairo)
 are batches throughout.
@@ -680,8 +680,8 @@ application's changes to `_NET_WM_ICON` as `window.update`s.
 
 ### Overscan
 
-A client that shows only part of a window, panning inside the rest itself (phone-owned
-scrolling), asks for the window to be laid out larger than it shows: `configure.overscan`
+A client that shows only part of a window and pans inside the rest itself may ask for the
+window to be laid out larger than it shows: `configure.overscan`
 `[w, h]` is how much wider and taller than `geometry` to make it, in display pixels;
 `[0, 0]` ends it. It stays asked for across later configures until ended, and ends with
 the client's session. `geometry` keeps meaning what the client shows; a configure with
@@ -697,44 +697,20 @@ the window's size beyond the shown size, up to the overscan laid out. An applica
 sizes itself in steps, such as a terminal in character cells, gets part of it. An update
 carries `[0, 0]` when the overscan ends or the window no longer exceeds the shown size. Such an update precedes every frame of the new picture
 size, as a size change precedes its keyframe. The picture is then the whole window:
-`frame.rect` is `[0, 0, w + ow, h + oh]`, tiles, video and motion rectangles map through
+`frame.rect` is `[0, 0, w + ow, h + oh]`, tiles and video rectangles map through
 it as usual, and window-local input positions with `x >= w` or `y >= h` address the
 overscan. Popup and dialog geometry stays relative to the parent's geometry origin.
 
 Anything an application sizes to its window (a full-height hero, a pane that fills the
-window) grows by the overscan, so content below it moves once when the overscan begins;
-clients ask for overscan only while it pays: a window whose scroll region they have
-measured, while the user scrolls it.
+window) grows by the overscan, so content below it moves once when the overscan begins and
+again when it ends. The iOS app does not ask for overscan: it shows the application's
+picture as the application drew it, at the window's size.
 
-### Direct content scroll units
+### Scrolling input
 
-The iOS direct-content pan negates finger movement for natural direction, integrates
-tracking and inertia in view points, then maps each axis by reported guest size divided
-by presented surface size. It applies a reference gain of 1/12 before sending precise
-pointer deltas. Hardware wheel/trackpad input, dedicated phone trackpads, native
-`wl_touch` gestures and the guest's paired relative/absolute pointer motion are unchanged.
-The precise wire values remain scaled pixel units; they do not guarantee content pixels.
-The guest divides them by output scale and sends `wl_pointer.axis` with source `finger`.
-Ordinary wheel clicks still use axis value 15 and value120 120 per click.
-
-[Xwayland's scroll dispatch](https://gitlab.freedesktop.org/xorg/xserver/-/blob/xwayland-24.1.6/hw/xwayland/xwayland-input.c)
-converts an axis value to XI2 increments by dividing by 10. The reference
-[Chromium X11 consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/events/x/events_x_utils.cc)
-uses 120 units per wheel increment; its
-[native Wayland consumer](https://chromium.googlesource.com/chromium/src/+/130.0.6723.116/ui/ozone/platform/wayland/host/wayland_pointer.cc)
-also converts axis values by 120/10. These explain the reference gain of 12; they do
-not establish a particular Steam build's embedded Chromium version. Newer Chromium
-has an unscaled-touchpad path, and other toolkits choose different steps or acceleration.
-No application identity selects the phone's calibration.
-
-For one axis, finger distance `d`, presented extent `V`, guest extent `P`, output scale
-`s`, and client response `g`, the phone sends `-d * P / V / 12`, the guest sends
-`-d * P / V / 12 / s`, and reference content moves by that amount times `g`.
-Rendering back into the presented surface multiplies by `s * V / P`, leaving
-`-d * g / 12`. Thus the reference `g = 12` follows finger distance independently of
-rotation, fitting and output scale, including 1.5; other responses remain proportional.
-Wayland fixed-point quantization, client rounding, zoom and scroll boundaries limit this
-model. The client does not infer or compensate for per-application response differences.
+A `pointer` message's `scroll` is in the window's pixels when `precise` (a finger) and in
+wheel clicks otherwise. How the computer delivers it to Wayland and X11 applications,
+and what they do with it, is the input system's ([input.md](input.md#scrolling)).
 
 ### Clipboard
 
@@ -816,152 +792,13 @@ nothing. `drag.end` says the application's drag ended and whether the client too
 Drags started by X11 applications stay within X11 (Xwayland and its window manager do
 not hand them to Wayland), so the client is not told of them.
 
-### Phone-owned scrolling
-
-Phone-owned scrolling is on unless the iOS app is launched with `CABOOSE_LOCAL_SCROLL=0`.
-With that, every pan scrolls the app remotely, as described under direct content scroll
-units, and no presented pictures are captured.
-
-A one-finger or two-finger pan over a window shown with pointer gestures is scrolled by
-the phone itself. That covers a window whose picture the phone draws (a card or tile) and
-a live GPU window whose presented pictures the phone captures
-([presented-picture capture](gpu-live.md#presented-picture-capture)). A window that takes native touch is covered too while
-its toolkit reporter names a scroller with a range: as UIScrollView delays content
-touches, a finger's first 150 ms are held back from the app. If it moves past the pan
-slop, the phone scrolls; if it stays still, lifts, or a second finger lands, the finger goes
-to the app as it went down, and the app gets its taps, presses, drags and pinches
-natively. Games and GPU streams are not covered. Over a live GPU layer, the phone draws its compositions in an
-overlay above the layer, and only while it owns the scroll. Compositions are drawn at the
-screen's own pixels, with pictures filtered as the layer would scale them. The content's
-fractional position is snapped to whole screen pixels, so motion advances evenly and text
-stays crisp. The wire is unchanged: the app still receives precise `pointer` scroll. The phone
-uses it differently:
-
-- **The phone owns the position.** Finger tracking and iOS momentum (UIScrollView's normal
-  deceleration, 0.998 per millisecond) move the content at display rate, 120 Hz on
-  ProMotion, from the first movement. The phone draws the window's captured pictures moved
-  to that position.
-- **The app is driven ahead.** Forwarded scroll aims the app where the phone will be once
-  the app's picture arrives: the position one measured input-to-picture latency ahead. That
-  target is exact during momentum and extrapolated from finger velocity while tracking.
-  While content moves fast, the target adds up to half the region more, fading below 1500
-  picture pixels per second. The content a flick brings into view is therefore already in a
-  captured picture. Earlier pictures cover the content behind it.
-- **Prefetch at rest.** 0.1 s after a scroll hands back, the phone drives the app 0.7 of
-  the scrolling region further in the scroll's direction and back. It shows the unchanged
-  picture throughout, so the next flick's first frames find their content captured. Other
-  input (a tap, a key) brings the app straight back.
-- **Every picture is measured.** Each captured picture gets line signatures on the GPU:
-  per row and per vertical band of about 40 pixels, the mean colour and the mean luma step
-  along the row. Horizontal scrolling uses the transpose. A coarse search of sampled
-  detailed cells, over the shifts the forwarded scroll makes possible, finds the rigid
-  motion relative to the previous picture. A full search follows only for an unexpected
-  jump, and it must be explained by much more of the picture. Cells explained only by
-  standing still bound the moving region. Toolbars, sticky headers, status bars, sidebars
-  and gutters are drawn from the newest picture, unmoved. Inside the region, blocks of 16
-  lines by one band whose detail stood still while the content moved are fixed overlays
-  (a floating button, a chat bubble). Up to four per picture are kept, drawn from the
-  newest picture where they are, and left out of every picture's scrolled content, so
-  they leave no copies behind. No application identity is used.
-- **Learning the window.** The measured placements give the app's latency (the 75th
-  percentile of recent samples) and its gain (content pixels per pixel sent, from rest to
-  rest). Forwarded scroll is divided by that gain, so any toolkit's response follows the
-  finger one to one. A run in which three pictures in a row stood still while the forwarded
-  scroll kept moving one way was clamped at an end, so its gain is not learned.
-- **Ends of content.** The app may stop moving while it is still being driven, for twice
-  its latency plus 120 ms (or 1.5 times its longest recent stall). Pictures that do not
-  move and no pictures at all look alike at an end and in an app whose scrolling is busy
-  (a page decoding images). So the phone sends a 24-pixel step back, alone and behind its
-  own picture. Only an app held at its end can answer by moving back, in a picture measured
-  against the one before; that confirms the end. A picture that cannot be measured voids
-  the probe. An app that moves on was stalled, and one that does not answer within a second is
-  driven again. Past a confirmed end the phone resists as UIScrollView does, and momentum
-  that reaches it springs back. Each new gesture forgets inferred ends and tries again; a
-  picture placed beyond an end removes it. A toolkit adapter's reported range stays. With an overscan, the
-  application's enlarged viewport stops one overscan short of the content's end, which its
-  picture still shows, so the phone's end is the reported range plus the overscan. The
-  application is driven no further than its range; past it the phone rests with the
-  picture moved, and taps there land on the content shown.
-- **Silences.** Consecutive pictures must overlap to be measured. The app is therefore
-  driven at most 0.6 of the region per picture interval. While it has shown nothing for
-  two picture intervals (and 100 ms) of being driven, counted from its last picture or,
-  for an app at rest, from the first scroll sent since, its drive is capped half a region past its
-  last picture. It is never held, since an app that draws only when it scrolls would
-  otherwise stay silent.
-- **Nothing is guessed.** A measurement must explain at least half of the detail that
-  could reappear at its shift, judged on the overlap. A picture that cannot be measured
-  (a new page, a reflow, a jump past the overlap) is never placed by the forwarded scroll.
-  Composition ends for that run instead: the app's own picture shows, scrolled by the
-  finger and momentum without lead, until the scroll rests.
-- **Bounded reveal.** Content no captured picture covers shows in the colour of the
-  nearest captured edge. It may fill at most 40% of the region. Past that, the shown
-  position resists and catches up as pictures arrive, never slower than the gesture.
-- **Hand back.** When the phone comes to rest, the app is brought to the same position,
-  round after round at the newly learned gain, while the phone keeps drawing from its
-  captured pictures. Once the app's newest picture is within 1.5 picture pixels, the phone
-  draws the app's own picture again. The content never moves after the finger lets it
-  rest. The one exception is a native bounce: if a correction lands without the app
-  moving, the phone probes for an end, and only a confirmed end springs the content back
-  to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
-
-- **Resizes hold the picture.** When a window's drawable is about to change size (an
-  overscan enlarging or ending, a new scale) or a drawn window's overscan changes, the phone
-  keeps showing the picture on screen, unscaled, until the application has drawn the new
-  size and stopped drawing for 120 ms (0.6 s after its first picture of the new size at
-  most, 4 s in all, or until a gesture begins). A picture
-  of the old size is never shown stretched to the new one, nor a half-drawn one.
-  When a window's frame changes (a fold, a resize), what was measured of its old layout is
-  forgotten, and its pictures show as they arrive. A picture longer than the window's shape
-  (one of the older, larger size) is cut off at the window's shape, never squashed into it.
-- **Overscan windows.** While a window has been scrolled locally within the last 30
-  seconds and its scrolling region is measured, or within 30 seconds of a reporter's
-  `scroll.tree` naming a scroller with a range (so the first gesture already carries frame
-  tags), the phone asks for an overscan of one viewport along the scroll axis
-  (`configure.overscan`, with the whole picture kept within 4096 pixels). A report without a
-  range, such as one the overscan itself made fit, does not end it. A viewport that changes
-  by up to a quarter (a keyboard, a bar) keeps the overscan it has, since every change
-  re-lays out the app. It ends after 30 seconds with neither, and always when the window
-  leaves the screen or
-  changes, or when the app goes to the background. It asks and ends only at rest. Once
-  pictures of the enlarged window arrive (recognised by their shape against the announced
-  overscan), the phone shows them through the viewport, also at rest. The header and the
-  region's first lines show as they are, and what follows the region in the picture (a
-  footer, a status bar) is anchored at the viewport's end. Touches and the pointer on
-  that anchored part reach the window the overscan further on. A live GPU layer shows
-  its viewport top-left aligned, the rest clipped, until the phone composes over it.
-  Content a flick reveals below is already drawn; content above comes from the frame
-  history and from driving the app ahead.
-
-The phone keeps captured pictures for three seconds after a scroll comes to rest, and at
-most six of them, chosen for the content they add near the current position. Video layers
-over the picture move with the scrolled content.
-
-One GPU pass draws the region: per pixel, the newest captured picture that covers it
-outside its fixed overlays, else the fill colour.
-
-- **Zoom.** Two fingers pinching a window whose reporter names a scroller and reports
-  `zoom_range` zoom it on the phone, as UIScrollView zooms. The picture on screen scales with the fingers at display
-  rate, with the content first under them staying under them. Past the page's
-  `zoom_range` the scale rubber-bands. On lift it settles in
-  0.3 s within the range about the fingers, with no edge of the content pulled inside the
-  viewport. The phone then sends `scroll.zoom` with the settled scale and the point a pure
-  scale to it keeps still, and keeps showing its composition until a picture whose report
-  has applied that seq at that scale arrives (1.5 s at most). Then it shows the app's
-  picture. A scroll in progress stops where it shows when a pinch begins. Windows that take
-  native touch get their pinches themselves.
-
-`CabooseKit/Scroll` implements this. `LocalScroll` is the model, free of UIKit and Metal.
-`ScrollMotionEstimator` measures motion, `LocalScrollRenderer` captures and draws, and
-`LocalScrollController` runs them for a view. A toolkit adapter that reports a picture's
-exact scroll offset, region, range and fixed rectangles replaces measurement for that
-picture (`ScrollObservation.reported`); see [Scroll reports](#scroll-reports).
-
 ### Scroll reports
 
-An application's own scroll state, bound to the exact pictures that show it, replaces
-pixel measurement wherever a toolkit reporter runs. A picture whose report says the
-content is scrolled by `offset` shows exactly that content, whatever loaded, stuck or
-shifted on the page.
+A toolkit reporter gives a client an application's own scroll state, bound to the exact
+pictures that show it. A picture whose report says the content is scrolled by `offset`
+shows exactly that content, whatever loaded, stuck or shifted on the page. The server sends
+reports only to a client whose hello says `scroll: true`; the iOS app does not ask for
+them, and its pans reach the application as ordinary precise `pointer` scroll.
 
 **Reporters.** A reporter runs inside the application, in its toolkit: the Chromium
 extension (and the same script in Electron applications, loaded through `NODE_OPTIONS`), and
@@ -980,13 +817,10 @@ and `range` its largest offset (the smallest is 0). `fixed` are rectangles insid
 that do not move with the content: fixed elements, stuck sticky elements and the frame
 tag. `applied` is the last `scroll.target` `seq` the application had applied when it drew
 the frame, 0 for none. `epoch` changes when content moved in document coordinates, such
-as an image loading above the viewport or scroll anchoring. Pictures of two epochs are not
-placed against each other by their offsets. The phone anchors a new epoch's first picture
-where its own measurement against the previous picture puts it, or, when it cannot be
-measured, where the phone had driven the application to, as it does the first report. `tag` and `tag_rect` are present while the
-frame tag is drawn.
+as an image loading above the viewport or scroll anchoring: offsets of two epochs do not
+compare. `tag` and `tag_rect` are present while the frame tag is drawn.
 
-**Frame tag.** The application's pictures reach the phone on their own path (a video
+**Frame tag.** The application's pictures reach the client on their own path (a video
 `frame`, a GPU present), later than and independently of their `scroll.tree`. Only the
 picture can say which report it shows. While the window has bottom overscan with room for
 it, the reporter draws a tag on the first line of the 16-pixel grid (window-local) at or
@@ -1003,8 +837,7 @@ from 16 to 32, and start on the coding grid. A block's centre is then far from a
 fractional scale or the video coder blends, even in a GPU picture smaller than the window. `tag_rect` is where the 32 blocks are. A client samples
 each block's centre luma, thresholds at 128, and accepts the value only with the sync
 pattern and the check. It then places the picture by the `scroll.tree` with that `tag`
-and treats the tag as fixed content. A picture without a decodable tag, or whose tag names
-no report it holds, is placed by measurement. A report's frame number changes only when
+and treats the tag as fixed content. A report's frame number changes only when
 something it reports changes, so a picture drawn for another reason carries a tag whose
 report is still exact. `guest/display/vectors/scroll-tag/scroll-tag.json` pins the blocks of five
 values.
@@ -1014,16 +847,14 @@ pixels (display pixels; positive scrolls toward the end). The reporter applies i
 no gain, no animation, in the application's next frame, before that frame's report. Deltas
 rather than positions keep the application's own adjustments, such as scroll anchoring,
 and need no shared origin. A client that wants the content at offset `X` sends
-`X - (offset + Σ delta of the targets after applied)`. The phone places pictures by
-reports only while it drives the window with `scroll.target`. Scrolling that Chromium
+`X - (offset + Σ delta of the targets after applied)`. Scrolling that Chromium
 animates on its compositor thread, as a wheel scroll can, may show an offset before its
 frame's report.
 
 **Zoom.** A report's `zoom` is the page's visual scale (1 when absent). While it is not 1,
 the primary scroller's `offset` and `range` are in pixels of the zoomed content; fixed
 rectangles stay in window pixels. `zoom_range` is the scales the page allows; a reporter sends it when it applies
-`scroll.zoom`. A report at
-another zoom starts a new placement epoch on the phone, as `epoch` does.
+`scroll.zoom`. Offsets at two zooms do not compare, as across epochs.
 
 **`scroll.zoom`** (`0x99`): zoom window `id`'s page to the absolute `scale` about `focus`,
 a window-pixel point that stays still, which may lie outside the window. `seq` is the
@@ -1123,15 +954,14 @@ resume without a reset. The server lists `audio` in `features` when it has sound
 The iOS player anchors server time to the monotonic host clock when starting playback;
 it does not use the asynchronously updated renderer timebase to detect packet backlog.
 Audio-session interruptions clear that anchor before the next playback begins. Live
-window and motion pictures present immediately; only passthrough presentation uses the
+window pictures present immediately; only passthrough presentation uses the
 shared audio timeline, and an idle live video renderer cannot hold audio preroll.
 
 ### Video streams
 
 The iOS app omits `video_decoders`. Independently, the compositor requests server
 decode for all marker streams: codec support alone does not prove correct foreground
-composition (see [composition admission](codec-passthrough.md#composition-admission)). It
-advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
+composition (see [composition admission](codec-passthrough.md#composition-admission)). PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
 payload. Excess or empty packets are rejected before dispatch, counted as
@@ -1177,28 +1007,7 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   H.264 and HEVC, a temporal unit of OBUs with the sequence header on keyframes for AV1,
   and a frame or superframe for VP9. `extradata` is only for a codec whose parameters
   cannot travel in band.
-- **`motion` streams** are regions of a window that the server finds updating at video
-  rates. A region qualifies once it has been a dense rectangle of at least 192×112
-  picture pixels for a second, with most of its macroblocks changing in most pictures at
-  15 or more pictures a second. In Surface Atlas mode only new tiles that look like video
-  count as changes: more than 16 colours that LZ4 cannot halve. Scroll copies, fills, cached
-  tiles and drawn content (text, icons, chrome) never start a motion stream, so a scrolling
-  document stays lossless. It is sent in the window stream's codec at the window
-  picture's pixel scale by default, to a client that lists that codec in `video_decoders` or advertises
-  `scaled_motion`. With `scaled_motion`, a software-encoded region divisible by four is box-filtered to
-  half width and height and `video.create.scaled` is true; `rect` and `clip` still use
-  window coordinates. The client upscales the decoded picture with MetalFX where available,
-  falling back to vImage on the CPU if the scaler cannot be made or fails; if that fails,
-  the video layer scales the decoded picture.
-  A window with a passthrough stream bound gets none. While the stream exists, the
-  window's `frame`s keep the region frozen, including keyframes, replacement codec buffers
-  and refinement passes; the client shows the stream over it. Refining the base does not
-  recreate the motion encoder or lose its reference frames. Once the
-  region has stopped looking like that for a second (the video paused, moved, or closed),
-  the server sends a window `frame` that repaints the region and then `video.destroy`.
-  The client keeps showing the stream until it has shown that frame. A resize ends the
-  stream with the keyframe that follows it.
-- **`surface` and `motion` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
+- **`surface` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
   commit, like `frame`), have no reordering, and are shown as soon as they are decoded.
 - **`passthrough` streams** carry no `pts_us`: the application's decoder is the server's
   VA-API driver, which sees no timestamps. The client decodes in order and keeps decoded
@@ -1208,7 +1017,7 @@ owner; thumbnails and inactive presentations do not take it from the visible win
 - `color` describes the stream in ITU-T H.273 code points (for example `9/16/9`, BT.2020
   with PQ); with it a client whose display reports `hdr` shows HDR video with EDR. Window
   pictures stay SDR.
-- `video.ack` says a frame is queued for display; for `surface` and `motion` streams it is
+- `video.ack` says a frame is queued for display; for `surface` streams it is
   the flow control of the window stream (at most 2 unacknowledged), for `passthrough` it is
   only latency accounting, because the application paces itself. After a
   `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
@@ -1283,10 +1092,6 @@ each table, run in the dev container (`guest/display/scripts/dev.sh`).
 - `tiles`: 31 characters typed into Chromium at 1179×2556 take 6 pictures and 470 ms of
   server CPU, against 77 pictures and 1180 ms with `--tile-max-px 0`; the final pictures
   match at 66.6 dB.
-- `motion`: the check's 8 s canvas video in a 1280×720 Chromium window costs 5.1% of a
-  core, against 8.0% with `--no-motion`. The window stream sends about 50 pictures, most
-  of them before the region qualifies; each video frame is then a 480×288 encode instead
-  of a 1280×720 one.
 
 `scripts/profile.py [phone|tv] [type|scroll|caret]`, Chromium maximised on a phone's
 display (1179×2556 at 3×) or a TV's (3840×2160 at 2×), server CPU from process CPU over

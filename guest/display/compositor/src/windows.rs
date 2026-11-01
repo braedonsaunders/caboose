@@ -1,8 +1,7 @@
 //! Every window the protocol knows: xdg toplevels, xdg popups and X11 windows, each with
-//! a stable id, a display, a geometry in that display's pixels, and its stream.
+//! a stable id, a display, a geometry in that display's pixels, and its picture.
 
 use crate::displays::{DisplayOutput, Displays};
-use crate::stream::Stream;
 use caboose_display_protocol::{self as proto, Rect, WindowKind};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
@@ -43,7 +42,7 @@ pub struct Window {
     pub position: Point<i32, Logical>,
     /// What the client was last told, to send only changes.
     pub announced: Option<proto::WindowCreate>,
-    pub stream: Stream,
+    pub picture: crate::picture::Picture,
     /// The configure the client asked for that the app has not yet matched.
     pub fullscreen: bool,
     pub maximized: bool,
@@ -62,59 +61,10 @@ pub struct Window {
     pub identified: bool,
     /// A toplevel's xdg-toplevel-icon buffers last read, once its client has set one.
     pub toplevel_icon: Option<Vec<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer>>,
-    /// The highest `pointer.scroll.seq` delivered to the window's client, and its value
-    /// at the client's latest commit (the picture's `input_seq`).
-    pub scroll_seq_delivered: u64,
-    pub scroll_seq_committed: u64,
-    /// Overscan the client asked for: how much wider and taller than the geometry it
-    /// shows the window is laid out (logical pixels; zero for none).
-    pub overscan: Size<i32, Logical>,
-    /// The whole size (shown geometry plus overscan) last configured for that overscan.
-    /// The overscan applies while the window has exactly this size.
-    pub overscan_size: Option<Size<i32, Logical>>,
-    /// The size last configured for the client to show, while an overscan is or was
-    /// asked for: an overscan change keeps it, even before the app has committed it.
-    pub shown: Option<Size<i32, Logical>>,
     /// An X11 top-level without size hints that asked for a first size larger than its
     /// display (xwm.rs `first_size`): held at that size, its minimum and its maximum to the
     /// phone, which then keeps it at that size and shows it scaled to fit.
     pub held_min: Option<Size<i32, Logical>>,
-}
-
-/// The largest picture, per axis, an overscan may make: what the encoders take.
-pub const OVERSCAN_MAX_PICTURE: i32 = 4096;
-
-/// The whole size to lay a window out at for a shown size and a requested overscan, and
-/// the overscan that size carries: the overscan is cut so the whole stays within `limit`
-/// and within the app's maximum size (zero for none) on each axis.
-pub fn overscan_layout(
-    shown: Size<i32, Logical>,
-    overscan: Size<i32, Logical>,
-    max: Size<i32, Logical>,
-    limit: i32,
-) -> (Size<i32, Logical>, Size<i32, Logical>) {
-    let axis = |shown: i32, over: i32, max: i32| {
-        let ceiling = if max > 0 { limit.min(max) } else { limit };
-        over.max(0).min((ceiling - shown).max(0))
-    };
-    let applied: Size<i32, Logical> = (axis(shown.w, overscan.w, max.w), axis(shown.h, overscan.h, max.h)).into();
-    ((shown.w + applied.w, shown.h + applied.h).into(), applied)
-}
-
-/// The overscan a window of `size` carries when it was configured to show `shown` and laid
-/// out at `full`: per axis, its size beyond `shown`, up to the overscan laid out. A window
-/// whose minimum size `min` exceeds `shown` shows that much itself: only its size beyond
-/// its minimum is overscan.
-pub fn overscan_received(
-    size: Size<i32, Logical>,
-    shown: Size<i32, Logical>,
-    full: Size<i32, Logical>,
-    min: Size<i32, Logical>,
-) -> Size<i32, Logical> {
-    let axis = |size: i32, shown: i32, full: i32, min: i32| {
-        if full > shown { (size - shown.max(min)).clamp(0, full - shown) } else { 0 }
-    };
-    (axis(size.w, shown.w, full.w, min.w), axis(size.h, shown.h, full.h, min.h)).into()
 }
 
 /// The xdg window geometry of a surface: where the window is within the surface
@@ -156,40 +106,6 @@ fn size_px(d: &DisplayOutput, s: Size<i32, Logical>) -> Option<proto::Size> {
 impl Window {
     pub fn gpu_bind_follows_display(&self) -> bool {
         gpu_bind_follows_display(self.fullscreen, self.placed)
-    }
-
-    /// The overscan in effect: on each axis laid out with one, what the app's size has
-    /// beyond the size it was configured to show, up to the overscan laid out. An app that
-    /// sizes itself in steps (a terminal's character cells) gets part of it; one that
-    /// declined it, or has not committed it yet, none; one held larger than the shown size
-    /// by its minimum size (a dialog), only what it has beyond that minimum.
-    pub fn applied_overscan(&self) -> Size<i32, Logical> {
-        let (Some(full), Some(shown)) = (self.overscan_size, self.shown) else { return (0, 0).into() };
-        overscan_received(self.local_geometry().size, shown, full, self.min_size())
-    }
-
-    /// The app's minimum size, zero on an axis without one.
-    pub fn min_size(&self) -> Size<i32, Logical> {
-        match &self.surface {
-            Surface::Toplevel(t) => min_max(t.wl_surface()).0,
-            Surface::X11(x) => x.min_size().or(self.held_min).unwrap_or_default(),
-            Surface::Popup(_) => (0, 0).into(),
-        }
-    }
-
-    /// The size the client shows: the geometry without the overscan in effect.
-    pub fn shown_size(&self) -> Size<i32, Logical> {
-        let (size, over) = (self.local_geometry().size, self.applied_overscan());
-        (size.w - over.w, size.h - over.h).into()
-    }
-
-    /// The app's maximum size, zero on an axis without one.
-    pub fn max_size(&self) -> Size<i32, Logical> {
-        match &self.surface {
-            Surface::Toplevel(t) => min_max(t.wl_surface()).1,
-            Surface::X11(x) => x.max_size().or(self.held_min).unwrap_or_default(),
-            Surface::Popup(_) => (0, 0).into(),
-        }
     }
 
     /// The window's geometry in surface-local logical coordinates (for X11 windows the
@@ -334,17 +250,8 @@ impl Windows {
             Some(p) => origin - self.logical_origin(p, displays),
             None => origin - d.origin,
         };
-        // The overscan lies right of and below the geometry the client shows; the picture
-        // is the whole window.
-        let applied = w.applied_overscan();
-        let overscan = (applied.w > 0 || applied.h > 0).then(|| proto::Size { w: to_px(d, applied.w), h: to_px(d, applied.h) });
-        let (over_w, over_h) = overscan.map_or((0, 0), |o| (o.w, o.h));
-        let geometry = Rect::new(
-            to_px(d, relative.x),
-            to_px(d, relative.y),
-            to_px(d, local.size.w) - over_w,
-            to_px(d, local.size.h) - over_h,
-        );
+        let geometry =
+            Rect::new(to_px(d, relative.x), to_px(d, relative.y), to_px(d, local.size.w), to_px(d, local.size.h));
         let (title, app_id, min, max, fullscreen) = match &w.surface {
             Surface::Toplevel(t) => {
                 let (title, app_id) = title_app_id(t.wl_surface());
@@ -383,9 +290,8 @@ impl Windows {
             display: Some(d.info.id),
             xwayland: w.surface.is_x11(),
             // A popup's rounded corners and shadow lie inside its geometry: its picture
-            // keeps the alpha, as lossless tiles (docs/display.md, "Video streams").
+            // keeps the alpha, premultiplied.
             alpha: w.kind == WindowKind::Popup,
-            overscan,
             desktop_id: w.desktop_id.clone().flatten(),
             pid: if w.parent.is_none() { w.lineage.as_ref().and_then(|l| l.first().copied()) } else { None },
         })
@@ -411,7 +317,6 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         display: if before.display != now.display { now.display } else { None },
         xwayland: changed(&before.xwayland, &now.xwayland),
         alpha: changed(&before.alpha, &now.alpha),
-        overscan: if before.overscan != now.overscan { now.overscan.or(Some(proto::Size { w: 0, h: 0 })) } else { None },
         desktop_id: if before.desktop_id != now.desktop_id { now.desktop_id.clone() } else { None },
         pid: if before.pid != now.pid { now.pid } else { None },
     }
@@ -454,7 +359,6 @@ mod tests {
             display: Some(1),
             xwayland: false,
             alpha: false,
-            overscan: None,
             desktop_id: None,
             pid: None,
         }
@@ -476,49 +380,6 @@ mod tests {
         b.icon = Some(vec![1, 2]);
         let d = diff(&a, &b);
         assert_eq!((d.pid, d.icon), (Some(42), Some(vec![1, 2])));
-    }
-
-    #[test]
-    fn overscan_is_cut_to_the_picture_limit_and_the_app_maximum() {
-        let size = |w, h| Size::<i32, Logical>::from((w, h));
-        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 0), 4096), (size(400, 1600), size(0, 800)));
-        assert_eq!(overscan_layout(size(400, 3000), size(0, 2000), size(0, 0), 4096), (size(400, 4096), size(0, 1096)));
-        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 1000), 4096), (size(400, 1000), size(0, 200)));
-        // Already at the app's maximum: nothing to add.
-        assert_eq!(overscan_layout(size(400, 800), size(0, 800), size(0, 700), 4096), (size(400, 800), size(0, 0)));
-    }
-
-    #[test]
-    fn an_app_sized_in_steps_gets_the_overscan_it_took() {
-        let size = |w, h| Size::<i32, Logical>::from((w, h));
-        // Exactly the laid-out size, a terminal a part-row short, and no overscan taken.
-        let none = size(0, 0);
-        assert_eq!(overscan_received(size(800, 1400), size(800, 800), size(800, 1400), none), size(0, 600));
-        assert_eq!(overscan_received(size(792, 1392), size(800, 800), size(800, 1400), none), size(0, 592));
-        assert_eq!(overscan_received(size(792, 792), size(800, 800), size(800, 1400), none), size(0, 0));
-        assert_eq!(overscan_received(size(900, 1500), size(800, 800), size(800, 1400), none), size(0, 600));
-    }
-
-    #[test]
-    fn a_dialog_held_open_by_its_minimum_size_has_no_overscan() {
-        let size = |w, h| Size::<i32, Logical>::from((w, h));
-        // A fixed-size dialog (546x390) larger than the shown 466x330, asked for overscan on
-        // both axes: all of its size is its own picture, none of it overscan.
-        let dialog = size(546, 390);
-        assert_eq!(overscan_received(dialog, size(466, 330), size(932, 990), dialog), size(0, 0));
-        // A window with a minimum that took the overscan: only what lies beyond the minimum.
-        assert_eq!(overscan_received(size(466, 990), size(466, 330), size(466, 990), size(300, 390)), size(0, 600));
-    }
-
-    #[test]
-    fn an_ended_overscan_is_sent_as_zero() {
-        let mut a = create();
-        a.overscan = Some(proto::Size { w: 0, h: 600 });
-        let mut b = a.clone();
-        assert_eq!(diff(&a, &b).overscan, None);
-        b.overscan = None;
-        assert_eq!(diff(&a, &b).overscan, Some(proto::Size { w: 0, h: 0 }));
-        assert_eq!(diff(&b, &a).overscan, Some(proto::Size { w: 0, h: 600 }));
     }
 
     #[test]

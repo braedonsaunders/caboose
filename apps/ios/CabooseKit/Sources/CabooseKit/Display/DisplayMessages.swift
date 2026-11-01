@@ -12,39 +12,17 @@ public enum DisplayProtocol {
         case windowCreate = 0x02
         case windowUpdate = 0x03
         case windowDestroy = 0x04
-        case frame = 0x10
-        case tile = 0x11
-        // Video streams (docs/display.md "Video streams").
-        case videoCreate = 0x12
-        case videoFrame = 0x13
-        case videoUpdate = 0x14
-        case videoDestroy = 0x15
-        case videoPresent = 0x16
         // Game handoff (docs/game-handoff.md).
         case gameCreate = 0x17
         case gameDestroy = 0x18
-        // GPU streams (docs/gpu-stream.md).
-        case gpuCreate = 0x19
-        case gpuData = 0x1A
-        case gpuDestroy = 0x1B
         case webviewCreate = 0x1C
         case webviewDestroy = 0x1D
         case cursor = 0x20
         case cursorNamed = 0x21
         case textInput = 0x22
-        case surfaceBatch = 0x23
-        case surfaceReset = 0x24
-        case sceneFont = 0x25
-        case sceneCommit = 0x26
-        // Toolkit scroll reports (docs/display.md, "Scroll reports").
-        case scrollTree = 0x27
         // Controls a finger may mean (docs/display.md, "Touch targets").
         case targets = 0x28
         case textFocus = 0x29
-        // Draw lists (docs/draw.md); sent only to a client whose hello says `draw`.
-        case drawOps = 0x2A
-        case drawPresent = 0x2B
-        case drawEnd = 0x2C
         case clipboard = 0x30
         case notification = 0x31
         case dropStatus = 0x32
@@ -66,24 +44,16 @@ public enum DisplayProtocol {
     public enum ClientType: UInt8, Sendable {
         case hello = 0x81
         case vsync = 0x82
-        case ack = 0x83
         case configure = 0x84
         case close = 0x85
-        case requestKeyframe = 0x86
         case displays = 0x87
-        case videoAck = 0x88
-        case videoKeyframe = 0x89
         case touch = 0x90
         case pencil = 0x91
         case pointer = 0x92
         case key = 0x93
         case text = 0x94
-        case scrollTarget = 0x95
-        case scrollZoom = 0x99
-        case gpuAck = 0x96
         case gameDecline = 0x97
         case webviewDecline = 0x98
-        case sceneScroll = 0x9A
         case clipboard = 0xA0
         case devices = 0xB0
         case deviceCamera = 0xB1
@@ -148,9 +118,6 @@ public struct WindowFields: Equatable, Sendable {
     public var display: Int?
     public var xwayland: Bool?
     public var alpha: Bool?
-    /// How far the window's pictures extend right of and below `geometry`, while an
-    /// overscan the client asked for applies; `[0, 0]` when it ends.
-    public var overscan: CGSize?
     /// The desktop entry whose launch started the window's process (`<id>.desktop`).
     public var desktopID: String?
     /// The process that owns a toplevel, as the computer sees it.
@@ -173,7 +140,6 @@ public struct WindowFields: Equatable, Sendable {
         display = body["display"]?.int
         xwayland = body["xwayland"]?.bool
         alpha = body["alpha"]?.bool
-        overscan = body["overscan"].flatMap(Self.size)
         desktopID = body["desktop_id"]?.string
         pid = body["pid"]?.int
     }
@@ -189,144 +155,8 @@ public struct WindowFields: Equatable, Sendable {
     }
 }
 
-public enum DisplayCodec: String, Sendable, CaseIterable {
-    case hevc, av1, h264
-}
-
-/// One encoded picture of one window. `rect` is where it lands in the window (window-local
-/// display pixels); `crop` is the visible part of the decoded picture, without encoder padding.
-public struct EncodedFrame: Sendable {
-    public var window: Int
-    public var codec: DisplayCodec
-    public var keyframe: Bool
-    public var ptsMicros: UInt64
-    public var rect: CGRect
-    public var crop: CGRect
-    public var data: Data
-
-    public init(window: Int, codec: DisplayCodec, keyframe: Bool, ptsMicros: UInt64, rect: CGRect, crop: CGRect, data: Data) {
-        self.window = window
-        self.codec = codec
-        self.keyframe = keyframe
-        self.ptsMicros = ptsMicros
-        self.rect = rect
-        self.crop = crop
-        self.data = data
-    }
-
-    init?(_ body: CBOR) {
-        guard let window = body["id"]?.int, let codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:)),
-              let pts = body["pts_us"]?.uint64, let rect = body["rect"].flatMap(WindowFields.rect),
-              let data = body["data"]?.data else { return nil }
-        self.window = window
-        self.codec = codec
-        keyframe = body["keyframe"]?.bool ?? false
-        ptsMicros = pts
-        self.rect = rect
-        crop = body["crop"].flatMap(WindowFields.rect) ?? CGRect(origin: .zero, size: rect.size)
-        self.data = data
-    }
-}
-
-/// A lossless refresh of static content.
-public struct LosslessTile: Sendable {
-    public var window: Int
-    public var rect: CGRect
-    public var format: String
-    public var data: Data
-
-    init?(_ body: CBOR) {
-        guard let window = body["id"]?.int, let rect = body["rect"].flatMap(WindowFields.rect),
-              let format = body["format"]?.string, let data = body["data"]?.data else { return nil }
-        self.window = window
-        self.rect = rect
-        self.format = format
-        self.data = data
-    }
-}
-
-/// Where a video stream comes from: the app's own bitstream through the Caboose VA-API driver,
-/// a Wayland video subsurface the compositor encodes, or a region detected as moving.
-public enum VideoSource: String, Sendable {
-    case passthrough, surface, motion
-
-    /// Live streams are shown as they decode; an app's own stream when the app presents a frame.
-    public var isLive: Bool { self != .passthrough }
-}
-
-/// H.273 colour description of a video stream, e.g. 9/16/9 for BT.2020 PQ.
-public struct VideoColor: Equatable, Sendable {
-    public var primaries: Int
-    public var transfer: Int
-    public var matrix: Int
-    public var fullRange: Bool
-
-    /// PQ or HLG: the stream wants the screen's extended dynamic range.
-    public var isHDR: Bool { transfer == 16 || transfer == 18 }
-
-    init?(_ body: CBOR) {
-        guard let primaries = body["primaries"]?.int, let transfer = body["transfer"]?.int, let matrix = body["matrix"]?.int else { return nil }
-        self.primaries = primaries
-        self.transfer = transfer
-        self.matrix = matrix
-        fullRange = body["full_range"]?.bool ?? false
-    }
-}
-
-/// The fields of `video.create`, or the changed ones of `video.update`. `rect` is where the
-/// whole picture goes in its window (window-local display pixels, scaled to it), `clip` the
-/// part of it that shows, and `z` its order among the window's streams, all above the window.
-public struct VideoStreamFields: Sendable {
-    public var id: Int
-    public var window: Int?
-    public var rect: CGRect?
-    public var clip: CGRect?
-    public var z: Int?
-    public var codec: DisplayCodec?
-    public var source: VideoSource?
-    public var color: VideoColor?
-    public var scaled: Bool
-
-    init?(_ body: CBOR) {
-        guard let id = body["id"]?.int else { return nil }
-        self.id = id
-        window = body["window"]?.int
-        rect = body["rect"].flatMap(WindowFields.rect)
-        clip = body["clip"].flatMap(WindowFields.rect)
-        z = body["z"]?.int
-        codec = body["codec"]?.string.flatMap(DisplayCodec.init(rawValue:))
-        source = body["source"]?.string.flatMap(VideoSource.init(rawValue:))
-        color = body["color"].flatMap(VideoColor.init)
-        scaled = body["scaled"]?.bool ?? false
-    }
-}
-
-/// One access unit of a video stream, in decode order (`seq` from 0), in the same in-band
-/// format as `frame.data`. Live streams carry `pts_us`; an app's own stream does not, and is
-/// shown frame by frame as `video.present` says.
-public struct VideoFrame: Sendable {
-    public var video: Int
-    public var seq: Int
-    public var keyframe: Bool
-    public var ptsMicros: UInt64?
-    public var data: Data
-
-    public init(video: Int, seq: Int, keyframe: Bool, ptsMicros: UInt64? = nil, data: Data) {
-        self.video = video
-        self.seq = seq
-        self.keyframe = keyframe
-        self.ptsMicros = ptsMicros
-        self.data = data
-    }
-
-    init?(_ body: CBOR) {
-        guard let video = body["id"]?.int, let seq = body["seq"]?.int, let data = body["data"]?.data else { return nil }
-        self.init(video: video, seq: seq, keyframe: body["keyframe"]?.bool ?? false, ptsMicros: body["pts_us"]?.uint64, data: data)
-    }
-}
-
 /// One packet of the computer's sound: 20 ms of Opus at 48 kHz, stamped with the server clock
-/// time of its first sample (the clock pictures are stamped with too).
+/// time of its first sample.
 public struct AudioPacket: Sendable {
     public var codec: String
     public var ptsMicros: UInt64
@@ -406,253 +236,21 @@ public struct WebviewDescriptor: Equatable, Sendable {
     }
 }
 
-public enum AtlasTileFormat: String, Equatable, Sendable {
-    case pal2Lz4 = "pal2-lz4"
-    case pal16Lz4 = "pal16-lz4"
-    case rgbaLz4 = "rgba-lz4"
-    case png = "png"
-}
-
-public struct SurfaceCopy: Equatable, Sendable {
-    public var dx: Int
-    public var dy: Int
-    public var rect: CGRect
-    public init(dx: Int, dy: Int, rect: CGRect) { self.dx = dx; self.dy = dy; self.rect = rect }
-    init?(_ value: CBOR) {
-        guard let v = value.ints, v.count == 6, v[4] >= 0, v[5] >= 0 else { return nil }
-        self.init(dx: v[0], dy: v[1], rect: CGRect(x: v[2], y: v[3], width: v[4], height: v[5]))
-    }
-}
-
-public struct SurfaceFill: Equatable, Sendable {
-    public var rect: CGRect
-    public var rgba: UInt32
-    public init(rect: CGRect, rgba: UInt32) { self.rect = rect; self.rgba = rgba }
-    init?(_ value: CBOR) {
-        guard let arr = value.array, arr.count == 5,
-              let x = arr[0].int, let y = arr[1].int, let w = arr[2].int, let h = arr[3].int,
-              w >= 0, h >= 0, let rgba = arr[4].uint64, rgba <= UInt64(UInt32.max) else { return nil }
-        self.init(rect: CGRect(x: x, y: y, width: w, height: h), rgba: UInt32(rgba))
-    }
-}
-
-public struct SurfaceTileRef: Equatable, Sendable {
-    public var x: Int
-    public var y: Int
-    public var hash: UInt64
-    public init(x: Int, y: Int, hash: UInt64) { self.x = x; self.y = y; self.hash = hash }
-    init?(_ value: CBOR) {
-        guard let arr = value.array, arr.count == 3,
-              let x = arr[0].int, let y = arr[1].int, let hash = arr[2].uint64 else { return nil }
-        self.init(x: x, y: y, hash: hash)
-    }
-}
-
-public struct SurfaceTile: Equatable, Sendable {
-    public var rect: CGRect
-    public var hash: UInt64?
-    public var format: AtlasTileFormat
-    public var data: Data
-    public init(rect: CGRect, hash: UInt64? = nil, format: AtlasTileFormat, data: Data) {
-        self.rect = rect; self.hash = hash; self.format = format; self.data = data
-    }
-    init?(_ body: CBOR) {
-        guard let x = body["x"]?.int, let y = body["y"]?.int,
-              let w = body["w"]?.int, let h = body["h"]?.int, w > 0, h > 0,
-              let fmtStr = body["fmt"]?.string, let format = AtlasTileFormat(rawValue: fmtStr),
-              let data = body["data"]?.data else { return nil }
-        let hash: UInt64?
-        if let hVal = body["hash"] {
-            guard let u = hVal.uint64 else { return nil }
-            hash = u
-        } else {
-            hash = nil
-        }
-        self.init(rect: CGRect(x: x, y: y, width: w, height: h), hash: hash, format: format, data: data)
-    }
-}
-
-public struct SurfaceBatch: Equatable, Sendable {
-    public var window: Int
-    public var seq: UInt64
-    public var ptsMicros: UInt64
-    public var size: CGSize
-    public var rect: CGRect
-    public var keyframe: Bool
-    public var copies: [SurfaceCopy]
-    public var fills: [SurfaceFill]
-    public var refs: [SurfaceTileRef]
-    public var tiles: [SurfaceTile]
-
-    public init(window: Int, seq: UInt64, ptsMicros: UInt64, size: CGSize, rect: CGRect, keyframe: Bool = false,
-                copies: [SurfaceCopy] = [], fills: [SurfaceFill] = [], refs: [SurfaceTileRef] = [], tiles: [SurfaceTile] = []) {
-        self.window = window; self.seq = seq; self.ptsMicros = ptsMicros; self.size = size; self.rect = rect
-        self.keyframe = keyframe; self.copies = copies; self.fills = fills; self.refs = refs; self.tiles = tiles
-    }
-
-    init?(_ body: CBOR) {
-        guard let window = body["id"]?.int,
-              let seq = body["seq"]?.uint64,
-              let pts = body["pts_us"]?.uint64,
-              let size = body["size"].flatMap(WindowFields.size), size.width > 0, size.height > 0,
-              let rect = body["rect"].flatMap(WindowFields.rect) else { return nil }
-        var copies: [SurfaceCopy] = []
-        if let raw = body["copies"]?.array {
-            for item in raw { guard let c = SurfaceCopy(item) else { return nil }; copies.append(c) }
-        }
-        var fills: [SurfaceFill] = []
-        if let raw = body["fills"]?.array {
-            for item in raw { guard let f = SurfaceFill(item) else { return nil }; fills.append(f) }
-        }
-        var refs: [SurfaceTileRef] = []
-        if let raw = body["refs"]?.array {
-            for item in raw { guard let r = SurfaceTileRef(item) else { return nil }; refs.append(r) }
-        }
-        var tiles: [SurfaceTile] = []
-        if let raw = body["tiles"]?.array {
-            for item in raw { guard let t = SurfaceTile(item) else { return nil }; tiles.append(t) }
-        }
-        self.init(window: window, seq: seq, ptsMicros: pts, size: size, rect: rect,
-                  keyframe: body["keyframe"]?.bool ?? false,
-                  copies: copies, fills: fills, refs: refs, tiles: tiles)
-    }
-}
-
-public struct SceneFontDescriptor: Equatable, Sendable {
-    public var font: UInt64
-    public var index: Int
-    public var family: String?
-    public var data: Data
-    public init(font: UInt64, index: Int, family: String? = nil, data: Data) {
-        self.font = font; self.index = index; self.family = family; self.data = data
-    }
-    init?(_ body: CBOR) {
-        guard let font = body["font"]?.uint64, let index = body["index"]?.int, index >= 0,
-              let data = body["data"]?.data else { return nil }
-        self.init(font: font, index: index, family: body["family"]?.string, data: data)
-    }
-}
-
-public enum SceneNodeKind: String, Equatable, Sendable {
-    case group, clip, rclip, scroll, rect, border, shadow, glyphs, path, surface
-}
-
-public struct SceneNode: Equatable, Sendable {
-    public var id: UInt64
-    public var kind: SceneNodeKind
-    public var rect: CGRect?
-    public var radius: [Int]?
-    public var color: UInt32?
-    public var scroll: CGRect?
-    public var children: [UInt64]?
-    public var font: UInt64?
-    public var size: Double?
-    public var glyphs: Data?
-    public var path: Data?
-    public var surface: UInt64?
-
-    public init(id: UInt64, kind: SceneNodeKind, rect: CGRect? = nil, radius: [Int]? = nil, color: UInt32? = nil,
-                scroll: CGRect? = nil, children: [UInt64]? = nil, font: UInt64? = nil, size: Double? = nil,
-                glyphs: Data? = nil, path: Data? = nil, surface: UInt64? = nil) {
-        self.id = id; self.kind = kind; self.rect = rect; self.radius = radius; self.color = color
-        self.scroll = scroll; self.children = children; self.font = font; self.size = size
-        self.glyphs = glyphs; self.path = path; self.surface = surface
-    }
-
-    init?(_ body: CBOR) {
-        guard let id = body["id"]?.uint64,
-              let kindStr = body["kind"]?.string,
-              let kind = SceneNodeKind(rawValue: kindStr) else { return nil }
-        let radius: [Int]?
-        if let rVal = body["radius"] {
-            guard let ints = rVal.ints, ints.count == 4 else { return nil }
-            radius = ints
-        } else {
-            radius = nil
-        }
-        let color: UInt32?
-        if let cVal = body["color"] {
-            guard let u = cVal.uint64, u <= UInt64(UInt32.max) else { return nil }
-            color = UInt32(u)
-        } else {
-            color = nil
-        }
-        let children: [UInt64]?
-        if let chVal = body["children"] {
-            guard let arr = chVal.array else { return nil }
-            var ids: [UInt64] = []
-            for item in arr { guard let u = item.uint64 else { return nil }; ids.append(u) }
-            children = ids
-        } else {
-            children = nil
-        }
-        self.init(
-            id: id,
-            kind: kind,
-            rect: body["rect"].flatMap(WindowFields.rect),
-            radius: radius,
-            color: color,
-            scroll: body["scroll"].flatMap(WindowFields.rect),
-            children: children,
-            font: body["font"]?.uint64,
-            size: body["size"]?.double,
-            glyphs: body["glyphs"]?.data,
-            path: body["path"]?.data,
-            surface: body["surface"]?.uint64
-        )
-    }
-}
-
-public struct SceneCommit: Equatable, Sendable {
-    public var window: Int
-    public var seq: UInt64
-    public var ptsMicros: UInt64
-    public var root: UInt64
-    public var reset: Bool
-    public var nodes: [SceneNode]
-    public var remove: [UInt64]
-
-    public init(window: Int, seq: UInt64, ptsMicros: UInt64, root: UInt64, reset: Bool = false,
-                nodes: [SceneNode] = [], remove: [UInt64] = []) {
-        self.window = window; self.seq = seq; self.ptsMicros = ptsMicros; self.root = root
-        self.reset = reset; self.nodes = nodes; self.remove = remove
-    }
-
-    init?(_ body: CBOR) {
-        guard let window = body["id"]?.int,
-              let seq = body["seq"]?.uint64,
-              let pts = body["pts_us"]?.uint64,
-              let root = body["root"]?.uint64 else { return nil }
-        var nodes: [SceneNode] = []
-        if let raw = body["nodes"]?.array {
-            for item in raw { guard let n = SceneNode(item) else { return nil }; nodes.append(n) }
-        }
-        var remove: [UInt64] = []
-        if let raw = body["remove"]?.array {
-            for item in raw { guard let id = item.uint64 else { return nil }; remove.append(id) }
-        }
-        self.init(window: window, seq: seq, ptsMicros: pts, root: root,
-                  reset: body["reset"]?.bool ?? false, nodes: nodes, remove: remove)
-    }
-}
-
 public struct ServerHello: Equatable, Sendable {
     public var version: Int
     public var displays: [Int]
-    public var encoders: [String]
     public var features: Set<String>
     /// The server process's epoch: window ids name the same windows only within one. Nil
     /// from a server that sends none, or one that is not 1–64 bytes of text.
     public var epoch: String?
     /// Live GPU service identity for this owner display. Only a nonzero 16-byte
     /// value can authorize matching a GPU surface to one of this display's windows.
-    /// This is distinct from the text epoch used for retained ordinary pictures.
+    /// This is distinct from the text epoch that keeps windows through a reconnect.
     public var gpuLiveEpoch: Data?
 
     init(_ body: CBOR) {
         version = body["version"]?.int ?? 0
         displays = body["displays"]?.array?.compactMap { $0.int ?? $0["id"]?.int } ?? []
-        encoders = body["encoders"]?.array?.compactMap(\.string) ?? []
         features = Set(body["features"]?.array?.compactMap(\.string) ?? [])
         epoch = body["epoch"]?.string.flatMap { (1 ... 64).contains($0.utf8.count) ? $0 : nil }
         gpuLiveEpoch = body["gpu_live_epoch"]?.data.flatMap {
@@ -667,26 +265,13 @@ public enum ServerMessage: Sendable {
     case windowCreate(WindowFields)
     case windowUpdate(WindowFields)
     case windowDestroy(id: Int)
-    case frame(EncodedFrame)
-    case tile(LosslessTile)
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
-    case scrollTree(ScrollTree)
     /// A window's controls, replacing its previous list.
     case targets(window: Int, serial: UInt64, targets: [TouchTarget])
     /// Whether the window's focus, as its accessibility tree reports it, takes typing.
     case textFocus(window: Int, editing: Bool)
-    case surfaceBatch(SurfaceBatch)
-    case surfaceReset(epoch: UInt64)
-    case sceneFont(SceneFontDescriptor)
-    case sceneCommit(SceneCommit)
-    /// Draw-list ops one process recorded, in its order (docs/draw.md).
-    case drawOps(stream: UInt32, ops: Data)
-    /// The window now shows a surface of a draw stream.
-    case drawPresent(window: Int, stream: UInt32, surface: UInt32, pts: UInt64)
-    /// A draw stream ended; its surfaces, images and glyphs can go.
-    case drawEnd(stream: UInt32)
     case clipboard(ClipboardContent)
     /// Whether the application under a drop from the phone accepts it; nil when it answers
     /// only once it has the content, on the drop.
@@ -703,22 +288,10 @@ public enum ServerMessage: Sendable {
     case audio(AudioPacket)
     case pong(micros: UInt64)
     case bye(reason: String)
-    case videoCreate(VideoStreamFields)
-    case videoFrame(VideoFrame)
-    case videoUpdate(VideoStreamFields)
-    case videoDestroy(id: Int)
-    /// The app is showing passthrough frame `seq` now.
-    case videoPresent(id: Int, seq: Int, ptsMicros: UInt64)
     case webviewCreate(WebviewDescriptor)
     case webviewDestroy(id: Int)
     case gameCreate(GameDescriptor)
     case gameDestroy(id: Int)
-    /// Window `window` is drawn on this device from stream `id`, an application's Vulkan calls.
-    case gpuCreate(id: Int, window: Int)
-    /// The next bytes of stream `id`, `offset` bytes from its start.
-    case gpuData(id: Int, offset: UInt64, data: Data)
-    /// The stream ended; `reason` says why when the computer could not go on (`spool-limit`).
-    case gpuDestroy(id: Int, reason: String?)
     /// What each offered device became in the computer.
     case deviceStatus([DeviceState])
     /// A computer application started using `device`; `rateHz` for motion.
@@ -745,13 +318,10 @@ public enum ServerMessage: Sendable {
         case .windowCreate: parsed = WindowFields(body).map(ServerMessage.windowCreate)
         case .windowUpdate: parsed = WindowFields(body).map(ServerMessage.windowUpdate)
         case .windowDestroy: parsed = body["id"]?.int.map { .windowDestroy(id: $0) }
-        case .frame: parsed = EncodedFrame(body).map(ServerMessage.frame)
-        case .tile: parsed = LosslessTile(body).map(ServerMessage.tile)
         case .cursor:
             let hotspot = body["hotspot"]?.ints.flatMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil } ?? .zero
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }
         case .cursorNamed: parsed = body["name"]?.string.map(ServerMessage.cursorNamed)
-        case .scrollTree: parsed = ScrollTree(body).map(ServerMessage.scrollTree)
         case .textFocus:
             if let window = body["id"]?.int, let editing = body["editing"]?.bool {
                 parsed = .textFocus(window: window, editing: editing)
@@ -770,25 +340,6 @@ public enum ServerMessage: Sendable {
                 .textInput(window: $0, enabled: body["enabled"]?.bool ?? false, purpose: body["purpose"]?.string,
                            surrounding: SurroundingText(text: body["surrounding"]?.string, cursor: body["cursor"]?.int, anchor: body["anchor"]?.int))
             }
-        case .surfaceBatch: parsed = SurfaceBatch(body).map(ServerMessage.surfaceBatch)
-        case .surfaceReset: parsed = body["epoch"]?.uint64.map { .surfaceReset(epoch: $0) }
-        case .sceneFont: parsed = SceneFontDescriptor(body).map(ServerMessage.sceneFont)
-        case .sceneCommit: parsed = SceneCommit(body).map(ServerMessage.sceneCommit)
-        case .drawOps:
-            if let stream = body["stream"]?.uint64, let ops = body["ops"]?.data, stream <= UInt64(UInt32.max) {
-                parsed = .drawOps(stream: UInt32(stream), ops: ops)
-            } else {
-                parsed = nil
-            }
-        case .drawPresent:
-            if let window = body["id"]?.int, let stream = body["stream"]?.uint64, let surface = body["surface"]?.uint64,
-               let pts = body["pts_us"]?.uint64, stream <= UInt64(UInt32.max), surface <= UInt64(UInt32.max) {
-                parsed = .drawPresent(window: window, stream: UInt32(stream), surface: UInt32(surface), pts: pts)
-            } else {
-                parsed = nil
-            }
-        case .drawEnd:
-            parsed = body["stream"]?.uint64.flatMap { $0 <= UInt64(UInt32.max) ? .drawEnd(stream: UInt32($0)) : nil }
         case .clipboard: parsed = ClipboardContent(cbor: body).map(ServerMessage.clipboard)
         case .dropStatus: parsed = .dropStatus(accepted: body["accepted"]?.bool)
         case .dropResult: parsed = body["ok"]?.bool.map { .dropResult(ok: $0, reason: body["reason"]?.string) }
@@ -807,31 +358,10 @@ public enum ServerMessage: Sendable {
             }
         case .pong: parsed = body["t_us"]?.uint64.map { .pong(micros: $0) }
         case .bye: parsed = .bye(reason: body["reason"]?.string ?? "")
-        case .videoCreate:
-            let fields = VideoStreamFields(body)
-            parsed = fields.flatMap { $0.window != nil && $0.rect != nil && $0.codec != nil ? .videoCreate($0) : nil }
-        case .videoFrame: parsed = VideoFrame(body).map(ServerMessage.videoFrame)
-        case .videoUpdate: parsed = VideoStreamFields(body).map(ServerMessage.videoUpdate)
-        case .videoDestroy: parsed = body["id"]?.int.map { .videoDestroy(id: $0) }
-        case .videoPresent:
-            if let id = body["id"]?.int, let seq = body["seq"]?.int, let pts = body["pts_us"]?.uint64 {
-                parsed = .videoPresent(id: id, seq: seq, ptsMicros: pts)
-            } else {
-                parsed = nil
-            }
         case .webviewCreate: parsed = WebviewDescriptor(body).map(ServerMessage.webviewCreate)
         case .webviewDestroy: parsed = body["id"]?.int.map { .webviewDestroy(id: $0) }
         case .gameCreate: parsed = GameDescriptor(body).map(ServerMessage.gameCreate)
         case .gameDestroy: parsed = body["id"]?.int.map { .gameDestroy(id: $0) }
-        case .gpuCreate:
-            if let id = body["id"]?.int, let window = body["window"]?.int { parsed = .gpuCreate(id: id, window: window) } else { parsed = nil }
-        case .gpuData:
-            if let id = body["id"]?.int, let offset = body["offset"]?.uint64, let data = body["data"]?.data {
-                parsed = .gpuData(id: id, offset: offset, data: data)
-            } else {
-                parsed = nil
-            }
-        case .gpuDestroy: parsed = body["id"]?.int.map { .gpuDestroy(id: $0, reason: body["reason"]?.string) }
         case .deviceStatus: parsed = body["devices"]?.array.map { .deviceStatus($0.compactMap(DeviceState.init)) }
         case .deviceOpen: parsed = body["device"]?.string.map { .deviceOpen(device: $0, rateHz: body["rate_hz"]?.double) }
         case .deviceClose: parsed = body["device"]?.string.map { .deviceClose(device: $0) }
@@ -962,22 +492,17 @@ public enum PointerButtons {
 }
 
 public enum ClientMessage: Sendable {
-    /// `videoDecoders`: what the client plays as video streams; absent, the server sends none.
     /// `audioDecoders`: the sound codecs the client plays ("opus"); absent, the server sends no sound.
     /// `wasm`: the client runs handed-off games (`"wasm": true`); the key is absent otherwise.
-    /// `gpu`: the client renders GPU streams (`"gpu": true`); the key is absent otherwise.
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     /// `clipboardTypes`: what the client takes from the clipboard besides text; absent, text only.
-    case hello(token: String, decoders: [DisplayCodec], displays: [DisplayInfo], videoDecoders: [DisplayCodec]? = nil,
-               audioDecoders: [String]? = nil, wasm: Bool = false, gpu: Bool = false, scaledMotion: Bool = false, webview: Bool = false,
-               devices: Bool = false, clipboardTypes: [String]? = nil, atlas: Bool = false, scene: Bool = false,
-               scroll: Bool = false, targets: Bool = false, draw: Bool = false)
+    /// `targets`: the client aims touches at windows' controls (`targets` messages).
+    case hello(token: String, displays: [DisplayInfo], audioDecoders: [String]? = nil, wasm: Bool = false,
+               webview: Bool = false, devices: Bool = false, clipboardTypes: [String]? = nil, targets: Bool = false)
     case vsync(display: Int, micros: UInt64)
-    case ack(window: Int, ptsMicros: UInt64, decodedMicros: Int)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
-                   maximized: Bool? = nil, activated: Bool? = nil, overscan: CGSize? = nil)
+                   maximized: Bool? = nil, activated: Bool? = nil)
     case close(window: Int)
-    case requestKeyframe(window: Int)
     case displays([DisplayInfo])
     case touch(window: Int, points: [TouchPoint])
     case pencil(window: Int, PencilSample)
@@ -987,9 +512,6 @@ public enum ClientMessage: Sendable {
     /// looking around in a game).
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?,
                  scrollSeq: UInt64? = nil, relative: CGPoint? = nil)
-    /// Scroll a reported scroller by `delta` content pixels, exactly, as input `seq`.
-    case scrollTarget(window: Int, scroller: Int, seq: UInt64, delta: CGPoint)
-    case scrollZoom(window: Int, seq: UInt64, scale: Double, focus: CGPoint)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(ClipboardContent)
@@ -1002,17 +524,10 @@ public enum ClientMessage: Sendable {
     /// The phone takes the application's drag in progress.
     case dragTake
     case ping(micros: UInt64)
-    /// A video frame is decoded and queued for display.
-    case videoAck(video: Int, seq: Int)
-    /// The client could not decode a video stream; it drops frames until the next keyframe.
-    case videoKeyframe(video: Int)
-    /// The client has consumed GPU stream `id` up to `offset`.
-    case gpuAck(id: Int, offset: UInt64)
     /// Game `id` cannot run on this device, and why (docs/game-handoff.md, "Declining"). The
     /// reason is cut to `GameDecline.reasonLimit` UTF-8 bytes at a character boundary.
     case gameDecline(id: Int, reason: String)
     case webviewDecline(id: Int, reason: String)
-    case sceneScroll(window: Int, node: Int, sx: Double, sy: Double)
     /// The complete set of devices the phone offers now.
     case devices([DeviceDescriptor])
     /// One H.264 access unit of a camera, Annex-B, with SPS and PPS on keyframes.
@@ -1037,27 +552,16 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let decoders, let displays, let videoDecoders, let audioDecoders, let wasm, let gpu, let scaledMotion, let webview, let devices, let clipboardTypes, let atlas, let scene, let scroll, let targets, let draw):
+        case .hello(let token, let displays, let audioDecoders, let wasm, let webview, let devices, let clipboardTypes, let targets):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
-                ("decoders", .array(decoders.map { CBOR($0.rawValue) })), ("displays", .array(displays.map(\.cbor))),
-                ("video_decoders", videoDecoders.map { .array($0.map { CBOR($0.rawValue) }) }),
+                ("displays", .array(displays.map(\.cbor))),
                 ("audio_decoders", audioDecoders.map { .array($0.map { CBOR($0) }) }),
                 ("wasm", wasm ? CBOR(true) : nil),
-                ("gpu", gpu ? CBOR(true) : nil),
-                ("scaled_motion", scaledMotion ? CBOR(true) : nil),
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
-                ("scroll", scroll ? CBOR(true) : nil),
                 ("targets", targets ? CBOR(true) : nil),
                 ("clipboard_types", clipboardTypes.map { .array($0.map { CBOR($0) }) }),
-                ("atlas", atlas ? CBOR(true) : nil),
-                ("scene", scene ? CBOR(true) : nil),
-                ("draw", draw ? CBOR(true) : nil),
-            ]))
-        case .sceneScroll(let window, let node, let sx, let sy):
-            return DisplayFrame(type: T.sceneScroll.rawValue, body: map([
-                ("id", CBOR(window)), ("node", CBOR(node)), ("sx", CBOR(sx)), ("sy", CBOR(sy)),
             ]))
         case .devices(let devices):
             return DisplayFrame(type: T.devices.rawValue, body: map([("devices", .array(devices.map(\.cbor)))]))
@@ -1086,33 +590,20 @@ public enum ClientMessage: Sendable {
             ]))
         case .deviceError(let device, let reason):
             return DisplayFrame(type: T.deviceError.rawValue, body: map([("device", CBOR(device)), ("reason", CBOR(GameDecline.bounded(reason)))]))
-        case .videoAck(let video, let seq):
-            return DisplayFrame(type: T.videoAck.rawValue, body: map([("id", CBOR(video)), ("seq", CBOR(seq))]))
-        case .videoKeyframe(let video):
-            return DisplayFrame(type: T.videoKeyframe.rawValue, body: map([("id", CBOR(video))]))
-        case .gpuAck(let id, let offset):
-            return DisplayFrame(type: T.gpuAck.rawValue, body: map([("id", CBOR(id)), ("offset", CBOR(offset))]))
         case .webviewDecline(let id, let reason):
             return DisplayFrame(type: T.webviewDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .gameDecline(let id, let reason):
             return DisplayFrame(type: T.gameDecline.rawValue, body: map([("id", CBOR(id)), ("reason", CBOR(GameDecline.bounded(reason)))]))
         case .vsync(let display, let micros):
             return DisplayFrame(type: T.vsync.rawValue, body: map([("display", CBOR(display)), ("t_us", CBOR(micros))]))
-        case .ack(let window, let pts, let decoded):
-            return DisplayFrame(type: T.ack.rawValue, body: map([
-                ("id", CBOR(window)), ("pts_us", CBOR(pts)), ("decoded_us", CBOR(decoded)),
-            ]))
-        case .configure(let window, let geometry, let display, let fullscreen, let maximized, let activated, let overscan):
+        case .configure(let window, let geometry, let display, let fullscreen, let maximized, let activated):
             return DisplayFrame(type: T.configure.rawValue, body: map([
                 ("id", CBOR(window)), ("geometry", geometry.map(rect)), ("display", display.map { CBOR($0) }),
                 ("fullscreen", fullscreen.map { CBOR($0) }), ("maximized", maximized.map { CBOR($0) }),
                 ("activated", activated.map { CBOR($0) }),
-                ("overscan", overscan.map { [CBOR(Int($0.width.rounded())), CBOR(Int($0.height.rounded()))] }),
             ]))
         case .close(let window):
             return DisplayFrame(type: T.close.rawValue, body: map([("id", CBOR(window))]))
-        case .requestKeyframe(let window):
-            return DisplayFrame(type: T.requestKeyframe.rawValue, body: map([("id", CBOR(window))]))
         case .displays(let displays):
             return DisplayFrame(type: T.displays.rawValue, body: map([("displays", .array(displays.map(\.cbor)))]))
         case .touch(let window, let points):
@@ -1130,16 +621,6 @@ public enum ClientMessage: Sendable {
                     map([("dx", CBOR(s.dx)), ("dy", CBOR(s.dy)), ("precise", CBOR(s.precise)), ("seq", seq.map { CBOR($0) })])
                 }),
                 ("relative", relative.map { [CBOR(Double($0.x)), CBOR(Double($0.y))] }),
-            ]))
-        case .scrollTarget(let window, let scroller, let seq, let delta):
-            return DisplayFrame(type: T.scrollTarget.rawValue, body: map([
-                ("id", CBOR(window)), ("scroller", CBOR(scroller)), ("seq", CBOR(seq)),
-                ("delta", [CBOR(Double(delta.x)), CBOR(Double(delta.y))]),
-            ]))
-        case .scrollZoom(let window, let seq, let scale, let focus):
-            return DisplayFrame(type: T.scrollZoom.rawValue, body: map([
-                ("id", CBOR(window)), ("seq", CBOR(seq)), ("scale", CBOR(scale)),
-                ("focus", [CBOR(Double(focus.x)), CBOR(Double(focus.y))]),
             ]))
         case .key(let keysym, let pressed, let modifiers):
             return DisplayFrame(type: T.key.rawValue, body: map([

@@ -8,8 +8,10 @@ binaries built and weston, xterm, Chromium and Xwayland installed:
     guest/display/scripts/dev.sh python3 scripts/check.py chromium  # by name
 
 Each scenario starts the compositor with an application, connects the headless probe
-(which decodes every frame with libavcodec and acknowledges it), asserts on what
-arrived, and prints fps, latency and the server's CPU time per frame.
+(which announces a phone, ticks vsync and drives the windows with the phone's input),
+and asserts on what arrived: windows, text input state, the clipboard, drag and drop,
+sound, and the server's CPU time and memory. Pictures reach the phone through the GPU
+path (docs/gpu-live.md), which guest/framelab measures.
 """
 import json
 import os
@@ -17,7 +19,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import time
 import zlib
@@ -101,14 +102,6 @@ def wait_for_file(path, seconds=10):
     raise Failed(f"{path} was never written")
 
 
-def summary(report):
-    w = max(report["windows"], key=lambda w: w["frames"])
-    cpu = report["server_cpu_ms_per_frame"]
-    return (f'{w["codec"]} {w["size"][0]}x{w["size"][1]} {w["fps"]:.1f} fps, latency p50 {w["latency_ms_p50"]:.1f} ms '
-            f'p95 {w["latency_ms_p95"]:.1f} ms, server {report["server_cpu_pct"]}% of a core'
-            + (f", {cpu} ms CPU/frame" if cpu else ""))
-
-
 def with_server(command, fn, extra=()):
     token = tempfile.NamedTemporaryFile("w", delete=False, prefix="token-")
     token.write("check-token\n")
@@ -137,11 +130,11 @@ def check_wayland_terminal():
     os.environ["CABOOSE_TYPED"] = typed
     text = "echo $((6*7)) ~!@#%^&*()_+{}|:<>? caboose"
     def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--type", text + "\n"])
+        probe(["--token-file", token, "--duration", "3", "--windows", "1", "--type", text + "\n"])
         got = wait_for_file(typed)
         if got != text:
             raise Failed(f"typed {text!r}, terminal read {got!r}")
-        return "typed text arrives exactly (key fallback, no text-input-v3); " + summary(r)
+        return "typed text arrives exactly (key fallback, no text-input-v3)"
     return with_server(["weston-terminal", f"--shell={HERE}/read-line.sh"], run)
 
 
@@ -149,11 +142,11 @@ def check_x11_terminal():
     typed = os.path.join(tempfile.mkdtemp(), "typed")
     text = "X11 says $HOME ~!@#%^&*()_+{}|:<>? ok"
     def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--type", text + "\n"])
+        probe(["--token-file", token, "--duration", "3", "--windows", "1", "--type", text + "\n"])
         got = wait_for_file(typed)
         if got != text:
             raise Failed(f"typed {text!r}, xterm read {got!r}")
-        return "Xwayland window, typed text arrives exactly; " + summary(r)
+        return "Xwayland window, typed text arrives exactly"
     env_cmd = ["env", f"CABOOSE_TYPED={typed}", "xterm", "-e", f"{HERE}/read-line.sh"]
     return with_server(env_cmd, run)
 
@@ -178,38 +171,11 @@ def check_taskbar():
     return with_server(["sh", "-c", f"python3 {HERE}/x11-icon-window.py {pid_file} 20 & wait"], run)
 
 
-def check_shm_animation():
-    def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--min-fps", "55",
-                   "--server-pid", str(proc.pid)])
-        return "paced on vsync; " + summary(r)
-    return with_server(["weston-simple-shm"], run)
-
-
-def check_hevc():
-    def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", "--decoders", "hevc",
-                   "--server-pid", str(proc.pid)])
-        if r["windows"][0]["codec"] != "hevc":
-            raise Failed(f'got {r["windows"][0]["codec"]}')
-        return "a client that decodes only HEVC gets x265; " + summary(r)
-    return with_server(["weston-simple-shm"], run)
-
-
 def check_two_windows():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "3", "--windows", "2"])
-        return f'{len(r["windows"])} windows streamed independently'
+        return f'{len(r["windows"])} windows announced, each its own'
     return with_server(["sh", "-c", "weston-terminal & exec weston-simple-shm"], run)
-
-
-def check_chromium_motion():
-    def run(proc, token):
-        time.sleep(4)
-        r = probe(["--token-file", token, "--duration", "8", "--windows", "1", "--min-fps", "55",
-                   "--display", "1280x800@60x1", "--server-pid", str(proc.pid)])
-        return "Chromium (Wayland, software raster) 60 Hz animation; " + summary(r)
-    return with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/motion.html"], run)
 
 
 def check_chromium_text_input():
@@ -225,104 +191,6 @@ def check_chromium_text_input():
         return "touch reached the page; text-input-v3 enabled and committed exactly"
     return with_server(CHROMIUM + ["--enable-wayland-ime", "--wayland-text-input-version=3", "--window-size=900,400",
                                    f"--app={PAGES}/input.html"], run)
-
-
-
-def check_chromium_scroll_reports(x11=False, display="900x800@60x1", zoom=None, focus=0.5):
-    """The Chromium scroll reporter end to end: every picture's frame tag names a report
-    whose offset is the one the picture shows (read from the page's ruler), while
-    scroll.target drives the page and its seq is acknowledged."""
-    repo = os.path.dirname(os.path.dirname(ROOT))
-    extension = os.path.join(repo, "guest", "scroll-reporter", "chromium")
-    profile = tempfile.mkdtemp(prefix="caboose-check-scroll-")
-    hosts = os.path.join(profile, "NativeMessagingHosts")
-    os.makedirs(hosts)
-    with open(os.path.join(hosts, "com.caboose.scroll.json"), "w") as f:
-        json.dump({"name": "com.caboose.scroll", "description": "Caboose scroll reporter", "type": "stdio",
-                   "path": os.path.join(extension, "caboose-scroll-host.mjs"),
-                   "allowed_origins": ["chrome-extension://cnfgmfjajbhilcebcekcfckpfoapbkfn/"]}, f)
-    # Extensions do not run on file:// pages unless the user allows it: serve the page.
-    pages = subprocess.Popen([sys.executable, "-m", "http.server", "--bind", "127.0.0.1", "18765"],
-                             cwd=os.path.join(HERE, "pages"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    command = ["chromium", "--ozone-platform=x11" if x11 else "--ozone-platform=wayland", "--no-sandbox", "--disable-gpu", "--no-first-run",
-               "--password-store=basic", "--disable-features=Translate", "--silent-debugger-extension-api", f"--user-data-dir={profile}", f"--load-extension={extension}",
-               "--window-size=900,800", "--app=http://127.0.0.1:18765/scroll-ruler.html"]
-    # An X11 browser draws at scale 1 and the compositor scales it to the display's scale.
-    scale = float(display.rsplit("x", 1)[1]) if x11 else 1.0
-    return with_scroll_server(command, pages, display, scale, zoom, focus)
-
-
-def scroll_report_check(proc, token, display="900x800@60x1", ruler_scale=1.0, zoom=None, focus=0.5):
-    """The probe drives a reporting window with scroll.target and checks every tagged
-    picture's report against the ruler the window draws (probe/src/scroll.rs)."""
-    time.sleep(8)  # a browser starts slowly on a loaded computer; its page reports once loaded
-    r = probe(["--token-file", token, "--duration", "10", "--windows", "1", "--display", display,
-               "--scroll", "--scroll-overscan", "600", "--scroll-drive", "7.25", "--ruler",
-               "--ruler-scale", str(ruler_scale)] + (["--scroll-zoom", str(zoom), "--scroll-zoom-focus", str(focus)] if zoom else []), json_out=False)
-    line = next((l for l in r.stdout.splitlines() if l.startswith("scroll: ")), None)
-    if line is None:
-        raise Failed(f"probe gave no scroll report: {r.stdout} {r.stderr}")
-    s = json.loads(line[len("scroll: "):])
-    if s["matched"] < 100 or s["unmatched"] or s["ruler_bad"] or s["ruler_checked"] < 100:
-        raise Failed(f"scroll reports: {s}; {r.stderr.strip()[-2000:]}")
-    if s["sent_seq"] - s["applied"] > 30:
-        raise Failed(f"scroll.target not applied: {s}")
-    if zoom and (s["zoomed_checked"] < 100 or abs(s["max_zoom"] - zoom) > 0.01):
-        raise Failed(f"zoom to {zoom} not reported: {s}; {r.stderr.strip()[-1500:]}")
-    # The first picture that applies the zoom is at its scale, its focus content where it was.
-    if zoom and not (0 <= s["zoom_scale_error"] <= 0.005 and 0 <= s["zoom_focus_error"] <= 2.0):
-        raise Failed(f"zoom to {zoom} landed wrong: {s}; {r.stderr.strip()[-1500:]}")
-    # The ruler never moves in its document: a new epoch would drop pictures for nothing.
-    if s["epochs"]:
-        raise Failed(f"layout shift reported where there is none: {s}")
-    zoomed = (f', {s["zoomed_checked"]} of them at zoom {s["max_zoom"]:.2f} (first acked frame: scale off by '
-              f'{100 * s["zoom_scale_error"]:.2f}%, focus content off by {s["zoom_focus_error"]:.2f} px)') if zoom else ''
-    return (f'{s["matched"]}{zoomed} tagged pictures matched their reports, ruler agrees within '
-            f'{s["ruler_max_error"]:.2f} px over {s["ruler_checked"]} (the newest report on arrival was wrong for '
-            f'{s["newest_bad"]}); applied {s["applied"]}/{s["sent_seq"]}')
-
-
-def with_scroll_server(command, helper=None, display="900x800@60x1", ruler_scale=1.0, zoom=None, focus=0.5):
-    try:
-        return with_server(command, lambda proc, token: scroll_report_check(proc, token, display, ruler_scale, zoom, focus))
-    finally:
-        if helper:
-            helper.kill()
-            helper.wait()
-
-
-# The reporters' build directories are named by the compiler's multiarch triplet.
-MULTIARCH = sysconfig.get_config_var("MULTIARCH") or "x86_64-linux-gnu"
-
-
-def check_gtk_scroll_reports(version):
-    """The GTK reporter (guest/scroll-reporter/gtk) in its check application, preloaded.
-    CABOOSE_SCROLL_GTK names the directory guest/scroll-reporter/gtk/build.sh --check built."""
-    built = os.environ.get("CABOOSE_SCROLL_GTK") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "gtk", "out", MULTIARCH)
-    command = ["env", f"LD_PRELOAD={built}/libcaboose-scroll-gtk{version}.so", f"{built}/scroll-ruler-gtk{version}"]
-    return with_scroll_server(command)
-
-
-def check_qt_scroll_reports():
-    """The Qt Quick reporter (guest/scroll-reporter/qt) in its check application, preloaded.
-    CABOOSE_SCROLL_QT names the directory guest/scroll-reporter/qt/build.sh --check built."""
-    built = os.environ.get("CABOOSE_SCROLL_QT") or os.path.join(os.path.dirname(ROOT), "scroll-reporter", "qt", "out", MULTIARCH)
-    command = ["env", "QT_QPA_PLATFORM=wayland", f"LD_PRELOAD={built}/libcaboose-scroll-qt6.so", f"{built}/scroll-ruler-qt6"]
-    return with_scroll_server(command)
-
-
-def check_electron_scroll_reports(zoom=None):
-    """The Electron reporter (guest/scroll-reporter/electron) loaded through NODE_OPTIONS into
-    a stock Electron (CABOOSE_SCROLL_ELECTRON names its binary) showing the ruler page."""
-    electron = os.environ.get("CABOOSE_SCROLL_ELECTRON")
-    if not electron:
-        raise Failed("CABOOSE_SCROLL_ELECTRON is not set")
-    reporter = os.path.join(os.path.dirname(ROOT), "scroll-reporter", "electron")
-    os.environ["NODE_OPTIONS"] = f"--require={reporter}/main.js"
-    try:
-        return with_scroll_server([electron, "--no-sandbox", "--ozone-platform=wayland", f"{reporter}/ruler-app"], zoom=zoom)
-    finally:
-        del os.environ["NODE_OPTIONS"]
 
 
 def check_chromium_touch_fling():
@@ -342,7 +210,7 @@ def check_chromium_touch_fling():
         late = samples[-1][1] if samples else None
         if early is None or late is None or early < 100 or late - early < 50:
             raise Failed(f"no sustained native fling: y at 300ms={early}, final={late}; samples={samples}")
-        return f"native touch scrolls to {early}px by 300ms, coasts to {late}px after release; " + summary(r)
+        return f"native touch scrolls to {early}px by 300ms, coasts to {late}px after release"
     return with_server(CHROMIUM + ["--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
 
 
@@ -353,39 +221,8 @@ def check_reconnect():
         ids = lambda r: sorted(w["id"] for w in r["windows"])
         if ids(a) != ids(b):
             raise Failed(f"window ids changed across reconnect: {ids(a)} → {ids(b)}")
-        if not all(w["keyframe_first"] for w in b["windows"]):
-            raise Failed("a reconnecting client did not start with a keyframe")
-        return f"same window ids {ids(b)} after reconnect, each starting with a keyframe"
+        return f"same window ids {ids(b)} after reconnect"
     return with_server(["weston-simple-shm"], run)
-
-
-def check_reconnect_idle():
-    # A window streamed in place from its shm buffer (xterm: one surface, even size) that
-    # draws nothing between two clients: the second client's keyframe must still be the
-    # window's picture, read from the buffer.
-    def run(proc, token):
-        pictures = []
-        for _ in range(2):
-            out = tempfile.mkdtemp(prefix="idle-")
-            probe(["--token-file", token, "--duration", "2", "--windows", "1", "--save", out])
-            pictures.append(open(os.path.join(out, "window-1.png"), "rb").read())
-            time.sleep(1)
-        if pictures[0] != pictures[1]:
-            raise Failed("the second client's picture of an idle window differs from the first's")
-        return f"an idle window's picture is the same for a second client ({len(pictures[1])} byte PNG)"
-    return with_server(["xterm", "-geometry", "80x24", "-e", "sh", "-c", "ls -l /usr/bin | head -20; exec sleep 600"], run)
-
-
-def check_encoder_eviction():
-    # One connection stays alive through refinement, ten seconds of quiet, and a
-    # small change. A new keyframe must decode even though the update was partial.
-    def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "19", "--windows", "1"])
-        w = r["windows"][0]
-        if w["keyframes"] < 2 or w["decode_errors"] or w["frames"] < 3:
-            raise Failed(f"idle recreation did not decode from a fresh keyframe: {w}")
-        return f"{w['frames']} pictures, {w['keyframes']} keyframes, no decode errors across idle eviction"
-    return with_server(CHROMIUM + ["--window-size=900,600", f"--app={PAGES}/eviction.html"], run)
 
 
 def check_replace():
@@ -413,13 +250,10 @@ def check_popup():
         if not popups or not main or popups[0]["parent"] != main[0]["id"]:
             raise Failed(f"expected a popup parented to the page: {r['windows']}")
         p, g = popups[0], popups[0]["geometry"]
-        # A popup keeps its alpha: announced with alpha, sent only as tiles, never a frame.
+        # A popup keeps its alpha; the toplevel is opaque.
         if not p["alpha"] or main[0]["alpha"]:
             raise Failed(f"popup alpha {p['alpha']}, toplevel alpha {main[0]['alpha']}")
-        if p["tiles"] < 1 or p["frames"] != 0:
-            raise Failed(f"the popup was streamed as {p['tiles']} tiles and {p['frames']} frames")
-        return (f"<select> list is its own popup window, parent {main[0]['id']}, at {g} relative to it, "
-                f"with alpha, as {p['tiles']} tiles and no frame")
+        return f"<select> list is its own popup window, parent {main[0]['id']}, at {g} relative to it, with alpha"
     return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run)
 
 
@@ -450,38 +284,6 @@ def check_text_input_on_connect():
         return "each new client is told the focused field has text input enabled"
     return with_server(CHROMIUM + ["--enable-wayland-ime", "--wayland-text-input-version=3", "--window-size=900,400",
                                    f"--app={PAGES}/input.html"], run)
-
-
-def check_direct_matches_compose():
-    # A single-surface shm window is streamed from its buffer; the picture must be the
-    # one composition would have made. A static page, streamed both ways, decoded and
-    # saved: the PNGs must be identical (x264 on one thread is deterministic).
-    pictures = []
-    for extra in ((), ("--always-compose",)):
-        out = tempfile.mkdtemp(prefix="direct-")
-        def run(proc, token, out=out):
-            time.sleep(4)
-            probe(["--token-file", token, "--duration", "2", "--windows", "1", "--save", out])
-            return open(os.path.join(out, "window-1.png"), "rb").read()
-        pictures.append(with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/popup.html"], run, extra=extra))
-    if pictures[0] != pictures[1]:
-        raise Failed("the directly streamed picture differs from the composed one")
-    return f"streaming straight from the shm buffer gives the composed picture exactly ({len(pictures[0])} byte PNG)"
-
-
-def check_passthrough():
-    # Decoder advertisements cannot prove foreground composition. The child opens
-    # every codec before and during the probe's advertising session.
-    out = os.path.join(tempfile.mkdtemp(prefix="admission-"), "result.json")
-    def run(proc, token):
-        before = json.loads(wait_for_file(out))["rounds"]
-        r = probe(["--token-file", token, "--duration", "3", "--windows", "0",
-                   "--video-decoders", "h264,hevc,vp9,av1"])
-        after = json.loads(open(out).read())
-        if after["status"] == "failed" or after["rounds"] <= before or r["videos"]:
-            raise Failed(f"admission check stalled or sent unsafe video: {before}/{after}, {r['videos']}")
-        return f"all four codecs request local decode before/during client advertisement ({after['rounds']} rounds)"
-    return with_server(["python3", f"{HERE}/video-admission.py", out], run)
 
 
 def check_clipboard_wayland():
@@ -775,101 +577,6 @@ def check_audio():
     return with_server(["sh", "-c", f"weston-terminal & sleep 3.5; paplay {tone}; exec sleep 60"], run)
 
 
-def psnr(a, b):
-    out = subprocess.run(["ffmpeg", "-hide_banner", "-i", a, "-i", b, "-lavfi", "psnr", "-f", "null", "-"],
-                         capture_output=True, text=True).stderr
-    for word in out.split():
-        if word.startswith("average:"):
-            return float(word.split(":")[1].replace("inf", "99"))
-    raise Failed(f"ffmpeg psnr: {out[-300:]}")
-
-
-def check_refine():
-    # A quiet terminal full of text: the keyframe is coded at the normal QP, then once,
-    # 300 ms later, the same picture sharpened, then nothing. Measured against a
-    # near-lossless reference, the sharpened picture must be clearly closer than the
-    # unrefined one. A blinking caret must not cost a sharpening picture per blink.
-    text = ["xterm", "-geometry", "100x40", "-e", "sh", "-c", "ls -l /usr/bin | head -38; exec sleep 600"]
-    def picture(extra):
-        out = tempfile.mkdtemp(prefix="refine-")
-        def run(proc, token):
-            r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--save", out])
-            return r["windows"][0], os.path.join(out, "window-1.png")
-        return with_server(text, run, extra=extra)
-    _, reference = picture(("--crf", "1", "--refine-qp", "0"))
-    off, soft = picture(("--refine-qp", "0"))
-    on, sharp = picture(())
-    if off["frames"] != 1 or on["frames"] != 2 or on["keyframes"] != 1:
-        raise Failed(f"frames: {off['frames']} without refinement, {on['frames']} ({on['keyframes']} key) with")
-    before, after = psnr(soft, reference), psnr(sharp, reference)
-    if after < before + 3:
-        raise Failed(f"refinement took the picture from {before:.1f} dB to {after:.1f} dB")
-    sharpening = (on["bytes"] - off["bytes"]) / 1000
-    def blinking(extra):
-        def run(proc, token):
-            time.sleep(3)
-            return probe(["--token-file", token, "--duration", "6", "--windows", "1"])["windows"][0]["frames"]
-        return with_server(CHROMIUM + ["--window-size=900,400", f"--app={PAGES}/input.html"], run, extra=extra)
-    plain, sharpened = blinking(("--refine-qp", "0")), blinking(())
-    if sharpened > plain + 4:
-        raise Failed(f"a blinking caret took {sharpened} pictures in 6 s with sharpening, {plain} without")
-    return (f"one sharpening picture ({sharpening:.0f} kB) takes a quiet terminal from {before:.1f} to {after:.1f} dB "
-            f"PSNR; a blinking caret: {sharpened} pictures in 6 s, {plain} without sharpening")
-
-
-def check_motion():
-    # Chromium plays a 480x270 canvas "video" for 8 s within a page of text. Its region
-    # must become a motion stream, close to the canvas, whose every frame decodes; the
-    # window stream must carry little meanwhile; the stream must end once the video
-    # stops; and the window's final picture (the region put back) must match the one
-    # streamed without motion detection.
-    runs = {}
-    for name, extra in (("motion", ()), ("window only", ("--no-motion",))):
-        out = tempfile.mkdtemp(prefix="motion-")
-        def run(proc, token, out=out):
-            r = probe(["--token-file", token, "--duration", "13", "--windows", "1", "--video-decoders", "h264",
-                       "--server-pid", str(proc.pid), "--save", out])
-            return r, os.path.join(out, "window-1.png")
-        runs[name] = with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/movie.html#240"], run,
-                                 extra=extra)
-    (r, picture), (plain, plain_picture) = runs["motion"], runs["window only"]
-    if len(r["videos"]) != 1 or r["videos"][0]["source"] != "motion":
-        raise Failed(f"expected one motion stream: {r['videos']}")
-    v, window = r["videos"][0], r["windows"][0]
-    x, y, w, h = v["rect"]
-    # The canvas is 480x270 at x=160 (y below Chromium's infobar), regions are whole
-    # macroblocks.
-    if v["window"] != window["id"] or abs(x - 160) > 16 or abs(w - 480) > 32 or abs(h - 270) > 32:
-        raise Failed(f"motion stream at {v['rect']} in window {v['window']}, expected about 480x270 at x=160")
-    if v["frames"] < 120 or v["decoded"] != v["frames"] or v["decode_errors"] or v["timed"] != v["frames"]:
-        raise Failed(f"motion frames {v['frames']}, decoded {v['decoded']}, errors {v['decode_errors']}, "
-                     f"with pts {v['timed']}")
-    if not v["keyframe_first"] or not v["destroyed"]:
-        raise Failed(f"keyframe first {v['keyframe_first']}, ended {v['destroyed']}")
-    if window["frames"] * 2 > v["frames"]:
-        raise Failed(f"the window stream sent {window['frames']} pictures beside {v['frames']} motion frames")
-    match = psnr(picture, plain_picture)
-    if match < 40:
-        raise Failed(f"the window after the motion stream differs from the window-only stream ({match:.1f} dB)")
-    return (f"{v['frames']} motion frames at {v['rect']}, {window['frames']} window pictures beside them; "
-            f"server {r['server_cpu_pct']}% of a core, {plain['server_cpu_pct']}% without motion streams; "
-            f"the final pictures match at {match:.1f} dB")
-
-
-def check_scaled_motion():
-    def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "13", "--windows", "1", "--decoders", "h264", "--scaled-motion"])
-        if len(r["videos"]) != 1:
-            raise Failed(f"expected one motion stream: {r['videos']}")
-        v = r["videos"][0]
-        if not v["scaled"] or v["source"] != "motion" or v["size"] != [v["rect"][2] // 2, v["rect"][3] // 2]:
-            raise Failed(f"scaled motion dimensions or placement are wrong: {v}")
-        if v["frames"] < 120 or v["decoded"] != v["frames"] or v["decode_errors"] or not v["destroyed"]:
-            raise Failed(f"scaled motion did not decode and end cleanly: {v}")
-        return f"{v['frames']} decoded motion frames at {v['size']}, placed at {v['rect']}"
-    return with_server(CHROMIUM + ["--window-size=1280,720", f"--app={PAGES}/movie.html#240"], run)
-
-
 def server_status(pid):
     fields = dict(line.split(":", 1) for line in open(f"/proc/{pid}/status") if ":" in line)
     return int(fields["Threads"]), int(fields["VmRSS"].split()[0]) // 1024
@@ -883,7 +590,7 @@ def probe_cmd(token, *args):
 def check_storm():
     # 48 broken connections while a window animates: TCP connections closed at once or
     # left silent, WebSocket handshakes cut short, a wrong token, and clients killed
-    # mid-stream. Then a normal client must be served as usual, and the server must have
+    # mid-session. Then a normal client must be served as usual, and the server must have
     # let go of what the broken ones held.
     import socket
     def run(proc, token):
@@ -912,22 +619,21 @@ def check_storm():
             c.close()
         time.sleep(4)
         r = probe(["--token-file", token, "--duration", "3", "--windows", "1"])
-        w = r["windows"][0]
         threads1, rss1 = server_status(proc.pid)
         if proc.poll() is not None:
             raise Failed("the server exited")
-        if not w["keyframe_first"] or w["fps"] < 50 or w["decode_errors"]:
-            raise Failed(f"the client after the storm: {w}")
+        if r["rtt_ms"] is None:
+            raise Failed(f"the client after the storm was not answered: {r}")
         if threads1 > threads0 + 1 or rss1 > rss0 + 64:
             raise Failed(f"threads {threads0} → {threads1}, RSS {rss0} → {rss1} MB")
-        return (f"48 broken connections later a client streams at {w['fps']:.0f} fps; threads {threads0} → "
+        return (f"48 broken connections later a client is served as usual; threads {threads0} → "
                 f"{threads1}, RSS {rss0} → {rss1} MB")
     return with_server(["weston-simple-shm"], run)
 
 
 def check_takeover():
     # Two devices taking the display from each other, six times in a row while a window
-    # animates: each newcomer starts with a keyframe, each one replaced is told so.
+    # animates: each newcomer is told of the window, each one replaced is told so.
     def run(proc, token):
         threads0, _ = server_status(proc.pid)
         clients = []
@@ -940,67 +646,21 @@ def check_takeover():
             out, _ = c.communicate(timeout=30)
             reports.append(json.loads(out.strip().splitlines()[-1]))
         for i, r in enumerate(reports):
-            w = r["windows"][0] if r["windows"] else None
-            if not w or not w["keyframe_first"] or w["frames"] < 30 or w["decode_errors"]:
-                raise Failed(f"client {i}: {w}")
+            if not r["windows"]:
+                raise Failed(f"client {i} was told of no window: {r}")
             expected = None if i == len(reports) - 1 else "replaced"
             if r["bye"] != expected:
                 raise Failed(f"client {i} got bye {r['bye']!r}, expected {expected!r}")
         threads1, _ = server_status(proc.pid)
         if threads1 > threads0 + 1:
             raise Failed(f"threads {threads0} → {threads1}")
-        return f"6 takeovers: each client began with a keyframe, each replaced one got bye(replaced)"
+        return "6 takeovers: each client was told of the window, each replaced one got bye(replaced)"
     return with_server(["weston-simple-shm"], run)
-
-
-def check_resize_streaming():
-    # Chromium animating while the client resizes its window ten times, 300 ms apart:
-    # every size starts with a keyframe, nothing fails to decode, the last size sticks.
-    sizes = [(800, 600), (1200, 700), (640, 480), (1280, 800), (900, 900), (700, 1000), (1000, 560),
-             (1180, 720), (720, 720), (1024, 768)]
-    actions = ";".join(f"resize:{w},{h}" for w, h in sizes) + ";wait:1500"
-    def run(proc, token):
-        r = probe(["--token-file", token, "--duration", "7", "--windows", "1", "--actions", actions])
-        w = r["windows"][0]
-        if w["decode_errors"] or not w["keyframe_after_resize"]:
-            raise Failed(f"decode errors {w['decode_errors']}, a size without a keyframe: {not w['keyframe_after_resize']}")
-        if w["sizes"] < 6 or tuple(w["size"][:2]) != (1024, 768):
-            raise Failed(f"{w['sizes']} sizes seen, ending at {w['size']}")
-        return f"{w['sizes']} sizes while animating, each from a keyframe, ending at {w['size'][0]}x{w['size'][1]}"
-    return with_server(CHROMIUM + ["--window-size=1000,700", f"--app={PAGES}/motion.html"], run)
-
-
-def check_overscan(x11=False):
-    # A resizable window asked for 600 pixels of overscan below a 800x500 geometry: the
-    # update announcing it precedes every frame of the taller picture, the picture is the
-    # geometry plus the overscan, and a touch in the overscan reaches the window. Ending
-    # it returns the window to the shown size.
-    actions = "resize:800,500;wait:600;overscan:0,600;wait:900"
-    def run(proc, token):
-        # Chromium can take a while to map its window on a loaded machine.
-        for _ in range(30):
-            if probe(["--token-file", token, "--duration", "1"], check=False)["windows"]:
-                break
-        r = probe(["--token-file", token, "--duration", "4", "--windows", "1", "--actions", actions])
-        w = r["windows"][0]
-        if w["rect_mismatch"] or w["decode_errors"]:
-            raise Failed(f"{w['rect_mismatch']} frames disagreed with the announced overscan, {w['decode_errors']} decode errors")
-        if tuple(w["geometry"][2:]) != (800, 500) or tuple(w["overscan"]) != (0, 600) or tuple(w["rect"]) != (800, 1100):
-            raise Failed(f"geometry {w['geometry']}, overscan {w['overscan']}, picture {w['rect']}")
-        r = probe(["--token-file", token, "--duration", "3", "--windows", "1", "--actions", "overscan:0,0;wait:900"])
-        w = r["windows"][0]
-        if tuple(w["overscan"]) != (0, 0) or tuple(w["rect"]) != (800, 500) or w["rect_mismatch"]:
-            raise Failed(f"after ending it: overscan {w['overscan']}, picture {w['rect']}, {w['rect_mismatch']} mismatches")
-        return "overscan 0x600 under 800x500: announced before the 800x1100 pictures, and ended back to 800x500"
-    command = CHROMIUM + ["--window-size=800,500", f"--app={PAGES}/motion.html"]
-    if x11:
-        command = [arg for arg in command if not arg.startswith("--ozone-platform")] + ["--ozone-platform=x11"]
-    return with_server(command, run)
 
 
 def check_app_crash():
     # Two animating windows and an xterm; one animation and the xterm are killed with
-    # SIGKILL mid-stream. Their windows go, the other keeps streaming, and the server
+    # SIGKILL while a client watches. Their windows go, the other stays, and the server
     # serves the next client the survivor.
     pids = tempfile.mkdtemp(prefix="crash-")
     launcher = (f"weston-simple-shm & echo $! > {pids}/a; weston-simple-shm & echo $! > {pids}/b; "
@@ -1014,14 +674,12 @@ def check_app_crash():
         r = json.loads(out.strip().splitlines()[-1])
         gone = [w for w in r["windows"] if w["destroyed"]]
         alive = [w for w in r["windows"] if not w["destroyed"]]
-        if len(gone) != 2 or len(alive) != 1 or any(w["decode_errors"] for w in r["windows"]):
+        if len(gone) != 2 or len(alive) != 1:
             raise Failed(f"windows after the crash: {r['windows']}")
-        if alive[0]["frames"] < 250:
-            raise Failed(f"the survivor sent only {alive[0]['frames']} frames in 6 s")
         after = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
         if proc.poll() is not None or len(after["windows"]) != 1:
             raise Failed(f"after the crash the next client got {len(after['windows'])} windows")
-        return "two of three applications killed mid-stream: their windows went, the survivor streamed on"
+        return "two of three applications killed: their windows went, the survivor stayed"
     return with_server(["sh", "-c", launcher], run)
 
 
@@ -1056,51 +714,10 @@ def check_stalled_client():
             raise Failed(f"{held} connection(s) while stalled, {left} after the timeout")
         if rss1 > rss0 + 32:
             raise Failed(f"RSS grew {rss0} → {rss1} MB for a stalled client")
-        r = probe(["--token-file", token, "--duration", "2", "--windows", "1"])
-        if not r["windows"][0]["keyframe_first"]:
-            raise Failed("the next client did not start with a keyframe")
+        probe(["--token-file", token, "--duration", "2", "--windows", "1"])
         return f"a stalled client was closed after the timeout, RSS {rss0} → {rss1} MB; the next one was served"
     return with_server(["sh", "-c", "weston-simple-shm & while true; do paplay /dev/urandom --raw 2>/dev/null; sleep 1; done"],
                        run, extra=("--client-timeout", "5"))
-
-
-def check_tiles():
-    # Typing 30 characters into Chromium at a phone's size: each keystroke must go as a
-    # few lossless tiles instead of a picture, every tile must decode, the final picture
-    # (frame plus tiles, as the client paints it) must match the one streamed without
-    # tiles, and the server must spend far less on it.
-    typed = "tiles are lossless and cheap ok"
-    actions = ";".join(["maximize", "wait:1500", "tap:590,1278", "wait:600"] + [f"text:{c}" for c in typed]
-                       + ["wait:400"])
-    runs = {}
-    for name, extra in (("tiles", ()), ("pictures", ("--tile-max-px", "0"))):
-        out = tempfile.mkdtemp(prefix="tiles-")
-        def run(proc, token, out=out):
-            r = probe(["--token-file", token, "--duration", "14", "--windows", "1", "--display", "1179x2556@120x3",
-                       "--actions", actions, "--server-pid", str(proc.pid), "--save", out])
-            return r, os.path.join(out, "window-1.png")
-        runs[name] = with_server(CHROMIUM + [f"--app={PAGES}/input.html"], run, extra=extra)
-    (r, picture), (plain, plain_picture) = runs["tiles"], runs["pictures"]
-    w, p = r["windows"][0], plain["windows"][0]
-    if w["tiles"] < len(typed) or w["tile_errors"] or w["decode_errors"]:
-        raise Failed(f"{w['tiles']} tiles for {len(typed)} keystrokes, {w['tile_errors']} bad")
-    if w["frames"] * 3 > p["frames"]:
-        raise Failed(f"{w['frames']} pictures with tiles against {p['frames']} without")
-    match = psnr(picture, plain_picture)
-    if match < 40:
-        raise Failed(f"the picture with tiles differs from the one without ({match:.1f} dB)")
-    cpu, plain_cpu = r["server_cpu_ms"], plain["server_cpu_ms"]
-    if cpu > 0.6 * plain_cpu:
-        raise Failed(f"server CPU {cpu} ms with tiles, {plain_cpu} ms without")
-    # A small animation (250x250 at 60 Hz) changes as little each time, but goes as video.
-    anim = with_server(["weston-simple-shm"], lambda proc, token: probe(
-        ["--token-file", token, "--duration", "4", "--windows", "1"]))["windows"][0]
-    # (Its first updates go as tiles until it shows itself an animation.)
-    if anim["tile_bytes"] > 1_000_000 or anim["fps"] < 50:
-        raise Failed(f"an animation went as {anim['tile_bytes'] // 1000} kB of tiles, {anim['fps']} pictures a second")
-    return (f"{len(typed)} keystrokes at 1179x2556: {w['tiles']} tiles ({w['tile_bytes'] // 1000} kB) and "
-            f"{w['frames']} pictures, against {p['frames']} pictures; server {cpu} ms against {plain_cpu} ms; "
-            f"final pictures match at {match:.1f} dB; an animation stays video ({anim['fps']:.0f} fps, {anim['tile_bytes'] // 1000} kB of tiles at its start)")
 
 
 def check_idle():
@@ -1113,134 +730,23 @@ def check_idle():
     return with_server(["weston-terminal"], run)
 
 
-def check_atlas_exact():
-    # Zero-video Surface Atlas streaming (--zero-video): a static page streamed directly
-    # from its shm buffer and via Pixman composition must reconstruct bit-for-bit
-    # identical PNGs, with 0 video frames and 0 decode errors.
-    pictures = []
-    reports = []
-    for extra in ((), ("--always-compose",)):
-        out = tempfile.mkdtemp(prefix="atlas-exact-")
-        profile = tempfile.mkdtemp(prefix="chromium-atlas-exact-")
-        def run(proc, token, out=out):
-            time.sleep(6)
-            r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video", "--save", out])
-            return r, open(os.path.join(out, "window-1.png"), "rb").read()
-        r, png_bytes = with_server(
-            CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,400", f"--app={PAGES}/popup.html"],
-            run, extra=extra)
-        reports.append(r)
-        pictures.append(png_bytes)
-    r0 = reports[0]
-    w0 = r0["windows"][0]
-    if r0["surface_batches"] < 1 or w0["codec"] != "atlas" or w0["decode_errors"]:
-        raise Failed(f"expected atlas batches with 0 decode errors, got {r0}")
-    if pictures[0] != pictures[1]:
-        raise Failed("atlas reconstructed picture differs between direct shm and composed paths")
-    return (f"zero-video surface.batch reconstructed bit-exact ({len(pictures[0])} byte PNG, "
-            f"{r0['atlas_fills']} fills, {r0['atlas_tiles']} tiles)")
-
-
-def check_atlas_scroll_copyrect():
-    # Scrolling a page under --zero-video must detect the translation vector and emit
-    # SurfaceCopy (CopyRect) commands, encoding only the newly exposed strip.
-    profile = tempfile.mkdtemp(prefix="chromium-atlas-scroll-")
-    actions = "wait:500;scroll:400,400,64;wait:400;scroll:400,400,64;wait:500"
-    def run(proc, token):
-        time.sleep(5)
-        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
-                   "--display", "900x800@60x1", "--actions", actions])
-        w = r["windows"][0]
-        if r["surface_batches"] < 2 or r["atlas_copies"] < 1 or w["decode_errors"]:
-            raise Failed(f"expected SurfaceCopy on scroll, got batches={r['surface_batches']} copies={r['atlas_copies']} window={w}")
-        return (f"scroll emitted {r['atlas_copies']} CopyRect command(s) across {r['surface_batches']} batches "
-                f"({r['atlas_tiles']} exposed tiles, {r['atlas_fills']} fills)")
-    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,800", f"--app={PAGES}/scroll.html"], run)
-
-
-def check_atlas_tab_switch_dedup():
-    # Switching from View A to View B and back to View A under --zero-video must hit the
-    # session-wide 64x64 tile hash cache and emit SurfaceTileRef (0 pixel bytes) for
-    # revisited tiles.
-    page_dir = tempfile.mkdtemp(prefix="atlas-tabs-")
-    profile = tempfile.mkdtemp(prefix="chromium-atlas-tabs-")
-    page_path = os.path.join(page_dir, "tabs.html")
-    with open(page_path, "w", encoding="utf-8") as f:
-        f.write("""<!doctype html>
-<meta charset="utf-8">
-<title>Atlas tabs</title>
-<style>
-  html, body { margin: 0; font: 22px monospace; background: #101820; color: #f0f4f8; }
-  #view { padding: 24px; line-height: 1.5; }
-</style>
-<div id="view"></div>
-<script>
-  const views = [
-    Array.from({length: 18}, (_, i) => `View Alpha line ${i}: 0123456789abcdef`).join('<br>'),
-    Array.from({length: 18}, (_, i) => `View Bravo row ${i}: fedcba9876543210`).join('<br>')
-  ];
-  let idx = 0;
-  const el = document.getElementById('view');
-  el.innerHTML = views[0];
-  addEventListener('pointerdown', () => {
-    idx = (idx + 1) % 2;
-    el.innerHTML = views[idx];
-    document.title = 'tab:' + idx;
-  });
-</script>
-""")
-    actions = "wait:500;click:300,300;wait:600;click:300,300;wait:600"
-    def run(proc, token):
-        time.sleep(5)
-        r = probe(["--token-file", token, "--duration", "5", "--windows", "1", "--zero-video",
-                   "--display", "900x600@60x1", "--actions", actions])
-        w = r["windows"][0]
-        if r["surface_batches"] < 3 or r["atlas_refs"] < 1 or w["decode_errors"]:
-            raise Failed(f"expected SurfaceTileRef cache hits on tab switch back, got refs={r['atlas_refs']} report={r}")
-        return (f"tab switch A -> B -> A emitted {r['atlas_refs']} cached tile ref(s) (0 pixel bytes) "
-                f"across {r['surface_batches']} batches")
-    return with_server(CHROMIUM + [f"--user-data-dir={profile}", "--window-size=900,600", f"--app=file://{page_path}"], run)
-
-
 CHECKS = [
     ("auth", check_auth),
     ("wayland-terminal", check_wayland_terminal),
     ("x11-terminal", check_x11_terminal),
     ("taskbar", check_taskbar),
-    ("shm-animation", check_shm_animation),
-    ("hevc", check_hevc),
     ("two-windows", check_two_windows),
-    ("chromium", check_chromium_motion),
     ("chromium-text-input", check_chromium_text_input),
     ("chromium-touch-fling", check_chromium_touch_fling),
-    ("chromium-scroll-reports", check_chromium_scroll_reports),
-    # X11 at a fractional scale: the tag must survive scaling and video coding.
-    ("chromium-zoom-scroll-reports", lambda: check_chromium_scroll_reports(zoom=2.5)),
-    # A pinch that also panned: its focus is below the window.
-    ("chromium-zoom-outside-scroll-reports", lambda: check_chromium_scroll_reports(zoom=1.8, focus=1.4)),
-    ("chromium-x11-scroll-reports", lambda: check_chromium_scroll_reports(x11=True, display="1179x1716@60x1.4375")),
-    ("gtk4-scroll-reports", lambda: check_gtk_scroll_reports(4)),
-    ("gtk3-scroll-reports", lambda: check_gtk_scroll_reports(3)),
-    ("qt6-scroll-reports", check_qt_scroll_reports),
-    ("electron-scroll-reports", check_electron_scroll_reports),
-    ("electron-zoom-scroll-reports", lambda: check_electron_scroll_reports(zoom=2.0)),
     ("reconnect", check_reconnect),
-    ("reconnect-idle", check_reconnect_idle),
-    ("encoder-eviction", check_encoder_eviction),
-    ("scaled-motion", check_scaled_motion),
     ("replace", check_replace),
     ("storm", check_storm),
     ("takeover", check_takeover),
-    ("resize-streaming", check_resize_streaming),
-    ("overscan", check_overscan),
-    ("overscan-x11", lambda: check_overscan(x11=True)),
     ("app-crash", check_app_crash),
     ("stalled-client", check_stalled_client),
     ("popup", check_popup),
     ("text-input-on-connect", check_text_input_on_connect),
     ("autocorrect", check_autocorrect),
-    ("direct-matches-compose", check_direct_matches_compose),
-    ("passthrough", check_passthrough),
     ("clipboard-wayland", check_clipboard_wayland),
     ("clipboard-x11", check_clipboard_x11),
     ("clipboard-bridge", check_clipboard_bridge),
@@ -1252,13 +758,7 @@ CHECKS = [
     ("drop-x11", check_drop_x11),
     ("drag-out", check_drag_out),
     ("audio", check_audio),
-    ("refine", check_refine),
-    ("motion", check_motion),
-    ("tiles", check_tiles),
     ("idle", check_idle),
-    ("atlas_exact", check_atlas_exact),
-    ("atlas_scroll_copyrect", check_atlas_scroll_copyrect),
-    ("atlas_tab_switch_dedup", check_atlas_tab_switch_dedup),
 ]
 
 

@@ -2,22 +2,17 @@
 
 use crate::config::Config;
 use crate::displays::Displays;
-use crate::encode::Encoders;
 use crate::input::InputState;
 use crate::net::{HasNet, Net, NetEvent};
-use crate::render::Renderer;
 use crate::session::Session;
-use crate::stream::{Done, Stream};
 use crate::text_input::{TextInputs, Toggle};
 use crate::windows::{Surface, Window, Windows};
 use caboose_display_protocol::{self as proto, WindowKind};
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
-use smithay::backend::renderer::ImportDma;
 use smithay::input::keyboard::{KeyboardTarget, KeysymHandle, ModifiersState};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatHandler, SeatState};
-use smithay::reexports::calloop::channel::Sender;
 use smithay::reexports::calloop::{LoopHandle, LoopSignal};
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
@@ -122,51 +117,37 @@ impl ClientData for ClientState {
     fn disconnected(&self, _: ClientId, _: DisconnectReason) {}
 }
 
-/// Counters the probe and logs report.
+/// Counters the control socket's `stats` and the exit log report.
 #[derive(Default, Debug, Clone)]
 pub struct Stats {
-    pub frames: u64,
-    pub bytes: u64,
+    /// Window renders, and those that changed nothing.
     pub renders: u64,
-    /// Renders that copied a shm buffer instead of composing.
-    pub direct: u64,
-    /// Pictures sent as draw lists (draw.present) instead of batches.
-    pub drawn: u64,
     pub unchanged_renders: u64,
-    /// Main-thread time spent rendering windows into their pictures.
+    /// Main-thread time spent rendering windows into their images.
     pub render_us: u64,
-    /// Encoder-thread CPU time.
-    pub encode_cpu_us: u64,
-    /// Pixels re-encoded vs pixels in the pictures sent.
+    /// Pixels redrawn.
     pub damaged_px: u64,
-    pub picture_px: u64,
-    /// Pictures that only sharpened unchanged content.
-    pub refines: u64,
-    /// Pictures of motion regions (video.frame).
-    pub motion_frames: u64,
-    /// Updates sent as tiles instead of a picture, and the tiles.
-    pub tile_pictures: u64,
-    pub tiles: u64,
+    /// Bytes texture uploads copied out of wl_shm buffers.
+    pub uploaded_bytes: u64,
+    /// The compositor's own images the broker was asked to show, and client buffers.
+    pub presents: u64,
+    pub direct_presents: u64,
+    /// Presents the broker released without showing (replaced, or refused).
+    pub unshown: u64,
 }
 
 impl Stats {
     pub fn summary(&self) -> String {
-        let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles + {} drawn by the client, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
-            self.frames,
-            self.refines,
-            self.motion_frames,
-            self.tile_pictures,
-            self.tiles,
-            self.drawn,
-            self.bytes / 1000,
+            "{} presents of the compositor's images and {} of client buffers ({} not shown); {} renders ({} unchanged), {} pixels redrawn, {} kB uploaded from shared memory, {:.2} ms per render",
+            self.presents,
+            self.direct_presents,
+            self.unshown,
             self.renders,
-            self.direct,
             self.unchanged_renders,
-            100.0 * self.damaged_px as f64 / self.picture_px.max(1) as f64,
-            per(self.render_us),
-            per(self.encode_cpu_us)
+            self.damaged_px,
+            self.uploaded_bytes / 1000,
+            if self.renders > 0 { self.render_us as f64 / self.renders as f64 / 1000.0 } else { 0.0 }
         )
     }
 }
@@ -206,21 +187,20 @@ pub struct State {
 
     pub windows: Windows,
     pub displays: Displays,
-    pub renderer: Renderer,
-    pub encoders: Encoders,
+    /// The GPU renderer, made again whenever the phone's executor comes or goes.
+    pub gpu: Option<crate::render::Gpu>,
+    pub gpu_generation: u64,
+    /// The last canvas serial given out (render.rs `Canvas`).
+    pub next_canvas: u64,
+    /// The computer's vgem render node, when it has one.
+    pub render_node: Option<std::path::PathBuf>,
     pub net: Net,
     pub session: Option<Session>,
-    pub done_tx: Sender<Done>,
     pub input: InputState,
     /// Windows in the order they were focused, most recent last.
     pub focus_history: Vec<u64>,
-    pub videos: crate::video::server::Videos,
     pub games: crate::game::Games,
-    pub scene: crate::scene::SceneServer,
-    pub draw: crate::draw::DrawServer,
     pub control: crate::control::Control,
-    /// Toolkit scroll reporters (scroll.rs).
-    pub scroll: crate::scroll::ScrollHub,
     /// The focused window's controls for a client that aims touches (targets.rs).
     pub targets: crate::targets::Targets,
     pub clipboard: crate::clipboard::Clipboard,
@@ -251,8 +231,6 @@ pub struct State {
     pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
-    /// The wake-up for the next refinement: when (monotonic µs), and its timer.
-    pub refine_timer: Option<(u64, smithay::reexports::calloop::RegistrationToken)>,
 }
 
 impl HasNet for State {
@@ -379,7 +357,8 @@ impl State {
     }
 
     /// A buffer window: one this compositor asked the broker to show a remote buffer in,
-    /// bound to a live process of the compositor's user. The broker names the process that
+    /// bound to a live process of the compositor's user, the compositor itself included
+    /// (its own images of every window, popups too). The broker names the process that
     /// registered the buffer; holding its dma-buf is that process's proof of ownership.
     fn buffer_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
         use std::os::fd::AsRawFd;
@@ -387,13 +366,14 @@ impl State {
         // SAFETY: geteuid has no arguments or memory-safety preconditions.
         let ours = bind.uid == unsafe { libc::geteuid() } &&
             crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd());
-        let toplevel = self.windows.get(window).is_some_and(|w| matches!(w.surface, Surface::Toplevel(_)));
-        if ours && toplevel && self.remote_presents.presenting(window) { vec![window] } else { Vec::new() }
+        let admitted = crate::picture::buffer_bind_admits(
+            self.windows.get(window).is_some(), self.remote_presents.presenting(window), ours);
+        if admitted { vec![window] } else { Vec::new() }
     }
 
-    /// A toplevel committed a new remote buffer, on its own surface or on a subsurface that
+    /// A window committed a new remote buffer, on its own surface or on a subsurface that
     /// covers its window geometry (Chromium's primary plane, over a one-pixel root): ask the
-    /// broker to show it.
+    /// broker to show it as it is.
     fn present_remote_buffer(&mut self, surface: &WlSurface) {
         let Some(buffer) = with_renderer_surface_state(surface, |state| state.buffer().cloned()).flatten() else { return };
         let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer) else { return };
@@ -411,7 +391,6 @@ impl State {
         if self.gpu_grants.as_ref().and_then(|grants| grants.epoch_if_ready()).is_none() { return skipped("no GPU epoch") }
         let Some(id) = self.window_of_surface(surface) else { return skipped("no window") };
         let Some(window) = self.windows.get(id) else { return skipped("no window") };
-        if !matches!(window.surface, Surface::Toplevel(_)) { return skipped("not a toplevel") }
         if window.surface.wl_surface().as_ref() != Some(surface) && !covers_geometry(surface, window.local_geometry()) {
             let geometry = window.local_geometry();
             return skipped(&format!("subsurface does not cover the window geometry {}x{} at {},{}",
@@ -420,7 +399,8 @@ impl State {
         let (Some(identity), size) = (crate::remote_buffers::identity(dmabuf), smithay::backend::allocator::Buffer::size(dmabuf)) else { return };
         let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else { return };
         let fence = crate::remote_buffers::pending_fence(dmabuf);
-        let request = self.remote_presents.begin(id, buffer);
+        let request = self.remote_presents.begin(id, crate::remote_buffers::Held::Client { _buffer: buffer });
+        self.stats.direct_presents += 1;
         let Some(fence) = fence else {
             self.send_remote_present(request, id, identity, width, height);
             return;
@@ -440,14 +420,14 @@ impl State {
             Ok(token) => {
                 if let Some((replaced, old)) = self.remote_presents.fence(id, request, token) {
                     self.handle.remove(old);
-                    self.remote_presents.released(replaced);
+                    self.own_present_released(replaced);
                 }
             }
-            Err(_) => { self.remote_presents.released(request); }
+            Err(_) => { self.own_present_released(request); }
         }
     }
 
-    fn send_remote_present(&mut self, request: u64, window: u64, identity: (u64, u64), width: u32, height: u32) {
+    pub(crate) fn send_remote_present(&mut self, request: u64, window: u64, identity: (u64, u64), width: u32, height: u32) {
         static SENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = SENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if n < 8 || n % 1024 == 0 {
@@ -456,14 +436,18 @@ impl State {
         let sent = crate::gpu_control::buffer_present(request, window, identity, width, height)
             .and_then(|bytes| self.net.queue_gpu_control(bytes, None));
         if sent.is_err() {
-            self.remote_presents.released(request);
+            self.own_present_released(request);
             self.gpu_control_failed();
         }
     }
 
     fn release_remote_presents(&mut self) {
-        for token in self.remote_presents.release_all() {
+        let (tokens, held) = self.remote_presents.release_all();
+        for token in tokens {
             self.handle.remove(token);
+        }
+        for (window, held) in held {
+            self.free_held(window, held);
         }
     }
 
@@ -478,6 +462,8 @@ impl State {
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
         self.schedule_gpu_restart();
+        // Whatever executor the renderer was on is gone with the broker.
+        self.rebuild_gpu();
     }
 
     fn schedule_gpu_restart(&mut self) {
@@ -539,20 +525,8 @@ impl State {
 
     pub(crate) fn configure_gpu_window_to_display(&mut self, id: u64) {
         let Some(display) = self.windows.get(id).and_then(|w| self.displays.get(w.display)) else { return };
-        let mut size = display.logical_size();
-        let limit = (crate::windows::OVERSCAN_MAX_PICTURE as f64 / display.info.scale).round() as i32;
-        let Some(window) = self.windows.get_mut(id) else { return };
-        // The display's extent is what the client shows; an asked-for overscan adds to it.
-        window.overscan_size = None;
-        window.shown = Some(size);
-        if window.overscan.w > 0 || window.overscan.h > 0 {
-            let (whole, applied) = crate::windows::overscan_layout(size, window.overscan, window.max_size(), limit);
-            if applied.w > 0 || applied.h > 0 {
-                size = whole;
-                window.overscan_size = Some(whole);
-            }
-        }
-        let window = self.windows.get(id).unwrap();
+        let size = display.logical_size();
+        let Some(window) = self.windows.get(id) else { return };
         match &window.surface {
             Surface::Toplevel(toplevel) => {
                 toplevel.with_pending_state(|state| state.size = Some(size));
@@ -590,13 +564,15 @@ impl State {
                         let size = display.logical_size(); size.w > 0 && size.h > 0
                     })) { matches.clear(); }
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
-                    grants.bind(bind.process, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+                    grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {
                     // A popup keeps the place and size its application gave it, and a window the
                     // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
-                    // would otherwise resize it to the display each time.
+                    // would otherwise resize it to the display each time. The compositor's own
+                    // images take the window's size as it is.
                     let grows = std::mem::take(&mut self.gpu_bind_larger);
-                    if self.windows.get(grant.window)
+                    let application = bind.pid != std::process::id();
+                    if application && self.windows.get(grant.window)
                         .is_some_and(|window| window.kind != WindowKind::Popup && (grows || window.gpu_bind_follows_display())) {
                         self.configure_gpu_window_to_display(grant.window);
                     }
@@ -621,7 +597,11 @@ impl State {
                 }
             }
             Record::BufferReleased { request, status } => {
-                if !self.remote_presents.released(request) { self.gpu_control_failed(); return }
+                let Some((window, held)) = self.remote_presents.released(request) else { self.gpu_control_failed(); return };
+                self.free_held(window, held);
+                if status != 0 { self.stats.unshown += 1; }
+                // A frame went to the phone: the application may draw the next one.
+                self.release_paced_callbacks(window);
                 // Rate-limited: the first few of each outcome, then every 1024th.
                 static OUTCOMES: [std::sync::atomic::AtomicU64; 2] =
                     [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
@@ -637,7 +617,11 @@ impl State {
                 match kind {
                     4 => {
                         if grants.ready(executor, generation).is_err() { self.gpu_control_failed(); }
-                        else { self.reconnect_for_gpu_epoch(); }
+                        else {
+                            self.reconnect_for_gpu_epoch();
+                            // The phone's GPU is there: render on it.
+                            self.rebuild_gpu();
+                        }
                     }
                     5 => {
                         let revokes = match grants.lost(executor, generation) {
@@ -648,6 +632,8 @@ impl State {
                             if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); return; }
                         }
                         self.reconnect_for_gpu_epoch();
+                        // The phone's GPU is gone: render on the computer until it returns.
+                        self.rebuild_gpu();
                     }
                     6 => {
                         if grants.retired(executor, generation).is_err() { self.gpu_control_failed(); }
@@ -700,7 +686,7 @@ impl State {
             display,
             position: (0, 0).into(),
             announced: None,
-            stream: Stream::default(),
+            picture: Default::default(),
             fullscreen: false,
             maximized: false,
             maximized_geometry: None,
@@ -710,11 +696,6 @@ impl State {
             icon: None,
             identified: false,
             toplevel_icon: None,
-            scroll_seq_delivered: 0,
-            scroll_seq_committed: 0,
-            overscan: (0, 0).into(),
-            overscan_size: None,
-            shown: None,
             held_min: None,
         });
         self.assign_output(id);
@@ -762,18 +743,11 @@ impl State {
                 keyboard.set_focus(self, None, serial);
             }
         }
-        self.video_window_gone(id);
         self.game_window_gone(id);
-        self.scene_window_gone(id);
-        self.draw.window_gone(id);
         self.targets_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
-                let conn = s.conn;
-                if let Some(m) = &w.stream.motion {
-                    self.net.send(conn, &proto::Message::VideoDestroy { id: m.id });
-                }
-                self.net.send(conn, &proto::Message::WindowDestroy { id });
+                self.net.send(s.conn, &proto::Message::WindowDestroy { id });
             }
         }
     }
@@ -811,7 +785,7 @@ impl State {
     pub fn release_frame_callbacks(&mut self, id: u64) {
         let time = self.now_ms();
         let Some(w) = self.windows.get_mut(id) else { return };
-        w.stream.callbacks_pending = false;
+        w.picture.callbacks_pending = false;
         let Some(root) = w.surface.wl_surface() else { return };
         with_surface_tree_downward(
             &root,
@@ -874,30 +848,22 @@ impl State {
 
     pub fn sync_windows(&mut self) {
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
-        let mut resized = false;
         for id in self.windows.parent_first() {
             self.identify_x11(id);
             self.read_toplevel_icon(id);
             self.find_desktop_id(id);
             let Some(w) = self.windows.get(id) else { continue };
-            // A Vulkan application whose stream the client renders never presents here, so its
-            // X11 window is shown once X maps it, without a buffer (docs/gpu-stream.md).
-            let virtual_window = self.gpu_grants.as_ref().is_some_and(|grants| grants.active_window(id)) &&
+            // A Vulkan application bound to its phone surface may never commit a buffer here:
+            // its window is shown once it has a grant.
+            let virtual_window = self.gpu_grants.as_ref().is_some_and(|grants| grants.client_surface(id)) &&
                 self.session.as_ref().is_some_and(|session| session.owner_displays.contains(&w.display));
-            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || self.streams_unbuffered(id) || virtual_window;
+            let mapped = w.surface.wl_surface().is_some_and(|s| Self::is_mapped(&s)) || virtual_window;
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {
-                    if let Some(m) = &w.stream.motion {
-                        self.net.send(conn, &proto::Message::VideoDestroy { id: m.id });
-                    }
                     self.window_withdrawn(id);
                     self.net.send(conn, &proto::Message::WindowDestroy { id });
-                    let w = self.windows.get_mut(id).unwrap();
-                    w.announced = None;
-                    w.stream.in_flight.clear();
-                    w.stream.motion = None;
-                    w.stream.tracker = None;
+                    self.windows.get_mut(id).unwrap().announced = None;
                 }
                 continue;
             }
@@ -907,37 +873,26 @@ impl State {
                 let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };
                 let Some(display) = self.displays.get(w.display) else { continue };
                 let Some((width, height)) = virtual_target_pixels(size.w, size.h, display.info.scale) else { continue };
-                // A size configured with overscan shows the shown part as the geometry.
-                let over = (w.overscan_size == Some(size)).then_some(w.overscan)
-                    .and_then(|o| virtual_target_pixels(o.w.max(1), o.h.max(1), display.info.scale)
-                        .map(|(ow, oh)| proto::Size { w: if o.w > 0 { ow } else { 0 }, h: if o.h > 0 { oh } else { 0 } }));
-                let (ow, oh) = over.map_or((0, 0), |o| (o.w, o.h));
-                now.geometry.w = width - ow;
-                now.geometry.h = height - oh;
-                now.overscan = over;
+                now.geometry.w = width;
+                now.geometry.h = height;
             }
             match &w.announced {
                 None => {
                     self.net.send(conn, &proto::Message::WindowCreate(now.clone()));
                     let w = self.windows.get_mut(id).unwrap();
                     w.announced = Some(now);
-                    resized = true;
-                    w.stream.need_keyframe = true;
-                    w.stream.dirty = true;
+                    // The client has nothing of it yet: its picture is presented whole.
+                    w.picture.repaint();
                     self.window_announced(id);
                 }
                 Some(before) => {
                     let update = crate::windows::diff(before, &now);
                     if !update.is_empty() {
-                        resized |= update.geometry.is_some() || update.overscan.is_some() || update.title.is_some();
                         self.net.send(conn, &proto::Message::WindowUpdate(update));
                         self.windows.get_mut(id).unwrap().announced = Some(now);
                     }
                 }
             }
-        }
-        if resized {
-            self.scroll_rebind();
         }
     }
 
@@ -958,11 +913,11 @@ impl State {
         }
     }
 
-    /// Runs after every batch of events: announce, render, encode, flush.
+    /// Runs after every batch of events: announce, render, present, flush.
     pub fn tick(&mut self) {
         self.sync_windows();
         let started = input_trace().then(monotonic_us);
-        self.render_streams();
+        self.render_windows();
         if let Some(started) = started {
             let took = monotonic_us() - started;
             if took >= 4000 {
@@ -1074,16 +1029,9 @@ impl CompositorHandler for State {
             }
         }
         on_commit_buffer_handler::<Self>(surface);
-        // The picture this commit makes can hold every scroll delivered so far, no later one.
-        if let Some(w) = self.windows.by_surface(surface).and_then(|id| self.windows.get_mut(id)) {
-            w.scroll_seq_committed = w.scroll_seq_delivered;
-        }
         for fresh in &new_buffers {
             self.present_remote_buffer(fresh);
         }
-        let Renderer::Pixman(r) = &mut self.renderer;
-        // Import now so a client's shm buffer is released as early as possible.
-        let _ = smithay::backend::renderer::utils::import_surface_tree(r, surface);
         // xdg surfaces get their initial configure on their first commit.
         if let Some(id) = self.windows.by_surface(surface) {
             match &self.windows.get(id).unwrap().surface {
@@ -1106,8 +1054,12 @@ impl CompositorHandler for State {
         if let Some(id) = self.window_of_surface(surface) {
             let now = self.now_us();
             let new_children = self.windows.get(id).is_some_and(|w| w.surface.wl_surface().as_ref() != Some(surface));
+            // A window whose tree is one phone-resident buffer covering it shows that buffer;
+            // any other is rendered by the compositor.
+            let source = if self.covered_by_remote_buffer(id) { crate::picture::Source::Direct } else { crate::picture::Source::Composed };
             if let Some(w) = self.windows.get_mut(id) {
-                w.stream.mark_dirty(now);
+                w.picture.mark_dirty(now);
+                w.picture.source = source;
             }
             if new_children {
                 self.assign_output(id);
@@ -1138,9 +1090,7 @@ impl DmabufHandler for State {
         let ok = if crate::remote_buffers::is_remote(&dmabuf) {
             crate::remote_buffers::identity(&dmabuf).is_some()
         } else {
-            match &mut self.renderer {
-                Renderer::Pixman(r) => r.import_dmabuf(&dmabuf, None).is_ok(),
-            }
+            self.gpu.as_mut().is_some_and(|gpu| gpu.import_dmabuf(&dmabuf))
         };
         if ok {
             let _ = notifier.successful::<State>();
@@ -1485,6 +1435,18 @@ impl XWaylandShellHandler for State {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.xwayland_shell
     }
+
+    /// Xwayland's first commit to the surface is seen before the surface is the window's:
+    /// that commit's frame callback is the window's to release, or Xwayland never commits
+    /// what the X11 client draws next.
+    fn surface_associated(&mut self, _xwm: smithay::xwayland::xwm::XwmId, _surface: WlSurface, window: X11Surface) {
+        if let Some(id) = self.windows.by_x11(&window) {
+            let now = self.now_us();
+            if let Some(w) = self.windows.get_mut(id) {
+                w.picture.mark_dirty(now);
+            }
+        }
+    }
 }
 
 impl smithay::wayland::tablet_manager::TabletSeatHandler for State {}
@@ -1540,7 +1502,7 @@ impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for State {
 
 /// Whether a subsurface's buffer, at its position relative to its root surface, covers
 /// `geometry` (in the root's surface coordinates).
-fn covers_geometry(surface: &WlSurface, geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>) -> bool {
+pub(crate) fn covers_geometry(surface: &WlSurface, geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>) -> bool {
     use smithay::wayland::compositor::{with_states, SubsurfaceCachedState};
     let Some(size) = with_renderer_surface_state(surface, |state| state.surface_size()).flatten() else { return false };
     let mut location = smithay::utils::Point::<i32, smithay::utils::Logical>::from((0, 0));

@@ -63,36 +63,6 @@ string_enum!(
     /// A window's role. Popups and dialogs have a parent.
     WindowKind { Toplevel => "toplevel", Popup => "popup", Dialog => "dialog" }
 );
-string_enum!(Codec { Hevc => "hevc", Av1 => "av1", H264 => "h264", Vp9 => "vp9" });
-string_enum!(
-    /// Where a video stream comes from (docs/display.md, "Video, for every app").
-    VideoSource { Passthrough => "passthrough", Surface => "surface", Motion => "motion" }
-);
-string_enum!(TileFormat { Png => "png", WebpLossless => "webp-lossless" });
-string_enum!(
-    /// Lossless micro-codec formats for `surface.batch` tiles.
-    AtlasTileFormat {
-        Pal2Lz4 => "pal2-lz4",
-        Pal16Lz4 => "pal16-lz4",
-        RgbaLz4 => "rgba-lz4",
-        Png => "png",
-    }
-);
-string_enum!(
-    /// Node kinds in a retained vector/glyph `scene.commit` tree.
-    SceneNodeKind {
-        Group => "group",
-        Clip => "clip",
-        RClip => "rclip",
-        Scroll => "scroll",
-        Rect => "rect",
-        Border => "border",
-        Shadow => "shadow",
-        Glyphs => "glyphs",
-        Path => "path",
-        Surface => "surface",
-    }
-);
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
@@ -174,8 +144,6 @@ pub struct ServerHello {
     pub version: u32,
     /// The client display ids the server accepted.
     pub displays: Vec<u32>,
-    /// The server's encoders that the client can decode, in preference order.
-    pub encoders: Vec<Codec>,
     pub features: Vec<String>,
     /// Random for each server process. Window ids are unique within one epoch, so a client
     /// may keep a window's last picture across a reconnect only when the epoch matches.
@@ -202,9 +170,6 @@ pub struct WindowCreate {
     pub display: Option<u32>,
     pub xwayland: bool,
     pub alpha: bool,
-    /// The picture extends this far right of and below `geometry` (display pixels), while
-    /// the app has the enlarged size a `configure.overscan` asked for.
-    pub overscan: Option<Size>,
     /// The desktop entry whose launch started the window's process (`<id>.desktop`).
     pub desktop_id: Option<String>,
     /// The process that owns a toplevel (`_NET_WM_PID` or the Wayland client's), when known.
@@ -227,8 +192,6 @@ pub struct WindowUpdate {
     pub display: Option<u32>,
     pub xwayland: Option<bool>,
     pub alpha: Option<bool>,
-    /// `[0, 0]` when the overscan ended.
-    pub overscan: Option<Size>,
     pub desktop_id: Option<String>,
     pub pid: Option<u32>,
 }
@@ -237,34 +200,6 @@ impl WindowUpdate {
     pub fn is_empty(&self) -> bool {
         *self == WindowUpdate { id: self.id, ..Default::default() }
     }
-}
-
-/// `frame` (0x10): one encoded picture of one window.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Frame {
-    pub id: u64,
-    pub codec: Codec,
-    pub keyframe: bool,
-    /// Server CLOCK_MONOTONIC at the surface commit, microseconds.
-    pub pts_us: u64,
-    /// Where the picture lands, window-local display pixels.
-    pub rect: Rect,
-    /// The visible part of the decoded picture, picture pixels.
-    pub crop: Rect,
-    /// Annex-B for h264/hevc; one temporal unit of low-overhead OBUs for av1.
-    pub data: Vec<u8>,
-    /// The highest `pointer.scroll.seq` delivered to the window's client before the
-    /// commit this picture shows: the picture contains no scroll input after it.
-    pub input_seq: Option<u64>,
-}
-
-/// `tile` (0x11): a lossless refresh of static content.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Tile {
-    pub id: u64,
-    pub rect: Rect,
-    pub format: TileFormat,
-    pub data: Vec<u8>,
 }
 
 /// `cursor` (0x20).
@@ -293,267 +228,6 @@ pub struct Surrounding {
     pub text: String,
     pub cursor: u64,
     pub anchor: u64,
-}
-
-/// Self-copy (`CopyRect`) within the window's retained texture before fills and tiles.
-/// Encoded in CBOR as `[dx, dy, rect.x, rect.y, rect.w, rect.h]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceCopy {
-    pub dx: i32,
-    pub dy: i32,
-    pub rect: Rect,
-}
-
-impl SurfaceCopy {
-    fn to_value(self) -> Value {
-        Value::Array(vec![
-            self.dx.into(),
-            self.dy.into(),
-            self.rect.x.into(),
-            self.rect.y.into(),
-            self.rect.w.into(),
-            self.rect.h.into(),
-        ])
-    }
-
-    fn from_value(v: &Value) -> Option<Self> {
-        match fields::as_array(v)? {
-            [dx, dy, x, y, w, h] => Some(Self {
-                dx: fields::as_i32(dx)?,
-                dy: fields::as_i32(dy)?,
-                rect: Rect {
-                    x: fields::as_i32(x)?,
-                    y: fields::as_i32(y)?,
-                    w: fields::as_i32(w)?,
-                    h: fields::as_i32(h)?,
-                },
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// Solid RGBA8888 fill within a `surface.batch`.
-/// Encoded in CBOR as `[rect.x, rect.y, rect.w, rect.h, rgba]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceFill {
-    pub rect: Rect,
-    /// 0xRRGGBBAA
-    pub rgba: u32,
-}
-
-impl SurfaceFill {
-    fn to_value(self) -> Value {
-        Value::Array(vec![
-            self.rect.x.into(),
-            self.rect.y.into(),
-            self.rect.w.into(),
-            self.rect.h.into(),
-            self.rgba.into(),
-        ])
-    }
-
-    fn from_value(v: &Value) -> Option<Self> {
-        match fields::as_array(v)? {
-            [x, y, w, h, rgba] => Some(Self {
-                rect: Rect {
-                    x: fields::as_i32(x)?,
-                    y: fields::as_i32(y)?,
-                    w: fields::as_i32(w)?,
-                    h: fields::as_i32(h)?,
-                },
-                rgba: fields::as_u32(rgba)?,
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// Reference to a previously cached 64×64 tile by its `XXH64` content hash.
-/// Encoded in CBOR as `[x, y, hash]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SurfaceTileRef {
-    pub x: i32,
-    pub y: i32,
-    pub hash: u64,
-}
-
-impl SurfaceTileRef {
-    fn to_value(self) -> Value {
-        Value::Array(vec![self.x.into(), self.y.into(), self.hash.into()])
-    }
-
-    fn from_value(v: &Value) -> Option<Self> {
-        match fields::as_array(v)? {
-            [x, y, hash] => Some(Self {
-                x: fields::as_i32(x)?,
-                y: fields::as_i32(y)?,
-                hash: fields::as_u64(hash)?,
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// A newly encoded lossless UI tile in `surface.batch`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SurfaceTile {
-    pub rect: Rect,
-    pub hash: Option<u64>,
-    pub format: AtlasTileFormat,
-    pub data: Vec<u8>,
-}
-
-impl SurfaceTile {
-    fn to_value(&self) -> Value {
-        MapBuilder::new()
-            .put("x", self.rect.x)
-            .put("y", self.rect.y)
-            .put("w", self.rect.w)
-            .put("h", self.rect.h)
-            .put("fmt", self.format)
-            .opt("hash", self.hash)
-            .put("data", self.data.clone())
-            .build()
-    }
-
-    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
-        let f = Fields::new("surface.batch.tiles", v)?;
-        Ok(Self {
-            rect: Rect {
-                x: f.req("x", fields::as_i32)?,
-                y: f.req("y", fields::as_i32)?,
-                w: f.req("w", fields::as_i32)?,
-                h: f.req("h", fields::as_i32)?,
-            },
-            hash: f.opt_u64("hash")?,
-            format: enum_field(&f, "fmt", AtlasTileFormat::parse)?,
-            data: f.bytes("data")?,
-        })
-    }
-}
-
-/// `surface.batch` (0x23): atomic byte-perfect surface damage batch (Layer 0).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SurfaceBatch {
-    pub id: u64,
-    pub seq: u64,
-    pub pts_us: u64,
-    pub size: Size,
-    pub rect: Rect,
-    pub keyframe: bool,
-    pub copies: Vec<SurfaceCopy>,
-    pub fills: Vec<SurfaceFill>,
-    pub refs: Vec<SurfaceTileRef>,
-    pub tiles: Vec<SurfaceTile>,
-}
-
-/// `scene.font` (0x25): outline font face registration for `scene.commit` glyph runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SceneFont {
-    pub font: u64,
-    pub index: u32,
-    pub family: Option<String>,
-    pub data: Vec<u8>,
-}
-
-/// `draw.ops` (0x2A): draw-list ops (docs/draw.md) one process recorded, in its order. `stream`
-/// names the process's recording; its surface ids, images and glyphs belong to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrawOps {
-    pub stream: u32,
-    pub ops: Vec<u8>,
-}
-
-/// `draw.present` (0x2B): window `id` now shows surface `surface` of draw stream `stream`, as
-/// the picture stamped `pts_us`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrawPresent {
-    pub id: u64,
-    pub stream: u32,
-    pub surface: u32,
-    pub pts_us: u64,
-}
-
-/// A retained node in a `scene.commit` vector/glyph scene graph (Layer 1).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SceneNode {
-    pub id: u64,
-    pub kind: SceneNodeKind,
-    pub rect: Option<Rect>,
-    pub radius: Option<[u32; 4]>,
-    pub color: Option<u32>,
-    pub scroll: Option<Rect>,
-    pub children: Option<Vec<u64>>,
-    pub font: Option<u64>,
-    pub size: Option<f64>,
-    pub glyphs: Option<Vec<u8>>,
-    pub path: Option<Vec<u8>>,
-    pub surface: Option<u64>,
-}
-
-impl SceneNode {
-    fn to_value(&self) -> Value {
-        MapBuilder::new()
-            .put("id", self.id)
-            .put("kind", self.kind)
-            .opt("rect", self.rect)
-            .opt(
-                "radius",
-                self.radius.map(|r| Value::Array(vec![r[0].into(), r[1].into(), r[2].into(), r[3].into()])),
-            )
-            .opt("color", self.color)
-            .opt("scroll", self.scroll)
-            .opt(
-                "children",
-                self.children.as_ref().map(|c| Value::Array(c.iter().map(|&id| Value::from(id)).collect())),
-            )
-            .opt("font", self.font)
-            .opt("size", self.size)
-            .opt("glyphs", self.glyphs.clone())
-            .opt("path", self.path.clone())
-            .opt("surface", self.surface)
-            .build()
-    }
-
-    fn from_value(v: &Value) -> Result<Self, ProtocolError> {
-        let f = Fields::new("scene.commit.nodes", v)?;
-        Ok(Self {
-            id: f.u64("id")?,
-            kind: enum_field(&f, "kind", SceneNodeKind::parse)?,
-            rect: f.opt_rect("rect")?,
-            radius: f.opt("radius", fields::as_u32_quad)?,
-            color: f.opt_u32("color")?,
-            scroll: f.opt_rect("scroll")?,
-            children: f.opt("children", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?,
-            font: f.opt_u64("font")?,
-            size: f.opt_f64("size")?,
-            glyphs: f.opt_bytes("glyphs")?,
-            path: f.opt_bytes("path")?,
-            surface: f.opt_u64("surface")?,
-        })
-    }
-}
-
-/// `scene.commit` (0x26): retained vector/glyph scene-graph update (Layer 1).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SceneCommit {
-    pub id: u64,
-    pub seq: u64,
-    pub pts_us: u64,
-    pub root: u64,
-    pub reset: bool,
-    pub nodes: Vec<SceneNode>,
-    pub remove: Vec<u64>,
-}
-
-/// `scene.scroll` (0x9A): client-predicted scroll offset synced back to the guest.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SceneScroll {
-    pub id: u64,
-    pub node: u64,
-    pub sx: f64,
-    pub sy: f64,
 }
 
 /// One representation of a copy: its MIME type and its bytes.
@@ -609,7 +283,7 @@ pub struct Notification {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Audio {
     pub codec: String,
-    /// Server CLOCK_MONOTONIC of the packet's first sample (the clock of frame.pts_us).
+    /// Server CLOCK_MONOTONIC of the packet's first sample (the clock the server stamps everything with).
     pub pts_us: u64,
     /// 1 or 2; absent means 2.
     pub channels: Option<u32>,
@@ -621,90 +295,20 @@ pub struct Audio {
 pub struct ClientHello {
     pub version: u32,
     pub token: String,
-    pub decoders: Vec<Codec>,
     pub displays: Vec<Display>,
-    /// Codecs the client can play as `video.*` streams; absent means none.
-    pub video_decoders: Option<Vec<Codec>>,
     /// Audio codecs the client plays (`"opus"`); absent means no audio is sent.
     pub audio_decoders: Option<Vec<String>>,
     /// The client runs games handed off to it (docs/game-handoff.md). Sent only when true.
     pub wasm: bool,
     /// The client can host agent app web views.
     pub webview: bool,
-    /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
-    pub gpu: bool,
-    /// The client accepts half-resolution motion streams.
-    pub scaled_motion: bool,
     /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
     pub devices: bool,
-    /// The client places pictures by toolkit scroll reports (`scroll.tree`). Sent only when true.
-    pub scroll: bool,
     /// The client aims touches at the controls `targets` lists. Sent only when true.
     pub targets: bool,
     /// MIME types the client takes from the computer's clipboard besides text; absent
     /// means text only.
     pub clipboard_types: Option<Vec<String>>,
-    /// The client renders byte-perfect `surface.batch` and `surface.reset` messages. Sent only when true.
-    pub atlas: bool,
-    /// The client renders retained vector and glyph `scene.font` and `scene.commit` messages. Sent only when true.
-    pub scene: bool,
-    /// The client draws draw lists (`draw.ops`, `draw.present`, `draw.end`; docs/draw.md). Sent only when true.
-    pub draw: bool,
-}
-
-/// Colour description of a video stream, as ITU-T H.273 code points.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoColor {
-    pub primaries: u32,
-    pub transfer: u32,
-    pub matrix: u32,
-    pub full_range: bool,
-}
-
-/// `video.create` (0x12): a video stream layered into a window.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoCreate {
-    pub id: u64,
-    pub window: u64,
-    /// Where the whole picture goes, window-local display pixels.
-    pub rect: Rect,
-    /// The visible part of `rect`; absent means all of it.
-    pub clip: Option<Rect>,
-    /// Order among the window's video streams, higher on top; all are above the window.
-    pub z: Option<i32>,
-    pub codec: Codec,
-    pub source: VideoSource,
-    pub color: Option<VideoColor>,
-    /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
-    /// in band.
-    pub extradata: Option<Vec<u8>>,
-    /// This motion stream is encoded at half the region's width and height.
-    pub scaled: bool,
-}
-
-/// `video.frame` (0x13): one access unit, in decode order.
-#[derive(Debug, Clone, PartialEq)]
-pub struct VideoFrame {
-    pub id: u64,
-    /// Decode order, starting at 0 for each stream and increasing by one.
-    pub seq: u64,
-    pub keyframe: bool,
-    /// When to show it (server CLOCK_MONOTONIC). Present for `surface` and `motion`
-    /// streams, whose frames are shown as decoded; absent for `passthrough`, whose
-    /// frames are shown when `video.present` names them.
-    pub pts_us: Option<u64>,
-    /// Annex-B for h264/hevc (parameter sets on keyframes), a temporal unit of OBUs for
-    /// av1, a frame or superframe for vp9.
-    pub data: Vec<u8>,
-}
-
-/// `video.update` (0x14): the stream moved, was clipped, or restacked.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct VideoUpdate {
-    pub id: u64,
-    pub rect: Option<Rect>,
-    pub clip: Option<Rect>,
-    pub z: Option<i32>,
 }
 
 /// A directory a game persists through IDBFS: `mount` in the game's file system, `path` on
@@ -740,14 +344,6 @@ pub struct WebviewCreate {
     pub entry: String,
 }
 
-/// `gpu.data` (0x1A): the next bytes of a Vulkan stream, at `offset` from its start.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GpuData {
-    pub id: u64,
-    pub offset: u64,
-    pub data: Vec<u8>,
-}
-
 /// `configure` (0x84).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Configure {
@@ -757,9 +353,6 @@ pub struct Configure {
     pub fullscreen: Option<bool>,
     pub maximized: Option<bool>,
     pub activated: Option<bool>,
-    /// Lay the window out this much wider and taller than `geometry`, which stays what the
-    /// client shows; `[0, 0]` ends it.
-    pub overscan: Option<Size>,
 }
 
 /// One contact in a `touch` message.
@@ -800,8 +393,8 @@ pub struct Scroll {
     pub dx: f64,
     pub dy: f64,
     pub precise: bool,
-    /// The window's input sequence number for this scroll (docs/display.md, "Scroll
-    /// reports"): per window, strictly increasing from 1 for each display session.
+    /// The window's input sequence number for this scroll: per window, strictly
+    /// increasing from 1 for each display session.
     pub seq: Option<u64>,
 }
 
@@ -826,55 +419,6 @@ pub struct Pointer {
     pub relative: Option<[f64; 2]>,
 }
 
-/// One scrolling area in a `scroll.tree`, window-local display pixels.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Scroller {
-    /// The reporter's id for this scroller, stable while it exists.
-    pub id: u32,
-    /// Where the scroller's visible area is in the window.
-    pub rect: Rect,
-    /// Its content offset `[x, y]`.
-    pub offset: [f64; 2],
-    /// Its largest offset `[x, y]`; the smallest is 0.
-    pub range: [f64; 2],
-    /// Rectangles inside `rect` that do not move with the content (fixed and stuck
-    /// sticky elements, the frame tag). Absent when empty.
-    pub fixed: Vec<Rect>,
-}
-
-/// `scroll.tree` (0x23): a toolkit reporter's scroll state for the pictures that show
-/// frame tag `tag`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScrollTree {
-    pub id: u64,
-    /// The 24-bit frame tag drawn in the pictures this report describes; absent when the
-    /// window has no overscan to draw it in.
-    pub tag: Option<u32>,
-    /// Where the tag's 32 blocks are drawn, window-local display pixels.
-    pub tag_rect: Option<Rect>,
-    /// The last `scroll.target` seq the app had applied when it drew these pictures; 0 none.
-    pub applied: u64,
-    /// Changes when content moved in document coordinates (a layout shift, scroll
-    /// anchoring): pictures of different epochs are not placed against each other.
-    pub epoch: u64,
-    /// The primary scroller first.
-    pub scrollers: Vec<Scroller>,
-    /// The page's visual scale in this frame, when the reporter zooms; absent is 1. Offsets
-    /// and ranges are in pixels of the zoomed content.
-    pub zoom: Option<f64>,
-    /// The scales the page can be zoomed to, `[min, max]`.
-    pub zoom_range: Option<[f64; 2]>,
-}
-
-/// `scroll.zoom` (0x99): zoom the window's page to `scale` with the window point `focus` fixed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScrollZoom {
-    pub id: u64,
-    pub seq: u64,
-    pub scale: f64,
-    pub focus: [f64; 2],
-}
-
 /// One control a finger may mean, in a `targets` message: window-local display pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Target {
@@ -892,15 +436,6 @@ pub struct Targets {
     /// Increases with every list the server sends in a session.
     pub serial: u64,
     pub targets: Vec<Target>,
-}
-
-/// `scroll.target` (0x95): scroll a reported scroller by `delta` content pixels, exactly.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ScrollTarget {
-    pub id: u64,
-    pub scroller: u32,
-    pub seq: u64,
-    pub delta: [f64; 2],
 }
 
 /// `key` (0x93).
@@ -934,14 +469,11 @@ pub enum Message {
     WindowDestroy {
         id: u64,
     },
-    Frame(Frame),
-    Tile(Tile),
     Cursor(Cursor),
     CursorNamed {
         name: String,
     },
     TextInput(TextInputState),
-    ScrollTree(ScrollTree),
     Targets(Targets),
     /// `text_focus` (0x29): whether window `id`'s focus, as its accessibility tree reports
     /// it, is where typed text goes (a field, a cell being edited), or not (a button, a
@@ -949,19 +481,6 @@ pub enum Message {
     TextFocus {
         id: u64,
         editing: bool,
-    },
-    SurfaceBatch(SurfaceBatch),
-    SurfaceReset {
-        epoch: u64,
-    },
-    SceneFont(SceneFont),
-    SceneCommit(SceneCommit),
-    DrawOps(DrawOps),
-    DrawPresent(DrawPresent),
-    /// `draw.end` (0x2C): draw stream `stream` ended (its process is gone or stopped
-    /// recording); its surfaces, images and glyphs can go.
-    DrawEnd {
-        stream: u32,
     },
     ServerClipboard(Clipboard),
     Notification(Notification),
@@ -984,18 +503,6 @@ pub enum Message {
     DeviceKeyframe {
         device: String,
     },
-    VideoCreate(VideoCreate),
-    VideoFrame(VideoFrame),
-    VideoUpdate(VideoUpdate),
-    VideoDestroy {
-        id: u64,
-    },
-    /// The application is showing the frame `seq` of a passthrough stream now.
-    VideoPresent {
-        id: u64,
-        seq: u64,
-        pts_us: u64,
-    },
     WebviewCreate(WebviewCreate),
     WebviewDestroy {
         id: u64,
@@ -1003,18 +510,6 @@ pub enum Message {
     GameCreate(GameCreate),
     GameDestroy {
         id: u64,
-    },
-    /// The window's pictures are a Vulkan stream the client renders.
-    GpuCreate {
-        id: u64,
-        window: u64,
-    },
-    GpuData(GpuData),
-    /// The stream ended: its application closed, or `reason` says why it could not go on
-    /// (`"spool-limit"`: the computer would keep more of it than it allows).
-    GpuDestroy {
-        id: u64,
-        reason: Option<String>,
     },
     /// Whether the application under a drop from the client accepts it; absent when it
     /// answers only once it has the content, on the drop.
@@ -1048,16 +543,8 @@ pub enum Message {
         display: u32,
         t_us: u64,
     },
-    Ack {
-        id: u64,
-        pts_us: u64,
-        decoded_us: i64,
-    },
     Configure(Configure),
     Close {
-        id: u64,
-    },
-    RequestKeyframe {
         id: u64,
     },
     Displays {
@@ -1068,9 +555,6 @@ pub enum Message {
     Pointer(Pointer),
     Key(Key),
     Text(Text),
-    ScrollTarget(ScrollTarget),
-    ScrollZoom(ScrollZoom),
-    SceneScroll(SceneScroll),
     ClientClipboard(Clipboard),
     /// The complete set of devices the phone offers now.
     Devices {
@@ -1104,20 +588,6 @@ pub enum Message {
     DropPerform(Clipboard),
     /// The client takes the application's drag in progress.
     DragTake,
-    /// The client has the video frame `seq` queued for display.
-    VideoAck {
-        id: u64,
-        seq: u64,
-    },
-    /// The client's decoder failed; it drops the stream's frames until a keyframe.
-    VideoKeyframe {
-        id: u64,
-    },
-    /// The client has consumed a stream up to `offset`.
-    GpuAck {
-        id: u64,
-        offset: u64,
-    },
     /// The client cannot run game `id` (docs/game-handoff.md, "Declining"); `reason` says
     /// why, for the computer's log.
     WebviewDecline {
@@ -1138,33 +608,15 @@ pub mod type_id {
     pub const WINDOW_CREATE: u8 = 0x02;
     pub const WINDOW_UPDATE: u8 = 0x03;
     pub const WINDOW_DESTROY: u8 = 0x04;
-    pub const FRAME: u8 = 0x10;
-    pub const TILE: u8 = 0x11;
-    pub const VIDEO_CREATE: u8 = 0x12;
-    pub const VIDEO_FRAME: u8 = 0x13;
-    pub const VIDEO_UPDATE: u8 = 0x14;
-    pub const VIDEO_DESTROY: u8 = 0x15;
-    pub const VIDEO_PRESENT: u8 = 0x16;
     pub const GAME_CREATE: u8 = 0x17;
     pub const GAME_DESTROY: u8 = 0x18;
-    pub const GPU_CREATE: u8 = 0x19;
-    pub const GPU_DATA: u8 = 0x1A;
-    pub const GPU_DESTROY: u8 = 0x1B;
     pub const WEBVIEW_CREATE: u8 = 0x1C;
     pub const WEBVIEW_DESTROY: u8 = 0x1D;
     pub const CURSOR: u8 = 0x20;
     pub const CURSOR_NAMED: u8 = 0x21;
     pub const TEXT_INPUT: u8 = 0x22;
-    pub const SCROLL_TREE: u8 = 0x27;
     pub const TARGETS: u8 = 0x28;
     pub const TEXT_FOCUS: u8 = 0x29;
-    pub const SURFACE_BATCH: u8 = 0x23;
-    pub const SURFACE_RESET: u8 = 0x24;
-    pub const SCENE_FONT: u8 = 0x25;
-    pub const SCENE_COMMIT: u8 = 0x26;
-    pub const DRAW_OPS: u8 = 0x2A;
-    pub const DRAW_PRESENT: u8 = 0x2B;
-    pub const DRAW_END: u8 = 0x2C;
     pub const CLIPBOARD: u8 = 0x30;
     pub const NOTIFICATION: u8 = 0x31;
     pub const DROP_STATUS: u8 = 0x32;
@@ -1182,24 +634,16 @@ pub mod type_id {
     pub const BYE: u8 = 0x7F;
     pub const CLIENT_HELLO: u8 = 0x81;
     pub const VSYNC: u8 = 0x82;
-    pub const ACK: u8 = 0x83;
     pub const CONFIGURE: u8 = 0x84;
     pub const CLOSE: u8 = 0x85;
-    pub const REQUEST_KEYFRAME: u8 = 0x86;
     pub const DISPLAYS: u8 = 0x87;
-    pub const VIDEO_ACK: u8 = 0x88;
-    pub const VIDEO_KEYFRAME: u8 = 0x89;
     pub const TOUCH: u8 = 0x90;
     pub const PENCIL: u8 = 0x91;
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
-    pub const SCROLL_TARGET: u8 = 0x95;
-    pub const SCROLL_ZOOM: u8 = 0x99;
-    pub const GPU_ACK: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
-    pub const SCENE_SCROLL: u8 = 0x9A;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const DEVICES: u8 = 0xB0;
     pub const DEVICE_CAMERA: u8 = 0xB1;
@@ -1232,15 +676,6 @@ impl Direction {
             Direction::ClientToServer
         }
     }
-}
-
-fn codecs_value(codecs: &[Codec]) -> Value {
-    Value::Array(codecs.iter().map(|c| Value::from(*c)).collect())
-}
-
-/// Codec lists skip names this build does not know, so a newer peer's list still parses.
-fn codecs_from(f: &Fields<'_>, key: &'static str) -> Result<Vec<Codec>, ProtocolError> {
-    Ok(f.strings(key)?.iter().filter_map(|s| Codec::parse(s)).collect())
 }
 
 fn clipboard_value(c: &Clipboard) -> Value {
@@ -1277,21 +712,11 @@ impl Message {
             Message::WindowCreate(_) => WINDOW_CREATE,
             Message::WindowUpdate(_) => WINDOW_UPDATE,
             Message::WindowDestroy { .. } => WINDOW_DESTROY,
-            Message::Frame(_) => FRAME,
-            Message::Tile(_) => TILE,
             Message::Cursor(_) => CURSOR,
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
-            Message::ScrollTree(_) => SCROLL_TREE,
             Message::Targets(_) => TARGETS,
             Message::TextFocus { .. } => TEXT_FOCUS,
-            Message::SurfaceBatch(_) => SURFACE_BATCH,
-            Message::SurfaceReset { .. } => SURFACE_RESET,
-            Message::SceneFont(_) => SCENE_FONT,
-            Message::SceneCommit(_) => SCENE_COMMIT,
-            Message::DrawOps(_) => DRAW_OPS,
-            Message::DrawPresent(_) => DRAW_PRESENT,
-            Message::DrawEnd { .. } => DRAW_END,
             Message::ServerClipboard(_) => CLIPBOARD,
             Message::Notification(_) => NOTIFICATION,
             Message::DropStatus { .. } => DROP_STATUS,
@@ -1314,45 +739,29 @@ impl Message {
             Message::DeviceButton { .. } => DEVICE_BUTTON,
             Message::DeviceBattery(_) => DEVICE_BATTERY,
             Message::DeviceError { .. } => DEVICE_ERROR,
-            Message::VideoCreate(_) => VIDEO_CREATE,
-            Message::VideoFrame(_) => VIDEO_FRAME,
-            Message::VideoUpdate(_) => VIDEO_UPDATE,
-            Message::VideoDestroy { .. } => VIDEO_DESTROY,
-            Message::VideoPresent { .. } => VIDEO_PRESENT,
             Message::WebviewCreate(_) => WEBVIEW_CREATE,
             Message::WebviewDestroy { .. } => WEBVIEW_DESTROY,
             Message::WebviewDecline { .. } => WEBVIEW_DECLINE,
             Message::GameCreate(_) => GAME_CREATE,
             Message::GameDestroy { .. } => GAME_DESTROY,
-            Message::GpuCreate { .. } => GPU_CREATE,
-            Message::GpuData(_) => GPU_DATA,
-            Message::GpuDestroy { .. } => GPU_DESTROY,
             Message::Pong { .. } => PONG,
             Message::Bye { .. } => BYE,
             Message::ClientHello(_) => CLIENT_HELLO,
             Message::Vsync { .. } => VSYNC,
-            Message::Ack { .. } => ACK,
             Message::Configure(_) => CONFIGURE,
             Message::Close { .. } => CLOSE,
-            Message::RequestKeyframe { .. } => REQUEST_KEYFRAME,
             Message::Displays { .. } => DISPLAYS,
             Message::Touch(_) => TOUCH,
             Message::Pencil(_) => PENCIL,
             Message::Pointer(_) => POINTER,
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
-            Message::ScrollTarget(_) => SCROLL_TARGET,
-            Message::ScrollZoom(_) => SCROLL_ZOOM,
-            Message::SceneScroll(_) => SCENE_SCROLL,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::DropEnter(_) => DROP_ENTER,
             Message::DropMotion { .. } => DROP_MOTION,
             Message::DropLeave => DROP_LEAVE,
             Message::DropPerform(_) => DROP_PERFORM,
             Message::DragTake => DRAG_TAKE,
-            Message::VideoAck { .. } => VIDEO_ACK,
-            Message::VideoKeyframe { .. } => VIDEO_KEYFRAME,
-            Message::GpuAck { .. } => GPU_ACK,
             Message::GameDecline { .. } => GAME_DECLINE,
             Message::Ping { .. } => PING,
         }
@@ -1368,7 +777,6 @@ impl Message {
             Message::ServerHello(m) => MapBuilder::new()
                 .put("version", m.version)
                 .put("displays", Value::Array(m.displays.iter().map(|d| Value::from(*d)).collect()))
-                .put("encoders", codecs_value(&m.encoders))
                 .put("features", m.features.clone())
                 .opt("epoch", m.epoch.clone())
                 .opt("gpu_live_epoch", m.gpu_live_epoch.filter(|v| v.iter().any(|b| *b != 0)).map(|v| v.to_vec()))
@@ -1387,7 +795,6 @@ impl Message {
                 .opt("display", m.display)
                 .put("xwayland", m.xwayland)
                 .put("alpha", m.alpha)
-                .opt("overscan", m.overscan)
                 .opt("desktop_id", m.desktop_id.clone())
                 .opt("pid", m.pid)
                 .build(),
@@ -1405,25 +812,13 @@ impl Message {
                 .opt("display", m.display)
                 .opt("xwayland", m.xwayland)
                 .opt("alpha", m.alpha)
-                .opt("overscan", m.overscan)
                 .opt("desktop_id", m.desktop_id.clone())
                 .opt("pid", m.pid)
                 .build(),
             Message::WindowDestroy { id }
             | Message::Close { id }
-            | Message::RequestKeyframe { id }
-            | Message::VideoDestroy { id }
             | Message::GameDestroy { id }
-            | Message::WebviewDestroy { id }
-            | Message::VideoKeyframe { id } => MapBuilder::new().put("id", *id).build(),
-            Message::GpuDestroy { id, reason } => {
-                MapBuilder::new().put("id", *id).opt("reason", reason.clone()).build()
-            }
-            Message::GpuCreate { id, window } => MapBuilder::new().put("id", *id).put("window", *window).build(),
-            Message::GpuData(m) => {
-                MapBuilder::new().put("id", m.id).put("offset", m.offset).put("data", m.data.clone()).build()
-            }
-            Message::GpuAck { id, offset } => MapBuilder::new().put("id", *id).put("offset", *offset).build(),
+            | Message::WebviewDestroy { id } => MapBuilder::new().put("id", *id).build(),
             Message::WebviewCreate(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("window", m.window)
@@ -1461,86 +856,12 @@ impl Message {
                     }),
                 )
                 .build(),
-            Message::VideoCreate(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("window", m.window)
-                .put("rect", m.rect)
-                .opt("clip", m.clip)
-                .opt("z", m.z)
-                .put("codec", m.codec)
-                .put("source", m.source)
-                .opt(
-                    "color",
-                    m.color.as_ref().map(|c| {
-                        MapBuilder::new()
-                            .put("primaries", c.primaries)
-                            .put("transfer", c.transfer)
-                            .put("matrix", c.matrix)
-                            .put("full_range", c.full_range)
-                            .build()
-                    }),
-                )
-                .opt("extradata", m.extradata.clone())
-                .opt("scaled", m.scaled.then_some(true))
-                .build(),
-            Message::VideoFrame(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("seq", m.seq)
-                .put("keyframe", m.keyframe)
-                .opt("pts_us", m.pts_us)
-                .put("data", m.data.clone())
-                .build(),
-            Message::VideoUpdate(m) => {
-                MapBuilder::new().put("id", m.id).opt("rect", m.rect).opt("clip", m.clip).opt("z", m.z).build()
-            }
-            Message::VideoPresent { id, seq, pts_us } => {
-                MapBuilder::new().put("id", *id).put("seq", *seq).put("pts_us", *pts_us).build()
-            }
-            Message::VideoAck { id, seq } => MapBuilder::new().put("id", *id).put("seq", *seq).build(),
-            Message::Frame(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("codec", m.codec)
-                .put("keyframe", m.keyframe)
-                .put("pts_us", m.pts_us)
-                .put("rect", m.rect)
-                .put("crop", m.crop)
-                .put("data", m.data.clone())
-                .opt("input_seq", m.input_seq)
-                .build(),
-            Message::ScrollTree(m) => MapBuilder::new()
-                .put("id", m.id)
-                .opt("tag", m.tag)
-                .opt("tag_rect", m.tag_rect)
-                .put("applied", m.applied)
-                .put("epoch", m.epoch)
-                .put("scrollers", Value::Array(m.scrollers.iter().map(scroller_value).collect()))
-                .opt("zoom", m.zoom)
-                .opt("zoom_range", m.zoom_range.map(|r| Value::Array(vec![r[0].into(), r[1].into()])))
-                .build(),
-            Message::ScrollZoom(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("seq", m.seq)
-                .put("scale", m.scale)
-                .put("focus", Value::Array(vec![m.focus[0].into(), m.focus[1].into()]))
-                .build(),
             Message::Targets(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("serial", m.serial)
                 .put("targets", Value::Array(m.targets.iter().map(target_value).collect()))
                 .build(),
             Message::TextFocus { id, editing } => MapBuilder::new().put("id", *id).put("editing", *editing).build(),
-            Message::ScrollTarget(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("scroller", m.scroller)
-                .put("seq", m.seq)
-                .put("delta", Value::Array(vec![m.delta[0].into(), m.delta[1].into()]))
-                .build(),
-            Message::Tile(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("rect", m.rect)
-                .put("format", m.format)
-                .put("data", m.data.clone())
-                .build(),
             Message::Cursor(m) => MapBuilder::new()
                 .opt("id", m.id)
                 .put("image", m.image.clone())
@@ -1554,72 +875,6 @@ impl Message {
                 .opt("surrounding", m.surrounding.as_ref().map(|s| s.text.as_str()))
                 .opt("cursor", m.surrounding.as_ref().map(|s| s.cursor))
                 .opt("anchor", m.surrounding.as_ref().map(|s| s.anchor))
-                .build(),
-            Message::SurfaceBatch(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("seq", m.seq)
-                .put("pts_us", m.pts_us)
-                .put("size", m.size)
-                .put("rect", m.rect)
-                .opt("keyframe", m.keyframe.then_some(true))
-                .opt(
-                    "copies",
-                    (!m.copies.is_empty())
-                        .then(|| Value::Array(m.copies.iter().map(|c| c.to_value()).collect())),
-                )
-                .opt(
-                    "fills",
-                    (!m.fills.is_empty())
-                        .then(|| Value::Array(m.fills.iter().map(|f| f.to_value()).collect())),
-                )
-                .opt(
-                    "refs",
-                    (!m.refs.is_empty())
-                        .then(|| Value::Array(m.refs.iter().map(|r| r.to_value()).collect())),
-                )
-                .opt(
-                    "tiles",
-                    (!m.tiles.is_empty())
-                        .then(|| Value::Array(m.tiles.iter().map(SurfaceTile::to_value).collect())),
-                )
-                .build(),
-            Message::SurfaceReset { epoch } => MapBuilder::new().put("epoch", *epoch).build(),
-            Message::DrawOps(m) => MapBuilder::new().put("stream", m.stream).put("ops", m.ops.clone()).build(),
-            Message::DrawPresent(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("stream", m.stream)
-                .put("surface", m.surface)
-                .put("pts_us", m.pts_us)
-                .build(),
-            Message::DrawEnd { stream } => MapBuilder::new().put("stream", *stream).build(),
-            Message::SceneFont(m) => MapBuilder::new()
-                .put("font", m.font)
-                .put("index", m.index)
-                .opt("family", m.family.clone())
-                .put("data", m.data.clone())
-                .build(),
-            Message::SceneCommit(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("seq", m.seq)
-                .put("pts_us", m.pts_us)
-                .put("root", m.root)
-                .opt("reset", m.reset.then_some(true))
-                .opt(
-                    "nodes",
-                    (!m.nodes.is_empty())
-                        .then(|| Value::Array(m.nodes.iter().map(SceneNode::to_value).collect())),
-                )
-                .opt(
-                    "remove",
-                    (!m.remove.is_empty())
-                        .then(|| Value::Array(m.remove.iter().map(|&id| Value::from(id)).collect())),
-                )
-                .build(),
-            Message::SceneScroll(m) => MapBuilder::new()
-                .put("id", m.id)
-                .put("node", m.node)
-                .put("sx", m.sx)
-                .put("sy", m.sy)
                 .build(),
             Message::ServerClipboard(c)
             | Message::ClientClipboard(c)
@@ -1670,26 +925,15 @@ impl Message {
             Message::ClientHello(m) => MapBuilder::new()
                 .put("version", m.version)
                 .put("token", m.token.as_str())
-                .put("decoders", codecs_value(&m.decoders))
                 .put("displays", displays_value(&m.displays))
-                .opt("video_decoders", m.video_decoders.as_deref().map(codecs_value))
                 .opt("audio_decoders", m.audio_decoders.clone())
                 .opt("wasm", m.wasm.then_some(true))
                 .opt("webview", m.webview.then_some(true))
-                .opt("gpu", m.gpu.then_some(true))
-                .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
-                .opt("scroll", m.scroll.then_some(true))
                 .opt("targets", m.targets.then_some(true))
                 .opt("clipboard_types", m.clipboard_types.clone())
-                .opt("atlas", m.atlas.then_some(true))
-                .opt("scene", m.scene.then_some(true))
-                .opt("draw", m.draw.then_some(true))
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
-            Message::Ack { id, pts_us, decoded_us } => {
-                MapBuilder::new().put("id", *id).put("pts_us", *pts_us).put("decoded_us", *decoded_us).build()
-            }
             Message::Configure(m) => MapBuilder::new()
                 .put("id", m.id)
                 .opt("geometry", m.geometry)
@@ -1697,7 +941,6 @@ impl Message {
                 .opt("fullscreen", m.fullscreen)
                 .opt("maximized", m.maximized)
                 .opt("activated", m.activated)
-                .opt("overscan", m.overscan)
                 .build(),
             Message::Displays { displays } => MapBuilder::new().put("displays", displays_value(displays)).build(),
             Message::Touch(m) => MapBuilder::new()
@@ -1766,7 +1009,6 @@ impl Message {
             HELLO => Message::ServerHello(ServerHello {
                 version: f.u32("version")?,
                 displays: f.req("displays", |v| fields::as_array(v)?.iter().map(fields::as_u32).collect())?,
-                encoders: codecs_from(&f, "encoders")?,
                 features: f.strings("features")?,
                 epoch: f.opt_string("epoch")?,
                 gpu_live_epoch: f.opt_bytes("gpu_live_epoch").ok().flatten()
@@ -1787,7 +1029,6 @@ impl Message {
                 display: f.opt_u32("display")?,
                 xwayland: f.opt_bool("xwayland")?.unwrap_or(false),
                 alpha: f.opt_bool("alpha")?.unwrap_or(false),
-                overscan: f.opt_size("overscan")?,
                 desktop_id: f.opt_string("desktop_id")?,
                 pid: f.opt_u32("pid")?,
             }),
@@ -1808,43 +1049,16 @@ impl Message {
                 display: f.opt_u32("display")?,
                 xwayland: f.opt_bool("xwayland")?,
                 alpha: f.opt_bool("alpha")?,
-                overscan: f.opt_size("overscan")?,
                 desktop_id: f.opt_string("desktop_id")?,
                 pid: f.opt_u32("pid")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
-            FRAME => Message::Frame(Frame {
-                id: f.u64("id")?,
-                codec: enum_field(&f, "codec", Codec::parse)?,
-                keyframe: f.bool("keyframe")?,
-                pts_us: f.u64("pts_us")?,
-                rect: f.rect("rect")?,
-                crop: f.rect("crop")?,
-                data: f.bytes("data")?,
-                input_seq: f.opt_u64("input_seq")?,
-            }),
-            SCROLL_TREE => Message::ScrollTree(ScrollTree {
-                id: f.u64("id")?,
-                tag: f.opt_u32("tag")?,
-                tag_rect: f.opt_rect("tag_rect")?,
-                applied: f.u64("applied")?,
-                epoch: f.u64("epoch")?,
-                scrollers: f.array("scrollers")?.iter().map(scroller_from).collect::<Result<_, _>>()?,
-                zoom: f.opt_f64("zoom")?,
-                zoom_range: f.opt("zoom_range", fields::as_f64_pair)?,
-            }),
             TARGETS => Message::Targets(Targets {
                 id: f.u64("id")?,
                 serial: f.u64("serial")?,
                 targets: f.array("targets")?.iter().map(target_from).collect::<Result<_, _>>()?,
             }),
             TEXT_FOCUS => Message::TextFocus { id: f.u64("id")?, editing: f.bool("editing")? },
-            TILE => Message::Tile(Tile {
-                id: f.u64("id")?,
-                rect: f.rect("rect")?,
-                format: enum_field(&f, "format", TileFormat::parse)?,
-                data: f.bytes("data")?,
-            }),
             CURSOR => Message::Cursor(Cursor {
                 id: f.opt_u64("id")?,
                 image: f.bytes("image")?,
@@ -1863,62 +1077,6 @@ impl Message {
                         Some(Surrounding { text, cursor, anchor })
                     }
                 },
-            }),
-            SURFACE_BATCH => Message::SurfaceBatch(SurfaceBatch {
-                id: f.u64("id")?,
-                seq: f.u64("seq")?,
-                pts_us: f.u64("pts_us")?,
-                size: f.size("size")?,
-                rect: f.rect("rect")?,
-                keyframe: f.opt_bool("keyframe")?.unwrap_or(false),
-                copies: f
-                    .opt("copies", |v| fields::as_array(v)?.iter().map(SurfaceCopy::from_value).collect())?
-                    .unwrap_or_default(),
-                fills: f
-                    .opt("fills", |v| fields::as_array(v)?.iter().map(SurfaceFill::from_value).collect())?
-                    .unwrap_or_default(),
-                refs: f
-                    .opt("refs", |v| fields::as_array(v)?.iter().map(SurfaceTileRef::from_value).collect())?
-                    .unwrap_or_default(),
-                tiles: match f.opt("tiles", fields::as_array)? {
-                    None => Vec::new(),
-                    Some(tiles) => tiles.iter().map(SurfaceTile::from_value).collect::<Result<_, ProtocolError>>()?,
-                },
-            }),
-            SURFACE_RESET => Message::SurfaceReset { epoch: f.u64("epoch")? },
-            DRAW_OPS => Message::DrawOps(DrawOps { stream: f.u32("stream")?, ops: f.bytes("ops")? }),
-            DRAW_PRESENT => Message::DrawPresent(DrawPresent {
-                id: f.u64("id")?,
-                stream: f.u32("stream")?,
-                surface: f.u32("surface")?,
-                pts_us: f.u64("pts_us")?,
-            }),
-            DRAW_END => Message::DrawEnd { stream: f.u32("stream")? },
-            SCENE_FONT => Message::SceneFont(SceneFont {
-                font: f.u64("font")?,
-                index: f.u32("index")?,
-                family: f.opt_string("family")?,
-                data: f.bytes("data")?,
-            }),
-            SCENE_COMMIT => Message::SceneCommit(SceneCommit {
-                id: f.u64("id")?,
-                seq: f.u64("seq")?,
-                pts_us: f.u64("pts_us")?,
-                root: f.u64("root")?,
-                reset: f.opt_bool("reset")?.unwrap_or(false),
-                nodes: match f.opt("nodes", fields::as_array)? {
-                    None => Vec::new(),
-                    Some(nodes) => nodes.iter().map(SceneNode::from_value).collect::<Result<_, ProtocolError>>()?,
-                },
-                remove: f
-                    .opt("remove", |v| fields::as_array(v)?.iter().map(fields::as_u64).collect())?
-                    .unwrap_or_default(),
-            }),
-            SCENE_SCROLL => Message::SceneScroll(SceneScroll {
-                id: f.u64("id")?,
-                node: f.u64("node")?,
-                sx: f.f64("sx")?,
-                sy: f.f64("sy")?,
             }),
             CLIPBOARD => Message::ServerClipboard(clipboard_from(&f)?),
             DROP_STATUS => Message::DropStatus { accepted: f.opt_bool("accepted")? },
@@ -1944,44 +1102,6 @@ impl Message {
                 channels: f.opt_u32("channels")?,
                 data: f.bytes("data")?,
             }),
-            VIDEO_CREATE => Message::VideoCreate(VideoCreate {
-                id: f.u64("id")?,
-                window: f.u64("window")?,
-                rect: f.rect("rect")?,
-                clip: f.opt_rect("clip")?,
-                z: f.opt("z", fields::as_i32)?,
-                codec: enum_field(&f, "codec", Codec::parse)?,
-                source: enum_field(&f, "source", VideoSource::parse)?,
-                color: match f.opt("color", Some)? {
-                    None => None,
-                    Some(v) => {
-                        let c = Fields::new("video.create.color", v)?;
-                        Some(VideoColor {
-                            primaries: c.u32("primaries")?,
-                            transfer: c.u32("transfer")?,
-                            matrix: c.u32("matrix")?,
-                            full_range: c.bool("full_range")?,
-                        })
-                    }
-                },
-                extradata: f.opt_bytes("extradata")?,
-                scaled: f.opt_bool("scaled")?.unwrap_or(false),
-            }),
-            VIDEO_FRAME => Message::VideoFrame(VideoFrame {
-                id: f.u64("id")?,
-                seq: f.u64("seq")?,
-                keyframe: f.bool("keyframe")?,
-                pts_us: f.opt_u64("pts_us")?,
-                data: f.bytes("data")?,
-            }),
-            VIDEO_UPDATE => Message::VideoUpdate(VideoUpdate {
-                id: f.u64("id")?,
-                rect: f.opt_rect("rect")?,
-                clip: f.opt_rect("clip")?,
-                z: f.opt("z", fields::as_i32)?,
-            }),
-            VIDEO_DESTROY => Message::VideoDestroy { id: f.u64("id")? },
-            VIDEO_PRESENT => Message::VideoPresent { id: f.u64("id")?, seq: f.u64("seq")?, pts_us: f.u64("pts_us")? },
             WEBVIEW_CREATE => Message::WebviewCreate(WebviewCreate {
                 id: f.u64("id")?,
                 window: f.u64("window")?,
@@ -2012,47 +1132,27 @@ impl Message {
                 },
             }),
             GAME_DESTROY => Message::GameDestroy { id: f.u64("id")? },
-            GPU_CREATE => Message::GpuCreate { id: f.u64("id")?, window: f.u64("window")? },
-            GPU_DATA => {
-                Message::GpuData(GpuData { id: f.u64("id")?, offset: f.u64("offset")?, data: f.bytes("data")? })
-            }
-            GPU_DESTROY => Message::GpuDestroy { id: f.u64("id")?, reason: f.opt_string("reason")? },
-            GPU_ACK => Message::GpuAck { id: f.u64("id")?, offset: f.u64("offset")? },
             GAME_DECLINE => Message::GameDecline { id: f.u64("id")?, reason: f.string("reason")? },
-            VIDEO_ACK => Message::VideoAck { id: f.u64("id")?, seq: f.u64("seq")? },
-            VIDEO_KEYFRAME => Message::VideoKeyframe { id: f.u64("id")? },
             PONG => Message::Pong { t_us: f.u64("t_us")? },
             BYE => Message::Bye { reason: enum_field(&f, "reason", ByeReason::parse)? },
             CLIENT_HELLO => Message::ClientHello(ClientHello {
                 version: f.u32("version")?,
                 token: f.string("token")?,
-                decoders: codecs_from(&f, "decoders")?,
                 displays: displays_from(&f)?,
-                video_decoders: match f.opt("video_decoders", fields::as_array)? {
-                    None => None,
-                    Some(_) => Some(codecs_from(&f, "video_decoders")?),
-                },
                 audio_decoders: match f.opt("audio_decoders", fields::as_array)? {
                     None => None,
                     Some(_) => Some(f.strings("audio_decoders")?),
                 },
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
                 webview: f.opt_bool("webview")?.unwrap_or(false),
-                gpu: f.opt_bool("gpu")?.unwrap_or(false),
-                scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
-                scroll: f.opt_bool("scroll")?.unwrap_or(false),
                 targets: f.opt_bool("targets")?.unwrap_or(false),
                 clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
                     None => None,
                     Some(_) => Some(f.strings("clipboard_types")?),
                 },
-                atlas: f.opt_bool("atlas")?.unwrap_or(false),
-                scene: f.opt_bool("scene")?.unwrap_or(false),
-                draw: f.opt_bool("draw")?.unwrap_or(false),
             }),
             VSYNC => Message::Vsync { display: f.u32("display")?, t_us: f.u64("t_us")? },
-            ACK => Message::Ack { id: f.u64("id")?, pts_us: f.u64("pts_us")?, decoded_us: f.i64("decoded_us")? },
             CONFIGURE => Message::Configure(Configure {
                 id: f.u64("id")?,
                 geometry: f.opt_rect("geometry")?,
@@ -2060,10 +1160,8 @@ impl Message {
                 fullscreen: f.opt_bool("fullscreen")?,
                 maximized: f.opt_bool("maximized")?,
                 activated: f.opt_bool("activated")?,
-                overscan: f.opt_size("overscan")?,
             }),
             CLOSE => Message::Close { id: f.u64("id")? },
-            REQUEST_KEYFRAME => Message::RequestKeyframe { id: f.u64("id")? },
             DISPLAYS => Message::Displays { displays: displays_from(&f)? },
             TOUCH => Message::Touch(Touch {
                 id: f.u64("id")?,
@@ -2109,18 +1207,6 @@ impl Message {
             KEY => {
                 Message::Key(Key { keysym: f.u32("keysym")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })
             }
-            SCROLL_ZOOM => Message::ScrollZoom(ScrollZoom {
-                id: f.u64("id")?,
-                seq: f.u64("seq")?,
-                scale: f.f64("scale")?,
-                focus: f.req("focus", fields::as_f64_pair)?,
-            }),
-            SCROLL_TARGET => Message::ScrollTarget(ScrollTarget {
-                id: f.u64("id")?,
-                scroller: f.u32("scroller")?,
-                seq: f.u64("seq")?,
-                delta: f.req("delta", fields::as_f64_pair)?,
-            }),
             TEXT => Message::Text(Text {
                 commit: f.opt_string("commit")?,
                 preedit: f.opt_string("preedit")?,
@@ -2171,39 +1257,17 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         WINDOW_CREATE => "window.create",
         WINDOW_UPDATE => "window.update",
         WINDOW_DESTROY => "window.destroy",
-        FRAME => "frame",
-        TILE => "tile",
-        VIDEO_CREATE => "video.create",
-        VIDEO_FRAME => "video.frame",
-        VIDEO_UPDATE => "video.update",
-        VIDEO_DESTROY => "video.destroy",
-        VIDEO_PRESENT => "video.present",
-        VIDEO_ACK => "video.ack",
-        VIDEO_KEYFRAME => "video.keyframe",
         WEBVIEW_CREATE => "webview.create",
         WEBVIEW_DESTROY => "webview.destroy",
         WEBVIEW_DECLINE => "webview.decline",
         GAME_CREATE => "game.create",
         GAME_DESTROY => "game.destroy",
-        GPU_CREATE => "gpu.create",
-        GPU_DATA => "gpu.data",
-        GPU_DESTROY => "gpu.destroy",
-        GPU_ACK => "gpu.ack",
         GAME_DECLINE => "game.decline",
         CURSOR => "cursor",
         CURSOR_NAMED => "cursor.named",
         TEXT_INPUT => "text_input",
-        SCROLL_TREE => "scroll.tree",
         TARGETS => "targets",
         TEXT_FOCUS => "text_focus",
-        SURFACE_BATCH => "surface.batch",
-        SURFACE_RESET => "surface.reset",
-        SCENE_FONT => "scene.font",
-        SCENE_COMMIT => "scene.commit",
-        DRAW_OPS => "draw.ops",
-        DRAW_PRESENT => "draw.present",
-        DRAW_END => "draw.end",
-        SCENE_SCROLL => "scene.scroll",
         CLIPBOARD | CLIENT_CLIPBOARD => "clipboard",
         NOTIFICATION => "notification",
         DROP_STATUS => "drop.status",
@@ -2220,18 +1284,14 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         PONG => "pong",
         BYE => "bye",
         VSYNC => "vsync",
-        ACK => "ack",
         CONFIGURE => "configure",
         CLOSE => "close",
-        REQUEST_KEYFRAME => "request_keyframe",
         DISPLAYS => "displays",
         TOUCH => "touch",
         PENCIL => "pencil",
         POINTER => "pointer",
         KEY => "key",
         TEXT => "text",
-        SCROLL_TARGET => "scroll.target",
-        SCROLL_ZOOM => "scroll.zoom",
         PING => "ping",
         DEVICE_STATUS => "device.status",
         DEVICE_OPEN => "device.open",
@@ -2269,28 +1329,4 @@ fn target_from(v: &Value) -> Result<Target, ProtocolError> {
         }
         _ => Err(bad),
     }
-}
-
-fn scroller_value(s: &Scroller) -> Value {
-    MapBuilder::new()
-        .put("id", s.id)
-        .put("rect", s.rect)
-        .put("offset", Value::Array(vec![s.offset[0].into(), s.offset[1].into()]))
-        .put("range", Value::Array(vec![s.range[0].into(), s.range[1].into()]))
-        .opt("fixed", (!s.fixed.is_empty()).then(|| Value::Array(s.fixed.iter().map(|&r| r.into()).collect())))
-        .build()
-}
-
-fn scroller_from(v: &Value) -> Result<Scroller, ProtocolError> {
-    let f = Fields::new("scroll.tree.scrollers", v)?;
-    Ok(Scroller {
-        id: f.u32("id")?,
-        rect: f.rect("rect")?,
-        offset: f.req("offset", fields::as_f64_pair)?,
-        range: f.req("range", fields::as_f64_pair)?,
-        fixed: match f.opt("fixed", fields::as_array)? {
-            None => Vec::new(),
-            Some(items) => items.iter().map(|r| fields::as_rect(r).ok_or(ProtocolError::Field { message: "scroll.tree.scrollers", field: "fixed", problem: "not a rect" })).collect::<Result<_, _>>()?,
-        },
-    })
 }

@@ -5,9 +5,7 @@ import Testing
 
 @MainActor struct RemoteWindowViewAlphaTests {
     @Test func aWindowWithAlphaShowsThroughAndAnOpaqueOneSitsOnBlack() {
-        let surface = WindowSurface()
-        surface.resize(width: 40, height: 30)
-        let popup = RemoteWindow(id: 9, frame: CGRect(x: 10, y: 10, width: 40, height: 30), overrideRedirect: true, surface: surface)
+        let popup = RemoteWindow(id: 9, frame: CGRect(x: 10, y: 10, width: 40, height: 30), overrideRedirect: true)
         popup.hasAlpha = true
         let view = RemoteWindowView(session: nil, window: popup)
         let layer = view.layer as! CAMetalLayer

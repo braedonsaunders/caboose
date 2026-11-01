@@ -78,7 +78,6 @@ class ParseTests(unittest.TestCase):
 class PhoneClockTests(unittest.TestCase):
     def test_phone_uptime(self):
         self.assertEqual(fl.phone_uptime('CABOOSE_GPU_MEMORY_AUDIT {"kind":"x","uptimeSeconds":12.5}'), 12_500_000_000)
-        self.assertEqual(fl.phone_uptime('caboose-scroll: rtt sent=3.25 pong=3.3 rtt_ms=5'), 3_250_000_000)
         self.assertIsNone(fl.phone_uptime('CABOOSE_GPU_DECODE_TIMING stream=1'))
 
 
@@ -201,15 +200,35 @@ class ScorecardTests(unittest.TestCase):
         # Answered in 40 ms, and nothing else is owed: no stall.
         self.assertEqual(card['stalls']['count'], 0)
 
-    def test_video_path_from_compositor_frames(self):
-        sent = [[1 * S + i * 100 * MS, 1 * S + i * 100 * MS - 5 * MS, 1000, False] for i in range(10)]
-        sent.append([1 * S + 950 * MS, 1 * S + 950 * MS, 0, True])  # sharpening only
+    def test_computer_path_from_compositor_commits(self):
+        commits = [1 * S + i * 100 * MS for i in range(10)]
         run = {'start_ns': 0, 'measure_ns': 1 * S, 'end_ns': 2 * S, 'ok': True,
-               'windows': {'7': {'commits': [], 'sent': sent}}, 'cpu': []}
+               'windows': {'7': {'commits': commits}}, 'cpu': []}
         card = fl.scorecard({'id': 'terminal'}, run)
-        self.assertEqual(card['path'], 'video')
+        self.assertEqual(card['path'], 'computer')
         self.assertEqual(card['pacing']['per_s'], 10.0)
-        self.assertEqual(card['resources']['stream_bytes_per_s'], 10000)
+        self.assertEqual(card['pacing']['source'], 'compositor commits')
+        self.assertIsNone(card['wire'])
+        self.assertIsNone(card['resources']['stream_bytes_per_s'])
+
+    def test_wire_bytes_per_input_and_idle_second(self):
+        streams = [{'kind': 'gpu_stream', 't': 1 * S + 500 * MS, 'elapsed_ms': 500, 'to_phone_bytes': 3000,
+                    'from_phone_bytes': 100},
+                   {'kind': 'gpu_stream', 't': 2 * S, 'elapsed_ms': 500, 'to_phone_bytes': 1000, 'from_phone_bytes': 100},
+                   # Outside the measured span: not counted.
+                   {'kind': 'gpu_stream', 't': 500 * MS, 'elapsed_ms': 500, 'to_phone_bytes': 99999, 'from_phone_bytes': 0}]
+        presents = [1 * S + 100 * MS, 1 * S + 300 * MS]
+        typed = {'start_ns': 0, 'measure_ns': 1 * S, 'end_ns': 2 * S, 'ok': True,
+                 'records': [{'kind': 'gpu_present', 'event': 'present', 't': t} for t in presents] + streams,
+                 'inputs': [{'t': 1 * S + 50 * MS}, {'t': 1 * S + 250 * MS}]}
+        card = fl.scorecard({'id': 'foot'}, typed)
+        self.assertEqual(card['wire'], {'to_phone_bytes': 4000, 'seconds': 1.0, 'to_phone_per_s': 4000,
+                                        'from_phone_per_s': 200, 'inputs': 2, 'to_phone_per_input': 2000})
+        self.assertEqual(card['resources']['stream_bytes_per_s'], 4000)
+        self.assertIn('| 2000 |', fl.summary_table([card]))
+        idle = {**typed, 'inputs': []}
+        card = fl.scorecard({'id': 'idle-desktop'}, idle)
+        self.assertEqual((card['wire']['to_phone_per_s'], card['wire']['to_phone_per_input']), (4000, None))
 
     def test_rate_only(self):
         records = [{'kind': 'present_rate', 't': 2 * S, 'elapsed_ms': 1000, 'presented': 30, 'ordered': 0,

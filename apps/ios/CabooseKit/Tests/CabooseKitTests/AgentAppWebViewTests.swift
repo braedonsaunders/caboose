@@ -13,7 +13,7 @@ import XCTest
             "grant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "root": "Apps/check", "entry": "index.html"
         ]))
         let game = RemoteGame(GameDescriptor(id: 1, window: 1, root: descriptor.root, entry: descriptor.entry),
-                              host: GameHostAccess(baseURL: base, token: "test"), picture: WindowSurface(), webview: descriptor)
+                              host: GameHostAccess(baseURL: base, token: "test"), picture: WindowSnapshot(), webview: descriptor)
         let surface = GameSurfaceView.surface(for: game)
         defer { game.end() }
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
@@ -119,7 +119,7 @@ import XCTest
         XCTAssertEqual(failed, "refused")
 
         let next = RemoteGame(GameDescriptor(id: 2, window: 1, root: descriptor.root, entry: descriptor.entry),
-                              host: GameHostAccess(baseURL: base, token: "test"), picture: WindowSurface(), webview: descriptor)
+                              host: GameHostAccess(baseURL: base, token: "test"), picture: WindowSnapshot(), webview: descriptor)
         XCTAssertTrue(AgentAppPages.shared.adopt(next))
         XCTAssertTrue(GameSurfaceView.surface(for: next) === surface)
         XCTAssertEqual(AgentAppPages.shared.count, 0)
