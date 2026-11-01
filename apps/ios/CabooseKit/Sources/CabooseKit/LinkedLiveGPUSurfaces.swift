@@ -202,7 +202,8 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         info.vk_format = request.format; info.color_space = request.colorSpace
         info.width = request.width; info.height = request.height; info.image_array_layers = request.arrayLayers
         info.image_usage = request.usage; info.pre_transform = request.preTransform
-        info.composite_alpha = request.compositeAlpha; info.present_mode = request.presentMode
+        info.composite_alpha = LiveGPUCompositeAlpha.native(requested: request.compositeAlpha)
+        info.present_mode = request.presentMode
         info.clipped = request.clipped ? 1 : 0; info.sharing_mode = request.sharingMode
         info.queue_family_count = UInt32(request.families.count)
         var output: OpaquePointer?, id: UInt64 = 0, count: UInt32 = 0
@@ -218,6 +219,11 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         let value = output.map { LinkedLiveGPUIndexedSwapchain(pointer: $0, id: id, count: count,
                                                              identity: bind.identity, parent: self) }
         if code != 0 && actual.querySucceeded { return (.init(nativeErrno: EIO, vkResult: nil), value) }
+        if code == 0, value != nil {
+            // A premultiplied swapchain (a menu, a tooltip) shows what is behind its window.
+            let translucent = request.compositeAlpha == LiveGPUCompositeAlpha.preMultiplied
+            _ = try? liveGPUOnMain { [lease] in lease.setTranslucent(translucent) }
+        }
         return (actual, value)
     }
     func waitOrder(_ serial: UInt64) -> Int32 {
@@ -255,7 +261,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
             currentWidth: view.current_width, currentHeight: view.current_height,
             minWidth: view.min_width, minHeight: view.min_height, maxWidth: view.max_width, maxHeight: view.max_height,
             maxImageArrayLayers: view.max_image_array_layers, supportedTransforms: view.supported_transforms,
-            currentTransform: view.current_transform, supportedCompositeAlpha: view.supported_composite_alpha,
+            currentTransform: view.current_transform, supportedCompositeAlpha: LiveGPUCompositeAlpha.offered(native: view.supported_composite_alpha),
             supportedUsageFlags: view.supported_usage_flags, formats: formats, modes: modes, queues: queues)
         return (actual, caps)
     }

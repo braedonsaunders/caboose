@@ -486,6 +486,17 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(lease.extent, CGSize(width: 240, height: 180))
         XCTAssertFalse(owners.presents(in: parentView))
         XCTAssertTrue(owners.presents(in: popupView))
+        // A premultiplied swapchain (an ARGB menu) shows the parent through its clear pixels.
+        XCTAssertEqual(lease.content?.isOpaque, true)
+        lease.setTranslucent(true)
+        XCTAssertTrue(owners.presentsTranslucent(in: popupView))
+        XCTAssertEqual(lease.content?.isOpaque, false)
+        XCTAssertEqual(lease.content?.backgroundColor, .clear)
+        XCTAssertTrue(popupView.showsThrough)
+        lease.setTranslucent(false)
+        XCTAssertFalse(owners.presentsTranslucent(in: popupView))
+        XCTAssertEqual(lease.content?.isOpaque, true)
+        XCTAssertFalse(popupView.showsThrough)
         owners.revoke()
         owners.release(lease)
     }
