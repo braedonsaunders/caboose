@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Scrolling itself</title>
+<style>
+body { margin: 0 auto; max-width: 42em; padding: 1em; font: 17px/1.5 sans-serif; color: #222; background: #fafafa; }
+h2 { color: #345; }
+.card { border: 1px solid #ccd; border-radius: 8px; padding: 0.6em 1em; margin: 0.8em 0; background: white; }
+</style>
+<script>
+// An article that scrolls itself 12 CSS pixels per frame, turning at either end: a reader
+// flicking through, with no input needed.
+addEventListener('DOMContentLoaded', () => {
+  for (let i = 0; i < 120; i++) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `<h2>Section ${i}</h2><p>The caboose rides at the end of the train. Its crew watches the cars ahead for hot boxes, shifted loads and dragging equipment, and signals the engineer when something is wrong. Car ${i} carries ${(i * 37) % 90 + 10} tons under seal ${String((i * 7919) % 100000).padStart(5, '0')}.</p>`;
+    document.body.append(card);
+  }
+  let step = 12;
+  function frame() {
+    const before = scrollY;
+    scrollBy(0, step);
+    if (scrollY === before) step = -step;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+});
+</script>
