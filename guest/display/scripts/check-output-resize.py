@@ -211,10 +211,8 @@ def main():
                 while packet:
                     kind, size = packet[0], int.from_bytes(packet[1:5], 'little')
                     assert len(packet) >= size + 5
-                    fields, _ = decode(packet[5:5 + size])
+                    decode(packet[5:5 + size])
                     packet = packet[5 + size:]
-                    if kind in (0x10, 0x11):
-                        send(0x83, dict(id=fields['id'], pts_us=fields['pts_us'], decoded_us=0))
                     if kind == 0x7f:
                         raise AssertionError('Server ended fixture session')
         except Exception as e:
