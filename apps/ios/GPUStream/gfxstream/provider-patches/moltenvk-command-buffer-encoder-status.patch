@@ -1,0 +1,17 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+index dec4b45..4deeb89 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+@@ -169,9 +169,9 @@ id<MTLCommandBuffer> MVKQueue::getMTLCommandBuffer(MVKCommandUse cmdUse, bool re
+ 
+ 	MTLCommandBufferDescriptor* mtlCmdBuffDesc = [MTLCommandBufferDescriptor new];	// temp retain
+ 	mtlCmdBuffDesc.retainedReferences = retainRefs;
+-	if (getMVKConfig().debugMode) {
+-		mtlCmdBuffDesc.errorOptions |= MTLCommandBufferErrorOptionEncoderExecutionStatus;
+-	}
++	// Always: a failed command buffer then says which of its encoders faulted (logged by
++	// handleMTLCommandBufferError), for a small cost on every command buffer.
++	mtlCmdBuffDesc.errorOptions |= MTLCommandBufferErrorOptionEncoderExecutionStatus;
+ 	mtlCmdBuff = [_mtlQueue commandBufferWithDescriptor: mtlCmdBuffDesc];
+ 	[mtlCmdBuffDesc release];														// temp release
+ 
