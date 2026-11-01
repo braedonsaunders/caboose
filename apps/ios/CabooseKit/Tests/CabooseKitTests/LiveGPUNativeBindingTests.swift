@@ -30,6 +30,37 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
     }
 
+    func testSessionSelectsTheComputersCacheRootBeforeAnyProcess() throws {
+        for root in [URL(fileURLWithPath: "/tmp/caboose-gpu-cache/computer-a"), nil] {
+            let runtime = LiveRuntimeProbe()
+            let binding = try LiveGPUNativeBinding(backend: runtime, cacheRoot: root)
+            try binding.start(output: { _ in true }, failed: { _ in })
+            XCTAssertTrue(runtime.cacheRoots.isEmpty)
+            try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+            // A session without a root clears the previous computer's caches.
+            XCTAssertEqual(runtime.cacheRoots, [root?.path])
+            try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+            XCTAssertEqual(runtime.cacheRoots.count, 1)
+            try binding.revoke(); try binding.finish()
+        }
+    }
+
+    func testCacheRootIsOnePrivateDirectoryPerPairing() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let a = try LiveGPUCacheRoot.directory(pairing: "computer-a", base: base)
+        let b = try LiveGPUCacheRoot.directory(pairing: "computer-b", base: base)
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(a.deletingLastPathComponent().lastPathComponent, "CabooseGPU")
+        XCTAssertEqual(try a.deletingLastPathComponent().resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup, true)
+        for bad in ["", ".", "..", "a/b"] {
+            XCTAssertThrowsError(try LiveGPUCacheRoot.directory(pairing: bad, base: base))
+        }
+        LiveGPUCacheRoot.remove(pairing: "computer-a", base: base)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: a.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: b.path))
+    }
+
     func testCompressionNegotiationCannotRepeatOrFollowProcessAdmission() throws {
         for late in [false, true] {
             let runtime = LiveRuntimeProbe()
@@ -305,6 +336,8 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
     var reads = true
     let stopped = DispatchSemaphore(value: 0)
     func start() -> Int32 { lock.withLock { starts += 1 }; return 0 }
+    var cacheRoots: [String?] = []
+    func setCacheRoot(_ path: String?) -> Int32 { lock.withLock { cacheRoots.append(path) }; return 0 }
     func open(_ token: inout UInt64) -> Int32 { lock.withLock { next += 1; token = next }; return 0 }
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32 {
         lock.withLock { active[token, default: 0] += 1 }; entered.signal()

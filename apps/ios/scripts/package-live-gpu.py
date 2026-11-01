@@ -21,6 +21,8 @@ ARCHIVES = (
     "adapter/libcaboose_gpu_native_runtime.a",
     "adapter/libcaboose_gfxstream_framebuffer.a",
     "adapter/libcaboose_gfxstream_connection.a",
+    "adapter/libcaboose_shader_store.a",
+    "adapter/libcaboose_blake3.a",
     "upstream/host/libgfxstream_backend_static.a",
     "upstream/host/vulkan/libgfxstream-vulkan-server.a",
     "upstream/host/vulkan/emulated_textures/libemulated_textures.a",
@@ -49,6 +51,7 @@ REQUIRED_NATIVE = {
     "caboose_gpu_surface_attach", "caboose_gpu_surface_query",
     "caboose_gpu_surface_capabilities_get", "caboose_gpu_surface_capabilities_release",
     "caboose_gpu_surface_present", "caboose_gpu_surface_retire", "caboose_gpu_surface_detach",
+    "caboose_gpu_runtime_set_cache_root",
 }
 REQUIRED_EXPORTS = {"vkGetInstanceProcAddr", "vkGetDeviceProcAddr", "vkCreateInstance",
                     "vkDestroyInstance", "vkCreateDevice", "vkDestroyDevice"}
@@ -112,6 +115,7 @@ import CabooseGPULive
 @main struct LinkProbe {
     @MainActor static func main() {
         _ = caboose_gpu_live_start_v4()
+        _ = caboose_gpu_runtime_set_cache_root("/")
         var surface: OpaquePointer?
         var bind = caboose_gpu_surface_bind_info()
         _ = caboose_gpu_surface_prepare(&bind, &surface)

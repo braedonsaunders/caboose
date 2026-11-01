@@ -22,6 +22,11 @@ int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve
 int caboose_gpu_runtime_start_virtual_wsi(PFN_vkGetInstanceProcAddr get,
                                            caboose_gpu_resolve_export resolve);
 #endif
+// Selects the connected computer's persistent caches: SPIR-V modules in `root/shaders`
+// and pipelines in `root/pipeline` (docs/gpu-live.md, "Shader cache"). `root` is an
+// absolute directory, created if needed; NULL selects none, as does a failure. Call
+// before opening the computer's processes.
+int caboose_gpu_runtime_set_cache_root(const char* root);
 // Creates an independent upstream process; token is nonzero and never reused.
 int caboose_gpu_runtime_open(uint64_t* token);
 // Caller authenticates, binds the session and verifies the negotiated stream

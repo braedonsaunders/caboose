@@ -29,13 +29,16 @@ public final class LiveGPUOwnerSession {
     private let onEnd: @MainActor (Error?, Error?) -> Void
     private final class Reference { weak var owner: LiveGPUOwnerSession? }
 
-    public init(hostURL: URL, phoneToken: String,
+    /// `pairing` names the computer's persistent GPU caches (LiveGPUCacheRoot); without it,
+    /// or if they cannot be created, the computer sends every shader in full.
+    public init(hostURL: URL, phoneToken: String, pairing: String? = nil,
                 onEnd: @escaping @MainActor (Error?, Error?) -> Void) throws {
         let reference = Reference()
         let owners = LiveGPUPresentationOwners { [reference] identity in
             reference.owner?.executor.requestSurfaceRevocation(identity)
         }
-        let binding = try LiveGPUNativeBinding(presentationOwners: owners)
+        let cacheRoot = pairing.flatMap { try? LiveGPUCacheRoot.directory(pairing: $0) }
+        let binding = try LiveGPUNativeBinding(presentationOwners: owners, cacheRoot: cacheRoot)
         executor = try LiveGPUSession(transport: LiveGPUConnection(hostURL: hostURL, phoneToken: phoneToken),
                                       nativeBinding: binding)
         presentationOwners = owners; self.onEnd = onEnd

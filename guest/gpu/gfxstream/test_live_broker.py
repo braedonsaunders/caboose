@@ -346,9 +346,14 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Descriptor-set and command-buffer handles need guest handles themselves.
         self.assertEqual(negotiate(hello(0x1F0), frozenset({'guest-handle-arrays'})), hello(0x70))
         self.assertIsNone(negotiate(hello(0x170), everything))
+        # The shader cache stands alone: it is granted with or without guest handles.
+        self.assertEqual(negotiate(hello(0x2070), everything), hello(0x2070))
+        self.assertEqual(negotiate(hello(0x3FF0), frozenset({'shader-cache'})), hello(0x2070))
+        self.assertEqual(negotiate(hello(0x3FF0), everything - {'shader-cache'}), hello(0x1FF0))
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
+        self.assertIsNone(negotiate(hello(0x4070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
         self.assertIsNone(negotiate(broker.HELLO, everything))
         self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))

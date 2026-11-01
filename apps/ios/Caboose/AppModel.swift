@@ -381,7 +381,10 @@ final class AppModel {
         let oldPairing = credentials?.fileDomainIdentifier
         do { try Credentials.clear() }
         catch { pairingFailure = error.localizedDescription; return }
-        if let oldPairing { Task { await appListCache.remove(pairing: oldPairing) } }
+        if let oldPairing {
+            Task { await appListCache.remove(pairing: oldPairing) }
+            LiveGPUCacheRoot.remove(pairing: oldPairing)
+        }
         AgentAppPages.shared.endAll()
         resetConnection()
         credentials = nil
@@ -1154,7 +1157,7 @@ final class AppModel {
         let generation = UUID()
         do {
             let owner = try LiveGPUOwnerSession(hostURL: activeHostURL ?? credentials.hostURL,
-                phoneToken: credentials.token) { [weak self] _, _ in
+                phoneToken: credentials.token, pairing: credentials.fileDomainIdentifier) { [weak self] _, _ in
                     guard let self, self.liveGPUGeneration == generation else { return }
                     self.endLiveGPUBackgroundTime()
                     // Even after failed native cleanup (a lost device) the GPU comes back.

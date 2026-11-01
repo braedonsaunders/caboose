@@ -163,16 +163,18 @@ wire fixtures do not initialize a provider or activate the driver.
 The phone app names the capabilities of its native decoder in the
 `X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
-`completion-feed` and `ordered-present`. The broker reads them from the authenticated
-upgrade request.
+`completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools` and
+`shader-cache`. The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
 hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned handles),
 `0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
-`0x200` (completion feed) and `0x400` (ordered presents). The broker replies with the
-required mask plus the offered bits whose capability the phone declared (`guest-handles`,
-`guest-handle-arrays`, `completion-feed`, `ordered-present` respectively); it drops
-`0x100` when it does not grant `0x80`. An
+`0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
+images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
+cache). The broker replies with the required mask plus the offered bits whose capability
+the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
+`ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache` respectively); it
+drops `0x100` and `0x1000` when it does not grant `0x80`. An
 offer with unknown bits, `0x100` without `0x80`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
 
@@ -260,6 +262,51 @@ of its private binary semaphores. When the application acquires, the process ret
 that image once its ACQUIRED reply is in, and one queue submission waits for the private
 semaphore and signals the application's semaphore and fence. Neither the phone nor the
 wire changes for this.
+
+### Shader cache
+
+With `0x2000`, the phone keeps every SPIR-V module a computer creates, so later sessions
+name it by hash instead of sending it. The app gives the decoder one directory per paired
+computer (`Application Support/CabooseGPU/<pairing>`, excluded from the phone's backup and
+removed at sign-out): modules go in `shaders/`, one file per module named by the lowercase
+hex BLAKE3-256 of its code, and the persistent `VkPipelineCache` and the Metal pipeline
+binaries in `pipeline/`. One computer never sees another's modules or pipelines.
+
+A process asks for the phone's keys once, before its first module of at least 256 bytes,
+with `SHADER_INVENTORY` on its device stream, after reading every reply it still owes:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| SHADER_INVENTORY | `0x4342FE10` | 16 | version u32 = 1, reserved u32 = 0 |
+
+The reply, on the same stream, is a key count u32 (at most 16384), reserved u32 zero, and
+the 32-byte keys. From then on `vkCreateShaderModule` sends, in place of the code of a
+module the phone holds, a 48-byte token: magic u32 `0x4D534243` ("CBSM"), version u32 1,
+the code size u32 (256 bytes to 16 MiB, whole words), reserved u32 zero and the key, with
+`codeSize` 48. A SPIR-V module starts with `0x07230203`, so a module is never read as a
+token. A process whose commands all share one device stream also names by token a module
+it sent as code earlier on that stream. The key covers the bytes the driver sends, after
+its own rewrites of the module. The byte-exact forms are in
+`guest/gpu/gfxstream/shader-cache/vectors.json`.
+
+The decoder replaces a token with the stored code, verified against its key, before
+creating the module, and keeps the code of every module it creates from code, on disk or,
+if the file cannot be written, in memory. Nothing is removed while the app runs, so every
+key an inventory listed and every module created from code stays resolvable; the store is
+trimmed to 256 MiB and 16384 modules, least recently used first, when the app next opens
+it. A token the decoder cannot resolve (a damaged file) fails that module's creation; with
+guest-assigned handles that is device loss for the process. A new executor connection
+discards what the process knew, and it asks again.
+
+Pipelines built from these modules come from the per-computer `VkPipelineCache`, and the
+Metal pipeline states MoltenVK makes from them from a Metal binary archive in `pipeline/`
+(`provider-patches/moltenvk-pipeline-binary-archive.patch`): each pipeline is looked up in
+the archive alone first; a pipeline the archive lacks is compiled as usual and added to it
+on a serial queue, which writes the archive after every 16 additions and when a process
+finishes. An archive the system cannot load (another OS version or GPU, a damaged file) is
+replaced by an empty one. When a process finishes the decoder writes
+`CABOOSE_GPU_CACHES` to standard error with the store's size and its resolved,
+unresolved and inserted modules, and the archive's hits and misses since launch.
 
 ## Readiness and retirement
 

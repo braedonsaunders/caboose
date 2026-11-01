@@ -2850,7 +2850,9 @@ Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
 Release builds never activate this private executor.
 Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, connect the owner AppModel to the
-authenticated host GPU endpoint. Backgrounding, computer switch and display
+authenticated host GPU endpoint. Each session selects the paired computer's GPU caches
+(`LiveGPUCacheRoot`, [gpu-live.md](gpu-live.md#shader-cache)) before its first process;
+signing out removes them. Backgrounding, computer switch and display
 takeover drain it; ordinary display reconnects preserve it. A normal broker close
 after the native REVOKED receipt and successful cleanup is required before the
 app releases its owner reservation.
