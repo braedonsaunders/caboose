@@ -2829,8 +2829,9 @@ the app card, and a detached view releases its layers.
   green button returns it to its own frame, unmaximized. A window whose minimum size holds
   it larger than the screen takes the screen's shape, zoomed or not, and shows scaled to
   fit edge to edge. A window the app resizes off Laptop's layout anyway (one leaving the
-  maximized state itself, or a snapped half) is put back, at most three times in ten
-  seconds (`LaptopFill`). Controls never move above the hinge.
+  maximized state itself, or a snapped half) is put back once; if the app leaves it again
+  it keeps its own size, shown fitted, until the owner lays it out again or the screen
+  changes (`LaptopFill`). Controls never move above the hinge.
   The measured reserved division between the upper panel and controls stays black throughout
   Laptop mode, including window, fullscreen and loading transitions. Keyboard occlusion does
   not enlarge that division.

@@ -11,10 +11,12 @@ import CoreGraphics
 /// A window that fills the screen is configured maximized: the computer keeps it at its
 /// frame while the app asks for another size, and the app knows it fills the screen. Every
 /// window laid out at Laptop's frame rather than its own is also held there: one the app
-/// resizes anyway (one that leaves the maximized state itself, or a half) is put back. A
-/// window that cannot take the frame exactly (one sized in character cells) stays at the
-/// nearest size it takes, and one the app keeps resizing is put back at most `restores`
-/// times in `period` seconds.
+/// resizes anyway (one that leaves the maximized state itself, or a half) is put back, once.
+/// An app that leaves the layout again has refused it: its window keeps the app's own size,
+/// shown fitted, and a relayout to the same frame leaves it be, until the owner lays it out
+/// again (the green button, a snap) or the screen changes. Laptop never fights an app for a
+/// window's size. A window that cannot take the frame exactly (one sized in character cells)
+/// stays at the nearest size it takes.
 public struct LaptopFill: Sendable {
     public struct Layout: Equatable, Sendable {
         public var frame: CGRect
@@ -27,8 +29,6 @@ public struct LaptopFill: Sendable {
         }
     }
 
-    public static let restores = 3
-    public static let period: Double = 10
     /// How far, in pixels, a committed frame may stray from its layout and still be there:
     /// the computer rounds a frame to its logical pixels.
     public static let tolerance: CGFloat = 2
@@ -36,12 +36,14 @@ public struct LaptopFill: Sendable {
     private struct Hold: Sendable {
         var layout: Layout
         var seen: CGRect
-        var restored: [Double]
+        var restored = false
     }
 
     private var holds: [Int: Hold] = [:]
     /// Whether each window was last configured maximized, where that is known.
     private var configured: [Int: Bool] = [:]
+    /// The layout frame each window's app refused, by leaving it after it was put back.
+    private var refused: [Int: CGRect] = [:]
 
     public init() {}
 
@@ -73,23 +75,30 @@ public struct LaptopFill: Sendable {
     }
 
     /// Whether a window at `current` must be configured to take `layout`: it is elsewhere, or
-    /// its maximized state is another or not known.
+    /// its maximized state is another or not known, and its app has not refused that layout.
     public func needsConfigure(_ id: Int, _ layout: Layout, current: CGRect) -> Bool {
-        current != layout.frame || configured[id] != layout.maximized
+        guard refused[id] != layout.frame else { return false }
+        return current != layout.frame || configured[id] != layout.maximized
     }
 
     public func isMaximized(_ id: Int) -> Bool { configured[id] == true }
 
-    /// The window was configured to `layout` while it was at `current`.
-    public mutating func laidOut(_ id: Int, _ layout: Layout, current: CGRect) {
+    public func hasRefused(_ id: Int) -> Bool { refused[id] != nil }
+
+    /// The window is at `layout` while it is at `current`: `configured` to it now, which
+    /// holds it there afresh, or already there, which keeps its hold, and a refused layout
+    /// refused.
+    public mutating func laidOut(_ id: Int, _ layout: Layout, current: CGRect, configured now: Bool = true) {
+        if !now, refused[id] == layout.frame || holds[id]?.layout == layout { return }
+        refused[id] = nil
         configured[id] = layout.maximized
-        guard layout.held else { holds[id] = nil; return }
-        holds[id] = Hold(layout: layout, seen: current, restored: holds[id]?.restored ?? [])
+        holds[id] = layout.held ? Hold(layout: layout, seen: current) : nil
     }
 
     /// The window was configured to a frame of the owner's, unmaximized: a drag or a resize.
     public mutating func release(_ id: Int) {
         holds[id] = nil
+        refused[id] = nil
         configured[id] = false
     }
 
@@ -98,27 +107,33 @@ public struct LaptopFill: Sendable {
     public mutating func reset() {
         holds.removeAll()
         configured.removeAll()
+        refused.removeAll()
     }
 
     /// Keeps only these windows.
     public mutating func keep(_ ids: Set<Int>) {
         holds = holds.filter { ids.contains($0.key) }
         configured = configured.filter { ids.contains($0.key) }
+        refused = refused.filter { ids.contains($0.key) }
     }
 
     public func isHeld(_ id: Int) -> Bool { holds[id] != nil }
 
-    /// The window has committed `frame` at `now` (seconds). Returns the layout to configure it
-    /// to again when the app has resized it off its layout since it was last seen.
-    public mutating func restore(_ id: Int, committed frame: CGRect, now: Double) -> Layout? {
+    /// The window has committed `frame`. Returns the layout to configure it to again the
+    /// first time the app resizes it off its layout; the second time, the app has refused the
+    /// layout, and the window is let go.
+    public mutating func restore(_ id: Int, committed frame: CGRect) -> Layout? {
         guard var hold = holds[id] else { return nil }
-        defer { holds[id] = hold }
         let changed = !Self.near(frame, hold.seen)
         hold.seen = frame
-        guard changed, !Self.near(frame, hold.layout.frame) else { return nil }
-        hold.restored.removeAll { now - $0 >= Self.period }
-        guard hold.restored.count < Self.restores else { return nil }
-        hold.restored.append(now)
+        guard changed, !Self.near(frame, hold.layout.frame) else { holds[id] = hold; return nil }
+        guard !hold.restored else {
+            holds[id] = nil
+            refused[id] = hold.layout.frame
+            return nil
+        }
+        hold.restored = true
+        holds[id] = hold
         return hold.layout
     }
 
