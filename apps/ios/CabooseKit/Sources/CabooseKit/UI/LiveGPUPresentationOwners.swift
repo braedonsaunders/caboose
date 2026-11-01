@@ -133,8 +133,10 @@ public final class LiveGPUPresentationOwners {
         }
         // Fitting the view slot scales the dedicated presentation layer without
         // invalidating the bound surface; the guest recreates its swapchain at
-        // the new extent via configurePresentationExtent.
-        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: view.croppingOverscan ? window.frame.size : nil)
+        // the new extent via configurePresentationExtent, and a picture that keeps
+        // another size is scaled to the window (LiveGPUDrawableGeometry.placement).
+        (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, viewport: view.croppingOverscan ? window.frame.size : nil,
+                                                  fullscreen: window.isFullscreen)
     }
     /// The one eligible view showing the lease's window, preferring its current view.
     private func host(for lease: LiveGPULayerLease) -> RemoteWindowView? {
@@ -289,12 +291,15 @@ private final class LiveGPULayerView: UIView {
     /// The window's viewport and overscan in server pixels: a picture of the enlarged
     /// window (an overscan window) shows its viewport, top-left aligned, the rest clipped.
     private var viewport: CGSize?
+    /// A full-screen window's picture fills the view whatever its shape.
+    private var fullscreen = false
     /// `viewport`, while the window has an overscan, is the shape the view shows: a longer
     /// drawable shows its viewport top-left aligned, the rest clipped, never scaled.
-    func fit(in target: CGRect, viewport: CGSize? = nil) {
+    func fit(in target: CGRect, viewport: CGSize? = nil, fullscreen: Bool = false) {
         frame = target
         clipsToBounds = viewport != nil
         self.viewport = viewport
+        self.fullscreen = fullscreen
         applyDrawableExtent()
     }
     /// The part of the drawable the view shows.
@@ -316,9 +321,12 @@ private final class LiveGPULayerView: UIView {
         metal.contentsScale = 1
         metal.drawableSize = pixelExtent
         let shown = shownExtent
-        let scale = CGAffineTransform(scaleX: bounds.width / shown.width, y: bounds.height / shown.height)
-        // Centred on the shown part, so a full drawable fills the bounds exactly as before.
-        metal.position = CGPoint(x: bounds.minX + pixelExtent.width * scale.a / 2, y: bounds.minY + pixelExtent.height * scale.d / 2)
+        // A picture of another shape than the window (an application keeping its own
+        // resolution) fits it, or fills a full-screen window; the layer's GPU sampling scales it.
+        let placed = LiveGPUDrawableGeometry.placement(picture: shown, in: bounds, fill: fullscreen)
+        let scale = CGAffineTransform(scaleX: placed.width / shown.width, y: placed.height / shown.height)
+        // The shown part's top-left at the placement's, the rest of an overscan clipped.
+        metal.position = CGPoint(x: placed.minX + pixelExtent.width * scale.a / 2, y: placed.minY + pixelExtent.height * scale.d / 2)
         metal.setAffineTransform(scale)
         CATransaction.commit()
     }

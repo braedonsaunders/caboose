@@ -351,7 +351,10 @@ window extent changes to a valid new size, the compositor reconfigures the
 bound toplevel window to the new display dimensions and the owner view updates
 the active lease extent and fits the presentation view in place while the
 application reconfigures its swapchain at the new extent, without revoking the
-surface grant or dropping the executor. A changed display epoch or window object,
+surface grant or dropping the executor. An application that keeps its own resolution
+instead (a full-screen game often does) is scaled by the phone: the presentation layer
+fills a full-screen window and otherwise fits the window with the picture's aspect ratio,
+centred, with black where it does not reach. A changed display epoch or window object,
 or invalid/zero server geometry, requests revocation of only the affected surface
 (`SURFACE_REVOKE_REQUEST`). Background or computer
 replacement drains the entire executor. This path is not enabled

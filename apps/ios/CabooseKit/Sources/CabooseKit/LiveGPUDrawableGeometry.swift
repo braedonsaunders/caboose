@@ -29,4 +29,20 @@ enum LiveGPUDrawableGeometry {
         }
         return serverPixels
     }
+
+    /// Where a picture of `picture` pixels shows in a view's `bounds`: filling them when
+    /// the window is full screen or the picture has their shape (within half a percent),
+    /// otherwise scaled with its aspect ratio to fit, centred. An application that keeps
+    /// its own resolution after its window changed size (a fold, a rotation) is scaled by
+    /// the phone, never shown at its old size in a corner.
+    static func placement(picture: CGSize, in bounds: CGRect, fill: Bool) -> CGRect {
+        guard !fill, picture.width.isFinite, picture.height.isFinite, picture.width > 0, picture.height > 0,
+              bounds.width.isFinite, bounds.height.isFinite, bounds.width > 0, bounds.height > 0 else { return bounds }
+        let scale = min(bounds.width / picture.width, bounds.height / picture.height)
+        var size = CGSize(width: picture.width * scale, height: picture.height * scale)
+        if size.width >= bounds.width * 0.995 { size.width = bounds.width }
+        if size.height >= bounds.height * 0.995 { size.height = bounds.height }
+        return CGRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
+                      width: size.width, height: size.height)
+    }
 }
