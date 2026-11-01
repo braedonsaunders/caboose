@@ -1,6 +1,57 @@
 {
  "format": "CGLZ-v1 algorithm 2 (zstd-stream)",
- "note": "Decode `sequence` in order on one decoder: each record continues the stream of the records before it. Each `invalid` record is the first record of a fresh decoder.",
+ "note": "Decode `sequence` in order on one decoder: each record continues the stream of the records before it. Each `invalid` record is the first record of a fresh decoder. `transport` pairs the broker's TRANSPORT_CONFIG with READY answers, and the window each valid one takes.",
+ "transport": {
+  "valid": [
+   {
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001b00000000000000",
+    "window_log": 27
+   },
+   {
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001a00000000000000",
+    "window_log": 26
+   },
+   {
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001700000000000000",
+    "window_log": 23
+   }
+  ],
+  "invalid": [
+   {
+    "name": "larger-window",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001c00000000000000"
+   },
+   {
+    "name": "window-too-small",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001300000000000000"
+   },
+   {
+    "name": "reserved",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "02000000400001001a00000001000000"
+   },
+   {
+    "name": "other-decoded-size",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "020000003f0001001a00000000000000"
+   },
+   {
+    "name": "algorithm-1",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "0100000040000100"
+   },
+   {
+    "name": "no-window",
+    "config_hex": "02000000400001001b00000000000000",
+    "ready_hex": "0200000040000100"
+   }
+  ]
+ },
  "sequence": [
   {
    "name": "commands",
@@ -71,7 +122,7 @@
   },
   {
    "name": "window-too-large",
-   "wire_hex": "43474c5a01000200410000000900000028b52ffd0070010000"
+   "wire_hex": "43474c5a01000200410000000900000028b52ffd00a8010000"
   }
  ]
 }

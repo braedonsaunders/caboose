@@ -1,0 +1,53 @@
+Description: DRI3 on a render node without glamor
+ Without glamor (a computer whose only DRM device is vgem, where Xwayland
+ refuses llvmpipe), DRI3 still opens the render node named by
+ CABOOSE_XWAYLAND_RENDER_NODE, so X11 clients get a GBM device on it
+ (Chromium's native pixmaps). No buffer is imported as a pixmap.
+Forwarded: not-needed
+---
+--- a/hw/xwayland/xwayland-screen.c
++++ b/hw/xwayland/xwayland-screen.c
+@@ -71,6 +71,29 @@
+ #include "tearing-control-v1-client-protocol.h"
+ #include "fractional-scale-v1-client-protocol.h"
+ 
++#ifdef DRI3
++#include <fcntl.h>
++#include <dri3.h>
++
++/* Caboose: without glamor, DRI3 still opens the render node the compositor names in
++ * CABOOSE_XWAYLAND_RENDER_NODE, so X11 clients can allocate buffers on it through GBM
++ * (Chromium's native pixmaps). Buffers are not imported as pixmaps. */
++static const char *xwl_dri3_render_node;
++
++static int
++xwl_dri3_open_render_node(ClientPtr client, ScreenPtr screen,
++                          RRProviderPtr provider, int *fd)
++{
++    *fd = open(xwl_dri3_render_node, O_RDWR | O_CLOEXEC);
++    return *fd < 0 ? BadAlloc : Success;
++}
++
++static const dri3_screen_info_rec xwl_dri3_render_node_info = {
++    .version = 1,
++    .open_client = xwl_dri3_open_render_node,
++};
++#endif
++
+ static DevPrivateKeyRec xwl_screen_private_key;
+ static DevPrivateKeyRec xwl_client_private_key;
+ 
+@@ -1112,6 +1135,13 @@
+     }
+ #endif
+ 
++#ifdef DRI3
++    xwl_dri3_render_node = getenv("CABOOSE_XWAYLAND_RENDER_NODE");
++    if (!xwl_screen->glamor && xwl_dri3_render_node && *xwl_dri3_render_node &&
++        !dri3_screen_init(pScreen, &xwl_dri3_render_node_info))
++        ErrorF("XWAYLAND: DRI3 on %s failed\n", xwl_dri3_render_node);
++#endif
++
+     xwl_screen->present = xwl_present_init(pScreen);
+ 
+     if (!xwl_screen->glamor) {

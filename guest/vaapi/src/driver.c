@@ -1046,6 +1046,12 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID id)
             if (other)
                 shown = other;
         }
+        /* A picture decoded on the phone is named by its surface's identity: a surface
+         * without one (an imported buffer with no spare page) needs its pixels here. */
+        if (c->mode == CB_MODE_GPU && (!s->identity || !shown->identity)) {
+            cb_log("stream %u: surface %u carries no identity", c->stream, s->identity ? shown->id : s->id);
+            switch_to_decode(c, CB_CLOSE_UNSUPPORTED);
+        }
         c->seq_surface[seq % CB_SEQ_MAP] = shown->id;
         c->seq_of[seq % CB_SEQ_MAP] = seq;
         c->seq_serial[seq % CB_SEQ_MAP] = c->mode == CB_MODE_GPU ? ++d->next_serial : 0;

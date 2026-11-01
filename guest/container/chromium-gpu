@@ -4,21 +4,34 @@
 # Vulkan is the computer's CPU renderer, and the GPU process restarts onto the phone
 # when one attaches (guest/gpu/executor-switch), as often as it comes and goes. The GPU
 # process runs outside Chromium's GPU sandbox, which does not let it reach the socket.
+# The computer's render node is vgem (docs/gpu-buffers.md), which Chromium passes over
+# when it looks for one.
+render_node=
+for node in /dev/dri/renderD*; do
+  [ -e "$node" ] || continue
+  [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
+  render_node=$node
+  break
+done
 if [ -n "${CABOOSE_GFXSTREAM_SOCKET:-}" ] && [ -n "${DISPLAY:-}" ]; then
-  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11 --ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --disable-gpu-sandbox --disable-gpu-process-crash-limit"
+  features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan
+  # Video decodes through the Caboose VA-API driver on the phone, which fills the frames
+  # Chromium samples (docs/gpu-media.md); Xwayland's DRI3 gives it the GBM device for them
+  # (guest/xwayland).
+  if [ "${LIBVA_DRIVER_NAME:-}" = caboose ] && [ -n "$render_node" ]; then
+    features="$features,VaapiVideoDecoder,VaapiIgnoreDriverChecks,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL"
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --hardware-video-device-path=$render_node"
+  fi
+  CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=x11 --ignore-gpu-blocklist --use-gl=angle --use-angle=vulkan --enable-features=$features --disable-gpu-sandbox --disable-gpu-process-crash-limit"
 else
   # Under Caboose Display, Chromium is a native Wayland client (no X11 round trips).
   if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ozone-platform=wayland"
   fi
-  # The computer's render node is vgem (docs/gpu-buffers.md), which Chromium passes over
-  # when it looks for one: name it, so its Wayland GPU path allocates shared buffers there.
-  for node in /dev/dri/renderD*; do
-    [ -e "$node" ] || continue
-    [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
-    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$node"
-    break
-  done
+  # Name the render node, so Chromium's Wayland GPU path allocates shared buffers there.
+  if [ -n "$render_node" ]; then
+    CHROMIUM_FLAGS="$CHROMIUM_FLAGS --render-node-override=$render_node"
+  fi
   # Mesa D3D12 is available to WSL containers through /dev/dxg.
   if [ "${CABOOSE_GPU:-none}" = wsl ]; then
     export GALLIUM_DRIVER=d3d12

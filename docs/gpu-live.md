@@ -84,8 +84,8 @@ arbitrary generated Vulkan fields, object handles or application synchronization
 | 22 | SOURCE_RELEASED | Process | 48 bytes |
 | 23 | SURFACE_RETIRE | Process | 40 bytes |
 | 24 | SURFACE_RETIRED | Process | 56 bytes |
-| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1 or 2, maximum decoded record u32 = 65600 |
-| 38 | TRANSPORT_READY | Session | Exact matching configuration |
+| 37 | TRANSPORT_CONFIG | Session | Algorithm u32 = 1 or 2, maximum decoded record u32 = 65600; algorithm 2 adds window log u32 and reserved u32 zero |
+| 38 | TRANSPORT_READY | Session | The configuration; algorithm 2's with the window log the phone takes |
 | 39 | SWAPCHAIN_PRESENT_ORDERED | Process | Kind 34's fields plus a device-stream order mark |
 | 40 | ACK | Session, sequence 0 | Highest contiguous sequence received u64 |
 | 41 | RESUME | Session, sequence 0 | Highest contiguous sequence received u64, reserved u64 zero, 16-byte nonzero nonce |
@@ -121,9 +121,19 @@ remaining message, and the decoded bytes are exactly one CGLV DATA envelope with
 65536 payload bytes, whose identity, scope and sequence pass through the existing decoder
 unchanged. Control envelopes stay raw CGLV.
 
+Algorithm 2's configuration is 16 bytes: algorithm 2, 65600, a window log and a reserved
+zero. The broker's TRANSPORT_CONFIG names the largest window it compresses with (log 27,
+128 MiB); TRANSPORT_READY repeats the configuration with the window the phone takes, from
+log 20 up to the offer, and the broker compresses with that window. The decoder holds the
+whole window, so the phone takes it by the memory the system leaves its app
+(`os_proc_available_memory`): 128 MiB (log 27) with at least 3 GiB available, 64 MiB (26) with
+at least 512 MiB, else 8 MiB (23), and logs `CABOOSE_GPU_COMPRESSION algorithm=2 window_log=N`. A window beyond 8 MiB is compressed with zstd's long-distance
+matching, which finds content that repeats far back, such as an image uploaded again a minute
+later.
+
 With algorithm 2 every DATA envelope is a record, and the records of a session are one
-zstd stream (zstd 1.5 format, no dictionary, no checksum, window at most 8 MiB, window log
-23), started at TRANSPORT_READY: the broker compresses each envelope in sequence order and
+zstd stream (zstd 1.5 format, no dictionary, no checksum, the negotiated window), started at
+TRANSPORT_READY: the broker compresses each envelope in sequence order and
 flushes the stream at the end of each record, so a record decodes completely given every
 earlier record of the session, and none can be skipped. The phone feeds its decoder exactly
 the records it accepts, in sequence order, each once; a record must yield exactly
@@ -188,7 +198,8 @@ The phone app names the capabilities of its native decoder in the
 `X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
-`shader-cache`, `executor-resume` and `zstd-stream` ([Compressed commands](#compressed-commands)).
+`shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)) and
+`upload-cache` ([Upload cache](#upload-cache)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -196,9 +207,9 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
-cache). The broker replies with the required mask plus the offered bits whose capability
+cache) and `0x8000` (upload cache). The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
-`ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache` respectively); it
+`ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache` respectively); it
 drops `0x100` and `0x1000` when it does not grant `0x80`. An
 offer with unknown bits, `0x100` without `0x80`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
@@ -337,6 +348,52 @@ finishes. An archive the system cannot load (another OS version or GPU, a damage
 replaced by an empty one. When a process finishes the decoder writes
 `CABOOSE_GPU_CACHES` to standard error with the store's size and its resolved,
 unresolved and inserted modules, and the archive's hits and misses since launch.
+
+### Upload cache
+
+With `0x8000`, the phone also keeps 4096-byte pieces of mapped memory a computer uploads, by
+the BLAKE3-256 of their bytes, so a later process names a piece it uploads again (the same
+image at the next launch) instead of sending it. The store is `uploads/` in the computer's
+directory beside `shaders/`: packs of 16384 slots, each the 32-byte key and the piece, with an
+in-memory index of key prefixes rebuilt when the app opens it. The budget is 1 GiB, at most 5% of
+the free space; opening the store drops whole least recently used packs, and nothing is removed
+while the app runs.
+
+A process asks once per executor, before its first cacheable flush and after reading every reply
+it owes, with `UPLOAD_INVENTORY` on its device stream:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| UPLOAD_INVENTORY | `0x4342FE11` | 16 | version u32 = 1, reserved u32 = 0 |
+
+The reply, on the same stream, is a prefix count u32 (at most 262144), an allowance u32 and the
+16-byte prefixes (the first 16 bytes of each key) of the pieces the store holds. The allowance is
+how many pieces the process may ask the phone to store under this executor (at most 65536, 0
+when the phone stores none).
+
+In a multi-range flush packet, a fragment's data is `u64 length` and that many bytes; a piece
+replaces it with `u64 length` of bit 63 set and exactly 4096 below it, then `u32 kind`:
+
+| Kind | Follows | The decoder |
+| --- | --- | --- |
+| 1 | 4096 bytes | Writes them, hashes them and stores the piece (a duplicate key is kept once) |
+| 2 | a 16-byte key prefix | Writes the stored piece |
+
+Any other kind or length, or a prefix the store does not hold or holds for two keys, fails the
+flush, which is device loss for the process. The phone hashes every piece it stores; it never
+takes a key from the guest. Storing happens after the write, off the decoding thread, through a
+pending set of at most 16 MiB from which later pieces already resolve.
+
+The guest cuts pieces from the application's flushed range, not from its changed-block runs:
+each whole 4096 bytes, from the range's offset, of a range of at least 16 KiB, all-zero pieces
+excepted. A piece whose prefix the process knows goes as kind 2; any other as kind 1 while the
+allowance lasts; both skip the changed-block comparison and leave the bytes known to the shadow.
+Everything else is flushed as before. A process knows the prefixes of its inventory, and on each
+device stream the pieces it stored on that stream, so a name never reaches the decoder before
+its piece; the kind of a piece is decided before it is written, and a stored piece is hashed
+again as it is written, so the key known is the one stored. A new executor (after a loss) drops
+both and asks again; a resumed one keeps them, its retained records replaying into the same
+store. The byte-exact forms are in `guest/gpu/gfxstream/upload-cache/vectors.json`.
 
 ## Readiness and retirement
 
@@ -938,7 +995,7 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | `QSG_RHI_BACKEND=vulkan`. |
 | Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. The launcher (`apps/host/src/guest-apps.py`) starts an Electron binary with Chromium's switches for this seat: ANGLE on Vulkan, without the GPU sandbox. |
-| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. With the Caboose VA-API driver it decodes video through it, on the phone ([gpu-media.md](gpu-media.md)). Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 Once a second, while it changes, the broker writes each local process's GPU use beside its
 local socket as `usage.json` (mode 0600): `{ version: 1, processes: [{ pid, start,

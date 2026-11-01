@@ -8,10 +8,10 @@ the receiving side, for tests and measurement.
 import ctypes
 import ctypes.util
 
-WINDOW_LOG = 23  # 8 MiB: what the phone's decoder holds
+WINDOW_LOG = 23  # 8 MiB, the smallest window a phone takes
 BLOCK_HEADER = 3
 
-_C_COMPRESSION_LEVEL, _C_WINDOW_LOG, _C_CONTENT_SIZE, _C_CHECKSUM = 100, 101, 200, 201
+_C_COMPRESSION_LEVEL, _C_WINDOW_LOG, _C_LONG_DISTANCE, _C_CONTENT_SIZE, _C_CHECKSUM = 100, 101, 160, 200, 201
 _D_WINDOW_LOG_MAX = 100
 _E_FLUSH = 1
 
@@ -74,7 +74,10 @@ class Compressor:
         self._context = _lib.ZSTD_createCCtx()
         if not self._context:
             raise MemoryError("zstd compression context")
+        # Beyond the default window, long-distance matching finds what repeats far back
+        # (an image uploaded again a minute later).
         for parameter, value in ((_C_COMPRESSION_LEVEL, level), (_C_WINDOW_LOG, window_log),
+                                 (_C_LONG_DISTANCE, int(window_log > WINDOW_LOG)),
                                  (_C_CONTENT_SIZE, 0), (_C_CHECKSUM, 0)):
             _check(_lib.ZSTD_CCtx_setParameter(self._context, parameter, value))
         self._capacity = 0

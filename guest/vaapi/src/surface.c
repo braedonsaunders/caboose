@@ -142,7 +142,6 @@ fail:
 
 VAStatus cb_surface_import(cb_driver *d, cb_surface *s, const VADRMPRIMESurfaceDescriptor *desc)
 {
-    (void)d;
     s->memfd = s->dmabuf = -1;
     s->owner = VA_INVALID_ID;
     s->imported = 1;
@@ -175,18 +174,28 @@ VAStatus cb_surface_import(cb_driver *d, cb_surface *s, const VADRMPRIMESurfaceD
     s->pitch = y_pitch;
     s->uv_offset = uv_off;
     s->rows = uv_off / y_pitch;
-    s->size = desc->objects[0].size;
-    if (s->size < uv_off + (size_t)uv_pitch * ((s->height + 1) / 2) || s->rows < s->height)
+    size_t planes = uv_off + (size_t)uv_pitch * ((s->rows > s->height ? s->rows : s->height) + 1) / 2;
+    if (desc->objects[0].size < uv_off + (size_t)uv_pitch * ((s->height + 1) / 2) || s->rows < s->height)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
     s->dmabuf = fcntl(desc->objects[0].fd, F_DUPFD_CLOEXEC, 0);
     if (s->dmabuf < 0)
         return VA_STATUS_ERROR_INVALID_PARAMETER;
+    /* The whole buffer, which may be larger than the application says. */
+    off_t end = lseek(s->dmabuf, 0, SEEK_END);
+    s->size = end > 0 && (size_t)end > desc->objects[0].size ? (size_t)end : desc->objects[0].size;
     s->map = mmap(NULL, s->size, PROT_READ | PROT_WRITE, MAP_SHARED, s->dmabuf, 0);
     if (s->map == MAP_FAILED) {
         s->map = NULL;
         cb_surface_free(s);
         return VA_STATUS_ERROR_UNSUPPORTED_MEMORY_TYPE;
     }
+    /* A buffer with a whole spare page after its planes, as the computer's GBM backend
+     * allocates video buffers (guest/gpu/gbm), carries an identity there like our own
+     * surfaces; any other imported buffer carries none. */
+    if (s->size % CB_GM_IDENTITY_PAGE == 0 && s->size >= ALIGN(planes, 4096) + CB_GM_IDENTITY_PAGE)
+        s->identity = cb_gm_identity_at(s->map, s->size);
+    if (s->identity)
+        cb_surface_empty(d, s);
     struct stat st;
     if (fstat(s->dmabuf, &st) == 0) {
         s->dev = st.st_dev;

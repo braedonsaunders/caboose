@@ -19,7 +19,7 @@ export const GPU_RESUME_HOLD_MS = 30_000
 export const GPU_SUSPEND_HOLD_MS = 30 * 60_000
 export const GPU_SUSPENDED_CLOSE = 4001
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {

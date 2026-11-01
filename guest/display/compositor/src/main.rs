@@ -771,6 +771,9 @@ fn run(config: Config) -> Result<(), String> {
             Err(e) => tracing::warn!("no scroll reports: cannot listen on {}: {e}", path.display()),
         }
     }
+    // On the seat that renders on the phone's GPU, Xwayland's DRI3 opens the render node
+    // (guest/xwayland): X11 clients such as Chromium get their GBM device from it.
+    let dri3_node = state.config.private_gpu_stream.as_ref().and_then(|_| render_node::find()).map(|(_, path)| path);
     let spawned = x_display.and_then(|number| {
         // Xwayland's socket directory; systemd-tmpfiles makes it on a booted system.
         let dir = std::path::Path::new("/tmp/.X11-unix");
@@ -790,10 +793,14 @@ fn run(config: Config) -> Result<(), String> {
                 return None;
             }
         };
+        let mut env = prepared.env.clone();
+        if let Some(node) = &dri3_node {
+            env.push(("CABOOSE_XWAYLAND_RENDER_NODE".into(), node.clone().into_os_string()));
+        }
         match XWayland::spawn(
             &dh,
             Some(number),
-            prepared.env.clone(),
+            env,
             true,
             std::process::Stdio::null(),
             std::process::Stdio::inherit(),

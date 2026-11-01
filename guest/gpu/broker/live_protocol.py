@@ -126,7 +126,7 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
         if length < 40:
             raise ProtocolError("truncated surface control")
     elif kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
-        if length != 8:
+        if length not in (8, 16):
             raise ProtocolError("invalid transport configuration size")
     elif kind in (Kind.SESSION, Kind.SESSION_READY):
         if length != 48:
@@ -144,11 +144,23 @@ def is_surface(kind):
     return Kind.SURFACE_BIND <= kind <= Kind.PRESENT_RETIRED or kind == Kind.SWAPCHAIN_PRESENT_ORDERED
 
 
+# zstd window logs a transport configuration may name (live_compression.py).
+ZSTD_WINDOW_LOGS = range(20, 31)
+
+
 def _transport(kind, payload):
-    # Algorithm 1 is DEFLATE per record, 2 one zstd stream per session (live_compression.py).
-    if kind in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY) and payload not in (
-            struct.pack("<II", 1, 65600), struct.pack("<II", 2, 65600)):
-        raise ProtocolError("invalid transport configuration")
+    # Algorithm 1 is DEFLATE per record: {1, 65600}. Algorithm 2 is one zstd stream per
+    # session: {2, 65600, window log, 0}, the broker's largest window in CONFIG and the one
+    # the phone takes, no larger, in READY (live_compression.py).
+    if kind not in (Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY):
+        return
+    if payload == struct.pack("<II", 1, 65600):
+        return
+    if len(payload) == 16:
+        algorithm, decoded, window_log, reserved = struct.unpack("<IIII", payload)
+        if algorithm == 2 and decoded == 65600 and window_log in ZSTD_WINDOW_LOGS and not reserved:
+            return
+    raise ProtocolError("invalid transport configuration")
 
 
 def encode(message: Envelope) -> bytes:

@@ -22,7 +22,7 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 broker = importlib.util.module_from_spec(spec)
 loader.exec_module(broker)
 from live_protocol import Decoder, Envelope, Kind, encode
-from live_compression import StreamDecompressor
+from live_compression import StreamDecompressor, zstd_stream_config
 import live_zstd
 from test_gpu_websocket import client_frame
 import control_protocol
@@ -354,10 +354,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x2070), everything), hello(0x2070))
         self.assertEqual(negotiate(hello(0x3FF0), frozenset({'shader-cache'})), hello(0x2070))
         self.assertEqual(negotiate(hello(0x3FF0), everything - {'shader-cache'}), hello(0x1FF0))
+        # So does the upload cache.
+        self.assertEqual(negotiate(hello(0x8070), everything), hello(0x8070))
+        self.assertEqual(negotiate(hello(0x8070), everything - {'upload-cache'}), hello(0x70))
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x8070), everything))
+        self.assertIsNone(negotiate(hello(0x10070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
         # Executor resume is granted only when the phone declared it.
         self.assertEqual(negotiate(hello(0x4070), everything), hello(0x4070))
@@ -1027,16 +1030,18 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                 wire, _ = session.pending.get_nowait()
                 got = []; Decoder(b'a'*16, 1).feed(wire[2:], got.append)
                 self.assertEqual((got[0].kind, got[0].payload), (Kind.TRANSPORT_CONFIG, broker.CONFIG_ZSTD_STREAM))
-                with self.assertRaises(ValueError):  # the DEFLATE configuration is not this one
-                    await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, broker.TRANSPORT_CONFIG))
-                await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, broker.CONFIG_ZSTD_STREAM))
+                for refused in (broker.TRANSPORT_CONFIG, zstd_stream_config(28)):  # DEFLATE; a larger window
+                    with self.assertRaises(ValueError):
+                        await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, refused))
+                # The phone takes a 64 MiB window of the 128 MiB offered.
+                await session.message(Envelope(Kind.TRANSPORT_READY, b'a'*16, 1, 0, 0, 2, zstd_stream_config(26)))
                 self.assertTrue(session.session_ready.is_set())
                 self.assertFalse(session.deflate_enabled)
                 payloads = [b'abc' * 5000, os.urandom(65536), b'abc' * 5000]
                 for payload in payloads:
                     session.send(Kind.DATA, 1, 1, payload)
                 session.send(Kind.FIN, 1, 1)
-                inflater, parser, envelopes = StreamDecompressor(), Decoder(b'a'*16, 1), []
+                inflater, parser, envelopes = StreamDecompressor(26), Decoder(b'a'*16, 1), []
                 parser.feed(encode(got[0]), lambda _: None)
                 sizes = []
                 while not session.pending.empty():
