@@ -340,9 +340,7 @@ struct Dock: View {
         .onDisappear { desktop.dockFrames.removeAll(); desktop.launchpadButtonFrame = .zero }
     }
 
-    private func isRunning(_ app: HostClient.App) -> Bool {
-        model.appWindows.contains { model.matches($0, app) }
-    }
+    private func isRunning(_ app: HostClient.App) -> Bool { model.isRunning(app) }
 }
 
 struct Cursor: View {

@@ -34,6 +34,9 @@ final class AppModel {
     private(set) var mcp = McpCenter()
     private(set) var documents = OpenDocumentCenter()
     var desktopFiles = DesktopFilesCenter()
+    /// The computer's running apps, for the Task Manager and the dock (`/v1/running-apps`).
+    let runningApps = RunningAppsCenter()
+    var taskManagerPresented = false
     var dockLaunches = DockLaunchState()
     private var dockLaunchTimeouts: [String: Task<Void, Never>] = [:]
     let phone = PhoneHandoff()
@@ -329,6 +332,7 @@ final class AppModel {
         mcp.reset()
         documents.reset()
         desktopFiles.reset()
+        runningApps.reset()
         phone.reset()
         bridge.reset()
         agents = AgentCenter()
@@ -352,6 +356,7 @@ final class AppModel {
         notificationTaskID = nil
         notificationCommandID = nil
         settingsPresented = false
+        taskManagerPresented = false
         recentFiles = []
         selectedTab = .home
         deviceDesktopActive = false
@@ -1207,6 +1212,8 @@ final class AppModel {
         guard let host else { return }
         let revision = connectionRevision
         settingsPresented = false
+        taskManagerPresented = false
+        runningApps.reset()
         closeDisplay()
         clearFrameCache() // the apps behind these frames are gone
         phase = .restarting
@@ -1334,7 +1341,31 @@ final class AppModel {
         for window in appWindows {
             if let app = apps.first(where: { matches(window, $0) }), !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
         }
+        // An app running without windows (Steam in its tray) stays reachable, to quit it.
+        if runningAppsAvailable {
+            for running in runningApps.listing?.apps ?? [] where running.isBackground {
+                guard let id = running.desktopId, let app = apps.first(where: { TaskManager.sameDesktopID($0.id, id) }),
+                      !dock.contains(where: { $0.id == app.id }) else { continue }
+                dock.append(app)
+            }
+        }
         return Array(dock.prefix(14))
+    }
+
+    /// The host lists and ends the computer's apps (`capabilities.runningApps`), and the computer runs.
+    var runningAppsAvailable: Bool {
+        computerStatus?.capabilities.runningApps == true && (phase == .ready || phase == .displayElsewhere)
+    }
+
+    /// A dock entry's running apps in the last listing: by its windows, then its desktop id.
+    func dockRunningApps(_ app: HostClient.App) -> [RunningApp] {
+        guard runningAppsAvailable else { return [] }
+        return runningApps.running(windowIDs: appWindows.filter { matches($0, app) }.map(\.id), desktopID: app.id)
+    }
+
+    /// A dock entry runs, with windows or without.
+    func isRunning(_ app: HostClient.App) -> Bool {
+        appWindows.contains { matches($0, app) } || dockRunningApps(app).contains { $0.canEnd }
     }
 
     /// A dock click on the big screen: show the app's windows if it has any, else launch it.

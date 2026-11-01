@@ -90,9 +90,7 @@ struct YardDock: View {
                        at: CGPoint(x: frame.minX, y: frame.minY - 6), above: true)
     }
 
-    private func isRunning(_ app: HostClient.App) -> Bool {
-        model.appWindows.contains { model.matches($0, app) }
-    }
+    private func isRunning(_ app: HostClient.App) -> Bool { model.isRunning(app) }
 
     private func button(_ title: String, _ symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
@@ -187,7 +185,8 @@ struct DockAppActions: View {
         let detached = model.detachedWindowIDs
         let actions = DockMenu.actions(appName: app.name, pinned: model.pinnedApps.contains { $0.id == app.id },
                                        windows: windows.map { DockMenu.Window(id: $0.id, title: $0.title, detached: detached.contains($0.id)) },
-                                       windowScenes: model.supportsWindowScenes)
+                                       windowScenes: model.supportsWindowScenes, ending: ending(app, windows: windows, model: model))
+        let windowIDs = windows.map(\.id)
         var items = [DesktopModel.MenuItem(title: "Add Shortcut to Desktop", systemImage: "plus.square") {
             Task { await model.desktopFiles.addShortcut(app, model: model) }
         }]
@@ -207,8 +206,27 @@ struct DockAppActions: View {
                 items.append(.init(title: action.title, systemImage: "xmark", destructive: true) {
                     if let window = model.session?.windows[id] { model.session?.closeDiagnosed(window) }
                 })
+            case .quit:
+                items.append(.init(title: action.title, systemImage: "xmark.circle") {
+                    Task { await model.runningApps.quitEntry(name: app.name, windowIDs: windowIDs, desktopID: app.id, model: model) }
+                })
+            case .forceQuit:
+                items.append(.init(title: action.title, systemImage: "xmark.octagon", destructive: true) {
+                    Task { await model.runningApps.confirmForceQuitEntry(name: app.name, windowIDs: windowIDs, desktopID: app.id, model: model) }
+                })
             }
         }
+        if model.runningAppsAvailable {
+            items.append(.init(title: "Task Manager", systemImage: "gauge.with.dots.needle.33percent") { model.taskManagerPresented = true })
+        }
         return items
+    }
+
+    /// Quit and Force Quit where the computer has app scopes: from its windows here, and the
+    /// last listing for an app that runs without one. The action reads a fresh listing.
+    private static func ending(_ app: HostClient.App, windows: [RemoteWindow], model: AppModel) -> DockMenu.Ending? {
+        guard model.runningAppsAvailable else { return nil }
+        if !windows.isEmpty { return DockMenu.Ending(canQuit: true, canForceQuit: true) }
+        return DockMenu.Ending(model.dockRunningApps(app))
     }
 }

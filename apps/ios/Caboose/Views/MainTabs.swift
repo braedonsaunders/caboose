@@ -208,6 +208,12 @@ struct ComputerLifecycleActions: View {
     var selected: () -> Void = {}
     var body: some View {
         Group {
+                if model.runningAppsAvailable {
+                    Button("Task Manager", systemImage: "gauge.with.dots.needle.33percent") {
+                        selected()
+                        model.taskManagerPresented = true
+                    }
+                }
                 if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
                     Button(title, systemImage: upgrade.state == "failed" ? "exclamationmark.triangle" : "arrow.down.circle") {
                         selected()
