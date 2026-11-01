@@ -262,8 +262,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         guard generation != presentedGeneration else { return }
         let size = CGSize(width: texture.width, height: texture.height)
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
-        guard let drawable = metalLayer.nextDrawable(),
-              let commands = SharedMetal.shared.queue.makeCommandBuffer(),
+        // A stalled GPU returns no drawable for a second at a time: never ask for one then.
+        guard !SharedMetal.shared.isStalled, let commands = SharedMetal.shared.makeCommandBuffer(),
+              let drawable = metalLayer.nextDrawable(),
               let blit = commands.makeBlitCommandEncoder() else { return }
         let target = drawable.texture
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
@@ -280,8 +281,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     private func clearPicture() -> Bool {
         let pass = MTLRenderPassDescriptor()
-        guard let drawable = metalLayer.nextDrawable(),
-              let commands = SharedMetal.shared.queue.makeCommandBuffer() else { return false }
+        guard !SharedMetal.shared.isStalled, let commands = SharedMetal.shared.makeCommandBuffer(),
+              let drawable = metalLayer.nextDrawable() else { return false }
         pass.colorAttachments[0].texture = drawable.texture
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)

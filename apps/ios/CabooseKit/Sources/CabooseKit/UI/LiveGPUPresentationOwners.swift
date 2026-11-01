@@ -51,8 +51,32 @@ public final class LiveGPUPresentationOwners {
     /// Invalidates admission and detaches visible presentation layers immediately on main;
     /// native GPU work and backing layer ownership remain retained until the worker
     /// retirement/main detach barrier.
+    /// Once a second while any window has a GPU layer: the notice over each window follows
+    /// its GPU (lost, not responding, or nothing).
+    private var healthTimer: Timer?
+    private func watchHealth() {
+        guard healthTimer == nil, !leases.isEmpty, !stopped else { return }
+        healthTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkHealth() }
+        }
+    }
+    private func checkHealth() {
+        guard !leases.isEmpty, !stopped else {
+            healthTimer?.invalidate(); healthTimer = nil
+            return
+        }
+        for lease in leases.values where lease.isValid {
+            let state = lease.healthState
+            guard state != lease.shownHealth else { continue }
+            lease.shownHealth = state
+            (lease.content as? LiveGPULayerView)?.showHealth(state)
+            print("CABOOSE_GPU_WINDOW_HEALTH window=\(lease.windowID) state=\(state)")
+        }
+    }
+
     public func revoke() {
         stopped = true; epoch = nil; windows.removeAll(); remoteWindows.removeAll()
+        healthTimer?.invalidate(); healthTimer = nil
         waiting.cancel()
         for lease in leases.values {
             if lease.invalidate() {
@@ -250,6 +274,7 @@ public final class LiveGPUPresentationOwners {
             #endif
         }
         leases[windowID] = lease
+        watchHealth()
         return lease
     }
     func release(_ lease: LiveGPULayerLease) {
@@ -270,11 +295,29 @@ private final class LiveGPULayerView: UIView {
     private var configuringExtent = false
     private var extentQuarantined = false
     let metal = CAMetalLayer()
+    /// One line over the window while its GPU is lost or not responding; no controls.
+    private let notice = UILabel()
     init(frame: CGRect, pixelExtent: CGSize) {
         self.pixelExtent = pixelExtent
         super.init(frame: frame)
         layer.addSublayer(metal)
+        notice.font = .preferredFont(forTextStyle: .caption1)
+        notice.textColor = .white
+        notice.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        notice.textAlignment = .center
+        notice.layer.cornerRadius = 6
+        notice.layer.masksToBounds = true
+        notice.isHidden = true
+        addSubview(notice)
         applyDrawableExtent()
+    }
+    func showHealth(_ state: LiveGPUWindowHealth.State) {
+        switch state {
+        case .running: notice.isHidden = true
+        case .stalled: notice.text = "GPU not responding"; notice.isHidden = false
+        case .lost: notice.text = "GPU lost"; notice.isHidden = false
+        }
+        setNeedsLayout()
     }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -285,6 +328,10 @@ private final class LiveGPULayerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         applyDrawableExtent()
+        guard !notice.isHidden else { return }
+        let size = notice.sizeThatFits(CGSize(width: bounds.width - 16, height: 40))
+        let width = min(bounds.width - 16, size.width + 16), height = size.height + 8
+        notice.frame = CGRect(x: (bounds.width - width) / 2, y: 8, width: width, height: height)
     }
     /// Whether the window's pictures carry alpha: the layer then shows what is behind it
     /// instead of sitting on black.
@@ -367,6 +414,15 @@ final class LiveGPULayerLease: @unchecked Sendable {
         (content as? LiveGPULayerView)?.translucent = value
         view?.liveGPUTranslucencyChanged()
     }
+    /// The window's GPU for the notice over it: presents are noted from the presenting
+    /// thread, read once a second on main (LiveGPUPresentationOwners).
+    private var health = LiveGPUWindowHealth()
+    func notePresented(_ serial: UInt64) { lock.withLock { health.presented(serial, at: ProcessInfo.processInfo.systemUptime) } }
+    func noteReleased(_ serial: UInt64) { lock.withLock { health.released(serial) } }
+    func noteDeviceLost() { lock.withLock { health.deviceLost() } }
+    var healthState: LiveGPUWindowHealth.State { lock.withLock { health.state(at: ProcessInfo.processInfo.systemUptime) } }
+    /// The notice currently shown over the window.
+    @MainActor var shownHealth = LiveGPUWindowHealth.State.running
     private let lock = NSLock()
     private var valid = true
     private var currentExtent: CGSize

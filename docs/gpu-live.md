@@ -831,7 +831,10 @@ host objects were released, newest first, as `kind:handle:bytes@age`. MoltenVK a
 for each command buffer's encoder status, so its error lines name the faulting encoder
 (`Faulted`) and its kind of work. A lost device ends only its guest process; the phone's
 own window pictures never wait for a GPU that has stopped completing work (they are skipped
-and `CABOOSE_METAL_STALLED` is printed until it recovers).
+and `CABOOSE_METAL_STALLED` is printed until it recovers). Over a window whose GPU is lost (a
+present reported its device lost) or not responding (a present has waited 2 s for the GPU
+to release its source), one line says so, "GPU lost" or "GPU not responding", until it
+recovers, with `CABOOSE_GPU_WINDOW_HEALTH window=… state=…` on each change.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 
