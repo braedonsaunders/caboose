@@ -87,10 +87,16 @@ private struct BrandSchedule: TimelineSchedule {
 
     func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnySequence<Date> {
         if motion == .still { return AnySequence(CollectionOfOne(startDate)) }
-        return AnySequence(sequence(first: startDate) { date in
+        // SwiftUI walks the entries up to now each time the schedule is replaced (every
+        // update of the view around it, such as each key typed in a field beside the
+        // logo), so the frames begin now rather than at a `startDate` long past. Each entry
+        // is strictly later than the one before: a rest that rounds to the same instant
+        // would otherwise repeat it forever and hang the main thread.
+        let frame = 1.0 / 60
+        return AnySequence(sequence(first: max(startDate, Date.now)) { date in
             let time = date.timeIntervalSince(start)
-            guard let rest = BrandFrame.nextMove(motion: motion, after: time) else { return date + 1.0 / 60 }
-            return start + rest
+            guard let rest = BrandFrame.nextMove(motion: motion, after: time) else { return date + frame }
+            return max(start + rest, date + frame)
         })
     }
 }
