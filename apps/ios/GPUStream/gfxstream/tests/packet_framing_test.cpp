@@ -2,6 +2,7 @@
 // Portable source fixture. No decoder, GPU, or window is used.
 #include "packet_framing.h"
 #include "decode_diagnostic.h"
+#include "upload_store.h"
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -87,6 +88,46 @@ int main() {
     caboose::gpuv2::DecodeDiagnosticBudget budget;
     for (unsigned i = 0; i < 65; ++i) assert(budget.take() == i);
     for (unsigned i = 0; i < 100; ++i) assert(budget.take() == 65);
+    // Upload cache pieces (docs/gpu-live.md, "Upload cache"): a literal range, a stored piece
+    // (kind 1, 4096 bytes) and a named piece (kind 2, a 16-byte prefix), each piece's range
+    // exactly 4096 bytes.
+    auto pieces = [](uint64_t pieceRange, uint64_t length, uint32_t kind) {
+        std::vector<uint8_t> b;
+        put<uint32_t>(b, 20025); put<uint32_t>(b, 8 + 8 + 4 + 3 * 32);
+        put<uint64_t>(b, 11); put<uint32_t>(b, 3);
+        const uint64_t sizes[] = {3, pieceRange, 4096};
+        for (int i = 0; i < 3; ++i) {
+            put<uint32_t>(b, 6); put<uint32_t>(b, 0);
+            put<uint64_t>(b, 100); put<uint64_t>(b, 4096 * i); put<uint64_t>(b, sizes[i]);
+        }
+        put<uint64_t>(b, 3); b.insert(b.end(), {1, 2, 3});
+        put<uint64_t>(b, length); put<uint32_t>(b, kind); b.resize(b.size() + (kind == 1 ? 4096 : 16), 7);
+        put<uint64_t>(b, caboose::gpuv2::kUploadPieceFlag | 4096); put<uint32_t>(b, 2); b.resize(b.size() + 16, 9);
+        return b;
+    };
+    {
+        constexpr uint64_t piece = caboose::gpuv2::kUploadPieceFlag | 4096;
+        for (uint32_t kind : {1u, 2u}) {
+            auto b = pieces(4096, piece, kind);
+            for (size_t i = 0; i < b.size(); i += 7) {
+                auto r = inspectFrame(b.data(), i, 16384, false);
+                assert(r.status == FrameStatus::need_more && r.size > i && r.size <= b.size());
+            }
+            auto r = inspectFrame(b.data(), b.size(), 16384, false);
+            assert(r.status == FrameStatus::ready && r.size == b.size());
+        }
+        // A piece whose range is not exactly one piece, another length form, another kind.
+        auto b = pieces(4095, piece, 2);
+        assert(inspectFrame(b.data(), b.size(), 16384, false).status == FrameStatus::invalid);
+        for (uint64_t length : {uint64_t(piece - 1), uint64_t(piece | (uint64_t(1) << 32))}) {
+            b = pieces(4096, length, 2);
+            assert(inspectFrame(b.data(), b.size(), 16384, false).status == FrameStatus::invalid);
+        }
+        for (uint32_t kind : {0u, 3u}) {
+            b = pieces(4096, piece, kind);
+            assert(inspectFrame(b.data(), b.size(), 16384, false).status == FrameStatus::invalid);
+        }
+    }
     std::vector<uint8_t> unknown;
     put<uint32_t>(unknown, 0); put<uint32_t>(unknown, 8);
     assert(inspectFrame(unknown.data(), unknown.size(), 4096, false).status == FrameStatus::invalid);

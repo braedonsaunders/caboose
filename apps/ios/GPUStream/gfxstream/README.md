@@ -136,9 +136,27 @@ and the per-computer roots:
 for f in blake3.c blake3_dispatch.c blake3_portable.c blake3_neon.c; do
   cc -O2 -c apps/ios/GPUStream/gfxstream/blake3/$f -o /tmp/caboose-$f.o
 done
-c++ -std=c++17 -I apps/ios/GPUStream/gfxstream apps/ios/GPUStream/gfxstream/tests/shader_store_test.cpp \
-  apps/ios/GPUStream/gfxstream/shader_store.cpp /tmp/caboose-blake3*.o -o /tmp/caboose-shader-store-test
+c++ -std=c++17 -pthread -I apps/ios/GPUStream/gfxstream apps/ios/GPUStream/gfxstream/tests/shader_store_test.cpp \
+  apps/ios/GPUStream/gfxstream/shader_store.cpp apps/ios/GPUStream/gfxstream/upload_store.cpp \
+  /tmp/caboose-blake3*.o -o /tmp/caboose-shader-store-test
 /tmp/caboose-shader-store-test guest/gpu/gfxstream/shader-cache/vectors.json
+```
+
+`upload_store.{h,cpp}` is the phone's persistent store of 4096-byte upload pieces and the
+decoder's `vkFlushMappedMemoryRanges` hooks; `decode_connection.cpp` answers
+`UPLOAD_INVENTORY` and `packet_framing.cpp` frames the piece forms
+([docs/gpu-live.md](../../../../docs/gpu-live.md#upload-cache)). It lives in `uploads/` of the
+same computer directory. Each pack is a table of 16384 keys followed by 16384 slots; a slot
+is written before its key and checked against it whenever it is read. Pieces wait in memory,
+at most 16 MiB, until a writer thread has put them in a pack, and resolve from there
+meanwhile. The fixture checks keys, the inventory and piece forms against the guest's
+vectors, persistence, damaged slots, prefixes shared by two keys, the budget at open and the
+pending bound (with the BLAKE3 objects built above):
+
+```sh
+c++ -std=c++17 -pthread -I apps/ios/GPUStream/gfxstream apps/ios/GPUStream/gfxstream/tests/upload_store_test.cpp \
+  apps/ios/GPUStream/gfxstream/upload_store.cpp /tmp/caboose-blake3*.o -o /tmp/caboose-upload-store-test
+/tmp/caboose-upload-store-test guest/gpu/gfxstream/upload-cache/vectors.json
 ```
 
 `tests/pipeline_archive_check.sh` checks the MoltenVK binary archive on a Mac's GPU, with

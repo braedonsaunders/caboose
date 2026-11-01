@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "packet_framing.h"
+#include "upload_store.h"
 #include <algorithm>
 #include <cstring>
 #include <iterator>
@@ -61,6 +62,18 @@ FrameResult inspectFrame(const uint8_t* data, size_t size, size_t max_size, bool
             diagnostic->rangeIndex = i;
             diagnostic->tailBytes = bytes;
             diagnostic->tailOffset = position;
+        }
+        if (bytes & kUploadPieceFlag) {
+            // An upload cache piece (docs/gpu-live.md, "Upload cache"): its range is exactly
+            // one piece, and its form says how many bytes follow.
+            const auto* range = data + ranges_offset + size_t(i) * range_size;
+            if (u64(range + 24) != kUploadPieceBytes || max_size - position < 4) return invalid();
+            if (size - position < 4) return need(position + 4);
+            const int64_t piece = uploadPieceSize(bytes, data + position, size - position);
+            if (piece <= 0 || static_cast<uint64_t>(piece) > max_size - position) return invalid();
+            position += static_cast<size_t>(piece);
+            if (size < position) return need(position);
+            continue;
         }
         if (bytes > max_size - position) return invalid();
         position += static_cast<size_t>(bytes);
