@@ -605,7 +605,7 @@ final class DesktopModel {
             layout.setPreferred(id, frame: frame, in: workArea, app: app(window))
             if let snap = pendingSnap, canSnap(snap, window) {
                 layout.setSnap(id, snap, current: frame, in: workArea, app: app(window))
-                applyPlace(window, session)
+                applyPlace(window, session, always: true)
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
             save()
@@ -750,7 +750,7 @@ final class DesktopModel {
         focus(id, session)
         layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
         save()
-        applyPlace(window, session)
+        applyPlace(window, session, always: true)
         return placedFrame(window) != nil
     }
 
@@ -771,7 +771,7 @@ final class DesktopModel {
             guard let window = session.windows[id] else { continue }
             laptopFilled.insert(id)
             layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
-            applyPlace(window, session)
+            applyPlace(window, session, always: true)
         }
         if !filling.isEmpty { save() }
     }
@@ -796,7 +796,7 @@ final class DesktopModel {
     private func applyPlace(_ window: RemoteWindow, _ session: any DisplaySession, always: Bool = false) {
         guard let laid = laidOut(window) else { return }
         let needed = always || fill.needsConfigure(window.id, laid, current: window.frame)
-        fill.laidOut(window.id, laid, current: window.frame)
+        fill.laidOut(window.id, laid, current: window.frame, configured: needed)
         guard needed else { return }
         session.configure(window, frame: laid.frame, state: ["maximized": laid.maximized])
     }
@@ -807,9 +807,8 @@ final class DesktopModel {
         guard case .ready = session.state else { return }
         fill.keep(Set(session.windows.keys))
         guard detachedChrome else { return }
-        let now = CACurrentMediaTime()
         for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && !detached.contains(window.id) {
-            guard let laid = fill.restore(window.id, committed: window.frame, now: now) else { continue }
+            guard let laid = fill.restore(window.id, committed: window.frame) else { continue }
             session.configure(window, frame: laid.frame, state: ["maximized": laid.maximized])
         }
     }

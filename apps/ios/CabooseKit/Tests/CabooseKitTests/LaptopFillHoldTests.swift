@@ -68,7 +68,7 @@ struct LaptopFillHoldTests {
         // Steam reloads and asks for its saved size: the computer keeps it filled.
         computer.request(saved)
         #expect(computer.frame == screen)
-        #expect(fill.restore(1, committed: computer.frame, now: 0) == nil)
+        #expect(fill.restore(1, committed: computer.frame) == nil)
         #expect(edgeToEdge(computer.frame, in: screen.size))
         // Nothing changed, so nothing is configured again.
         #expect(!fill.needsConfigure(1, filled, current: computer.frame))
@@ -81,11 +81,11 @@ struct LaptopFillHoldTests {
         fill.laidOut(1, filled, current: computer.frame)
         computer.configure(filled)
         computer.unmaximizeAndRequest(saved)
-        let restored = fill.restore(1, committed: computer.frame, now: 1)
+        let restored = fill.restore(1, committed: computer.frame)
         let back = try #require(restored)
         computer.configure(back)
         #expect(computer.frame == screen && computer.maximized)
-        #expect(fill.restore(1, committed: computer.frame, now: 1.1) == nil)
+        #expect(fill.restore(1, committed: computer.frame) == nil)
         #expect(edgeToEdge(computer.frame, in: screen.size))
     }
 
@@ -107,7 +107,7 @@ struct LaptopFillHoldTests {
         try apply(nil)
         #expect(computer.frame == own && !computer.maximized && !fill.isHeld(1))
         computer.request(CGSize(width: 1100, height: 650))
-        #expect(fill.restore(1, committed: computer.frame, now: 2) == nil)
+        #expect(fill.restore(1, committed: computer.frame) == nil)
         // Pressed again: filled, then its own frame, each the first time.
         try apply(.maximized)
         #expect(computer.frame == screen && computer.maximized)
@@ -161,25 +161,80 @@ struct LaptopFillHoldTests {
         let layout = LaptopFill.Layout(frame: screen, maximized: true, held: true)
         fill.laidOut(1, layout, current: own)
         let cells = CGRect(x: 0, y: 64, width: 1332, height: 840)
-        #expect(fill.restore(1, committed: cells, now: 0) == layout)
-        #expect(fill.restore(1, committed: cells, now: 0.1) == nil)
+        #expect(fill.restore(1, committed: cells) == layout)
+        #expect(fill.restore(1, committed: cells) == nil)
         // Rounding to logical pixels counts as there.
         fill.laidOut(2, layout, current: own)
-        #expect(fill.restore(2, committed: CGRect(x: 0, y: 64, width: 1337, height: 846), now: 0) == nil)
+        #expect(fill.restore(2, committed: CGRect(x: 0, y: 64, width: 1337, height: 846)) == nil)
     }
 
-    @Test func anAppThatKeepsResizingIsPutBackAFewTimesAPeriod() {
+    /// The phone as Laptop drives a window: configures it to its layout, puts it back when
+    /// the hold says so, and lays everything out again (`relayout`) now and then.
+    struct Phone {
         var fill = LaptopFill()
-        let layout = LaptopFill.Layout(frame: screen, maximized: true, held: true)
-        fill.laidOut(1, layout, current: screen)
-        var restored = 0
-        for step in 0..<10 {
-            let now = Double(step) * 0.2
-            if fill.restore(1, committed: own, now: now) != nil { restored += 1 }
-            _ = fill.restore(1, committed: screen, now: now + 0.1)
+        var configures = 0
+        mutating func apply(_ layout: LaptopFill.Layout, to computer: inout Computer, always: Bool = false) {
+            let needed = always || fill.needsConfigure(1, layout, current: computer.frame)
+            fill.laidOut(1, layout, current: computer.frame, configured: needed)
+            guard needed else { return }
+            configure(layout, &computer)
         }
-        #expect(restored == LaptopFill.restores)
-        #expect(fill.restore(1, committed: own, now: LaptopFill.period + 1) == layout)
+        mutating func windowChanged(_ computer: inout Computer) {
+            guard let layout = fill.restore(1, committed: computer.frame) else { return }
+            configure(layout, &computer)
+        }
+        /// The computer applies the configure, and its window update reaches the phone.
+        private mutating func configure(_ layout: LaptopFill.Layout, _ computer: inout Computer) {
+            configures += 1
+            computer.configure(layout)
+            #expect(fill.restore(1, committed: computer.frame) == nil)
+        }
+    }
+
+    @Test func aFilledWindowIsConfiguredExactlyOnce() throws {
+        // Steam reloading every 30 s for five minutes, asking for its saved size each time,
+        // while Laptop lays out again now and then: the maximized fill holds it.
+        var computer = Computer(frame: CGRect(origin: .zero, size: saved))
+        var phone = Phone()
+        let filled = try #require(LaptopFill.layout(screen, snap: .maximized, screen: screen, minimum: minimum, maximum: nil))
+        phone.apply(filled, to: &computer, always: true)
+        for _ in 0..<10 {
+            computer.request(saved)
+            phone.windowChanged(&computer)
+            phone.apply(filled, to: &computer)
+        }
+        #expect(phone.configures == 1)
+        #expect(computer.frame == screen && computer.maximized)
+    }
+
+    @Test func aCEFLikeAppThatLeavesItsLayoutIsPutBackOnceThenLeftAlone() throws {
+        // CEF answering every configure by leaving the maximized state and restoring its own
+        // size, and doing it again every 30 s: Laptop puts it back once, then lets it be,
+        // through relayouts, rather than resizing it back and forth.
+        var computer = Computer(frame: CGRect(origin: .zero, size: saved))
+        var phone = Phone()
+        let filled = try #require(LaptopFill.layout(screen, snap: .maximized, screen: screen, minimum: minimum, maximum: nil))
+        phone.apply(filled, to: &computer, always: true)
+        for _ in 0..<10 {
+            computer.unmaximizeAndRequest(saved)
+            phone.windowChanged(&computer)
+            phone.apply(filled, to: &computer)
+        }
+        #expect(phone.configures == 2)
+        #expect(phone.fill.hasRefused(1) && !phone.fill.isHeld(1))
+        #expect(computer.frame.size == saved)
+        // The owner pressing the green button lays it out again, once more.
+        phone.apply(filled, to: &computer, always: true)
+        #expect(phone.configures == 3 && !phone.fill.hasRefused(1))
+        // A changed screen is a new layout, tried again.
+        let wider = CGRect(x: 0, y: 64, width: 1400, height: 847)
+        computer.unmaximizeAndRequest(saved)
+        phone.windowChanged(&computer)
+        computer.unmaximizeAndRequest(CGSize(width: 1000, height: 700))
+        phone.windowChanged(&computer)
+        let configures = phone.configures
+        phone.apply(try #require(LaptopFill.layout(wider, snap: .maximized, screen: wider, minimum: minimum, maximum: nil)), to: &computer)
+        #expect(phone.configures == configures + 1)
     }
 
     @Test func releasingForgetsTheHoldAndTheMaximizedState() {
@@ -189,7 +244,7 @@ struct LaptopFillHoldTests {
         fill.laidOut(2, layout, current: own)
         fill.release(1)
         #expect(!fill.isHeld(1) && !fill.isMaximized(1))
-        #expect(fill.restore(1, committed: own, now: 0) == nil)
+        #expect(fill.restore(1, committed: own) == nil)
         // Laptop opening or closing: each window is configured again by its next layout,
         // even one already at its frame, since another layout may have unmaximized it.
         #expect(!fill.needsConfigure(2, layout, current: screen))
