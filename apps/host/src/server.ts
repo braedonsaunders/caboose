@@ -50,6 +50,7 @@ import { MAX_SLOTS } from './network.js'
 import { networkBusy, readNetworkActivity, type NetworkServer } from './network-activity.js'
 import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
+import { ContainerSpecError, type ContainerSpec, type ContainerSpecStore } from './container-spec.js'
 import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
 import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
@@ -109,6 +110,10 @@ export interface Controller extends ComputerDriver<Session> {
   refreshNetwork?(): Promise<void>
   /** Gives the computer's network names its new name. */
   renameNetwork?(): Promise<void>
+  /** What the existing container was created with beyond the host's defaults (container-spec.ts); null without one. */
+  existingContainerSpec?(): Promise<ContainerSpec | null>
+  /** Whether the existing container already has this computer's container settings; null without one. */
+  containerSpecApplied?(): Promise<boolean | null>
   /** Called whenever network() may answer differently. */
   onNetworkChange?(listener: () => void): void
   /** Deletes the computer and its disk; only when the computer itself is deleted. */
@@ -133,7 +138,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -1326,7 +1331,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, containerSpec: pieces.containerSpec, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
     /**
      * What the running computer serves (services and listening ports), for the park decision;
      * null when it is not running or tracks no services. Never wakes it.
@@ -1767,6 +1772,25 @@ export function createCabooseServer(options: ComputerPieces & {
         })
       }
       if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request), principal)))
+      const containerPath = /^\/v1\/computers\/([^/]+)\/container(\/import)?$/.exec(path)
+      if (containerPath?.[1]) {
+        // A computer's container settings reach into the host (its folders and devices): the operator's alone.
+        if (!administers(principal, null)) return json(response, 403, { error: 'Only the operator sets a computer\'s container' })
+        const runtime = runtimes.get(decodeURIComponent(containerPath[1]))
+        if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
+        const store = runtime.containerSpec
+        if (!store) return json(response, 409, { error: 'Only container computers have container settings' })
+        const answer = async () => ({ spec: store.get(), applied: await runtime.controller.containerSpecApplied?.() ?? null })
+        if (!containerPath[2] && request.method === 'GET') return json(response, 200, await answer())
+        if (!containerPath[2] && request.method === 'PUT') { await store.set(await readJson(request)); return json(response, 200, await answer()) }
+        if (containerPath[2] && request.method === 'POST') {
+          const existing = await runtime.controller.existingContainerSpec?.()
+          if (!existing) return json(response, 409, { error: 'The computer has no container to read its settings from' })
+          await store.set(existing)
+          return json(response, 200, await answer())
+        }
+        return json(response, 405, { error: 'method not allowed' })
+      }
       const computerPath = /^\/v1\/computers\/([^/]+)(?:\/pairing|\/phones(?:\/([^/]+))?)?$/.exec(path)
       if (computerPath?.[1]) {
         const runtime = runtimes.get(decodeURIComponent(computerPath[1]))
@@ -1837,7 +1861,7 @@ export function createCabooseServer(options: ComputerPieces & {
     })().catch(error => {
       if (response.destroyed) return
       if (error instanceof OwnershipError) return json(response, 409, { error: error.message })
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })

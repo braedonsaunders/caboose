@@ -13,6 +13,14 @@ import { guestLaunch } from './guest-apps.js'
 import type { ComputerSettings } from './settings.js'
 import { allowCompanion, fenceBridge, privilegedOutput, unfenceBridge } from './network.js'
 import { LanAddress } from './lan.js'
+import { specArgs, specFromInspect, type ContainerInspect, type ContainerSpec } from './container-spec.js'
+
+/** Flag and value pairs, so argument lists compare without regard to order. */
+function pairs(args: readonly string[]): string[] {
+  const result: string[] = []
+  for (let index = 0; index < args.length; index += 2) result.push(`${args[index]} ${args[index + 1]}`)
+  return result
+}
 import { TailnetNode, dockerInputCli, tailnetHostname, type DockerInput, type TailnetStatus } from './tailnet.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
@@ -229,10 +237,11 @@ export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = 
   return [...userfaultfd, ...vgem]
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; spec?: () => ContainerSpec; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
   const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
+  const spec = (): ContainerSpec => dependencies.spec?.() ?? {}
   /** The computer's own device on the owner's tailnet (tailnet.ts), unless the host turns it off. */
   const tailnet = config.tailnet && config.tailnet.mode !== 'off'
     ? new TailnetNode({ config: config.tailnet, docker, dockerInput: dependencies.dockerInput ?? (dependencies.docker ? undefined : dockerInputCli()), name: `${place.name}-net`,
@@ -296,17 +305,35 @@ export function createContainerController(config: Config, dependencies: { docker
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
       ...([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const).flatMap(([key, port]) => ['-p', `127.0.0.1:${place.ports[key] || ''}:${port}`]),
+      ...providedArgs(),
+      ...securityArgs([...config.containerArgs, ...(spec().securityOpt ?? []).flatMap(option => ['--security-opt', option])]),
+      // Its own cgroup tree, writable, for app scopes (guest/scopes).
+      '--security-opt', 'writable-cgroups=true',
+      // This computer's own folders, devices, environment and options (container-spec.ts).
+      ...specArgs(spec(), providedArgs()),
+      ...config.containerArgs,
+      spec().image ?? config.containerImage,
+    ]
+  }
+
+  /** What every computer gets from the host: its home, the depot, and the GPU's devices and libraries. */
+  function providedArgs(): string[] {
+    return [
       '-v', `${place.home}:/home/caboose`,
       // Shared runtimes: written only by the host's builder, never by a computer.
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
-      ...securityArgs(config.containerArgs),
-      // Its own cgroup tree, writable, for app scopes (guest/scopes).
-      '--security-opt', 'writable-cgroups=true',
       ...gpuArgs(gpu, dependencies.exists),
       ...phoneGpuArgs(gpu, dependencies.exists, dependencies.drm),
-      ...config.containerArgs,
-      config.containerImage,
     ]
+  }
+
+  /** The spec the existing container was created with, read from Docker; null when there is none. */
+  async function existingSpec(): Promise<ContainerSpec | null> {
+    let inspect: ContainerInspect
+    try { inspect = (JSON.parse(await docker(['inspect', name], 15_000)) as ContainerInspect[])[0]! } catch { return null }
+    const image = inspect.Config?.Image
+    const imageEnv = image ? JSON.parse(await docker(['image', 'inspect', '-f', '{{json .Config.Env}}', image], 15_000).catch(() => 'null')) ?? [] : []
+    return specFromInspect(inspect, providedArgs(), imageEnv)
   }
 
   async function exec(user: 'root' | 'caboose', command: string, args: string[], timeoutMs = 30_000): Promise<string> {
@@ -395,6 +422,14 @@ export function createContainerController(config: Config, dependencies: { docker
     refreshNetwork: () => networkTask(() => Promise.all([tailnet?.refresh(), lan?.refresh()])),
     renameNetwork: () => networkTask(async () => { await tailnet?.rename() }),
     onNetworkChange(listener) { networkChanged = listener },
+    existingContainerSpec: existingSpec,
+    async containerSpecApplied() {
+      const existing = await existingSpec()
+      if (!existing) return null
+      const wanted = spec()
+      const key = (value: ContainerSpec) => JSON.stringify([value.image ?? config.containerImage, ...pairs(specArgs(value, providedArgs()))].sort())
+      return key(existing) === key({ ...wanted, image: wanted.image ?? config.containerImage })
+    },
     activeResources: () => resources,
     hasSavedState: () => resources !== null,
     lastError: () => lastError,

@@ -979,6 +979,8 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 - The owner's computer's `caboose.json` (settings), `push-devices.json`,
   `activities.json` and `commands/` (one `<id>.json` per command, directory mode 0700) at the
   root, where a host from before several computers kept them.
+- A container computer's `container.json` (its container settings, under Computers), beside
+  its `caboose.json`.
 - Every other computer's own `caboose.json`, `push-devices.json`, `activities.json` and
   `commands/` in `computers/<id>/`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
@@ -1010,6 +1012,9 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `GET` | `/v1/computers/:id` | One computer, as listed |
 | `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
+| `GET` | `/v1/computers/:id/container` | Operator only. `{ spec, applied }`: a container computer's container settings (below), and whether its existing container has them (null without a container). 409 for a microVM computer |
+| `PUT` | `/v1/computers/:id/container` | Operator only. A whole `ContainerSpec` → `{ spec, applied }`. Used the next time the host creates the container; an existing container is not changed. 400 for an invalid spec |
+| `POST` | `/v1/computers/:id/container/import` | Operator only. Reads the spec from the existing container (`docker inspect`) and saves it → `{ spec, applied }`. 409 without a container |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
 | `DELETE` | `/v1/computers/:id/phones/:phone` | → `{ revoked: true }`. Signs the phone out: its token stops working, its open sockets close, and its push and Live Activity registrations are removed |
@@ -1028,6 +1033,28 @@ person in that destination and operator access. People are renamed through their
 are checked whenever a computer is made, resized (`PATCH …/computer/settings`), moved or
 woken (see Accounts and tenants); a computer over quota answers 409 with what it would be
 given and the quota.
+
+**Container settings.** A container computer's `container.json`, beside its `caboose.json`,
+holds what its container is created with beyond the host's defaults, so creating it again
+(after it was removed, or for a new image) loses nothing:
+
+```ts
+type ContainerSpec = {
+  image?: string,                                                // instead of CABOOSE_CONTAINER_IMAGE
+  mounts?: Array<{ source: string, target: string, readOnly: boolean }>,  // host folders, bind-mounted
+  devices?: Array<{ host: string, container?: string }>,         // paths under /dev
+  env?: string[],                                                // KEY=value
+  securityOpt?: string[],  // seccomp=unconfined | seccomp=<profile path>, apparmor=, label=, no-new-privileges, systempaths=unconfined, writable-cgroups=
+}
+```
+
+Paths are absolute without `..`. A mount never replaces the home, the depot, `/`, `/proc`,
+`/sys`, `/dev`, `/run` or the system directories. What the host already gives every computer
+(its home and the depot, and the GPU's devices and libraries) is not repeated. A seccomp
+option replaces Caboose's default profile. Import leaves out the host's defaults: the home,
+volumes, the default profile and environment the image or the host sets. The host reads the
+file at start and refuses to start if it is invalid. Only the operator may set it, because it
+reaches into the host.
 
 **Pairing.** The console asks for a code and shows it as a QR code and as
 `caboose://connect?host=<origin>&code=<code>`. A code is 8 characters from

@@ -69,6 +69,32 @@ describe('createContainerController', () => {
     expect(controller.terminalService?.()).toEqual({ url: 'http://127.0.0.1:14701', token: session.display.token })
   })
 
+  it('creates a computer with its own image, folders, devices and options, without repeating the host’s', async () => {
+    const fake = fakeDocker('missing')
+    const spec = { image: 'caboose-owner:steam-ready-5051b68', mounts: [{ source: '/mnt/i/SteamLibrary', target: '/mnt/i/SteamLibrary', readOnly: true }, { source: '/usr/lib/wsl', target: '/usr/lib/wsl', readOnly: true }],
+      devices: [{ host: '/dev/dxg' }, { host: '/dev/kfd' }], env: ['PROTON_LOG=1'], securityOpt: ['apparmor=unconfined'] }
+    const controller = createContainerController(config({ ...env, CABOOSE_CONTAINER_ARGS: '' }), { fence: async () => {}, docker: fake.docker, exists: path => path === '/dev/dxg', spec: () => spec })
+    await controller.wake()
+    const run = fake.calls.find(call => call[0] === 'run')!
+    expect(run.at(-1)).toBe('caboose-owner:steam-ready-5051b68')
+    expect(run).toEqual(expect.arrayContaining(['--mount', '"type=bind","source=/mnt/i/SteamLibrary","target=/mnt/i/SteamLibrary","readonly"', '--device', '/dev/kfd', '-e', 'PROTON_LOG=1', '--security-opt', 'apparmor=unconfined']))
+    expect(run.filter(arg => arg === '/dev/dxg')).toHaveLength(1)
+    expect(run.filter(arg => arg.includes('/usr/lib/wsl:/usr/lib/wsl'))).toHaveLength(1)
+    expect(run.some(arg => arg.startsWith('seccomp='))).toBe(true)
+  })
+
+  it('tells whether the existing container already has the computer’s container settings', async () => {
+    const fake = fakeDocker('running')
+    const inspect = [{ Config: { Image: 'caboose-computer:gpu', Env: [] }, HostConfig: { Binds: [], Mounts: [{ Type: 'bind', Source: '/srv/games', Target: '/games', ReadOnly: true }], Devices: [], SecurityOpt: [] } }]
+    const docker: Docker = async (args, timeout) => args[0] === 'inspect' && args.length === 2 ? JSON.stringify(inspect) : args[0] === 'image' ? '[]' : fake.docker(args, timeout)
+    let spec: import('./container-spec.js').ContainerSpec = { mounts: [{ source: '/srv/games', target: '/games', readOnly: true }] }
+    const controller = createContainerController(settings, { fence: async () => {}, docker, exists: () => false, spec: () => spec })
+    expect(await controller.existingContainerSpec?.()).toEqual({ image: 'caboose-computer:gpu', mounts: [{ source: '/srv/games', target: '/games', readOnly: true }] })
+    expect(await controller.containerSpecApplied?.()).toBe(true)
+    spec = { ...spec, image: 'caboose-owner:steam-ready-5051b68' }
+    expect(await controller.containerSpecApplied?.()).toBe(false)
+  })
+
   it('reaches the terminal on the bridge address of a container created without its port', async () => {
     const fake = fakeDocker('paused', ['14700'])
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })

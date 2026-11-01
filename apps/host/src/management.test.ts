@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { createCabooseServer, type Controller, type Session } from './server.js'
 import { openSettings } from './settings.js'
 import { ServiceMemory } from './running-apps.js'
+import { ContainerSpecStore } from './container-spec.js'
 
 const cleanup: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
@@ -249,3 +250,26 @@ it('does not pause a computer in memory while Steam listens, nor while an app wo
   cpu = 0
   await vi.waitFor(() => expect(controller.freeze).toHaveBeenCalled(), { timeout: 8000 })
 }, 20_000)
+
+it('keeps a container computer’s image, folders and devices for the operator, read from its container or set whole', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-container-'))
+  cleanup.push(() => rm(root, { recursive: true, force: true }))
+  const containerSpec = await ContainerSpecStore.open(join(root, 'container.json'))
+  const existing = { image: 'caboose-computer:flathub-79f46a1', mounts: [{ source: '/home/bsaun/gpu-remoting/ge', target: '/opt/caboose-games/GE-Proton11-11', readOnly: true }] }
+  const { request } = await fixture(controller => {
+    controller.existingContainerSpec = async () => existing
+    controller.containerSpecApplied = async () => JSON.stringify(containerSpec.get()) === JSON.stringify(existing)
+  }, { containerSpec })
+  expect(await (await request('/v1/computers/owner/container')).json()).toEqual({ spec: {}, applied: false })
+  expect(await (await request('/v1/computers/owner/container/import', 'POST')).json()).toEqual({ spec: existing, applied: true })
+  const put = await request('/v1/computers/owner/container', 'PUT', { ...existing, image: 'caboose-owner:steam-ready-5051b68' })
+  expect(await put.json()).toEqual({ spec: { ...existing, image: 'caboose-owner:steam-ready-5051b68' }, applied: false })
+  expect((await request('/v1/computers/owner/container', 'PUT', { mounts: [{ source: '/', target: '/home/caboose', readOnly: false }] })).status).toBe(400)
+  expect(containerSpec.get().image).toBe('caboose-owner:steam-ready-5051b68')
+  expect((await request('/v1/computers/nope/container')).status).toBe(404)
+})
+
+it('has no container settings for a microVM computer', async () => {
+  const { request } = await fixture()
+  expect((await request('/v1/computers/owner/container')).status).toBe(409)
+})

@@ -19,6 +19,7 @@ import { createStorageFromEnv } from '@braedonsaunders/appkit-storage/env'
 import { snapshotTierKey } from './snapshot-tier-config.js'
 import { startSnapshotGc } from './snapshot-tier-gc.js'
 import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
+import { ContainerSpecStore } from './container-spec.js'
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
 import { FlathubIndex } from './flathub.js'
@@ -145,8 +146,9 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const push = sender ? new PushService(await PushDevices.open(join(dir, 'push-devices.json')), sender) : undefined
   const activities = apns && sender ? new ActivityService(await ActivityStore.open(join(dir, 'activities.json')), message => sender.send(message), apns.topic) : undefined
   const identity = { id: record.id, slot: record.slot }
+  const containerSpec = deployment.runtime === 'container' ? await ContainerSpecStore.open(join(dir, 'container.json')) : undefined
   const controller = deployment.runtime === 'container'
-    ? createContainerController(deployment, { identity, settings: () => settings.get() })
+    ? createContainerController(deployment, { identity, settings: () => settings.get(), spec: () => containerSpec!.get() })
     : createController(runtimeConfig, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const serviceMemory = deployment.runtime === 'container' ? await ServiceMemory.open(join(dir, 'services.json')) : undefined
@@ -154,7 +156,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const paths = vmPaths(runtimeRoot, record.id, deployment.vmTemplate)
   const snapshotPath = paths.snapshot
   const computerStorage = cluster ? undefined : storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
-  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), ...(serviceMemory ? { serviceMemory } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
