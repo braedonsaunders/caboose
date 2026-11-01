@@ -141,10 +141,9 @@ workers and some browser APIs are unavailable on them.
 A computer parks after its idle time without leases. It is also kept awake (the lifecycle's busy
 check, read from the computer's `/proc/net` tables) while either of these is true:
 
-- **A server another machine can reach is running:** a TCP listener, or a bound UDP socket,
-  on an address that is not loopback, while the computer has an address of its own (a
-  running tailnet device or home network address).
-  Forwarded loopback servers count. Caboose's ports, the ephemeral range and discovery
+- **A server is running:** a TCP listener, or a bound UDP socket, on an address that is not
+  loopback, whether or not the computer has an address of its own yet. Loopback servers
+  that caboose-ports forwards count. Caboose's ports, the ephemeral range and discovery
   protocols (mDNS, SSDP, LLMNR, NetBIOS) do not.
 - **Another machine is connected:** an established TCP connection to one of the computer's
   servers from an address that is not loopback.

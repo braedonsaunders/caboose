@@ -59,11 +59,10 @@ describe('network activity', () => {
   it('uses the kernel ephemeral range it is given', () => {
     expect(networkActivity(sockets, [5000, 6000]).servers.map(server => server.port)).toEqual([8080, 27015, 32400, 41000])
   })
-  it('is busy with an outside connection, or a server another machine can reach', () => {
-    expect(networkBusy({ servers: [], connections: 0 }, true)).toBe(false)
-    expect(networkBusy({ servers: [{ protocol: 'tcp', address: '0.0.0.0', port: 80 }], connections: 0 }, false)).toBe(false)
-    expect(networkBusy({ servers: [{ protocol: 'tcp', address: '0.0.0.0', port: 80 }], connections: 0 }, true)).toBe(true)
-    expect(networkBusy({ servers: [], connections: 2 }, false)).toBe(true)
+  it('is busy while a server runs or another machine is connected', () => {
+    expect(networkBusy({ servers: [], connections: 0 })).toBe(false)
+    expect(networkBusy({ servers: [{ protocol: 'tcp', address: '0.0.0.0', port: 27036 }], connections: 0 })).toBe(true)
+    expect(networkBusy({ servers: [], connections: 2 })).toBe(true)
   })
   it('reads every table in one guest command', async () => {
     const calls: string[][] = []

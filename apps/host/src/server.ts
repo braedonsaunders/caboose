@@ -344,7 +344,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const network = controller.network?.()
     return network?.tailnet?.state === 'running' || network?.lan?.state === 'running'
   }
-  // A server another machine can reach, or an outside connection, keeps the computer awake (docs/network.md).
+  // A running server, or an outside connection, keeps the computer awake (docs/network.md).
   /** The servers another machine can reach, as last read; shown with the computer's address. */
   let servers: { list: NetworkServer[]; readAt: number } = { list: [], readAt: 0 }
   async function readServers(guest: AgentGuest) {
@@ -366,7 +366,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   computer.setBusyCheck(async () => {
     const guest = controller.guest()
     if (!guest) return false
-    if (networkBusy(await readServers(guest), reachable())) return true
+    if (networkBusy(await readServers(guest))) return true
     if (controller.componentsMode !== 'container') return false
     try { return (await serviceActivity(guest)).services.active > 0 } catch { return false }
   })

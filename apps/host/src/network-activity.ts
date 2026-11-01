@@ -109,10 +109,9 @@ export async function readNetworkActivity(guest: AgentGuest, timeoutMs = 10_000)
 }
 
 /**
- * Whether the computer is in use as a network machine. A server another machine can reach
- * keeps it awake (it is not idle while a server runs), but only when the computer has an
- * address another machine can use; an outside connection always does.
+ * Whether the computer is in use as a network machine: it is not idle while a server runs
+ * (a listener on an address that is not loopback), or while another machine is connected.
  */
-export function networkBusy(activity: NetworkActivity, reachable: boolean): boolean {
-  return activity.connections > 0 || (reachable && activity.servers.length > 0)
+export function networkBusy(activity: NetworkActivity): boolean {
+  return activity.connections > 0 || activity.servers.length > 0
 }
