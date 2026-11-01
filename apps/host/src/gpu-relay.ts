@@ -38,6 +38,26 @@ export function gpuUpstreamURL(displayURL: string): string {
   return url.href
 }
 
+/** Envelope kinds that suspend and resume a phone's executor (docs/gpu-live.md,
+ * "Suspending an executor"), as the phone sends them in whole CGLV envelopes. */
+const EXECUTOR_SUSPEND = 42
+const EXECUTOR_RESUME = 45
+
+/** Whether a phone message suspends (true) or resumes (false) its executor, or neither
+ * (undefined), from the kinds of the whole envelopes it holds. */
+export function suspension(data: RawData): boolean | undefined {
+  const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+  let found: boolean | undefined
+  for (let at = 0; at + 64 <= bytes.length;) {
+    if (bytes.toString('latin1', at, at + 4) !== 'CGLV') return found
+    const kind = bytes.readUInt16LE(at + 6)
+    if (kind === EXECUTOR_SUSPEND) found = true
+    else if (kind === EXECUTOR_RESUME) found = false
+    at += 64 + bytes.readUInt32LE(at + 8)
+  }
+  return found
+}
+
 function size(data: RawData): number {
   return Array.isArray(data) ? data.reduce((sum, part) => sum + part.byteLength, 0) : data.byteLength
 }
@@ -125,8 +145,11 @@ export function startGPURelay(first: WebSocket, options: {
       for (const endpoint of [phone, upstream]) if (endpoint && endpoint.readyState !== WebSocket.CLOSED) endpoint.terminate()
       settle()
     }
+    // A phone that suspended its executor and then went silent (iOS suspended the app
+    // before its 4001 close) is held as long as one that closed as suspended.
+    let suspended = false
     // The phone side is lost: a resumable relay keeps the guest side for a while.
-    function lose(reason: string, hold = GPU_RESUME_HOLD_MS): void {
+    function lose(reason: string, hold = suspended ? GPU_SUSPEND_HOLD_MS : GPU_RESUME_HOLD_MS): void {
       if (stopped) return
       if (!options.resumable) { stop(reason); return }
       const lost = phone
@@ -212,6 +235,7 @@ export function startGPURelay(first: WebSocket, options: {
       client.on('message', (data: RawData, binary: boolean) => {
         if (at !== generation) return
         heard = Date.now()
+        if (options.resumable) suspended = suspension(data) ?? suspended
         forward(client, upstream, 0, data, binary, at)
       })
     }

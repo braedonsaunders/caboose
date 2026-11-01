@@ -367,7 +367,9 @@ phone side is lost: a socket error, a close other than 1000, a failed send, or 3
 pong or a message. It stops reading the broker's side, so nothing is queued while parked and
 the broker's own window is the only replay, keeps that side open, and still counts the
 executor as the computer's one. It holds it for 30 s, or for 30 min after a phone that closed
-with code 4001 (suspended); neither close is forwarded to the broker. A phone close with 1000
+with code 4001 (suspended) or that last sent EXECUTOR_SUSPEND without a later EXECUTOR_RESUME
+(iOS can suspend the app before its close); neither close is forwarded to the broker. The
+relay reads only the kinds of the whole envelopes in the phone's messages for that. A phone close with 1000
 keeps the normal-close receipt. A splice that arrives while the old phone socket still looks
 open ends that socket. When a hold expires the relay ends the broker's side abruptly, and the
 executor is lost as after any lost transport; a host restart ends parked relays too.
@@ -393,7 +395,9 @@ phone. It reopens the gate on EXECUTOR_RESUME (mode 0 in place, 1 from a snapsho
 SNAPSHOT_REFUSED's reason, and refuses suspension controls in a session that is not resumable,
 a second EXECUTOR_SUSPEND, QUIESCED outside a suspension, or EXECUTOR_RESUME without one.
 The broker's own deadlines for the phone's answers (a process or stream opening, a stream's
-FIN, a process or surface retiring) count only time the executor is not suspended. Local
+FIN, a process or surface retiring) count only time the executor is not suspended, and in a
+resumable session last at least the host's longest hold, since the phone may be away
+unseen while the relay holds its transport. Local
 processes keep their streams and bindings throughout; nothing is reported to the
 compositor, whose grants stay as they were, unless the relay's hold expires and the executor
 is lost.

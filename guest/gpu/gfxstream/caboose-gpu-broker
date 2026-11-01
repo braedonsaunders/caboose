@@ -74,6 +74,9 @@ RESUME_WINDOW_BYTES = 8 * 1024 * 1024
 RESUME_WINDOW_MESSAGES = 2048
 ACK_BYTES = 64 * 1024
 ACK_DELAY = 0.05
+# The host's longest hold of a phone's transport (apps/host/src/gpu-relay.ts, the suspended
+# hold), with a margin.
+RESUME_HOLD_SECONDS = 31 * 60
 
 
 class IndexedSurface:
@@ -661,8 +664,11 @@ class Session:
 
     async def phone_answer(self, event, timeout):
         """Waits for an answer from the phone at most `timeout` seconds of time it is not
-        suspended: a suspended executor answers nothing until it resumes."""
-        remaining = timeout
+        suspended: a suspended executor answers nothing until it resumes. In a resumable
+        session the phone may also be away while the host holds its transport, unseen here,
+        so the wait is bounded by the longest hold instead; the session ends with the
+        transport if the phone does not come back."""
+        remaining = max(timeout, RESUME_HOLD_SECONDS) if self.resumable else timeout
         while not event.is_set():
             if self.suspended:
                 waits = [asyncio.ensure_future(event.wait()), asyncio.ensure_future(self.guest_open.wait())]
