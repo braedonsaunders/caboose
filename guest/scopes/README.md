@@ -67,7 +67,10 @@ owner's processes out of `init.scope` into the session scope, then classifies; t
 matching rule wins (`scopecore.classify`):
 
 1. Steam's game reaper (`reaper SteamLaunch AppId=N --`) and its tree: a scope for game N,
-   named from `steamapps/appmanifest_N.acf`.
+   named from `steamapps/appmanifest_N.acf`. Then every other process whose environment
+   names game N (`SteamGameId`, or `SteamAppId`), with the sandbox launchers that started
+   it, joins that scope: Flatpak Steam's pressure-vessel runs the game in a sandbox the
+   Flatpak portal starts, outside the reaper's tree, and Proton's wineserver outlives it.
 2. Children forked while a split was being made, left in the scope it came from, follow
    their parent for 5 s.
 3. A phone terminal session (a child of `caboose-terminal.py`), or an agent task's runner

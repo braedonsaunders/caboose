@@ -89,7 +89,10 @@ def valid_entry_id(ident):
 
 def parse_stat(line):
     """/proc/<pid>/stat: (comm, state, ppid, controlling tty, cpu ticks, start ticks). comm may
-    hold spaces and parentheses, so the fields after it are found from its last ')'."""
+    hold spaces and parentheses, so the fields after it are found from its last ')'. A
+    process that ended before it was read has none: ValueError, as for a malformed one."""
+    if not line:
+        raise ValueError('no stat')
     start, end = line.find('('), line.rfind(')')
     if start < 0 or end < start or line[end + 1:end + 2] != ' ':
         raise ValueError('malformed stat')
@@ -107,8 +110,8 @@ def state_name(code):
 
 
 def parse_uid(status):
-    """The real uid from /proc/<pid>/status."""
-    for line in status.splitlines():
+    """The real uid from /proc/<pid>/status (ValueError for a process that has ended)."""
+    for line in (status or '').splitlines():
         if line.startswith('Uid:'):
             return int(line.split()[1])
     raise ValueError('no Uid line')
@@ -185,6 +188,17 @@ def steam_game(argv):
     return None
 
 
+def environ_game(environ):
+    """The Steam app id a process runs for, from its environment: Steam gives a game's
+    whole launch `SteamGameId` (and `SteamAppId`), and pressure-vessel and Proton pass it to
+    every process of the game, including those a portal starts in a sandbox of their own."""
+    for name in ('SteamGameId', 'SteamAppId'):
+        value = variable(environ, name)
+        if value and value.isdigit() and 0 < int(value) < 1 << 32:
+            return int(value)
+    return None
+
+
 def terminal_service(argv):
     """Whether a process is Caboose's terminal service, whose children are phone terminal
     sessions."""
@@ -258,11 +272,12 @@ def acf_name(text):
 
 class Proc:
     """One process as classification sees it."""
-    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start', 'flatpak')
+    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start', 'flatpak', 'game')
 
-    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0, flatpak=None):
+    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0, flatpak=None,
+                 game=None):
         self.pid, self.ppid, self.uid, self.comm, self.argv, self.marks = pid, ppid, uid, comm, argv, marks
-        self.tty, self.state, self.ticks, self.start, self.flatpak = tty, state, ticks, start, flatpak
+        self.tty, self.state, self.ticks, self.start, self.flatpak, self.game = tty, state, ticks, start, flatpak, game
 
 
 class NewScope:
@@ -319,6 +334,9 @@ def classify(procs, membership, scopes, windows, now):
 
     The rules, first match wins for each process:
     1. Steam's reaper for game N, outside a scope for game N: its tree becomes game N's.
+       Then any process whose environment names game N (`SteamGameId`), outside a scope for
+       game N, with the sandbox launchers that started it: game N's scope. Flatpak Steam's
+       pressure-vessel runs the game in a sandbox a portal starts, outside the reaper's tree.
     2. A child of a scope made in the last few seconds by a split, left behind in the scope
        it was split from: it follows its parent.
     3. A phone terminal session (a child of the terminal service), or an agent task's runner
@@ -350,6 +368,24 @@ def classify(procs, membership, scopes, windows, now):
         if scopes.get(scope, {}).get('game') == game:
             continue
         move(subtree(pid, children, membership), NewScope(f'steam_app_{game}', 'game', game=game, source=scope))
+    pending = {target.game for _, target in moves if isinstance(target, NewScope)}
+    for pid in sorted(procs):
+        game = procs[pid].game
+        scope = membership.get(pid)
+        if game is None or scope is None or pid in taken or scopes.get(scope, {}).get('game') == game:
+            continue
+        existing = sorted((m.get('createdAt', 0), name) for name, m in scopes.items() if m.get('game') == game)
+        if not existing and game in pending:
+            # The reaper's scope is made this pass; the rest joins it on the next.
+            continue
+        top = pid
+        while procs[top].ppid in procs and membership.get(procs[top].ppid) == scope and \
+                procs[procs[top].ppid].argv and os.path.basename(procs[procs[top].ppid].argv[0]) in SANDBOX_LAUNCHERS:
+            top = procs[top].ppid
+        target = existing[-1][1] if existing else NewScope(f'steam_app_{game}', 'game', game=game, source=scope)
+        move(subtree(top, children, membership), target)
+        if not existing:
+            pending.add(game)
 
     # 2. Stragglers.
     for pid in sorted(procs):

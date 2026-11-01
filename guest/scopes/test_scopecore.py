@@ -89,6 +89,23 @@ class Files(unittest.TestCase):
         self.assertFalse(core.terminal_service(['/usr/bin/python3', '/opt/caboose/files/caboose-files.py']))
         self.assertFalse(core.terminal_service(['bash']))
 
+    def test_a_process_that_ended_before_it_was_read_is_a_value_error(self):
+        # read() gives None for a /proc file that went away; a tick must skip the process,
+        # not end on an AttributeError while a game starts and ends processes by the dozen.
+        for parse in (core.parse_stat, core.parse_uid):
+            with self.assertRaises(ValueError):
+                parse(None)
+            with self.assertRaises(ValueError):
+                parse('')
+
+    def test_steam_game_from_the_environment(self):
+        self.assertEqual(core.environ_game(b'HOME=/h\0SteamGameId=976730\0SteamAppId=976730\0'), 976730)
+        self.assertEqual(core.environ_game(b'SteamAppId=620\0'), 620)
+        self.assertIsNone(core.environ_game(b'SteamGameId=0\0'))
+        self.assertIsNone(core.environ_game(b'SteamGameId=abc\0'))
+        self.assertIsNone(core.environ_game(b'XSteamGameId=5\0'))
+        self.assertIsNone(core.environ_game(b''))
+
     def test_appmanifest_name(self):
         acf = '"AppState"\n{\n\t"appid"\t\t"620"\n\t"name"\t\t"Portal \\"2\\""\n}\n'
         self.assertEqual(core.acf_name(acf), 'Portal "2"')
@@ -111,6 +128,39 @@ class Classify(unittest.TestCase):
         membership = {pid: STEAM for pid in (10, 11, 20, 21, 22)}
         moves = self.classify(procs, membership)
         self.assertEqual(moves, [([20, 21, 22], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
+
+    def test_a_flatpak_steam_game_in_a_portal_sandbox_joins_its_scope(self):
+        # Flatpak Steam: the reaper runs in Steam's sandbox, but pressure-vessel asks the
+        # Flatpak portal to start the game in a sandbox of its own, outside the reaper's
+        # tree. Every process of the game carries SteamGameId.
+        flatpak = 'app-com.valvesoftware.Steam-87.scope'
+        game = 'app-steam_app_976730-90.scope'
+        self.scopes[flatpak] = {'origin': 'launch', 'flatpak': 'com.valvesoftware.Steam', 'createdAt': 0}
+        self.scopes[game] = {'origin': 'game', 'game': 976730, 'source': flatpak, 'createdAt': 0}
+        procs = [Proc(10, 1, comm='steam', flatpak='com.valvesoftware.Steam'),
+                 Proc(20, 10, argv=['reaper', 'SteamLaunch', 'AppId=976730', '--', 'x'], game=976730),
+                 Proc(30, 1, comm='flatpak-portal', argv=['/usr/libexec/flatpak-portal']),
+                 Proc(31, 30, comm='bwrap', argv=['bwrap', '--args', '40']),
+                 Proc(32, 31, comm='bwrap', argv=['bwrap', '--args', '41'], flatpak='com.valvesoftware.Steam'),
+                 Proc(33, 32, comm='pv-adverb', argv=['pv-adverb'], game=976730, flatpak='com.valvesoftware.Steam'),
+                 Proc(34, 33, comm='MCC-Win64-Shipp', argv=['Z:\\MCC-Win64-Shipping.exe'], game=976730),
+                 Proc(35, 1, comm='wineserver', argv=['wineserver'], game=976730)]
+        membership = {10: flatpak, 20: game, 30: SESSION, 31: flatpak, 32: flatpak, 33: flatpak, 34: flatpak, 35: flatpak}
+        self.assertEqual(self.classify(procs, membership), [([31, 32, 33, 34], game), ([35], game)])
+        # Once there, nothing moves; Steam and the portal stay where they are.
+        settled = {**membership, 31: game, 32: game, 33: game, 34: game, 35: game}
+        self.assertEqual(self.classify(procs, settled), [])
+
+    def test_a_game_process_without_a_reaper_scope_gets_one(self):
+        procs = [Proc(33, 1, comm='pv-adverb', argv=['pv-adverb'], game=620), Proc(34, 33, comm='game.exe', game=620)]
+        self.assertEqual(self.classify(procs, {33: STEAM, 34: STEAM}),
+                         [([33, 34], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
+
+    def test_game_processes_wait_for_the_reapers_new_scope(self):
+        procs = [Proc(10, 1, comm='steam'), Proc(20, 10, argv=['reaper', 'SteamLaunch', 'AppId=620', '--', 'x'], game=620),
+                 Proc(40, 1, comm='game.exe', game=620)]
+        moves = self.classify(procs, {10: STEAM, 20: STEAM, 40: STEAM})
+        self.assertEqual(moves, [([20], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
 
     def test_a_game_already_in_its_scope_stays(self):
         self.scopes['app-steam_app_620-3.scope'] = {'origin': 'game', 'game': 620, 'source': STEAM, 'createdAt': 0}

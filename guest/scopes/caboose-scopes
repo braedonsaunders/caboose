@@ -205,7 +205,8 @@ def observe(request):
                 flatpak = core.flatpak_app(Path(f'/proc/{pid}/root/.flatpak-info').read_text()[:65536])
             except (OSError, UnicodeDecodeError):
                 flatpak = None
-            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None, 'flatpak': flatpak}
+            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None, 'flatpak': flatpak,
+                             'game': core.environ_game(environ) if environ else None}
         return out
     if op == 'windows':
         answer = control('windows')
@@ -929,10 +930,12 @@ class Daemon:
                 marks = info.get('marks')
                 self.argv[keys[pid]] = {'argv': info.get('argv') if isinstance(info.get('argv'), list) else None,
                                        'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None,
-                                       'flatpak': info.get('flatpak') if isinstance(info.get('flatpak'), str) else None}
+                                       'flatpak': info.get('flatpak') if isinstance(info.get('flatpak'), str) else None,
+                                       'game': info.get('game') if isinstance(info.get('game'), int) and
+                                       not isinstance(info.get('game'), bool) and 0 < info.get('game') < 1 << 32 else None}
         for pid, proc in procs.items():
             info = self.argv.get(keys[pid], {})
-            proc.argv, proc.marks, proc.flatpak = info.get('argv'), info.get('marks'), info.get('flatpak')
+            proc.argv, proc.marks, proc.flatpak, proc.game = info.get('argv'), info.get('marks'), info.get('flatpak'), info.get('game')
         return procs
 
     def reap(self, now):
