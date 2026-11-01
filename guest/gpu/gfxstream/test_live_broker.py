@@ -353,8 +353,11 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x4070), everything))
+        self.assertIsNone(negotiate(hello(0x8070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
+        # Executor resume is granted only when the phone declared it.
+        self.assertEqual(negotiate(hello(0x4070), everything), hello(0x4070))
+        self.assertEqual(negotiate(hello(0x4070), everything - {'executor-resume'}), hello(0x70))
         self.assertIsNone(negotiate(broker.HELLO, everything))
         self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))
         self.assertIsNone(negotiate(hello(0x70)[:47], everything))
@@ -1237,6 +1240,28 @@ class ExecutorResumeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)
 
+    async def test_a_frame_draining_when_the_phone_resumes_is_sent_again(self):
+        session = self.session()
+        drained = asyncio.Event()
+        class SlowWriter(Writer):
+            async def drain(self): await drained.wait()
+        session.writer = SlowWriter()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            session.send(Kind.REVOKE)
+            for _ in range(10): await asyncio.sleep(0)
+            # Frame 1 is written and still draining when the phone's RESUME arrives.
+            await session.message(self.phone(Kind.RESUME, 0, struct.pack('<QQ16s', 0, 0, b'n' * 16)))
+            session.writer.data.clear()
+            drained.set()
+            for _ in range(10): await asyncio.sleep(0)
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.RESUME, 0), (Kind.REVOKE, 1)])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
     async def test_a_full_window_holds_the_sender_until_an_acknowledgement(self):
         session = self.session()
         sender = asyncio.create_task(session.send_loop())
@@ -1283,5 +1308,53 @@ class ExecutorResumeTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaises(ValueError):
                 await session.message(self.phone(Kind.ACK, 0, struct.pack('<Q', 0)))
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+
+class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
+    """Executor suspension (docs/gpu-live.md, "Suspending an executor") on the broker's side."""
+    executor = b'a' * 16
+
+    def phone(self, kind, sequence, payload=b''):
+        return Envelope(kind, self.executor, 1, 0, 0, sequence, payload)
+
+    async def test_suspend_holds_guest_reads_quiesces_after_reads_in_flight_and_resumes(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True,
+                                 features={'executor-resume'})
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            # A guest read already past the gate when the phone suspends.
+            await session.guest_read()
+            await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 1))
+            for _ in range(10): await asyncio.sleep(0)
+            self.assertFalse(session.guest_open.is_set())
+            self.assertNotIn(Kind.QUIESCE, [k for k, _, _ in written_envelopes(session.writer.data)])
+            session.send(Kind.REVOKE)  # what that read sends goes before QUIESCE
+            session.read_done()
+            for _ in range(10): await asyncio.sleep(0)
+            kinds = [k for k, _, _ in written_envelopes(session.writer.data) if k != Kind.ACK]
+            self.assertEqual(kinds, [Kind.REVOKE, Kind.QUIESCE])
+            # A new guest read waits until the phone resumes.
+            waiting = asyncio.create_task(session.guest_read())
+            for _ in range(10): await asyncio.sleep(0)
+            self.assertFalse(waiting.done())
+            await session.message(self.phone(Kind.QUIESCED, 2))
+            await session.message(self.phone(Kind.EXECUTOR_RESUME, 3, struct.pack('<II', 0, 0)))
+            await asyncio.wait_for(waiting, 1)
+            session.read_done()
+            self.assertFalse(session.suspended)
+            with self.assertRaises(ValueError):
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 4, struct.pack('<II', 0, 0)))
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_suspension_controls_need_executor_resume(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features=set())
+        try:
+            with self.assertRaises(ValueError):
+                await session.message(self.phone(Kind.QUIESCED, 1))
         finally:
             session.bindings.finish(session.binding_generation)
