@@ -22,15 +22,6 @@ struct NetworkSettingsSection: View {
                     if let ipv4 = tailnet.ipv4 {
                         LabeledContent("Address") { Text(ipv4).textSelection(.enabled) }
                     }
-                    if let host = network.host {
-                        ForEach(network.servers ?? []) { server in serverRow(server, host: host) }
-                    }
-                    Toggle("Share Localhost Servers", isOn: Binding(get: { forwardLoopback }, set: { value in
-                        Task {
-                            do { try await model.saveSettings(["forwardLoopback": .bool(value)]); saveError = nil }
-                            catch { saveError = error.localizedDescription }
-                        }
-                    }))
                 case "needs-login":
                     if let url = tailnet.loginUrl {
                         Button("Add to Tailscale") { openURL(url) }
@@ -45,6 +36,26 @@ struct NetworkSettingsSection: View {
                 default:
                     Label { Text("Joining your tailnet…") } icon: { ProgressView() }
                 }
+            }
+            if let lan = network.lan {
+                switch lan.state {
+                case "running":
+                    if let name = lan.name { LabeledContent("Home network") { Text(name).textSelection(.enabled) } }
+                    if let address = lan.address { LabeledContent("Home address") { Text(address).textSelection(.enabled) } }
+                case "error":
+                    StatusRow(title: "Not on Your Home Network", systemImage: "exclamationmark.triangle", tint: .orange, message: lan.error)
+                default:
+                    Label { Text("Joining your home network…") } icon: { ProgressView() }
+                }
+            }
+            if let host = network.host {
+                ForEach(network.servers ?? []) { server in serverRow(server, host: host) }
+                Toggle("Share Localhost Servers", isOn: Binding(get: { forwardLoopback }, set: { value in
+                    Task {
+                        do { try await model.saveSettings(["forwardLoopback": .bool(value)]); saveError = nil }
+                        catch { saveError = error.localizedDescription }
+                    }
+                }))
             }
             if let saveError { Text(saveError).font(.footnote).foregroundStyle(.red) }
         } header: {
@@ -61,7 +72,8 @@ struct NetworkSettingsSection: View {
         let sharing = forwardLoopback
             ? " Servers that listen only on localhost, such as Vite or Django, are shared too."
             : " Servers that listen only on localhost stay private."
-        return "Any server you start is reachable at \(host) from your devices with Tailscale, such as http://\(host):8000 in Safari or \(host):5432 in a database app.\(sharing) A running server keeps the computer awake."
+        let devices = network.tailnet?.state == "running" ? "your devices with Tailscale" : "devices on your home network"
+        return "Any server you start is reachable at \(host) from \(devices), such as http://\(host):8000 in Safari or \(host):5432 in a database app.\(sharing) A running server keeps the computer awake."
     }
 
     @ViewBuilder

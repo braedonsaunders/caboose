@@ -70,16 +70,32 @@ public struct ComputerNetwork: Decodable, Equatable, Sendable {
         ]
     }
 
-    public var tailnet: Tailnet?
-    public var servers: [Server]?
+    /// Its own address on the home network, on a Linux host that shares its Ethernet.
+    public struct Lan: Decodable, Equatable, Sendable {
+        /// `starting`, `running` or `error`.
+        public var state: String
+        public var address: String?
+        /// Its mDNS name, `dev-box.local`.
+        public var name: String?
+        public var error: String?
 
-    public init(tailnet: Tailnet? = nil, servers: [Server]? = nil) {
-        self.tailnet = tailnet; self.servers = servers
+        public init(state: String, address: String? = nil, name: String? = nil, error: String? = nil) {
+            self.state = state; self.address = address; self.name = name; self.error = error
+        }
     }
 
-    /// The name other devices use, once the computer is on the tailnet.
+    public var tailnet: Tailnet?
+    public var lan: Lan?
+    public var servers: [Server]?
+
+    public init(tailnet: Tailnet? = nil, lan: Lan? = nil, servers: [Server]? = nil) {
+        self.tailnet = tailnet; self.lan = lan; self.servers = servers
+    }
+
+    /// The name other devices use: its tailnet name, which works anywhere, else its name at home.
     public var host: String? {
-        guard let tailnet, tailnet.state == "running" else { return nil }
-        return tailnet.name ?? tailnet.ipv4
+        if let tailnet, tailnet.state == "running", let name = tailnet.name ?? tailnet.ipv4 { return name }
+        if let lan, lan.state == "running" { return lan.name ?? lan.address }
+        return nil
     }
 }

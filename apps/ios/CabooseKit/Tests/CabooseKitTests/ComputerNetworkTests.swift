@@ -19,6 +19,13 @@ final class ComputerNetworkTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(ComputerNetwork.self, from: Data("{}".utf8)).host)
     }
 
+    func testFallsBackToTheHomeNetworkName() throws {
+        let json = #"{"tailnet":{"state":"needs-login"},"lan":{"state":"running","address":"192.168.68.40","name":"dev-box.local"}}"#
+        let network = try JSONDecoder().decode(ComputerNetwork.self, from: Data(json.utf8))
+        XCTAssertEqual(network.host, "dev-box.local")
+        XCTAssertEqual(network.lan?.address, "192.168.68.40")
+    }
+
     func testOpensWebServersInABrowserAndNamesOthers() {
         let vite = ComputerNetwork.Server(protocol: "tcp", address: "0.0.0.0", port: 5173)
         XCTAssertEqual(vite.label, "Vite")

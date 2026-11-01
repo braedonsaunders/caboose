@@ -101,7 +101,7 @@ struct ComputerSettingsView: View {
             NativeBridgeSettingsSection(bridge: model.bridge)
             DeviceSettingsSection()
             connectionAddressSection
-            if let network = status.network, network.tailnet != nil {
+            if let network = status.network, network.tailnet != nil || network.lan != nil {
                 NetworkSettingsSection(network: network, forwardLoopback: status.settings.forwardLoopback ?? true)
             }
             if let upgrade = status.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
