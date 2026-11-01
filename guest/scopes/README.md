@@ -87,7 +87,9 @@ cgroups themselves say which scopes exist.
 
 Each sample reads per scope `cpu.stat` (`usage_usec`), `memory.current` less
 `memory.stat`'s `inactive_file`, and `io.stat` summed over devices, and per process
-`/proc/<pid>/stat` and `statm`. GPU use is the private GPU broker's per-process
+`/proc/<pid>/stat` and `statm`. The kernel leaves memory charged to the cgroup it was
+allocated in, so an app adopted after it started (rules 1 to 5) shows only what it
+allocates after the move; an app launched from the dock is born in its scope. GPU use is the private GPU broker's per-process
 `usage.json` ([gpu-live.md](../../docs/gpu-live.md#applications)) matched by pid and start
 time. An app's windows are the owner display's toplevels and dialogs whose process (the
 control socket's `pid`, the same the display protocol reports) is in its scope.
