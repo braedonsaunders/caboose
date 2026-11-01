@@ -14,6 +14,9 @@ export interface ComputerDriver<T> {
 
 export class ComputerConflictError extends Error {}
 
+/** How often a computer kept awake by something holding no lease is checked again. */
+export const BUSY_RECHECK_MS = 60_000
+
 export class ComputerLifecycle<T> {
   private current: ComputerState = 'parked'
   private value: T | undefined
@@ -27,6 +30,8 @@ export class ComputerLifecycle<T> {
   private mode: WakeMode = 'interactive'
   private beforeFreeze: () => Promise<boolean> = async () => true
   private freezeAllowed: () => boolean = () => true
+  private busy: () => Promise<boolean> = async () => false
+  private lastBusyAt = Number.NEGATIVE_INFINITY
   private parkedGeneration = 0
   private cancelParkedWork: () => void = () => {}
   private parkedWorkCancellers = new Set<() => void>()
@@ -43,6 +48,19 @@ export class ComputerLifecycle<T> {
   get lastError(): string | null { return this.failure }
   setBeforeFreeze(work: () => Promise<boolean>): void { this.beforeFreeze = work }
   setFreezeAllowed(check: () => boolean): void { this.freezeAllowed = check }
+  /**
+   * Work that holds no lease but keeps the computer in use: a server it runs, a managed
+   * service. While it answers true the computer neither freezes nor parks; it parks only
+   * after a full idle timeout since it last answered true. A check that fails counts as idle.
+   */
+  setBusyCheck(check: () => Promise<boolean>): void { this.busy = check }
+
+  private async isBusy(): Promise<boolean> {
+    let busy = false
+    try { busy = await this.busy() } catch (error) { console.error('Could not check whether the computer is in use:', error instanceof Error ? error.message : error) }
+    if (busy) this.lastBusyAt = Date.now()
+    return busy
+  }
 
   /** Cancel external parked work synchronously before a state-changing admission is queued. */
   setParkedWorkCanceller(cancel: () => void): void { this.cancelParkedWork = cancel }
@@ -119,6 +137,11 @@ export class ComputerLifecycle<T> {
       void this.serialize(async () => {
         if (this.leases !== 0) return
         if (freezing && !this.freezeAllowed()) { this.armIdle(); return }
+        if (this.current === 'running') {
+          if (await this.isBusy()) { this.armIdle(Math.min(this.idleMs, BUSY_RECHECK_MS)); return }
+          const quiet = Date.now() - this.lastBusyAt
+          if (!freezing && quiet < this.idleMs) { this.armIdle(this.idleMs - quiet); return }
+        }
         if (freezing && this.current === 'running') {
           // Publish the fence before awaiting the VMM so new work queues behind pause.
           this.setState('frozen')

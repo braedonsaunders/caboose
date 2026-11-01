@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ComputerLifecycle } from './lifecycle.js'
+import { BUSY_RECHECK_MS, ComputerLifecycle } from './lifecycle.js'
 import { authenticate } from './auth.js'
 import { config } from './config.js'
 
@@ -135,6 +135,70 @@ describe('computer lifecycle', () => {
     await vi.advanceTimersByTimeAsync(3000)
     expect(driver.freeze).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(7000)
+    expect(driver.park).toHaveBeenCalledOnce()
+  })
+  it('stays awake while something holding no lease is busy, then parks a full idle timeout later', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 600_000)
+    let busy = true
+    const check = vi.fn(async () => busy)
+    computer.setBusyCheck(check)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(check).toHaveBeenCalledOnce()
+    expect(driver.park).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS * 5)
+    expect(check).toHaveBeenCalledTimes(6)
+    busy = false
+    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS)
+    expect(driver.park).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(600_000 - BUSY_RECHECK_MS - 1)
+    expect(driver.park).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(driver.park).toHaveBeenCalledOnce()
+  })
+  it('treats a failing busy check as idle', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10_000)
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    computer.setBusyCheck(async () => { throw new Error('exec failed') })
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(driver.park).toHaveBeenCalledOnce()
+    expect(error).toHaveBeenCalled()
+    error.mockRestore()
+  })
+  it('does not freeze a busy computer, and freezes once it is not', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}), canFreeze: () => true,
+      freeze: vi.fn(async () => {}), thaw: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 600_000)
+    let busy = true
+    computer.setBusyCheck(async () => busy)
+    await computer.wake()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(computer.state).toBe('running')
+    busy = false
+    await vi.advanceTimersByTimeAsync(BUSY_RECHECK_MS)
+    expect(computer.state).toBe('frozen')
+    expect(driver.freeze).toHaveBeenCalledOnce()
+    await computer.park()
+  })
+  it('does not check whether a computer is busy while a lease holds it', async () => {
+    vi.useFakeTimers()
+    const driver = { wake: async () => 'desk', park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10_000)
+    const check = vi.fn(async () => false)
+    computer.setBusyCheck(check)
+    await computer.wake()
+    const release = computer.acquire()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(check).not.toHaveBeenCalled()
+    release()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(check).toHaveBeenCalledOnce()
     expect(driver.park).toHaveBeenCalledOnce()
   })
   it('parks a frozen VM at the host cap when the idle setting is longer', async () => {
