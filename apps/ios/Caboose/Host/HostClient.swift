@@ -1,3 +1,6 @@
+#if CABOOSE_APP
+import CabooseKit
+#endif
 import Foundation
 
 /// The caboose-host HTTP API (see docs/architecture.md).
@@ -54,6 +57,8 @@ struct HostClient: Sendable {
             var memoryMb: Int
             var vcpus: Int
             var idleMs: Int
+            /// Whether loopback-only servers are reached on the computer's own address; nil means on.
+            var forwardLoopback: Bool?
         }
         struct Resources: Decodable, Equatable, Sendable {
             var memoryMb: Int
@@ -96,6 +101,10 @@ struct HostClient: Sendable {
         var capabilities: Capabilities
         var lastError: String?
         var upgrade: Upgrade?
+        #if CABOOSE_APP
+        /// Where other devices reach the computer, and the servers they can reach on it.
+        var network: ComputerNetwork?
+        #endif
         /// The bounds `PATCH /v1/computer/settings` accepts.
         var limits: Limits
     }
