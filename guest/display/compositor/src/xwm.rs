@@ -69,6 +69,38 @@ impl State {
     }
 }
 
+/// What an X11 window's own configure request gets. Apps may size themselves, as a Wayland
+/// app may; only an unmanaged-looking window (one not yet a protocol window) moves itself,
+/// since a managed one stays where it was placed. A maximized or full-screen window keeps
+/// the size it was configured to as well: it is the compositor's (and the phone's) while
+/// that state lasts, so an app restoring a saved size cannot shrink it out of it.
+fn requested_geometry(
+    current: Rectangle<i32, Logical>,
+    (x, y): (Option<i32>, Option<i32>),
+    (w, h): (Option<u32>, Option<u32>),
+    managed: bool,
+    locked: bool,
+) -> Rectangle<i32, Logical> {
+    let mut geo = current;
+    if !locked {
+        if let Some(w) = w {
+            geo.size.w = w as i32;
+        }
+        if let Some(h) = h {
+            geo.size.h = h as i32;
+        }
+    }
+    if !managed {
+        if let Some(x) = x {
+            geo.loc.x = x;
+        }
+        if let Some(y) = y {
+            geo.loc.y = y;
+        }
+    }
+    geo
+}
+
 impl XwmHandler for State {
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
         self.xwm.as_mut().expect("X11 window manager")
@@ -121,24 +153,11 @@ impl XwmHandler for State {
         h: Option<u32>,
         _reorder: Option<Reorder>,
     ) {
-        // Apps may size themselves. Only unmanaged-looking placement requests move a
-        // window: a managed window stays where it was placed.
-        let mut geo = window.geometry();
-        if let Some(w) = w {
-            geo.size.w = w as i32;
-        }
-        if let Some(h) = h {
-            geo.size.h = h as i32;
-        }
-        if self.windows.by_x11(&window).is_none() {
-            if let Some(x) = x {
-                geo.loc.x = x;
-            }
-            if let Some(y) = y {
-                geo.loc.y = y;
-            }
-        }
-        let _ = window.configure(geo);
+        let (managed, locked) = match self.windows.by_x11(&window).and_then(|id| self.windows.get(id)) {
+            Some(w) => (true, w.maximized || w.fullscreen),
+            None => (false, false),
+        };
+        let _ = window.configure(requested_geometry(window.geometry(), (x, y), (w, h), managed, locked));
     }
 
     fn configure_notify(
@@ -261,5 +280,27 @@ impl XwmHandler for State {
     fn disconnected(&mut self, _xwm: XwmId) {
         tracing::warn!("the X11 window manager lost Xwayland");
         self.xwm = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_geometry;
+    use smithay::utils::Rectangle;
+
+    #[test]
+    fn a_managed_window_sizes_itself_but_stays_in_place() {
+        let current = Rectangle::new((0, 0).into(), (669, 424).into());
+        let geo = requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), true, false);
+        assert_eq!(geo, Rectangle::new((0, 0).into(), (535, 380).into()));
+        // Before it is a protocol window it places itself too.
+        let geo = requested_geometry(current, (Some(12), Some(5)), (None, Some(380)), false, false);
+        assert_eq!(geo, Rectangle::new((12, 5).into(), (669, 380).into()));
+    }
+
+    #[test]
+    fn a_maximized_window_keeps_its_configured_size() {
+        let current = Rectangle::new((0, 0).into(), (669, 424).into());
+        assert_eq!(requested_geometry(current, (Some(12), Some(0)), (Some(535), Some(380)), true, true), current);
     }
 }
