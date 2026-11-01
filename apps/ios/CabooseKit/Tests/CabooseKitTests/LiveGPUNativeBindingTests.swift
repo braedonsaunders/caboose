@@ -258,6 +258,22 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         }
         try binding.finish()
     }
+    func testOpeningsArrivingOutOfOrderAreServed() throws {
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 3))
+        try binding.consume(wire(.processOpen, sequence: 3, process: 2))
+        try binding.consume(wire(.streamOpen, sequence: 4, process: 3, stream: 5))
+        try binding.consume(wire(.streamOpen, sequence: 5, process: 3, stream: 4))
+        try binding.consume(wire(.streamOpen, sequence: 6, process: 3, stream: 4))  // a repeat is dropped
+        let frames = try output.frames()
+        XCTAssertEqual(frames.filter { $0.kind == .processReady }.map(\.process), [3, 2])
+        XCTAssertEqual(frames.filter { $0.kind == .streamReady }.map(\.stream), [5, 4])
+        try binding.revoke(); try binding.finish()
+    }
     func testIDsCannotBeReusedAfterRetirement() throws {
         let runtime = LiveRuntimeProbe()
         let binding = try LiveGPUNativeBinding(backend: runtime)

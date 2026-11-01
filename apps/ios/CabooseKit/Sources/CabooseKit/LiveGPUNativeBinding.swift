@@ -283,6 +283,10 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var processes: [UInt64: LiveGPUProcess] = [:]
     private var lastProcess: UInt64 = 0
     private var lastStream: UInt64 = 0
+    // Every identity this generation has opened. The broker never reuses one, but may send
+    // the openings of two local clients out of order, so a lower new identity is accepted.
+    private var openedProcesses = Set<UInt64>()
+    private var openedStreams = Set<UInt64>()
     private var outputSequence: UInt64 = 1
     private var outputExhausted = false
     private var output: (@Sendable (Data) -> Bool)?
@@ -511,7 +515,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         case .processOpen:
             // An opening the phone cannot honour is left unanswered and logged; the executor and
             // every other process go on (the broker ends the waiting process).
-            guard frame.process > lastProcess, lock.withLock({ processes.count < 16 }) else {
+            guard !openedProcesses.contains(frame.process), lock.withLock({ processes.count < 16 }) else {
                 return dropped("process open", frame)
             }
             var token: UInt64 = 0
@@ -521,7 +525,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             let process = LiveGPUProcess(token)
             let revoked = lock.withLock { processes[frame.process] = process; return cancelled }
             if revoked { process.stop(backend); throw LiveGPUError.closed }
-            lastProcess = frame.process
+            openedProcesses.insert(frame.process)
+            lastProcess = max(lastProcess, frame.process)
             try send(.processReady, process: frame.process)
         case .streamOpen:
             try openStream(frame)
@@ -601,10 +606,10 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         let count = snapshot.reduce(0) { total, p in total + p.lock.withLock { p.streams.count } }
         // A reused identity is dropped; an opening past capacity is refused with FIN, which the
         // broker reports to that process alone. The executor goes on either way.
-        guard frame.stream > lastStream else { return dropped("stream open", frame) }
+        guard !openedStreams.contains(frame.stream) else { return dropped("stream open", frame) }
         guard count < 64 else {
             dropped("stream open over capacity", frame)
-            lastStream = frame.stream
+            openedStreams.insert(frame.stream); lastStream = max(lastStream, frame.stream)
             return try send(.fin, process: frame.process, stream: frame.stream)
         }
         let stream = try LiveGPUDuplex()
@@ -614,7 +619,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             process.streams[frame.stream] = stream
             if process.stopped { stream.cancel() }
         }
-        lastStream = frame.stream
+        openedStreams.insert(frame.stream); lastStream = max(lastStream, frame.stream)
         let gate = DispatchSemaphore(value: 0)
         Thread.detachNewThread { [self] in
             defer { stream.workers.leave() }
