@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import type { Docker } from './container-driver.js'
+import { CABOOSE_PORTS } from './network-activity.js'
 
 /**
  * Each container computer as its own device on the owner's tailnet (docs/network.md). A
@@ -147,11 +148,13 @@ mkdir -p /var/run/tailscale /var/lib/tailscale
 exec tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock --tun=tailscale0 --port=41641`
 
 /**
- * Sends everything that arrives on tailscale0 to the computer ($1), as the companion. The
+ * Sends everything that arrives on tailscale0 to the computer ($1), as the companion, except
+ * Caboose's own services (14600–14799), which only the host may reach. The
  * computer may answer but may not start anything: not to the tailnet, the companion, or past
  * it to the uplink. IPv6 is refused at once, so clients fall back to IPv4 without waiting.
  * Idempotent: every run replaces Caboose's chains.
  */
+const CABOOSE_RANGE = `${CABOOSE_PORTS.min}:${CABOOSE_PORTS.max}`
 export const ROUTE_SCRIPT = `set -eu
 target=$1
 dev=$(ip -4 route get "$target" | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1)
@@ -159,12 +162,16 @@ dev=$(ip -4 route get "$target" | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -
 chain() { iptables -t "$1" -N "$2" 2>/dev/null || iptables -t "$1" -F "$2"; }
 hook() { t=$1; shift; iptables -t "$t" -C "$@" 2>/dev/null || iptables -t "$t" -I "$@"; }
 chain nat CABOOSE-IN
+iptables -t nat -A CABOOSE-IN -p tcp --dport ${CABOOSE_RANGE} -j RETURN
+iptables -t nat -A CABOOSE-IN -p udp --dport ${CABOOSE_RANGE} -j RETURN
 iptables -t nat -A CABOOSE-IN -j DNAT --to-destination "$target"
 hook nat PREROUTING -i tailscale0 -j CABOOSE-IN
 chain nat CABOOSE-OUT
 iptables -t nat -A CABOOSE-OUT -o "$dev" -d "$target" -j MASQUERADE
 hook nat POSTROUTING -j CABOOSE-OUT
 chain filter CABOOSE-FWD
+iptables -A CABOOSE-FWD -i tailscale0 -o "$dev" -d "$target" -p tcp --dport ${CABOOSE_RANGE} -j DROP
+iptables -A CABOOSE-FWD -i tailscale0 -o "$dev" -d "$target" -p udp --dport ${CABOOSE_RANGE} -j DROP
 iptables -A CABOOSE-FWD -i tailscale0 -o "$dev" -d "$target" -j ACCEPT
 iptables -A CABOOSE-FWD -i "$dev" -o tailscale0 -s "$target" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A CABOOSE-FWD -j DROP

@@ -94,6 +94,11 @@ describe('tailnet keys', () => {
 describe('the companion’s routing', () => {
   it('forwards the tailnet to the computer, lets it answer, and refuses everything it starts', () => {
     expect(ROUTE_SCRIPT).toContain('-A CABOOSE-IN -j DNAT --to-destination "$target"')
+    // Caboose's own services (display, files, terminal) are never on the tailnet.
+    for (const protocol of ['tcp', 'udp']) {
+      expect(ROUTE_SCRIPT.indexOf(`-A CABOOSE-IN -p ${protocol} --dport 14600:14799 -j RETURN`)).toBeLessThan(ROUTE_SCRIPT.indexOf('-j DNAT'))
+      expect(ROUTE_SCRIPT.indexOf(`-p ${protocol} --dport 14600:14799 -j DROP`)).toBeLessThan(ROUTE_SCRIPT.indexOf('-A CABOOSE-FWD -i tailscale0 -o "$dev" -d "$target" -j ACCEPT'))
+    }
     expect(ROUTE_SCRIPT).toContain('-A CABOOSE-FWD -i "$dev" -o tailscale0 -s "$target" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT')
     expect(ROUTE_SCRIPT.indexOf('-A CABOOSE-FWD -j DROP')).toBeGreaterThan(ROUTE_SCRIPT.indexOf('-A CABOOSE-FWD -i tailscale0'))
     expect(ROUTE_SCRIPT).toContain('-A CABOOSE-CIN -j DROP')
