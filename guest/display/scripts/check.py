@@ -157,6 +157,26 @@ def check_x11_terminal():
     return with_server(env_cmd, run)
 
 
+def check_taskbar():
+    """An X11 window started by a child process, with a class no desktop entry has and a
+    _NET_WM_PID from another PID namespace, names its real process and carries its icon,
+    which follows the program's change (docs/display.md, "Windows and launches")."""
+    pid_file = os.path.join(tempfile.mkdtemp(), "pid")
+    def run(proc, token):
+        r = probe(["--token-file", token, "--duration", "8", "--windows", "1"])
+        real = int(wait_for_file(pid_file))
+        window = next((w for w in r["windows"] if w["app_id"] == "CabooseTaskbarCheck"), None)
+        if window is None:
+            raise Failed(f"no window of class CabooseTaskbarCheck: {[w['app_id'] for w in r['windows']]}")
+        if window["pid"] != real:
+            raise Failed(f"window pid {window['pid']}, its process is {real} (it claims 2)")
+        if window["icon_bytes"] == 0 or window["icons"] < 2:
+            raise Failed(f"icon {window['icon_bytes']} bytes, {window['icons']} sent (want the first and the change)")
+        return f'class {window["app_id"]}, pid {real} from the X server, icon sent {window["icons"]} times'
+    # Through a shell, as a game launcher or a script would start it.
+    return with_server(["sh", "-c", f"python3 {HERE}/x11-icon-window.py {pid_file} 20 & wait"], run)
+
+
 def check_shm_animation():
     def run(proc, token):
         r = probe(["--token-file", token, "--duration", "6", "--windows", "1", "--min-fps", "55",
@@ -1181,6 +1201,7 @@ CHECKS = [
     ("auth", check_auth),
     ("wayland-terminal", check_wayland_terminal),
     ("x11-terminal", check_x11_terminal),
+    ("taskbar", check_taskbar),
     ("shm-animation", check_shm_animation),
     ("hevc", check_hevc),
     ("two-windows", check_two_windows),

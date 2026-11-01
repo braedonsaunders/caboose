@@ -359,7 +359,7 @@ Server → client (`0x01`–`0x7F`):
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
 | `0x01` | `hello` | `version: uint`, `displays: [uint]`, `encoders: [codec]`, `features: [text]`, `epoch?: text` (1–64 bytes; caboose-display sends 16 hex characters) |
-| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size`, `desktop_id?: text` ([Windows and launches](#windows-and-launches)) |
+| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `overscan?: size`, `desktop_id?: text`, `pid?: uint` ([Windows and launches](#windows-and-launches)) |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes`, `input_seq?: uint` ([Input sequencing](#input-sequencing)) |
@@ -491,9 +491,9 @@ the pointer message's pixel coordinates or its precise-pixel versus wheel-click 
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png` in legacy mode; `alpha: true` for windows of kind `popup` and
-`alpha: false` for every other; no `icon`, because Smithay 0.7 supports neither
-xdg-toplevel-icon-v1 nor `_NET_WM_ICON`, so the phone resolves a window's icon from the
-computer's app list by its `app_id` or class; `video.create` and `video.update` without
+`alpha: false` for every other; `icon` only for a toplevel that gives one as pixels
+(`_NET_WM_ICON`, or xdg-toplevel-icon-v1 `wl_shm` buffers; an icon given only by name is not
+sent, and the client resolves it from the computer's app list by `app_id`); `video.create` and `video.update` without
 `z`, `color` or `extradata`; and no `notification` (the computer's notifications reach
 the app through the host, from [guest/notifications](../guest/notifications)). It delivers
 `pencil` as tablet-unstable-v2 pen events: `hover` and `motion` move the pen (bringing it
@@ -648,6 +648,19 @@ environment. A window belongs to the launch only if no process between it and th
 process has a window of its own. So a program started from a launched terminal's shell is not
 the terminal. A client matches launches and taskbar entries to windows by `desktop_id` first,
 then by class (`app_id`, `StartupWMClass`).
+
+`pid` is the process that owns a toplevel as the computer sees it: the Wayland client's, or for
+an X11 window the X server's record of the client that created it (X-Resource
+`LocalClientPID`), with `_NET_WM_PID` only when the server has none. `_NET_WM_PID` is the
+client's claim in its own PID namespace, which for an application in Flatpak, such as a game
+Steam runs, names a process of the sandbox. A client's taskbar is built from the windows that
+exist, never only from the launches it made: every toplevel belongs to an application, matched
+to a desktop entry by `desktop_id`, `StartupWMClass`, the entry's id, a Steam game's
+`steam_app_<id>` class to the entry whose `Exec` runs `steam://rungameid/<id>`, the entry's
+program, and finally another window of the same `pid`. A window no entry claims is an
+application of its own, grouped with windows of the same class (else the same `pid`), drawn
+with its `icon` and named by its class or title. An X11 window's `icon` follows the
+application's changes to `_NET_WM_ICON` as `window.update`s.
 
 ### Overscan
 
