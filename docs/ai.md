@@ -218,6 +218,41 @@ How a request runs on Foundation Models:
 Only the foreground app serves: iOS suspends Caboose soon after it leaves the screen, and
 Apple limits the model's use by apps in the background.
 
+## Limits
+
+Measured with the probe on an iPhone19,4 (A20 Pro class, 11.6 GB, iOS 27.2):
+
+| | Apple on-device (`apple-foundation`) |
+| --- | --- |
+| Model | AFM 3 Core Advanced; `contentTagging` is the same variant |
+| Window | 8192 tokens, the instructions, tools, transcript, prompt and answer together: a request of 8193 fails with `contextSizeExceeded` |
+| Tokens | about 3.1 characters per token in English, 2.6–2.8 in code and JSON; a tool definition about 100 |
+| Output | 78–82 tokens per second, greedy or sampled, cold or prewarmed |
+| First token | 0.5 s for a short prompt (0.8 s cold); input runs at 1300–1600 tokens per second, so a full window is about 6 s |
+| Images | yes: an image is about 130 tokens, and text in it is read |
+| Reasoning | not offered on the device |
+| At once | two sessions run one after the other; a session takes one request at a time |
+| Memory | the model runs outside the app: Caboose's footprint grows by tens of MB |
+
+A session that must call a tool (`required`) calls one after every result: it made 64 calls in
+30 seconds without answering, which is why such a turn ends with its calls.
+
+Private Cloud Compute (`PrivateCloudComputeLanguageModel`) reports itself available with a
+32768-token window, images, reasoning, guided generation and tools, under a quota. An app
+without Apple's managed entitlement `com.apple.developer.private-cloud-compute` (requested
+from Apple) stops with a fatal error at its first request, so Caboose does not offer it.
+
+Open-weight models with MLX on the phone's GPU (4-bit, from Hugging Face):
+
+| Model | Output tokens/s | Input tokens/s | Peak memory |
+| --- | --- | --- | --- |
+| Qwen3 1.7B | 97 | 1790 | 1.6 GB |
+| Gemma 4 E2B | 64 | 1780 | 3.4 GB |
+| Llama 3.2 3B | 55 | 1090 | 2.4 GB |
+| Qwen3 4B | 44 | 790 | 3.0 GB |
+
+An app with the increased memory limit has about 6 GB available on this phone.
+
 ## Measuring
 
 `apps/ios/scripts/check-on-device-ai.sh <device> [probes]` builds and installs
