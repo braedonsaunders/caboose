@@ -27,7 +27,10 @@ struct DesktopScreen: View {
                             if laptop { LaptopExternalOverview() }
                             else { TrackpadScreen(desktop: model.desktop) }
                         } else {
-                            DesktopStage()
+                            // Laptop's upper screen has the wallpaper at its own shape, not a
+                            // band of one cut for the whole display. One stage throughout, so
+                            // folding never remounts it.
+                            DesktopStage().background { if laptop { ShellBackground() } }
                         }
                     }
                 }
@@ -35,7 +38,7 @@ struct DesktopScreen: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: portraitDesktop && !laptopActive ? [.top, .bottom] : [])
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            .background { ShellBackground() }
+            .background { ShellBackground(drivesStore: !laptopActive || model.externalDisplayActive) }
             .navigationTitle("Desktop")
             .navigationBarTitleDisplayMode(.inline)
             // The desktop needs the height more than a title: with the vertical bar the top
