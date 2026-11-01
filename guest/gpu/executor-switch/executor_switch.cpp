@@ -128,6 +128,15 @@ Placement& placement() {
     return *instance;
 }
 
+// CABOOSE_GPU_EXECUTOR_SWITCH_TRACE=1: every instance, device and lookup the layer handles,
+// with dispatch keys, on stderr (diagnosis of how a driver reaches it).
+bool tracing() {
+    static const bool on = [] { const char* v = std::getenv("CABOOSE_GPU_EXECUTOR_SWITCH_TRACE"); return v && *v == '1'; }();
+    return on;
+}
+#define TRACE(format, ...) do { if (tracing()) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH_TRACE pid=%d " format "\n", \
+                                    int(getpid()), ##__VA_ARGS__); } while (0)
+
 void* key(const void* dispatchable) { return *static_cast<void* const*>(dispatchable); }
 
 struct InstanceData {
@@ -197,6 +206,7 @@ F fallback(const char* name) {
 }
 // Said once, by name: such a device does not move to the phone.
 void unknownDevice(const char* call) {
+    TRACE("unknown device for %s", call);
     static std::atomic<bool> said{false};
     if (!said.exchange(true))
         std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_SWITCH: %s on a device or queue this layer did not create; "
@@ -250,6 +260,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo* info, 
     data->createDevice = reinterpret_cast<PFN_vkCreateDevice>(next(*instance, "vkCreateDevice"));
     data->properties =
         reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(next(*instance, "vkGetPhysicalDeviceProperties"));
+    TRACE("CreateInstance instance=%p key=%p", static_cast<void*>(*instance), key(*instance));
     std::lock_guard<std::mutex> lock(mutex);
     instances[key(*instance)] = std::move(data);
     return VK_SUCCESS;
@@ -277,6 +288,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
                                             const VkAllocationCallbacks* allocator, VkDevice* device) {
     InstanceData* owner = instanceData(physical);
     auto* link = const_cast<VkLayerDeviceCreateInfo*>(deviceLink(info));
+    TRACE("CreateDevice physical=%p key=%p owner=%d link=%d", static_cast<void*>(physical), key(physical), owner != nullptr,
+          link && link->u.pLayerInfo);
     if (!owner || !link || !link->u.pLayerInfo) return VK_ERROR_INITIALIZATION_FAILED;
     PFN_vkGetInstanceProcAddr nextInstance = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     PFN_vkGetDeviceProcAddr next = link->u.pLayerInfo->pfnNextGetDeviceProcAddr;
@@ -295,6 +308,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     data->next = next;
     data->switchable = switchable;
     data->staying = switchable && !processMoves();
+    TRACE("CreateDevice device=%p key=%p vendor=0x%x type=%d switchable=%d staying=%d", static_cast<void*>(*device),
+          key(*device), properties.vendorID, int(properties.deviceType), switchable, data->staying);
     data->destroy = load<PFN_vkDestroyDevice>(next, *device, "vkDestroyDevice");
     data->queueSubmit = load<PFN_vkQueueSubmit>(next, *device, "vkQueueSubmit");
     data->queueSubmit2 = load<PFN_vkQueueSubmit2>(next, *device, "vkQueueSubmit2");
@@ -449,6 +464,8 @@ PFN_vkVoidFunction deviceFunction(const char* name) {
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, const char* name) {
     DeviceData* data = deviceData(device);
+    if (deviceFunction(name)) TRACE("GetDeviceProcAddr device=%p key=%p %s known=%d", static_cast<void*>(device),
+                                    key(device), name, data != nullptr);
     if (!data) return nullptr;
     PFN_vkVoidFunction next = data->next(device, name);
     // Only functions the device has are wrapped; a missing one stays missing.
@@ -468,6 +485,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetInstanceProcAddr(VkInstance instance
     PFN_vkVoidFunction next = data->next(instance, name);
     if (!next) return nullptr;
     if (PFN_vkVoidFunction own = deviceFunction(name)) {
+        TRACE("GetInstanceProcAddr instance=%p %s", static_cast<void*>(instance), name);
         rememberFallback(name, next);
         return own;
     }
