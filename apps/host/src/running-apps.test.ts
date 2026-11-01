@@ -1,7 +1,10 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { AgentInputError, AgentNotFoundError, AgentOperationError, type AgentGuest } from './agents.js'
 import { ComputerConflictError } from './lifecycle.js'
-import { SCOPES, endRunningApp, listRunningApps, parseRunningAppId, parseRunningApps } from './running-apps.js'
+import { SCOPES, ServiceMemory, deleteService, endRunningApp, listRunningApps, parseRunningAppId, parseRunningApps, putService, readActivity, serviceAction, serviceLogs } from './running-apps.js'
 
 const STEAM = 'app-steam-3.scope'
 const process = { pid: 41, ppid: 1, name: 'steam', command: 'steam -silent', state: 'sleeping', cpuPercent: 1.5, memoryBytes: 1024 }
@@ -97,5 +100,65 @@ describe('ending an app', () => {
     expect(computer.calls).toEqual([])
     expect(() => parseRunningAppId('app-x-1.scope/../../x')).toThrow(AgentInputError)
     expect(parseRunningAppId('app-Portal\\x202-12.scope')).toBe('app-Portal\\x202-12.scope')
+  })
+})
+
+const status = { id: 'postgres.service', name: 'postgres', description: 'PostgreSQL', source: 'system', state: 'active', error: null,
+  autostart: true, restart: 'always', requires: [], since: 5, restarts: 1, lastExit: { code: 1, signal: null, at: 4 } }
+const running = { ...status, cpuPercent: 3, memoryBytes: 1 << 20, io: { readBytesPerSecond: 0, writeBytesPerSecond: 0 }, gpu: null,
+  processCount: 1, processes: [{ ...process, name: 'postgres' }], ports: [{ protocol: 'tcp', address: '0.0.0.0', port: 5432 }] }
+
+describe('services', () => {
+  it('lists services with their ports, and apps with theirs', () => {
+    const parsed = parseRunningApps({ ...listing([{ ...app, ports: [{ protocol: 'tcp', address: '::', port: 3000 }, { protocol: 'sctp', address: 'x', port: 1 }] }]),
+      services: [running, { ...running, state: 'sleepy' }, { ...running, id: 'other.service' }, running] })
+    expect(parsed.apps[0]!.ports).toEqual([{ protocol: 'tcp', address: '::', port: 3000 }])
+    expect(parsed.services.map(s => [s.name, s.state, s.ports.length])).toEqual([['postgres', 'active', 1]])
+    expect(parseRunningApps(listing([app])).services).toEqual([])
+  })
+
+  it('acts on a service through caboose-scopes and checks the status it answers', async () => {
+    const computer = guest({ ok: true, result: status })
+    expect((await serviceAction(computer, 'postgres', 'restart')).state).toBe('active')
+    expect(computer.calls).toEqual([[SCOPES, 'service', 'restart', 'postgres']])
+    await expect(serviceAction(guest({ ok: true, result: { ...status, state: 'odd' } }), 'postgres', 'start')).rejects.toThrow(AgentOperationError)
+    await expect(serviceAction(computer, '../x', 'start')).rejects.toThrow(AgentInputError)
+    await expect(serviceAction(guest({ ok: false, error: 'forbidden', message: 'a system service of that name exists' }), 'postgres', 'stop'))
+      .rejects.toThrow('a system service of that name exists')
+  })
+
+  it('writes, removes and reads the logs of an owner service', async () => {
+    const computer = guest({ ok: true, result: { ...status, source: 'owner', name: 'dev', id: 'dev.service' } })
+    await putService(computer, 'dev', { command: ['npm', 'run', 'dev'], autostart: true })
+    expect(computer.calls[0]!.slice(0, 3)).toEqual([SCOPES, 'service-put', 'dev'])
+    expect(JSON.parse(computer.calls[0]![3]!)).toEqual({ command: ['npm', 'run', 'dev'], autostart: true })
+    await expect(putService(computer, 'dev', { command: [] })).rejects.toThrow(AgentInputError)
+    await expect(putService(computer, 'dev', { command: ['x'], shell: true })).rejects.toThrow(AgentInputError)
+    expect(await deleteService(guest({ ok: true, result: { removed: true } }), 'dev')).toEqual({ removed: true })
+    const logs = guest({ ok: true, result: { lines: ['a', 'b\u0007', 3, 'c'] } })
+    expect(await serviceLogs(logs, 'dev', 2)).toEqual({ lines: ['b', 'c'] })
+    expect(logs.calls).toEqual([[SCOPES, 'logs', 'dev', '2']])
+    await expect(serviceLogs(logs, 'dev', 0)).rejects.toThrow(AgentInputError)
+  })
+
+  it('reads activity for the park decision, dropping invalid listeners', async () => {
+    const listener = { protocol: 'tcp', address: '0.0.0.0', port: 5432, pid: 40, owner: 'postgres.service', established: 2, lastActiveAt: 9 }
+    const activity = await readActivity(guest({ ok: true, result: { services: { active: 1, autostart: 1, failed: 0 },
+      listening: [listener, { ...listener, port: 70000 }, { ...listener, owner: '' }, { ...listener, pid: null, owner: 'caboose', established: 0, lastActiveAt: null }] } }))
+    expect(activity.services).toEqual({ active: 1, autostart: 1, failed: 0 })
+    expect(activity.listening.map(l => [l.port, l.owner])).toEqual([[5432, 'postgres.service'], [5432, 'caboose']])
+    await expect(readActivity(guest({ ok: true, result: { services: {}, listening: [] } }))).rejects.toThrow(AgentOperationError)
+  })
+
+  it('remembers autostart services across host restarts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'caboose-services-'))
+    try {
+      const path = join(dir, 'services.json')
+      const memory = await ServiceMemory.open(path)
+      expect(memory.autostart()).toBe(false)
+      await memory.record(true)
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ autostart: true })
+      expect((await ServiceMemory.open(path)).autostart()).toBe(true)
+    } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

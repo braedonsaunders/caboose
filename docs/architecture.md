@@ -1409,6 +1409,7 @@ the host serves the guest's app scopes. These routes do not wake the computer.
     io: { readBytesPerSecond: number, writeBytesPerSecond: number },
     gpu: { streams: number, surfaces: number, toPhoneBytesPerSecond: number, fromPhoneBytesPerSecond: number } | null,
     processCount: number,
+    ports: Array<{ protocol: "tcp" | "udp", address: string, port: number }>,   // its listening sockets; the session's are Caboose's own
     processes: Array<{        // at most 256, busiest first
       pid: number, ppid: number,
       name: string,           // at most 64 characters
@@ -1416,12 +1417,51 @@ the host serves the guest's app scopes. These routes do not wake the computer.
       state: "running" | "sleeping" | "waiting" | "stopped" | "zombie" | "idle" | "other",
       cpuPercent: number, memoryBytes: number   // resident set
     }>
+  }>,
+  services: Array<{           // every service with a unit file, running or not
+    id: string,               // "<name>.service"
+    name: string, description: string,
+    source: "system" | "owner",
+    state: "inactive" | "activating" | "active" | "deactivating" | "failed",
+    error: string | null,     // why it failed or is restarting, or why its unit file is refused
+    autostart: boolean, restart: "no" | "on-failure" | "always", requires: string[],
+    since: number,            // Unix ms of the last state change
+    restarts: number,         // automatic restarts since the daemon started
+    lastExit: { code: number | null, signal: number | null, at: number } | null,
+    cpuPercent, memoryBytes, io, gpu, processCount, processes, ports   // as for apps
   }>
 }
 ```
 
 The host checks the guest's answer field by field and drops what fails. Window ids are the
 display protocol's (`window.create`).
+
+### Services
+
+Container computers' services ([guest services](#guest-services)); routes do not wake the
+computer.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `PUT` | `/v1/services/:name` | Create or replace an owner service → its status (the `services` entry without resource use). Body: `{ command: string[], description?, workingDirectory?, environment?: { [name]: value }, restart?: "no" \| "on-failure" \| "always", autostart?: boolean (default true), requires?: string[] }`. It is not started; 409 when a system service has the name |
+| `DELETE` | `/v1/services/:name` | Stop an owner service and remove its unit file → `{ removed: true }`; 409 for a system service |
+| `POST` | `/v1/services/:name/start` | Start it, and what it requires → status |
+| `POST` | `/v1/services/:name/stop` | Stop it, and what requires it → status, once stopped |
+| `POST` | `/v1/services/:name/restart` | Stop, then start → status |
+| `POST` | `/v1/services/:name/enable`, `/disable` | Start it with the computer, or not → status |
+| `GET` | `/v1/services/:name/logs?lines=N` | The last N (1–2000, default 200) lines of its log → `{ lines }` |
+
+`:name` is 1–64 of `A-Z a-z 0-9 _ . @ -`, not starting with a punctuation character, without
+`.service`. Invalid definitions answer 400 with the reason; unknown services 404.
+
+The host remembers whether a computer has autostart services in `services.json` in its
+state directory, updated whenever it reads the services. For its park decision it reads the
+computer's activity (`caboose-scopes activity`): `{ services: { active, autostart, failed },
+listening: [{ protocol, address, port, pid, owner, established, lastActiveAt }] }`, where
+`owner` is the service (`<name>.service`) or app scope holding the socket, or `caboose` for
+Caboose's own processes and anything outside the owner's apps and services; `established` is
+the TCP connections to it from non-loopback peers now and `lastActiveAt` the Unix ms one was
+last seen (read at most every 5 s).
 
 ### Files
 
