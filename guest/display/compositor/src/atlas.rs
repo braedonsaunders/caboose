@@ -8,7 +8,7 @@ use crate::encode::CpuImage;
 use crate::motion;
 use caboose_display_protocol::atlas::{detect_scroll_copy, encode_atlas_tile, xxh64};
 use caboose_display_protocol::{
-    Rect, Size, SurfaceBatch, SurfaceFill, SurfaceTile, SurfaceTileRef,
+    AtlasTileFormat, Rect, Size, SurfaceBatch, SurfaceFill, SurfaceTile, SurfaceTileRef,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -168,7 +168,9 @@ impl AtlasWindowEncoder {
     /// `SurfaceBatch`, updating `self.shadow` while consulting `cache` read-only.
     ///
     /// Callers must invoke [`AtlasCacheTracker::try_record_published_batch`] when the returned
-    /// `SurfaceBatch` is actually sent to the client.
+    /// `SurfaceBatch` is actually sent to the client. The rectangles returned with it are the
+    /// new tiles that look like video, for the motion detector: scroll copies, fills, cached
+    /// tiles and drawn content never start a motion stream.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_input(
         &mut self,
@@ -376,9 +378,6 @@ impl AtlasWindowEncoder {
         let mut tiles: Vec<SurfaceTile> = Vec::new();
         let mut changed_rects: Vec<Rect> = Vec::new();
 
-        for copy in &copies {
-            changed_rects.push(copy.rect);
-        }
 
         let mut tile_buf = Vec::with_capacity((TILE_SIZE as usize) * (TILE_SIZE as usize) * 4);
         let row_bytes = w_usize * 4;
@@ -412,8 +411,6 @@ impl AtlasWindowEncoder {
                     self.shadow[off..off + w_byte].copy_from_slice(slice);
                     tile_buf.extend_from_slice(slice);
                 }
-                changed_rects.push(tile_rect);
-
                 if let Some(rgba) = uniform_rgba(&tile_buf) {
                     if let Some(idx) = prev_fill_idx {
                         let last = &mut fills[idx];
@@ -442,6 +439,9 @@ impl AtlasWindowEncoder {
                         refs.push(SurfaceTileRef { x: x0, y: y0, hash });
                     } else {
                         let (format, data) = encode_atlas_tile(&tile_buf, tw as u32, th as u32);
+                        if looks_like_video(format, data.len(), tile_buf.len()) {
+                            changed_rects.push(tile_rect);
+                        }
                         tiles.push(SurfaceTile {
                             rect: tile_rect,
                             hash: Some(hash),
@@ -451,6 +451,9 @@ impl AtlasWindowEncoder {
                     }
                 } else {
                     let (format, data) = encode_atlas_tile(&tile_buf, tw as u32, th as u32);
+                    if looks_like_video(format, data.len(), tile_buf.len()) {
+                        changed_rects.push(tile_rect);
+                    }
                     tiles.push(SurfaceTile {
                         rect: tile_rect,
                         hash: None,
@@ -485,6 +488,13 @@ impl AtlasWindowEncoder {
         };
         (Some(batch), changed_rects)
     }
+}
+
+/// Whether a new tile looks like a picture from a video rather than an application's
+/// drawing: more than 16 colours that LZ4 cannot halve. Text, icons, flat chrome and
+/// gradients compress far better than that; camera and film pictures barely compress.
+fn looks_like_video(format: AtlasTileFormat, encoded: usize, raw: usize) -> bool {
+    format == AtlasTileFormat::RgbaLz4 && encoded * 2 >= raw
 }
 
 fn mark_tiles(dirty: &mut [bool], cols: usize, rows: usize, r: Rect) {
@@ -809,6 +819,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Dark anti-aliased "text" on white: many grey levels, long white runs.
+    fn paint_text_image(w: u32, h: u32, y_offset: u32) -> CpuImage {
+        let mut img = CpuImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let off = (y as usize) * img.stride + (x as usize) * 4;
+                let sy = y + y_offset;
+                let ink = sy % 24 < 12 && x % 9 < 5;
+                let v = if ink { ((x * 37 + sy * 11) % 200) as u8 } else { 0xFF };
+                img.data[off..off + 4].copy_from_slice(&[v, v, v, 0x00]);
+            }
+        }
+        img
+    }
+
+    fn paint_noise_image(w: u32, h: u32, seed: u32) -> CpuImage {
+        let mut img = CpuImage::new(w, h);
+        let mut state = seed.wrapping_mul(2654435761) | 1;
+        for b in img.data.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *b = state as u8;
+        }
+        img
+    }
+
+    #[test]
+    fn only_new_tiles_that_look_like_video_feed_the_motion_detector() {
+        let (w, h) = (256u32, 192u32);
+        let rect = Rect::new(0, 0, w as i32, h as i32);
+        let full = [rect];
+        let cache = AtlasCacheTracker::new();
+
+        // Text drawn and then scrolled: a copy and the exposed strip, none of it video.
+        let mut enc = AtlasWindowEncoder::new();
+        let (_, motion) = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&paint_text_image(w, h, 0)), false, true, None, None, &cache)
+            .unwrap();
+        assert!(motion.is_empty(), "drawn text is not video: {motion:?}");
+        let (batch, motion) = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&paint_text_image(w, h, 40)), false, false, Some(&full), None, &cache)
+            .unwrap();
+        assert_eq!(batch.unwrap().copies.len(), 1, "the scroll must be a copy");
+        assert!(motion.is_empty(), "a scroll is not video: {motion:?}");
+
+        // A film: every tile new and incompressible, every picture.
+        let mut enc = AtlasWindowEncoder::new();
+        enc.encode_input(1, 1000, rect, w, h, Input::Cpu(&paint_noise_image(w, h, 1)), false, true, None, None, &cache)
+            .unwrap();
+        let (_, motion) = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&paint_noise_image(w, h, 2)), false, false, Some(&full), None, &cache)
+            .unwrap();
+        assert_eq!(motion.len(), 12, "every 64x64 tile of the film is video");
     }
 
     #[test]
