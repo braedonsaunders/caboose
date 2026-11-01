@@ -18,7 +18,8 @@ RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 COPY gpu/gbm /gbm
 RUN make -C /gbm BUILD=/out/gbm /out/gbm/vgem_gbm.so
 
-# Xwayland with DRI3 on the vgem render node (guest/xwayland).
+# Xwayland with DRI3 on the vgem render node and finger scrolling from a touchpad device
+# (guest/xwayland).
 FROM debian:trixie-slim AS xwayland
 ENV DEBIAN_FRONTEND=noninteractive
 RUN printf 'deb-src https://deb.debian.org/debian trixie main\ndeb-src https://security.debian.org/debian-security trixie-security main\n' > /etc/apt/sources.list.d/src.list && \

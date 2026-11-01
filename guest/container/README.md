@@ -11,7 +11,7 @@ vendor), an NVIDIA GPU on Linux through the NVIDIA container toolkit, and Linux 
 
 | Path | What |
 | --- | --- |
-| `Dockerfile` | The image. Its first stages compile Caboose Display, the VA-API passthrough driver, the GBM backend, Xwayland with DRI3 on the render node (`guest/xwayland`) and the GPU stream driver; the last installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
+| `Dockerfile` | The image. Its first stages compile Caboose Display, the VA-API passthrough driver, the GBM backend, Xwayland with DRI3 on the render node and touchpad finger scrolling (`guest/xwayland`) and the GPU stream driver; the last installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
 | `caboose-session` | The session script the host runs with `docker exec` (installed as `/usr/local/bin/caboose-session`). |
 | `chromium-gpu` | Chromium flags for the display and GPU in use (installed as `/etc/chromium.d/caboose-gpu`). |
 | `chromium-policy.json` | Chromium's managed policy (installed as `/etc/chromium/policies/managed/caboose-gpu.json`): no warning for the flags `chromium-gpu` sets. |
