@@ -13,6 +13,11 @@ Flatpak, its introspection bindings (`gir1.2-flatpak-1.0`) and bubblewrap, then 
 | `caboose-bwrap` | In a container computer, `/usr/bin/bwrap` (the real one is diverted to `bwrap.distrib`): each sandbox gets the container's `/proc` read-only, without bubblewrap's sysctl lock on user namespaces, and root's sandboxes start in a user namespace of their own (`docs/architecture.md` § Catalog). Every other argument passes through. |
 | `var-lib-caboose-depot.mount` | In a microVM, mounts the host's virtio-fs tag `caboose-depot` read-only at `/var/lib/caboose/depot`. Without the tag the mount fails without delaying boot. |
 
+`install.sh` also shares `~/.local/state/caboose/game-diagnostics` into Steam's sandbox
+(`com.valvesoftware.Steam`), which otherwise has no `~/.local/state`. A game launched with
+the launch options `PROTON_LOG=1 PROTON_LOG_DIR=/home/<user>/.local/state/caboose/game-diagnostics %command%`
+writes its Proton log, `steam-<appid>.log`, there, and the log stays after the game exits.
+
 On the container runtime the host mounts the `caboose-depot` volume at the same path instead.
 Apps install into the system installation (`/var/lib/flatpak`); the Library's installer adds the
 depot as each transaction's dependency source, so an app whose runtime the depot has installs
