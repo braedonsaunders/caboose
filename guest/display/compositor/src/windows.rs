@@ -87,10 +87,19 @@ pub fn overscan_layout(
 }
 
 /// The overscan a window of `size` carries when it was configured to show `shown` and laid
-/// out at `full`: per axis, its size beyond `shown`, up to the overscan laid out.
-pub fn overscan_received(size: Size<i32, Logical>, shown: Size<i32, Logical>, full: Size<i32, Logical>) -> Size<i32, Logical> {
-    let axis = |size: i32, shown: i32, full: i32| if full > shown { (size - shown).clamp(0, full - shown) } else { 0 };
-    (axis(size.w, shown.w, full.w), axis(size.h, shown.h, full.h)).into()
+/// out at `full`: per axis, its size beyond `shown`, up to the overscan laid out. A window
+/// whose minimum size `min` exceeds `shown` shows that much itself: only its size beyond
+/// its minimum is overscan.
+pub fn overscan_received(
+    size: Size<i32, Logical>,
+    shown: Size<i32, Logical>,
+    full: Size<i32, Logical>,
+    min: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    let axis = |size: i32, shown: i32, full: i32, min: i32| {
+        if full > shown { (size - shown.max(min)).clamp(0, full - shown) } else { 0 }
+    };
+    (axis(size.w, shown.w, full.w, min.w), axis(size.h, shown.h, full.h, min.h)).into()
 }
 
 /// The xdg window geometry of a surface: where the window is within the surface
@@ -133,10 +142,20 @@ impl Window {
     /// The overscan in effect: on each axis laid out with one, what the app's size has
     /// beyond the size it was configured to show, up to the overscan laid out. An app that
     /// sizes itself in steps (a terminal's character cells) gets part of it; one that
-    /// declined it, or has not committed it yet, none.
+    /// declined it, or has not committed it yet, none; one held larger than the shown size
+    /// by its minimum size (a dialog), only what it has beyond that minimum.
     pub fn applied_overscan(&self) -> Size<i32, Logical> {
         let (Some(full), Some(shown)) = (self.overscan_size, self.shown) else { return (0, 0).into() };
-        overscan_received(self.local_geometry().size, shown, full)
+        overscan_received(self.local_geometry().size, shown, full, self.min_size())
+    }
+
+    /// The app's minimum size, zero on an axis without one.
+    pub fn min_size(&self) -> Size<i32, Logical> {
+        match &self.surface {
+            Surface::Toplevel(t) => min_max(t.wl_surface()).0,
+            Surface::X11(x) => x.min_size().unwrap_or_default(),
+            Surface::Popup(_) => (0, 0).into(),
+        }
     }
 
     /// The size the client shows: the geometry without the overscan in effect.
@@ -428,10 +447,22 @@ mod tests {
     fn an_app_sized_in_steps_gets_the_overscan_it_took() {
         let size = |w, h| Size::<i32, Logical>::from((w, h));
         // Exactly the laid-out size, a terminal a part-row short, and no overscan taken.
-        assert_eq!(overscan_received(size(800, 1400), size(800, 800), size(800, 1400)), size(0, 600));
-        assert_eq!(overscan_received(size(792, 1392), size(800, 800), size(800, 1400)), size(0, 592));
-        assert_eq!(overscan_received(size(792, 792), size(800, 800), size(800, 1400)), size(0, 0));
-        assert_eq!(overscan_received(size(900, 1500), size(800, 800), size(800, 1400)), size(0, 600));
+        let none = size(0, 0);
+        assert_eq!(overscan_received(size(800, 1400), size(800, 800), size(800, 1400), none), size(0, 600));
+        assert_eq!(overscan_received(size(792, 1392), size(800, 800), size(800, 1400), none), size(0, 592));
+        assert_eq!(overscan_received(size(792, 792), size(800, 800), size(800, 1400), none), size(0, 0));
+        assert_eq!(overscan_received(size(900, 1500), size(800, 800), size(800, 1400), none), size(0, 600));
+    }
+
+    #[test]
+    fn a_dialog_held_open_by_its_minimum_size_has_no_overscan() {
+        let size = |w, h| Size::<i32, Logical>::from((w, h));
+        // A fixed-size dialog (546x390) larger than the shown 466x330, asked for overscan on
+        // both axes: all of its size is its own picture, none of it overscan.
+        let dialog = size(546, 390);
+        assert_eq!(overscan_received(dialog, size(466, 330), size(932, 990), dialog), size(0, 0));
+        // A window with a minimum that took the overscan: only what lies beyond the minimum.
+        assert_eq!(overscan_received(size(466, 990), size(466, 330), size(466, 990), size(300, 390)), size(0, 600));
     }
 
     #[test]
