@@ -214,6 +214,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | `auth` | a wrong token gets `bye(auth)`; the right one gets windows |
 | `wayland-terminal` | text typed from the client reaches weston-terminal exactly (key fallback) |
 | `x11-terminal` | the same through Xwayland into xterm |
+| `taskbar` | an X11 window a shell started, with a class no desktop entry has and a `_NET_WM_PID` from another namespace, reports the X server's PID for its process and its `_NET_WM_ICON`, and its icon change follows as an update (`scripts/x11-icon-window.py`) |
 | `shm-animation` | an animating client is paced on vsync at ≥ 55 fps |
 | `hevc` | a client that decodes only HEVC gets x265 |
 | `two-windows` | two applications stream as two windows |
