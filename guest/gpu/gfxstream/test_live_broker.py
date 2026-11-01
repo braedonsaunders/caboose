@@ -1355,8 +1355,15 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
         session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'executor-resume'})
         try:
             answer = asyncio.Event()
+            # A resumable session waits as long as the host can hold the phone's transport.
+            with mock.patch.object(broker, 'RESUME_HOLD_SECONDS', 0.3):
+                started = asyncio.get_running_loop().time()
+                with self.assertRaises(asyncio.TimeoutError):
+                    await session.phone_answer(answer, 0.05)
+                self.assertGreaterEqual(asyncio.get_running_loop().time() - started, 0.25)
             session.suspended = True
             session.guest_open.clear()
+            hold = mock.patch.object(broker, 'RESUME_HOLD_SECONDS', 0.2); hold.start(); self.addCleanup(hold.stop)
             waiting = asyncio.create_task(session.phone_answer(answer, 0.2))
             await asyncio.sleep(0.5)  # longer than the timeout, but suspended
             self.assertFalse(waiting.done())

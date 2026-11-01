@@ -26,7 +26,7 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
@@ -275,4 +275,42 @@ it('keeps the normal close receipt and never parks a relay that is not resumable
   await done
   expect(upstream.readyState).toBe(WebSocket.CLOSED)
   expect(upstream.closeCodes).toEqual([])
+})
+
+function envelope(kind: number, payload = Buffer.alloc(0)): Buffer {
+  const header = Buffer.alloc(64)
+  header.write('CGLV', 0, 'latin1')
+  header.writeUInt16LE(1, 4); header.writeUInt16LE(kind, 6); header.writeUInt32LE(payload.length, 8)
+  return Buffer.concat([header, payload])
+}
+
+it('reads suspension from the whole envelopes a phone message holds', () => {
+  expect(suspension(envelope(7, Buffer.from([1, 2, 3])))).toBeUndefined()
+  expect(suspension(Buffer.concat([envelope(7, Buffer.from([1])), envelope(42)]))).toBe(true)
+  expect(suspension(Buffer.concat([envelope(42), envelope(44), envelope(45, Buffer.alloc(8))]))).toBe(false)
+  expect(suspension(Buffer.from('not an envelope'))).toBeUndefined()
+})
+
+it('holds a phone that suspended and then went silent for the extended hold', async () => {
+  vi.useFakeTimers()
+  try {
+    const { client, upstream, relay } = resumable()
+    client.emit('message', envelope(42), true)
+    upstream.pending.shift()!()
+    client.emit('message', envelope(44), true)
+    upstream.pending.shift()!()
+    // iOS suspends the app before its 4001 close: silence.
+    await vi.advanceTimersByTimeAsync(GPU_HEARTBEAT_TIMEOUT_MS + 2 * GPU_HEARTBEAT_MS)
+    expect(client.readyState).toBe(WebSocket.CLOSED)
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS * 2)
+    expect(upstream.readyState).toBe(WebSocket.OPEN)
+    const next = new WebSocket('ws://test') as ControlledSocket
+    expect(relay.attach(next)).toBe(true)
+    next.emit('message', envelope(45, Buffer.alloc(8)), true)
+    upstream.pending.shift()!()
+    // Resumed: a later loss gets the short hold again.
+    next.peerClose(1006)
+    await vi.advanceTimersByTimeAsync(GPU_RESUME_HOLD_MS + 10)
+    await relay.done
+  } finally { vi.useRealTimers() }
 })
