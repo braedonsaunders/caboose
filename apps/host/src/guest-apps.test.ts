@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentInputError, AgentNotFoundError } from './agents.js'
 import { guestLaunch, guestLaunchArgs, parseAppLaunch } from './guest-apps.js'
@@ -177,11 +177,25 @@ describe('guest-apps.py', () => {
       .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility --ozone-platform=x11 --ignore-gpu-blocklist`
         + ' --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'
         + ' --disable-gpu-sandbox --disable-gpu-process-crash-limit\n')
+    // With the Caboose VA-API driver it also decodes video on the computer's vgem render node,
+    // when there is one.
+    const va = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, 'CABOOSE_GFXSTREAM_SOCKET=/run/caboose-gpu/gpu.sock', 'DISPLAY=:140',
+      'LIBVA_DRIVER_NAME=caboose', ...run.command, 'launch', 'notes.desktop'], run.options)
+    expect(va.status).toBe(0)
+    const node = existsSync('/dev/dri') ? readdirSync('/dev/dri').filter(name => name.startsWith('renderD')).sort()
+      .map(name => `/dev/dri/${name}`)
+      .find(path => basename(realpathSync(`/sys/class/drm/${basename(path)}/device`)) === 'vgem') : undefined
+    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
+      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility --ozone-platform=x11 --ignore-gpu-blocklist`
+        + ' --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'
+        + (node ? ',VaapiVideoDecoder,VaapiIgnoreDriverChecks,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL' : '')
+        + ' --disable-gpu-sandbox --disable-gpu-process-crash-limit'
+        + (node ? ` --hardware-video-device-path=${node}` : '') + '\n')
     // Anything else launches from its own entry, unchanged.
     expect(spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'plain.desktop'], run.options).status).toBe(0)
     expect(existsSync(join(runtime, 'caboose-launch', 'plain.desktop'))).toBe(false)
     expect(recorded()).toEqual([{ launch: 'notes.desktop', files: [] }, { launch: 'notes.desktop', files: [] },
-      { launch: 'plain.desktop', files: [] }])
+      { launch: 'notes.desktop', files: [] }, { launch: 'plain.desktop', files: [] }])
   })
 })
 

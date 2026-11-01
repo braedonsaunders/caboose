@@ -134,6 +134,17 @@ ELECTRON_SWITCH = '--force-renderer-accessibility'
 ELECTRON_GPU_SWITCHES = ('--ozone-platform=x11', '--ignore-gpu-blocklist', '--use-gl=angle',
                          '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan',
                          '--disable-gpu-sandbox', '--disable-gpu-process-crash-limit')
+# With the Caboose VA-API driver, video decodes on the phone, as in Chromium there
+# (docs/gpu-media.md): the same switches, VA-API decoding on the computer's render node.
+ELECTRON_VA_FEATURES = ',VaapiVideoDecoder,VaapiIgnoreDriverChecks,VaapiVideoDecodeLinuxGL,' \
+    'AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL'
+
+def render_node():
+    """The computer's vgem render node (docs/gpu-buffers.md), or None."""
+    for node in sorted(pathlib.Path('/dev/dri').glob('renderD*')):
+        if pathlib.Path(os.path.realpath(f'/sys/class/drm/{node.name}/device')).name == 'vgem':
+            return str(node)
+    return None
 
 def electron(exec_line):
     """Whether an Exec line starts an Electron (or other Chromium-packaged) binary itself:
@@ -154,6 +165,10 @@ def electron_switches(exec_line):
     switches = [ELECTRON_SWITCH]
     if os.environ.get('CABOOSE_GFXSTREAM_SOCKET') and os.environ.get('DISPLAY'):
         switches += ELECTRON_GPU_SWITCHES
+        node = render_node() if os.environ.get('LIBVA_DRIVER_NAME') == 'caboose' else None
+        if node:
+            switches = [switch + ELECTRON_VA_FEATURES if switch.startswith('--enable-features=') else switch
+                        for switch in switches] + [f'--hardware-video-device-path={node}']
     try:
         present = set(shlex.split(exec_line))
     except ValueError:

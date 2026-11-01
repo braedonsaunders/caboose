@@ -919,7 +919,7 @@ application is configured individually; each toolkit's own GPU path reaches the 
 | GTK 4 | `GSK_RENDERER=vulkan`. |
 | Qt 6 Quick | `QSG_RHI_BACKEND=vulkan`. |
 | Electron | `ELECTRON_OZONE_PLATFORM_HINT=x11`: an X11 client, as Chromium on this seat. The launcher (`apps/host/src/guest-apps.py`) starts an Electron binary with Chromium's switches for this seat: ANGLE on Vulkan, without the GPU sandbox. |
-| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
+| Chromium | `/etc/chromium.d/caboose-gpu`: an X11 client with ANGLE on Vulkan, with or without a phone, and no limit on GPU process restarts. With the Caboose VA-API driver it decodes video through it, on the phone ([gpu-media.md](gpu-media.md)). Its GPU process runs without Chromium's GPU sandbox, which keeps it from the broker's sockets; the managed policy `/etc/chromium/policies/managed/caboose-gpu.json` turns off the warning for that switch. |
 
 Once a second, while it changes, the broker writes each local process's GPU use beside its
 local socket as `usage.json` (mode 0600): `{ version: 1, processes: [{ pid, start,

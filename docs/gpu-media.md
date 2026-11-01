@@ -36,6 +36,12 @@ the phone what it decodes. A decoder context (`vaCreateContext`) is decoded on t
   the phone's pictures (Chromium's GPU process, mpv `--vo=gpu-next` through Vulkan, GL
   applications through Zink).
 
+On the seat that renders on the phone's GPU, Chromium and Electron applications decode through
+the driver (`guest/container/chromium-gpu`, and the launcher's Electron switches): VA-API video
+decoding on the computer's render node. They are X11 clients there, and take the GBM device
+they allocate their frames with from Xwayland's DRI3, which opens the render node
+([guest/xwayland](../guest/xwayland/README.md)).
+
 Otherwise the stream takes the path in [codec-passthrough.md](codec-passthrough.md): decoded
 locally into the surfaces. While the media connection is open, the driver advertises only the
 VA profiles the phone decodes, so an application that picks its codec by the hardware decoders
@@ -74,7 +80,11 @@ connection or lifetime.
   new serial.
 - A new surface, or one whose picture could not be rebuilt, is state 0: nothing to show.
 
-Surfaces the application allocates itself (imported through `vaCreateSurfaces`) carry no record.
+A surface the application allocates itself (imported through `vaCreateSurfaces`, as Chromium
+does) carries the record in the last page of its dma-buf when the buffer has a whole page after
+its planes, as the computer's GBM backend allocates linear NV12 and P010 buffers
+([guest/gpu/gbm](../guest/gpu/gbm/README.md)); any other imported surface carries none, and a
+stream whose picture would be shown in one is decoded locally, from its last key frame.
 
 ## Media stream
 
