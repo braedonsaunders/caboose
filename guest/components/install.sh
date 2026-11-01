@@ -54,6 +54,8 @@ install -Dm755 "$root/files/parked_quiesce.py" /opt/caboose/files/parked_quiesce
 install -Dm644 "$root/files/caboose-files.service" /etc/systemd/system/caboose-files.service
 install -Dm755 "$root/terminal/caboose-terminal.py" /opt/caboose/terminal/caboose-terminal.py
 install -Dm644 "$root/terminal/caboose-terminal.service" /etc/systemd/system/caboose-terminal.service
+install -Dm755 "$root/ai/caboose-ai.py" /opt/caboose/ai/caboose-ai.py
+install -Dm644 "$root/ai/caboose-ai.service" /etc/systemd/system/caboose-ai.service
 install -Dm755 "$root/ports/caboose-ports.py" /opt/caboose/ports/caboose-ports.py
 install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
 install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
@@ -91,7 +93,7 @@ else
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
-  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-bridge.service var-lib-caboose-depot.mount
+  systemctl enable caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-ai.service caboose-bridge.service var-lib-caboose-depot.mount
   systemctl disable cups.service cups.socket cups.path caboose-phone-printer.service
 fi
 if [[ "$mode" = vm ]]; then
@@ -107,6 +109,7 @@ if [[ "$mode" = vm ]]; then
   fi
   systemctl restart caboose-files.service
   systemctl restart caboose-terminal.service
+  systemctl restart caboose-ai.service
   # Only a host that shares its runtime depot gives the computer the caboose-depot tag.
   systemctl start var-lib-caboose-depot.mount 2>/dev/null || :
   # The bridge runs with the owner's display; restart it only where that display is up.

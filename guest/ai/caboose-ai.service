@@ -1,0 +1,13 @@
+[Unit]
+Description=Caboose AI: the phone's language models at localhost:11434
+
+[Service]
+Slice=caboose-workloads.slice
+User=caboose
+Group=caboose
+Environment=HOME=/home/caboose
+ExecStart=/usr/bin/python3 /opt/caboose/ai/caboose-ai.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

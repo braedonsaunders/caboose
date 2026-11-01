@@ -32,6 +32,8 @@
   "files/caboose-files.service",
   "terminal/caboose-terminal.py",
   "terminal/caboose-terminal.service",
+  "ai/caboose-ai.py",
+  "ai/caboose-ai.service",
   "ports/caboose-ports.py",
   "notifications/install.sh",
   "notifications/daemon.py",

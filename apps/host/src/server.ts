@@ -19,6 +19,7 @@ import { agentJob, parseJob, type ActivityService } from './activities.js'
 import { rm } from 'node:fs/promises'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Duplex } from 'node:stream'
+import { AiRelay, MAX_AI_EVENT_BYTES, type AiService } from './ai.js'
 import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, RequestTooLargeError, json, noContent, readJson } from './http.js'
@@ -101,6 +102,8 @@ export interface Controller extends ComputerDriver<Session> {
   fileService?(): FileService
   /** The guest's caboose-terminal, once the computer has woken. */
   terminalService?(): TerminalService
+  /** The guest's caboose-ai relay port (docs/ai.md), once the computer has woken. */
+  aiService?(): AiService | undefined
   activeResources(): ComputerResources | null
   hasSavedState(): boolean
   lastError?(): string | null
@@ -201,6 +204,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const gpuWss = new WebSocketServer({ noServer: true, maxPayload: GPU_MAX_MESSAGE, perMessageDeflate: false,
     handleProtocols: protocols => protocols.size === 1 && protocols.has(GPU_PROTOCOL) ? GPU_PROTOCOL : false })
   const gpuSockets = new Set<WebSocket>()
+  /** The phone's models for the computer's programs (docs/ai.md). */
+  const ai = new AiRelay(() => controller.aiService?.())
+  const aiWss = new WebSocketServer({ noServer: true, maxPayload: MAX_AI_EVENT_BYTES, perMessageDeflate: false })
+  const aiSockets = new Set<WebSocket>()
   const pendingGPUSockets = new Map<Duplex, string | undefined>()
   let gpuReservation: object | undefined
   /** The running relay's resume credential (`executor-resume`), the phone it was issued to,
@@ -508,6 +515,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   function broadcastSettings(): void { broadcast({ type: 'computer.settings', computer: managementStatus() }) }
   function closeSockets(): void {
     for (const socket of sockets) socket.terminate()
+    for (const socket of aiSockets) socket.terminate()
     for (const socket of pendingGPUSockets.keys()) socket.destroy()
     gpuResume?.relay.end()
   }
@@ -563,6 +571,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       }
     }
     guestEvents.setRunning(state === 'running')
+    ai.setRunning(state === 'running')
     if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
     else if (state === 'frozen') { agents.pause(); commands.pause() }
     else { agents.pause(); commands.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
@@ -1281,8 +1290,24 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     } catch { socket.destroy() }
   }
 
+  /**
+   * A phone serving its models to the computer's programs. It never wakes the computer or
+   * holds it awake: requests reach it while the computer runs.
+   */
+  function connectAI(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, principal: Principal): void {
+    if (url.search) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return }
+    aiWss.handleUpgrade(request, socket, head, client => {
+      aiSockets.add(client)
+      if (principal.phoneId) phoneSockets.set(client, principal.phoneId)
+      client.on('error', () => client.terminate())
+      client.once('close', () => { aiSockets.delete(client); phoneSockets.delete(client) })
+      ai.addPhone(client)
+    })
+  }
+
   function connect(request: IncomingMessage, socket: Duplex, head: Buffer, url: URL, path: string, principal: Principal): void {
     if (path === '/v1/terminal') return connectTerminal(request, socket, head, url, principal)
+    if (path === '/v1/ai') return connectAI(request, socket, head, url, principal)
     if (path === '/v1/gpu') return connectGPU(request, socket, head, url, principal)
     if (!computer.acceptsConnections) { socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n'); return }
     const offered = request.headers['sec-websocket-protocol']?.split(',').map(value => value.trim()) ?? []
@@ -1340,6 +1365,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
 
   async function shutdown(): Promise<void> {
+    ai.close()
     await tiering?.close()
     pieces.storage?.close()
     clearInterval(autoUpdates)
@@ -1361,6 +1387,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
    * disk goes. A components upgrade the host started on its own is waited for, not refused.
    */
   async function destroy(): Promise<void> {
+    ai.close()
     clearInterval(autoUpdates)
     clearInterval(networkPoll)
     guestEvents.stop()
@@ -1941,7 +1968,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
       const routed = target(url.pathname, principal)
       if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-      if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+      if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu' && routed.path !== '/v1/ai')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
       if (options.cluster) {
         const release = clusterAdmission.enter(routed.runtime.id, () => socket.destroy())
         let workDone = false, transportDone = socket.destroyed
