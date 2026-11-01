@@ -41,11 +41,14 @@ impl X11Windows {
         Ok(Self { conn, root })
     }
 
-    /// The top-level in `toplevels` that `window` is, or that it covers exactly, with the
-    /// PID of the X client that created `window`. None when it is neither, or unknown.
-    pub fn resolve(&self, window: Window, toplevels: &[Window]) -> Result<Option<(Window, u32)>, Error> {
+    /// The top-level in `toplevels` that `window` is, or that it covers, with the PID of the
+    /// X client that created `window`. None when it is neither, or unknown. X11 windows are
+    /// in display pixels at `scale` (x11_scale.rs) while the compositor sizes top-levels in
+    /// whole logical pixels, so a child sized to an odd display (a full-screen game's, 911
+    /// pixels high at scale 2) may fall short of its top-level by less than a logical pixel.
+    pub fn resolve(&self, window: Window, toplevels: &[Window], scale: f64) -> Result<Option<(Window, u32)>, Error> {
         let Some(toplevel) = self.toplevel_of(window, toplevels)? else { return Ok(None) };
-        if window != toplevel && !self.covers(window, toplevel)? {
+        if window != toplevel && !self.covers(window, toplevel, scale)? {
             return Ok(None);
         }
         Ok(self.client_pid(window)?.map(|pid| (toplevel, pid)))
@@ -66,13 +69,13 @@ impl X11Windows {
         Ok(None)
     }
 
-    /// The window lies at the top-level's origin and has its size, so its pictures are
-    /// the top-level's whole content.
-    fn covers(&self, window: Window, toplevel: Window) -> Result<bool, Error> {
+    /// The window lies at the top-level's origin and has its size, to within a logical
+    /// pixel, so its pictures are the top-level's whole content.
+    fn covers(&self, window: Window, toplevel: Window, scale: f64) -> Result<bool, Error> {
         let inner = self.conn.get_geometry(window)?.reply()?;
         let outer = self.conn.get_geometry(toplevel)?.reply()?;
         let at = self.conn.translate_coordinates(window, toplevel, 0, 0)?.reply()?;
-        Ok(at.same_screen && (at.dst_x, at.dst_y) == (0, 0) && (inner.width, inner.height) == (outer.width, outer.height))
+        Ok(at.same_screen && covers((at.dst_x, at.dst_y), (inner.width, inner.height), (outer.width, outer.height), scale))
     }
 
     fn client_pid(&self, window: Window) -> Result<Option<u32>, Error> {
@@ -80,6 +83,15 @@ impl X11Windows {
         let reply = self.conn.res_query_client_ids(&[spec])?.reply()?;
         Ok(local_client_pid(reply.ids.iter().map(|id| (id.spec.mask, id.value.as_slice()))))
     }
+}
+
+/// Whether a child at `at` in its top-level, of size `inner`, covers a top-level of size
+/// `outer`: at its origin, and no more than the rounding of one logical pixel at `scale`
+/// smaller in either direction, never larger.
+fn covers(at: (i16, i16), inner: (u16, u16), outer: (u16, u16), scale: f64) -> bool {
+    let slack = if scale.is_finite() && scale > 1.0 { scale.ceil() as u16 - 1 } else { 0 };
+    let within = |inner: u16, outer: u16| inner <= outer && outer - inner <= slack;
+    at == (0, 0) && within(inner.0, outer.0) && within(inner.1, outer.1)
 }
 
 /// The one LocalClientPID record, if the X server reported exactly one.
@@ -94,6 +106,26 @@ fn local_client_pid<'a>(ids: impl Iterator<Item = (ClientIdMask, &'a [u32])>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_child_covers_its_toplevel_to_within_a_logical_pixel() {
+        // Exactly, at any scale.
+        assert!(covers((0, 0), (1338, 912), (1338, 912), 1.0));
+        assert!(covers((0, 0), (1338, 912), (1338, 912), 2.0));
+        // A full-screen game's child on a 911-pixel display, its top-level 456 logical pixels at 2.
+        assert!(covers((0, 0), (1338, 911), (1338, 912), 2.0));
+        assert!(!covers((0, 0), (1338, 911), (1338, 912), 1.0));
+        // Up to two pixels at scale 3, one at a fractional scale below 2.
+        assert!(covers((0, 0), (930, 1354), (932, 1356), 3.0));
+        assert!(!covers((0, 0), (929, 1356), (932, 1356), 3.0));
+        assert!(covers((0, 0), (1599, 900), (1600, 900), 1.5));
+        assert!(!covers((0, 0), (1598, 900), (1600, 900), 1.5));
+        // Never offset, never larger, and no slack for a scale that is not one.
+        assert!(!covers((1, 0), (1338, 912), (1338, 912), 2.0));
+        assert!(!covers((0, 0), (1339, 912), (1338, 912), 2.0));
+        assert!(!covers((0, 0), (1337, 912), (1338, 912), f64::NAN));
+        assert!(!covers((0, 0), (1337, 912), (1338, 912), 0.5));
+    }
 
     #[test]
     fn exactly_one_nonzero_local_pid_is_an_answer() {

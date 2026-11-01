@@ -370,8 +370,11 @@ X11 `_NET_WM_PID` is not authority.
 - A Wayland bind matches a toplevel whose own `wl_surface` has that ID and whose
   accepted Wayland peer is the bound process (its held pidfd and the broker's).
 - An X11 bind matches a managed, non-override-redirect X11 toplevel that is the
-  window or that the window covers exactly (a descendant at the toplevel's origin
-  with its size, as Chromium's GPU process draws into). The X server's own record of
+  window or that the window covers (a descendant at the toplevel's origin with its
+  size, as Chromium's GPU process draws into, or short of it by less than a logical
+  pixel: X11 windows are in display pixels and toplevels are sized in whole logical
+  pixels, so a full-screen game's child on a display 911 pixels high at scale 2 is
+  one pixel shorter than its 912-pixel toplevel). The X server's own record of
   the client that created the window (X-Resource `LocalClientPID`) must be the bound
   process, the broker's pidfd must identify that live process (PID, start time and
   owner), and the owner must be the compositor's user. The grant is the toplevel's

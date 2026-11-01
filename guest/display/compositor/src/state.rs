@@ -348,7 +348,7 @@ impl State {
             _ => None,
         }).collect();
         let ids: Vec<u32> = toplevels.iter().map(|(xid, _)| *xid).collect();
-        match lookup.resolve(bind.object, &ids) {
+        match lookup.resolve(bind.object, &ids, self.x11_scale) {
             Ok(Some((toplevel, pid))) if pid == bind.pid &&
                 crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) =>
                 toplevels.iter().filter(|(xid, _)| *xid == toplevel).map(|(_, id)| *id).collect(),
