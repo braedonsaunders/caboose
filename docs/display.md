@@ -255,6 +255,9 @@ for byte.
   size, so the phone keeps it fixed-size and shows it scaled to fit. Resizing it, smaller
   or larger, would cut or pad its picture, since the application keeps drawing at the size
   it chose, and a swapchain child that no longer covers it would lose its GPU surface.
+  It is placed where it asked to be when its size hints give a position (Wine gives every
+  window one; a splash centres itself), otherwise centred, and moved only as far as keeps
+  it on its display.
 - A window configured `maximized: true` with a `geometry` takes that geometry and keeps it
   while it stays maximized; one maximized without a geometry (the application's own
   request) takes its display's rectangle. An X11 application's own configure request
