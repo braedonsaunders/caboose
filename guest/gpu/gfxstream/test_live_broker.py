@@ -1381,6 +1381,20 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
         finally:
             session.bindings.finish(session.binding_generation)
 
+    async def test_an_unanswered_opening_is_not_held_and_refuses_only_its_process(self):
+        session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'executor-resume'})
+        try:
+            started = asyncio.get_running_loop().time()
+            with self.assertRaises(asyncio.TimeoutError):
+                await session.phone_answer(asyncio.Event(), 0.1, held=False)
+            self.assertLess(asyncio.get_running_loop().time() - started, 1)
+            with mock.patch.object(session, 'phone_answer', side_effect=asyncio.TimeoutError):
+                with self.assertRaises(broker.OpeningUnanswered):
+                    await session.open_answer(asyncio.Event(), 'process')
+            self.assertFalse(session.failed)
+        finally:
+            session.bindings.finish(session.binding_generation)
+
     async def test_suspension_controls_need_executor_resume(self):
         session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features=set())
         try:

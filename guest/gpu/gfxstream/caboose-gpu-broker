@@ -66,6 +66,10 @@ def negotiate_hello(offered, phone_features):
     return HELLO_V4[:12] + struct.pack('<I', 0x70 | granted) + HELLO_V4[16:]
 
 
+class OpeningUnanswered(Exception):
+    """The phone did not answer a local process's or stream's opening in time."""
+
+
 # Executor resume (docs/gpu-live.md, "Resuming an executor"): sequenced envelopes sent to the
 # phone are kept until it acknowledges them, at most this many bytes and envelopes; a full
 # window holds the sender back. The phone is acknowledged after this many received bytes, or
@@ -662,13 +666,14 @@ class Session:
         self.failed = True
         self.writer.close()
 
-    async def phone_answer(self, event, timeout):
+    async def phone_answer(self, event, timeout, *, held=True):
         """Waits for an answer from the phone at most `timeout` seconds of time it is not
         suspended: a suspended executor answers nothing until it resumes. In a resumable
         session the phone may also be away while the host holds its transport, unseen here,
-        so the wait is bounded by the longest hold instead; the session ends with the
-        transport if the phone does not come back."""
-        remaining = max(timeout, RESUME_HOLD_SECONDS) if self.resumable else timeout
+        so a `held` wait (a retirement, whose failure ends the session) is bounded by the
+        longest hold instead. A new process's opening is not held: a phone that does not
+        answer it in time leaves that process on the computer's own drivers."""
+        remaining = max(timeout, RESUME_HOLD_SECONDS) if self.resumable and held else timeout
         while not event.is_set():
             if self.suspended:
                 waits = [asyncio.ensure_future(event.wait()), asyncio.ensure_future(self.guest_open.wait())]
@@ -682,6 +687,15 @@ class Session:
             except asyncio.TimeoutError:
                 remaining -= time.monotonic() - started
                 if remaining <= 0: raise
+
+    async def open_answer(self, event, what):
+        """A new process's or stream's opening: unanswered in time, that process alone is
+        refused (it stays on the computer's own drivers) and the session goes on."""
+        try:
+            await self.phone_answer(event, 10, held=False)
+        except asyncio.TimeoutError:
+            print(f'CABOOSE_GPU_BROKER the phone did not answer a {what} opening; refusing that process', file=sys.stderr, flush=True)
+            raise OpeningUnanswered() from None
 
     async def guest_read(self):
         """Waits while the executor is suspended; the caller then holds a read until read_done."""
@@ -1232,12 +1246,12 @@ class Session:
                 local_aborted = True
                 return
             process['streams'].add(stream_id)
-            await self.phone_answer(process['ready'], 10)
+            await self.open_answer(process['ready'], 'process')
             stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(),
                       'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
-            await self.phone_answer(stream['ready'], 10)
+            await self.open_answer(stream['ready'], 'stream')
             try:
                 writer.write(reply)
                 await writer.drain()
@@ -1302,6 +1316,12 @@ class Session:
             # Reject an excess local stream without taking ownership or poisoning
             # already admitted processes.
             pass
+        except OpeningUnanswered:
+            # The phone did not open this process or stream: only it is refused. A process
+            # left without streams is stopped like any other that went idle.
+            if stream_id is None and process_id is not None and not self.draining:
+                with contextlib.suppress(OSError, RuntimeError, BufferError, KeyError):
+                    self.stop_process_if_idle(process_id)
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError) as error:
             self.fail(f'local stream {stream_id} of process {process_id}: {type(error).__name__}: {error}')
         finally:
