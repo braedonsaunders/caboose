@@ -21,13 +21,14 @@ program=$!
 sleep 6; kill $landscape; sleep 1
 caboose-display-probe --url ws://127.0.0.1:14690/ --token-file /tmp/token --display 932x1356@60x3 --duration 400 >/dev/null 2>&1 &
 sleep 10
+sed -i 's/\r$//' /tmp/dpi.out
 echo "before: $(head -1 /tmp/dpi.out)"
 echo "after:  $(tail -1 /tmp/dpi.out)"
 grep -a "Assertion" /tmp/dpi.err | head -2
-# Wine keeps ENUM_CURRENT_SETTINGS at 1338x911 (emulate_modeset) while WINE_ENUM_PHYSICAL_SETTINGS
-# becomes 932x1356; MDT_RAW_DPI is round(932*96/1338)=67 by round(1356*96/911)=143.
-if kill -0 $program 2>/dev/null && grep -q "raw dpi 67 143" /tmp/dpi.out; then
-  echo "PASS: $(grep 'raw dpi 67 143' /tmp/dpi.out | tail -1)"
+if kill -0 $program 2>/dev/null && grep -q "^screen 1338x911 raw dpi 96 96$" /tmp/dpi.out && \
+   [ "$(tail -1 /tmp/dpi.out)" = "screen 932x1356 raw dpi 96 96" ]; then
+  echo "PASS: $(tail -1 /tmp/dpi.out)"
 else
   echo "FAIL: $(tail -1 /tmp/dpi.out)"
+  exit 1
 fi

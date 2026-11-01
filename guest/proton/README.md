@@ -6,7 +6,7 @@ the patches here. Everything else in the release is used as GE ships it.
 
 | Patch | Module | What it fixes |
 | --- | --- | --- |
-| `win32u-monitor-dpi-ratio.patch` | `win32u.so` (x86_64 and i386) | `monitor_get_dpi()` packs a display's physical size over its current size, times its DPI, into 16 bits each, and asserted that it fits. After a mode change the two sizes can share no factor: a phone turning from 1338x911 to 932x1356 while a game runs gives 1356 × 96 over 911, and every Wine process that then asked for a DPI ended (`sysparams.c:2884: monitor_get_dpi: Assertion 'num * dpi / d < 65536' failed`). The ratio is now reduced and halved until it fits, and `get_monitor_dpi()` / `get_monitor_from_rect()` unpack it with `round_fractional_dpi()` instead of returning the packed `(den << 16) \| num` bitfield to `GetDpiForMonitor`. |
+| `win32u-monitor-dpi-ratio.patch` | `win32u.so` (x86_64 and i386) | In Proton's `emulate_modeset` path, `add_modes()` read `ENUM_CURRENT_SETTINGS` back as a virtual mode even when the host physical display changed (e.g. a phone turning from 1338x911 to 932x1356 while a game runs), keeping `source->current` at 1338x911 while `source->physical` became 932x1356. That kept the desktop at 1338x911, produced an asymmetric 67x143 raw DPI, and crashed every Wine process that asked for a DPI (`sysparams.c:2884: monitor_get_dpi: Assertion 'num * dpi / d < 65536' failed` on 1356 × 96 / 911). `add_modes()` now updates `ENUM_CURRENT_SETTINGS` and `ENUM_REGISTRY_SETTINGS` when `WINE_ENUM_PHYSICAL_SETTINGS` changes, `monitor_get_dpi()` reduces and halves the ratio until it fits 16 bits instead of asserting, and `get_monitor_dpi()` / `get_monitor_from_rect()` unpack fractional DPIs with `round_fractional_dpi()`. |
 | `ntdll-fsync-alert-fd.patch` | `ntdll.so` (x86_64 and i386) | When `fsync` is enabled, `get_inproc_alert_fd()` stores the thread's `fsync_shm_idx` in `alert_fd` (`TEB+0x394` / `0x230`) rather than a file descriptor, but `pthread_exit_wrapper()` unconditionally called `close(alert_fd)`, closing whichever fd in the process matched that index on thread exit. Now closes `alert_fd` only when `!do_fsync()`. |
 
 ## Build
@@ -49,4 +49,4 @@ undoes it.
 `check-rotation.sh` (run with Docker on the GPU workstation) starts caboose-display at
 1338x911, runs a DPI-aware Wine program with the release's Wine, and turns the display to
 932x1356 under it: with GE's `win32u.so` the program ends on the assertion, with the
-rebuilt one it keeps running and reports the rotated raw DPI (`67 143`).
+rebuilt one it keeps running and reports the rotated screen and DPI (`screen 932x1356 raw dpi 96 96`).
