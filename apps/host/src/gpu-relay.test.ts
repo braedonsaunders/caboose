@@ -323,3 +323,19 @@ it('ends a parked relay when the guest side ends (a broker or display restart)',
   await relay.done
   expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
 })
+
+it('settles once the phone side closes after the guest side ended the relay', async () => {
+  const { client, upstream, relay } = resumable()
+  let finished = false
+  void relay.done.then(() => { finished = true })
+  // The guest side ends first; the phone socket's close event comes later.
+  client.terminate = () => { (client as unknown as { readyState: number }).readyState = 2 }
+  upstream.peerClose(1006)
+  expect(relay.ended).toBe(true)
+  await Promise.resolve()
+  expect(finished).toBe(false)
+  client.peerClose(1006)
+  await relay.done
+  expect(finished).toBe(true)
+  expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
+})

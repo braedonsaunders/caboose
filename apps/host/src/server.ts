@@ -1288,7 +1288,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   function resumeGPU(request: IncomingMessage, socket: Duplex, head: Buffer, presented: string, principal: Principal, refuse: (status: string) => void): void {
     const offered = Buffer.from(presented, 'base64url')
     const current = gpuResume
-    if (!current || offered.length !== current.credential.length || !timingSafeEqual(offered, current.credential) ||
+    if (!current || current.relay.ended || offered.length !== current.credential.length || !timingSafeEqual(offered, current.credential) ||
       current.phoneId !== principal.phoneId || !computer.acceptsConnections) return refuse('410 Gone')
     gpuResumeHeaders.set(request, presented)
     try {

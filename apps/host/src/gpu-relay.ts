@@ -70,6 +70,8 @@ export interface GPURelay {
   attach(client: WebSocket): boolean
   /** Ends both sides abruptly (the computer parks, the phone is revoked). */
   end(): void
+  /** Whether it has ended or is ending: a phone can no longer be attached. */
+  readonly ended: boolean
 }
 
 /** Opaque live command/reply transport. A flushed send is not GPU completion.
@@ -99,7 +101,7 @@ export function startGPURelay(first: WebSocket, options: {
   features?: readonly string[]
   resumable?: boolean
 }): GPURelay {
-  if (first.readyState !== WebSocket.OPEN) return { done: Promise.resolve(), attach: () => false, end: () => {} }
+  if (first.readyState !== WebSocket.OPEN) return { done: Promise.resolve(), attach: () => false, end: () => {}, ended: true }
   const url = gpuUpstreamURL(options.displayURL)
   first.pause()
   const upstream = new WebSocket(url, GPU_PROTOCOL, {
@@ -115,6 +117,7 @@ export function startGPURelay(first: WebSocket, options: {
   })
   let attachPhone: (client: WebSocket) => boolean = () => false
   let endRelay: () => void = () => {}
+  let isEnded: () => boolean = () => false
   const done = new Promise<void>(resolve => {
     let phone: WebSocket | undefined = first
     // Each phone side gets a generation; callbacks of an earlier one are ignored.
@@ -150,7 +153,8 @@ export function startGPURelay(first: WebSocket, options: {
     let suspended = false
     // The phone side is lost: a resumable relay keeps the guest side for a while.
     function lose(reason: string, hold = suspended ? GPU_SUSPEND_HOLD_MS : GPU_RESUME_HOLD_MS): void {
-      if (stopped) return
+      // After a stop, the phone side's own close is the last thing the relay waits for.
+      if (stopped) { settle(); return }
       if (!options.resumable) { stop(reason); return }
       const lost = phone
       phone = undefined
@@ -243,6 +247,7 @@ export function startGPURelay(first: WebSocket, options: {
     }
     wire(first)
     endRelay = () => stop('ended by the host')
+    isEnded = () => stopped || settled || closeTimer !== undefined
     attachPhone = client => {
       if (stopped || settled || closeTimer) return false
       const previous = phone
@@ -265,5 +270,5 @@ export function startGPURelay(first: WebSocket, options: {
       phone.resume()
     })
   })
-  return { done, attach: client => attachPhone(client), end: () => endRelay() }
+  return { done, attach: client => attachPhone(client), end: () => endRelay(), get ended() { return isEnded() } }
 }

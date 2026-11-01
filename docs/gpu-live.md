@@ -474,10 +474,10 @@ SNAPSHOT_REFUSED's reason, and refuses suspension controls in a session that is 
 a second EXECUTOR_SUSPEND, QUIESCED outside a suspension, or EXECUTOR_RESUME without one.
 The broker's own deadlines for the phone's answers (a process or stream opening, a stream's
 FIN, a process or surface retiring) count only time the executor is not suspended, and in a
-resumable session a retirement's lasts at least the host's longest hold, since the phone may
-be away unseen while the relay holds its transport. A new process's or stream's opening keeps
-its 10 s: a phone that does not answer it refuses only that process, which then stays on the
-computer's own drivers, and the session goes on. Local
+resumable session last at least the host's longest hold, since the phone may be away unseen
+while the relay holds its transport. A process or stream the phone has not yet opened is
+never given up on alone: the phone would then receive its surfaces and further openings
+under identities it does not know. Local
 processes keep their streams and bindings throughout; nothing is reported to the
 compositor, whose grants stay as they were, unless the relay's hold expires and the executor
 is lost.
