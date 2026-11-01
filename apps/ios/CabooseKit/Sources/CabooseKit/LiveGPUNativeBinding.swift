@@ -273,7 +273,9 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var started = false
     private var finished = false
     private var negotiated = false
-    private var compressedTransport = false // guarded by lock for network admission
+    private var compression: LiveGPUCompression.Algorithm? // guarded by lock for network admission
+    private var compressedTransport: Bool { compression != nil }
+    private var zstd: LiveGPUZstdStream? // worker only: the session's one zstd stream
     private var drainRequested = false
     private var drainSent = false
     private var peerRevoked = false
@@ -366,14 +368,24 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     public func consume(_ bytes: Data) throws {
         guard lock.withLock({ started && !cancelled && !finished && !peerRevoked }) else { throw LiveGPUError.closed }
         do {
-            let compressed = lock.withLock { compressedTransport }
-            if compressed {
+            let algorithm = lock.withLock { compression }
+            if let algorithm {
                 guard decoder.atFrameBoundary else { throw LiveGPUBindingError.protocolViolation("fragmented compressed transport") }
                 if LiveGPUCompression.isCompressed(bytes) {
-                    let decoded = try LiveGPUCompression.decode(bytes)
+                    let decoded: Data
+                    switch algorithm {
+                    case .deflate: decoded = try LiveGPUCompression.decode(bytes)
+                    case .zstdStream:
+                        guard let zstd else { throw LiveGPUCompression.invalid() }
+                        decoded = try zstd.decode(bytes)
+                    }
                     try decoder.feed(decoded) { try handle($0) }
                 } else {
                     try LiveGPUCompression.requireWholeEnvelope(bytes)
+                    // On the zstd stream every DATA envelope is a record of it.
+                    if algorithm == .zstdStream, bytes[bytes.startIndex + 6] == 7, bytes[bytes.startIndex + 7] == 0 {
+                        throw LiveGPUCompression.invalid()
+                    }
                     try decoder.feed(bytes) { try handle($0) }
                 }
             } else {
@@ -511,13 +523,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             onQuiesced?()
             if resumeAfterQuiesce { try finishResume() }
         case .transportConfig:
-            guard frame.payload == LiveGPUCompression.offer, lastProcess == 0,
+            guard let algorithm = LiveGPUCompression.algorithm(ofOffer: frame.payload), lastProcess == 0,
                   !drainRequested, !lock.withLock({ compressedTransport }) else {
                 throw LiveGPUBindingError.protocolViolation("unexpected compression negotiation")
             }
+            if algorithm == .zstdStream { zstd = try LiveGPUZstdStream() }
             // Publish the accounting mode before admitting the acknowledgement.
-            lock.withLock { compressedTransport = true }
-            try send(.transportReady, payload: LiveGPUCompression.offer)
+            lock.withLock { compression = algorithm }
+            try send(.transportReady, payload: frame.payload)
         case .processOpen:
             // An opening the phone cannot honour is left unanswered and logged; the executor and
             // every other process go on (the broker ends the waiting process).

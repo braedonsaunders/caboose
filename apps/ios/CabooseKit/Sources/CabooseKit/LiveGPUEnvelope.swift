@@ -57,7 +57,7 @@ struct LiveGPUEnvelope: Equatable {
         try validate(length: payload.count)
         if kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: kind, payload: payload) }
         if kind == .transportConfig || kind == .transportReady {
-            guard payload == LiveGPUCompression.offer else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
+            guard LiveGPUCompression.algorithm(ofOffer: payload) != nil else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
         }
         var result = Data([0x43, 0x47, 0x4c, 0x56])
         func append<T: FixedWidthInteger>(_ value: T) {
@@ -126,7 +126,7 @@ final class LiveGPUEnvelopeDecoder {
                 if sequence == UInt64.max { exhausted = true } else { sequence += 1 }
                 if frame.kind.isSurface { _ = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload) }
                 if frame.kind == .transportConfig || frame.kind == .transportReady {
-                    guard frame.payload == LiveGPUCompression.offer else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
+                    guard LiveGPUCompression.algorithm(ofOffer: frame.payload) != nil else { throw LiveGPUBindingError.protocolViolation("invalid compression offer") }
                 }
                 try deliver(frame)
             }
