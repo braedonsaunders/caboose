@@ -58,12 +58,20 @@ constexpr size_t kGuestFramesInFlight = 8;
 static VkResult presentFailureResult(Status s) {
     return s.hasVk && VkResult(s.vk)==VK_ERROR_DEVICE_LOST ? VK_ERROR_DEVICE_LOST : VK_ERROR_OUT_OF_DATE_KHR;
 }
+// A swapchain call that fails as device loss says why, once per call: the application only
+// sees VK_ERROR_DEVICE_LOST and recreates its device.
+static VkResult wsiFailed(const char* call, const char* reason, VkResult cause) {
+    std::fprintf(stderr,"CABOOSE_GPU_WSI_FAILED call=%s reason=\"%s\" result=%d\n",call,reason,int(cause));
+    return VK_ERROR_DEVICE_LOST;
+}
 static bool orderedPresentFailed(DeviceSwapchain& swap, VkResult* result) {
     if (caboose_gfxstream_ordered_present!=1 || !swap.native) return false;
     swap.surface->client.pump();
     Status failure{};
     if (!swap.surface->client.presentFailed(swap.native,&failure)) return false;
     swap.poisoned=true; *result=presentFailureResult(failure);
+    std::fprintf(stderr,"CABOOSE_GPU_WSI_FAILED reason=\"earlier present\" native=%d vk=%d\n",
+                 int(failure.nativeError),failure.hasVk ? int(failure.vk) : 0);
     return true;
 }
 static std::shared_ptr<DeviceSwapchain> lookupSwapchain(VkSwapchainKHR handle) {
@@ -159,8 +167,8 @@ static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphor
             auto* tracker=gfxstream::vk::ResourceTracker::get();
             VkSubmitInfo signal{}; signal.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
             signal.signalSemaphoreCount=semaphore ? 1 : 0; signal.pSignalSemaphores=&semaphore;
-            if (tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap.handoffQueue,semaphore ? 1 : 0,&signal,fence)!=VK_SUCCESS)
-                return VK_ERROR_DEVICE_LOST;
+            const VkResult submitted=tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap.handoffQueue,semaphore ? 1 : 0,&signal,fence);
+            if (submitted!=VK_SUCCESS) return wsiFailed("acquire","hand-off submit",submitted);
             if (swap.native) client.acquireLocally(swap.native,uint32_t(i));
             image.held=true; swap.nextImage=i+1; *index=uint32_t(i);
             return VK_SUCCESS;
@@ -340,7 +348,7 @@ static VkResult createNative(DeviceSwapchain& swap) {
     for (const auto& image:swap.images) images.push_back(get_host_u64_VkImage(image.image));
     // The phone maps images this device stream created, allocated and bound.
     if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
-        return VK_ERROR_DEVICE_LOST;
+        return wsiFailed("swapchain","deferred replies",VK_ERROR_DEVICE_LOST);
     auto mapped=surface.client.mapSwapchain(swap.native,images,deadline(),swap.mailbox ? 3u : 1u);
     result=apiStatus(status(mapped.body,48));
     if (result!=VK_SUCCESS) {
@@ -598,13 +606,15 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             VkSubmitInfo handoff{}; handoff.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
             handoff.waitSemaphoreCount=1; handoff.pWaitSemaphores=&slot.semaphore; handoff.pWaitDstStageMask=&stage;
             handoff.signalSemaphoreCount=internalSemaphore ? 1 : 0; handoff.pSignalSemaphores=&internalSemaphore;
-            if (tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,1,&handoff,slot.fence)!=VK_SUCCESS)
-                return VK_ERROR_DEVICE_LOST;
+            if (const VkResult submitted=tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,1,&handoff,slot.fence);
+                submitted!=VK_SUCCESS)
+                return wsiFailed("acquire","hand-off submit",submitted);
             slot.fenceSubmitted=true;
             // An empty batch's fence signals once the hand-off before it completed.
-            if (internalFence &&
-                tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,0,nullptr,internalFence)!=VK_SUCCESS)
-                return VK_ERROR_DEVICE_LOST;
+            if (internalFence) {
+                const VkResult submitted=tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap->handoffQueue,0,nullptr,internalFence);
+                if (submitted!=VK_SUCCESS) return wsiFailed("acquire","fence submit",submitted);
+            }
             *index=acquired;
             return result;
         }
@@ -614,7 +624,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
         uint64_t request=++surface.query;
         // The phone signals a semaphore and fence the device stream created.
         if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
-            return VK_ERROR_DEVICE_LOST;
+            return wsiFailed("acquire","deferred replies",VK_ERROR_DEVICE_LOST);
         surface.client.beginAcquire(swap->native,request,boxedSemaphore,boxedFence,timeout,deadline());
         // A transport deadline is never relabelled as a Vulkan acquire timeout.
         auto reply=[&] { caboose::completion::WaitTimer acquired{21004};
@@ -687,9 +697,12 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
                 consume.waitSemaphoreCount=uint32_t(internalWaits.size());
                 consume.pWaitSemaphores=internalWaits.data(); consume.pWaitDstStageMask=stages.data();
                 swap->images[index].held=false;
-                if (!internalWaits.empty() && gfxstream::vk::ResourceTracker::get()->on_vkQueueSubmit(
+                if (!internalWaits.empty()) {
+                    const VkResult submitted=gfxstream::vk::ResourceTracker::get()->on_vkQueueSubmit(
                         gfxstream::vk::ResourceTracker::getThreadLocalEncoder(),VK_SUCCESS,queue->internal_object,
-                        1,&consume,VK_NULL_HANDLE)!=VK_SUCCESS) return VK_ERROR_DEVICE_LOST;
+                        1,&consume,VK_NULL_HANDLE);
+                    if (submitted!=VK_SUCCESS) return wsiFailed("present","wait submit",submitted);
+                }
                 if (made==VK_NOT_READY) { if (info->pResults) info->pResults[0]=VK_SUCCESS; return VK_SUCCESS; }
                 if (made==VK_ERROR_DEVICE_LOST) return made;
                 // The window it bound to needs another swapchain (size, format).
@@ -727,7 +740,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         // The phone presents on the queue after the work, and waits for the semaphores,
         // the device stream submitted.
         if (!gfxstream::vk::ResourceTracker::getThreadLocalEncoder()->cabooseDrainDeferredObjects(true))
-            return VK_ERROR_DEVICE_LOST;
+            return wsiFailed("present","deferred replies",VK_ERROR_DEVICE_LOST);
         auto reply=surface.client.presentIndexed(swap->native,serial,
             get_host_u64_VkQueue(queue->internal_object),index,swap->family,waits,deadline());
         auto result=apiStatus(status(reply.body,48));
