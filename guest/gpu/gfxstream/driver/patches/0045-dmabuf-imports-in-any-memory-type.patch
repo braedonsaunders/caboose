@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sun, 1 Nov 2026 00:00:00 +0000
+Subject: [PATCH 45/45] Take dma-buf imports and exports to the dma-buf paths in any
+ memory type
+
+The socket path gave every host-visible allocation a mapped-memory shadow and
+refused any other structure in its chain, so a dma-buf import into a host-visible
+type (every type, on a lavapipe decoder) failed with
+VK_ERROR_FEATURE_NOT_PRESENT before the video-surface import could take it.
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 04fc822..c873eb9 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -4060,9 +4060,17 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
+ 
+     const bool requestedMemoryIsHostVisible =
+         isHostVisible(&physicalDeviceMemoryProps, pAllocateInfo->memoryTypeIndex);
++    // A dma-buf import or export (a video surface, a phone-resident buffer) takes the
++    // dma-buf paths below in any memory type, never the mapped-memory shadow: where the
++    // decoder's types are all host-visible (lavapipe), the import's type is too.
++    const VkImportMemoryFdInfoKHR* cabooseImportFd =
++        vk_find_struct_const(pAllocateInfo, IMPORT_MEMORY_FD_INFO_KHR);
++    const bool cabooseDmabufMemory =
++        (cabooseImportFd && (cabooseImportFd->handleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)) ||
++        (exportAllocateInfoPtr && (exportAllocateInfoPtr->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT));
+     // Experimental socket path: explicit flush/invalidate only. Vulkan instance
+     // creation remains gated until coherent mappings and session loss are handled.
+-    if (std::getenv("CABOOSE_GFXSTREAM_SOCKET") && requestedMemoryIsHostVisible) {
++    if (std::getenv("CABOOSE_GFXSTREAM_SOCKET") && requestedMemoryIsHostVisible && !cabooseDmabufMemory) {
+         for (auto* ext = static_cast<const VkBaseInStructure*>(pAllocateInfo->pNext); ext; ext = ext->pNext) {
+             if (ext->sType != VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO &&
+                 ext->sType != VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO &&
