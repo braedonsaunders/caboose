@@ -142,7 +142,7 @@ describe('guest-apps.py', () => {
     expect(recorded()).toHaveLength(2)
   })
 
-  it('launches an Electron binary with its pages\' accessibility trees, through a copy of the entry', () => {
+  it('launches an Electron binary with its pages\' accessibility trees, and on the GPU seat with Vulkan, through a copy of the entry', () => {
     const app = mkdtempSync(join(tmpdir(), 'caboose-electron-test-')); roots.push(app)
     mkdirSync(join(app, 'resources'))
     for (const file of ['v8_context_snapshot.bin', 'resources.pak']) writeFileSync(join(app, file), '')
@@ -156,11 +156,20 @@ describe('guest-apps.py', () => {
     const launched = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'notes.desktop'], run.options)
     expect(launched.status).toBe(0)
     expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
-      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility`)
+      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility\n`)
+    // On the seat that renders on the phone's GPU it also renders with ANGLE on Vulkan.
+    const gpu = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, 'CABOOSE_GFXSTREAM_SOCKET=/run/caboose-gpu/gpu.sock', 'DISPLAY=:140',
+      ...run.command, 'launch', 'notes.desktop'], run.options)
+    expect(gpu.status).toBe(0)
+    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
+      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility --ozone-platform=x11 --ignore-gpu-blocklist`
+        + ' --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'
+        + ' --disable-gpu-sandbox --disable-gpu-process-crash-limit\n')
     // Anything else launches from its own entry, unchanged.
     expect(spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'plain.desktop'], run.options).status).toBe(0)
     expect(existsSync(join(runtime, 'caboose-launch', 'plain.desktop'))).toBe(false)
-    expect(recorded()).toEqual([{ launch: 'notes.desktop', files: [] }, { launch: 'plain.desktop', files: [] }])
+    expect(recorded()).toEqual([{ launch: 'notes.desktop', files: [] }, { launch: 'notes.desktop', files: [] },
+      { launch: 'plain.desktop', files: [] }])
   })
 })
 
