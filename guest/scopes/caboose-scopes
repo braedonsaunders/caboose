@@ -201,7 +201,11 @@ def observe(request):
             except OSError:
                 pass
             marks = core.launch_marks(environ) if environ else None
-            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None}
+            try:
+                flatpak = core.flatpak_app(Path(f'/proc/{pid}/root/.flatpak-info').read_text()[:65536])
+            except (OSError, UnicodeDecodeError):
+                flatpak = None
+            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None, 'flatpak': flatpak}
         return out
     if op == 'windows':
         answer = control('windows')
@@ -805,7 +809,7 @@ class Daemon:
         elif desktop_id is None and new.app_id:
             desktop_id = self.entries.for_window(new.app_id)
         meta = {'origin': new.origin, 'desktopId': desktop_id, 'appId': new.app_id, 'game': new.game,
-                'source': new.source, 'createdAt': now, 'name': self.name_for(new, desktop_id)}
+                'source': new.source, 'flatpak': new.flatpak, 'createdAt': now, 'name': self.name_for(new, desktop_id)}
         self.scopes[name] = meta
         self.save()
         return name
@@ -865,13 +869,14 @@ class Daemon:
         with self.lock:
             self.entries.refresh()
             session = f'{OWNER}/{core.SESSION}'
-            # The owner's processes started through `docker exec` arrive in init.scope.
+            # The owner's processes started through `docker exec` arrive in init.scope; other
+            # users' (the system bus's) stay there with root's.
             for pid in procs_of(INIT):
                 if pid == self.observer.pid:
                     continue
                 status = read(f'/proc/{pid}/status')
                 try:
-                    if status and core.parse_uid(status) != 0:
+                    if status and core.parse_uid(status) == self.uid:
                         move(pid, session)
                 except ValueError:
                     pass
@@ -923,10 +928,11 @@ class Daemon:
                 info = info if isinstance(info, dict) else {}
                 marks = info.get('marks')
                 self.argv[keys[pid]] = {'argv': info.get('argv') if isinstance(info.get('argv'), list) else None,
-                                       'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None}
+                                       'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None,
+                                       'flatpak': info.get('flatpak') if isinstance(info.get('flatpak'), str) else None}
         for pid, proc in procs.items():
             info = self.argv.get(keys[pid], {})
-            proc.argv, proc.marks = info.get('argv'), info.get('marks')
+            proc.argv, proc.marks, proc.flatpak = info.get('argv'), info.get('marks'), info.get('flatpak')
         return procs
 
     def reap(self, now):
@@ -947,6 +953,20 @@ class Daemon:
             changed = True
         if changed:
             self.save()
+
+    def placement_files(self):
+        """The GPU layer's per-process placement files (docs/gpu-live.md)."""
+        directory = Path('/run/user') / str(self.uid) / 'caboose-gpu' / 'placement'
+        out = {}
+        try:
+            paths = sorted(directory.iterdir())[:4096]
+        except OSError:
+            return out
+        for path in paths:
+            text = read(path)
+            if text is not None and len(text) < 256:
+                out[path.name] = text
+        return out
 
     def gpu_entries(self):
         path = Path('/run/user') / str(self.uid) / 'caboose-gpu' / 'usage.json'
@@ -1049,6 +1069,7 @@ class Daemon:
         if now - self.listened_at >= LISTEN_SECONDS:
             self.listening = self.listeners(members, procs, now)
             self.listened_at = now
+        placements = core.gpu_placements(self.placement_files(), {pid: proc.start for pid, proc in procs.items()})
         ports = {}
         for listener in self.listening:
             ports.setdefault(listener['owner'], []).append(
@@ -1061,6 +1082,7 @@ class Daemon:
             gpu = core.gpu_usage(gpu_now.get(name, []), self.gpu, seconds) if name in gpu_now else None
             app = core.app_entry(name, meta, counters, previous, seconds, processes, windows, gpu)
             app['ports'] = ports.get(name, []) if name != core.SESSION else ports.get('caboose', [])
+            app['gpuPlacement'] = core.app_placement(placements[p['pid']] for p in processes if p['pid'] in placements)
             apps.append(app)
         for name in sorted(self.supervisor.services):
             try:

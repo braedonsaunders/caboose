@@ -184,11 +184,21 @@ public struct RunningApp: Decodable, Identifiable, Equatable, Sendable {
     public var ports: [Port]
     /// At most 256, busiest first.
     public var processes: [Process]
+    /// Where its GPU work runs, when the GPU layer knows: on the phone, or still on the
+    /// computer's CPU until the app is relaunched (it started before the phone attached).
+    public var gpuPlacement: GPUPlacement?
+
+    public enum GPUPlacement: String, Sendable {
+        case phone
+        case cpuUntilRelaunch = "cpu-until-relaunch"
+    }
 
     public init(id: String, kind: Kind = .app, desktopId: String? = nil, name: String, origin: Origin = .launch,
                 startedAt: Double = 0, windows: [Int] = [], cpuPercent: Double = 0, memoryBytes: Int = 0,
-                io: IO = IO(), gpu: GPU? = nil, processCount: Int? = nil, ports: [Port] = [], processes: [Process] = []) {
+                io: IO = IO(), gpu: GPU? = nil, processCount: Int? = nil, ports: [Port] = [], processes: [Process] = [],
+                gpuPlacement: GPUPlacement? = nil) {
         self.ports = ports
+        self.gpuPlacement = gpuPlacement
         self.id = id
         self.kind = kind
         self.desktopId = desktopId
@@ -206,6 +216,7 @@ public struct RunningApp: Decodable, Identifiable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, desktopId, name, origin, startedAt, windows, cpuPercent, memoryBytes, io, gpu, processCount, ports, processes
+        case gpuPlacement
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +238,7 @@ public struct RunningApp: Decodable, Identifiable, Equatable, Sendable {
         processes = try c.decodeIfPresent([Lossy<Process>].self, forKey: .processes)?.compactMap(\.value) ?? []
         processCount = try c.integer(.processCount) ?? processes.count
         ports = (try? c.decodeIfPresent([Lossy<Port>].self, forKey: .ports))??.compactMap(\.value) ?? []
+        gpuPlacement = (try? c.decodeIfPresent(String.self, forKey: .gpuPlacement)).flatMap { $0.flatMap(GPUPlacement.init(rawValue:)) }
     }
 }
 

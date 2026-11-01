@@ -138,6 +138,35 @@ class Classify(unittest.TestCase):
         moves = self.classify(procs, {9: SESSION, 10: SESSION, 11: SESSION, 12: SESSION})
         self.assertEqual(moves, [([9, 10, 11], NewScope('caboose-agent', 'agent', source=SESSION))])
 
+    def test_flatpak_sandboxes_are_adopted_with_their_launchers(self):
+        # Steam as a Flatpak started without launch marks: flatpak run became bwrap, its
+        # sandbox runs Steam; the portal spawned a second sandbox for the same application.
+        procs = [Proc(2754, 0, argv=['/usr/bin/bwrap.distrib', '--ro-bind-fd', '25', '/usr']),
+                 Proc(2797, 2754, argv=['/usr/bin/bwrap.distrib'], flatpak='com.valvesoftware.Steam'),
+                 Proc(2798, 2797, argv=['bash', 'steam.sh'], flatpak='com.valvesoftware.Steam'),
+                 Proc(2837, 1, argv=['/usr/libexec/flatpak-portal']),
+                 Proc(2980, 2837, argv=['/usr/bin/bwrap.distrib'], flatpak='com.valvesoftware.Steam'),
+                 Proc(3008, 2980, argv=['pv-adverb'], flatpak='com.valvesoftware.Steam'),
+                 Proc(4000, 1, argv=['/usr/bin/bwrap'], flatpak='org.gimp.GIMP')]
+        membership = {p.pid: SESSION for p in procs}
+        moves = self.classify(procs, membership)
+        self.assertEqual(moves, [
+            ([2754, 2797, 2798, 2980, 3008], NewScope('com.valvesoftware.Steam', 'launch', desktop_id='com.valvesoftware.Steam.desktop',
+                                                       source=SESSION, flatpak='com.valvesoftware.Steam')),
+            ([4000], NewScope('org.gimp.GIMP', 'launch', desktop_id='org.gimp.GIMP.desktop', source=SESSION, flatpak='org.gimp.GIMP'))])
+
+    def test_a_flatpak_sandbox_joins_its_dock_launched_scope(self):
+        self.scopes['app-com.valvesoftware.Steam-2.scope'] = {'origin': 'launch', 'desktopId': 'com.valvesoftware.Steam.desktop', 'createdAt': 0}
+        procs = [Proc(2837, 1, argv=['/usr/libexec/flatpak-portal']),
+                 Proc(2980, 2837, argv=['/usr/bin/bwrap'], flatpak='com.valvesoftware.Steam')]
+        moves = self.classify(procs, {2837: SESSION, 2980: SESSION})
+        self.assertEqual(moves, [([2980], 'app-com.valvesoftware.Steam-2.scope')])
+
+    def test_flatpak_info(self):
+        self.assertEqual(core.flatpak_app('[Application]\nname=com.valvesoftware.Steam\nruntime=x\n'), 'com.valvesoftware.Steam')
+        self.assertIsNone(core.flatpak_app('[Runtime]\nname=org.freedesktop.Platform\n'))
+        self.assertIsNone(core.flatpak_app('[Application]\nname=../x\n'))
+
     def test_marked_launches_in_the_session_are_adopted_per_launch(self):
         procs = [Proc(30, 1, marks=('steam.desktop', 30)), Proc(31, 30), Proc(32, 1, marks=('steam.desktop', 30)),
                  Proc(40, 1, marks=('org.gnome.Calculator.desktop', None)), Proc(50, 1)]
@@ -241,6 +270,15 @@ class Snapshot(unittest.TestCase):
         self.assertEqual(core.gpu_usage(entries, previous, 2.0),
                          {'streams': 3, 'surfaces': 1, 'toPhoneBytesPerSecond': 1000, 'fromPhoneBytesPerSecond': 10})
         self.assertIsNone(core.gpu_usage([], previous, 2.0))
+
+    def test_gpu_placements(self):
+        starts = {100: 5000, 200: 6000, 300: 7000}
+        files = {'100': 'cpu-until-relaunch 5000\n', '2': 'cpu-until-relaunch 6000',  # 2: a sandbox's own pid
+                 '300': 'cpu-until-relaunch 1', '400': 'phone 8000', 'x': 'phone 5000', '101': 'warm 5000'}
+        self.assertEqual(core.gpu_placements(files, starts), {100: 'cpu-until-relaunch', 200: 'cpu-until-relaunch'})
+        self.assertEqual(core.app_placement(['phone', 'cpu-until-relaunch']), 'cpu-until-relaunch')
+        self.assertEqual(core.app_placement(['phone']), 'phone')
+        self.assertIsNone(core.app_placement([]))
 
     def test_gpu_usage_file_is_checked(self):
         good = {'pid': 5, 'start': 9, 'streams': 1, 'surfaces': 0, 'toPhoneBytes': 1, 'fromPhoneBytes': 2}

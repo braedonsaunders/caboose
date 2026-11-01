@@ -51,6 +51,12 @@ pub struct Window {
     pub lineage: Option<Vec<u32>>,
     /// The desktop entry a toplevel's process was launched from, once looked up (launch.rs).
     pub desktop_id: Option<Option<String>>,
+    /// The window's own icon as PNG: X11 `_NET_WM_ICON` (x11_icons.rs) or xdg-toplevel-icon.
+    pub icon: Option<Vec<u8>>,
+    /// An X11 top-level's icon and creator have been read (x11_identity.rs).
+    pub identified: bool,
+    /// A toplevel's xdg-toplevel-icon buffers last read, once its client has set one.
+    pub toplevel_icon: Option<Vec<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer>>,
     /// The highest `pointer.scroll.seq` delivered to the window's client, and its value
     /// at the client's latest commit (the picture's `input_seq`).
     pub scroll_seq_delivered: u64,
@@ -356,7 +362,7 @@ impl Windows {
             kind: w.kind,
             title,
             app_id,
-            icon: None,
+            icon: w.icon.clone(),
             geometry,
             min,
             max,
@@ -368,6 +374,7 @@ impl Windows {
             alpha: w.kind == WindowKind::Popup,
             overscan,
             desktop_id: w.desktop_id.clone().flatten(),
+            pid: if w.parent.is_none() { w.lineage.as_ref().and_then(|l| l.first().copied()) } else { None },
         })
     }
 }
@@ -393,6 +400,7 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         alpha: changed(&before.alpha, &now.alpha),
         overscan: if before.overscan != now.overscan { now.overscan.or(Some(proto::Size { w: 0, h: 0 })) } else { None },
         desktop_id: if before.desktop_id != now.desktop_id { now.desktop_id.clone() } else { None },
+        pid: if before.pid != now.pid { now.pid } else { None },
     }
 }
 
@@ -417,6 +425,7 @@ mod tests {
             alpha: false,
             overscan: None,
             desktop_id: None,
+            pid: None,
         }
     }
 
@@ -431,6 +440,11 @@ mod tests {
         assert_eq!(d.title.as_deref(), Some("b"));
         assert_eq!(d.geometry, Some(Rect::new(1, 2, 30, 40)));
         assert_eq!(d.app_id, None);
+        assert_eq!(d.pid, None);
+        b.pid = Some(42);
+        b.icon = Some(vec![1, 2]);
+        let d = diff(&a, &b);
+        assert_eq!((d.pid, d.icon), (Some(42), Some(vec![1, 2])));
     }
 
     #[test]

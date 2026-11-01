@@ -5,12 +5,16 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 make -s -C "$here" O= >/dev/null
+"$here/test_policy"
 cp "$here/libVkLayer_caboose_executor_switch.so" "$here/test_executor_switch" "$work/"
 sed -e "s#/usr/local/lib/caboose-gpu-live/#$work/#" -e 's/"enable_environment".*//' -e 's/"disable_environment".*/"disable_environment": { "CABOOSE_GPU_EXECUTOR_SWITCH_DISABLE": "1" }/' \
     "$here/implicit_layer.json" > "$work/layer.json"
 lvp=/usr/share/vulkan/icd.d/lvp_icd.json
 [ -f "$lvp" ] || lvp=$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)
-VK_DRIVER_FILES="$lvp" VK_ICD_FILENAMES="$lvp" VK_LAYER_PATH="$work" \
-    VK_INSTANCE_LAYERS=VK_LAYER_CABOOSE_executor_switch CABOOSE_GFXSTREAM_SOCKET="$work/gpu.sock" \
-    "$work/test_executor_switch"
+# A process that recovers from device loss moves; one that pauses stays and is recorded.
+for mode in restart pause; do
+    VK_DRIVER_FILES="$lvp" VK_ICD_FILENAMES="$lvp" VK_LAYER_PATH="$work" CABOOSE_GPU_ON_LOSS=$mode \
+        VK_INSTANCE_LAYERS=VK_LAYER_CABOOSE_executor_switch CABOOSE_GFXSTREAM_SOCKET="$work/gpu.sock" \
+        "$work/test_executor_switch"
+done
 make -s -C "$here" clean

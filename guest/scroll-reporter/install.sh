@@ -1,8 +1,10 @@
 #!/bin/sh
 # Install the Caboose scroll reporters into the guest image, for every user. Run inside the
 # image build (as root), after Chromium and Node are installed. Safe to run again. The GTK and
-# Qt reporters are installed when built (gtk/build.sh, qt/build.sh, into their out/);
-# caboose-display preloads every libcaboose-scroll-*.so in /opt/caboose/scroll-reporter/lib.
+# Qt reporters are installed when built (gtk/build.sh, qt/build.sh, into their out/MULTIARCH),
+# each architecture's into /opt/caboose/scroll-reporter/lib/MULTIARCH; caboose-display preloads
+# them as /opt/caboose/scroll-reporter/$LIB/libcaboose-scroll-*.so, which the dynamic loader
+# resolves to the process's own architecture.
 set -eu
 src=$(cd "$(dirname "$0")" && pwd)
 dest=/opt/caboose/scroll-reporter
@@ -38,14 +40,32 @@ SH
 chmod 0644 /etc/chromium.d/caboose-scroll
 install -d -m 0755 "$dest/lib" "$dest/electron"
 install -m 0644 "$src/electron/main.js" "$dest/electron/main.js"
-for lib in "$src"/gtk/out/libcaboose-scroll-*.so "$src"/qt/out/libcaboose-scroll-*.so; do
-    if [ -f "$lib" ]; then install -m 0644 "$lib" "$dest/lib/"; fi
+for built in "$src"/gtk/out/*/ "$src"/qt/out/*/; do
+    [ -d "$built" ] || continue
+    arch=$(basename "$built")
+    install -d -m 0755 "$dest/lib/$arch"
+    for lib in "$built"libcaboose-scroll-*.so; do
+        if [ -f "$lib" ]; then install -m 0644 "$lib" "$dest/lib/$arch/"; fi
+    done
+done
+# The computer's own architecture names the preloads; every other architecture installed
+# must have each of them, or its processes would report a missing preload.
+case $(uname -m) in
+    x86_64) native=x86_64-linux-gnu ;;
+    aarch64) native=aarch64-linux-gnu ;;
+    *) echo "no multiarch triplet for $(uname -m)" >&2; exit 1 ;;
+esac
+names=$(cd "$dest/lib/$native" 2>/dev/null && ls libcaboose-scroll-*.so 2>/dev/null | grep -v -- '-quick\.so$' || true)
+for arch in "$dest"/lib/*/; do
+    for name in $names; do
+        [ -f "$arch$name" ] || { echo "$arch lacks $name" >&2; exit 1; }
+    done
 done
 # Flatpak applications see neither /opt nor the host's LD_PRELOAD: a system-wide override
 # gives every one of them the libraries, read-only, and the display instances' sockets, where
 # the reporters find their scroll socket from WAYLAND_DISPLAY.
 if command -v flatpak >/dev/null 2>&1; then
-    preload=$(ls "$dest"/lib/libcaboose-scroll-*.so 2>/dev/null | grep -v -- '-quick' | paste -sd: -)
+    preload=$(for name in $names; do printf '%s/$LIB/%s\n' "$dest" "$name"; done | paste -sd: -)
     if [ -n "$preload" ]; then
         flatpak override --system --filesystem="$dest:ro" --filesystem=xdg-run/caboose-display \
             --env=LD_PRELOAD="$preload" --env=NODE_OPTIONS="--require=$dest/electron/main.js"

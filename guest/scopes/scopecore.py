@@ -202,6 +202,52 @@ def agent_runner(argv):
     return False
 
 
+def flatpak_app(info):
+    """The application id in a sandbox's /.flatpak-info, else None."""
+    section = None
+    for line in info.splitlines():
+        line = line.strip()
+        if line.startswith('['):
+            section = line
+        elif section == '[Application]' and line.startswith('name='):
+            ident = line[len('name='):].strip()
+            return ident if re.fullmatch(r'[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+', ident) and len(ident) <= 255 else None
+    return None
+
+
+SANDBOX_LAUNCHERS = ('bwrap', 'bwrap.distrib', 'caboose-bwrap', 'flatpak')
+
+
+PLACEMENTS = ('cpu-until-relaunch', 'phone')
+
+
+def gpu_placements(files, starts):
+    """{pid: placement} from the GPU layer's placement files ({file name: content}), each
+    `<placement> <start ticks>` named by the writer's pid as it sees it (a Flatpak sandbox's
+    own pid namespace). `starts` maps the computer's pids to their start ticks; a file whose
+    pid is not that process is matched by its start time, and dropped when nothing matches."""
+    by_start = {}
+    for pid, start in sorted(starts.items()):
+        by_start.setdefault(start, pid)
+    out = {}
+    for name, content in files.items():
+        words = content.split()
+        if not name.isdigit() or len(words) != 2 or words[0] not in PLACEMENTS or not words[1].isdigit():
+            continue
+        pid, start = int(name), int(words[1])
+        if starts.get(pid) != start:
+            pid = by_start.get(start)
+        if pid is not None:
+            out[pid] = words[0]
+    return out
+
+
+def app_placement(placements):
+    """An app's placement from its processes': any still on the CPU until relaunched wins."""
+    values = set(placements)
+    return 'cpu-until-relaunch' if 'cpu-until-relaunch' in values else 'phone' if 'phone' in values else None
+
+
 def acf_name(text):
     """The game's name from a Steam appmanifest_<id>.acf."""
     match = re.search(r'^\s*"name"\s+"((?:[^"\\]|\\.)*)"', text, re.MULTILINE)
@@ -212,20 +258,21 @@ def acf_name(text):
 
 class Proc:
     """One process as classification sees it."""
-    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start')
+    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start', 'flatpak')
 
-    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0):
+    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0, flatpak=None):
         self.pid, self.ppid, self.uid, self.comm, self.argv, self.marks = pid, ppid, uid, comm, argv, marks
-        self.tty, self.state, self.ticks, self.start = tty, state, ticks, start
+        self.tty, self.state, self.ticks, self.start, self.flatpak = tty, state, ticks, start, flatpak
 
 
 class NewScope:
     """A scope to make: its key, how it came to be, and naming hints."""
-    __slots__ = ('key', 'origin', 'desktop_id', 'app_id', 'game', 'source')
+    __slots__ = ('key', 'origin', 'desktop_id', 'app_id', 'game', 'source', 'flatpak')
 
-    def __init__(self, key, origin, desktop_id=None, app_id=None, game=None, source=None):
+    def __init__(self, key, origin, desktop_id=None, app_id=None, game=None, source=None, flatpak=None):
         self.key, self.origin, self.desktop_id, self.app_id, self.game, self.source = \
             key, origin, desktop_id, app_id, game, source
+        self.flatpak = flatpak
 
     def __eq__(self, other):
         return isinstance(other, NewScope) and all(getattr(self, s) == getattr(other, s) for s in self.__slots__)
@@ -276,8 +323,10 @@ def classify(procs, membership, scopes, windows, now):
        it was split from: it follows its parent.
     3. A phone terminal session (a child of the terminal service), or an agent task's runner
        (`caboose-agentd.mjs run`) in the session scope: its own scope.
-    4. In the session scope, processes a launch marked: one scope per launch.
-    5. A toplevel window whose process is in the session scope or a phone terminal session's
+    4. In the session scope, a Flatpak application's sandboxes (with the bubblewrap and
+       flatpak processes that started them): its scope, one per application.
+    5. In the session scope, processes a launch marked: one scope per launch.
+    6. A toplevel window whose process is in the session scope or a phone terminal session's
        scope, or in an app scope when the process runs on a terminal under a process of that
        scope that has a window of its own and is not on that terminal (a program run from a
        terminal app): the window's process tree becomes a scope of its own.
@@ -324,7 +373,29 @@ def classify(procs, membership, scopes, windows, now):
             continue
         move(subtree(pid, children, membership), NewScope('caboose-agent', 'agent', source=SESSION))
 
-    # 4. Launch marks in the session scope.
+    # 4. Flatpak sandboxes in the session scope, each application into its own scope.
+    sandboxes = {}
+    for pid in sorted(procs):
+        proc = procs[pid]
+        if pid in taken or membership.get(pid) != SESSION or not proc.flatpak:
+            continue
+        top = pid
+        while procs.get(top) and procs[top].ppid in procs and membership.get(procs[top].ppid) == SESSION and \
+                procs[procs[top].ppid].argv and os.path.basename(procs[procs[top].ppid].argv[0]) in SANDBOX_LAUNCHERS:
+            top = procs[top].ppid
+        sandboxes.setdefault(proc.flatpak, [])
+        if top not in sandboxes[proc.flatpak]:
+            sandboxes[proc.flatpak].append(top)
+    for app, tops in sandboxes.items():
+        tree = []
+        for top in tops:
+            tree.extend(p for p in subtree(top, children, membership) if p not in tree)
+        existing = sorted((m.get('createdAt', 0), name) for name, m in scopes.items()
+                          if m.get('flatpak') == app or m.get('desktopId') == f'{app}.desktop')
+        move(tree, existing[-1][1] if existing else
+             NewScope(app, 'launch', desktop_id=f'{app}.desktop', source=SESSION, flatpak=app))
+
+    # 5. Launch marks in the session scope.
     launches = {}
     for pid in sorted(procs):
         proc = procs[pid]
@@ -337,7 +408,7 @@ def classify(procs, membership, scopes, windows, now):
             tree.extend(p for p in subtree(pid, children, membership) if p not in tree)
         move(tree, NewScope(scope_key(desktop_id), 'launch', desktop_id=desktop_id, source=SESSION))
 
-    # 5. Windows.
+    # 6. Windows.
     owners = {w['pid'] for w in windows if isinstance(w.get('pid'), int)}
     for window in windows:
         pid = window.get('pid')

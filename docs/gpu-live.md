@@ -769,14 +769,25 @@ session. Counters only, no payloads, handles or names; the task manager's app sc
 ([architecture.md](architecture.md#guest-services)) sum them per app. The file is removed
 when the broker stops.
 
+The task manager also reads `placement/` in the same directory: one file per process, named
+by its pid as the process sees it (a Flatpak sandbox's own pid namespace), holding
+`<placement> <start>`. It matches a file to its process by pid and start time, else by start
+time alone, and ignores files that match nothing.
+
 The broker listens on its local socket only while a phone's executor is ready. With no
 phone the driver fails its Vulkan instance and the loader continues with the computer's
-drivers; GTK and Chromium draw with lavapipe.
+drivers, and the routing layer presents lavapipe as a virtual GPU named `Caboose GPU (no
+phone attached)`: applications that pick their rendering path once at launch take their GPU
+paths on it, so a computer started or relaunched without the phone draws the same way it
+will on the phone.
 Those applications draw on the computer and reach the phone as pictures, like every
 application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
-environment, the executor-switch layer (`install-live.py --executor-switch`) makes a
-lavapipe device lose itself once a phone's executor is ready, and an application that
-recreates lost devices, as Chromium does, moves to the phone.
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes the
+lavapipe devices of processes that recover from device loss (Chromium-family GPU processes,
+including Steam's web views, and Qt) lose themselves once a phone's executor is ready, and
+they move to the phone. Every other process keeps its lavapipe device until it is relaunched
+and is listed in the running-apps API with `gpuPlacement: "cpu-until-relaunch"`, so the
+phone can offer to relaunch it on its GPU.
 
 When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
 `restart` reports device loss, `pause` holds the application until the phone returns.
@@ -785,10 +796,12 @@ The launch environment sets `auto`, which the driver resolves per process:
 Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
 recover from device loss (GTK 4, Vulkan applications and games).
 
-OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan, which Mesa tries before
-llvmpipe when no other driver serves the display (`LIBGL_KOPPER_DRI2=1`, and no
-`GALLIUM_DRIVER`). Zink is not forced: with no phone attached it finds no GPU and Mesa
-falls back to llvmpipe, where a forced Zink would leave OpenGL with no renderer at all. Zink presents through the
+OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan: `LIBGL_KOPPER_DRI2=1` for
+GLX, which tries Zink before any software renderer, and `GALLIUM_DRIVER=zink` for EGL's
+software path (Chromium's and CEF's ANGLE among its users), which otherwise prefers Mesa
+D3D12 (WSL's `/dev/dxg`) and llvmpipe. With no phone attached Zink renders on the CPU
+device the routing layer presents as a GPU, so OpenGL always has a renderer, and an
+application that recovers from device loss moves to the phone when it attaches. Zink presents through the
 driver's X11 windows (Kopper); without a DRM render node it cannot present through
 Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
 `QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick), `SDL_VIDEODRIVER=x11,wayland` and
@@ -799,10 +812,23 @@ for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT`
 `MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
 and a shader that uses either feature fails to compile or draw.
 
+32-bit applications take the same paths. The driver and both layers are also built for
+i386 (`gfxstream/driver/build.sh` writes `i386/libvulkan_gfxstream.so`; the layers build
+with `make CXX=i686-linux-gnu-g++`), and `install-live.py`, given those builds too, puts
+them in `/usr/local/lib/caboose-gpu-live/i386` with their own manifests; the launch
+environment names both drivers in `VK_ADD_DRIVER_FILES`, and each process's loader passes
+over the one of the other architecture. The i386 layers are named
+`VK_LAYER_CABOOSE_gpu_routing_32` and `VK_LAYER_CABOOSE_executor_switch_32`: the Vulkan
+loader keeps one layer of a name, whatever its library's architecture. Without the i386
+routing layer a 32-bit process would see lavapipe as a CPU device, which Zink refuses,
+and with `GALLIUM_DRIVER=zink` have no OpenGL renderer at all.
+
 Flatpak applications take the same paths inside their sandbox. `install-live.py
 --driver` also installs the driver as the unmaintained `org.freedesktop.Platform.GL.host`
 extension (version 1.4, which Flatpak enables for every runtime built on the Freedesktop
 runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's drivers,
+and the i386 builds as `org.freedesktop.Platform.GL32.host`, for the runtime's 32-bit
+compatibility libraries,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
 override. The launch environment's variables pass into the sandbox unchanged;
 `PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,

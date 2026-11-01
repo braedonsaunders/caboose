@@ -1,0 +1,158 @@
+#!/usr/bin/python3 -I
+"""Wine and Proton at the display's density (README.md).
+
+Wine takes its DPI from each prefix's registry, HKCU\\Control Panel\\Desktop\\LogPixels,
+96 by default: not from X11. On a display at scale 3 every Wine window is a third of the
+size of the computer's other windows. This service follows the owner's display density
+(XSETTINGS Xft/DPI, which caboose-display publishes) and writes it as LogPixels into every
+Wine prefix it finds, when the density changes and as prefixes appear.
+
+usage: caboose-wine-dpi            the service (runs as the owner)
+       caboose-wine-dpi --once DPI  set DPI in every prefix now and exit"""
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+DISPLAY_ENV = Path("/run/caboose/display.env")
+STEAM_ROOTS = (".var/app/com.valvesoftware.Steam/.local/share/Steam", ".local/share/Steam")
+SECTION = "[Control Panel\\\\Desktop]"
+RESCAN_SECONDS = 10
+
+
+def dpi_for(xft_dpi):
+    """LogPixels for an Xft/DPI value (dots per inch times 1024): 96 when unknown."""
+    if not xft_dpi or xft_dpi <= 0:
+        return 96
+    return max(96, min(480, round(xft_dpi / 1024)))
+
+
+def library_paths(steam_root):
+    """The library folders Steam's libraryfolders.vdf names, with Steam's own first."""
+    paths = [steam_root]
+    vdf = steam_root / "steamapps" / "libraryfolders.vdf"
+    try:
+        text = vdf.read_text(errors="replace")
+    except OSError:
+        return paths
+    for match in re.finditer(r'"path"\s+"((?:[^"\\]|\\.)*)"', text):
+        path = Path(match.group(1).replace("\\\\", "\\"))
+        if path not in paths:
+            paths.append(path)
+    return paths
+
+
+def prefixes(home):
+    """Every Wine prefix under `home`: ~/.wine, winetricks' and each Steam game's."""
+    home = Path(home)
+    candidates = [home / ".wine"]
+    candidates += sorted((home / ".local/share/wineprefixes").glob("*"))
+    for relative in STEAM_ROOTS:
+        root = home / relative
+        if not root.is_dir():
+            continue
+        for library in library_paths(root):
+            candidates += sorted((library / "steamapps" / "compatdata").glob("*/pfx"))
+    seen, found = set(), []
+    for prefix in candidates:
+        if (prefix / "user.reg").is_file() and prefix.resolve() not in seen:
+            seen.add(prefix.resolve())
+            found.append(prefix)
+    return found
+
+
+def with_log_pixels(text, dpi):
+    """user.reg `text` with LogPixels = `dpi` in its Control Panel\\Desktop section."""
+    value = f'"LogPixels"=dword:{dpi:08x}'
+    lines = text.split("\n")
+    start = next((i for i, line in enumerate(lines) if line.startswith(SECTION)), None)
+    if start is None:
+        tail = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        return f"{text}{tail}{SECTION} 0\n{value}\n"
+    end = start + 1
+    while end < len(lines) and lines[end].strip() and not lines[end].startswith("["):
+        end += 1
+    for i in range(start + 1, end):
+        if lines[i].startswith('"LogPixels"='):
+            if lines[i] == value:
+                return text
+            lines[i] = value
+            return "\n".join(lines)
+    lines.insert(end, value)
+    return "\n".join(lines)
+
+
+def apply(prefix, dpi):
+    """Writes `dpi` into `prefix`'s user.reg; True if it changed."""
+    reg = Path(prefix) / "user.reg"
+    try:
+        current = reg.read_text(encoding="utf-8", errors="surrogateescape")
+    except OSError:
+        return False
+    updated = with_log_pixels(current, dpi)
+    if updated == current:
+        return False
+    fd, temporary = tempfile.mkstemp(prefix=".user.reg.", dir=reg.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", errors="surrogateescape") as out:
+            out.write(updated)
+        os.chmod(temporary, reg.stat().st_mode & 0o777)
+        os.replace(temporary, reg)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return True
+
+
+def apply_all(home, dpi):
+    changed = [prefix for prefix in prefixes(home) if apply(prefix, dpi)]
+    for prefix in changed:
+        print(f"LogPixels {dpi} in {prefix}", flush=True)
+    return changed
+
+
+def display_environment(path=DISPLAY_ENV):
+    """DISPLAY and XAUTHORITY from the owner display's launch environment."""
+    env = {}
+    for line in path.read_text().splitlines():
+        key, _, value = line.partition("=")
+        if key in ("DISPLAY", "XAUTHORITY"):
+            env[key] = value.strip().strip("'\"")
+    return env
+
+
+def serve(home):
+    import time
+    while not DISPLAY_ENV.exists() or "DISPLAY" not in display_environment():
+        time.sleep(2)
+    os.environ.update(display_environment())
+    os.environ["GDK_BACKEND"] = "x11"
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gtk
+    if not Gtk.init_check(None)[0]:
+        sys.exit("caboose-wine-dpi: cannot open the display")
+    settings = Gtk.Settings.get_default()
+    state = {"dpi": None}
+
+    def update(*_):
+        state["dpi"] = dpi_for(settings.props.gtk_xft_dpi)
+        apply_all(home, state["dpi"])
+        return True
+
+    settings.connect("notify::gtk-xft-dpi", update)
+    update()
+    GLib.timeout_add_seconds(RESCAN_SECONDS, update)
+    # The display's X server ending ends this service, which its manager restarts.
+    Gtk.main()
+
+
+if __name__ == "__main__":
+    home = Path(os.environ.get("HOME", Path.home()))
+    if len(sys.argv) == 3 and sys.argv[1] == "--once":
+        apply_all(home, int(sys.argv[2]))
+        sys.exit(0)
+    if len(sys.argv) != 1:
+        sys.exit(__doc__.split("\n\n")[-1])
+    serve(home)

@@ -11,6 +11,15 @@ turns it off.
   lavapipe last, keeping the driver's order among equals. Applications that take the
   first device, and toolkits such as Zink that take the first suitable one, render on
   the phone whenever it is attached.
+- **CPU implementations without the phone.** While no phone is listed, a CPU implementation
+  is presented as a virtual GPU named `Caboose GPU (no phone attached)`, with driver name
+  `Caboose` and gfxstream's driver ID: Steam turns its web views' GPU acceleration off for
+  lavapipe's ID, and Zink keys no workarounds on gfxstream's, so it treats lavapipe as an
+  ordinary GPU. Applications
+  that choose their rendering path once at launch (Chromium's and Steam's GPU acceleration,
+  Firefox's WebRender, Zink, which refuses CPU devices) take their GPU paths and keep them;
+  the executor switch moves those that recover from device loss to the phone when it attaches.
+  `fossilize_replay`, kept off the phone, sees the CPU implementation as it is.
 - **CPU implementations beside the phone.** While the phone's GPU is listed, CPU
   implementations such as lavapipe are not, so applications that pick a device by their
   own rules, or judge the computer by every device they are offered (Steam turns its GPU
@@ -28,7 +37,10 @@ make            # libVkLayer_caboose_gpu_routing.so and test_routing
 ./test_routing
 ```
 
-Both need a C++17 compiler and the Vulkan headers. `guest/gpu/install-live.py
+Both need a C++17 compiler and the Vulkan headers. `make CXX=i686-linux-gnu-g++` builds
+both for i386, for 32-bit applications (Debian's `g++-i686-linux-gnu`). `guest/gpu/install-live.py
 --routing-layer libVkLayer_caboose_gpu_routing.so` installs the layer with its implicit
-manifest, also into the Flatpak `host` GL extension. `guest/gpu/check-apps.sh` checks it
+manifest, also into the Flatpak `host` GL extension; given the i386 build as well, it
+installs that as `VK_LAYER_CABOOSE_gpu_routing_32` beside it and into the `host` GL32
+extension. `guest/gpu/check-apps.sh` checks it
 in a disposable seat container.

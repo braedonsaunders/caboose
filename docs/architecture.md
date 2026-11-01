@@ -685,9 +685,11 @@ for 30 s) moves processes into scopes, first rule first:
 2. Children forked during a split and left in the scope it came from follow their parent.
 3. A phone terminal session (a child of the terminal service), or an agent task's runner,
    gets its own scope.
-4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
+4. In the session scope, a Flatpak application's sandboxes (by `/.flatpak-info`), with the
+   bubblewrap and `flatpak` processes that started them, join that application's scope.
+5. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
    `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
-5. A toplevel window whose process is in the session scope or a phone terminal session's
+6. A toplevel window whose process is in the session scope or a phone terminal session's
    scope, or in an app scope when the process runs on a terminal under a windowed process
    of that scope that is not on that terminal (a program run from a terminal app), takes
    its process tree into a scope of its own.
@@ -1448,6 +1450,7 @@ the host serves the guest's app scopes. These routes do not wake the computer.
     gpu: { streams: number, surfaces: number, toPhoneBytesPerSecond: number, fromPhoneBytesPerSecond: number } | null,
     processCount: number,
     ports: Array<{ protocol: "tcp" | "udp", address: string, port: number }>,   // its listening sockets; the session's are Caboose's own
+    gpuPlacement: "phone" | "cpu-until-relaunch" | null,   // "cpu-until-relaunch": a process kept a CPU Vulkan device after the phone attached
     processes: Array<{        // at most 256, busiest first
       pid: number, ppid: number,
       name: string,           // at most 64 characters
@@ -3254,7 +3257,10 @@ Caboose's own processes apart, with CPU, memory, disk and GPU use (GPU only with
 GPU connection) and listening ports, polling `/v1/running-apps` every 2 s while it is
 shown. An app opens to its processes. Quit is offered while an app has windows; after a
 Quit, an app still running 5 s later is offered Force Quit. Force Quit and Kill All Processes
-confirm first. Services can be started, stopped, restarted, set to start with the computer,
+confirm first. An app with windows that still draws on the computer's CPU because it
+started before the phone attached (`gpuPlacement: "cpu-until-relaunch"`) is badged On CPU
+and offers Relaunch on Phone GPU: Quit, then, once it has ended (within 15 s), its desktop
+entry opens again. Services can be started, stopped, restarted, set to start with the computer,
 created from a form (the command split as shell words, without expansion), deleted (the
 owner's only) and their logs followed. The dock's Quit and Force Quit resolve the app from a
 fresh listing: the running apps holding the windows of the dock app's taskbar group, else the

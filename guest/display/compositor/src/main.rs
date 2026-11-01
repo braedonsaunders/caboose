@@ -20,6 +20,7 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod icons;
 mod ibus;
 mod ibus_portal;
 mod input;
@@ -44,6 +45,7 @@ mod transfers;
 mod video;
 mod windows;
 mod x11_focus;
+mod x11_identity;
 mod x11sel;
 mod xauth;
 mod xdnd;
@@ -215,12 +217,16 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("SDL_VIDEODRIVER", "x11,wayland"),
     ("MOZ_ENABLE_WAYLAND", "0"),
     ("LIBGL_KOPPER_DRI2", "1"),
+    // EGL's software path takes no Zink unless named, and prefers Mesa D3D12 (WSL's
+    // /dev/dxg) to it: named here, OpenGL always reaches the phone, or the routing layer's
+    // presented CPU device when no phone is attached.
+    ("GALLIUM_DRIVER", "zink"),
     ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
     ("MESA_GLSL_VERSION_OVERRIDE", "450"),
 ];
 
-/// The seat's own renderer selection, which would keep OpenGL off Zink (Mesa D3D12 on WSL).
-const GPU_LIVE_REMOVED_ENV: &[&str] = &["GALLIUM_DRIVER"];
+/// Launch-environment entries the GPU seat drops (none beyond those it replaces).
+const GPU_LIVE_REMOVED_ENV: &[&str] = &[];
 
 /// On the seat that renders on the phone's GPU: every application's Vulkan loader also
 /// loads the phone's driver, which reaches the phone through the broker's sockets; they
@@ -237,7 +243,13 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     }
     // The toolkit settings replace the seat's defaults.
     env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k) && !GPU_LIVE_REMOVED_ENV.contains(&k.as_str()));
-    env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
+    // The driver for 32-bit applications, where installed, beside it: each process's loader
+    // passes over the manifest whose library is of the other architecture.
+    let mut drivers = icd.display().to_string();
+    if let Some(icd32) = icd.parent().map(|d| d.join("i386").join("icd.json")).filter(|p| p.is_file()) {
+        drivers = format!("{drivers}:{}", icd32.display());
+    }
+    env.push(("VK_ADD_DRIVER_FILES".into(), drivers));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
     // Steam's container runtime (pressure-vessel) shares only the paths it is told to.
@@ -276,9 +288,7 @@ fn ready(state: &mut State, x_display: Option<u32>, xauthority: Option<&std::pat
         // recorder is preloaded where installed: inert in processes without cairo, and idle
         // until a client that draws draw lists asks.
         env.push(("CABOOSE_DRAW_SOCKET".into(), socket.display().to_string()));
-        if std::path::Path::new(draw::RECORDER).is_file() {
-            preload.push(draw::RECORDER.to_owned());
-        }
+        preload.extend(scroll::per_architecture(std::path::Path::new(draw::RECORDERS), draw::RECORDER));
     }
     if let Some(socket) = &state.scene.socket {
         // Scene graph interception: libcaboose_scene_cairo.so connects here (scene.rs).
@@ -459,6 +469,7 @@ fn run(config: Config) -> Result<(), String> {
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
+    smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<State>(&dh).add_icon_size(128);
     smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
     // Games lock the pointer and read relative motion for mouse look (input.rs).
     smithay::wayland::pointer_constraints::PointerConstraintsState::new::<State>(&dh);
@@ -597,6 +608,7 @@ fn run(config: Config) -> Result<(), String> {
         x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
+        x11_identity: None,
         ibus: None,
         ibus_shown: None,
         text_inputs,
@@ -797,6 +809,9 @@ fn run(config: Config) -> Result<(), String> {
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
                                 }
+                                if let Err(error) = x11_identity::X11Identity::install(state, display_number, &cookie) {
+                                    tracing::error!("X11 window icons and processes unavailable: {error}");
+                                }
                                 state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 if state.gpu_grants.is_some() {
                                     match gpu_x11::X11Windows::connect(display_number, &cookie) {
@@ -906,7 +921,7 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
         assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
-        assert_eq!(get(&env, "GALLIUM_DRIVER"), None, "OpenGL goes through Zink");
+        assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("zink"), "OpenGL goes through Zink, never Mesa D3D12");
         std::fs::remove_file(&icd).unwrap();
     }
 
@@ -920,6 +935,23 @@ mod tests {
         apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
         assert_eq!(env, before);
         std::fs::remove_file(&icd).unwrap();
+    }
+
+    #[test]
+    fn the_gpu_seat_also_names_the_driver_for_32_bit_applications() {
+        let dir = std::env::temp_dir().join(format!("caboose-icd32-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("i386")).unwrap();
+        let icd = dir.join("icd.json");
+        std::fs::write(&icd, "{}").unwrap();
+        let mut env = Vec::new();
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str(), "only drivers that are installed");
+        std::fs::write(dir.join("i386/icd.json"), "{}").unwrap();
+        let mut env = Vec::new();
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        let expected = format!("{}:{}", icd.display(), dir.join("i386/icd.json").display());
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), Some(expected.as_str()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn tempfile_icd() -> std::path::PathBuf {

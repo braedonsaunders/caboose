@@ -90,7 +90,7 @@ expect_env LIBGL_KOPPER_DRI2 1
 ! grep -q "^MESA_LOADER_DRIVER_OVERRIDE=" "$out/display.env" || fail "launch environment forces a Mesa driver"
 expect_env MESA_GL_VERSION_OVERRIDE 4.5COMPAT
 expect_env CABOOSE_GPU_EXECUTOR_SWITCH 1
-! grep -q '^GALLIUM_DRIVER=' "$out/display.env" || fail 'launch environment selects a Gallium driver'
+expect_env GALLIUM_DRIVER zink
 
 # No phone: nothing listens, and every toolkit draws on the computer as before.
 owner sh -c 'set -a; . "$1"; exec glxinfo -B' sh "$out/display.env" > "$out/no-phone-glxinfo.log" 2>&1 ||

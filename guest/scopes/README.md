@@ -73,11 +73,16 @@ matching rule wins (`scopecore.classify`):
 3. A phone terminal session (a child of `caboose-terminal.py`), or an agent task's runner
    (`caboose-agentd.mjs run`) in the session scope, with everything the agent starts: a
    scope of its own.
-4. In the session scope, processes a launch marked through their environment
+4. In the session scope, a Flatpak application's sandboxes: processes whose
+   `/proc/<pid>/root/.flatpak-info` names an application, with the bubblewrap and `flatpak`
+   processes above them, join that application's scope (one per application, the one a dock
+   launch made if any). Steam as a Flatpak, started any way, is one app with its
+   pressure-vessel runtime.
+5. In the session scope, processes a launch marked through their environment
    (`CABOOSE_DESKTOP_ID`, else GLib's `GIO_LAUNCHED_DESKTOP_FILE`, with
    `GIO_LAUNCHED_DESKTOP_FILE_PID`): one scope per launch. This adopts apps that started
    before the daemon, and those another app launched through GLib.
-5. A toplevel window (from the owner display's control socket `windows`) whose process is
+6. A toplevel window (from the owner display's control socket `windows`) whose process is
    in the session scope or a terminal session's scope, or in an app scope when that process
    runs on a terminal under a windowed process of the scope that is not on that terminal (a
    program run from a terminal app): the window's process and descendants, a scope of its
@@ -92,7 +97,7 @@ cgroups themselves say which scopes exist.
 Each sample reads per scope `cpu.stat` (`usage_usec`), `memory.current` less
 `memory.stat`'s `inactive_file`, and `io.stat` summed over devices, and per process
 `/proc/<pid>/stat` and `statm`. The kernel leaves memory charged to the cgroup it was
-allocated in, so an app adopted after it started (rules 1 to 5) shows only what it
+allocated in, so an app adopted after it started (rules 1 to 6) shows only what it
 allocates after the move; an app launched from the dock is born in its scope. GPU use is the private GPU broker's per-process
 `usage.json` ([gpu-live.md](../../docs/gpu-live.md#applications)) matched by pid and start
 time. An app's windows are the owner display's toplevels and dialogs whose process (the

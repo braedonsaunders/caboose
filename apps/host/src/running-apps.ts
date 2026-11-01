@@ -41,6 +41,8 @@ export interface RunningApp {
   processCount: number
   processes: RunningProcess[]
   ports: ListeningPort[]
+  /** Where its GPU work runs, from the GPU layer: still on the CPU until relaunched, the phone, or unknown. */
+  gpuPlacement: 'phone' | 'cpu-until-relaunch' | null
 }
 export const SERVICE_STATES = ['inactive', 'activating', 'active', 'deactivating', 'failed'] as const
 export const SERVICE_ACTIONS = ['start', 'stop', 'restart', 'enable', 'disable'] as const
@@ -155,6 +157,7 @@ function parseApp(value: unknown): RunningApp | null {
     id, kind: expected, desktopId, name, origin, startedAt, windows: [...new Set(windows)], cpuPercent, memoryBytes,
     io: { readBytesPerSecond: io.readBytesPerSecond, writeBytesPerSecond: io.writeBytesPerSecond },
     gpu: parsedGpu, processCount: Math.max(processCount, parsed.length), processes: parsed, ports: parsePorts(value.ports),
+    gpuPlacement: oneOf(['phone', 'cpu-until-relaunch'] as const, value.gpuPlacement) ? value.gpuPlacement : null,
   }
 }
 

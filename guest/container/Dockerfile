@@ -29,23 +29,27 @@ COPY gpu /gpu
 ARG GPU_BUILD_JOBS=2
 RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
 
-# The GTK and Qt scroll reporters' preload libraries (guest/scroll-reporter).
-FROM debian:trixie-slim AS scroll-reporters
+# The preload libraries: the GTK and Qt scroll reporters (guest/scroll-reporter) and the cairo
+# draw-list recorder (guest/draw), each built into a directory named by its multiarch triplet.
+# On x86-64 they are built for i386 too, for 32-bit applications.
+FROM debian:trixie-slim AS preloads
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      gcc g++ libc6-dev pkg-config libgtk-3-dev libgtk-4-dev qt6-declarative-dev && \
+RUN dev="libgtk-3-dev libgtk-4-dev qt6-declarative-dev libcairo2-dev libfreetype-dev libfontconfig-dev libwayland-dev" && \
+    extra= && \
+    if [ "$(dpkg --print-architecture)" = amd64 ]; then \
+      dpkg --add-architecture i386 && \
+      extra="gcc-i686-linux-gnu g++-i686-linux-gnu $(for p in $dev; do printf '%s:i386 ' "$p"; done)"; \
+    fi && \
+    apt-get update && apt-get install -y --no-install-recommends gcc g++ libc6-dev binutils pkg-config $dev $extra && \
     rm -rf /var/lib/apt/lists/*
 COPY scroll-reporter /scroll-reporter
-RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh
-
-# The cairo draw-list recorder's preload library (guest/draw).
-FROM debian:trixie-slim AS draw-recorder
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      gcc libc6-dev binutils pkg-config libcairo2-dev libfreetype-dev libfontconfig-dev libwayland-dev && \
-    rm -rf /var/lib/apt/lists/*
 COPY draw /draw
-RUN /draw/build.sh /draw/build
+RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh && /draw/build.sh && \
+    if command -v i686-linux-gnu-gcc >/dev/null; then \
+      export CC=i686-linux-gnu-gcc CXX=i686-linux-gnu-g++ \
+        PKG_CONFIG="env PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config" && \
+      /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh && /draw/build.sh; \
+    fi
 
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -98,11 +102,11 @@ RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
 COPY scroll-reporter /tmp/scroll-reporter
-COPY --from=scroll-reporters /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
-COPY --from=scroll-reporters /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
+COPY --from=preloads /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
+COPY --from=preloads /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
 RUN /tmp/scroll-reporter/install.sh && rm -rf /tmp/scroll-reporter
 COPY draw /tmp/draw
-COPY --from=draw-recorder /draw/build /tmp/draw/build
+COPY --from=preloads /draw/build /tmp/draw/build
 RUN /tmp/draw/install.sh && rm -rf /tmp/draw
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \

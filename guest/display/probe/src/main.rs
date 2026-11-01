@@ -311,6 +311,12 @@ struct GameStats {
 #[derive(Default)]
 struct WindowStats {
     title: String,
+    /// What a taskbar groups the window by, and its own icon (PNG bytes; 0 for none).
+    app_id: String,
+    pid: Option<u32>,
+    icon_bytes: usize,
+    /// How many times an icon arrived (with the window, then each change).
+    icons: u64,
     kind: &'static str,
     parent: Option<u64>,
     geometry: proto::Rect,
@@ -1031,6 +1037,10 @@ fn run(args: Args) -> Result<bool, String> {
                 Message::WindowCreate(c) => {
                     let s = windows.entry(c.id).or_default();
                     s.title = if c.title.is_empty() { c.app_id.clone() } else { c.title.clone() };
+                    s.app_id = c.app_id.clone();
+                    s.pid = c.pid;
+                    s.icon_bytes = c.icon.as_ref().map_or(0, Vec::len);
+                    s.icons += u64::from(c.icon.is_some());
                     s.geometry = c.geometry;
                     s.overscan = c.overscan.map_or((0, 0), |o| (o.w, o.h));
                     s.kind = c.kind.as_str();
@@ -1041,6 +1051,16 @@ fn run(args: Args) -> Result<bool, String> {
                     let s = windows.entry(u.id).or_default();
                     if let Some(t) = u.title {
                         s.title = t;
+                    }
+                    if let Some(a) = u.app_id {
+                        s.app_id = a;
+                    }
+                    if let Some(p) = u.pid {
+                        s.pid = Some(p);
+                    }
+                    if let Some(i) = &u.icon {
+                        s.icon_bytes = i.len();
+                        s.icons += 1;
                     }
                     if let Some(g) = u.geometry {
                         s.geometry = g;
@@ -1543,8 +1563,12 @@ fn run(args: Args) -> Result<bool, String> {
                     .map(|c| c.as_str())
                     .unwrap_or(if w.surface_batches > 0 { "atlas" } else { "" });
                 format!(
-                    "{{\"id\":{id},\"title\":{:?},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"drawn\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
+                    "{{\"id\":{id},\"title\":{:?},\"app_id\":{:?},\"pid\":{},\"icon_bytes\":{},\"icons\":{},\"kind\":{:?},\"parent\":{},\"geometry\":[{},{},{},{}],\"alpha\":{},\"keyframe_first\":{},\"codec\":{:?},\"size\":[{},{}],\"frames\":{},\"keyframes\":{},\"bytes\":{},\"fps\":{:.1},\"kbps\":{:.0},\"decode_ms_p50\":{:.2},\"latency_ms_p50\":{:.2},\"latency_ms_p95\":{:.2},\"decode_errors\":{},\"sizes\":{},\"keyframe_after_resize\":{},\"destroyed\":{},\"tiles\":{},\"tile_bytes\":{},\"tile_errors\":{},\"surface_batches\":{},\"drawn\":{},\"atlas_copies\":{},\"atlas_fills\":{},\"atlas_refs\":{},\"atlas_tiles\":{},\"overscan\":[{},{}],\"rect\":[{},{}],\"rect_mismatch\":{}}}",
                     w.title,
+                    w.app_id,
+                    w.pid.map(|p| p.to_string()).unwrap_or("null".into()),
+                    w.icon_bytes,
+                    w.icons,
                     w.kind,
                     w.parent.map(|p| p.to_string()).unwrap_or("null".into()),
                     w.geometry.x,

@@ -212,6 +212,10 @@ extension RunningApp {
 
     /// Force Quit and Kill end any app but the session.
     public var canEnd: Bool { !isSession }
+
+    /// An app still drawing on the computer's CPU because it started before the phone
+    /// attached: quitting it politely and opening its entry again puts it on the phone's GPU.
+    public var canRelaunchOnPhoneGPU: Bool { canQuit && gpuPlacement == .cpuUntilRelaunch && desktopId != nil }
 }
 
 /// Quit asks politely; an app still listed some seconds later is offered Force Quit, as a

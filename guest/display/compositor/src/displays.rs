@@ -55,6 +55,33 @@ pub struct Change {
     pub changed: Vec<u32>,
 }
 
+/// How a window follows a display change (a fold, a rotation, Laptop and Tablet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Follow {
+    /// Untouched.
+    Stay,
+    /// A full-screen or maximized window takes the display's new rectangle.
+    Display,
+    /// Another window the phone's GPU presents is configured to the display's new size,
+    /// so its application recreates its swapchain at that size.
+    GpuWindow,
+}
+
+impl Change {
+    /// What this change does to a window on `display`. `fills` is a full-screen or
+    /// maximized window; `gpu` one with an active GPU surface grant.
+    pub fn follow(&self, display: u32, fills: bool, gpu: bool) -> Follow {
+        let changed = self.changed.contains(&display);
+        if fills && (changed || self.removed.contains(&display)) {
+            Follow::Display
+        } else if gpu && changed {
+            Follow::GpuWindow
+        } else {
+            Follow::Stay
+        }
+    }
+}
+
 fn mode(d: &proto::Display) -> Mode {
     Mode { size: (d.width, d.height).into(), refresh: (d.refresh_hz * 1000.0).round() as i32 }
 }
@@ -173,6 +200,23 @@ mod tests {
         assert_eq!(removal.removed, vec![1]);
         assert!(removal.changed.is_empty());
         assert_eq!(displays.primary().info.id, 0);
+    }
+
+    #[test]
+    fn full_screen_and_gpu_windows_follow_a_changed_display() {
+        let change = Change { removed: vec![2], changed: vec![0] };
+        // A fold or rotation of the window's display: full-screen and maximized windows
+        // take its new rectangle, X11 and Wayland alike.
+        assert_eq!(change.follow(0, true, false), Follow::Display);
+        assert_eq!(change.follow(0, true, true), Follow::Display);
+        // A GPU-presented window is configured to the new size.
+        assert_eq!(change.follow(0, false, true), Follow::GpuWindow);
+        assert_eq!(change.follow(0, false, false), Follow::Stay);
+        // A full-screen window on a removed display moves to the fallback's rectangle.
+        assert_eq!(change.follow(2, true, false), Follow::Display);
+        assert_eq!(change.follow(2, false, true), Follow::Stay);
+        // Another display's change leaves the window alone.
+        assert_eq!(change.follow(1, true, true), Follow::Stay);
     }
 
     #[test]

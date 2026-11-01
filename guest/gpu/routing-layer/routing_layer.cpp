@@ -6,6 +6,7 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "routing.h"
@@ -31,6 +33,8 @@ struct InstanceData {
     PFN_vkEnumeratePhysicalDeviceGroups groups = nullptr;
     PFN_vkEnumeratePhysicalDeviceGroups groupsKHR = nullptr;
     PFN_vkGetPhysicalDeviceProperties properties = nullptr;
+    PFN_vkGetPhysicalDeviceProperties2 properties2 = nullptr;
+    PFN_vkGetPhysicalDeviceProperties2 properties2KHR = nullptr;
     PFN_vkCreateDevice createDevice = nullptr;
 };
 
@@ -42,6 +46,9 @@ struct DeviceData {
 std::mutex mutex;
 std::unordered_map<void*, std::unique_ptr<InstanceData>> instances;
 std::unordered_map<void*, std::unique_ptr<DeviceData>> devices;
+// CPU implementations presented as GPUs (kNoPhoneName): physical devices are never destroyed
+// before their instance, and a handle once presented stays presented, as apps decided on it.
+std::unordered_set<VkPhysicalDevice> presented;
 
 InstanceData* instanceData(const void* handle) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -98,6 +105,8 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateInstance(const VkInstanceCreateInfo* info, 
     data->groups = reinterpret_cast<PFN_vkEnumeratePhysicalDeviceGroups>(load("vkEnumeratePhysicalDeviceGroups"));
     data->groupsKHR = reinterpret_cast<PFN_vkEnumeratePhysicalDeviceGroups>(load("vkEnumeratePhysicalDeviceGroupsKHR"));
     data->properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(load("vkGetPhysicalDeviceProperties"));
+    data->properties2 = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(load("vkGetPhysicalDeviceProperties2"));
+    data->properties2KHR = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(load("vkGetPhysicalDeviceProperties2KHR"));
     data->createDevice = reinterpret_cast<PFN_vkCreateDevice>(load("vkCreateDevice"));
     std::lock_guard<std::mutex> lock(mutex);
     instances[key(*instance)] = std::move(data);
@@ -125,6 +134,67 @@ int deviceRank(InstanceData& data, VkPhysicalDevice device) {
     data.properties(device, &properties);
     if (properties.vendorID == kPhoneVendor && processHidesPhone()) return kHidden;
     return rank(properties.vendorID, properties.deviceType);
+}
+
+// Records the CPU implementations among `devices` to present as GPUs, judged against every
+// device listed (`listed`, default `ranks`).
+void present(const VkPhysicalDevice* devices, const std::vector<int>& ranks, const std::vector<int>& listed) {
+    if (!presentsCpuAsGpu(listed, processHidesPhone())) return;
+    std::lock_guard<std::mutex> lock(mutex);
+    for (size_t i = 0; i < ranks.size(); ++i)
+        if (ranks[i] == rank(0, kCpu)) presented.insert(devices[i]);
+}
+void present(const VkPhysicalDevice* devices, const std::vector<int>& ranks) { present(devices, ranks, ranks); }
+
+bool isPresented(VkPhysicalDevice device) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return presented.count(device) != 0;
+}
+
+// VK_DRIVER_ID_MESA_GFXSTREAM, by value: headers before 1.4.313 lack the name.
+constexpr VkDriverId kNoPhoneDriverID = static_cast<VkDriverId>(29);
+
+void presentAsGpu(VkPhysicalDeviceProperties& properties) {
+    properties.deviceType = VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
+    std::snprintf(properties.deviceName, sizeof(properties.deviceName), "%s", kNoPhoneName);
+}
+
+VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice device, VkPhysicalDeviceProperties* out) {
+    InstanceData* data = instanceData(device);
+    if (!data || !data->properties) return;
+    data->properties(device, out);
+    if (out && isPresented(device)) presentAsGpu(*out);
+}
+// The driver's name and ID too: renderer strings carry the name (ANGLE's, so Chromium's), and
+// Steam judges its web views' GPU acceleration by the ID (lavapipe's turns it off for good).
+// The ID is gfxstream's, which Zink keys no workarounds on; it then treats lavapipe as an
+// ordinary GPU (no lavapipe-specific optimisations, and signed vertex-buffer offsets offered
+// where device-address commands are).
+void properties2(PFN_vkGetPhysicalDeviceProperties2 next, VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
+    if (!next) return;
+    next(device, out);
+    if (!out || !isPresented(device)) return;
+    presentAsGpu(out->properties);
+    for (auto* item = static_cast<VkBaseOutStructure*>(out->pNext); item; item = item->pNext) {
+        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES) {
+            auto* driver = reinterpret_cast<VkPhysicalDeviceDriverProperties*>(item);
+            std::snprintf(driver->driverName, VK_MAX_DRIVER_NAME_SIZE, "%s", kNoPhoneDriverName);
+            driver->driverID = kNoPhoneDriverID;
+        }
+        if (item->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES) {
+            auto* v12 = reinterpret_cast<VkPhysicalDeviceVulkan12Properties*>(item);
+            std::snprintf(v12->driverName, VK_MAX_DRIVER_NAME_SIZE, "%s", kNoPhoneDriverName);
+            v12->driverID = kNoPhoneDriverID;
+        }
+    }
+}
+VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2(VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
+    InstanceData* data = instanceData(device);
+    if (data) properties2(data->properties2, device, out);
+}
+VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties2KHR(VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
+    InstanceData* data = instanceData(device);
+    if (data) properties2(data->properties2KHR ? data->properties2KHR : data->properties2, device, out);
 }
 
 // Drops the hidden devices from `all` and their ranks.
@@ -166,6 +236,7 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumeratePhysicalDevices(VkInstance instance, uin
     all.resize(total);
     std::vector<int> ranks;
     for (auto device : all) ranks.push_back(deviceRank(*data, device));
+    present(all.data(), ranks);
     hideCpuBesidePhone(ranks);
     dropHidden(all, ranks);
     return answer(all, ranks, count, out);
@@ -184,6 +255,8 @@ VkResult enumerateGroups(PFN_vkEnumeratePhysicalDeviceGroups next, InstanceData&
     all.resize(total);
     std::vector<int> ranks;
     for (auto& group : all) ranks.push_back(group.physicalDeviceCount ? deviceRank(data, group.physicalDevices[0]) : 5);
+    for (size_t i = 0; i < all.size(); ++i)
+        if (all[i].physicalDeviceCount) present(&all[i].physicalDevices[0], {ranks[i]}, ranks);
     hideCpuBesidePhone(ranks);
     dropHidden(all, ranks);
     total = static_cast<uint32_t>(all.size());
@@ -255,6 +328,9 @@ PFN_vkVoidFunction own(const char* name) {
     ENTRY(EnumeratePhysicalDevices);
     ENTRY(EnumeratePhysicalDeviceGroups);
     ENTRY(EnumeratePhysicalDeviceGroupsKHR);
+    ENTRY(GetPhysicalDeviceProperties);
+    ENTRY(GetPhysicalDeviceProperties2);
+    ENTRY(GetPhysicalDeviceProperties2KHR);
     ENTRY(CreateDevice);
     ENTRY(DestroyDevice);
 #undef ENTRY
