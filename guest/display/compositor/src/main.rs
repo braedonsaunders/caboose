@@ -20,6 +20,7 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod icons;
 mod ibus;
 mod ibus_portal;
 mod input;
@@ -44,6 +45,7 @@ mod transfers;
 mod video;
 mod windows;
 mod x11_focus;
+mod x11_identity;
 mod x11sel;
 mod xauth;
 mod xdnd;
@@ -459,6 +461,7 @@ fn run(config: Config) -> Result<(), String> {
     ViewporterState::new::<State>(&dh);
     FractionalScaleManagerState::new::<State>(&dh);
     CursorShapeManagerState::new::<State>(&dh);
+    smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<State>(&dh).add_icon_size(128);
     smithay::wayland::relative_pointer::RelativePointerManagerState::new::<State>(&dh);
     // Games lock the pointer and read relative motion for mouse look (input.rs).
     smithay::wayland::pointer_constraints::PointerConstraintsState::new::<State>(&dh);
@@ -597,6 +600,7 @@ fn run(config: Config) -> Result<(), String> {
         x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
+        x11_identity: None,
         ibus: None,
         ibus_shown: None,
         text_inputs,
@@ -796,6 +800,9 @@ fn run(config: Config) -> Result<(), String> {
                                 state.apply_x11_scale();
                                 if let Err(error) = x11_focus::Foreground::install(state, display_number, &cookie) {
                                     tracing::error!("X11 foreground initialization: {error}");
+                                }
+                                if let Err(error) = x11_identity::X11Identity::install(state, display_number, &cookie) {
+                                    tracing::error!("X11 window icons and processes unavailable: {error}");
                                 }
                                 state.x11 = Some(x11sel::Access { display: display_number, cookie });
                                 if state.gpu_grants.is_some() {
