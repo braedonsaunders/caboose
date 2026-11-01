@@ -116,6 +116,7 @@ function fakeDocker(options: { backend?: () => unknown } = {}) {
   const calls: string[][] = []
   let companion: 'missing' | 'created' | 'running' = 'missing'
   let uplink = false
+  let signedIn = false
   const docker = vi.fn(async (args: string[]) => {
     calls.push(args)
     const [command] = args
@@ -126,7 +127,8 @@ function fakeDocker(options: { backend?: () => unknown } = {}) {
     if (command === 'inspect') return args.at(-1) === 'caboose-owner' ? '172.19.0.2\n' : '172.19.0.3\n'
     if (command === 'create') { companion = 'created'; return 'id' }
     if (command === 'start') { companion = 'running'; return '' }
-    if (command === 'exec' && args.includes('status')) return JSON.stringify(options.backend?.() ?? { BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/abc' })
+    if (command === 'exec' && args.includes('up')) signedIn = true
+    if (command === 'exec' && args.includes('status')) return JSON.stringify(options.backend?.() ?? (signedIn ? { BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/abc' } : { BackendState: 'NeedsLogin' }))
     return ''
   })
   return { docker, calls }
@@ -149,6 +151,12 @@ describe('a computer’s companion', () => {
     const up = calls.find(args => args.includes('up'))!
     expect(up).toEqual(expect.arrayContaining(['--hostname=dev-box', '--netfilter-mode=off', '--accept-dns=false']))
     expect(up.some(arg => arg.startsWith('--advertise-tags') || arg.startsWith('--auth-key'))).toBe(false)
+  })
+  it('keeps a pending sign-in link rather than asking for another', async () => {
+    const { docker, calls } = fakeDocker({ backend: () => ({ BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/kept' }) })
+    const node = new TailnetNode({ ...base, config: { mode: 'login', image: TAILSCALE_IMAGE }, docker, allow: async () => {} })
+    expect(await node.ensure()).toEqual({ state: 'needs-login', loginUrl: 'https://login.tailscale.com/a/kept' })
+    expect(calls.some(args => args.includes('up'))).toBe(false)
   })
   it('joins with a key through standard input, never an argument', async () => {
     let joined = false

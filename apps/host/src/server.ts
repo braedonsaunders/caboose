@@ -381,12 +381,14 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     broadcastSettings()
     void syncForwarding().catch(error => console.error('Could not tell the computer about its address:', error instanceof Error ? error.message : error))
   })
-  // Until the device is up (the owner may be signing it in), its state is read every 10 s; then every 5 minutes.
+  // While someone watches a device that is not up yet (the owner may be signing it in), its
+  // state is read every 10 s; otherwise every 5 minutes.
   let networkChecked = 0
   const networkPoll = setInterval(() => {
-    const state = controller.network?.().tailnet?.state
-    if (computer.state !== 'running' || !state || state === 'off') return
-    if (state === 'running' && Date.now() - networkChecked < 300_000) return
+    const network = controller.network?.()
+    if (computer.state !== 'running' || (!network?.tailnet && !network?.lan)) return
+    const waiting = controls.size > 0 && ((network.tailnet && network.tailnet.state !== 'running') || (network.lan && network.lan.state !== 'running'))
+    if (!waiting && Date.now() - networkChecked < 300_000) return
     networkChecked = Date.now()
     void controller.refreshNetwork?.()
   }, 10_000)

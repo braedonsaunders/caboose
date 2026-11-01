@@ -298,7 +298,8 @@ export class TailnetNode {
       for (let attempt = 0; attempt < 20; attempt++) {
         try { await this.tailscale(['version'], 5_000); status = await this.read(); break } catch { await new Promise(resolve => setTimeout(resolve, 250)) }
       }
-      if (status.state === 'starting' || status.state === 'needs-login') await this.join()
+      // A pending sign-in link stays valid; asking again would replace the one the owner may be opening.
+      if (status.state === 'starting' || (status.state === 'needs-login' && !status.loginUrl)) await this.join()
       else if (status.state === 'running' && this.hostname !== this.options.hostname()) await this.rename()
       this.current = await this.read()
     } catch (error) {
