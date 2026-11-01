@@ -652,6 +652,13 @@ class Session:
         self.guest_open.set()
         print(f'CABOOSE_GPU_BROKER executor resumed {"in place" if mode == 0 else "from a snapshot"}', file=sys.stderr, flush=True)
 
+    def fail(self, reason):
+        """Ends the executor session from inside, saying why (its reader then sees the end)."""
+        if not self.failed:
+            print(f'CABOOSE_GPU_BROKER session failed: {reason}', file=sys.stderr, flush=True)
+        self.failed = True
+        self.writer.close()
+
     async def phone_answer(self, event, timeout):
         """Waits for an answer from the phone at most `timeout` seconds of time it is not
         suspended: a suspended executor answers nothing until it resumes."""
@@ -1086,8 +1093,8 @@ class Session:
                     surface['retired'].set()
                 self.bindings.retire_process(self.binding_generation, process_id)
                 self.processes.pop(process_id, None)
-            except (OSError, RuntimeError, asyncio.TimeoutError):
-                self.failed = True; self.writer.close()
+            except (OSError, RuntimeError, asyncio.TimeoutError) as error:
+                self.fail(f'process {process_id} did not retire: {type(error).__name__}: {error}')
         task = asyncio.create_task(finish())
         self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
 
@@ -1289,9 +1296,8 @@ class Session:
             # Reject an excess local stream without taking ownership or poisoning
             # already admitted processes.
             pass
-        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError):
-            self.failed = True
-            self.writer.close()
+        except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError) as error:
+            self.fail(f'local stream {stream_id} of process {process_id}: {type(error).__name__}: {error}')
         finally:
             if peer is not None: peer.close()
             reader.close()
@@ -1310,8 +1316,8 @@ class Session:
                             for surface_key in tuple(process['surfaces']):
                                 self.maybe_send_surface_retire(surface_key)
                             self.stop_process_if_idle(process_id)
-                        except (OSError, RuntimeError, BufferError):
-                            self.failed = True; self.writer.close()
+                        except (OSError, RuntimeError, BufferError) as error:
+                            self.fail(f'retiring process {process_id}: {type(error).__name__}: {error}')
 
 
 class Broker:
@@ -1542,8 +1548,7 @@ class Broker:
                 surface = session.surfaces[key]
                 abort_client(f'{type(error).__name__}: {error}')
                 if surface.get('bind_sent') is False:
-                    session.failed = True
-                    session.writer.close()
+                    session.fail(f'surface {key} failed before its bind was sent: {type(error).__name__}: {error}')
                 elif not session.draining and not session.failed and not session.closing_ws:
                     try:
                         if session.indexed_enabled:
@@ -1558,9 +1563,8 @@ class Broker:
                             await self.send_control(control_protocol.encode_revoke_request(control_protocol.RevokeRequest(*key)))
                         session.maybe_send_surface_retire(key)
                         await session.phone_answer(surface['retired'], 10)
-                    except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError):
-                        session.failed = True
-                        session.writer.close()
+                    except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError) as revoke_error:
+                        session.fail(f'surface {key} did not retire: {type(revoke_error).__name__}: {revoke_error}')
         finally:
             if key is not None and key in session.surfaces:
                 session.surfaces[key]['replies'] = None
