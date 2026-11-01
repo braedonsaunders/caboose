@@ -87,7 +87,7 @@ export function parseTailscaleStatus(value: unknown): TailnetStatus & { nodeId?:
   const backend = typeof status.BackendState === 'string' ? status.BackendState : ''
   const self = status.Self && typeof status.Self === 'object' ? status.Self as Record<string, unknown> : {}
   const url = typeof status.AuthURL === 'string' && /^https:\/\/login\.tailscale\.com\/a\/[A-Za-z0-9]+$/.test(status.AuthURL) ? status.AuthURL : undefined
-  if (backend === 'NeedsLogin') return url ? { state: 'needs-login', loginUrl: url } : { state: 'starting' }
+  if (backend === 'NeedsLogin') return url ? { state: 'needs-login', loginUrl: url } : { state: 'needs-login' }
   if (backend === 'NeedsMachineAuth') return { state: 'needs-approval' }
   if (backend !== 'Running') return { state: 'starting' }
   const dns = typeof self.DNSName === 'string' ? self.DNSName.replace(/\.$/, '').toLowerCase() : ''
@@ -331,10 +331,14 @@ export class TailnetNode {
     this.hostname = hostname
   }
 
-  /** Reads the device's state again, as when the owner may have just signed in. */
+  /** Reads the device's state again, as when the owner may have just signed in; an expired sign-in link is replaced. */
   async refresh(): Promise<TailnetStatus> {
-    if (await this.state() !== 'running') this.current = { state: 'starting' }
-    else this.current = await this.read()
+    if (await this.state() !== 'running') { this.current = { state: 'starting' }; return this.status }
+    this.current = await this.read()
+    if (this.current.state === 'needs-login' && !this.current.loginUrl) {
+      try { await this.join(); this.current = await this.read() }
+      catch (error) { this.current = { state: 'error', error: error instanceof Error ? error.message : String(error) } }
+    }
     return this.status
   }
 

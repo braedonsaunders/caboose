@@ -41,7 +41,7 @@ describe('tailscale status', () => {
   })
   it('offers only a genuine sign-in link', () => {
     expect(parseTailscaleStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/1a2b3c' })).toEqual({ state: 'needs-login', loginUrl: 'https://login.tailscale.com/a/1a2b3c' })
-    expect(parseTailscaleStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://evil.example/a/1' })).toEqual({ state: 'starting' })
+    expect(parseTailscaleStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://evil.example/a/1' })).toEqual({ state: 'needs-login' })
     expect(parseTailscaleStatus({ BackendState: 'NeedsMachineAuth' })).toEqual({ state: 'needs-approval' })
     expect(parseTailscaleStatus({ BackendState: 'Starting' })).toEqual({ state: 'starting' })
   })
@@ -157,6 +157,17 @@ describe('a computer’s companion', () => {
     const node = new TailnetNode({ ...base, config: { mode: 'login', image: TAILSCALE_IMAGE }, docker, allow: async () => {} })
     expect(await node.ensure()).toEqual({ state: 'needs-login', loginUrl: 'https://login.tailscale.com/a/kept' })
     expect(calls.some(args => args.includes('up'))).toBe(false)
+  })
+  it('asks for a new sign-in link when the last one expired', async () => {
+    let link: string | undefined = 'https://login.tailscale.com/a/first'
+    const { docker, calls } = fakeDocker({ backend: () => ({ BackendState: 'NeedsLogin', ...(link ? { AuthURL: link } : {}) }) })
+    const node = new TailnetNode({ ...base, config: { mode: 'login', image: TAILSCALE_IMAGE }, docker, allow: async () => {} })
+    const ups = () => calls.filter(args => args.includes('up')).length
+    expect(await node.ensure()).toEqual({ state: 'needs-login', loginUrl: 'https://login.tailscale.com/a/first' })
+    expect(ups()).toBe(0)
+    link = undefined
+    await node.refresh()
+    expect(ups()).toBe(1)
   })
   it('joins with a key through standard input, never an argument', async () => {
     let joined = false
