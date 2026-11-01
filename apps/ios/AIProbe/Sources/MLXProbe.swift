@@ -16,6 +16,7 @@ struct MLXProbe {
         "qwen3-0.6b": LLMRegistry.qwen3_0_6b_4bit,
         "qwen3-1.7b": LLMRegistry.qwen3_1_7b_4bit,
         "qwen3-4b": LLMRegistry.qwen3_4b_4bit,
+        "qwen3-8b": LLMRegistry.qwen3_8b_4bit,
         "qwen3.5-2b": LLMRegistry.qwen3_5_2b_4bit,
         "llama3.2-1b": LLMRegistry.llama3_2_1B_4bit,
         "llama3.2-3b": LLMRegistry.llama3_2_3B_4bit,

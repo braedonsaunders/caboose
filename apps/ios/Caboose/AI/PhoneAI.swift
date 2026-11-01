@@ -26,9 +26,21 @@ final class PhoneAI {
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private let runner = AppleModelRunner()
+    /// The open-weight models downloaded to this phone.
+    let library = PhoneModelLibrary()
+    @ObservationIgnored private let runner: PhoneModelRunner
 
-    init() { AISettings.register() }
+    init() {
+        AISettings.register()
+        runner = PhoneModelRunner(library: library)
+        library.changed = { [weak self] in self?.modelsChanged() }
+    }
+
+    /// Tells the computer the models now on offer.
+    private func modelsChanged() {
+        models = runner.models()
+        if let socket { send(AIRelay.hello(models), on: socket) }
+    }
 
     func attach(host: HostClient) {
         self.host = host
@@ -40,6 +52,9 @@ final class PhoneAI {
         host = nil
         close()
         status = .off
+        // iOS ends an app holding gigabytes in the background.
+        library.unload()
+        runner.embedder.unload()
     }
 
     func settingChanged() {
@@ -51,7 +66,7 @@ final class PhoneAI {
         guard let host, socket == nil else { return }
         guard AISettings.enabled else { status = .off; return }
         models = runner.models()
-        if let reason = runner.unavailableReason { status = .unavailable(reason); return }
+        if models.isEmpty { status = .unavailable(runner.unavailableReason ?? "No models are on this iPhone."); return }
         generation += 1
         let current = generation
         var request = URLRequest(url: host.socketURL("/v1/ai"))
@@ -122,12 +137,17 @@ final class PhoneAI {
         case .cancel(let id):
             tasks.removeValue(forKey: id)?.cancel()
             running = tasks.count
-        case .request(let id, let request):
+        case .request(let id, _), .embed(let id, _):
             guard tasks[id] == nil else { return }
             tasks[id] = Task { @MainActor [weak self, runner] in
-                await runner.run(id: id, request: request) { [weak self] event in
+                let send: (String) -> Void = { [weak self] event in
                     guard let self, self.socket === task else { return }
                     self.send(event, on: task)
+                }
+                switch message {
+                case .request(_, let request): await runner.run(id: id, request: request, send: send)
+                case .embed(_, let request): await runner.embed(id: id, request: request, send: send)
+                case .cancel: break
                 }
                 guard let self else { return }
                 if self.tasks.removeValue(forKey: id) != nil { self.answered += 1 }
@@ -163,16 +183,19 @@ struct PhoneAISettingsSection: View {
             .onChange(of: enabled) { _, _ in ai.settingChanged() }
             if enabled {
                 LabeledContent("Status", value: statusText)
-                if let model = ai.models.first, ai.status == .serving {
-                    LabeledContent("Model", value: model.family.map { "\(model.id) (\($0))" } ?? model.id)
-                    LabeledContent("Context", value: "\(model.contextSize.formatted()) tokens")
+                if ai.status == .serving {
                     LabeledContent("Answered", value: ai.running > 0 ? "\(ai.answered), \(ai.running) running" : "\(ai.answered)")
+                }
+                NavigationLink {
+                    PhoneModelsView(ai: ai)
+                } label: {
+                    LabeledContent("Models", value: "\(ai.models.count)")
                 }
             }
         } header: {
             Text("On-Device AI")
         } footer: {
-            Text("While Caboose is open, programs on the computer use Apple's model on this \(device) at localhost:11434, with the OpenAI or Ollama API. Requests and answers stay between this \(device) and your computer.")
+            Text("While Caboose is open, programs on the computer use the models on this \(device) at localhost:11434, with the OpenAI or Ollama API. Requests and answers stay between this \(device) and your computer.")
         }
     }
 
@@ -182,6 +205,68 @@ struct PhoneAISettingsSection: View {
         case .unavailable(let reason): reason
         case .connecting: "Connecting"
         case .serving: "Serving"
+        }
+    }
+}
+
+/// The models the computer can use, and the open-weight ones to download.
+struct PhoneModelsView: View {
+    let ai: PhoneAI
+
+    var body: some View {
+        List {
+            Section("Serving") {
+                if ai.models.isEmpty { Text("No models").foregroundStyle(.secondary) }
+                ForEach(ai.models, id: \.id) { model in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.id).font(.body.monospaced())
+                        Text(model.embedding ? "Embeddings · \(model.contextSize.formatted()) tokens" : "\(model.contextSize.formatted())-token window · \(model.capabilities.joined(separator: ", "))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section {
+                ForEach(PhoneModelLibrary.catalog) { entry in
+                    PhoneModelRow(entry: entry, library: ai.library)
+                }
+            } header: {
+                Text("Download")
+            } footer: {
+                Text("Open-weight models run on this iPhone's GPU while Caboose is open. Speeds were measured on an iPhone with an A20 Pro.\(ai.library.freeBytes.map { " \($0.formatted(.byteCount(style: .file))) free." } ?? "")")
+            }
+        }
+        .navigationTitle("Models")
+    }
+}
+
+private struct PhoneModelRow: View {
+    let entry: PhoneModelLibrary.Entry
+    let library: PhoneModelLibrary
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.name)
+                Text("\(entry.tokensPerSecond) tokens/s · \(entry.contextSize.formatted())-token window · needs \(entry.memoryBytes.formatted(.byteCount(style: .memory)))")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if case .failed(let reason) = library.states[entry.id] { Text(reason).font(.footnote).foregroundStyle(.red) }
+            }
+            Spacer()
+            switch library.states[entry.id] ?? .absent {
+            case .absent, .failed:
+                Button("Get \(entry.downloadBytes.formatted(.byteCount(style: .file)))") { library.download(entry.id) }
+                    .buttonStyle(.bordered)
+            case .downloading(let fraction):
+                ProgressView(value: fraction).frame(width: 60)
+                Button("Stop", systemImage: "xmark.circle.fill") { library.cancelDownload(entry.id) }.labelStyle(.iconOnly)
+            case .installed(let bytes):
+                Text(bytes.formatted(.byteCount(style: .file))).font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .swipeActions {
+            if case .installed = library.states[entry.id] {
+                Button("Delete", role: .destructive) { library.delete(entry.id) }
+            }
         }
     }
 }

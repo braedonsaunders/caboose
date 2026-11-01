@@ -12,6 +12,17 @@ packages:
   GhosttyKit:
     url: https://github.com/Lakr233/libghostty-spm
     exactVersion: 2.2.2026103001
+  # On-device AI's open-weight models (docs/ai.md): MLX on the phone's GPU, bridged into
+  # Foundation Models sessions, with Hugging Face downloads and tokenizers.
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    exactVersion: 3.32.3
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface
+    from: 0.9.0
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 1.3.0
 configFiles:
   Debug: Caboose/Config/Caboose.xcconfig
   Release: Caboose/Config/Caboose.xcconfig
@@ -46,6 +57,18 @@ targets:
       - package: CabooseKit
       - package: GhosttyKit
         product: GhosttyKit
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: mlx-swift-lm
+        product: MLXFoundationModels
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: swift-transformers
+        product: Tokenizers
       - target: CabooseShare
       - target: CabooseFiles
       - target: CabooseWidgets

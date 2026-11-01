@@ -3,8 +3,10 @@ import CoreGraphics
 import Foundation
 import FoundationModels
 import ImageIO
+import MLXFoundationModels
+import MLXLMCommon
 
-/// Runs Caboose AI requests (docs/ai.md § Phone) on Apple's on-device model.
+/// Runs Caboose AI requests (docs/ai.md § Phone) on Apple's on-device model and the downloaded models.
 ///
 /// A request becomes one turn of a `LanguageModelSession`: its conversation is the session's
 /// transcript and its last user message the prompt. A program's tools are tools of the
@@ -13,12 +15,16 @@ import ImageIO
 /// carries the result, and continues the same turn. Results that arrive after the session
 /// gave up waiting are written into a new session's transcript, which answers from them.
 @MainActor
-final class AppleModelRunner {
+final class PhoneModelRunner {
     static let modelID = "apple-foundation"
     /// How long a turn waits for the program to send the results of the tools it called.
     static let toolWait: Duration = .seconds(120)
 
     let model = SystemLanguageModel.default
+    let library: PhoneModelLibrary
+    let embedder = PhoneEmbedder()
+
+    init(library: PhoneModelLibrary) { self.library = library }
     /// Turns waiting for tool results, by the ids of the calls they made.
     private var waiting: [String: Turn] = [:]
     /// The turn each running request is a leg of.
@@ -35,8 +41,13 @@ final class AppleModelRunner {
         }
     }
 
-    /// The models to offer: none while Apple's is unavailable.
+    /// The models to offer: Apple's while it is available, the downloaded ones, and the
+    /// embedding model.
     func models() -> [AIRelay.Model] {
+        appleModels() + library.models() + embedder.models()
+    }
+
+    private func appleModels() -> [AIRelay.Model] {
         guard unavailableReason == nil else { return [] }
         var capabilities = ["tools", "json"]
         var family: String?
@@ -51,10 +62,7 @@ final class AppleModelRunner {
     /// Runs one request, sending its events; returns when this request's part is over.
     func run(id: String, request: AIRelay.Request, send: @escaping (String) -> Void) async {
         do {
-            guard unavailableReason == nil else { throw AIRelay.Failure(status: 503, code: "model_unavailable", message: unavailableReason ?? "") }
-            guard request.model == Self.modelID else {
-                throw AIRelay.Failure(status: 404, code: "model_not_found", message: "This iPhone has no model \(request.model).")
-            }
+            let backend = try backend(for: request.model)
             let conversation = try AIConversation(request)
             let ids = conversation.resultIDs
             if !ids.isEmpty, let turn = waiting[ids.first!], turn.waitingFor == ids {
@@ -62,10 +70,38 @@ final class AppleModelRunner {
                 try await leg(of: turn, id: id) { turn.resume(id: id, send: send, results: conversation.results) }
                 return
             }
-            let turn = try await Turn(runner: self, request: request, conversation: conversation)
+            let turn = try await Turn(runner: self, backend: backend, request: request, conversation: conversation)
             try await leg(of: turn, id: id) { turn.start(id: id, send: send) }
         } catch let failure as AIRelay.Failure {
             send(AIRelay.error(id, failure))
+        } catch is CancellationError {
+        } catch {
+            send(AIRelay.error(id, Self.failure(error)))
+        }
+    }
+
+    /// Where a request for `id` runs.
+    private func backend(for id: String) throws -> Backend {
+        if id == Self.modelID {
+            guard unavailableReason == nil else { throw AIRelay.Failure(status: 503, code: "model_unavailable", message: unavailableReason ?? "") }
+            return .apple(model)
+        }
+        if #available(iOS 27.0, *), let entry = library.installed.first(where: { $0.id == id }), let model = library.languageModel(id) {
+            return .mlx(model, contextSize: entry.contextSize)
+        }
+        throw AIRelay.Failure(status: 404, code: "model_not_found", message: "This iPhone has no model \(id).")
+    }
+
+    /// Embeds texts; returns when every vector is sent.
+    func embed(id: String, request: AIRelay.EmbedRequest, send: @escaping (String) -> Void) async {
+        send(AIRelay.started(id))
+        do {
+            let (vectors, tokens) = try await embedder.embed(request)
+            for (index, vector) in vectors.enumerated() {
+                try Task.checkCancellation()
+                send(AIRelay.vector(id, index: index, values: vector))
+            }
+            send(AIRelay.done(id, finish: .stop, usage: .init(promptTokens: tokens, completionTokens: 0)))
         } catch is CancellationError {
         } catch {
             send(AIRelay.error(id, Self.failure(error)))
@@ -153,7 +189,8 @@ final class AppleModelRunner {
 /// its tool calls and their results.
 @MainActor
 private final class Turn {
-    let runner: AppleModelRunner
+    let runner: PhoneModelRunner
+    let backend: Backend
     let session: LanguageModelSession
     let prompt: AIRelay.Message
     let options: GenerationOptions
@@ -175,9 +212,10 @@ private final class Turn {
     private(set) var waitingFor: Set<String> = []
     private var cancelled = false
 
-    init(runner: AppleModelRunner, request: AIRelay.Request, conversation: AIConversation) async throws {
+    init(runner: PhoneModelRunner, backend: Backend, request: AIRelay.Request, conversation: AIConversation) async throws {
         self.runner = runner
-        let model = runner.model
+        self.backend = backend
+        let contextSize = backend.contextSize
         // Results for calls of a turn no session waits for any more: the turn is written into
         // the transcript with them, and the model answers from them to an empty prompt.
         let continuing = !conversation.results.isEmpty
@@ -202,7 +240,7 @@ private final class Turn {
         case .named(let name): request.tools.filter { $0.name == name }
         case .auto, .required: request.tools
         }
-        var tools: [any Tool] = []
+        var tools: [any FoundationModels.Tool] = []
         let box = TurnBox()
         for tool in offered {
             tools.append(ClientTool(name: tool.name, description: tool.description,
@@ -215,17 +253,16 @@ private final class Turn {
         }
         var history = conversation
         // The answer needs room too: what the program allows it, or a quarter of the window.
-        let budget = model.contextSize - min(request.maxTokens ?? model.contextSize / 4, model.contextSize / 2)
-        if #available(iOS 26.4, *) {
+        let budget = contextSize - min(request.maxTokens ?? contextSize / 4, contextSize / 2)
+        if let count = backend.count {
             let fixed = entries
             let prompt = conversation.prompt.text + conversation.results.map(\.output).joined(separator: "\n")
             let used = try await history.fit(budget: budget) { conversation in
-                let transcript = fixed + Self.entries(conversation.history)
-                return try await model.tokenCount(for: transcript) + model.tokenCount(for: prompt)
+                try await count(fixed + Self.entries(conversation.history), prompt)
             }
             if used > budget {
                 throw AIRelay.Failure(status: 400, code: "context_length_exceeded",
-                                      message: "The last message and instructions need \(used) tokens; \(AppleModelRunner.modelID) holds \(model.contextSize), prompt and answer together.")
+                                      message: "The last message and instructions need \(used) tokens; \(backend.id) holds \(contextSize), prompt and answer together.")
             }
         }
         entries += Self.entries(history.history)
@@ -233,7 +270,7 @@ private final class Turn {
             entries += Self.entries([.user(conversation.prompt), .assistant(text: "", toolCalls: conversation.results.map(\.call))]
                                     + conversation.results.map { .toolOutput(callId: $0.call.id, name: $0.call.name, text: $0.output) })
         }
-        session = LanguageModelSession(model: model, tools: tools, transcript: Transcript(entries: entries))
+        session = backend.session(tools, Transcript(entries: entries))
         box.turn = self
     }
 
@@ -283,8 +320,8 @@ private final class Turn {
         begin(id: id, send: send)
         let images = prompt.images.compactMap(Self.image)
         if images.count < prompt.images.count { end(throwing: AIRelay.Failure(status: 400, code: "invalid_image", message: "An image could not be read.")); return }
-        if !images.isEmpty, !Self.sees(runner.model) {
-            end(throwing: AIRelay.Failure(status: 400, code: "unsupported", message: "Apple's model on this iPhone does not take images."))
+        if !images.isEmpty, !backend.sees {
+            end(throwing: AIRelay.Failure(status: 400, code: "unsupported", message: "\(backend.id) does not take images."))
             return
         }
         let promptText = prompt.text
@@ -310,7 +347,7 @@ private final class Turn {
                 }
             } catch {
                 if cancelled || error is CancellationError { end(throwing: CancellationError()); return }
-                if AppleModelRunner.filtered(error) {
+                if PhoneModelRunner.filtered(error) {
                     self.send(AIRelay.done(self.id, finish: .contentFilter, usage: .init(promptTokens: 0, completionTokens: 0)))
                     end(throwing: nil)
                     return
@@ -404,14 +441,73 @@ private final class Turn {
         if #available(iOS 27.0, *) { images.map { Attachment($0) } }
     }
 
-    static func sees(_ model: SystemLanguageModel) -> Bool {
-        if #available(iOS 27.0, *) { return model.capabilities.contains(.vision) }
-        return false
-    }
 
     static func image(_ image: AIRelay.Image) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(image.data as CFData, nil) else { return nil }
         return CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+    }
+}
+
+/// A model a turn runs on: Apple's, or a downloaded one through MLX.
+@MainActor
+struct Backend {
+    let id: String
+    let contextSize: Int
+    let sees: Bool
+    let session: ([any FoundationModels.Tool], Transcript) -> LanguageModelSession
+    /// Counts a transcript and prompt's tokens; nil where the model cannot.
+    let count: (([Transcript.Entry], String) async throws -> Int)?
+
+    static func apple(_ model: SystemLanguageModel) -> Backend {
+        var sees = false
+        if #available(iOS 27.0, *) { sees = model.capabilities.contains(.vision) }
+        var count: (([Transcript.Entry], String) async throws -> Int)?
+        if #available(iOS 26.4, *) {
+            count = { entries, prompt in try await model.tokenCount(for: entries) + model.tokenCount(for: prompt) }
+        }
+        return Backend(id: PhoneModelRunner.modelID, contextSize: model.contextSize, sees: sees,
+                       session: { tools, transcript in LanguageModelSession(model: model, tools: tools, transcript: transcript) }, count: count)
+    }
+
+    @available(iOS 27.0, *)
+    static func mlx(_ model: MLXLanguageModel, contextSize: Int) -> Backend {
+        Backend(id: model.modelID, contextSize: contextSize, sees: false,
+                session: { tools, transcript in LanguageModelSession(model: model, tools: tools, transcript: transcript) },
+                count: { entries, prompt in
+                    // The model's own tokenizer over the transcript's text; a few tokens more
+                    // per entry for its chat template.
+                    let text = Self.text(entries) + prompt
+                    let tokens = try await model.loadContainer().perform { context in context.tokenizer.encode(text: text).count }
+                    return tokens + 8 * (entries.count + 1)
+                })
+    }
+
+    /// A transcript as the text a chat template wraps: segments, tool definitions, calls.
+    @available(iOS 27.0, *)
+    static func text(_ entries: [Transcript.Entry]) -> String {
+        func segments(_ list: [Transcript.Segment]) -> String {
+            list.map { segment in
+                switch segment {
+                case .text(let text): text.content
+                case .structure(let structure): structure.content.jsonString
+                default: ""
+                }
+            }.joined()
+        }
+        return entries.map { entry in
+            switch entry {
+            case .instructions(let instructions):
+                segments(instructions.segments) + instructions.toolDefinitions.map { tool in
+                    "\(tool.name) \(tool.description) " + ((try? String(decoding: JSONEncoder().encode(tool.parameters), as: UTF8.self)) ?? "")
+                }.joined(separator: "\n")
+            case .prompt(let prompt): segments(prompt.segments)
+            case .response(let response): segments(response.segments)
+            case .toolCalls(let calls): calls.map { "\($0.toolName) \($0.arguments.jsonString)" }.joined(separator: "\n")
+            case .toolOutput(let output): segments(output.segments)
+            case .reasoning(let reasoning): segments(reasoning.segments)
+            @unknown default: ""
+            }
+        }.joined(separator: "\n")
     }
 }
 
@@ -421,7 +517,7 @@ private final class TurnBox: @unchecked Sendable {
 }
 
 /// A program's tool: the model calls it, and the program answers.
-private struct ClientTool: Tool {
+private struct ClientTool: FoundationModels.Tool {
     let name: String
     let description: String
     let parameters: GenerationSchema
