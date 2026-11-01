@@ -143,7 +143,7 @@ struct WindowScreen: View {
         let keyTarget = popups.last { !$0.isOverrideRedirect }?.id ?? window.id
         let frames = popupFrames(popups, over: window, size: size)
         let natural = DesktopGeometry.surfaceSize(
-            natural: CGSize(width: window.presentationSize.width / model.pixelsPerPoint, height: window.presentationSize.height / model.pixelsPerPoint),
+            natural: CGSize(width: window.frame.size.width / model.pixelsPerPoint, height: window.frame.size.height / model.pixelsPerPoint),
             available: size, locallyRendered: window.game != nil)
         let shown = DesktopGeometry.surfaceFrame(natural: natural, available: size, resizing: false,
                                                   fullscreen: window.isFullscreen)
@@ -247,7 +247,7 @@ struct WindowScreen: View {
                 let leftward = value.translation.width < 0
                 let target = neighbour(of: window, leftward: leftward)
                 if neighbour?.id != target?.id {
-                    neighbour = target.map { ($0.id, $0.surface.snapshot()) }
+                    neighbour = target.map { ($0.id, $0.snapshot.snapshot()) }
                 }
                 // Past the first or last app the card only gives a little.
                 swipe = target == nil ? value.translation.width * 0.2 : value.translation.width
@@ -363,7 +363,6 @@ struct WindowScreen: View {
         if model.agents.available {
             Button("Ask Agent About This Window", systemImage: "sparkle") { askingAbout = window }
         }
-        Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
         Button("Close Window", systemImage: "xmark", role: .destructive) { model.session?.closeDiagnosed(window) }
     }
 
@@ -404,7 +403,7 @@ struct WindowScreen: View {
     private func popupFrames(_ popups: [RemoteWindow], over parent: RemoteWindow, size: CGSize) -> [Int: CGRect] {
         let scale = model.pixelsPerPoint
         let root = DesktopGeometry.surfaceFrame(
-            natural: CGSize(width: parent.presentationSize.width / scale, height: parent.presentationSize.height / scale),
+            natural: CGSize(width: parent.frame.size.width / scale, height: parent.frame.size.height / scale),
             available: size, resizing: false, fullscreen: parent.isFullscreen)
         let windows = Dictionary(uniqueKeysWithValues: ([parent] + popups).map {
             ($0.id, DesktopGeometry.WindowGeometry(frame: $0.frame, parent: $0.transientFor))
@@ -479,8 +478,8 @@ struct RemoteWindowCanvas: UIViewRepresentable {
         view.fullscreen = window.isFullscreen
         view.content.pixelsPerPoint = model.pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
-        view.natural = CGSize(width: window.presentationSize.width / model.pixelsPerPoint,
-                              height: window.presentationSize.height / model.pixelsPerPoint)
+        view.natural = CGSize(width: window.frame.size.width / model.pixelsPerPoint,
+                              height: window.frame.size.height / model.pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboardVisible && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
@@ -501,7 +500,7 @@ struct RemoteWindowPreview: UIViewRepresentable {
         view.isInteractive = false
         view.pixelsPerPoint = max(1, window.frame.width / width)
         view.pacer = model.session // a live preview is paced like any window on screen
-        view.showsVideo = false // the window's own screen plays its videos
+        view.showsLiveContent = false // the window's own screen runs its GPU layer
         return view
     }
 

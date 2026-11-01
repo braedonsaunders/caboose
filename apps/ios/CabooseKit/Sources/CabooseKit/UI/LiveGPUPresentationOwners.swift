@@ -65,11 +65,6 @@ public final class LiveGPUPresentationOwners {
         }
     }
 
-    /// Whether a live GPU layer presents in `view`, over the picture the view draws itself.
-    func presents(in view: RemoteWindowView) -> Bool {
-        leases.values.contains { $0.isValid && $0.view === view }
-    }
-
     /// Whether the live GPU layer in `view` blends with what is behind the window.
     func presentsTranslucent(in view: RemoteWindowView) -> Bool {
         leases.values.contains { $0.isValid && $0.view === view && $0.translucent }
@@ -180,9 +175,9 @@ public final class LiveGPUPresentationOwners {
         invalidated(lease.identity)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
-        guard view.remoteWindow?.game == nil, view.remoteWindow?.gpuStream == nil,
+        guard view.remoteWindow?.game == nil,
               GamePresentation.hosts(interactive: view.isInteractive, desktop: view.hostsGame,
-            contentEnabled: view.showsVideo, hasConnection: (view.session ?? view.pacer) != nil,
+            contentEnabled: view.showsLiveContent, hasConnection: (view.session ?? view.pacer) != nil,
             onScreen: view.window != nil), let window = view.window, view.superview != nil else { return false }
         var ancestor: UIView? = view
         while let current = ancestor {
@@ -232,6 +227,8 @@ public final class LiveGPUPresentationOwners {
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
         LiveGPUMemoryAudit.ownerExtent(server: size, view: bounds)
         #endif
+        // Until its first present the layer shows nothing, over a blank view: never a picture
+        // from before.
         let content = LiveGPULayerView(frame: CGRect(origin: .zero, size: bounds), pixelExtent: size)
         content.isUserInteractionEnabled = false
         content.isOpaque = true
@@ -243,7 +240,9 @@ public final class LiveGPUPresentationOwners {
         layer.presentsWithTransaction = false
         view?.insertSubview(content, at: 0)
         let lease = LiveGPULayerLease(identity: identity, windowID: windowID,
-            windowIdentity: object, extent: size, view: view, content: content)
+            windowIdentity: object, extent: size, view: view, content: content, snapshot: window.snapshot)
+        // A window with alpha (a menu's shadow) shows what is behind it from the start.
+        lease.setTranslucent(window.hasAlpha)
         if view == nil {
             lease.parked = true
             #if DEBUG && canImport(CabooseGPUMemoryAudit)
@@ -359,8 +358,8 @@ final class LiveGPULayerLease: @unchecked Sendable {
         guard LiveGPUDrawableGeometry.extent(serverPixels: size, visibleBounds: content.bounds.size) != nil else { return EINVAL }
         return content.configurePresentationExtent(size, configure: configure)
     }
-    /// The window's current swapchain is premultiplied: its layer is not opaque, and the view
-    /// under it draws no picture of its own there.
+    /// The window's current swapchain is premultiplied: its layer is not opaque, and shows
+    /// what is behind the window.
     @MainActor private(set) var translucent = false
     @MainActor func setTranslucent(_ value: Bool) {
         guard isValid, translucent != value else { return }
@@ -376,10 +375,12 @@ final class LiveGPULayerLease: @unchecked Sendable {
     @discardableResult func invalidate() -> Bool { lock.withLock { let old = valid; valid = false; return old } }
     /// Out of view, still bound and still presenting (LiveGPUPresentationOwners).
     @MainActor var parked = false
+    /// The window's snapshot, which copies of this layer's presents replace.
+    let snapshot: WindowSnapshot
     @MainActor init(identity: LiveGPUSurfaceIdentity, windowID: UInt64, windowIdentity: ObjectIdentifier,
-                    extent: CGSize, view: RemoteWindowView?, content: UIView) {
+                    extent: CGSize, view: RemoteWindowView?, content: UIView, snapshot: WindowSnapshot) {
         self.identity = identity; self.windowID = windowID; self.windowIdentity = windowIdentity
-        self.currentExtent = extent; self.view = view; self.content = content
+        self.currentExtent = extent; self.view = view; self.content = content; self.snapshot = snapshot
     }
 }
 #endif

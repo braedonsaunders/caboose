@@ -65,15 +65,8 @@ final class AppModel {
     var addingComputer = false
     /// The owner's display.
     private(set) var session: (any DisplaySession)?
-    // Private physical acceptance uses the ordinary authenticated host and owner
-    // window path. Release builds never activate this experimental executor.
-    private static var privateIndexedGPU: Bool {
-        #if DEBUG
-        ProcessInfo.processInfo.environment["CABOOSE_PRIVATE_GPU_INDEXED"] != "0"
-        #else
-        false
-        #endif
-    }
+    /// The GPU executor every window's picture comes through (docs/gpu-live.md): one per
+    /// owner computer, over the same authenticated host.
     private var liveGPUOwner: LiveGPUOwnerSession?
     private var liveGPUIdentity: String?
     private var liveGPUGeneration = UUID()
@@ -155,7 +148,7 @@ final class AppModel {
     /// Which gathering of frames the cache belongs to, so pictures still arriving from the GPU
     /// after the cache was cleared or gathered again are dropped.
     private var frameCacheGeneration = 0
-    /// Reduced to this long edge: ample for seeding a window until its keyframe lands.
+    /// Reduced to this long edge: ample for a thumbnail until the window's GPU layer presents.
     private static let frameCacheLongEdge = 1024
     /// At most this many bytes of pictures, most recently raised windows first.
     private static let frameCacheBudget = 24 << 20
@@ -544,10 +537,9 @@ final class AppModel {
         Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
         guard phase != .displayElsewhere else { return }
-        // A connection kept through the background for its sound shows pictures again, and
-        // GPU rendering moves back onto this phone.
+        // A connection kept through the background for its sound shows pictures again: GPU
+        // rendering moves back onto this phone.
         if let display = session as? CabooseDisplaySession, display.state == .ready {
-            display.resumePictures()
             syncLiveGPU()
             return
         }
@@ -573,10 +565,7 @@ final class AppModel {
         phone.setActive(false)
         bridge.setActive(false)
         wakes.invalidate()
-        if let display = session as? CabooseDisplaySession, display.playsSoundNow {
-            display.suspendPictures()
-            return
-        }
+        if let display = session as? CabooseDisplaySession, display.playsSoundNow { return }
         link.stop()
         if let session { cacheFrames(of: session) }
         // An app page playing media on this device keeps playing in the background.
@@ -588,28 +577,28 @@ final class AppModel {
         if case .ready = phase { phase = .waking }
     }
 
-    /// Keeps reduced pictures of the windows most recently raised, as many as fit the budget,
+    /// Keeps reduced snapshots of the windows most recently raised, as many as fit the budget,
     /// gathered off the main thread: the scene may be suspended within seconds of leaving the
     /// screen, and a desktop's windows at full size would be hundreds of megabytes held through
-    /// the background. Those over the budget are dropped; they show once their keyframe lands.
+    /// the background. Those over the budget are dropped; they show once their GPU layers present.
     private func cacheFrames(of session: any DisplaySession) {
         frameCacheEpoch = session.epoch
         frameCacheGeneration += 1
         frameCache.removeAll()
         let generation = frameCacheGeneration
         var budget = Self.frameCacheBudget
-        var chosen: [Int: WindowSurface] = [:]
+        var chosen: [Int: WindowSnapshot] = [:]
         for window in session.windows.values.sorted(by: { $0.raisedAt > $1.raisedAt }) {
-            let size = window.surface.pixelSize
+            let size = window.snapshot.pixelSize
             guard size.width > 0, size.height > 0 else { continue }
             let scale = min(1, CGFloat(Self.frameCacheLongEdge) / max(size.width, size.height))
             let bytes = Int((size.width * scale).rounded()) * Int((size.height * scale).rounded()) * 4
             guard bytes <= budget else { break }
             budget -= bytes
-            chosen[window.id] = window.surface
+            chosen[window.id] = window.snapshot
         }
         guard !chosen.isEmpty else { return }
-        WindowSurface.snapshots(of: chosen, longEdgeAtMost: Self.frameCacheLongEdge) { [weak self] images in
+        WindowSnapshot.snapshots(of: chosen, longEdgeAtMost: Self.frameCacheLongEdge) { [weak self] images in
             Task { @MainActor in
                 guard let self, self.frameCacheGeneration == generation else { return }
                 self.frameCache = images
@@ -1159,10 +1148,13 @@ final class AppModel {
         return true
     }
 
+    /// Starts the GPU executor for the owner's ready display, in the foreground: every
+    /// window's picture comes through it. The computer's display then advertises
+    /// `gpu_live_epoch` in its next hello, which matches its surfaces to windows.
     /// READY-induced display reconnects retain this independent executor. A new
     /// computer or foreground lease waits for actual retirement of its predecessor.
     private func syncLiveGPU() {
-        guard Self.privateIndexedGPU, sceneActive, let credentials,
+        guard sceneActive, let credentials,
               let display = session as? CabooseDisplaySession, display.state == .ready else { return }
         let identity = Self.identity(credentials)
         if let owner = liveGPUOwner {

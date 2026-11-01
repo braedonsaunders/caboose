@@ -17,21 +17,17 @@ public struct DisplayLinkHealth: Equatable, Sendable {
     public var sinceLastReceive: Double?
     /// Bits per second received over the last few seconds.
     public var receiveRate: Double?
-    /// Window pictures applied per second over the last few seconds, all windows together.
+    /// Frames the windows' GPU layers presented per second over the last few seconds, all
+    /// windows together.
     public var picturesPerSecond: Double?
-    /// From a picture arriving on the socket to its decode starting: the client's own queue.
-    public var decodeWait: Samples?
-    /// Decoding one picture.
-    public var decode: Samples?
-    public var decodeFailures: Int
     /// What the socket has not finished sending. Nil where the transport does not report it.
     public var sendBacklog: SendBacklog?
-    /// The median time from a key press to the next picture of the same window.
+    /// The median time from a key press to the next present of the same window.
     public var typingEchoMs: Int?
-    /// Seconds since a key press whose window has not drawn since.
+    /// Seconds since a key press whose window has not presented since.
     public var keyAwaitingPicture: Double?
 
-    public static let empty = DisplayLinkHealth(decodeFailures: 0)
+    public static let empty = DisplayLinkHealth()
 }
 
 /// Messages handed to a socket that it has not finished sending.
@@ -46,14 +42,11 @@ public struct SendBacklog: Equatable, Sendable {
     }
 }
 
-/// Thread-safe counters fed from the socket queue, the decode queues and the main actor.
+/// Thread-safe counters fed from the socket queue, the GPU presenters and the main actor.
 /// Times are seconds on `CACurrentMediaTime`'s clock (passed in, so tests choose them).
 final class ConnectionMetrics: @unchecked Sendable {
     private let lock = NSLock()
     private var rtt = Ring(capacity: 20)
-    private var wait = Ring(capacity: 60)
-    private var decodeTime = Ring(capacity: 60)
-    private var failures = 0
     private var lastReceive: Double?
     private var firstReceive: Double?
     private var received = Buckets()
@@ -81,21 +74,15 @@ final class ConnectionMetrics: @unchecked Sendable {
         rtt.add(ms)
     }
 
-    /// One picture through a window's pipeline. `waited` and `took` in seconds.
-    func picture(window: Int, waited: Double, took: Double, failed: Bool, at now: Double) {
+    /// The window's GPU layer presented a frame.
+    func presented(window: Int, at now: Double) {
         lock.lock(); defer { lock.unlock() }
-        wait.add(waited * 1000)
-        if failed {
-            failures += 1
-            return
-        }
-        decodeTime.add(took * 1000)
         lastPicture[window] = now
         if firstPicture == nil { firstPicture = now }
         pictures.add(1, at: now)
     }
 
-    /// Seconds since the window's last applied picture, nil before its first on this connection.
+    /// Seconds since the window's last present, nil before its first on this connection.
     func pictureAge(window: Int, at now: Double) -> Double? {
         lock.lock(); defer { lock.unlock() }
         return lastPicture[window].map { max(0, now - $0) }
@@ -105,9 +92,6 @@ final class ConnectionMetrics: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         var health = DisplayLinkHealth.empty
         health.roundTrip = rtt.samples
-        health.decodeWait = wait.samples
-        health.decode = decodeTime.samples
-        health.decodeFailures = failures
         health.sinceLastReceive = lastReceive.map { max(0, now - $0) }
         health.receiveRate = Self.rate(received, since: firstReceive, at: now).map { $0 * 8 }
         health.picturesPerSecond = Self.rate(pictures, since: firstPicture, at: now)

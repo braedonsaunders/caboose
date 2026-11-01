@@ -1,8 +1,9 @@
-# Native GPU runtimes
+# Native GPU runtime
 
-`CMakeLists.txt`, `src/` and `include/` build the GFXReconstruct replay player.
-[`gfxstream/`](gfxstream/README.md) contains the separate live Vulkan decoder's
-adapter, the pin of its gfxstream fork and real-provider validation fixtures.
+The phone's GPU executor: every window's picture is rendered through it
+([docs/gpu-live.md](../../../docs/gpu-live.md)). [`gfxstream/`](gfxstream/README.md)
+contains the live Vulkan decoder's adapter, the pin of its gfxstream fork and
+real-provider validation fixtures; `live/include/caboose_gpu_live.h` is its C API.
 
 ## Live runtime package
 
@@ -62,11 +63,10 @@ three real audit entrypoints in the Swift link probe. The ordinary package omits
 that module. A mismatched build-cache setting is rejected. The diagnostic receipt
 records this selection; it does not establish allocation or byte-transfer results.
 
-CabooseKit conditionally links a selected package on iOS. Its manifest rejects the
-simultaneous presence of the replay `CabooseGPUStream.xcframework`, which contains
-a different provider. Without either package, the portable app and tests build
-without a native GPU backend. Packaging alone does not activate a connection or
-establish presentation, coherent memory, or game compatibility. The live image
+CabooseKit links the package on iOS when it is present. Without it, the portable
+package and its tests build without a native GPU backend, and the app shows no window
+pictures. Packaging alone does not establish presentation, coherent memory, or game
+compatibility. The live image
 lease and its presentation retirement barrier are separate from process cleanup.
 
 ## Live connection retirement

@@ -1,8 +1,7 @@
 # gfxstream decoder foundation
 
-This directory contains experimental source adapters. It is not connected to the
-shipping player or display handshake and does not provide a working iOS virtual
-GPU. The [macOS reference](macos-reference/README.md) contains a real-backend build
+This directory contains the source adapters of the phone's GPU executor, which renders
+every window's picture. The [macOS reference](macos-reference/README.md) contains a real-backend build
 recipe and lifecycle fixture. The Linux reference executes the private Mesa
 compute/CPU/indirect-draw oracle on lavapipe; the iOS reference links the real
 backend and stock MoltenVK. The standalone diagnostic also links with the private
@@ -205,6 +204,15 @@ commits provide the GLES-disabled [iOS reference](ios-reference/README.md), and
 the runtime from the pinned commit. Its static link includes the real framebuffer and
 Vulkan decoder; GL readback remains unsupported. The [source audit](apple-source-audit.md)
 describes these boundaries.
+
+## Presented-picture captures
+
+`caboose_gpu_surface_set_capture` copies presents into three capture images on the
+presenting device while a callback is set, and lends each copy's Metal texture to the
+callback until it is released (`presentation_capture_state.h`). CabooseKit sets it only
+for the presents a window snapshot or frame lab takes, and clears it once the copy
+arrives; with no callback set and no slot written or lent, the next present frees the
+images, so a window does not hold them between copies.
 
 ## Display times for frame lab
 

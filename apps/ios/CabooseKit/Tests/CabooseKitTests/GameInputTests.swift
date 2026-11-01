@@ -168,7 +168,7 @@ import Testing
     }
 
     @Test func aGameTakesInputOnlyWhileItRuns() {
-        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSurface())
+        let game = RemoteGame(GameDescriptor(id: 1, window: 7, root: "r", entry: "e"), host: nil, picture: WindowSnapshot())
         var delivered: [[GameInputEvent]] = []
         game.inputSink = { delivered.append($0) }
         game.key(Keysyms.special["Up"]!, pressed: true)

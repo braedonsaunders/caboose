@@ -65,6 +65,11 @@ public:
         for (const auto& slot : slots_) if (slot.state == Writing || slot.state == Quarantined) return false;
         return true;
     }
+    // No slot is written, lent or of unknown outcome: nothing reads or writes the ring.
+    bool unused() const {
+        for (const auto& slot : slots_) if (slot.state != Free) return false;
+        return true;
+    }
     uint32_t token(uint32_t index) const { return ((generation_ & 0xffffff) << 8) | (index & 0xff); }
 
 private:

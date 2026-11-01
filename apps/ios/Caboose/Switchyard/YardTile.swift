@@ -19,7 +19,7 @@ struct YardTile: View {
     var body: some View {
         let radius = yard.metrics.cornerRadius
         let tileContent = yard.metrics.content(ofTile: rect).size
-        let picture = CGSize(width: window.presentationSize.width / yard.pixelsPerPoint, height: window.presentationSize.height / yard.pixelsPerPoint)
+        let picture = CGSize(width: window.frame.size.width / yard.pixelsPerPoint, height: window.frame.size.height / yard.pixelsPerPoint)
         let card = window.game == nil ? DesktopGeometry.compactCard(
             natural: picture, maximum: window.maximumSize.map { CGSize(width: $0.width / yard.pixelsPerPoint, height: $0.height / yard.pixelsPerPoint) },
             available: tileContent, settling: yard.stretches(window.id), fullscreen: window.isFullscreen) : nil
@@ -168,7 +168,6 @@ struct YardTitleBar: View {
             if model.agents.available {
                 Button("Ask Agent About This Window", systemImage: "sparkle") { onAsk(window) }
             }
-            Button("Redraw", systemImage: "arrow.clockwise") { model.session?.refresh(window) }
         }
         Button("Close Window", systemImage: "xmark", role: .destructive) { yard.close(window.id) }
     }
@@ -199,7 +198,7 @@ struct YardSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> YardSurfaceView {
         let view = YardSurfaceView(content: RemoteWindowView(session: model.yardActive ? model.session : nil, window: window))
         view.content.pixelsPerPoint = pixelsPerPoint
-        view.content.showsVideo = model.yardActive
+        view.content.showsLiveContent = model.yardActive
         let model = model
         view.content.onKeyboardWanted = { wanted in
             if model.keyboardVisible != wanted { model.keyboardVisible = wanted }
@@ -209,7 +208,7 @@ struct YardSurface: UIViewRepresentable {
 
     func updateUIView(_ view: YardSurfaceView, context: Context) {
         view.content.session = model.yardActive ? model.session : nil
-        view.content.showsVideo = model.yardActive
+        view.content.showsLiveContent = model.yardActive
         view.content.pixelsPerPoint = pixelsPerPoint
         if view.content.remoteWindow?.id != window.id { view.content.attach(window) }
         view.onTouch = onTouch
@@ -217,7 +216,7 @@ struct YardSurface: UIViewRepresentable {
         view.stretch = stretch
         view.fullscreen = window.isFullscreen
         view.locallyRendered = window.game != nil
-        view.natural = CGSize(width: window.presentationSize.width / pixelsPerPoint, height: window.presentationSize.height / pixelsPerPoint)
+        view.natural = CGSize(width: window.frame.size.width / pixelsPerPoint, height: window.frame.size.height / pixelsPerPoint)
         view.laptopPoint = laptopInputOwned ? LaptopPointer.shared.point(in: window, session: model.session) : nil
         if keyboard && model.yardActive && !laptopInputOwned, !view.content.isFirstResponder {
             DispatchQueue.main.async { view.content.becomeFirstResponder() }
@@ -243,15 +242,6 @@ final class YardSurfaceView: UIView {
         super.init(frame: .zero)
         clipsToBounds = true
         addSubview(content)
-        // Core Animation can retain the preceding drawable until the GPU presents.
-        // Keep that drawable proportional across the atomic picture-size handoff too.
-        content.layer.contentsGravity = .resizeAspect
-        content.onPictureSizeChanged = { [weak self] size in
-            guard let self else { return }
-            self.natural = CGSize(width: size.width / self.content.pixelsPerPoint,
-                                  height: size.height / self.content.pixelsPerPoint)
-            self.layoutIfNeeded()
-        }
         laptopCursor.tintColor = .white
         laptopCursor.isUserInteractionEnabled = false
         laptopCursor.layer.shadowColor = UIColor.black.cgColor

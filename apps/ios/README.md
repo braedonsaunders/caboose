@@ -1,7 +1,9 @@
 # Caboose for iOS
 
 The iPhone and iPad app, and **CabooseKit**, the Swift package that connects it to the
-computer's display over the Caboose Display Protocol ([docs/display.md](../../docs/display.md)).
+computer's display over the Caboose Display Protocol ([docs/display.md](../../docs/display.md))
+and runs the computer's GPU work, which draws every window's picture
+([docs/gpu-live.md](../../docs/gpu-live.md)).
 
 ## Layout
 
@@ -14,9 +16,8 @@ checks; pure policy tests do not establish live app behavior.
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession`, per-window frame pipelines, video streams and sound. `Video/` decodes H.264, HEVC and AV1 with VideoToolbox into IOSurface-backed BGRA and keeps each window's Metal surface. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` presents a window and takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture. `GPU/GPUStreamPlayer` and `UI/GPUStreamView` replay a window's GPU stream ([GPU streams](#gpu-streams)). `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
-| `Draw/` | CabooseDraw: draws applications' draw lists ([docs/draw.md](../../docs/draw.md)) with Skia on Metal, behind a C API; built with Skia from source by `scripts/build-draw.sh` into `CabooseKit/Frameworks/CabooseDraw.xcframework` (see [Draw/README.md](Draw/README.md)). CabooseKit's `Draw/DrawRenderer` and `Draw/DrawLists` use it whenever it is linked. |
-| `GPUStream/` | The GPU stream player's native side: a C API (`include/caboose_gpu_stream.h`) over GFXReconstruct's Vulkan replay, the CMake project that builds it with MoltenVK, and the patches applied to GFXReconstruct. See [GPU streams](#gpu-streams). CabooseKit's `GPU/GPUStreamPlayer` and `UI/GPUStreamView` wrap it. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession` and sound. `LiveGPU*.swift` and `LinkedLiveGPUSurfaces.swift` are the GPU executor: the live Vulkan command stream from the computer, decoded on the phone's GPU through `CabooseGPULive.xcframework`, presenting each window into its own `CAMetalLayer`. `Session/WindowSnapshot` is a window's last picture held on the phone, copied on demand from its GPU layer's presents. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` shows a window, its GPU layer or its snapshot, takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture; `UI/LiveGPUPresentationOwners` places each window's GPU layer in the one view showing it live. `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
+| `GPUStream/` | The GPU executor's native side: the live Vulkan decoder's adapter over the gfxstream fork, its C API (`live/include/caboose_gpu_live.h`) and the provider patches, built and packaged into `CabooseKit/Frameworks/CabooseGPULive.xcframework` by `scripts/build-live-gpu.sh` and `scripts/package-live-gpu.py` (see [GPUStream/README.md](GPUStream/README.md)). |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents, the Task Manager (`Tasks/`). |
 | `Caboose/AI/` | On-device AI ([docs/ai.md](../../docs/ai.md)): `PhoneAI` serves Apple's on-device model to the computer's programs on the host's `/v1/ai` while Caboose is open, with its Computer settings section; `AppleModelRunner` runs each request as a turn of a Foundation Models session, with the program's tools. CabooseKit's `AI/` holds the messages (`AIRelay`), order-keeping JSON (`AIJSON`), turns and context fitting (`AIConversation`), stop sequences (`AIStreamText`) and JSON Schema as generation schemas (`AISchema`). |
 | `AIProbe/` | A separate app that measures Apple's model on a connected phone (`scripts/check-on-device-ai.sh`). |
@@ -92,15 +93,15 @@ port. A page that is playing media when Caboose leaves the screen is kept runnin
 (`AgentAppPages`) and taken over by the app's next announcement without a reload, which is
 why the app declares the `audio` background mode. The display's own sound keeps playing
 too: while the computer is playing sound, the display connection stays open in the
-background without pictures. App Transport Security allows
+background; GPU rendering leaves the phone either way. App Transport Security allows
 arbitrary loads so app pages and `net` requests reach plain-http servers.
 
 The unit tests replay the compositor's golden vectors from `guest/display/vectors` (every
 message decodes, re-encodes byte for byte and parses, and every client message the app
 sends matches its vector), drive `CabooseDisplaySession` over a mocked transport
-(handshake, windows, acks and keyframe recovery, vsync, input, text and preedit, sound,
-and reconnecting: epoch-checked window resume, the post-hello announcement marker, stale
-streams and pipelines, the watchdog, the retry policy and the measured metrics, and game
+(handshake, windows, presents and typing echo, vsync, input, text and preedit, sound,
+and reconnecting: epoch-checked window resume with its pictures, the post-hello announcement
+marker, stale streams, the watchdog, the retry policy and the measured metrics, and game
 handoff: `game.create` and `game.destroy`, games kept across a resume, saves flushed before
 `close` and before `game.decline`, declines sent once per connection and only for its announced current game, and no
 input to a game window reaching the computer), check the game rules (path resolution,
@@ -111,9 +112,8 @@ parsing and its bounds, the token, `Host` and method checks, response headers, a
 or when a request does not arrive), check the agent-app network origin's rules and an
 `AgentAppNetServer` that forwards, preflights and refuses over 127.0.0.1, run the game page's IndexedDB and
 gamepad scripts in JavaScriptCore the way Emscripten's IDBFS and a Gamepad API poll use
-them, and decode the vectors' H.264 and HEVC keyframes and an AV1 stream
-(`Tests/CabooseKitTests/Fixtures`) in hardware. The AV1 test runs where the Mac has an AV1
-decoder (M3 and later). `DeviceTests` cover the phone's hardware without it: what is offered
+them, and check window snapshots (`WindowSnapshotTests`: when a present is copied, format
+conversion, clamped reads and reductions on the GPU). `DeviceTests` cover the phone's hardware without it: what is offered
 for which switches, controller ids, the gamepad, acceleration, depth and Annex-B
 conversions, motion batching, 20 ms audio framing, an Opus round trip through the system
 encoder and decoder, and `DeviceCenter` against a fake backend (offering, open and close,
@@ -142,11 +142,11 @@ CABOOSE_HOST_URL=http://host:7310 CABOOSE_HOST_TOKEN=… swift test --filter Liv
 
 Or straight to a compositor, such as the dev container in `guest/display`, with
 `CABOOSE_DISPLAY_URL=ws://box:14600/ CABOOSE_DISPLAY_TOKEN=…` instead. The test wakes the
-computer (through a host), connects, waits for every window's keyframe, ticks vsync at
-120 Hz for ten seconds (`CABOOSE_VIDEO_SECONDS`), and prints the server's encoders and
-features, the windows, pictures per second, failed decodes and the round trip.
-`CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` measures sound against picture on
-the compositor's sound test page.
+computer (through a host), connects, waits for its windows, ticks vsync at 120 Hz for ten
+seconds (`CABOOSE_VIDEO_SECONDS`), and prints the server's features, whether it advertises a
+GPU epoch, the windows and the round trip. Pictures come through the GPU executor, not this
+connection. `CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` plays and times the
+compositor's sound test page.
 
 The MCP Library's routes (a qualified name's one `/` kept as a separator, every other
 character of a segment encoded, 1-based search pages and where paging stops), its answers
@@ -263,7 +263,7 @@ card's Window Options, a dock app's menu (for each of its windows) and Home's wi
 menu; dragging a Home window tile out of the app and dropping it opens it there too. The
 window (`Caboose/Views/LinuxWindowScene.swift`, a second `WindowGroup` whose value is
 `LinuxWindowRef`) fills the iPadOS window below a bar with the Linux title, Keyboard and
-Window Options: Move to Desktop, Exit App Full Screen, Redraw and Close Window.
+Window Options: Move to Desktop, Exit App Full Screen and Close Window.
 
 - **Size.** Resizing the iPadOS window resizes the Linux window to fit it, a few times a
   second while it moves. The Linux window's minimum and maximum sizes, where it has them,
@@ -289,25 +289,46 @@ are unit-tested: `cd CabooseKit && swift test --filter 'WindowScenesTests|DockMe
 
 ## How it renders
 
-Each Linux window is its own stream: HEVC, AV1 where the device decodes it in hardware
-(A17 Pro and M3 or later), or H.264. VideoToolbox decodes into IOSurface-backed pixel
-buffers that are copied into the window's BGRA Metal texture on the GPU, with the
-encoder's padding cropped off and scaled when the window's pixels differ, so video never
-touches the CPU. Lossless PNG and WebP tiles repaint static text. The window view presents
-its texture into a `CAMetalLayer` only when a picture changed it.
+A window's picture is its GPU layer: the computer's compositor renders each window, popups
+and menus included, on the phone's GPU through the live Vulkan stream
+([docs/gpu-live.md](../../docs/gpu-live.md)), and presents it into that window's own
+`CAMetalLayer`. The phone composes no pixels. It only places each window's layer, fitted to
+the view that shows the window, and draws its own title bars, window controls and cursor
+around it.
 
-- **Acknowledgements.** Every frame is acknowledged with its decode time. A failed one is
-  acknowledged with −1 and asks for a keyframe, and the frames that depend on it are skipped
-  until it arrives.
+- **The executor.** `AppModel` starts one GPU executor (`LiveGPUOwnerSession`) for the
+  owner's computer whenever its display is ready and the app is in the foreground, over the
+  host's authenticated `/v1/gpu` endpoint. The display's hello then carries
+  `gpu_live_epoch`, which matches the compositor's surfaces to this display's windows. An
+  executor that ends is started again after 1 s, doubling to 30 s. Agent, thumbnail and
+  auxiliary sessions never run one. The app links `CabooseKit/Frameworks/CabooseGPULive.xcframework`
+  (`GPUStream/README.md`); a build without it has no window pictures.
+- **Placement.** `LiveGPUPresentationOwners` puts a window's layer in the one live view
+  showing it: an interactive view or the desktop's, on screen and visible. While no such view
+  shows it (another tab, a thumbnail only, the view reused), the layer is parked off screen
+  and keeps its binding and its presents; it returns to the next view that shows the window
+  with the newest frame. Each popup and override-redirect window is a window of its own, in
+  its own view at its own place.
+- **Before the first frame.** A live view draws nothing of its own. Until the layer
+  presents it is blank: black for an opaque window, clear for one with alpha. A premultiplied
+  swapchain (a menu with a shadow) shows what is behind it.
+- **Snapshots.** Views that are never live (Switchyard and Home thumbnails, previews) show
+  the window's `WindowSnapshot`: a copy of one presented frame, taken through the presenter's
+  capture images (`caboose_gpu_surface_set_capture`) at a present, never between them. A
+  window's first present is copied; after that, one present a second while something shows
+  the snapshot or reads it (the covers over an application's own window controls take their
+  colour from it, and finger aiming at a window without accessibility targets finds shapes in
+  it), and otherwise one every five seconds. The capture images are freed between copies.
+  A window that stops presenting keeps its last copy, which can be up to that interval older
+  than its last frame. Home and the frames kept through the background are reduced copies
+  of the snapshots; a game window's snapshot is its game's last frame.
 - **Pacing.** Every window view on screen, previews and the desktop included, sends `vsync`
   from its own screen's display link, at 120 Hz on ProMotion
-  (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The server releases
-  a window's frames on those ticks, so a window nobody sees costs nothing.
-- **Video in windows.** The app leaves passthrough streams to server decoding and shows
-  `surface` streams over the window's picture. Resize metadata retains the previous
-  picture's pixel basis until its replacement frame decodes.
-  `VideoLayerGeometryTests` and `VideoSessionTests` cover geometry, negotiation and
-  retirement; `scripts/check-desktop.sh` covers physical-device playback and resizing.
+  (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The compositor
+  paces its frames on those ticks.
+- **Video in windows.** An application's video is decoded on the phone inside its GPU
+  stream ([docs/gpu-media.md](../../docs/gpu-media.md)) and reaches the screen as part of
+  the window's picture.
 - **Sound.** The computer's sound arrives as 20 ms Opus packets on the server timeline,
   decoded by AudioToolbox and played by an `AVSampleBufferAudioRenderer`. Playback uses
   an explicit monotonic host/server anchor. Placement samples host time once against
@@ -347,111 +368,6 @@ its texture into a `CAMetalLayer` only when a picture changed it.
   does not reconnect on its own; Show Here takes it back. A ping every 5 s keeps the server
   from closing the session as idle.
 
-## GPU streams
-
-A window whose application renders through Vulkan can arrive as a GPU stream instead of
-video ([docs/gpu-stream.md](../../docs/gpu-stream.md)): the GFXReconstruct capture of its
-Vulkan calls, which the device replays on its own GPU. `GPUStreamPlayer` takes the stream's
-bytes in order and reports each frame, the bytes it has taken (the offset `gpu.ack`
-reports) and how the replay ended; `GPUStreamView` is the `CAMetalLayer` it presents into.
-
-The player is [GFXReconstruct](https://github.com/LunarG/gfxreconstruct) (MIT), tag
-`vulkan-sdk-1.4.363.0` (capture format 1.0.5, the capture layer the computer runs), and
-[MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Apache-2.0) 1.4.2, the MoltenVK of the
-same SDK. It replays the way `gfxrecon-replay --remove-unsupported -m rebind` does:
-extensions and features the device lacks are removed, memory is rebound to the device's
-memory types, and presents go through GFXReconstruct's virtual swapchain into the layer.
-`GPUStream/src/player.mm` runs GFXReconstruct's `FileProcessor` and `VulkanReplayConsumer`
-on a thread with an 8 MiB stack, reading the fed bytes from a FIFO in the app's temporary
-directory, so a stream that arrives faster than it replays waits in the feed.
-`GPUStream/src/layer_window.mm` is GFXReconstruct's `MetalContext` with windows that are
-layers: the first live surface presents into the view's layer, and further surfaces the
-application makes at the same time render into layers that are not shown. GFXReconstruct
-finds MoltenVK through `GPUStream/patches/0001-replay-instance-proc-addr.patch`, which lets
-replay use a `vkGetInstanceProcAddr` linked into the app instead of loading a Vulkan library.
-
-The native code is a build product, not checked in (it is about 40 MB per platform):
-
-```sh
-sh scripts/build-gpu-stream.sh                    # macos, ios and ios-simulator slices
-sh scripts/build-gpu-stream.sh macos              # just the one swift test uses
-```
-
-It fetches GFXReconstruct by commit and the MoltenVK release by SHA-256, builds with at most
-`JOBS` (default 4) compiles at a time, and writes
-`CabooseKit/Frameworks/CabooseGPUStream.xcframework` (arm64 macOS, iOS and iOS simulator)
-and both licences in `CabooseKit/Frameworks/Licenses`. It needs Xcode (set `DEVELOPER_DIR`
-if `xcode-select` points at the Command Line Tools), CMake 3.24 or later and Ninja. A first
-build takes about 20 minutes per slice. `Package.swift` links the xcframework when it is
-there; without it CabooseKit builds without `GPUStreamPlayer` and `GPUStreamView`
-(`#if canImport(CabooseGPUStream)`), so build it before `xcodegen generate` for an app that
-plays GPU streams. Ship the two licences with the app's acknowledgements.
-
-With the xcframework built, `swift test --filter GPUStreamPlayer` checks the player's ends
-(an empty stream, bytes that are not a capture, stopping, one replay at a time). Replay a
-real capture through MoltenVK into a layer on no screen with
-
-```sh
-CABOOSE_GPU_CAPTURE=~/cube.gfxr CABOOSE_GPU_CAPTURE_FRAMES=300 swift test --filter GPUStreamPlayer
-```
-
-which requires every frame to replay without an error and prints the frame rate. A capture
-of `vkcube --use_staging` against the Khronos mock driver (`GFXRECON_CAPTURE_FILE=cube.gfxr`,
-`GFXRECON_CAPTURE_COMPRESSION_TYPE=NONE`, `VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_gfxreconstruct`)
-has 300 frames.
-
-`GPUDeviceCapabilities.queryJSON()` reports capabilities from the MoltenVK linked into
-the running app, without creating a Vulkan device or surface. It returns schema-versioned
-JSON with every physical device's core features, relevant limits, extension versions and
-all sixteen BC formats' sampled-image support, including the image-format query result.
-The query does not alter the guest profile. Rebuild the xcframework after changing this
-native API; an older binary lacks its symbols.
-
-The opt-in real-device check writes a report and verifies that an advertised BC feature
-agrees with all BC formats' sampled-image support. Run from `CabooseKit` after building
-the macOS slice:
-
-```sh
-CABOOSE_GPU_CAPABILITIES=/tmp/caboose-gpu-capabilities.json swift test --filter GPUDeviceCapabilities
-```
-
-For evidence from a signed iOS app, call the same API in the app process on that device,
-off the UI thread, and save the returned data to an app-accessible diagnostic file:
-
-```swift
-let report = try await Task.detached { try GPUDeviceCapabilities.queryJSON() }.value
-try report.write(to: diagnosticURL, options: .atomic)
-```
-
-A simulator or macOS report describes that host's GPU, not the phone. The report is a
-feature query, not a rendering test or a complete Khronos profile. Game compatibility
-still requires a real replay with the reported features.
-
-The signed Debug app has an opt-in launch diagnostic. With the rebuilt GPU framework
-installed, launch it with `CABOOSE_GPU_CAPABILITIES=1` in the app's environment:
-
-```sh
-xcrun devicectl device process launch --device "$DEVICE" --terminate-existing \
-  --environment-variables '{"CABOOSE_GPU_CAPABILITIES":"1"}' com.braedonsaunders.caboose
-xcrun devicectl device copy from --device "$DEVICE" --domain-type appDataContainer \
-  --domain-identifier com.braedonsaunders.caboose \
-  --source Library/Caches/CabooseDiagnostics/gpu-capabilities.json \
-  --destination /tmp/caboose-phone-gpu-capabilities.json
-```
-
-Wait for the background query to finish before copying. Each requested run removes the
-previous report first, so a failed query cannot leave old evidence in its place. The
-hook is absent from Release builds and does nothing on an ordinary launch.
-
-- **One stream at a time.** GFXReconstruct's decoder keeps process-wide state, so one player
-  replays at a time; a player started while another replays waits until that one stops.
-- **Compression.** Streams are uncompressed or zlib-compressed; LZ4 and Zstd blocks end the
-  replay with an error.
-- **Fatal replay errors.** A Vulkan call that cannot be replayed ends the replay with
-  GFXReconstruct's message. A few of GFXReconstruct's checks abort the process instead (no
-  usable surface extension at all, for example); MoltenVK always provides
-  `VK_EXT_metal_surface`.
-
 ## How input works
 
 Native Wayland windows take real multi-touch: every finger is a touch slot and each UIKit
@@ -478,25 +394,25 @@ clicks and right-clicks precisely.
 
 Emulated scrolling shares `CabooseKit/Input/ScrollPhysics.swift`: fractional deltas are
 coalesced once per display frame, and release velocity decays independently of refresh
-rate. `DirectScrollCalibration` applies a 1/12 reference gain after mapping direct
-content pans to guest pixels, including inertia. Hardware scrolling and dedicated phone
-trackpads bypass it. The [unit trace](../../docs/display.md#direct-content-scroll-units)
-defines the reference response and its limits. Desktop content scrolling and the phone
+rate. A finger panning content sends its own distance in window pixels, including
+inertia, and the computer scrolls the content exactly that far
+([docs/input.md](../../docs/input.md#scrolling)). Desktop content scrolling and the phone
 trackpad use the same inertia. New
 input, context actions, leaving the surface, losing the target and backgrounding stop
 client inertia; native Wayland touch keeps the application's own fling behavior. A display
 stall drops old movement and momentum while continuing to accept the finger's new movement.
-The phone shows only the newest picture the app drew. A pan over a window scrolls the
-app; the content moves when the app's next picture arrives, and nothing on the phone
+The phone shows only the newest frame the app presented. A pan over a window scrolls the
+app; the content moves when the app's next frame presents, and nothing on the phone
 moves, stitches or predicts it.
 
 Run `swift test --filter ScrollPhysicsTests` in `apps/ios/CabooseKit` for deterministic
 checks of distance at 30/60/90/120 Hz, fractional input, cancellation, stale release,
 reversal and display stalls. `swift test --filter ScrollGestureOwnershipTests` checks
 recognizer ownership and cancellation on finger-count changes.
-`swift test --filter DirectScrollCalibrationTests` checks the reference content distance
-through portrait, landscape, fitted/stretched surfaces, scales 1/1.5/3, fractional input,
-inertia and the hardware bypass. These pure checks do not measure an application's gain. Card and free-desktop
+`swift test --filter DirectContentScrollTests` checks that a pan sends the finger's distance
+in window pixels through portrait, landscape and fitted/stretched surfaces, and that tracking
+and inertia add up the same at every frame rate. These pure checks do not measure an
+application's response. Card and free-desktop
 scrolling retain their original connection and coordinate mapping through momentum.
 On a real host, check slow and fast swipes in a native
 Wayland app and one- and two-finger swipes in an Xwayland app, then desktop/trackpad scrolling. Confirm
@@ -758,8 +674,8 @@ The cog in every tab's toolbar opens **Computer**: the computer's name, the memo
 it boots with (applied on the next restart), how long it waits before parking, Park Now,
 Restart, the wallpaper, and Change Computer. Its Display row opens the connection's
 diagnostics: the reconnect state and recent losses, the network path and address, and
-what the phone measured on the current connection (round trip, data received, decode and
-queue times, send backlog, typing echo). A figure without a sample shows a dash. Beside the cog, the lifecycle menu shows the
+what the phone measured on the current connection (round trip, data received, frames
+presented, send backlog, typing echo). A figure without a sample shows a dash. Beside the cog, the lifecycle menu shows the
 computer's state and offers Turn On, Park and Restart as they apply. Both use the host's
 management API (`docs/architecture.md`) and follow `computer.settings` events on the control
 socket. The Apps tab lists every app on the computer, with System Settings & Tools last; its
@@ -1234,8 +1150,7 @@ Pure fold/keyboard geometry is covered by `swift test --filter LaptopLayoutTests
 
 ## Media playback checks
 
-The app renders moving video inside the window stream by default. It does not negotiate
-separate passthrough layers. Test an ordinary video page through resize,
+Moving video is part of the window's GPU picture. Test an ordinary video page through resize,
 fullscreen/exit, minimize/restore and Laptop/Tablet transitions: one picture must move
 with its window. Audio packets play on a continuous sample timeline; test sustained
 speech/music, pause/resume and an audio-session interruption without choppy gaps.
@@ -1576,21 +1491,18 @@ Run `swift test --filter FileExportTests` in `CabooseKit` for export validation.
 paired phone, follow `sh scripts/check-shortcuts.sh` to verify the system editor and
 end-to-end file results.
 
-### Private indexed GPU acceptance
+### GPU executor checks
 
-Release builds never run the live driver integration. A Debug build, unless launched
-with `CABOOSE_PRIVATE_GPU_INDEXED=0`, creates one executor for the paired owner computer
-using its existing phone token and host `/v1/gpu` endpoint. The matching guest
-requires the authenticated private sockets and explicit indexed broker selection
-described in [the live GPU contract](../../docs/gpu-live.md). This path never
-selects a diagnostic endpoint or creates an agent/thumbnail executor.
+Every build runs the GPU executor for the paired owner computer, with its existing phone
+token and the host's `/v1/gpu` endpoint ([the live GPU contract](../../docs/gpu-live.md)).
+Backgrounding suspends the executor in place when the computer resumes executors, and
+drains it otherwise; switching computers drains it. Failed or unconfirmed retirement keeps
+its reservation and disables replacement for that app process.
 
-The app's ordinary display supplies the compositor epoch and owner window objects;
-only their visible interactive views can supply a Metal layer. Backgrounding suspends
-the executor in place when the computer resumes executors, and drains it otherwise;
-switching computers drains it. Failed or unconfirmed retirement keeps
-its reservation and disables replacement for that app process. Native indexed
-presentation and game execution on this path remain unverified.
+On a device: open the Desktop with a terminal and a browser, and confirm each window shows
+its picture, a menu opens as its own layer over its window, and a window shows blank (never
+an older picture) until its first frame. Open Switchyard and Home and confirm the
+thumbnails show each window within a few seconds of its last change.
 
 With the separately packaged memory-audit module, Debug launch variable
 `CABOOSE_PRIVATE_GPU_MEMORY_AUDIT=1` enables native allocation receipts before the

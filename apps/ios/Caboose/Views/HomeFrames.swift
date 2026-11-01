@@ -54,7 +54,7 @@ final class HomeFrames {
     /// Which capture is the latest; an earlier one still gathering its pictures stands down.
     private var captureEpoch = 0
 
-    /// Takes the open windows' pictures now, while the display still holds them. The pictures
+    /// Takes the open windows' snapshots now, while the phone still holds them. The pictures
     /// are reduced on the GPU and arrive off the main thread, so leaving the screen never
     /// waits for a full-size readback of every window.
     func capture(_ model: AppModel) {
@@ -71,8 +71,8 @@ final class HomeFrames {
             Frame(id: window.id, title: window.title, app: model.appName(for: window),
                   width: window.frame.width, height: window.frame.height)
         }
-        let surfaces = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.surface) })
-        WindowSurface.snapshots(of: surfaces, longEdgeAtMost: Self.longestEdge) { [weak self] pictures in
+        let snapshots = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.snapshot) })
+        WindowSnapshot.snapshots(of: snapshots, longEdgeAtMost: Self.longestEdge) { [weak self] pictures in
             Task { @MainActor in
                 guard let self, self.captureEpoch == epoch else { return }
                 self.keep(key: key, directory: directory, running: true,

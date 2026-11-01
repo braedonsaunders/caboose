@@ -128,15 +128,12 @@ import Testing
         #expect(metrics.snapshot(at: 110).receiveRate == 500 * 8 / ConnectionMetrics.rateWindow)
     }
 
-    @Test func picturesRecordWaitDecodeFailuresAndAge() {
+    @Test func presentsRecordTheirRateAndAge() {
         let metrics = ConnectionMetrics()
-        metrics.picture(window: 7, waited: 0.002, took: 0.004, failed: false, at: 50)
-        metrics.picture(window: 7, waited: 0.010, took: 0, failed: true, at: 51)
-        let health = metrics.snapshot(at: 52)
-        #expect(health.decode?.count == 1 && health.decode?.last == 4)
-        #expect(health.decodeWait?.count == 2 && health.decodeWait?.worst == 10)
-        #expect(health.decodeFailures == 1)
-        #expect(metrics.pictureAge(window: 7, at: 52) == 2)
+        metrics.presented(window: 7, at: 50)
+        metrics.presented(window: 7, at: 51)
+        #expect(metrics.snapshot(at: 51).picturesPerSecond == 2)
+        #expect(metrics.pictureAge(window: 7, at: 52) == 1)
         #expect(metrics.pictureAge(window: 8, at: 52) == nil)
     }
 }
@@ -156,18 +153,16 @@ import Testing
     }
 
     let streams = Streams()
-    let decoder = FakeDecoder()
     let display = DisplayInfo(id: 0, width: 2000, height: 2000, scale: 2, refreshHz: 120)
     let helpers = CabooseDisplaySessionTests()
 
     func makeSession() -> CabooseDisplaySession {
-        let streams = streams, decoder = decoder
-        return CabooseDisplaySession(stream: { streams.make() }, token: "wake-token", displays: [display], decoders: [.hevc, .h264],
-                                     makeDecoder: { _ in decoder })
+        let streams = streams
+        return CabooseDisplaySession(stream: { streams.make() }, token: "wake-token", displays: [display])
     }
 
     func hello(epoch: CBOR?) -> CBOR {
-        var pairs: [(CBOR, CBOR)] = [("version", 0), ("displays", [0]), ("encoders", ["hevc"]), ("features", ["vsync", "ack"])]
+        var pairs: [(CBOR, CBOR)] = [("version", 0), ("displays", [0]), ("features", ["vsync"])]
         if let epoch { pairs.append(("epoch", epoch)) }
         return .map(pairs)
     }
@@ -202,8 +197,10 @@ import Testing
         session.connect()
         try await handshake(session, epoch: "e1", windows: [7, 8])
         let seven = try #require(session.windows[7])
+        let picture = try #require(CabooseDisplaySessionTests.picture())
+        seven.snapshot.store(image: picture)
         try await dropAndResume(session)
-        // Lost but kept: the window and its picture stay on screen.
+        // Lost but kept: the window and its picture stay.
         #expect(session.windows[7] === seven)
 
         let marker = try await handshake(session, epoch: "e1", windows: [7])
@@ -213,6 +210,7 @@ import Testing
         streams.last.server([(.pong, ["t_us": CBOR(marked)])])
         try await helpers.until("window 8 gone") { session.windows[8] == nil }
         #expect(session.windows[7] === seven)
+        #expect(seven.snapshot.pixelSize == CGSize(width: picture.width, height: picture.height))
         #expect(session.state == .ready)
     }
 
@@ -259,10 +257,10 @@ import Testing
         let seven = try #require(session.windows[7])
         try await dropAndResume(session)
         try await handshake(session, epoch: "e2", windows: [7])
-        // Window 7 of the new server is another window: a new object, a new surface.
+        // Window 7 of the new server is another window: a new object, a new picture.
         let fresh = try #require(session.windows[7])
         #expect(fresh !== seven)
-        #expect(fresh.surface !== seven.surface)
+        #expect(fresh.snapshot !== seven.snapshot)
     }
 
     /// A server without an epoch (an older guest) cannot prove its ids: nothing is kept.
@@ -302,23 +300,6 @@ import Testing
         #expect(session.state == .ready)
         #expect(session.windows[7] != nil && session.windows[9] == nil)
         #expect(!session.isReplaced)
-    }
-
-    /// A picture still queued for the closed pipeline is dropped; the successor paints.
-    @Test func aClosedPipelineDropsWhatWasQueued() async throws {
-        let decoder = FakeDecoder()
-        let closed = FramePipeline(windowID: 7, width: 8, height: 8, makeDecoder: { _ in decoder }, send: { _ in })
-        closed.close()
-        let frame = EncodedFrame(window: 7, codec: .hevc, keyframe: true, ptsMicros: 1, rect: CGRect(x: 0, y: 0, width: 8, height: 8),
-                                 crop: CGRect(x: 0, y: 0, width: 8, height: 8), data: Data([0, 0, 1]))
-        closed.frame(frame)
-        closed.flush()
-        #expect(decoder.decoded == 0)
-        let next = FramePipeline(succeeding: closed, width: 8, height: 8, metrics: nil, makeDecoder: { _ in decoder }, send: { _ in })
-        #expect(next.surface === closed.surface)
-        next.frame(frame)
-        next.flush()
-        #expect(decoder.decoded == 1)
     }
 
     @Test func silenceGivesTheConnectionUpAndKeepsTheWindows() async throws {
@@ -403,6 +384,17 @@ import Testing
         try await helpers.until("rtt") { session.health.roundTrip != nil }
         #expect(session.health.roundTrip?.count == 1)
         #expect((session.health.sinceLastReceive ?? 99) < 5)
+    }
+
+    /// A frame kept from before a cold reconnect becomes a new window's picture.
+    @Test func aCachedFrameSeedsANewWindowsPicture() async throws {
+        let session = makeSession()
+        let picture = try #require(CabooseDisplaySessionTests.picture())
+        session.cachedFrame = { $0 == 7 ? picture : nil }
+        session.connect()
+        try await handshake(session, epoch: "e1", windows: [7, 8])
+        #expect(session.windows[7]?.snapshot.pixelSize == CGSize(width: picture.width, height: picture.height))
+        #expect(session.windows[8]?.snapshot.presentation() == nil)
     }
 
     @Test func aModifierAloneWaitsForNoPicture() async throws {

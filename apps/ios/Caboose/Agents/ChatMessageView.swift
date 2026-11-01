@@ -124,7 +124,7 @@ struct AgentSeatPreview: UIViewRepresentable {
         let view = RemoteWindowView(session: nil, window: window)
         view.isInteractive = false
         view.pacer = seat
-        view.showsVideo = false
+        view.showsLiveContent = false
         view.pixelsPerPoint = max(1, window.frame.width / 320)
         return view
     }

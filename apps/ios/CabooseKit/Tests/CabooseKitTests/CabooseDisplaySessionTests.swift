@@ -1,5 +1,4 @@
 import CoreGraphics
-import CoreVideo
 import Foundation
 import Testing
 @testable import CabooseKit
@@ -37,37 +36,13 @@ final class MockStream: ByteStream, @unchecked Sendable {
     }
 }
 
-/// A decoder that hands back a solid picture, or fails, as the test says.
-final class FakeDecoder: PictureDecoder {
-    var fails = false
-    private(set) var decoded = 0
-    init(fails: Bool = false) { self.fails = fails }
-
-    func decode(_ accessUnit: Data) throws -> CVPixelBuffer? {
-        if fails { throw H264DecoderError.decode(-1) }
-        decoded += 1
-        return Self.picture(width: 8, height: 8)
-    }
-
-    func invalidate() {}
-
-    static func picture(width: Int, height: Int) -> CVPixelBuffer {
-        var buffer: CVPixelBuffer?
-        let attributes: [CFString: Any] = [kCVPixelBufferMetalCompatibilityKey: true, kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary]
-        CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &buffer)
-        return buffer!
-    }
-}
-
 @MainActor @Suite(.serialized) struct CabooseDisplaySessionTests {
     let stream = MockStream()
-    let decoder = FakeDecoder()
     let display = DisplayInfo(id: 0, width: 2000, height: 2000, scale: 2, refreshHz: 120)
 
     func makeSession() -> CabooseDisplaySession {
-        let stream = self.stream, decoder = self.decoder
-        return CabooseDisplaySession(stream: { stream }, token: "wake-token", displays: [display], decoders: [.hevc, .h264],
-                                     makeDecoder: { _ in decoder })
+        let stream = self.stream
+        return CabooseDisplaySession(stream: { stream }, token: "wake-token", displays: [display])
     }
 
     func until(_ what: String, _ condition: () -> Bool) async throws {
@@ -79,12 +54,12 @@ final class FakeDecoder: PictureDecoder {
     }
 
     /// Connects and completes the handshake with the given server features.
-    func ready(features: [String] = ["vsync", "ack", "touch", "text-input-v3", "cursor-named", "xwayland", "clipboard", "pencil"]) async throws -> CabooseDisplaySession {
+    func ready(features: [String] = ["vsync", "touch", "text-input-v3", "cursor-named", "xwayland", "clipboard", "pencil"]) async throws -> CabooseDisplaySession {
         let session = makeSession()
         session.connect()
         stream.deliver(.opened)
         try await until("hello") { session.state == .authenticating }
-        stream.server([(.hello, ["version": 0, "displays": [0], "encoders": ["hevc", "h264"], "features": .array(features.map { CBOR($0) })])])
+        stream.server([(.hello, ["version": 0, "displays": [0], "features": .array(features.map { CBOR($0) })])])
         try await until("ready") { session.state == .ready }
         _ = stream.take()
         return session
@@ -98,44 +73,18 @@ final class FakeDecoder: PictureDecoder {
         return .map(pairs)
     }
 
-    func frame(_ id: Int, pts: Int, keyframe: Bool = true) -> CBOR {
-        ["id": CBOR(id), "codec": "hevc", "keyframe": CBOR(keyframe), "pts_us": CBOR(pts), "rect": [0, 0, 8, 8],
-         "crop": [0, 0, 8, 8], "data": .bytes(Data([0, 0, 1]))]
-    }
-
-    // MARK: Background
-
-    @Test func suspendedPicturesAreAcknowledgedUnseenAndResumeAtAKeyframe() async throws {
-        let session = try await ready()
-        defer { session.disconnect() }
-        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000))])
-        try await until("first picture") { decoder.decoded == 1 }
-        _ = stream.take()
-
-        session.suspendPictures()
-        stream.server([(.frame, frame(7, pts: 2000, keyframe: false)), (.frame, frame(7, pts: 3000, keyframe: false))])
-        var acks: [DisplayFrame] = []
-        try await until("unseen acks") {
-            acks += stream.take().filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-            return acks.count == 2
-        }
-        #expect(decoder.decoded == 1)
-        #expect(acks.map { $0.body["pts_us"]?.int } == [2000, 3000])
-
-        // Back in the foreground: a keyframe is asked for, and only it is decoded next.
-        session.resumePictures()
-        var sent: [DisplayFrame] = []
-        try await until("keyframe request") {
-            sent += stream.take()
-            return sent.contains { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue }
-        }
-        stream.server([(.frame, frame(7, pts: 4000, keyframe: false)), (.frame, frame(7, pts: 5000))])
-        try await until("keyframe decoded") { decoder.decoded == 2 }
+    /// A small opaque picture, as a frame kept from before or a game's snapshot.
+    static func picture(width: Int = 4, height: Int = 2) -> CGImage? {
+        let bytes = [UInt8](repeating: 128, count: width * height * 4)
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                       space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
     }
 
     // MARK: Handshake
 
-    @Test func helloCarriesTheTokenDecodersAndDisplays() async throws {
+    @Test func helloCarriesTheTokenAndDisplaysAndAsksForNoPictures() async throws {
         let session = makeSession()
         session.connect()
         stream.deliver(.opened)
@@ -145,35 +94,24 @@ final class FakeDecoder: PictureDecoder {
         #expect(sent.first?.type == DisplayProtocol.ClientType.hello.rawValue)
         #expect(sent.first?.body["token"]?.string == "wake-token")
         #expect(sent.first?.body["version"]?.int == 0)
-        #expect(sent.first?.body["decoders"]?.array?.compactMap(\.string) == ["hevc", "h264"])
         #expect(sent.first?.body["displays"]?.array?.first?["width"]?.int == 2000)
         #expect(sent.first?.body["displays"]?.array?.first?["refresh_hz"] == .double(120))
+        // Pictures come only through the GPU path: no decoders, atlas, scene, draw or scroll.
+        for key in ["decoders", "video_decoders", "atlas", "scene", "draw", "scroll", "gpu"] {
+            #expect(sent.first?.body[key] == nil, "\(key)")
+        }
+        #expect(sent.first?.body["targets"] == .bool(true))
     }
 
-    @Test func helloCarriesAtlasAndSceneWhenEnabled() async throws {
-        let session = makeSession()
-        session.rendersSurfaceAtlas = true
-        session.rendersSceneGraph = true
-        defer { session.disconnect() }
-        session.connect()
-        stream.deliver(.opened)
-        try await until("hello") { session.state == .authenticating }
-        let sent = try #require(stream.take().first)
-        #expect(sent.type == DisplayProtocol.ClientType.hello.rawValue)
-        #expect(sent.body["atlas"] == .bool(true))
-        #expect(sent.body["scene"] == .bool(true))
-    }
-
-    @Test func unselectedBootstrapAndResumePaceRetainedIDsAndDecodePictures() async throws {
-        let decoder = self.decoder, initial = stream
-        let session = CabooseDisplaySession(stream: { initial }, token: "wake-token", displays: [],
-            decoders: [.hevc], makeDecoder: { _ in decoder })
+    @Test func unselectedBootstrapAndResumePaceRetainedIDs() async throws {
+        let initial = stream
+        let session = CabooseDisplaySession(stream: { initial }, token: "wake-token", displays: [])
         defer { session.disconnect() }
         session.connect()
         initial.deliver(.opened)
         try await until("bootstrap hello") { session.state == .authenticating }
         #expect(initial.take().first?.body["displays"]?.array == [])
-        initial.server([(.hello, ["version": 0, "displays": [7], "encoders": ["hevc"], "features": ["vsync", "ack"]])])
+        initial.server([(.hello, ["version": 0, "displays": [7], "features": ["vsync"]])])
         try await until("bootstrap ready") { session.state == .ready }
         _ = initial.take()
         session.displayWillRefresh(nil, targetTimestamp: 10)
@@ -182,15 +120,8 @@ final class FakeDecoder: PictureDecoder {
         let ticks = initial.take().filter { $0.type == DisplayProtocol.ClientType.vsync.rawValue }
         #expect(ticks.count == 1)
         #expect(ticks.first?.body["display"]?.int == 7)
-        initial.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000))])
-        var ack: DisplayFrame?
-        try await until("bootstrap frame ack") {
-            ack = initial.take().first { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-            return ack != nil
-        }
-        #expect((ack?.body["decoded_us"]?.int ?? -1) >= 0)
-        #expect(decoder.decoded == 1)
-        #expect(session.windows[7]?.surface.generation ?? 0 > 0)
+        initial.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8]))])
+        try await until("bootstrap window") { session.windows[7] != nil }
 
         initial.deliver(.closed(nil))
         try await until("closed bootstrap") { if case .closed = session.state { true } else { false } }
@@ -199,7 +130,7 @@ final class FakeDecoder: PictureDecoder {
         next.deliver(.opened)
         try await until("resume hello") { session.state == .authenticating }
         #expect(next.take().first?.body["displays"]?.array == [])
-        next.server([(.hello, ["version": 0, "displays": [19], "encoders": ["hevc"], "features": ["vsync"]])])
+        next.server([(.hello, ["version": 0, "displays": [19], "features": ["vsync"]])])
         try await until("resume ready") { session.state == .ready }
         _ = next.take()
         session.displayWillRefresh(nil, targetTimestamp: 20)
@@ -244,7 +175,7 @@ final class FakeDecoder: PictureDecoder {
         let session = makeSession()
         session.connect()
         stream.deliver(.opened)
-        stream.server([(.hello, ["version": 1, "displays": [0], "encoders": ["hevc"], "features": []])])
+        stream.server([(.hello, ["version": 1, "displays": [0], "features": []])])
         try await until("closed") { if case .closed = session.state { true } else { false } }
     }
 
@@ -379,172 +310,32 @@ final class FakeDecoder: PictureDecoder {
         #expect(session.windows[7]?.acceptsPencil == false)
     }
 
-    // MARK: Pictures and flow control
+    // MARK: Pictures and pacing
 
-    @Test func everyFrameIsAcked() async throws {
+    /// A window's picture is its GPU layer: each present is measured for the connection and
+    /// answers a key press waiting for the window to draw.
+    @Test func aWindowsPresentsAreMeasuredAndEndTheTypingEcho() async throws {
         let session = try await ready()
-        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000)), (.frame, frame(7, pts: 2000, keyframe: false))])
-        var acks: [DisplayFrame] = []
-        try await until("acks") {
-            acks += stream.take().filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-            return acks.count == 2
-        }
-        #expect(acks.map { $0.body["pts_us"]?.int } == [1000, 2000])
-        #expect(acks.allSatisfy { ($0.body["decoded_us"]?.int ?? -1) >= 0 })
-        #expect(decoder.decoded == 2)
+        defer { session.disconnect() }
+        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8]))])
         try await until("window") { session.windows[7] != nil }
-        #expect(session.windows[7]?.surface.generation ?? 0 > 0)
+        let window = try #require(session.windows[7])
+        #expect(session.pictureAge(of: window) == nil)
+        session.key(try #require(Keysyms.stroke(for: "a")), pressed: true, in: window)
+        #expect(session.health.keyAwaitingPicture != nil)
+        window.snapshot.onPresent?()
+        #expect(session.health.keyAwaitingPicture == nil)
+        #expect(session.typingEchoMs != nil)
+        #expect((session.pictureAge(of: window) ?? 10) < 1)
     }
 
-    @Test func surfaceBatchPaintsTheSurfaceRecordsStatsAndAcks() async throws {
-        let session = try await ready(features: ["vsync", "ack", "surface-atlas"])
-        defer { session.disconnect() }
-        let beforeCount = DrawStatistics.shared.snapshot.applied["atlas", default: 0]
-        let batch: CBOR = [
-            "id": 7,
-            "seq": 1,
-            "pts_us": 1000,
-            "size": [8, 8],
-            "rect": [0, 0, 8, 8],
-            "keyframe": true,
-            "fills": [[0, 0, 8, 8, CBOR(UInt64(0x2040_80FF))]],
-        ]
-        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.surfaceBatch, batch)])
-        var ack: DisplayFrame?
-        try await until("surfaceBatch ack") {
-            ack = stream.take().first { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-            return ack != nil
+    /// The display stream carries no pictures: a frame of the removed kinds is unknown.
+    @Test func removedPictureMessagesAreUnknown() {
+        for type: UInt8 in [0x10, 0x11, 0x12, 0x13, 0x16, 0x19, 0x1A, 0x1B, 0x23, 0x24, 0x25, 0x26, 0x27, 0x2A, 0x2B, 0x2C] {
+            guard case .unknown(type) = ServerMessage(DisplayFrame(type: type, body: ["id": 7])) else {
+                Issue.record("0x\(String(type, radix: 16)) is still parsed"); continue
+            }
         }
-        #expect((ack?.body["decoded_us"]?.int ?? -1) >= 0)
-        try await until("window") { session.windows[7] != nil }
-        #expect(session.windows[7]?.surface.generation ?? 0 > 0)
-        #expect(DrawStatistics.shared.snapshot.applied["atlas", default: 0] == beforeCount + 1)
-    }
-
-    @Test func surfaceBatchWithUnknownTileRefAcksFailedAndRequestsKeyframe() async throws {
-        let session = try await ready(features: ["vsync", "ack", "surface-atlas"])
-        defer { session.disconnect() }
-        let beforeFailed = DrawStatistics.shared.snapshot.failed["atlas", default: 0]
-        let batch: CBOR = [
-            "id": 7,
-            "seq": 1,
-            "pts_us": 2000,
-            "size": [64, 64],
-            "rect": [0, 0, 64, 64],
-            "keyframe": true,
-            "refs": [[0, 0, CBOR(UInt64(0xDEAD_BEEF_CAFE_BABE))]],
-        ]
-        stream.server([(.windowCreate, window(7, geometry: [0, 0, 64, 64])), (.surfaceBatch, batch)])
-        var sent: [DisplayFrame] = []
-        try await until("failed ack and keyframe request") {
-            sent += stream.take()
-            return sent.contains { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-                && sent.contains { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue }
-        }
-        let ack = try #require(sent.first { $0.type == DisplayProtocol.ClientType.ack.rawValue })
-        #expect(ack.body["id"]?.int == 7)
-        #expect(ack.body["decoded_us"]?.int == -1)
-        let kf = try #require(sent.first { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue })
-        #expect(kf.body["id"]?.int == 7)
-        #expect(DrawStatistics.shared.snapshot.failed["atlas", default: 0] == beforeFailed + 1)
-    }
-
-    @Test func sceneFontAndCommitPaintTheSurfaceAndScrollSceneNodeSendsSceneScroll() async throws {
-        let session = try await ready(features: ["vsync", "ack", "scene-graph"])
-        defer { session.disconnect() }
-        let font: CBOR = [
-            "font": CBOR(UInt64(99)),
-            "index": 0,
-            "family": "Helvetica",
-            "data": .bytes(Data([0, 1, 0, 0])),
-        ]
-        let commit: CBOR = [
-            "id": 7,
-            "seq": 1,
-            "pts_us": 3000,
-            "root": 1,
-            "reset": true,
-            "nodes": [
-                ["id": 1, "kind": "scroll", "rect": [0, 0, 64, 64], "scroll": [0, 0, 64, 200], "children": [2]],
-                ["id": 2, "kind": "rect", "rect": [0, 0, 64, 64], "color": CBOR(UInt64(0x2040_80FF))],
-            ],
-        ]
-        stream.server([
-            (.windowCreate, window(7, geometry: [0, 0, 64, 64])),
-            (.sceneFont, font),
-            (.sceneCommit, commit),
-        ])
-        try await until("scene painted") { (session.windows[7]?.surface.generation ?? 0) > 0 }
-        let remote = try #require(session.windows[7])
-        session.scrollSceneNode(1, in: remote, offset: CGPoint(x: 0, y: 120.5))
-        let sent = try #require(stream.take().first { $0.type == DisplayProtocol.ClientType.sceneScroll.rawValue })
-        #expect(sent.type == 0x9A)
-        #expect(sent.body["id"]?.int == 7)
-        #expect(sent.body["node"]?.int == 1)
-        #expect(sent.body["sx"]?.double == 0)
-        #expect(sent.body["sy"]?.double == 120.5)
-    }
-
-    @Test func resizeMetadataKeepsTheDisplayedPictureCoordinateSpaceUntilReplacement() throws {
-        let pipeline = FramePipeline(windowID: 7, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
-        defer { pipeline.close() }
-        guard case .frame(let first) = ServerMessage(DisplayFrame(type: DisplayProtocol.ServerType.frame.rawValue, body: frame(7, pts: 1000))) else {
-            Issue.record("frame"); return
-        }
-        pipeline.frame(first)
-        pipeline.flush()
-        pipeline.resize(width: 16, height: 20)
-        pipeline.flush()
-        #expect(pipeline.surface.pixelSize == CGSize(width: 8, height: 8))
-        let body: CBOR = ["id": 7, "codec": "hevc", "keyframe": false, "pts_us": 2000,
-                          "rect": [0, 0, 16, 20], "crop": [0, 0, 8, 8], "data": .bytes(Data([0, 0, 1]))]
-        guard case .frame(let replacement) = ServerMessage(DisplayFrame(type: DisplayProtocol.ServerType.frame.rawValue, body: body)) else {
-            Issue.record("replacement"); return
-        }
-        pipeline.frame(replacement)
-        pipeline.flush()
-        #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
-    }
-
-    @Test func aWindowShownOnlyAsTilesFollowsAResizeAtOnce() throws {
-        // A popup (alpha) never gets a frame; after a resize its next picture is a whole tile at
-        // the new size, so the surface must already be that size when the tile lands.
-        let pipeline = FramePipeline(windowID: 9, width: 8, height: 8, makeDecoder: { _ in FakeDecoder() }, send: { _ in })
-        defer { pipeline.close() }
-        let png = try TileTests.png(width: 8, height: 8, red: 1, green: 2, blue: 3)
-        let body: CBOR = ["id": 9, "rect": [0, 0, 8, 8], "format": "png", "data": .bytes(png)]
-        pipeline.tile(try #require(LosslessTile(body)))
-        pipeline.flush()
-        pipeline.resize(width: 16, height: 20)
-        pipeline.flush()
-        #expect(pipeline.surface.pixelSize == CGSize(width: 16, height: 20))
-    }
-
-    @Test func aBrokenStreamAsksForOneKeyframeAndSkipsToIt() async throws {
-        _ = try await ready()
-        decoder.fails = true
-        stream.server([(.windowCreate, window(7, geometry: [0, 0, 8, 8])), (.frame, frame(7, pts: 1000)),
-                       (.frame, frame(7, pts: 2000, keyframe: false)), (.frame, frame(7, pts: 3000, keyframe: false))])
-        var sent: [DisplayFrame] = []
-        try await until("acks") {
-            sent += stream.take()
-            return sent.filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }.count == 3
-        }
-        let acks = sent.filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-        #expect(acks.allSatisfy { $0.body["decoded_us"]?.int == -1 })
-        #expect(sent.filter { $0.type == DisplayProtocol.ClientType.requestKeyframe.rawValue }.count == 1)
-        #expect(decoder.decoded == 0)
-
-        // Pictures that depend on the lost one are not decoded; the keyframe recovers.
-        decoder.fails = false
-        stream.server([(.frame, frame(7, pts: 4000, keyframe: false)), (.frame, frame(7, pts: 5000))])
-        var later: [DisplayFrame] = []
-        try await until("recovery") {
-            later += stream.take().filter { $0.type == DisplayProtocol.ClientType.ack.rawValue }
-            return later.count == 2
-        }
-        #expect(later.map { $0.body["decoded_us"]?.int ?? 0 >= 0 } == [false, true])
-        #expect(decoder.decoded == 1)
     }
 
     @Test func vsyncIsSentOncePerRefreshAndOnlyWhenTheServerPacesOnIt() async throws {
@@ -557,7 +348,7 @@ final class FakeDecoder: PictureDecoder {
         #expect(ticks.allSatisfy { $0.body["display"]?.int == 0 })
 
         let other = CabooseDisplaySessionTests()
-        let unpaced = try await other.ready(features: ["ack"])
+        let unpaced = try await other.ready(features: ["touch"])
         unpaced.displayWillRefresh(0, targetTimestamp: 20)
         #expect(other.stream.take().isEmpty)
     }
@@ -879,20 +670,19 @@ final class FakeDecoder: PictureDecoder {
         try await until("window") { session.windows[7] != nil }
         let dragged = try #require(session.windows[7])
         session.configure(dragged, frame: CGRect(x: 100, y: 80, width: 300, height: 300))
-        #expect(dragged.surface.pixelSize == CGSize(width: 100, height: 100)) // the surface waits for the server
+        #expect(dragged.frame.size == CGSize(width: 100, height: 100)) // the size waits for the server
         stream.server([(.windowUpdate, ["id": 7, "geometry": [0, 0, 200, 200]]), (.windowCreate, window(8, geometry: [0, 0, 10, 10]))])
         try await until("handled") { session.windows[8] != nil }
         #expect(dragged.frame == CGRect(x: 100, y: 80, width: 200, height: 200))
         stream.server([(.windowUpdate, ["id": 7, "geometry": [100, 80, 300, 300]]), (.windowUpdate, ["id": 7, "geometry": [100, 80, 310, 300]])])
         try await until("confirmed") { dragged.frame.width == 310 } // after the answer, the server's word is final
-        try await until("surface") { dragged.surface.pixelSize == CGSize(width: 310, height: 300) }
+        #expect(dragged.frame.size == CGSize(width: 310, height: 300))
     }
 
     @Test func aClosedConnectionCannotReachTheNextOne() async throws {
         let first = MockStream(), second = MockStream()
         var streams = [first, second]
-        let session = CabooseDisplaySession(stream: { streams.removeFirst() }, token: "t", displays: [display], decoders: [.hevc],
-                                            makeDecoder: { _ in FakeDecoder() })
+        let session = CabooseDisplaySession(stream: { streams.removeFirst() }, token: "t", displays: [display])
         session.connect()
         session.disconnect()
         session.connect()
@@ -900,7 +690,7 @@ final class FakeDecoder: PictureDecoder {
         try await until("hello") { session.state == .authenticating }
         first.deliver(.closed(nil)) // the old socket's close, arriving late
         first.server([(.windowCreate, window(7, geometry: [0, 0, 10, 10]))])
-        second.server([(.hello, ["version": 0, "displays": [0], "encoders": ["hevc"], "features": []])])
+        second.server([(.hello, ["version": 0, "displays": [0], "features": []])])
         try await until("ready") { session.state == .ready }
         try await Task.sleep(for: .milliseconds(50))
         #expect(session.state == .ready)

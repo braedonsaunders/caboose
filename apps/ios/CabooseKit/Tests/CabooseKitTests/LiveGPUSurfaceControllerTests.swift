@@ -318,14 +318,9 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     @MainActor
     func testPresentationOwnerInvalidationDetachesLayerViewImmediatelyAndRetainsLeaseUntilRelease() throws {
         let stream = MockStream()
-        let decoder = FakeDecoder()
         let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
-        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
-                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
-        let surface = WindowSurface()
-        surface.resize(width: 800, height: 600)
-        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
-                                  overrideRedirect: false, surface: surface)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600), overrideRedirect: false)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
         host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
         let view = RemoteWindowView(session: session, window: window)
@@ -345,7 +340,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(lease.isValid)
 
         // A view that stops showing the window parks the lease: the layer leaves the
-        // view so the picture underneath is not covered, but the binding stays valid
+        // view, but the binding stays valid
         // and the guest is never asked to give up its surface.
         owners.withdraw(view)
         XCTAssertTrue(invalidatedIdentities.isEmpty)
@@ -366,7 +361,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(layerView.superview === view)
 
         // A change of window identity ends the lease and asks the guest to retire it.
-        let replacement = RemoteWindow(id: 7, frame: window.frame, overrideRedirect: false, surface: surface)
+        let replacement = RemoteWindow(id: 7, frame: window.frame, overrideRedirect: false)
         owners.update(epoch: identity.epoch, windows: [7: replacement])
         XCTAssertEqual(invalidatedIdentities, [identity])
         XCTAssertFalse(lease.isValid)
@@ -399,14 +394,9 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     @MainActor
     func testHidingTheWindowParksTheLeaseAndShowingItRestoresTheLayer() throws {
         let stream = MockStream()
-        let decoder = FakeDecoder()
         let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
-        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
-                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
-        let surface = WindowSurface()
-        surface.resize(width: 800, height: 600)
-        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
-                                  overrideRedirect: false, surface: surface)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
+        let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600), overrideRedirect: false)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
         host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
         let tab = UIView(frame: host.bounds)
@@ -451,18 +441,13 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     @MainActor
     func testAPopupPresentsInItsOwnViewOverItsParentAtItsOwnSize() throws {
         let stream = MockStream()
-        let decoder = FakeDecoder()
         let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
-        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
-                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
-        let parentSurface = WindowSurface(), popupSurface = WindowSurface()
-        parentSurface.resize(width: 800, height: 600)
-        popupSurface.resize(width: 240, height: 180)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
         let parent = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
-                                  overrideRedirect: false, surface: parentSurface)
+                                  overrideRedirect: false)
         // A menu: override-redirect, at its own place, not the display's size.
         let popup = RemoteWindow(id: 9, frame: CGRect(x: 100, y: 80, width: 240, height: 180),
-                                 overrideRedirect: true, surface: popupSurface)
+                                 overrideRedirect: true)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
         host.isHidden = false
         let parentView = RemoteWindowView(session: session, window: parent)
@@ -484,8 +469,7 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertTrue(lease.content?.superview === popupView)
         XCTAssertEqual(lease.content?.frame.size, popupView.bounds.size)
         XCTAssertEqual(lease.extent, CGSize(width: 240, height: 180))
-        XCTAssertFalse(owners.presents(in: parentView))
-        XCTAssertTrue(owners.presents(in: popupView))
+        XCTAssertFalse(lease.view === parentView)
         // A premultiplied swapchain (an ARGB menu) shows the parent through its clear pixels.
         XCTAssertEqual(lease.content?.isOpaque, true)
         lease.setTranslucent(true)
@@ -503,10 +487,8 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
 
     @MainActor
     func testClaimWithNoViewShowingTheWindowBindsParkedAtTheServerExtent() throws {
-        let surface = WindowSurface()
-        surface.resize(width: 800, height: 600)
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
-                                  overrideRedirect: false, surface: surface)
+                                  overrideRedirect: false)
         let owners = LiveGPUPresentationOwners { _ in XCTFail("no invalidation expected") }
         owners.update(epoch: identity.epoch, windows: [7: window])
         var claimed: Result<LiveGPULayerLease, Error>?
@@ -521,14 +503,10 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     @MainActor
     func testPresentationOwnerGeometryResizePreservesLeaseAndFitsLayerViewWithoutRevokingSurface() throws {
         let stream = MockStream()
-        let decoder = FakeDecoder()
         let display = DisplayInfo(id: 0, width: 1356, height: 932, scale: 2, refreshHz: 120)
-        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
-                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
-        let surface = WindowSurface()
-        surface.resize(width: 1356, height: 932)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 1356, height: 932),
-                                  overrideRedirect: false, surface: surface)
+                                  overrideRedirect: false)
         let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 678, height: 466))
         host.isHidden = false  // a UIWindow starts hidden: nothing in it is visible
         let view = RemoteWindowView(session: session, window: window)
