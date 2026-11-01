@@ -48,5 +48,10 @@ c++ $flags -I"$gfxstream/shader-cache" -I"$blake3" "$gfxstream/shader-cache/test
 "$scratch/test_shader_cache" "$gfxstream/shader-cache/vectors.json" >"$scratch/test_shader_cache.log" 2>&1 ||
     { cat "$scratch/test_shader_cache.log" >&2; echo "FAIL test_shader_cache" >&2; exit 1; }
 echo "pass test_shader_cache"
+c++ $flags -I"$gfxstream/bounded-memory" -I"$blake3" "$gfxstream/upload-cache/test_upload_cache_vectors.cpp" \
+    "$scratch"/blake3*.o -o "$scratch/test_upload_cache_vectors"
+"$scratch/test_upload_cache_vectors" "$gfxstream/upload-cache/vectors.json" >"$scratch/test_upload_cache_vectors.log" 2>&1 ||
+    { cat "$scratch/test_upload_cache_vectors.log" >&2; echo "FAIL test_upload_cache_vectors" >&2; exit 1; }
+echo "pass test_upload_cache_vectors"
 run d3d11_emulation_test -I"${CABOOSE_VULKAN_INCLUDE:-/work/mesa/include}" \
     "$gfxstream/feature-emulation/d3d11_emulation_test.cpp"

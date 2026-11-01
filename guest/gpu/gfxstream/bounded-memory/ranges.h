@@ -52,9 +52,11 @@ struct Range {
 // Lookup snapshots real mapping metadata; emit performs one ordinary synchronous
 // encoder RPC and returns its actual VkResult. No whole-call publication on any
 // failed invalidate. The caller supplies valid Vulkan host synchronization.
+// Chunks of a range start at multiples of `granule` from its offset when the
+// granule and the range's atom divide one another (upload cache pieces).
 template<class Lookup, class Emit>
 int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
-             Budget& budget = processBudget) {
+             Budget& budget = processBudget, uint64_t granule = 1) {
     if (!count || uint64_t(count) > (uint64_t(SIZE_MAX) - sizeof(Reservation)) / sizeof(Range))
         return outOfHostMemory;
     Reservation reservation{budget};
@@ -86,10 +88,12 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     }
     for (uint32_t i = 0; i < count; ++i) {
         const auto& r = plan[i];
+        const uint64_t larger = std::max(r.atom, granule), smaller = std::min(r.atom, granule);
+        const uint64_t step = smaller && larger % smaller == 0 && larger <= payloadBytes ? larger : r.atom;
         uint64_t done = 0;
         while (done < r.size) {
             uint64_t bytes = std::min(payloadBytes, r.size - done);
-            if (bytes < r.size - done) bytes -= bytes % r.atom;
+            if (bytes < r.size - done) bytes -= bytes % step;
             auto* destination = invalidate ? staged.get() + r.stagedOffset + size_t(done) : nullptr;
             const int result = emit(i, r.offset + done, bytes, destination);
             if (result != success) return result;

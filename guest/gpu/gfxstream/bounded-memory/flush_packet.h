@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "ranges.h"
+#include "upload_cache.h"
 #include <array>
 #include <utility>
 
@@ -14,6 +15,9 @@ struct FlushFragment {
     unsigned range;
     uint64_t offset;
     uint64_t size;
+    // An upload cache piece (4096 bytes at offset) instead of the range's bytes.
+    upload_cache::Kind kind = upload_cache::literal;
+    upload_cache::Prefix prefix{};
 };
 
 // One ordinary, unsequenced multi-range flush; DATA envelopes retain their own
@@ -37,6 +41,20 @@ public:
         }
         fragments_[count_++] = {range, offset, size};
         bytes_ += fragmentOverhead + size;
+        return count_ == capacity ? drain() : 0;
+    }
+    // A piece takes a fragment of its own; its data is the piece form, not the range's bytes.
+    int pushPiece(unsigned range, uint64_t offset, upload_cache::Kind kind,
+                  const upload_cache::Prefix& prefix) {
+        if (failure_) return failure_;
+        if (kind == upload_cache::literal) return lost();
+        const uint64_t bytes = fragmentOverhead - 8 + upload_cache::pieceDataBytes(kind);
+        if (bytes > byteLimit - bytes_) {
+            const int result = drain();
+            if (result) return result;
+        }
+        fragments_[count_++] = {range, offset, upload_cache::kPieceBytes, kind, prefix};
+        bytes_ += bytes;
         return count_ == capacity ? drain() : 0;
     }
     int finish() { return failure_ ? failure_ : drain(); }

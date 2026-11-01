@@ -113,6 +113,10 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0041 shader-cache | With hello `0x2000`, a module the phone's shader store holds, or one this process already sent on its single device stream, is sent as a 48-byte token naming its BLAKE3 hash; the process asks for the store's keys once (`../shader-cache/shader_cache.h`, docs/gpu-live.md "Shader cache") |
 | 0042 32-bit-handles | Handle casts through `uintptr_t` become `caboose::handle_key` and `caboose::to_handle` (`../bounded-memory/handles.h`), which keep a non-dispatchable handle whole in the i386 build |
 | 0043 held-loss-replies | With `CABOOSE_GPU_ON_LOSS` resolved to pause, a `VK_ERROR_DEVICE_LOST` the phone returns is held while its executor leaves (within `departureGraceMs`) and reported once a new executor is there (`../bounded-memory/completion_feed.h` `heldLoss`) |
+| 0044 gpu-writes-forget-flush-shadow | A copy into a host-visible buffer forgets the written range in the flush shadow (`FlushShadow::forgetRange`), so a rewrite of the bytes last flushed is sent again |
+| 0045 dmabuf-imports-in-any-memory-type | A dma-buf import or export takes the dma-buf paths in any memory type instead of the mapped-memory shadow, which refused its chain: on a lavapipe decoder every type is host-visible |
+| 0046 queue-device | Each queue records its device, so media latches are written and completion watches carry their device |
+| 0047 upload-cache | With hello `0x8000`, whole 4096-byte pieces of a flushed range of at least 16 KiB go as the prefix of a piece the phone's upload store holds, or as bytes for it to store while the allowance lasts; the process asks for the store's prefixes once per executor (`../bounded-memory/upload_cache.h`, docs/gpu-live.md "Upload cache") |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
