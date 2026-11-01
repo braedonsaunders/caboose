@@ -353,8 +353,11 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x4070), everything))
+        self.assertIsNone(negotiate(hello(0x8070), everything))
         self.assertIsNone(negotiate(hello(0x30), everything))
+        # Executor resume is granted only when the phone declared it.
+        self.assertEqual(negotiate(hello(0x4070), everything), hello(0x4070))
+        self.assertEqual(negotiate(hello(0x4070), everything - {'executor-resume'}), hello(0x70))
         self.assertIsNone(negotiate(broker.HELLO, everything))
         self.assertIsNone(negotiate(hello(0x70)[:47] + b'\0', everything))
         self.assertIsNone(negotiate(hello(0x70)[:47], everything))
@@ -1232,6 +1235,28 @@ class ExecutorResumeTests(unittest.IsolatedAsyncioTestCase):
                 session.acknowledge(2)
             with self.assertRaises(ValueError):
                 session.acknowledge(99)
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_frame_draining_when_the_phone_resumes_is_sent_again(self):
+        session = self.session()
+        drained = asyncio.Event()
+        class SlowWriter(Writer):
+            async def drain(self): await drained.wait()
+        session.writer = SlowWriter()
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            session.send(Kind.REVOKE)
+            for _ in range(10): await asyncio.sleep(0)
+            # Frame 1 is written and still draining when the phone's RESUME arrives.
+            await session.message(self.phone(Kind.RESUME, 0, struct.pack('<QQ16s', 0, 0, b'n' * 16)))
+            session.writer.data.clear()
+            drained.set()
+            for _ in range(10): await asyncio.sleep(0)
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.RESUME, 0), (Kind.REVOKE, 1)])
         finally:
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)
