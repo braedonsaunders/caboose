@@ -62,7 +62,9 @@ allocated with Mesa's Vulkan allocator. It does not need a common window-system 
 or create a Linux presentation buffer. Binding sends the `wl_proxy_get_id` of a Wayland
 surface or the X11 window ID, uses an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
 and a ten-second deadline. Provider replies populate base capabilities, formats
-and modes, including the base `*2` forms. Toolkits ask every frame (Zink's Kopper does),
+and modes, including the base `*2` forms. Of the provider's formats only the 8-bit RGBA
+and BGRA ones (UNORM and sRGB) are offered, the only formats the phone creates swapchains
+with (`presentableFormats`); its deeper and HDR formats are not. Toolkits ask every frame (Zink's Kopper does),
 so the provider's last reply for the physical device answers at once; once it is 500 ms
 old a refresh is sent without waiting (`Client::beginQuery`) and its reply is used when
 it arrives. Unknown extension chains fail

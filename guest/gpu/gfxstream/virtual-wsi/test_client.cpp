@@ -155,6 +155,10 @@ static void exercise(int scenario) {
     const std::array<uint32_t,13> expectedCaps={2,4,640,480,1,1,4096,4096,1,1,1,1,2};
     assert(caps.values==expectedCaps);
     assert((caps.formats==std::vector<std::array<uint32_t,2>>{{44,0}}));
+    // Deeper and HDR formats the provider lists are not offered: the phone cannot create them.
+    ProviderCaps listed=caps;
+    listed.formats={{64,0},{44,0},{97,1000104002},{50,0},{37,0},{43,0}};
+    assert((presentableFormats(listed)==std::vector<std::array<uint32_t,2>>{{44,0},{50,0},{37,0},{43,0}}));
     assert(caps.modes==std::vector<uint32_t>{2});
     assert((caps.queues==std::vector<std::array<uint32_t,4>>{{0,7,1,1}}));
     auto failedCaps=queried;

@@ -439,7 +439,9 @@ static VkResult VKAPI_CALL formats(VkPhysicalDevice physical, VkSurfaceKHR surfa
     return guarded([&]() -> VkResult {
         if (!count) return VK_ERROR_INITIALIZATION_FAILED;
         Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
-        const auto values=providerCaps(b).formats;
+        // Only formats the phone can create a swapchain with: an application that picked
+        // another would never present.
+        const auto values=presentableFormats(providerCaps(b));
         uint32_t total=values.size(), copied=out ? std::min(*count,total) : total;
         if (out) for (uint32_t i=0;i<copied;++i)
             out[i]={VkFormat(values[i][0]),VkColorSpaceKHR(values[i][1])};

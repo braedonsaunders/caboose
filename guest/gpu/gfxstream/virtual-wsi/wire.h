@@ -103,6 +103,16 @@ struct ProviderCaps {
     std::vector<uint32_t> modes;
     std::vector<std::array<uint32_t,4>> queues;
 };
+// The formats a swapchain on the phone can have: its virtual swapchain creates only 8-bit
+// RGBA and BGRA images (UNORM or sRGB), while its provider also lists deeper and HDR formats.
+inline bool presentableFormat(uint32_t format) {
+    return format==37 || format==43 || format==44 || format==50;
+}
+inline std::vector<std::array<uint32_t,2>> presentableFormats(const ProviderCaps& caps) {
+    std::vector<std::array<uint32_t,2>> kept;
+    for (const auto& format : caps.formats) if (presentableFormat(format[0])) kept.push_back(format);
+    return kept;
+}
 inline ProviderCaps providerCaps(const Bytes& body) {
     // Validate complete provider success before exposing any output fields.
     decode(packet(19,body));
