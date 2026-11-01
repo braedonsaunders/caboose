@@ -1,8 +1,0 @@
-{
-  "name": "draw-end",
-  "description": "Draw stream 3 ended; its surfaces, images and glyphs can go.",
-  "messages": [
-    {"direction": "server", "type": "draw.end", "type_id": 44, "fields": {"stream": 3}}
-  ],
-  "hex": "2c09000000a16673747265616d03"
-}

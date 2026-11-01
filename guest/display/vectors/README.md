@@ -37,8 +37,8 @@ Three shapes of entry:
 - **Unknown** (`"type": null`, `payload_hex`). A type id v0 does not define; the decoder
   skips it by length and the next message still decodes.
 
-The frame and audio vectors carry real media (`media/`): a 64x64 H.264 and a 64x64 HEVC
-keyframe that a hardware decoder must accept, a 16x16 PNG for the icon, cursor and tile
+The device camera and audio vectors carry real media (`media/`): a 64x64 H.264 keyframe
+that a hardware decoder must accept, a 16x16 PNG for the icon, cursor and clipboard
 vectors, and one 20 ms stereo Opus packet.
 
 Regenerate after changing the protocol, then commit both:
@@ -50,5 +50,5 @@ guest/display/scripts/dev.sh cargo test -p caboose-display-protocol
 
 `media/generate.sh` regenerates the media (run it in the dev container:
 `guest/display/scripts/dev.sh vectors/media/generate.sh`). Their bytes depend on the
-x264, x265 and libopus versions, so only run it when the media need to change, and re-run
+x264 and libopus versions, so only run it when the media need to change, and re-run
 `write-vectors` afterwards.
