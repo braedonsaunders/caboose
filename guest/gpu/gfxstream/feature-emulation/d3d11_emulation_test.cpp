@@ -348,6 +348,42 @@ void testBindStatus() {
     answerBindStatus(1, static_cast<const VkBindImageMemoryInfo*>(nullptr), VK_SUCCESS);
 }
 
+void testIgnoredDescriptorPointers() {
+    // DXVK's union: one array seen as image, buffer and texel buffer descriptors.
+    union Descriptor {
+        VkDescriptorImageInfo image;
+        VkDescriptorBufferInfo buffer;
+        VkBufferView texel;
+    } data[2] = {};
+    auto write = [&](VkDescriptorType type) {
+        auto w = make<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+        w.descriptorType = type;
+        w.descriptorCount = 2;
+        w.pImageInfo = &data[0].image;
+        w.pBufferInfo = &data[0].buffer;
+        w.pTexelBufferView = &data[0].texel;
+        clearIgnoredDescriptorPointers(w);
+        return w;
+    };
+    for (VkDescriptorType type : {VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                  VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT}) {
+        auto w = write(type);
+        assert(w.pImageInfo == &data[0].image && !w.pBufferInfo && !w.pTexelBufferView);
+    }
+    for (VkDescriptorType type : {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC}) {
+        auto w = write(type);
+        assert(!w.pImageInfo && w.pBufferInfo == &data[0].buffer && !w.pTexelBufferView);
+    }
+    for (VkDescriptorType type : {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER}) {
+        auto w = write(type);
+        assert(!w.pImageInfo && !w.pBufferInfo && w.pTexelBufferView == &data[0].texel);
+    }
+    auto inlineBlock = write(VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK);
+    assert(!inlineBlock.pImageInfo && !inlineBlock.pBufferInfo && !inlineBlock.pTexelBufferView);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -356,5 +392,6 @@ int main(int argc, char** argv) {
     testInlineModules();
     testNullDescriptors();
     testBindStatus();
+    testIgnoredDescriptorPointers();
     std::puts("d3d11 emulation tests passed");
 }

@@ -34,6 +34,10 @@ DXVK also requires `VK_KHR_maintenance5`, `VK_KHR_maintenance6` and
 sent without waiting for the phone, so a bind's `VkBindMemoryStatus` reports the result of
 its call.
 
+Patch 0038 clears the pointers of a descriptor write that its type does not use before the
+encoder marshals it: DXVK points all three at one union of descriptor data, and the encoder
+otherwise reads a buffer's offset as an image view.
+
 The phone's features are learned from the application's own feature query, or asked once
 at device creation; device creation keeps every offered feature, including 0035's, from the
 phone.
@@ -58,6 +62,6 @@ runs in `../driver/test.sh` before every build. It rewrites a vertex shader's cu
 for SPIR-V 1.0 and 1.4 and checks the result, reusing existing types, leaving modules
 without cull distances alone and refusing malformed ones; adjusts pipelines for each
 combination of missing features, checking copies replace only what changes; and checks the
-null stand-ins and bind statuses. With a directory it writes the shaders it rewrites, which
+null stand-ins, bind statuses and the pointers kept for each descriptor type. With a directory it writes the shaders it rewrites, which
 `spirv-val --target-env vulkan1.3` accepts. It passes under AddressSanitizer and
 UndefinedBehaviorSanitizer.

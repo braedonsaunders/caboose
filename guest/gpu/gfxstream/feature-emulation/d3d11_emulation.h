@@ -59,6 +59,39 @@ inline void answerBindStatus(uint32_t count, const BindInfo* infos, VkResult res
             }
 }
 
+// A descriptor write's pointers that its type does not use are ignored, and DXVK points all
+// three at one union of descriptor data. The encoder marshals every pointer that is not
+// null, reading buffer data as image views; the unused ones are cleared first.
+inline void clearIgnoredDescriptorPointers(VkWriteDescriptorSet& write) {
+    switch (write.descriptorType) {
+        case VK_DESCRIPTOR_TYPE_SAMPLER:
+        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+        case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+            write.pBufferInfo = nullptr;
+            write.pTexelBufferView = nullptr;
+            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+            write.pImageInfo = nullptr;
+            write.pTexelBufferView = nullptr;
+            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            write.pImageInfo = nullptr;
+            write.pBufferInfo = nullptr;
+            break;
+        default:  // inline uniform blocks and others carry their data in pNext
+            write.pImageInfo = nullptr;
+            write.pBufferInfo = nullptr;
+            write.pTexelBufferView = nullptr;
+            break;
+    }
+}
+
 // ---------------------------------------------------------------------------------------
 // Null descriptors
 // ---------------------------------------------------------------------------------------

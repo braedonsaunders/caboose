@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 38/38] Marshal only the descriptor pointers a write's type uses
+
+A descriptor write's pointers that its type does not use are ignored, and
+DXVK points all three of them at one union of descriptor data. Without the
+ignored-handles stream feature the encoder marshals every pointer that is
+not null: for a uniform buffer bound at an offset it read the offset as an
+image view and faulted inside vkUpdateDescriptorSets. Under Wine the fault
+abandons the call with the encoder lock held, and every thread that calls
+into the driver afterwards spins on it. The unused pointers are now
+cleared before the write is marshalled
+(caboose-features/d3d11_emulation.h).
+---
+ src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 64f1c2b..7acf44a 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -6278,6 +6278,10 @@ void ResourceTracker::on_vkUpdateDescriptorSets(void* context, VkDevice device,
+ 
+     memcpy(transformedWrites.data(), pDescriptorWrites,
+            sizeof(VkWriteDescriptorSet) * descriptorWriteCount);
++    // The marshaller follows every pointer that is not null, also those a write's type does
++    // not use (caboose-features/d3d11_emulation.h).
++    for (VkWriteDescriptorSet& write : transformedWrites)
++        caboose::features::clearIgnoredDescriptorPointers(write);
+ 
+     size_t imageInfosNeeded = 0;
+     for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
+-- 
+2.52.0
+
