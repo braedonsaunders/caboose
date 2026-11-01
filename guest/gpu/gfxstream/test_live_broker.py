@@ -922,7 +922,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         peer = mock.Mock()
         result = control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 12, 7)
         key = (result.epoch, result.grant, result.generation)
-        async def bind(_session, process, obj):
+        async def bind(_session, process, obj, space=0):
             self.assertEqual((process, obj), (1, 9))
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
             return result
@@ -965,7 +965,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         key = (result.epoch, result.grant, result.generation)
         values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
         vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
-        async def bind(_session, _process, _obj):
+        async def bind(_session, _process, _obj, space=0):
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
             return result
         instance = broker.Broker.__new__(broker.Broker); instance.request_bind = bind
