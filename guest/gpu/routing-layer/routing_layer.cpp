@@ -139,7 +139,8 @@ int deviceRank(InstanceData& data, VkPhysicalDevice device) {
 // Records the CPU implementations among `devices` to present as GPUs, judged against every
 // device listed (`listed`, default `ranks`).
 void present(const VkPhysicalDevice* devices, const std::vector<int>& ranks, const std::vector<int>& listed) {
-    if (!presentsCpuAsGpu(listed, processHidesPhone())) return;
+    static const bool presentedWhenHidden = keptOnComputer(commandLine());
+    if (!presentsCpuAsGpu(listed, processHidesPhone(), presentedWhenHidden)) return;
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < ranks.size(); ++i)
         if (ranks[i] == rank(0, kCpu)) presented.insert(devices[i]);
