@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sun, 1 Nov 2026 00:00:00 +0000
+Subject: [PATCH 44/44] Resend flushed blocks the device has written
+
+The flush shadow skips a block whose bytes match the last flush. A copy into
+a host-visible buffer changes the host's copy behind the shadow, so an
+application that rewrote the bytes it last flushed would leave the device's
+bytes on the host. cabooseMarkBufferGpuWritten now forgets the written range
+in the shadow (FlushShadow::forgetRange in ../bounded-memory/flush_shadow.h),
+including for buffers whose usage keeps them out of readback, so those blocks
+are sent again until an invalidate refreshes them.
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 6c3ce6e..04fc822 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1687,6 +1687,7 @@ void ResourceTracker::cabooseMarkBufferGpuWritten(VkBuffer buffer, VkDeviceSize
+     std::lock_guard<std::recursive_mutex> lock(mLock);
+     auto bufIt = info_VkBuffer.find(buffer);
+     if (bufIt == info_VkBuffer.end() || bufIt->second.currentBacking == VK_NULL_HANDLE) return;
++    bool gpuConsumed = false;
+     if (requireReadbackBuffer) {
+         constexpr VkBufferUsageFlags kGpuConsumedMask =
+             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+@@ -1697,9 +1698,7 @@ void ResourceTracker::cabooseMarkBufferGpuWritten(VkBuffer buffer, VkDeviceSize
+             VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT |
+             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+             VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+-        if ((bufIt->second.createInfo.usage & kGpuConsumedMask) != 0) {
+-            return;
+-        }
++        gpuConsumed = (bufIt->second.createInfo.usage & kGpuConsumedMask) != 0;
+     }
+     auto memIt = info_VkDeviceMemory.find(bufIt->second.currentBacking);
+     if (memIt == info_VkDeviceMemory.end()) return;
+@@ -1720,6 +1719,9 @@ void ResourceTracker::cabooseMarkBufferGpuWritten(VkBuffer buffer, VkDeviceSize
+         absBegin = 0;
+         absEnd = memInfo.allocationSize;
+     }
++    // The host copy of these bytes now differs from the last flush; resend them.
++    caboose::memory::flushShadow.forgetRange(caboose::handle_key(bufIt->second.currentBacking), absBegin, absEnd);
++    if (gpuConsumed) return;
+     if (!memInfo.socketGpuWritten || memInfo.socketGpuWrittenEnd <= memInfo.socketGpuWrittenBegin) {
+         memInfo.socketGpuWrittenBegin = absBegin;
+         memInfo.socketGpuWrittenEnd = absEnd;

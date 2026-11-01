@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 30/33] Keep one connection per process on the socket transport
+
+Every thread shares the first thread's encoder (ResourceTracker::
+getThreadLocalEncoder), but that encoder belonged to the first thread's
+thread-local connection manager, which is destroyed when that thread exits;
+an application whose render thread made the device and exited before the
+main thread destroyed the instance then used a freed encoder (Qt Quick). On
+the socket transport the connection manager is now one per process, never
+freed, and made again only while none has connected.
+---
+ .../guest/vulkan/gfxstream_vk_device.cpp      | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index aa53cd0..e689c0d 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -1,4 +1,5 @@
+ #include <cstdlib>
++#include <mutex>
+ /*
+  * Copyright 2023 Google LLC
+  * SPDX-License-Identifier: MIT
+@@ -43,6 +44,9 @@ uint32_t gNoRenderControlEnc = 0;
+ 
+ static gfxstream::vk::VkEncoder* getVulkanEncoder(GfxStreamConnectionManager* mgr) {
+     if (!mgr) return nullptr;
++    // Threads share one connection manager on the socket transport: add its encoder once.
++    static std::mutex encoderMutex;
++    std::lock_guard<std::mutex> encoderLock(encoderMutex);
+     if (!gNoRenderControlEnc) {
+         int32_t ret = renderControlInit(mgr, nullptr);
+         if (ret) {
+@@ -70,6 +74,23 @@ static gfxstream::vk::VkEncoder* getVulkanEncoder(GfxStreamConnectionManager* mg
+ 
+ static GfxStreamConnectionManager* getConnectionManager(void) {
+     auto transport = renderControlGetTransport();
++#ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
++    if (std::getenv("CABOOSE_GFXSTREAM_SOCKET")) {
++        // One connection per process, never freed: every thread shares its encoder
++        // (ResourceTracker::getThreadLocalEncoder), which must outlive the thread that made
++        // it; a thread-local one is destroyed with that thread. Made again only while none
++        // has connected, so a process that starts without an executor can find one later.
++        static std::mutex mutex;
++        static GfxStreamConnectionManager* process = nullptr;
++        std::lock_guard<std::mutex> lock(mutex);
++        if (!process) {
++            auto* manager = new GfxStreamConnectionManager(transport, kCapsetGfxStreamVulkan);
++            if (!manager->initialize()) { delete manager; return nullptr; }
++            process = manager;
++        }
++        return process;
++    }
++#endif
+     return GfxStreamConnectionManager::getThreadLocalInstance(transport, kCapsetGfxStreamVulkan);
+ }
+ 
+-- 
+2.52.0
+

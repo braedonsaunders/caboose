@@ -58,15 +58,66 @@ int main() {
     assert(remote.sends[1] == std::make_pair(uint64_t(12288), uint64_t(256)));
     assert(remote.bytes == local);
 
-    // A partial page is sent within the chunk bounds and never trusted later.
+    // A partial block is sent within the chunk bounds and never trusted later.
     remote.sends.clear();
     std::vector<uint8_t> other(size, 7);
     Remote fresh{size};
-    assert(shadow.emitChanged(2, other.data(), size, 100, 200, fresh.sender(other)) == success);
-    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(100), uint64_t(200)));
+    assert(shadow.emitChanged(2, other.data(), size, 100, 100, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(100), uint64_t(100)));
     fresh.sends.clear();
-    assert(shadow.emitChanged(2, other.data(), size, 0, 4096, fresh.sender(other)) == success);
-    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(0), uint64_t(4096)));
+    assert(shadow.emitChanged(2, other.data(), size, 0, 256, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(0), uint64_t(256)));
+
+    // Whole blocks are trusted though their page was never sent whole: small ranges of a
+    // large allocation, flushed again unchanged, send nothing.
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192 + 512, 1024, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(8192 + 512), uint64_t(1024)));
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192 + 512, 1024, fresh.sender(other)) == success);
+    assert(fresh.sends.empty());
+    other[8192 + 700] ^= 1;
+    assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 2);
+    assert(fresh.sends[0] == std::make_pair(uint64_t(8192), uint64_t(768)));  // unknown, then the edit
+    assert(fresh.sends[1] == std::make_pair(uint64_t(8192 + 1536), uint64_t(4096 - 1536)));
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
+    assert(fresh.sends.empty());
+
+    // An invalidate's refreshed bytes are known in whole blocks only.
+    fresh.sends.clear();
+    other[20000] = 1;
+    shadow.noteRefreshed(2, other.data(), size, 19968, 300);
+    assert(shadow.emitChanged(2, other.data(), size, 19968, 512, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(19968 + 256), uint64_t(256)));
+
+    // A range is unchanged only when every block it touches is held whole and its bytes match.
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(shadow.unchanged(1, local.data(), size, 64, 4096) && shadow.unchanged(1, local.data(), size, 0, size));
+    local[70] ^= 1;
+    assert(!shadow.unchanged(1, local.data(), size, 64, 4096) && shadow.unchanged(1, local.data(), size, 4160, 4096));
+    local[70] ^= 1;
+    shadow.forgetRange(1, 5000, 5001);
+    assert(!shadow.unchanged(1, local.data(), size, 4160, 4096) && shadow.unchanged(1, local.data(), size, 64, 4096));
+    assert(!shadow.unchanged(9, local.data(), size, 0, 4096) && !shadow.unchanged(1, local.data(), size, size - 10, 4096));
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+
+    // A device write forgets the blocks it touches, even partly, and only those.
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.empty());
+    shadow.forgetRange(1, 300, 520);
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.size() == 1 && remote.sends[0] == std::make_pair(uint64_t(256), uint64_t(512)));
+    remote.sends.clear();
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.empty());
+    shadow.forgetRange(1, 0, ~uint64_t(0));
+    shadow.forgetRange(9, 0, size);
+    assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
+    assert(remote.sends.size() == 1 && remote.sends[0].second == size);
 
     // Forgetting resends in full; a failed send forgets too.
     remote.sends.clear();

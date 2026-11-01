@@ -49,34 +49,52 @@ and final `PRESENT_RETIRED` (kind 36). A rejected-without-submission result remo
 its frame record; uncertain work remains reserved. Late native failure events are
 retained until final retirement. None of these records signals a guest semaphore.
 
-`../prepare_virtual_wsi_surface.py` installs the native Wayland instance and
-physical-device query overrides from `mesa_surface.inc` into a separately prepared
-private Mesa tree. It checks the exact pinned upstream blobs and each insertion
-anchor before writing, refuses duplicate application, and leaves `prepare_mesa.py`
-unchanged. `--check` validates the tree without writing. The overrides require
-both private build defines and a Wayland build; the ordinary diagnostic is unchanged.
+The driver includes `mesa_surface.inc` from `gfxstream_vk_device.cpp` (patches 0002
+and 0008 of [`../driver`](../driver/README.md)); `prepare.py` copies these files to
+`src/gfxstream/guest/vulkan/caboose-wsi/` in the Mesa tree. When `CABOOSE_GFXSTREAM_SOCKET`
+is set, it installs the instance, physical-device and device entry points for surfaces,
+presentation support and swapchains; otherwise Mesa's entry points are unchanged.
 
-The private surface wrapper is a standard `VkIcdSurfaceWayland` containing the
-actual display and surface pointers, allocated with Mesa's Vulkan allocator.
-It does not need a common Wayland backend or create a Linux presentation buffer.
-Binding uses `wl_proxy_get_id`, an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
+The surface wrapper is a standard `VkIcdSurfaceWayland` containing the actual display
+and surface pointers, a `VkIcdSurfaceXcb` containing the connection and window, or a
+`VkIcdSurfaceXlib` containing the Xlib display and window,
+allocated with Mesa's Vulkan allocator. It does not need a common window-system backend
+or create a Linux presentation buffer. Binding sends the `wl_proxy_get_id` of a Wayland
+surface or the X11 window ID, uses an explicit `CABOOSE_GFXSTREAM_SURFACE_SOCKET`,
 and a ten-second deadline. Provider replies populate base capabilities, formats
-and modes, including the base `*2` forms. Unknown extension chains fail explicitly.
-With the indexed path active, queue family 0 also reports Wayland and XCB presentation
-support, so X11 clients (Xwayland) select the same provider, and the instance keeps
-`VK_KHR_xcb_surface` and `VK_EXT_headless_surface`. Physical-device features report
-`provokingVertexLast` and `transformFeedbackPreservesProvokingVertex`.
-Uncertain binding or retirement retains the bounded wrapper and instance lease.
+and modes, including the base `*2` forms. Of the provider's formats only the 8-bit RGBA
+and BGRA ones (UNORM and sRGB) are offered, the only formats the phone creates swapchains
+with (`presentableFormats`); its deeper and HDR formats are not. Toolkits ask every frame (Zink's Kopper does),
+so the provider's last reply for the physical device answers at once; once it is 500 ms
+old a refresh is sent without waiting (`Client::beginQuery`) and its reply is used when
+it arrives. Unknown extension chains fail
+explicitly. Uncertain retirement retains the bounded wrapper and instance lease.
 
-`mesa_swapchain.inc` supplies the separate indexed device candidate under
-`CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI`. It requires the current socket's exact
-v4/0x70 handshake and a read-only check of Mesa's actual synchronous feature
-selection. The canonical socket implementation is guest-owner commit `6dfa6e45`.
-The diagnostic v2 and query-only v3 paths retain their existing behavior; v3
-advertises no swapchain. The indexed path exposes basic KHR_swapchain only; a swapchain create chain may carry
-only `VkImageFormatListCreateInfo`. Creating with `oldSwapchain` first waits for the
-old swapchain's presentation to go idle and retires it on the provider, so a resize
-never holds two native swapchains;
+Toolkits create a surface, query it and create a swapchain before its window exists: GTK
+for a `wl_surface` without an `xdg_toplevel` yet, X11 toolkits for windows not yet
+mapped. The compositor grants a bind only for an existing window, and the broker closes
+the connection of a bind it refused; that close is not executor loss (only a bound
+connection's end is reported to `peerGone`). The surface binds lazily: a query tries
+again at most every 100 ms on a new connection (`Client::reset`), and a present always
+tries. The bind is sent at once and its reply is collected by a later call when it has
+not arrived (a query waits up to 250 ms for it, a present not at all), so neither blocks
+on the phone's own wait for the window's layer. A bind the phone answered with a failure (it could not take the window's layer)
+is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
+four attempts and every 32nd after them print `CABOOSE_GPU_SURFACE_BIND object=…
+space=… attempt=… refused|failed|bound errno=… vk=…` on stderr. Until a bind succeeds, with guest-owned images, queries are answered locally:
+the phone's formats (`B8G8R8A8_UNORM` and `_SRGB`, sRGB nonlinear), FIFO, 4 to 8 images,
+opaque or premultiplied alpha, and no fixed extent (X11 surfaces report their window's
+size). Presentation support needs no window and is answered for the first queue family.
+`vkGetPhysicalDevice{Xcb,Xlib,Wayland}PresentationSupportKHR` are returned from
+`vkGetInstanceProcAddr` directly (patch 0029).
+
+Each present commits a Wayland application's `wl_surface`, without a buffer, as a window
+system's own present does with its buffer: toolkits request their frame callback, regions
+and geometry before presenting and pace drawing on that callback.
+
+`mesa_swapchain.inc` supplies the indexed swapchain. It requires the socket's version-4
+handshake (mask `0x70`, with or without guest-assigned handles) and a read-only check of
+Mesa's actual synchronous feature selection. It exposes basic KHR_swapchain only;
 unsupported presentation extensions, device groups and host-image-copy features
 are disabled or rejected before native device creation.
 
@@ -86,51 +104,41 @@ maps the exact ordered array. ACQUIRE forwards the original boxed binary
 semaphore/fence and returns only the actual acquired index. Image reuse also
 requires the prior source-release proof. PRESENT intercepts the original wait
 set before Mesa common prewait; multiple swapchains are rejected before consuming
-waits. Native capacity is one frame per surface, so the next presentation waits
-for actual kind 36. Native ordering fix `dc151a3c` is required: capacity becomes
-available before its final callback is observable. Source release alone does not
+waits. Native capacity is one frame per surface (two with ordered presents), so the
+next presentation waits for actual kind 36 once the window is full. The phone makes capacity available before its final callback is
+observable. Source release alone does not
 open presentation admission or signal an acquire semaphore.
+
+With hello bit `0x400`, PRESENT sends a device-stream order mark and an ordered present
+(kind 39) and returns without waiting for PRESENT_RESULT; `presentOrdered` records the
+frame and `pump` (or any later wait) consumes its result when it arrives. A frame that
+was not queued ends its swapchain: the next present or acquire returns
+`VK_ERROR_OUT_OF_DATE_KHR` (or `VK_ERROR_DEVICE_LOST`), a rejected frame's image counts
+as released, and an uncertain frame never retires and is not waited for.
+
+With ordered presents and the completion feed, the next image is acquired right after
+each present, on the phone, against one of three private semaphores. The application's
+acquire then waits only if that image is not ready yet (honouring its timeout), and one
+submission on a presentation-family queue waits for the private semaphore and signals
+the application's semaphore and fence. A private semaphore is acquired again only once
+its slot's fence shows that hand-off ran. Swapchain retirement first cancels an acquire
+made ahead of time; an image it acquired is released by native retirement.
 
 Unknown creation or retirement completion quarantines allocations and prevents
 device destruction. Source images are freed only after real swapchain or surface
 retirement. App-issued idle calls remain unchanged; the native decoder owns the
-observed completion proof for acquired-but-unused images. The source allocator
-uses compatible noncoherent types and does not alter application memory-property
-queries. Guest-visible flags are decoder-projected properties, not raw Apple
-provider flags. General coherent memory and actual game execution are unproven.
+observed completion proof for acquired-but-unused images. Source images use
+the first compatible memory type that is neither host-visible nor host-coherent where the
+device has one (lavapipe has none, and its first compatible type is used; a later type
+may be the phone's lazily allocated one, which patch 0010 advertises as device-local and
+a copy cannot read), and do not
+alter application memory-property queries. Guest-visible flags are decoder-projected
+properties, not raw Apple provider flags.
 
-The syntax check uses retained generated headers and compiler commands.
-`check_mesa_surface.py COMPILE_COMMANDS_JSON TRANSLATED_DEVICE_CPP --indexed`
-prints the exact argv and source hash and gives one compiler sixty seconds.
-`relink_private.py` describes an isolated incremental link: it recompiles the
-changed device, socket, connection-manager and CGLS client translation units,
-rebuilds the five-member connection archive, and reuses identified retained
-objects read-only. `--plan` prints exact commands without compiling. The caller
-bounds the whole invocation and mounts only a fresh output directory writable.
-Its manifest hashes input files and thin-archive members. This is not a clean
-rebuild or proof that retained objects match unrelated uncommitted source.
-The toolchain image and completed checks are recorded in `verification.json`;
-the historical image used for the retained build is not established. No phone,
-compositor or Vulkan execution is established by syntax or transport fixtures.
-The completed incremental link produced a 3,008,352-byte ICD with SHA-256
-`8ac1f100a2ce243be98962488b48051949f240271cba141f45f48d3d95b706ff`.
-`link-verification.json` records its exact commands and 226 identified input hashes,
-including 180 thin-archive members. The library requires `libwayland-client.so.0`
-and retains `/work/sysroot/lib` as its runpath. Loader and provider execution are
-not established by this link result.
+## Tests
 
-`check_loader_negative.sh` verifies the exact ICD and existing b94 loader hashes,
-loads the ICD with `RTLD_NOW`, checks its loader exports, then uses the ordinary
-Vulkan loader with explicitly nonexistent private broker endpoints. The isolated
-UID-1000 check passed: interface 7, four loader instance extensions and
-`VK_ERROR_INCOMPATIBLE_DRIVER` from instance creation. No instance or device was
-created. The run requires an executable 16-MiB `/tmp` tmpfs with a read-only root;
-the c399 build image has no system Vulkan loader. Earlier prerequisite failures
-and the passing result are recorded separately in `verification.json`.
-
-## Focused Linux verification
-
-With an existing C++17 toolchain in an isolated Linux environment:
+`../driver/test.sh` builds and runs both client tests on Linux; the driver build runs it
+before compiling. By hand:
 
 ```sh
 c++ -std=c++17 -Wall -Wextra -Werror client.cpp test_client.cpp -o /tmp/test-wsi
@@ -151,3 +159,37 @@ The indexed fixture checks 130 frames, cancellation racing actual acquisition,
 foreign-platform timeout provenance, owner revocation during acquire, and an index
 outside the provider's actual count. Additional frozen vector paths are explicit
 arguments to `check_vectors.py`.
+
+After a revocation the phone owes no further retirements, releases or acquire replies:
+waits for them end at once, and present and acquire report `VK_ERROR_OUT_OF_DATE_KHR`.
+Once the process's executor is lost (see `../bounded-memory/README.md`), present and
+acquire report `VK_ERROR_DEVICE_LOST`. A surface connection the broker closes marks the
+executor lost.
+
+With guest-owned images (hello feature `0x800`), the swapchain's images are the guest's
+own pool of 4 to 8 (surface capabilities report a minimum of 4 and a maximum of 8, and
+offer mailbox). MAP sends them with flag 1 (3 with mailbox), the phone's own swapchain is
+a FIFO of its natural size, and there is no SWAPCHAIN_ACQUIRE: acquisition hands the
+application an image whose last copy the phone has released, at once, and signals its
+semaphore and fence with a submission that has no waits. Each present names a guest
+image; the phone acquires a native image inside the present, and drops the frame (it
+still reports queued and releases its image) when none is free in mailbox, or after 1 s.
+
+A guest-owned swapchain is created on the guest first, and the phone's swapchain once the
+surface binds, at creation or at a later present. Until then each present is dropped:
+its wait semaphores are consumed by a submission on its queue and its image is free at
+once. The phone copies every presented image into its own, so only the fields its
+presentation layer takes reach CREATE: no flags, one layer, exclusive sharing, FIFO,
+identity transform, the application's alpha if the phone offers it (else opaque), and
+the usage the phone supports of the images' usage, which always adds transfer source and
+destination. The images keep the application's usage but are created without flags
+(`VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR` is accepted and not passed on, since the
+phone maps only images without flags) and exclusive. A swapchain whose extent, format or
+queue family does not fit the bound window reports `VK_ERROR_OUT_OF_DATE_KHR` at its
+next present, as on any window system after a resize. An X11 swapchain (XCB or Xlib)
+whose window no longer has its extent, asked of the X server at most every 50 ms, reports
+`VK_ERROR_OUT_OF_DATE_KHR` from present and acquire, and that frame is not sent: the
+compositor configures a window it grants to the phone's display, and the phone shows only
+frames of the window's size. The X11 libraries' functions are taken from the copies the
+application loaded, also when it loaded them privately (SDL loads libX11 with
+`RTLD_LOCAL`).

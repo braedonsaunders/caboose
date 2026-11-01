@@ -11,8 +11,12 @@
 
 namespace caboose::wsi {
 Client::~Client() { if (fd_>=0) close(fd_); }
+void (*Client::peerGone)()=nullptr;
 [[noreturn]] void Client::fail(int error) {
     if (fd_>=0) { close(fd_); fd_=-1; }
+    // A bound surface connection the broker closed may mean its executor left (checked by
+    // the hook); the broker also closes the connection of a bind it refused (no window yet).
+    if ((error==ECONNRESET || error==EPIPE) && bound_ && peerGone) peerGone();
     throw std::system_error(error, std::generic_category(), "Caboose surface transport");
 }
 void Client::ready(short events, Deadline deadline) {
@@ -60,20 +64,26 @@ void Client::send(uint16_t kind, const Bytes& body, Deadline deadline) {
 }
 Record Client::receive(Deadline deadline) {
     require(fd_>=0);
-    Bytes bytes(maxPacket);
     for (;;) {
         ready(POLLIN,deadline);
+        Record r;
+        if (receiveReady(&r)) return r;
+    }
+}
+bool Client::receiveReady(Record* out) {
+    Bytes bytes(maxPacket);
+    {
         iovec io{bytes.data(),bytes.size()};
         // No ancillary buffer: unexpected descriptors are discarded by the kernel
         // and MSG_CTRUNC causes rejection, without leaking received descriptors.
         msghdr msg{}; msg.msg_iov=&io; msg.msg_iovlen=1;
         ssize_t n=recvmsg(fd_,&msg,0);
-        if (n<0 && (errno==EINTR || errno==EAGAIN)) continue;
+        if (n<0 && (errno==EINTR || errno==EAGAIN)) return false;
         if (n<0) fail(errno);
         if (!n) fail(ECONNRESET);
         if (msg.msg_flags & (MSG_TRUNC|MSG_CTRUNC)) fail(EPROTO);
         bytes.resize(n);
-        try { return decode(bytes); } catch (const ProtocolError&) { fail(EPROTO); }
+        try { *out=decode(bytes); return true; } catch (const ProtocolError&) { fail(EPROTO); }
     }
 }
 Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
@@ -82,62 +92,153 @@ Record Client::await(uint16_t kind, uint64_t serial, Deadline deadline) {
     }
     for (;;) {
         auto r=receive(deadline);
-        if (r.kind==0x7fff) fail(status(r.body,0).nativeError);
-        if (bound_ && identity(r.body,r.kind==17?8:0)!=identity_) fail(EPROTO);
-        if (r.kind==35) { revoked_=true; continue; }
-        if (r.kind==36) {
-            auto id=u64(r.body,40), frame=u64(r.body,48);
-            auto found=sources_.find(frame);
-            if (found==sources_.end() || found->second.swapchain!=id ||
-                !found->second.result || !found->second.released) fail(EPROTO);
-            sources_.erase(found);
-            if (kind==36) return r;
-            continue;
-        }
-        if (r.kind==21 && u32(r.body,68)!=0) {
-            auto found=sources_.find(u64(r.body,40));
-            if (found==sources_.end() || found->second.event) fail(EPROTO);
-            found->second.event=true; failed_=true; failure_=status(r.body,48);
-            // Async failures do not overwrite the one submission response.
-            if (kind!=21 || serial!=u64(r.body,40) || found->second.result) continue;
-        }
-        if (r.kind==24) {
-            retirement_=r; retired_=status(r.body,40).success();
-            if (kind!=24) fail(ECANCELED);
-        }
-        if (r.kind==30 && (kind!=30 || u64(r.body,40)!=serial)) {
-            auto id=u64(r.body,40);
-            if (!swapchains_.count(id) || swapchains_.at(id).acquire!=u64(r.body,48) ||
-                acquireReplies_.count(id) || acquireReplies_.size()>=64) fail(EPROTO);
-            acquireReplies_.emplace(id,std::move(r)); continue;
-        }
-        if (r.kind==22) {
-            auto it=sources_.find(u64(r.body,40));
-            if (it==sources_.end() || it->second.released) fail(EPROTO);
-            it->second.released=true;
-            if (it->second.swapchain)
-                swapchains_.at(it->second.swapchain).releasedSerial.at(it->second.index)=u64(r.body,40);
-            if (kind==22 && (!serial || u64(r.body,40)==serial)) return r;
-            continue;
-        }
-        if (r.kind!=kind || (serial && u64(r.body,40)!=serial)) fail(EPROTO);
-        return r;
+        if (absorb(r,kind,serial)) return r;
     }
+}
+bool Client::awaitLive(uint16_t kind, uint64_t serial, Deadline deadline) {
+    while (!revoked_) {
+        auto r=receive(deadline);
+        if (absorb(r,kind,serial)) return true;
+    }
+    return false;
+}
+void Client::pump() {
+    require(fd_>=0);
+    for (;;) {
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,0);
+        if (result<0 && errno==EINTR) continue;
+        if (result<0) fail(errno);
+        if (!result) return;
+        if (!(p.revents & POLLIN)) fail(ECONNRESET);
+        Record r;
+        if (receiveReady(&r)) absorb(r,0,0);
+    }
+}
+bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
+    if (r.kind==0x7fff) fail(status(r.body,0).nativeError);
+    if (bound_ && identity(r.body,r.kind==17?8:0)!=identity_) fail(EPROTO);
+    if (r.kind==35) { revoked_=true; return false; }
+    if (r.kind==36) {
+        auto id=u64(r.body,40), frame=u64(r.body,48);
+        auto found=sources_.find(frame);
+        if (found==sources_.end() || found->second.swapchain!=id ||
+            !found->second.result || !found->second.released) fail(EPROTO);
+        sources_.erase(found);
+        return kind==36;
+    }
+    if (r.kind==21 && u32(r.body,68)==0) {
+        auto found=sources_.find(u64(r.body,40));
+        if (found!=sources_.end() && found->second.ordered) {
+            // An ordered present's submission result, after the caller moved on.
+            if (found->second.result) fail(EPROTO);
+            found->second.result=true;
+            const uint32_t disposition=u32(r.body,64);
+            if (disposition>2) fail(EPROTO);
+            if (disposition!=1) {
+                auto swap=swapchains_.find(found->second.swapchain);
+                if (swap!=swapchains_.end()) {
+                    swap->second.retiring=true;
+                    if (!swap->second.presentFailed) {
+                        Status failure=status(r.body,48);
+                        // A refusal without its own error still ends this swapchain.
+                        if (!failure.nativeError && (!failure.hasVk || !failure.vk)) failure.nativeError=EIO;
+                        swap->second.presentFailed=true; swap->second.presentFailure=failure;
+                    }
+                }
+                found->second.failed=true;
+                if (disposition==0) { rejected_.push_back(found->first); sources_.erase(found); }
+            }
+            return false;
+        }
+    }
+    if (r.kind==21 && u32(r.body,68)!=0) {
+        auto found=sources_.find(u64(r.body,40));
+        if (found==sources_.end() || found->second.event) fail(EPROTO);
+        found->second.event=true; failed_=true; failure_=status(r.body,48);
+        // Async failures do not overwrite the one submission response.
+        if (kind!=21 || serial!=u64(r.body,40) || found->second.result) return false;
+    }
+    if (r.kind==24) {
+        retirement_=r; retired_=status(r.body,40).success();
+        if (kind!=24) fail(ECANCELED);
+    }
+    if (r.kind==30 && (kind!=30 || u64(r.body,40)!=serial)) {
+        auto id=u64(r.body,40);
+        if (!swapchains_.count(id) || swapchains_.at(id).acquire!=u64(r.body,48) ||
+            acquireReplies_.count(id) || acquireReplies_.size()>=64) fail(EPROTO);
+        acquireReplies_.emplace(id,std::move(r)); return false;
+    }
+    if (r.kind==22) {
+        auto it=sources_.find(u64(r.body,40));
+        if (it==sources_.end() || it->second.released) fail(EPROTO);
+        it->second.released=true;
+        if (it->second.swapchain)
+            swapchains_.at(it->second.swapchain).releasedSerial.at(it->second.index)=u64(r.body,40);
+        return kind==22 && (!serial || u64(r.body,40)==serial);
+    }
+    if (r.kind==19 && pendingQuery_ && u64(r.body,40)==pendingQuery_) {
+        if (queryArrived_) fail(EPROTO);
+        queryReply_=std::move(r); queryArrived_=true; return false;
+    }
+    if (!kind || r.kind!=kind || (serial && u64(r.body,40)!=serial)) fail(EPROTO);
+    return true;
+}
+void Client::reset() {
+    require(!bound_);
+    if (fd_>=0) { close(fd_); fd_=-1; }
+    lastRequest_=0; bindPending_=false;
 }
 Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                     Space space) {
-    require(!bound_ && instance && object && bool(width)==bool(height) &&
+    beginBind(instance,object,width,height,deadline,space);
+    Record r;
+    if (!awaitBind(deadline,&r)) fail(ETIMEDOUT);
+    return r;
+}
+void Client::beginBind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
+                       Space space) {
+    require(!bound_ && !bindPending_ && instance && object && bool(width)==bool(height) &&
             (space==WaylandSurface || space==X11Window));
     Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,space);
-    send(16,p,deadline); auto r=await(17,0,deadline);
-    if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
-    return r;
+    send(16,p,deadline); bindPending_=true;
+}
+bool Client::awaitBind(Deadline deadline, Record* out) {
+    require(fd_>=0 && bindPending_);
+    for (;;) {
+        auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,int(std::max<int64_t>(0,std::min<int64_t>(left,INT_MAX))));
+        if (result<0 && errno==EINTR) continue;
+        if (result<0) fail(errno);
+        if (!result) return false;
+        if (!(p.revents & POLLIN)) fail(ECONNRESET);
+        Record r;
+        if (!receiveReady(&r)) continue;
+        if (r.kind==0x7fff) fail(status(r.body,0).nativeError);
+        if (r.kind!=17) fail(EPROTO);
+        bindPending_=false;
+        if (status(r.body,48).success()) { identity_=identity(r.body,8); bound_=true; }
+        *out=std::move(r);
+        return true;
+    }
 }
 Record Client::query(uint64_t request, uint64_t physical, Deadline deadline) {
     require(bound_ && !retiring_ && !revoked_ && request>lastRequest_ && physical);
     lastRequest_=request;
     Bytes p; put64(p,request); put64(p,physical); send(18,p,deadline);
     return await(19,request,deadline);
+}
+void Client::beginQuery(uint64_t request, uint64_t physical, Deadline deadline) {
+    require(bound_ && !retiring_ && !revoked_ && request>lastRequest_ && physical && !pendingQuery_);
+    lastRequest_=request;
+    Bytes p; put64(p,request); put64(p,physical); send(18,p,deadline);
+    pendingQuery_=request; queryArrived_=false;
+}
+bool Client::takeQuery(Record* out) {
+    if (!pendingQuery_ || !queryArrived_) return false;
+    *out=std::move(queryReply_); pendingQuery_=0; queryArrived_=false;
+    return true;
 }
 Record Client::present(const Bytes& p, Deadline deadline) {
     require(bound_ && !retiring_ && !revoked_ && p.size()>=56);
@@ -160,6 +261,7 @@ Record Client::present(const Bytes& p, Deadline deadline) {
 }
 bool Client::released(uint64_t serial) const {
     if (!serial) return false;
+    if (std::find(rejected_.begin(),rejected_.end(),serial)!=rejected_.end()) return true;
     auto it=sources_.find(serial);
     if (it!=sources_.end() && it->second.released && !it->second.consumed) return true;
     for (const auto& item:swapchains_)
@@ -169,7 +271,7 @@ bool Client::released(uint64_t serial) const {
 void Client::waitReleased(uint64_t serial, Deadline deadline) {
     require(bound_ && (sources_.count(serial) || released(serial)));
     releaseWait_=true;
-    try { if (!released(serial)) await(22,serial,deadline); }
+    try { if (!released(serial)) awaitLive(22,serial,deadline); }
     catch (...) { releaseWait_=false; throw; }
     releaseWait_=false;
 }
@@ -186,6 +288,8 @@ uint64_t Client::waitAnyReleased(Deadline deadline) {
 }
 void Client::consumeRelease(uint64_t serial) {
     require(released(serial));
+    auto rejected=std::find(rejected_.begin(),rejected_.end(),serial);
+    if (rejected!=rejected_.end()) { rejected_.erase(rejected); return; }
     auto found=sources_.find(serial);
     if (found!=sources_.end()) {
         require(found->second.result);
@@ -195,11 +299,17 @@ void Client::consumeRelease(uint64_t serial) {
     for (auto& item:swapchains_)
         for (auto& value:item.second.releasedSerial) if (value==serial) value=0;
 }
-void Client::waitPresentationIdle(Deadline deadline) {
-    require(bound_);
-    while (std::any_of(sources_.begin(),sources_.end(),[](const auto& entry) {
-        return entry.second.swapchain!=0;
-    })) await(36,0,deadline);
+void Client::waitPresentationIdle(Deadline deadline) { waitPresentationRoom(1,deadline); }
+void Client::waitPresentationRoom(size_t frames, Deadline deadline) {
+    require(bound_ && frames);
+    // A failed ordered present never retires; its swapchain is already ended.
+    auto unretired=[this] {
+        return size_t(std::count_if(sources_.begin(),sources_.end(),[](const auto& entry) {
+            return entry.second.swapchain!=0 && !entry.second.failed;
+        }));
+    };
+    // After a revocation no further retirements are owed: the caller sees revoked().
+    while (unretired()>=frames && awaitLive(36,0,deadline)) {}
 }
 Record Client::retire(Deadline deadline) {
     if (retired_) return retirement_;
@@ -234,16 +344,33 @@ Record Client::createSwapchain(const Bytes& p, Deadline deadline) {
     }
     return r;
 }
-Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline) {
-    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id));
+Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags) {
+    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id) && flags<=3 && flags!=2);
     auto& swap=swapchains_.at(id);
-    require(!swap.mapped && !swap.retiring && images.size()==swap.count);
+    require(!swap.mapped && !swap.retiring);
+    if (flags) {
+        // Guest-owned images: their count is the guest's; the phone takes native images itself.
+        require(images.size()>=1 && images.size()<=8);
+        swap.count=images.size(); swap.acquired.assign(swap.count,false); swap.releasedSerial.assign(swap.count,0);
+        swap.guestImages=true;
+    } else require(images.size()==swap.count);
     auto sorted=images; std::sort(sorted.begin(),sorted.end());
     require(!sorted.empty() && sorted[0] && std::adjacent_find(sorted.begin(),sorted.end())==sorted.end());
-    Bytes p; put64(p,id); put32(p,images.size()); put32(p,0);
+    Bytes p; put64(p,id); put32(p,images.size()); put32(p,flags);
     for (auto image:images) put64(p,image);
     send(27,p,deadline); auto r=await(28,id,deadline);
     swap.mapped=status(r.body,48).success(); return r;
+}
+void Client::acquireLocally(uint64_t id, uint32_t index) {
+    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id));
+    auto& swap=swapchains_.at(id);
+    require(swap.mapped && swap.guestImages && !swap.retiring && index<swap.count && !swap.acquired[index]);
+    swap.acquired[index]=true;
+}
+size_t Client::sourcesInFlight() const {
+    size_t count=0;
+    for (const auto& item:sources_) count+=item.second.swapchain && !item.second.released ? 1 : 0;
+    return count;
 }
 void Client::beginAcquire(uint64_t id, uint64_t request, uint64_t semaphore,
                           uint64_t fence, uint64_t timeout, Deadline deadline) {
@@ -270,6 +397,19 @@ Record Client::finishAcquire(uint64_t id, uint64_t request, Deadline deadline) {
     }
     swap.acquire=0; swap.completedAcquire=request; return r;
 }
+bool Client::awaitAcquireReply(uint64_t id, Deadline deadline) {
+    require(bound_ && swapchains_.count(id) && swapchains_.at(id).acquire);
+    for (;;) {
+        pump();
+        if (acquireReplies_.count(id)) return true;
+        if (revoked_) return false;
+        auto left=std::chrono::duration_cast<std::chrono::milliseconds>(deadline-std::chrono::steady_clock::now()).count();
+        if (left<=0) return false;
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,int(std::min<int64_t>(left,INT_MAX)));
+        if (result<0 && errno!=EINTR) fail(errno);
+    }
+}
 Record Client::presentIndexed(uint64_t id, uint64_t serial, uint64_t queue,
     uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline) {
     require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id) && queue && serial>lastSerial_);
@@ -292,6 +432,30 @@ Record Client::presentIndexed(uint64_t id, uint64_t serial, uint64_t queue,
         if (u32(r.body,64)==0) sources_.erase(serial);
     }
     return r;
+}
+void Client::presentOrdered(uint64_t id, uint64_t serial, uint64_t queue, uint64_t order,
+    uint32_t index, uint32_t family, const std::vector<uint64_t>& waits, Deadline deadline) {
+    require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id) && queue && order && serial>lastSerial_);
+    auto& swap=swapchains_.at(id);
+    require(swap.mapped && !swap.retiring && index<swap.count && swap.acquired[index] && waits.size()<=64);
+    auto sorted=waits; std::sort(sorted.begin(),sorted.end());
+    require(sorted.empty() || (sorted[0] && std::adjacent_find(sorted.begin(),sorted.end())==sorted.end()));
+    require(sources_.size()<64);
+    Bytes p; put64(p,id); put64(p,serial); put64(p,queue); put64(p,order);
+    put32(p,index); put32(p,family); put32(p,1); put32(p,waits.size());
+    for (auto wait:waits) put64(p,wait);
+    Source source{}; source.swapchain=id; source.index=index; source.ordered=true;
+    sources_.emplace(serial,source); lastSerial_=serial;
+    // The image now belongs to presentation; a refusal ends the swapchain instead.
+    swap.acquired[index]=false;
+    // Never retry an uncertain transmission.
+    send(39,p,deadline);
+}
+bool Client::presentFailed(uint64_t id, Status* out) const {
+    auto swap=swapchains_.find(id);
+    if (swap==swapchains_.end() || !swap->second.presentFailed) return false;
+    if (out) *out=swap->second.presentFailure;
+    return true;
 }
 Record Client::retireSwapchain(uint64_t id, Deadline deadline) {
     require(bound_ && swapchains_.count(id)); auto& swap=swapchains_.at(id);

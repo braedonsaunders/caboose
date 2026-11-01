@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 33/33] Offer VK_EXT_robustness2 and accept its null
+ descriptors
+
+DXVK 2 requires VK_EXT_robustness2 (robustBufferAccess2 and nullDescriptor) and
+fails to create a D3D11 device without it. The encoder already marshals its
+feature and property structures; the extension was only missing from the guest's
+device extension allowlist, which offers an extension only when the phone's
+device supports it.
+
+With nullDescriptor, a descriptor update template may name a null buffer, as
+vkUpdateDescriptorSets already allowed; Zink does this. The template path now
+passes it on as a null handle instead of dereferencing it.
+---
+ src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index d015898..1240a0a 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2242,6 +2242,7 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
+         "VK_KHR_zero_initialize_workgroup_memory",
+         "VK_EXT_4444_formats",
+         "VK_EXT_extended_dynamic_state",
++        "VK_EXT_robustness2",
+         "VK_EXT_extended_dynamic_state2",
+         "VK_EXT_inline_uniform_block",
+         "VK_EXT_pipeline_creation_cache_control",
+@@ -7837,8 +7838,10 @@ void ResourceTracker::on_vkUpdateDescriptorSetWithTemplate(
+                 // Convert mesa to internal for objects in the user buffer
+                 VkDescriptorBufferInfo* internalBufferInfo =
+                     (VkDescriptorBufferInfo*)(((uint8_t*)bufferInfos) + currBufferInfoOffset);
++                // A null buffer is a null descriptor (VK_EXT_robustness2).
+                 VK_FROM_HANDLE(gfxstream_vk_buffer, gfxstream_buffer, internalBufferInfo->buffer);
+-                internalBufferInfo->buffer = gfxstream_buffer->internal_object;
++                internalBufferInfo->buffer =
++                    gfxstream_buffer ? gfxstream_buffer->internal_object : VK_NULL_HANDLE;
+ #endif
+                 currBufferInfoOffset += sizeof(VkDescriptorBufferInfo);
+             }
+-- 
+2.52.0
+

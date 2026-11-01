@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sat, 31 Oct 2026 00:00:00 +0000
+Subject: [PATCH 40/40] Keep the creation structures the driver's rebuilt chains
+ dropped
+
+vkCreateBuffer, vkCreateImage and vkCreateImageView rebuild their pNext
+chains from the structures the driver handles itself, and dropped the
+rest. With VK_KHR_maintenance5, which 0037 offers, an application may give
+a buffer's usage only in VkBufferUsageFlags2CreateInfoKHR and leave
+VkBufferCreateInfo::usage 0: ANGLE does, so its buffers reached the phone,
+and the driver's own records of them, with no usage. A view's narrower
+usage, an image's view format list and its stencil usage were dropped
+too. These structures are now kept, and a buffer's recorded usage is
+maintenance5's when given (caboose-features/d3d11_emulation.h).
+---
+ guest/vulkan_enc/ResourceTracker.cpp | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 7acf44a..2bd39f2 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -5341,6 +5341,10 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
+     }
+ #endif
+ 
++    // Structures the rebuilt chain would otherwise drop (caboose-features/d3d11_emulation.h).
++    std::vector<std::vector<uint8_t>> cabooseKept;
++    caboose::features::appendKeptStructures(&localCreateInfo, pCreateInfo->pNext, cabooseKept);
++
+     VkResult res;
+     VkMemoryRequirements memReqs;
+ 
+@@ -6661,6 +6665,12 @@ VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice de
+     }
+ #endif  // VK_USE_PLATFORM_FUCHSIA
+ 
++    // maintenance5's usage, which replaces VkBufferCreateInfo::usage, and the other structures
++    // the rebuilt chain would otherwise drop (caboose-features/d3d11_emulation.h).
++    localCreateInfo.usage = caboose::features::bufferUsage(*pCreateInfo);
++    std::vector<std::vector<uint8_t>> cabooseKept;
++    caboose::features::appendKeptStructures(&localCreateInfo, pCreateInfo->pNext, cabooseKept);
++
+     VkResult res;
+     VkMemoryRequirements memReqs;
+ 
+@@ -9011,6 +9021,9 @@ VkResult ResourceTracker::on_vkCreateImageView(void* context, VkResult input_res
+     }
+ #endif
+ 
++    // Structures the rebuilt chain would otherwise drop (caboose-features/d3d11_emulation.h).
++    std::vector<std::vector<uint8_t>> cabooseKept;
++    caboose::features::appendKeptStructures(&localCreateInfo, pCreateInfo->pNext, cabooseKept);
+     return enc->vkCreateImageView(device, &localCreateInfo, pAllocator, pView, true /* do lock */);
+ }
+ 
+-- 
+2.52.0
+

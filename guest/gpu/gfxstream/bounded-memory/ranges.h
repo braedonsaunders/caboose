@@ -13,7 +13,7 @@ constexpr uint64_t rpcBytes = 64 * 1024;
 // One unsequenced VkMappedMemoryRange command: 52-byte header + 8-byte tail
 // length. Invalidate replies use a 4-byte result + 8-byte tail length.
 constexpr uint64_t payloadBytes = rpcBytes - 60;
-constexpr size_t stagingBytes = 64 * 1024 * 1024;
+constexpr size_t stagingBytes = 96 * 1024 * 1024;
 constexpr int success = 0, outOfHostMemory = -1;
 
 class Budget {
@@ -41,9 +41,14 @@ struct Reservation {
     }
     ~Reservation() { budget.release(held); }
 };
+// Set while a thread flushes the coherent mappings it found before a submit: another
+// thread may unmap or free one of them meanwhile, which needs no flush any more.
+inline thread_local bool skipVanishedMappings = false;
 struct Range {
     uint64_t offset = 0, size = 0, mapBegin = 0, mapEnd = 0, allocation = 0, atom = 0;
     bool whole = false;
+    // The memory is no longer mapped and the caller allows that: nothing is sent for it.
+    bool vanished = false;
     uint8_t* base = nullptr; // allocation-relative shadow, never serialized
     std::shared_ptr<uint8_t> lifetime;
     size_t stagedOffset = 0;
@@ -52,9 +57,11 @@ struct Range {
 // Lookup snapshots real mapping metadata; emit performs one ordinary synchronous
 // encoder RPC and returns its actual VkResult. No whole-call publication on any
 // failed invalidate. The caller supplies valid Vulkan host synchronization.
+// Chunks of a range start at multiples of `granule` from its offset when the
+// granule and the range's atom divide one another (upload cache pieces).
 template<class Lookup, class Emit>
 int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
-             Budget& budget = processBudget) {
+             Budget& budget = processBudget, uint64_t granule = 1) {
     if (!count || uint64_t(count) > (uint64_t(SIZE_MAX) - sizeof(Reservation)) / sizeof(Range))
         return outOfHostMemory;
     Reservation reservation{budget};
@@ -64,7 +71,9 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     size_t total = 0;
     for (uint32_t i = 0; i < count; ++i) {
         auto& r = plan[i];
-        if (!lookup(i, r) || !r.base || !r.lifetime || !r.atom || r.offset % r.atom ||
+        if (!lookup(i, r)) return outOfHostMemory;
+        if (r.vanished) continue;
+        if (!r.base || !r.lifetime || !r.atom || r.offset % r.atom ||
             r.mapBegin > r.mapEnd || r.mapEnd > r.allocation || r.allocation > SIZE_MAX ||
             r.offset < r.mapBegin || r.offset >= r.mapEnd) return outOfHostMemory;
         if (r.whole) r.size = r.mapEnd - r.offset;
@@ -86,10 +95,13 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     }
     for (uint32_t i = 0; i < count; ++i) {
         const auto& r = plan[i];
+        if (r.vanished) continue;
+        const uint64_t larger = std::max(r.atom, granule), smaller = std::min(r.atom, granule);
+        const uint64_t step = smaller && larger % smaller == 0 && larger <= payloadBytes ? larger : r.atom;
         uint64_t done = 0;
         while (done < r.size) {
             uint64_t bytes = std::min(payloadBytes, r.size - done);
-            if (bytes < r.size - done) bytes -= bytes % r.atom;
+            if (bytes < r.size - done) bytes -= bytes % step;
             auto* destination = invalidate ? staged.get() + r.stagedOffset + size_t(done) : nullptr;
             const int result = emit(i, r.offset + done, bytes, destination);
             if (result != success) return result;
@@ -99,6 +111,7 @@ int transact(bool invalidate, uint32_t count, Lookup lookup, Emit emit,
     if (invalidate) {
         for (uint32_t i = 0; i < count; ++i) {
             const auto& r = plan[i];
+            if (r.vanished) continue;
             // Preserve original order, including overlapping ranges.
             std::memcpy(r.base + size_t(r.offset), staged.get() + r.stagedOffset, size_t(r.size));
         }

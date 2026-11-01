@@ -388,9 +388,11 @@ pending set of at most 16 MiB from which later pieces already resolve.
 
 The guest cuts pieces from the application's flushed range, not from its changed-block runs:
 each whole 4096 bytes, from the range's offset, of a range of at least 16 KiB, all-zero pieces
-excepted. A piece whose prefix the process knows goes as kind 2; any other as kind 1 while the
-allowance lasts; both skip the changed-block comparison and leave the bytes known to the shadow.
-Everything else is flushed as before. A process knows the prefixes of its inventory, and on each
+excepted. A piece the host already holds unchanged costs nothing, as before. A changed piece
+whose prefix the process knows goes as kind 2; a changed one of staging memory (bound only to
+buffers that are copied from, never to vertex, index, uniform, storage, texel or indirect ones)
+as kind 1 while the allowance lasts; both skip the changed-block comparison and leave the bytes
+known to the shadow. Everything else is flushed as before. A process knows the prefixes of its inventory, and on each
 device stream the pieces it stored on that stream, so a name never reaches the decoder before
 its piece; the kind of a piece is decided before it is written, and a stored piece is hashed
 again as it is written, so the key known is the one stored. A new executor (after a loss) drops

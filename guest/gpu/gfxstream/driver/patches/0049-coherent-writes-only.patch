@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sun, 1 Nov 2026 00:00:00 +0000
+Subject: [PATCH 49/49] Send only what an application wrote to coherent memory
+
+Before every submit the socket path flushed every coherent mapping whole,
+where the flush shadow could not hold it (over 32 MiB, or past its budget)
+in full: Halo: The Master Chief Collection's 64 MiB DXVK chunks made that
+about 120 MB a frame, one frame every two seconds. The guest's copy of each
+coherent allocation is now its own anonymous pages, write-protected through
+/dev/userfaultfd (../bounded-memory/write_watch.h): the flush sends the 16 KiB
+blocks written since the last one, protecting them again first, and nothing
+for memory nobody wrote. An invalidate's own writes are not sent back. Without
+the device, mappings are flushed whole as before.
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index f914d20..fac4e72 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1504,10 +1504,30 @@ VkResult ResourceTracker::cabooseFlushCoherentMappings(VkEncoder* enc) {
+             range.memory = mem;
+             range.offset = info.socketMapOffset;
+             range.size = info.socketMapSize;
+-            mapped.push_back(Candidate{
+-                info.device, range, info.allocationSize, info.memoryTypeIndex,
+-                info.socketBufferUsageMask, info.socketGpuWrittenEver
+-            });
++            // Memory whose writes are recorded sends only the blocks written since the last
++            // flush, and nothing when none was (caboose-bounded-memory/write_watch.h).
++            const VkDeviceSize mapBegin = info.socketMapOffset, mapEnd = info.socketMapOffset + info.socketMapSize;
++            const VkDeviceSize atom = std::max<VkDeviceSize>(1, devIt->second.props.limits.nonCoherentAtomSize);
++            std::vector<VkMappedMemoryRange> written;
++            const bool watched = caboose::memory::writeWatch().written(info.ptr, mapBegin, mapEnd,
++                [&](uint64_t begin, uint64_t end) {
++                    VkDeviceSize first = std::max<VkDeviceSize>(mapBegin, begin / atom * atom);
++                    VkDeviceSize last = end;
++                    if (last % atom) last = std::min<VkDeviceSize>(info.allocationSize, last + (atom - last % atom));
++                    last = std::min<VkDeviceSize>(last, mapEnd);
++                    if (last <= first) return;
++                    VkMappedMemoryRange part = range;
++                    part.offset = first;
++                    part.size = last - first;
++                    written.push_back(part);
++                });
++            if (!watched) written.push_back(range);
++            for (const VkMappedMemoryRange& part : written) {
++                mapped.push_back(Candidate{
++                    info.device, part, info.allocationSize, info.memoryTypeIndex,
++                    info.socketBufferUsageMask, info.socketGpuWrittenEver
++                });
++            }
+         }
+     }
+     // The mappings were found under the lock and are flushed without it: one another thread
+@@ -4112,16 +4132,37 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
+         }
+         // posix_memalign requires a power of two and pointer-sized minimum.
+         if ((alignment & (alignment - 1)) != 0) return VK_ERROR_INITIALIZATION_FAILED;
+-        void* allocation = nullptr;
+-        if (posix_memalign(&allocation, alignment, static_cast<size_t>(pAllocateInfo->allocationSize)))
+-            return VK_ERROR_OUT_OF_HOST_MEMORY;
+-        auto raw = static_cast<uint8_t*>(allocation);
+         std::shared_ptr<uint8_t> shadow;
+-        try {
+-            shadow = std::shared_ptr<uint8_t>(raw, std::free);
+-        } catch (const std::bad_alloc&) {
+-            // shared_ptr invokes its deleter on construction failure.
+-            return VK_ERROR_OUT_OF_HOST_MEMORY;
++        const bool coherent = physicalDeviceMemoryProps.memoryTypes[pAllocateInfo->memoryTypeIndex].propertyFlags &
++                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
++        const size_t page = size_t(sysconf(_SC_PAGESIZE));
++        if (coherent && alignment <= page && caboose::memory::writeWatch().available()) {
++            // Coherent memory: whole pages of its own, so the writes the application makes
++            // between submits are recorded and only those are sent.
++            const size_t bytes = (static_cast<size_t>(pAllocateInfo->allocationSize) + page - 1) / page * page;
++            void* mapped = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++            if (mapped == MAP_FAILED) return VK_ERROR_OUT_OF_HOST_MEMORY;
++            auto release = [bytes](uint8_t* base) {
++                caboose::memory::writeWatch().unwatch(base);
++                munmap(base, bytes);
++            };
++            try {
++                shadow = std::shared_ptr<uint8_t>(static_cast<uint8_t*>(mapped), release);
++            } catch (const std::bad_alloc&) {
++                return VK_ERROR_OUT_OF_HOST_MEMORY;
++            }
++            caboose::memory::writeWatch().watch(shadow.get(), bytes);
++        } else {
++            void* allocation = nullptr;
++            if (posix_memalign(&allocation, alignment, static_cast<size_t>(pAllocateInfo->allocationSize)))
++                return VK_ERROR_OUT_OF_HOST_MEMORY;
++            auto raw = static_cast<uint8_t*>(allocation);
++            try {
++                shadow = std::shared_ptr<uint8_t>(raw, std::free);
++            } catch (const std::bad_alloc&) {
++                // shared_ptr invokes its deleter on construction failure.
++                return VK_ERROR_OUT_OF_HOST_MEMORY;
++            }
+         }
+         VkDeviceMemory memory = VK_NULL_HANDLE;
+         VkResult result = cabooseEncodeAllocateMemory(enc, device, physicalDeviceMemoryProps,
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+index bcef8f4..7ff1167 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -3,6 +3,7 @@
+ #include "caboose-bounded-memory/cb_staging.h"
+ #include "caboose-bounded-memory/rpc_timing.h"
+ #include "caboose-bounded-memory/flush_shadow.h"
++#include "caboose-bounded-memory/write_watch.h"
+ #include "caboose-dmabuf/dmabuf.h"
+ #include "caboose-media/media_import.h"
+ #include "caboose-dmabuf/remote_images.h"
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+index a353732..205b1a1 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -2729,6 +2729,10 @@ VkResult VkEncoder::vkInvalidateMappedMemoryRanges(VkDevice device, uint32_t cou
+                 caboose::memory::flushShadow.noteRefreshed(
+                     caboose::handle_key(ranges[i].memory), mappings[i].base,
+                     mappings[i].allocation, mappings[i].offset, mappings[i].size);
++                // The device's bytes were written here: nothing to send back.
++                caboose::memory::writeWatch().written(mappings[i].base, mappings[i].offset,
++                                                      mappings[i].offset + mappings[i].size,
++                                                      [](uint64_t, uint64_t) {});
+             }
+         } else {
+             for (uint32_t i = 0; i < count; ++i)
