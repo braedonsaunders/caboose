@@ -450,6 +450,22 @@ pub fn detect_scroll_copy(
     stride_px: u32,
     damage: Rect,
 ) -> Option<SurfaceCopy> {
+    detect_scroll_copy_hashed(prev_rgba, curr_rgba, stride_px, damage, None, &mut Vec::new())
+}
+
+/// [`detect_scroll_copy`] reusing row hashes across pictures. `prev_known` are the hashes of
+/// `prev_rgba`'s rows of `damage`, when the caller has them: the `curr_hashes` of the last call
+/// for the same `damage`, once `prev_rgba` holds that picture. `curr_hashes` receives this
+/// picture's row hashes, or is left empty when the region is not hashed.
+pub fn detect_scroll_copy_hashed(
+    prev_rgba: &[u8],
+    curr_rgba: &[u8],
+    stride_px: u32,
+    damage: Rect,
+    prev_known: Option<&[u64]>,
+    curr_hashes: &mut Vec<u64>,
+) -> Option<SurfaceCopy> {
+    curr_hashes.clear();
     if damage.w < 64 || damage.h < 64 || damage.x < 0 || damage.y < 0 {
         return None;
     }
@@ -471,16 +487,20 @@ pub fn detect_scroll_copy(
     let hash_w_bytes = w_bytes - margin_px * 8;
 
     let h = damage.h as usize;
-    let mut prev_hashes = Vec::with_capacity(h);
-    let mut curr_hashes = Vec::with_capacity(h);
-
-    for r in 0..h {
-        let y = (damage.y as usize) + r;
-        let row_start = y * stride_bytes + hash_x_bytes;
-        let row_end = row_start + hash_w_bytes;
-        prev_hashes.push(xxh64(&prev_rgba[row_start..row_end], 0));
-        curr_hashes.push(xxh64(&curr_rgba[row_start..row_end], 0));
-    }
+    let row = |rgba: &[u8], r: usize| {
+        let row_start = ((damage.y as usize) + r) * stride_bytes + hash_x_bytes;
+        xxh64(&rgba[row_start..row_start + hash_w_bytes], 0)
+    };
+    let computed: Vec<u64>;
+    let prev_hashes: &[u64] = match prev_known.filter(|k| k.len() == h) {
+        Some(known) => known,
+        None => {
+            computed = (0..h).map(|r| row(prev_rgba, r)).collect();
+            &computed
+        }
+    };
+    curr_hashes.extend((0..h).map(|r| row(curr_rgba, r)));
+    let curr_hashes: &[u64] = curr_hashes;
 
     let mut curr_informative = vec![false; h];
     let mut total_informative = 0usize;

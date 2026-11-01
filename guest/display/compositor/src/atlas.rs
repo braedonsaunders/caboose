@@ -6,7 +6,7 @@ use crate::encode::{Input, Pixels, ShmPicture};
 #[cfg(test)]
 use crate::encode::CpuImage;
 use crate::motion;
-use caboose_display_protocol::atlas::{detect_scroll_copy, encode_atlas_tile, xxh64};
+use caboose_display_protocol::atlas::{detect_scroll_copy_hashed, encode_atlas_tile, xxh64};
 use caboose_display_protocol::{
     AtlasTileFormat, Rect, Size, SurfaceBatch, SurfaceFill, SurfaceTile, SurfaceTileRef,
 };
@@ -152,6 +152,10 @@ pub struct AtlasWindowEncoder {
     pub height: u32,
     pub seq: u64,
     staging: Vec<u8>,
+    /// Row hashes of the shadow over `row_hashes_region`, from the last picture's scroll
+    /// detection: after a picture is encoded the shadow equals it there.
+    row_hashes: Vec<u64>,
+    row_hashes_region: Option<Rect>,
 }
 
 impl AtlasWindowEncoder {
@@ -346,6 +350,9 @@ impl AtlasWindowEncoder {
         }
 
         let mut copies = Vec::new();
+        // Only the next picture scanned over the very same region may reuse its row hashes.
+        let known_region = self.row_hashes_region.take();
+        let known_hashes = std::mem::take(&mut self.row_hashes);
         if !is_keyframe && excluded.is_none() {
             let scroll_candidates = coalesced_scroll_regions(&effective_damage, width as i32, height as i32);
             for cand in scroll_candidates {
@@ -363,7 +370,14 @@ impl AtlasWindowEncoder {
                         );
                         mark_tiles(&mut dirty_tiles, cols, rows, cand);
                     }
-                    if let Some(copy) = detect_scroll_copy(&self.shadow, &self.staging, width, cand) {
+                    let known = (known_region == Some(cand)).then_some(known_hashes.as_slice());
+                    let mut hashes = Vec::new();
+                    let found = detect_scroll_copy_hashed(&self.shadow, &self.staging, width, cand, known, &mut hashes);
+                    if !hashes.is_empty() {
+                        self.row_hashes = hashes;
+                        self.row_hashes_region = Some(cand);
+                    }
+                    if let Some(copy) = found {
                         apply_surface_copy(&mut self.shadow, width, height, copy);
                         copies.push(copy);
                     }
@@ -875,6 +889,33 @@ mod tests {
             .encode_input(1, 2000, rect, w, h, Input::Cpu(&paint_noise_image(w, h, 2)), false, false, Some(&full), None, &cache)
             .unwrap();
         assert_eq!(motion.len(), 12, "every 64x64 tile of the film is video");
+    }
+
+    /// `cargo test -p caboose-display bench_atlas_scroll -- --ignored --nocapture`: a phone-size
+    /// (1179x2556) text picture scrolled 36 rows per picture, damaged whole as Xwayland reports it.
+    #[test]
+    #[ignore]
+    fn bench_atlas_scroll() {
+        let (w, h) = (1179u32, 2556u32);
+        let rect = Rect::new(0, 0, w as i32, h as i32);
+        let full = [rect];
+        let pictures: Vec<CpuImage> = (0..41).map(|i| paint_text_image(w, h, i * 36)).collect();
+        let mut enc = AtlasWindowEncoder::new();
+        let mut cache = AtlasCacheTracker::new();
+        let (b, _) = enc.encode_input(1, 0, rect, w, h, Input::Cpu(&pictures[0]), false, true, None, None, &cache).unwrap();
+        cache.try_record_published_batch(&b.unwrap());
+        let start = std::time::Instant::now();
+        let mut copies = 0;
+        for (i, picture) in pictures.iter().enumerate().skip(1) {
+            let (b, _) = enc
+                .encode_input(1, i as u64, rect, w, h, Input::Cpu(picture), false, false, Some(&full), None, &cache)
+                .unwrap();
+            let b = b.unwrap();
+            copies += b.copies.len();
+            cache.try_record_published_batch(&b);
+        }
+        let per = start.elapsed().as_secs_f64() * 1000.0 / 40.0;
+        println!("atlas scroll 1179x2556: {per:.2} ms per picture, {copies} copies in 40");
     }
 
     #[test]
