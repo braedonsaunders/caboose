@@ -290,7 +290,10 @@ void UploadStore::write() {
              writeFully(fd, piece->key.bytes, kUploadKeyBytes, uint64_t(slot) * kUploadKeyBytes);
         lock.lock();
         const UploadPrefix prefix = piece->key.prefix();
-        if (ok) {
+        if (ok && index_.count(prefix) && index_[prefix].ambiguous) {
+            // Its prefix names two pieces on storage: it stays resolvable from memory.
+            ++packs_[index].used;
+        } else if (ok) {
             ++packs_[index].used;
             index_[prefix] = {index, slot, false};
             pending_.erase(prefix);
@@ -331,13 +334,19 @@ void UploadStore::store(const uint8_t* piece) {
     const UploadKey key = uploadKeyOf(piece);
     const UploadPrefix prefix = key.prefix();
     std::unique_lock<std::mutex> lock(mutex_);
-    if (index_.count(prefix) || pending_.count(prefix)) {
+    // Pieces wait in memory only up to the pending budget; past it, the decoder waits for the
+    // writer, and no piece is ever dropped. A piece that could not be written stays in memory
+    // without counting.
+    changed_.wait(lock, [&] {
+        return index_.count(prefix) || pending_.count(prefix) ||
+               pendingBytes_ + kUploadPieceBytes <= limits_.pendingBytes || stopping_;
+    });
+    // Held already, or stored by another stream while this one waited.
+    const auto held = index_.find(prefix);
+    if ((held != index_.end() && !held->second.ambiguous) || pending_.count(prefix)) {
         ++stats_.duplicates;
         return;
     }
-    // Pieces wait in memory only up to the pending budget; past it, the decoder waits for the
-    // writer. A piece that could not be written stays in memory without counting.
-    changed_.wait(lock, [&] { return pendingBytes_ + kUploadPieceBytes <= limits_.pendingBytes || stopping_; });
     auto pending = std::make_shared<Pending>();
     pending->key = key;
     pending->bytes.assign(piece, piece + kUploadPieceBytes);
@@ -349,38 +358,58 @@ void UploadStore::store(const uint8_t* piece) {
     changed_.notify_all();
 }
 
+void UploadStore::reportUnresolved(const UploadPrefix& prefix, const char* reason) {
+    // Every failure is a device loss for its process: say why, at once, for the first 64.
+    const uint64_t ordinal = ++unresolvedReports_;
+    if (ordinal > 64) return;
+    UploadStoreStats s = stats();
+    char hex[2 * kUploadPrefixBytes + 1];
+    for (size_t i = 0; i < kUploadPrefixBytes; ++i) std::snprintf(hex + 2 * i, 3, "%02x", prefix.bytes[i]);
+    std::fprintf(stderr,
+        "CABOOSE_GPU_UPLOAD_UNRESOLVED prefix=%s reason=%s uploads=%llu stored=%llu duplicates=%llu "
+        "resolved=%llu unresolved=%llu write_failures=%llu%s\n",
+        hex, reason, (unsigned long long)s.pieces, (unsigned long long)s.stored,
+        (unsigned long long)s.duplicates, (unsigned long long)s.resolved, (unsigned long long)s.unresolved,
+        (unsigned long long)s.writeFailures, ordinal == 64 ? " limit=64" : "");
+}
+
 bool UploadStore::resolve(const uint8_t* prefixBytes, uint8_t* out) {
     UploadPrefix prefix;
     std::memcpy(prefix.bytes, prefixBytes, kUploadPrefixBytes);
     int fd = -1;
     uint32_t slot = 0;
+    const char* failure = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto waiting = pending_.find(prefix);
+        const auto it = index_.find(prefix);
         if (waiting != pending_.end()) {
             std::memcpy(out, waiting->second->bytes.data(), kUploadPieceBytes);
             ++stats_.resolved;
             return true;
         }
-        const auto it = index_.find(prefix);
         if (it == index_.end() || it->second.ambiguous) {
             ++stats_.unresolved;
-            return false;
-        }
-        Pack& pack = packs_[it->second.pack];
-        fd = pack.fd;
-        slot = it->second.slot;
-        if (!pack.touched) {
-            // Used this run: the pack is among the most recently used when the store next opens.
-            pack.touched = true;
-            futimens(fd, nullptr);
+            failure = it == index_.end() ? "absent" : "ambiguous";
+        } else {
+            Pack& pack = packs_[it->second.pack];
+            fd = pack.fd;
+            slot = it->second.slot;
+            if (!pack.touched) {
+                // Used this run: the pack is among the most recently used when the store next opens.
+                pack.touched = true;
+                futimens(fd, nullptr);
+            }
         }
     }
-    const bool ok = readFully(fd, out, kUploadPieceBytes, kTableBytes + uint64_t(slot) * kUploadPieceBytes) &&
-                    uploadKeyOf(out).prefix() == prefix;
-    std::lock_guard<std::mutex> lock(mutex_);
-    ++(ok ? stats_.resolved : stats_.unresolved);
-    return ok;
+    if (!failure) {
+        if (!readFully(fd, out, kUploadPieceBytes, kTableBytes + uint64_t(slot) * kUploadPieceBytes)) failure = "unreadable";
+        else if (!(uploadKeyOf(out).prefix() == prefix)) failure = "damaged";
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++(failure ? stats_.unresolved : stats_.resolved);
+    }
+    if (failure) reportUnresolved(prefix, failure);
+    return !failure;
 }
 
 void UploadStore::drain() {
