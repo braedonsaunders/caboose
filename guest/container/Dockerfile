@@ -98,7 +98,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons && \
     (cd /tmp/themes/WhiteSur-cursors && ./install.sh) && \
     mkdir -p /etc/xdg/gtk-3.0 /etc/chromium.d && \
-    printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
+    printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-decoration-layout=:\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
     printf 'CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"\n' > /etc/chromium.d/caboose-gpu && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*

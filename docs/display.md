@@ -68,8 +68,12 @@ memory.
 GTK 3 ordinary windows use the KDE server-decoration default; xdg-decoration
 clients are configured for server-side decorations. Both leave their window controls
 to Caboose. The launch environment sets `GTK_CSD=0` for the X11 GTK fallback.
-Application-supplied headerbars and menus remain content: their controls cannot be
-safely removed by cropping the picture.
+Application-supplied headerbars and menus remain content, but the window-button layout
+is empty (`:`) everywhere toolkits read it: the desktop portal's
+`org.gnome.desktop.wm.preferences` `button-layout`, the GSettings default, and
+`gtk-decoration-layout` in the GTK settings files. GTK 3 and 4 headerbars, libadwaita,
+Firefox, and Chromium's and Electron's window-controls overlay (VS Code) therefore draw no
+minimize, maximize or close buttons. Qt asks for server-side decorations and draws none.
 
 ## Hosts and encoders
 
