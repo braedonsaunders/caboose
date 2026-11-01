@@ -32,4 +32,37 @@ final class LiveGPUDrawableGeometryTests: XCTestCase {
         }
         XCTAssertNil(LiveGPUDrawableGeometry.extent(serverPixels: CGSize(width: 640, height: 480), visibleBounds: .zero))
     }
+    func testPictureOfTheWindowsShapeFillsIt() {
+        let bounds = CGRect(x: 0, y: 0, width: 669, height: 456)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1338, height: 912), in: bounds, fill: false), bounds)
+        // Rounding of the two sizes is not a shape.
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1338, height: 911), in: bounds, fill: false), bounds)
+    }
+    func testKeptResolutionFitsTheGrownWindowCentred() {
+        // A game kept at 1338x911 after a fold opened its window to 1902x1338 (951x669 pt).
+        let bounds = CGRect(x: 0, y: 0, width: 951, height: 669)
+        let placed = LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1338, height: 911), in: bounds, fill: false)
+        XCTAssertEqual(placed.width, 951, accuracy: 0.001)
+        XCTAssertEqual(placed.height, 647.5, accuracy: 0.1)
+        XCTAssertEqual(placed.midX, bounds.midX, accuracy: 0.001)
+        XCTAssertEqual(placed.midY, bounds.midY, accuracy: 0.001)
+        XCTAssertGreaterThan(placed.minY, 0)
+    }
+    func testTallPictureIsPillarboxed() {
+        let bounds = CGRect(x: 10, y: 20, width: 800, height: 450)
+        let placed = LiveGPUDrawableGeometry.placement(picture: CGSize(width: 600, height: 900), in: bounds, fill: false)
+        XCTAssertEqual(placed, CGRect(x: 260, y: 20, width: 300, height: 450))
+    }
+    func testFullScreenWindowIsFilledWhateverTheShape() {
+        let bounds = CGRect(x: 0, y: 0, width: 951, height: 669)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1338, height: 911), in: bounds, fill: true), bounds)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 1920, height: 1080), in: bounds, fill: true), bounds)
+    }
+    func testMissingPictureOrBoundsFillsWithoutInventingAShape() {
+        let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: .zero, in: bounds, fill: false), bounds)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: CGFloat.nan, height: 1), in: bounds, fill: false), bounds)
+        XCTAssertEqual(LiveGPUDrawableGeometry.placement(picture: CGSize(width: 4, height: 3), in: .zero, fill: false), .zero)
+    }
 }
+

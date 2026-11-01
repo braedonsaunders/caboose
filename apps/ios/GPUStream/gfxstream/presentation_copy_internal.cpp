@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_copy_internal.h"
 #include "framelab_timing.h"
+#include "presentation_placement.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <memory>
@@ -64,10 +65,15 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         region.dstSubresource = region.srcSubresource;
         region.extent = objects.extent;
         VkImageCopy shown = region;
+        PresentationPlacement placement;
         if (destinationExtent) {
-            shown.extent.width = std::min(objects.extent.width, destinationExtent->width);
-            shown.extent.height = std::min(objects.extent.height, destinationExtent->height);
-            if (shown.extent.width < destinationExtent->width || shown.extent.height < destinationExtent->height) {
+            placement = placePresentation(objects.extent.width, objects.extent.height,
+                                          destinationExtent->width, destinationExtent->height);
+            shown.extent.width = placement.copyWidth;
+            shown.extent.height = placement.copyHeight;
+            if (placement.kind == PresentationPlacement::Kind::scale && !vk->vkCmdBlitImage)
+                return VK_ERROR_INITIALIZATION_FAILED;
+            if (placement.clear) {
                 if (!vk->vkCmdClearColorImage) return VK_ERROR_INITIALIZATION_FAILED;
                 const VkClearColorValue black{};
                 vk->vkCmdClearColorImage(commandBuffer, destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -78,8 +84,19 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &cleared, 0, nullptr, 0, nullptr);
             }
         }
-        vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &shown);
+        if (placement.kind == PresentationPlacement::Kind::scale) {
+            VkImageBlit blit{};
+            blit.srcSubresource = region.srcSubresource;
+            blit.dstSubresource = region.dstSubresource;
+            blit.srcOffsets[1] = {int32_t(objects.extent.width), int32_t(objects.extent.height), 1};
+            blit.dstOffsets[0] = {placement.x, placement.y, 0};
+            blit.dstOffsets[1] = {placement.x + int32_t(placement.width), placement.y + int32_t(placement.height), 1};
+            vk->vkCmdBlitImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        } else {
+            vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                destination, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &shown);
+        }
         if (capture) {
             vk->vkCmdCopyImage(commandBuffer, objects.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 capture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
