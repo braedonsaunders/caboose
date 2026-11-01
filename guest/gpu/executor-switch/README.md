@@ -53,7 +53,9 @@ make                 # libVkLayer_caboose_executor_switch.so and test_executor_s
 ```
 
 `test_policy` checks the decisions apart from Vulkan (`policy.h`). Both need a C++17
-compiler and the Vulkan headers and loader. The test also needs
+compiler and the Vulkan headers and loader. `make CXX=i686-linux-gnu-g++` and
+`CXX=i686-linux-gnu-g++ ./check.sh` build and check the layer for i386, for 32-bit
+applications, with the i386 loader and lavapipe installed. The test also needs
 lavapipe (`mesa-vulkan-drivers`). The test creates a lavapipe device and renders, then
 binds a socket at `CABOOSE_GFXSTREAM_SOCKET`. It requires submits and waits to report
 device loss within 500 ms. It then requires a CPU device created while the socket
@@ -65,7 +67,9 @@ appear, and disappear when the device is destroyed.
 
 Install `libVkLayer_caboose_executor_switch.so` in `/usr/local/lib/caboose-gpu-live/`
 and `implicit_layer.json` as
-`/usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json`. The layer is
+`/usr/local/share/vulkan/implicit_layer.d/caboose_executor_switch.json`, or let
+`guest/gpu/install-live.py --executor-switch` do it, which also installs an i386 build as
+`VK_LAYER_CABOOSE_executor_switch_32` in `/usr/local/lib/caboose-gpu-live/i386/`. The layer is
 active only in processes with `CABOOSE_GPU_EXECUTOR_SWITCH=1`, which the display
 session sets with the GPU socket environment. `CABOOSE_GPU_EXECUTOR_SWITCH_DISABLE=1`
 turns it off.

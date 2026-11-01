@@ -243,7 +243,13 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     }
     // The toolkit settings replace the seat's defaults.
     env.retain(|(k, _)| !GPU_LIVE_TOOLKIT_ENV.iter().any(|(t, _)| t == k) && !GPU_LIVE_REMOVED_ENV.contains(&k.as_str()));
-    env.push(("VK_ADD_DRIVER_FILES".into(), icd.display().to_string()));
+    // The driver for 32-bit applications, where installed, beside it: each process's loader
+    // passes over the manifest whose library is of the other architecture.
+    let mut drivers = icd.display().to_string();
+    if let Some(icd32) = icd.parent().map(|d| d.join("i386").join("icd.json")).filter(|p| p.is_file()) {
+        drivers = format!("{drivers}:{}", icd32.display());
+    }
+    env.push(("VK_ADD_DRIVER_FILES".into(), drivers));
     env.push(("CABOOSE_GFXSTREAM_SOCKET".into(), stream.display().to_string()));
     env.push(("CABOOSE_GFXSTREAM_SURFACE_SOCKET".into(), surface.display().to_string()));
     // Steam's container runtime (pressure-vessel) shares only the paths it is told to.
@@ -931,6 +937,23 @@ mod tests {
         apply_gpu_live(&mut env, &config(GPU_ARGS), std::path::Path::new("/nonexistent/icd.json"));
         assert_eq!(env, before);
         std::fs::remove_file(&icd).unwrap();
+    }
+
+    #[test]
+    fn the_gpu_seat_also_names_the_driver_for_32_bit_applications() {
+        let dir = std::env::temp_dir().join(format!("caboose-icd32-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("i386")).unwrap();
+        let icd = dir.join("icd.json");
+        std::fs::write(&icd, "{}").unwrap();
+        let mut env = Vec::new();
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str(), "only drivers that are installed");
+        std::fs::write(dir.join("i386/icd.json"), "{}").unwrap();
+        let mut env = Vec::new();
+        apply_gpu_live(&mut env, &config(GPU_ARGS), &icd);
+        let expected = format!("{}:{}", icd.display(), dir.join("i386/icd.json").display());
+        assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), Some(expected.as_str()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn tempfile_icd() -> std::path::PathBuf {

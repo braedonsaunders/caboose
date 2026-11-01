@@ -10,7 +10,7 @@ calls it makes. The design, the relay in caboose-display and the protocol are in
 | `caboose-gpu-run` | The launcher (Python 3, no dependencies) |
 | `build.sh` | Builds the driver and layers it loads, from pinned sources |
 | `profile.json` | The client GPU the application is shown (Khronos profiles format) |
-| `install-live.py` | Installs the live GPU broker, with `--driver` the phone's Vulkan driver and with `--executor-switch` the executor-switch layer ([docs/gpu-live.md](../../docs/gpu-live.md#applications)) |
+| `install-live.py` | Installs the live GPU broker, with `--driver` the phone's Vulkan driver, with `--executor-switch` and `--routing-layer` its layers, each 64-bit or i386 by the library ([docs/gpu-live.md](../../docs/gpu-live.md#applications)) |
 | `check-apps.sh`, `socket-recorder.py` | The application routing check below |
 | `executor-switch/` | Implicit Vulkan layer that moves applications from lavapipe back onto the phone's GPU when its executor returns ([README](executor-switch/README.md)) |
 | `background-check/` | Checks that Chromium's media plays on through the phone app's background and foreground ([README](background-check/README.md)) |
