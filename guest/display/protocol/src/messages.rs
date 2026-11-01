@@ -66,7 +66,7 @@ string_enum!(
 string_enum!(Codec { Hevc => "hevc", Av1 => "av1", H264 => "h264", Vp9 => "vp9" });
 string_enum!(
     /// Where a video stream comes from (docs/display.md, "Video, for every app").
-    VideoSource { Passthrough => "passthrough", Surface => "surface", Motion => "motion" }
+    VideoSource { Passthrough => "passthrough", Surface => "surface" }
 );
 string_enum!(TileFormat { Png => "png", WebpLossless => "webp-lossless" });
 string_enum!(
@@ -633,8 +633,6 @@ pub struct ClientHello {
     pub webview: bool,
     /// The client renders Vulkan streams itself (docs/gpu-stream.md). Sent only when true.
     pub gpu: bool,
-    /// The client accepts half-resolution motion streams.
-    pub scaled_motion: bool,
     /// The client offers its hardware as devices (docs/devices.md). Sent only when true.
     pub devices: bool,
     /// The client places pictures by toolkit scroll reports (`scroll.tree`). Sent only when true.
@@ -678,8 +676,6 @@ pub struct VideoCreate {
     /// Out-of-band codec configuration, only for a codec whose parameters cannot travel
     /// in band.
     pub extradata: Option<Vec<u8>>,
-    /// This motion stream is encoded at half the region's width and height.
-    pub scaled: bool,
 }
 
 /// `video.frame` (0x13): one access unit, in decode order.
@@ -689,8 +685,8 @@ pub struct VideoFrame {
     /// Decode order, starting at 0 for each stream and increasing by one.
     pub seq: u64,
     pub keyframe: bool,
-    /// When to show it (server CLOCK_MONOTONIC). Present for `surface` and `motion`
-    /// streams, whose frames are shown as decoded; absent for `passthrough`, whose
+    /// When to show it (server CLOCK_MONOTONIC). Present for `surface` streams, whose
+    /// frames are shown as decoded; absent for `passthrough`, whose
     /// frames are shown when `video.present` names them.
     pub pts_us: Option<u64>,
     /// Annex-B for h264/hevc (parameter sets on keyframes), a temporal unit of OBUs for
@@ -1481,7 +1477,6 @@ impl Message {
                     }),
                 )
                 .opt("extradata", m.extradata.clone())
-                .opt("scaled", m.scaled.then_some(true))
                 .build(),
             Message::VideoFrame(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -1677,7 +1672,6 @@ impl Message {
                 .opt("wasm", m.wasm.then_some(true))
                 .opt("webview", m.webview.then_some(true))
                 .opt("gpu", m.gpu.then_some(true))
-                .opt("scaled_motion", m.scaled_motion.then_some(true))
                 .opt("devices", m.devices.then_some(true))
                 .opt("scroll", m.scroll.then_some(true))
                 .opt("targets", m.targets.then_some(true))
@@ -1965,7 +1959,6 @@ impl Message {
                     }
                 },
                 extradata: f.opt_bytes("extradata")?,
-                scaled: f.opt_bool("scaled")?.unwrap_or(false),
             }),
             VIDEO_FRAME => Message::VideoFrame(VideoFrame {
                 id: f.u64("id")?,
@@ -2039,7 +2032,6 @@ impl Message {
                 wasm: f.opt_bool("wasm")?.unwrap_or(false),
                 webview: f.opt_bool("webview")?.unwrap_or(false),
                 gpu: f.opt_bool("gpu")?.unwrap_or(false),
-                scaled_motion: f.opt_bool("scaled_motion")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
                 scroll: f.opt_bool("scroll")?.unwrap_or(false),
                 targets: f.opt_bool("targets")?.unwrap_or(false),

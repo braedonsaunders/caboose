@@ -36,7 +36,6 @@ OPTIONS:
                            DIR/stream-<n>.cdl, each draw.present in it as a present op
                            naming the window, for caboose-draw-replay (guest/draw)
     --zero-video           advertise no window video decoders and enable --atlas
-    --scaled-motion        accept half-resolution motion streams
     --audio                play the computer's sound (decoded and measured, not heard)
     --wasm                 run games handed off to the client (reports game.create and
                            game.destroy; a game's window is a target like any other)
@@ -100,7 +99,6 @@ struct Args {
     atlas: bool,
     scene: bool,
     draw: Option<PathBuf>,
-    scaled_motion: bool,
     audio: bool,
     wasm: bool,
     gpu_save: Option<PathBuf>,
@@ -165,7 +163,6 @@ fn parse_args() -> Result<Args, String> {
         atlas: false,
         scene: false,
         draw: None,
-        scaled_motion: false,
         audio: false,
         wasm: false,
         gpu_save: None,
@@ -215,7 +212,6 @@ fn parse_args() -> Result<Args, String> {
                 a.decoders.clear();
             }
             "--audio" => a.audio = true,
-            "--scaled-motion" => a.scaled_motion = true,
             "--wasm" => a.wasm = true,
             "--gpu-save" => a.gpu_save = Some(value()?.into()),
             "--clipboard-types" => a.clipboard_types = Some(value()?.split(',').map(str::to_owned).collect()),
@@ -541,7 +537,6 @@ struct VideoStats {
     clip: Option<proto::Rect>,
     codec: Codec,
     source: proto::VideoSource,
-    scaled: bool,
     size: Option<(u32, u32)>,
     frames: u64,
     bytes: u64,
@@ -885,7 +880,6 @@ fn run(args: Args) -> Result<bool, String> {
             wasm: args.wasm,
             webview: false,
             gpu: args.gpu_save.is_some(),
-            scaled_motion: args.scaled_motion,
             clipboard_types: args.clipboard_types.clone(),
             atlas: args.atlas,
             scene: args.scene,
@@ -1438,7 +1432,6 @@ fn run(args: Args) -> Result<bool, String> {
                             clip: c.clip,
                             codec: c.codec,
                             source: c.source,
-                            scaled: c.scaled,
                             size: None,
                             frames: 0,
                             bytes: 0,
@@ -1642,11 +1635,10 @@ fn run(args: Args) -> Result<bool, String> {
             videos
                 .iter()
                 .map(|(id, v)| format!(
-                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"source\":{:?},\"scaled\":{},\"size\":{},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"bytes\":{},\"timed\":{},\"keyframe_first\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
+                    "{{\"id\":{id},\"window\":{},\"codec\":{:?},\"source\":{:?},\"size\":{},\"rect\":[{},{},{},{}],\"clip\":{},\"frames\":{},\"bytes\":{},\"timed\":{},\"keyframe_first\":{},\"keyframes\":{},\"decoded\":{},\"decode_errors\":{},\"presents\":{},\"unknown_presents\":{},\"last_present\":{},\"destroyed\":{}}}",
                     v.window,
                     v.codec.as_str(),
                     v.source.as_str(),
-                    v.scaled,
                     v.size.map(|(w,h)| format!("[{w},{h}]")).unwrap_or("null".into()),
                     v.rect.x,
                     v.rect.y,

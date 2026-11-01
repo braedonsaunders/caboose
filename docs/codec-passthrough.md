@@ -28,7 +28,7 @@ from uncovered video; tolerance-based gray matching also loses translucent edges
 color conversions and scaled/cropped samples. Recognition is not a composition mask.
 
 Local decode gives the application real video pixels before it draws controls,
-subtitles and menus. The ordinary window/motion paths carry that complete composition;
+subtitles and menus. The ordinary window picture carries that complete composition;
 the iOS window texture stays opaque and does not punch holes based on gray pixels.
 There is no marker-mask wire message or enabled phone passthrough path. The socket
 and experimental rebuilder/capture machinery below remain available for isolated tests.
@@ -171,8 +171,7 @@ subtitles the app draws over the video area are hidden while the stream is shown
 
 A stream falls back to local decoding: the driver decodes its own rebuilt bitstream with
 libavcodec into the app's surfaces, so the app has an ordinary decoder and the compositor
-sees ordinary video, which stays in the window picture or becomes a detected `motion`
-stream.
+sees ordinary video, which stays in the window picture.
 The switch happens:
 
 - **When the app reads pixels back** through VA: `vaGetImage`, or mapping a `vaDeriveImage`
@@ -226,4 +225,4 @@ debugging.
 - **Imported surfaces must be linear.** Apps that allocate their own buffers (Chromium on
   some GPUs) and hand tiled ones to `vaCreateSurfaces` are refused, and decode in software.
 - **Chromium needs a DRM render node** to open VA at all, so on hosts without one (`none`,
-  WSL) Chromium's video stays in the window picture or becomes a `motion` stream.
+  WSL) Chromium's video stays in the window picture.

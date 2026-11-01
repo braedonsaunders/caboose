@@ -30,8 +30,6 @@ OPTIONS:
     --renderer KIND        pixman [default: pixman]
     --always-compose       compose every window, never copy a shm buffer directly (for
                            comparisons)
-    --no-motion            keep regions that update at video rates in the window picture
-                           instead of sending them as their own video stream
     --client-timeout SECS  close a client that has sent nothing for this long; 0 = never
                            [default: 30]
     --encoder KIND         auto | software | nvenc [default: auto]
@@ -106,8 +104,6 @@ pub struct Config {
     pub env_file: Option<PathBuf>,
     pub renderer: RendererChoice,
     pub always_compose: bool,
-    /// Send regions that update at video rates as their own video stream.
-    pub motion: bool,
     /// Close a client that has sent nothing for this long.
     pub client_timeout: Option<std::time::Duration>,
     pub encoder: Choice,
@@ -135,7 +131,6 @@ impl Default for Config {
             env_file: None,
             renderer: RendererChoice::Pixman,
             always_compose: false,
-            motion: true,
             client_timeout: Some(std::time::Duration::from_secs(30)),
             encoder: Choice::Auto,
             settings: Settings::default(),
@@ -224,7 +219,6 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
                     DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
             }
             "--always-compose" => config.always_compose = true,
-            "--no-motion" => config.motion = false,
             "--client-timeout" => {
                 let secs: u64 = number(value(&mut args, &arg)?, &arg)?;
                 config.client_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));

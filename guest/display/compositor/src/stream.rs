@@ -14,12 +14,11 @@
 //!   window that has not changed by then gets one more picture of the same content,
 //!   sharper, under the same limits (a change first sharpens along the way);
 //! - an alpha window (a popup) is sent only as RGBA tiles, under the same flow control,
-//!   and has no encoder, sharpening, motion stream or marker detection.
+//!   and has no encoder, sharpening or marker detection.
 
 use crate::atlas::{AtlasCacheTracker, AtlasWindowEncoder};
 use crate::encode::alpha::AlphaTiler;
 use crate::encode::{Backend, CpuImage, Encoder, Input, Pixels, Settings, ShmPicture};
-use crate::motion;
 use crate::render::Canvas;
 use caboose_display_protocol::{Codec, Rect, SurfaceBatch};
 use smithay::reexports::calloop::channel::Sender;
@@ -57,83 +56,8 @@ pub struct Job {
     pub crop: Rect,
     pub backend: Backend,
     pub settings: Settings,
-    /// The window's motion region, encoded as its own stream and left out of the window
-    /// picture.
-    pub motion: Option<MotionJob>,
-    /// This picture puts the region of the motion stream with this id back into the
-    /// window picture (its damage covers the region); the stream ends with it.
-    pub ends_motion: Option<u64>,
     /// The picture's `frame.input_seq`.
     pub input_seq: Option<u64>,
-}
-
-pub struct MotionJob {
-    pub id: u64,
-    /// Picture pixels, even.
-    pub rect: Rect,
-    pub keyframe: bool,
-    pub scaled: bool,
-}
-
-/// Box-filter a motion crop to half resolution. Damage remains in source coordinates;
-/// the small picture is rebuilt on each motion update so edge blocks cannot go stale.
-fn half_motion(src: &[u8], stride: usize, width: usize, height: usize) -> Result<CpuImage, String> {
-    if width == 0
-        || height == 0
-        || width % 4 != 0
-        || height % 4 != 0
-        || stride < width * 4
-        || src.len() < (height - 1) * stride + width * 4
-    {
-        return Err("invalid motion crop".into());
-    }
-    let mut out = CpuImage::new((width / 2) as u32, (height / 2) as u32);
-    for y in 0..height / 2 {
-        for x in 0..width / 2 {
-            for c in 0..4 {
-                let i = y * 2 * stride + x * 8 + c;
-                let sum = src[i] as u32 + src[i + 4] as u32 + src[i + stride] as u32 + src[i + stride + 4] as u32;
-                out.data[y * out.stride + x * 4 + c] = ((sum + 2) / 4) as u8;
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn scaled_motion(job: &Job, rect: Rect) -> Result<CpuImage, String> {
-    let (x, y, w, h) = (rect.x as usize, rect.y as usize, rect.w as usize, rect.h as usize);
-    if rect.x < 0 || rect.y < 0 || rect.w <= 0 || rect.h <= 0 {
-        return Err("invalid motion crop".into());
-    }
-    match &job.shm {
-        None => {
-            if x + w > job.image.width as usize || y + h > job.image.height as usize {
-                return Err("motion crop outside image".into());
-            }
-            half_motion(&job.image.data[y * job.image.stride + x * 4..], job.image.stride, w, h)
-        }
-        Some(shm) => smithay::wayland::shm::with_buffer_contents(&shm.buffer, |ptr, len, data| {
-            let sx = shm.x as i64 + rect.x as i64;
-            let sy = shm.y as i64 + rect.y as i64;
-            if sx < 0
-                || sy < 0
-                || sx + rect.w as i64 > data.width as i64
-                || sy + rect.h as i64 > data.height as i64
-                || data.stride <= 0
-                || data.offset < 0
-            {
-                return Err("motion crop outside shm".into());
-            }
-            let start = data.offset as usize + sy as usize * data.stride as usize + sx as usize * 4;
-            if start > len {
-                return Err("motion crop outside shm pool".into());
-            }
-            // SAFETY: Smithay maps the pool for the duration of this closure.
-            let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-            half_motion(&bytes[start..], data.stride as usize, w, h)
-        })
-        .map_err(|e| format!("shm buffer: {e:?}"))?,
-    }
 }
 
 /// The worker's answer: the encoded pictures (or why not) and the image back for reuse.
@@ -144,15 +68,10 @@ pub struct Done {
     pub generation: u64,
     pub pts_us: u64,
     pub image: CpuImage,
-    /// The window picture; `None` when nothing changed outside the motion region.
+    /// The window picture; `None` when there is none to send.
     pub result: Option<Result<Encoded, String>>,
     pub rect: Rect,
     pub crop: Rect,
-    /// What really changed, window and motion region together (picture pixels).
-    pub changed: Vec<Rect>,
-    /// The motion region's picture, when it changed.
-    pub motion: Option<(u64, Result<Encoded, String>)>,
-    pub ends_motion: Option<u64>,
     pub input_seq: Option<u64>,
     /// Small changes sent as lossless tiles instead of a window picture.
     pub tiles: Option<TilesDone>,
@@ -227,83 +146,13 @@ fn thread_cpu_us() -> u64 {
 #[derive(Default)]
 struct Encoders {
     window: Option<(Backend, Box<dyn Encoder>)>,
-    /// For the motion stream with this id, at this rectangle.
-    motion: Option<(u64, Rect, Box<dyn Encoder>)>,
     /// An alpha window's shadow of what the client shows, at the picture size.
     alpha: Option<AlphaTiler>,
     /// Surface Atlas encoder for `job.atlas` mode.
     atlas: Option<AtlasWindowEncoder>,
 }
 
-/// Encodes `job.motion` (if present) into `done.motion` and appends motion-region changes to `done.changed`.
-fn encode_motion(job: &Job, done: &mut Done, encoders: &mut Encoders, motion_damage: Option<Vec<Rect>>) {
-    match &job.motion {
-        None if !job.refine => encoders.motion = None,
-        None => {}
-        Some(m) => {
-            let matches = encoders.motion.as_ref().is_some_and(|(id, r, _)| *id == m.id && *r == m.rect);
-            let mut motion_fresh = false;
-            if !matches {
-                // Sharpening is for still pictures; video is never still long enough.
-                let settings = Settings { refine_qp: 0, ..job.settings.clone() };
-                let divisor = if m.scaled { 2 } else { 1 };
-                encoders.motion =
-                    match job.backend.create(m.rect.w as u32 / divisor, m.rect.h as u32 / divisor, &settings) {
-                        Ok(e) => Some((m.id, m.rect, e)),
-                        Err(e) => {
-                            done.motion = Some((m.id, Err(format!("cannot open {}: {e}", job.backend.describe()))));
-                            None
-                        }
-                    };
-                motion_fresh = true;
-            }
-            let motion_key = m.keyframe || motion_fresh;
-            let region_damage = motion_damage.unwrap_or_default();
-            if let Some((_, _, enc)) = encoders.motion.as_mut().filter(|_| motion_key || !region_damage.is_empty()) {
-                let shm = job.shm.as_ref().map(|s| ShmPicture {
-                    buffer: s.buffer.clone(),
-                    x: s.x + m.rect.x,
-                    y: s.y + m.rect.y,
-                });
-                let scaled = if m.scaled {
-                    match scaled_motion(job, m.rect) {
-                        Ok(image) => Some(image),
-                        Err(e) => {
-                            done.motion = Some((m.id, Err(e)));
-                            encoders.motion = None;
-                            return;
-                        }
-                    }
-                } else {
-                    None
-                };
-                let input = match (&scaled, &shm) {
-                    (Some(image), _) => Input::Cpu(image),
-                    (None, Some(shm)) => Input::Shm(shm),
-                    (None, None) => Input::CpuAt(&job.image, m.rect.x as u32, m.rect.y as u32),
-                };
-                let damage = (!motion_key && !m.scaled).then_some(region_damage.as_slice());
-                let (result, changed) = encode_with(enc.as_mut(), input, motion_key, damage, false);
-                if result.is_err() {
-                    encoders.motion = None;
-                } else {
-                    let changed = if m.scaled {
-                        region_damage.clone()
-                    } else {
-                        changed.unwrap_or_else(|| {
-                            damage.map_or_else(|| vec![Rect::new(0, 0, m.rect.w, m.rect.h)], <[Rect]>::to_vec)
-                        })
-                    };
-                    done.changed.extend(changed.iter().map(|r| Rect::new(r.x + m.rect.x, r.y + m.rect.y, r.w, r.h)));
-                }
-                done.motion = Some((m.id, result));
-            }
-        }
-    }
-}
-
-/// Encodes a window picture into a `SurfaceBatch` (and optional motion stream + marker detection)
-/// without ever opening a base video encoder (`libx264`/`libx265`/`nvenc`).
+/// Encodes a window picture into a `SurfaceBatch` (and marker detection) without ever opening a base video encoder (`libx264`/`libx265`/`nvenc`).
 fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
     let mut done = Done {
         hits: job.detect.then(|| detect(&job)),
@@ -314,9 +163,6 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
         result: None,
         rect: job.rect,
         crop: job.crop,
-        changed: Vec::new(),
-        motion: None,
-        ends_motion: job.ends_motion,
         tiles: None,
         surface_batch: None,
         input_seq: job.input_seq,
@@ -327,7 +173,6 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
     let cpu0 = thread_cpu_us();
     let width = job.crop.w.max(0) as u32;
     let height = job.crop.h.max(0) as u32;
-    let excluded = job.motion.as_ref().map(|m| m.rect);
     let input = match &job.shm {
         Some(shm) => Input::Shm(shm),
         None => Input::Cpu(&job.image),
@@ -347,7 +192,6 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
                 job.alpha,
                 job.keyframe,
                 job.damage.as_deref(),
-                excluded,
                 &guard,
             );
             (epoch, res)
@@ -364,14 +208,12 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
                 job.alpha,
                 job.keyframe,
                 job.damage.as_deref(),
-                excluded,
                 &fallback_cache,
             ),
         ),
     };
     match batch_res {
-        Ok((Some(batch), changed)) => {
-            done.changed = changed;
+        Ok(Some(batch)) => {
             if tracing::enabled!(tracing::Level::DEBUG) {
                 let damage = job.damage.as_deref().unwrap_or_default();
                 let area: i64 = damage.iter().map(|r| r.w as i64 * r.h as i64).sum();
@@ -393,26 +235,12 @@ fn work_atlas(job: Job, encoders: &mut Encoders) -> Done {
             }
             done.surface_batch = Some((batch, thread_cpu_us().saturating_sub(cpu0), atlas_epoch));
         }
-        Ok((None, changed)) => {
-            done.changed = changed;
-        }
+        Ok(None) => {}
         Err(e) => {
             encoders.atlas = None;
             done.result = Some(Err(e));
         }
     }
-    let motion_damage = job.motion.as_ref().map(|m| {
-        let full = Rect::new(0, 0, width as i32, height as i32);
-        let all = match &job.damage {
-            Some(d) if !job.keyframe => d.as_slice(),
-            _ => std::slice::from_ref(&full),
-        };
-        all.iter()
-            .filter_map(|r| motion::intersect(*r, m.rect))
-            .map(|r| Rect::new(r.x - m.rect.x, r.y - m.rect.y, r.w, r.h))
-            .collect::<Vec<_>>()
-    });
-    encode_motion(&job, &mut done, encoders, motion_damage);
     done.image = job.image;
     done
 }
@@ -429,15 +257,11 @@ fn work_alpha(job: Job, encoders: &mut Encoders) -> Done {
         result: None,
         rect: job.rect,
         crop: job.crop,
-        changed: Vec::new(),
-        motion: None,
-        ends_motion: None,
         tiles: None,
         surface_batch: None,
         input_seq: job.input_seq,
     };
     encoders.window = None;
-    encoders.motion = None;
     encoders.atlas = None;
     if encoders.alpha.as_ref().is_none_or(|t| t.size() != size) {
         encoders.alpha = Some(AlphaTiler::new(size.0, size.1));
@@ -451,7 +275,6 @@ fn work_alpha(job: Job, encoders: &mut Encoders) -> Done {
         });
     match tiles {
         Ok(tiles) => {
-            done.changed = tiles.iter().map(|(r, _)| *r).collect();
             done.tiles = Some(TilesDone { tiles, refine_in_ms: None, cpu_us: thread_cpu_us().saturating_sub(cpu0) });
         }
         Err(e) => {
@@ -471,25 +294,19 @@ fn encode_with(
     keyframe: bool,
     damage: Option<&[Rect]>,
     refine: bool,
-) -> (Result<Encoded, String>, Option<Vec<Rect>>) {
+) -> Result<Encoded, String> {
     let cpu0 = thread_cpu_us();
     let start = Instant::now();
     let result = if refine { enc.refine() } else { enc.encode(input, keyframe, damage) };
-    match result {
-        Ok(p) => (
-            Ok(Encoded {
-                codec: enc.codec(),
-                keyframe: p.keyframe,
-                data: p.data,
-                encode_us: start.elapsed().as_micros() as u64,
-                cpu_us: thread_cpu_us().saturating_sub(cpu0),
-                refine_in_ms: p.refine_in_ms,
-                refined: refine,
-            }),
-            p.changed,
-        ),
-        Err(e) => (Err(e.to_string()), None),
-    }
+    result.map_err(|e| e.to_string()).map(|p| Encoded {
+        codec: enc.codec(),
+        keyframe: p.keyframe,
+        data: p.data,
+        encode_us: start.elapsed().as_micros() as u64,
+        cpu_us: thread_cpu_us().saturating_sub(cpu0),
+        refine_in_ms: p.refine_in_ms,
+        refined: refine,
+    })
 }
 
 fn work(job: Job, encoders: &mut Encoders) -> Done {
@@ -512,9 +329,6 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         result: None,
         rect: job.rect,
         crop: job.crop,
-        changed: Vec::new(),
-        motion: None,
-        ends_motion: job.ends_motion,
         input_seq: job.input_seq,
         tiles: None,
         surface_batch: None,
@@ -540,34 +354,14 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
         fresh = true;
     }
     done.hits = job.detect.then(|| detect(&job));
-    if !job.refine {
-        encoders.window.as_mut().unwrap().1.exclude(job.motion.as_ref().map(|m| m.rect));
-    }
     let keyframe = job.keyframe || fresh;
     let damage = if fresh { None } else { job.damage.clone() };
-    let full = Rect::new(0, 0, size.0 as i32, size.1 as i32);
-    // With a motion region, the window picture leaves it out, and the region is its own
-    // picture (in its own coordinates).
-    let (window_damage, motion_damage) = match &job.motion {
-        None => (damage, None),
-        Some(m) => {
-            let all = damage.unwrap_or_else(|| vec![full]);
-            let window = all.iter().flat_map(|r| motion::subtract(*r, m.rect)).collect();
-            let region = all
-                .iter()
-                .filter_map(|r| motion::intersect(*r, m.rect))
-                .map(|r| Rect::new(r.x - m.rect.x, r.y - m.rect.y, r.w, r.h))
-                .collect::<Vec<_>>();
-            (Some(window), Some(region))
-        }
-    };
+    let window_damage = damage;
     let mut window_needed = job.refine || keyframe || window_damage.as_ref().is_none_or(|d| !d.is_empty());
     // A small change goes as tiles: a few lossless PNGs cost far less than coding the
-    // whole picture. Not for a picture that ends a motion stream: the client keeps the
-    // stream until a frame repaints its region.
+    // whole picture.
     let tile_max_px = job.settings.tile_max_px;
-    if let (true, false, false, None, Some(d)) =
-        (window_needed && tile_max_px > 0, job.refine, keyframe, job.ends_motion, window_damage.as_ref())
+    if let (true, false, false, Some(d)) = (window_needed && tile_max_px > 0, job.refine, keyframe, window_damage.as_ref())
     {
         let cpu0 = thread_cpu_us();
         let (_, enc) = encoders.window.as_mut().unwrap();
@@ -581,7 +375,6 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
                     t.tiles.iter().map(|(r, rgb)| png(r.w as u32, r.h as u32, rgb, false).map(|p| (*r, p))).collect();
                 match tiles {
                     Ok(tiles) => {
-                        done.changed = tiles.iter().map(|(r, _)| *r).collect();
                         done.tiles = Some(TilesDone {
                             tiles,
                             refine_in_ms: t.refine_in_ms,
@@ -603,15 +396,12 @@ fn work(job: Job, encoders: &mut Encoders) -> Done {
             Some(shm) => Input::Shm(shm),
             None => Input::Cpu(&job.image),
         };
-        let (result, changed) = encode_with(enc.as_mut(), input, keyframe, window_damage.as_deref(), job.refine);
+        let result = encode_with(enc.as_mut(), input, keyframe, window_damage.as_deref(), job.refine);
         if result.is_err() {
             encoders.window = None; // start clean (and with a keyframe) next time
-        } else if !job.refine {
-            done.changed = changed.or(window_damage).unwrap_or_else(|| vec![full]);
         }
         done.result = Some(result);
     }
-    encode_motion(&job, &mut done, encoders, motion_damage);
     done.image = job.image;
     done
 }
@@ -630,7 +420,6 @@ impl Worker {
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                             if !refining {
                                 encoders.window = None;
-                                encoders.motion = None;
                                 encoders.alpha = None;
                             }
                             continue;
@@ -683,52 +472,11 @@ pub struct Stream {
     pub crop: Rect,
     /// Window-pixel placement of the last submitted picture.
     pub rect: Rect,
-    /// The window's motion region and its stream, while it has one.
-    pub motion: Option<MotionStream>,
-    /// Watches for a motion region, at the picture size it was made for.
-    pub tracker: Option<motion::Tracker>,
     /// Commits and sent pictures, for frame lab.
     pub trace: crate::frame_trace::WindowTrace,
 }
 
-/// A `motion` video stream: a region of the window sent as its own video.
-pub struct MotionStream {
-    pub id: u64,
-    /// Picture pixels.
-    pub rect: Rect,
-    pub next_seq: u64,
-    /// seq of frames sent and not yet acknowledged (`video.ack`).
-    pub in_flight: VecDeque<u64>,
-    pub need_keyframe: bool,
-    /// The next picture puts the region back into the window picture.
-    pub ending: bool,
-    pub scaled: bool,
-}
-
 impl Stream {
-    /// Retire only after a successful base frame has restored the region. Keeping
-    /// the stream here also keeps failed repaint attempts retryable.
-    pub fn end_motion(&mut self) {
-        if let Some(m) = self.motion.as_mut() {
-            m.ending = true;
-            self.dirty = true;
-        }
-    }
-
-    pub fn motion_repainted(&mut self, id: u64, sent: bool) -> bool {
-        if !self.motion.as_ref().is_some_and(|m| m.id == id && m.ending) {
-            return false;
-        }
-        if sent {
-            self.motion = None;
-            true
-        } else {
-            self.dirty = true;
-            self.need_keyframe = true;
-            false
-        }
-    }
-
     pub fn mark_dirty(&mut self, now_us: u64) {
         self.trace.commits.push(now_us);
         self.commit_us = now_us;
@@ -757,15 +505,14 @@ impl Stream {
         pts
     }
 
-    /// Room for another picture under the flow-control limit (of the window stream and
-    /// of its motion stream).
+    /// Room for another picture under the flow-control limit.
     pub fn can_send(&self) -> bool {
         self.can_send_for(false)
     }
 
     pub fn can_send_for(&self, atlas: bool) -> bool {
         let limit = if atlas { MAX_ATLAS_UNACKED } else { MAX_UNACKED };
-        !self.encoding && self.in_flight.len() < limit && self.motion_in_flight() < MAX_UNACKED
+        !self.encoding && self.in_flight.len() < limit
     }
 
     /// Whether frame callbacks may be released now.
@@ -776,23 +523,6 @@ impl Stream {
     pub fn can_release_callbacks_for(&self, atlas: bool) -> bool {
         let limit = if atlas { MAX_ATLAS_UNACKED } else { MAX_UNACKED };
         self.in_flight.len() + (self.encoding as usize) < limit
-            && self.motion_in_flight() + (self.encoding as usize) < MAX_UNACKED
-    }
-
-    fn motion_in_flight(&self) -> usize {
-        self.motion.as_ref().map_or(0, |m| m.in_flight.len())
-    }
-
-    /// A `video.ack` for the motion stream `id`.
-    pub fn ack_motion(&mut self, id: u64, seq: u64) -> bool {
-        let Some(m) = self.motion.as_mut().filter(|m| m.id == id) else { return false };
-        match m.in_flight.iter().position(|s| *s == seq) {
-            Some(i) => {
-                m.in_flight.drain(..=i);
-                true
-            }
-            None => false,
-        }
     }
 
     pub fn ack(&mut self, pts_us: u64) -> bool {
@@ -815,9 +545,6 @@ impl Stream {
         self.encoding = false;
         self.worker = None;
         self.refine_at_us = None;
-        // That client's motion stream is gone with it; the next one finds its own.
-        self.motion = None;
-        self.tracker = None;
     }
 
     /// Takes (or makes) a picture buffer of the coded size. A new buffer has no history,
@@ -844,9 +571,6 @@ impl Stream {
             self.dirty = false;
             self.need_keyframe = false;
         }
-        if let Some(m) = self.motion.as_mut().filter(|_| job.motion.is_some()) {
-            m.need_keyframe = false;
-        }
         // The answer says when to sharpen next.
         self.refine_at_us = None;
         self.crop = job.crop;
@@ -864,227 +588,6 @@ impl Stream {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn half_motion_averages_two_by_two_with_padded_rows() {
-        let mut pixels = vec![0; 24 * 4];
-        for y in 0..4 {
-            for x in 0..4 {
-                pixels[y * 24 + x * 4] = (y * 10 + x) as u8;
-            }
-        }
-        let out = half_motion(&pixels, 24, 4, 4).unwrap();
-        assert_eq!((out.width, out.height), (2, 2));
-        assert_eq!([out.data[0], out.data[4], out.data[8], out.data[12]], [6, 8, 26, 28]);
-        assert!(half_motion(&pixels[..20], 24, 4, 4).is_err());
-        assert!(half_motion(&pixels, 24, 3, 4).is_err());
-    }
-
-    #[test]
-    fn motion_retirement_waits_for_a_successful_repaint() {
-        let mut s = Stream {
-            motion: Some(MotionStream {
-                id: 7,
-                rect: Rect::new(0, 0, 16, 16),
-                next_seq: 0,
-                in_flight: Default::default(),
-                need_keyframe: false,
-                ending: false,
-                scaled: false,
-            }),
-            ..Default::default()
-        };
-        s.end_motion();
-        assert!(s.dirty && s.motion.as_ref().unwrap().ending);
-        assert!(!s.motion_repainted(8, true), "another stream cannot retire this one");
-        s.dirty = false;
-        assert!(!s.motion_repainted(7, false));
-        assert!(s.motion.is_some() && s.dirty && s.need_keyframe, "failed repaint must retry");
-        assert!(s.motion_repainted(7, true));
-        assert!(s.motion.is_none());
-    }
-
-    #[test]
-    fn refining_the_base_preserves_the_motion_encoder_and_its_reference_frames() {
-        ffmpeg_next::init().unwrap();
-        let mut encoders = Encoders::default();
-        let job = |image, motion, refine| Job {
-            window: 1,
-            generation: 1,
-            pts_us: 1,
-            image,
-            shm: None,
-            detect: false,
-            alpha: false,
-            atlas: false,
-            atlas_cache: None,
-            keyframe: false,
-            refine,
-            damage: None,
-            rect: Rect::new(0, 0, 128, 96),
-            crop: Rect::new(0, 0, 128, 96),
-            backend: Backend::Software(caboose_display_protocol::Codec::H264),
-            settings: Settings { threads: 1, refine_after_ms: 0, tile_max_px: 0, ..Settings::default() },
-            motion,
-            ends_motion: None,
-            input_seq: None,
-        };
-        let motion = || Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false });
-        let first = work(job(CpuImage::new(128, 96), motion(), false), &mut encoders);
-        assert!(first.motion.unwrap().1.unwrap().keyframe);
-        let sharp = work(job(first.image, None, true), &mut encoders);
-        assert!(sharp.result.unwrap().is_ok());
-        assert!(sharp.motion.is_none());
-        assert!(encoders.motion.is_some(), "refinement is not stream cessation");
-        let next = work(job(sharp.image, motion(), false), &mut encoders);
-        assert!(!next.motion.unwrap().1.unwrap().keyframe, "motion references survive base refinement");
-    }
-
-    #[test]
-    fn recreated_encoders_start_both_streams_with_keyframes() {
-        ffmpeg_next::init().unwrap();
-        let mut encoders = Encoders::default();
-        let job = |image| Job {
-            window: 1,
-            generation: 1,
-            pts_us: 1,
-            image,
-            shm: None,
-            detect: false,
-            alpha: false,
-            atlas: false,
-            atlas_cache: None,
-            keyframe: false,
-            refine: false,
-            damage: Some(vec![Rect::new(0, 0, 16, 16)]),
-            rect: Rect::new(0, 0, 128, 96),
-            crop: Rect::new(0, 0, 128, 96),
-            backend: Backend::Software(caboose_display_protocol::Codec::H264),
-            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
-            motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: false }),
-            ends_motion: None,
-            input_seq: None,
-        };
-        let first = work(job(CpuImage::new(128, 96)), &mut encoders);
-        assert!(first.result.unwrap().unwrap().keyframe);
-        assert!(first.motion.unwrap().1.unwrap().keyframe);
-        encoders = Encoders::default(); // idle eviction
-        let next = work(job(first.image), &mut encoders);
-        assert!(next.result.unwrap().unwrap().keyframe);
-        assert!(next.motion.unwrap().1.unwrap().keyframe);
-    }
-
-    #[test]
-    fn scaled_motion_encodes_half_size_and_keeps_damage_in_window_coordinates() {
-        ffmpeg_next::init().unwrap();
-        let mut encoders = Encoders::default();
-        let job = |image, damage| Job {
-            window: 1,
-            generation: 1,
-            pts_us: 1,
-            image,
-            shm: None,
-            detect: false,
-            alpha: false,
-            atlas: false,
-            atlas_cache: None,
-            keyframe: false,
-            refine: false,
-            damage,
-            rect: Rect::new(0, 0, 128, 96),
-            crop: Rect::new(0, 0, 128, 96),
-            backend: Backend::Software(caboose_display_protocol::Codec::H264),
-            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
-            motion: Some(MotionJob { id: 7, rect: Rect::new(32, 16, 64, 64), keyframe: false, scaled: true }),
-            ends_motion: None,
-            input_seq: None,
-        };
-        let done = work(job(CpuImage::new(128, 96), None), &mut encoders);
-        let picture = done.motion.unwrap().1.unwrap();
-        assert!(picture.keyframe);
-        let codec = ffmpeg_next::decoder::find(ffmpeg_next::codec::Id::H264).unwrap();
-        let mut decoder = ffmpeg_next::codec::context::Context::new_with_codec(codec).decoder().video().unwrap();
-        decoder.send_packet(&ffmpeg_next::Packet::copy(&picture.data)).unwrap();
-        let mut frame = ffmpeg_next::frame::Video::empty();
-        decoder.receive_frame(&mut frame).unwrap();
-        assert_eq!((frame.width(), frame.height()), (32, 32));
-        assert!(done.changed.contains(&Rect::new(32, 16, 64, 64)));
-        let mut image = done.image;
-        for y in 20..24 {
-            for x in 36..40 {
-                image.data[y * image.stride + x * 4] = 255;
-            }
-        }
-        let next = work(job(image, Some(vec![Rect::new(36, 20, 4, 4)])), &mut encoders);
-        assert!(next.changed.contains(&Rect::new(36, 20, 4, 4)));
-        let picture = next.motion.unwrap().1.unwrap();
-        assert!(!picture.keyframe);
-        decoder.send_packet(&ffmpeg_next::Packet::copy(&picture.data)).unwrap();
-        let mut frame = ffmpeg_next::frame::Video::empty();
-        decoder.receive_frame(&mut frame).unwrap();
-        assert_eq!((frame.width(), frame.height()), (32, 32));
-    }
-
-    #[test]
-    fn atlas_mode_encodes_motion_video_stream_and_excludes_video_region_from_surface_batch() {
-        ffmpeg_next::init().unwrap();
-        let mut encoders = Encoders::default();
-        let video_rect = Rect::new(0, 0, 64, 64);
-        let job = |image, keyframe, damage| Job {
-            window: 1,
-            generation: 1,
-            pts_us: 100,
-            image,
-            shm: None,
-            detect: false,
-            alpha: false,
-            atlas: true,
-            atlas_cache: None,
-            keyframe,
-            refine: false,
-            damage,
-            rect: Rect::new(0, 0, 128, 64),
-            crop: Rect::new(0, 0, 128, 64),
-            backend: Backend::Software(caboose_display_protocol::Codec::H264),
-            settings: Settings { threads: 1, refine_qp: 0, tile_max_px: 0, ..Settings::default() },
-            motion: Some(MotionJob { id: 9, rect: video_rect, keyframe, scaled: false }),
-            ends_motion: None,
-            input_seq: None,
-        };
-
-        // 1. Keyframe with motion stream on left 64x64 tile: SurfaceBatch encodes right 64x64 tile,
-        //    while motion encoder encodes left 64x64 tile as a H.264 keyframe.
-        let mut img = CpuImage::new(128, 64);
-        for y in 0..64 {
-            for x in 0..128 {
-                let off = y * img.stride + x * 4;
-                img.data[off] = (x + y) as u8;
-                img.data[off + 1] = (x * 3) as u8;
-                img.data[off + 2] = (y * 5) as u8;
-            }
-        }
-        let first = work(job(img, true, None), &mut encoders);
-        let (batch, _, _) = first.surface_batch.expect("keyframe surface batch");
-        assert!(batch.tiles.iter().all(|t| t.rect.x >= 64), "excluded motion region must not be in SurfaceBatch");
-        let (motion_id, motion_res) = first.motion.expect("motion video stream must be encoded in atlas mode");
-        assert_eq!(motion_id, 9);
-        assert!(motion_res.unwrap().keyframe);
-
-        // 2. Subsequent frame where ONLY the video region (0..64, 0..64) changes:
-        //    SurfaceBatch is None (0 UI tiles encoded!) and motion emits a delta video frame.
-        let mut img2 = first.image;
-        for y in 0..64 {
-            for x in 0..64 {
-                let off = y * img2.stride + x * 4;
-                img2.data[off] = img2.data[off].wrapping_add(40);
-            }
-        }
-        let next = work(job(img2, false, Some(vec![video_rect])), &mut encoders);
-        assert!(next.surface_batch.is_none(), "video-only frame in atlas mode must emit no SurfaceBatch");
-        let (_, motion_res2) = next.motion.expect("motion delta frame");
-        assert!(!motion_res2.unwrap().keyframe);
-        assert!(!next.changed.is_empty(), "motion damage must be reported so watch_motion keeps stream alive");
-    }
 
     #[test]
     fn an_alpha_window_gets_rgba_tiles_and_never_a_frame() {
@@ -1106,18 +609,16 @@ mod tests {
             crop: Rect::new(0, 0, 32, 16),
             backend: Backend::Software(caboose_display_protocol::Codec::H264),
             settings: Settings::default(),
-            motion: Some(MotionJob { id: 7, rect: Rect::new(0, 0, 16, 16), keyframe: true, scaled: false }),
-            ends_motion: None,
             input_seq: None,
         };
         let first = work(job(CpuImage::new(32, 16), true, None), &mut encoders);
-        assert!(first.result.is_none() && first.motion.is_none() && first.hits.is_none());
+        assert!(first.result.is_none() && first.hits.is_none());
         let tiles = first.tiles.unwrap().tiles;
         assert_eq!(tiles.len(), 1);
         assert_eq!(tiles[0].0, Rect::new(0, 0, 32, 16));
         let reader = png::Decoder::new(std::io::Cursor::new(&tiles[0].1)).read_info().unwrap();
         assert_eq!((reader.info().color_type, reader.info().bit_depth), (png::ColorType::Rgba, png::BitDepth::Eight));
-        assert!(encoders.window.is_none() && encoders.motion.is_none());
+        assert!(encoders.window.is_none());
         // Unchanged pixels send nothing; a keyframe request is the whole picture again.
         let image = first.image;
         let quiet = work(job(image, false, Some(vec![Rect::new(0, 0, 32, 16)])), &mut encoders);
@@ -1179,28 +680,6 @@ mod tests {
         s.in_flight.clear();
         s.reset_for_client();
         assert!(!s.refine_due(2000));
-    }
-
-    #[test]
-    fn a_motion_stream_shares_the_flow_control() {
-        let mut s = Stream {
-            motion: Some(MotionStream {
-                id: 7,
-                rect: Rect::new(0, 0, 16, 16),
-                next_seq: 2,
-                in_flight: [0, 1].into(),
-                need_keyframe: false,
-                ending: false,
-                scaled: false,
-            }),
-            ..Default::default()
-        };
-        assert!(!s.can_send() && !s.can_release_callbacks());
-        assert!(!s.ack_motion(8, 1), "another stream's ack");
-        assert!(s.ack_motion(7, 0));
-        assert!(s.can_send() && s.can_release_callbacks());
-        s.reset_for_client();
-        assert!(s.motion.is_none());
     }
 
     #[test]

@@ -2132,8 +2132,8 @@ composition; marker-based passthrough is fenced because it cannot preserve arbit
 foreground alpha and occlusion.
 
 Popups advertise alpha and use lossless RGBA PNG tiles over a transparent canvas,
-including the first picture and keyframe requests. They have no codec frames,
-sharpening or motion stream. The app keeps their layer and newly resized backing
+including the first picture and keyframe requests. They have no codec frames
+or sharpening. The app keeps their layer and newly resized backing
 pixels transparent, preserving rounded corners and shadows over underlying windows.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
@@ -2697,7 +2697,7 @@ feedback), legacy per-window video with acknowledgements and keyframe recovery, 
 layered into windows, Opus sound on the server timeline, and vsync pacing. Audio uses an
 explicit server/host clock anchor, cleared on interruption. Placement samples host time once
 against the requested anchor; renderer timebase updates never drive backlog recovery. Live
-window and motion pictures present immediately, while passthrough video shares the audio
+window pictures present immediately, while passthrough video shares the audio
 clock. Each window fills a `RemoteWindow` and its
 Metal `WindowSurface`. Decoding uses the Surface Atlas LZ4 micro-codec and `XXH64` tile cache
 for `surface.batch`, CoreText and Metal for `scene.commit` vector/glyph trees,

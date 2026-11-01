@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU-drawn windows on a phone: lossless atlas, never video.
+"""CPU-drawn windows on a phone: lossless atlas pictures.
 
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py              # everything
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py writer      # by name
@@ -7,11 +7,10 @@
 Each scenario starts the compositor with an application that draws on the CPU
 (LibreOffice Writer, a GTK 3 text view, Chromium in software on X11 as CEF applications such
 as Steam draw, xterm; on Wayland and on X11), connects the probe as the phone does (a
-1179x2556 display at scale 3, Surface Atlas, hardware video decoders for video streams,
-scaled motion), maximizes the window and scrolls it as a trackpad does, a step every 16 ms
-for five seconds (Chromium's page scrolls itself). It fails if any part of the window became
-a motion video stream, and prints the window's picture size, rate, bandwidth and latency,
-and the server's CPU.
+1179x2556 display at scale 3, Surface Atlas), maximizes the window and scrolls it as a
+trackpad does, a step every 16 ms for five seconds (Chromium's page scrolls itself). It fails
+if the picture came as video, and prints the window's picture size, rate, bandwidth and
+latency, and the server's CPU.
 
 LibreOffice and the GTK text view need `libreoffice-writer libreoffice-gtk3` and
 `python3-gi gir1.2-gtk-3.0` in the container.
@@ -88,8 +87,7 @@ def run(name, command, settle_s):
 
     def drive(proc, token):
         report = check.probe([
-            "--token-file", token, "--display", PHONE, "--atlas", "--decoders", "hevc,h264",
-            "--video-decoders", "hevc,h264", "--scaled-motion", "--windows", "1",
+            "--token-file", token, "--display", PHONE, "--atlas", "--decoders", "hevc,h264", "--windows", "1",
             "--server-pid", str(proc.pid), "--duration", str(settle_s + 9), "--actions", ";".join(actions),
         ])
         result["report"] = report
@@ -97,14 +95,10 @@ def run(name, command, settle_s):
     check.with_server(command, drive)
     report = result["report"]
     w = max(report["windows"], key=lambda w: w["surface_batches"] + w["frames"])
-    motion = [v for v in report["videos"] if v["source"] == "motion"]
-    video_kbps = sum(v["bytes"] for v in motion) * 8 / 1000 / report["seconds"]
     print(f"{name}: {w['size'][0]}x{w['size'][1]} {w['codec']}, {w['surface_batches']} batches "
           f"({w['atlas_copies']} copies, {w['atlas_tiles']} tiles, {w['atlas_refs']} refs), {w['fps']:.1f} fps, "
           f"{w['kbps']:.0f} kbit/s, latency p50 {w['latency_ms_p50']:.1f} ms p95 {w['latency_ms_p95']:.1f} ms, "
-          f"motion streams {len(motion)} ({video_kbps:.0f} kbit/s), server {report['server_cpu_pct']}% of a core")
-    if motion:
-        raise check.Failed(f"{name}: {len(motion)} motion stream(s) for a CPU-drawn window: {motion}")
+          f"server {report['server_cpu_pct']}% of a core")
     if w["codec"] != "atlas":
         raise check.Failed(f"{name}: the window picture came as {w['codec']} video")
 

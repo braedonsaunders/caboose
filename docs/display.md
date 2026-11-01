@@ -24,7 +24,7 @@ wire contract, the Caboose Display Protocol.
    │   and 120 Hz client-predicted scroll sync (scene.scroll, 0x9A)
    ├ legacy/fallback video encoder per stream: libx264, libx265, or NVENC (h264/hevc/av1_nvenc)
    ├ changed-block detection, lossless tiles for small changes, sharpening of quiet areas
-   ├ video: codec passthrough (the VA-API driver) and detected motion, as their own streams
+   ├ video: codec passthrough (the VA-API driver), as its own stream
    ├ games & 3D: WebAssembly games handed off to the client, and Vulkan / Zink GPU streams
    ├ pacing: frame callbacks released on the client's vsync, at most two frames in flight
    ├ input: pointer, wl_touch, keyboard by keysym, text-input-v3
@@ -42,8 +42,9 @@ wire contract, the Caboose Display Protocol.
   in `ClientHello` (even with `decoders: []`), the server skips per-window H.264/HEVC video
   encoding (`0x10` `frame`) and instead transmits atomic byte-perfect `surface.batch` (`0x23`)
   damage updates (Layer 0) and retained vector/glyph `scene.commit` (`0x26`) trees (Layer 1).
-  Hardware video (`video.*` passthrough and motion streams) is reserved for actual video:
-  only tiles that look like video can make a motion stream (see `motion` streams below).
+  Nothing of a window's own drawing becomes video: animation and video drawn into a window
+  stay lossless tiles and scroll copies in its picture. Video reaches the client as its own
+  stream only through codec passthrough or a GPU stream.
 - **Nothing runs while nothing changes.** Only damaged blocks are compared, and with no client
   connected the server does no per-window encoding work. In legacy video mode, only damaged
   16×16 blocks whose pixels really changed are converted and passed to the video encoder.
@@ -164,15 +165,14 @@ window's own picture.
    frame, so the application's own audio sync holds. It gives the original quality at
    almost no server CPU. The driver, its socket, and the on-screen marker that binds a
    stream to its window are specified in [codec-passthrough.md](codec-passthrough.md).
-2. **Detected motion.** A region of a window that updates at video rates is encoded as
-   its own `motion` stream, at the size it is shown on the client, and left out of the
-   window's pictures. This covers X11 players, canvas animation, and video that does not
-   decode through VA.
+2. **The window picture.** Video an application decodes and draws itself (X11 players,
+   canvas animation, video that does not decode through VA) stays in the window's own
+   picture. No part of a window is sent as video.
 
 Players that decode on the CPU through VA (mpv, GStreamer, FFmpeg) pass through wherever
 the driver runs. Chromium and Firefox decode through VA only with a working GPU process,
 which needs a DRM render node; on WSL2 and on hosts without a GPU their video stays in the
-window picture or becomes a `motion` stream. VA carries no HDR metadata, and AV1 is
+window picture. VA carries no HDR metadata, and AV1 is
 forwarded one picture late (see [guest/vaapi](../guest/vaapi/README.md)).
 
 The protocol also defines `surface` streams, for applications that present video on its
@@ -380,7 +380,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x04` | `window.destroy` | `id` |
 | `0x10` | `frame` | `id`, `codec: "hevc"\|"av1"\|"h264"`, `keyframe: bool`, `pts_us: uint`, `rect`, `crop`, `data: bytes`, `input_seq?: uint` ([Input sequencing](#input-sequencing)) |
 | `0x11` | `tile` | `id`, `rect`, `format: "png"\|"webp-lossless"`, `data: bytes` |
-| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"\|"motion"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
+| `0x12` | `video.create` | `id`, `window`, `rect`, `clip?: rect`, `z?: int`, `codec: "h264"\|"hevc"\|"av1"\|"vp9"`, `source: "passthrough"\|"surface"`, `color?: { primaries, transfer, matrix, full_range }`, `extradata?: bytes`, `scaled?: bool` |
 | `0x13` | `video.frame` | `id`, `seq`, `keyframe: bool`, `pts_us?`, `data: bytes` |
 | `0x14` | `video.update` | `id`, `rect?`, `clip?`, `z?` |
 | `0x15` | `video.destroy` | `id` |
@@ -425,7 +425,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `scaled_motion?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool`, `draw?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
+| `0x81` | `hello` | `version: 0`, `token`, `decoders: [codec]`, `displays: [display]`, `video_decoders?: [codec]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `gpu?: bool`, `webview?: bool`, `devices?: bool`, `scroll?: bool`, `targets?: bool`, `atlas?: bool`, `scene?: bool`, `draw?: bool` (booleans present only when true), `clipboard_types?: [mime]` (what the client takes from the clipboard besides text) |
 | `0x82` | `vsync` | `display`, `t_us` (client monotonic) |
 | `0x83` | `ack` | `id`, `pts_us`, `decoded_us: int` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?` (whose vsync paces it), `fullscreen?`, `maximized?`, `activated?`, `overscan?: size` |
@@ -630,7 +630,7 @@ When the client advertises `draw: true` and the server includes `"draw"` in
 (format: [draw.md](draw.md)), and sends each window picture either as a `draw.present` or as a
 `surface.batch`, never both. A picture goes as `draw.present` when the application's recorder
 presented exactly the buffer the window committed, complete, and the window's picture is that
-whole buffer (no subsurfaces, crop or scaling, no motion stream, alpha or pending keyframe).
+whole buffer (no subsurfaces, crop or scaling, alpha or pending keyframe).
 Every other picture is a batch, and the first batch after `draw.present` pictures is a
 keyframe. Windows without a recorder (X11 windows, applications that do not draw with cairo)
 are batches throughout.
@@ -697,7 +697,7 @@ the window's size beyond the shown size, up to the overscan laid out. An applica
 sizes itself in steps, such as a terminal in character cells, gets part of it. An update
 carries `[0, 0]` when the overscan ends or the window no longer exceeds the shown size. Such an update precedes every frame of the new picture
 size, as a size change precedes its keyframe. The picture is then the whole window:
-`frame.rect` is `[0, 0, w + ow, h + oh]`, tiles, video and motion rectangles map through
+`frame.rect` is `[0, 0, w + ow, h + oh]`, tiles and video rectangles map through
 it as usual, and window-local input positions with `x >= w` or `y >= h` address the
 overscan. Popup and dialog geometry stays relative to the parent's geometry origin.
 
@@ -978,15 +978,14 @@ resume without a reset. The server lists `audio` in `features` when it has sound
 The iOS player anchors server time to the monotonic host clock when starting playback;
 it does not use the asynchronously updated renderer timebase to detect packet backlog.
 Audio-session interruptions clear that anchor before the next playback begins. Live
-window and motion pictures present immediately; only passthrough presentation uses the
+window pictures present immediately; only passthrough presentation uses the
 shared audio timeline, and an idle live video renderer cannot hold audio preroll.
 
 ### Video streams
 
 The iOS app omits `video_decoders`. Independently, the compositor requests server
 decode for all marker streams: codec support alone does not prove correct foreground
-composition (see [composition admission](codec-passthrough.md#composition-admission)). It
-advertises `scaled_motion`, allowing motion streams in the window codec. PCM playback uses decoded sample durations to join adjacent
+composition (see [composition admission](codec-passthrough.md#composition-admission)). PCM playback uses decoded sample durations to join adjacent
 packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
 payload. Excess or empty packets are rejected before dispatch, counted as
@@ -1032,28 +1031,7 @@ owner; thumbnails and inactive presentations do not take it from the visible win
   H.264 and HEVC, a temporal unit of OBUs with the sequence header on keyframes for AV1,
   and a frame or superframe for VP9. `extradata` is only for a codec whose parameters
   cannot travel in band.
-- **`motion` streams** are regions of a window that the server finds updating at video
-  rates. A region qualifies once it has been a dense rectangle of at least 192×112
-  picture pixels for a second, with most of its macroblocks changing in most pictures at
-  15 or more pictures a second. In Surface Atlas mode only new tiles that look like video
-  count as changes: more than 16 colours that LZ4 cannot halve. Scroll copies, fills, cached
-  tiles and drawn content (text, icons, chrome) never start a motion stream, so a scrolling
-  document stays lossless. It is sent in the window stream's codec at the window
-  picture's pixel scale by default, to a client that lists that codec in `video_decoders` or advertises
-  `scaled_motion`. With `scaled_motion`, a software-encoded region divisible by four is box-filtered to
-  half width and height and `video.create.scaled` is true; `rect` and `clip` still use
-  window coordinates. The client upscales the decoded picture with MetalFX where available,
-  falling back to vImage on the CPU if the scaler cannot be made or fails; if that fails,
-  the video layer scales the decoded picture.
-  A window with a passthrough stream bound gets none. While the stream exists, the
-  window's `frame`s keep the region frozen, including keyframes, replacement codec buffers
-  and refinement passes; the client shows the stream over it. Refining the base does not
-  recreate the motion encoder or lose its reference frames. Once the
-  region has stopped looking like that for a second (the video paused, moved, or closed),
-  the server sends a window `frame` that repaints the region and then `video.destroy`.
-  The client keeps showing the stream until it has shown that frame. A resize ends the
-  stream with the keyframe that follows it.
-- **`surface` and `motion` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
+- **`surface` streams** carry `pts_us` (server `CLOCK_MONOTONIC` at the
   commit, like `frame`), have no reordering, and are shown as soon as they are decoded.
 - **`passthrough` streams** carry no `pts_us`: the application's decoder is the server's
   VA-API driver, which sees no timestamps. The client decodes in order and keeps decoded
@@ -1063,7 +1041,7 @@ owner; thumbnails and inactive presentations do not take it from the visible win
 - `color` describes the stream in ITU-T H.273 code points (for example `9/16/9`, BT.2020
   with PQ); with it a client whose display reports `hdr` shows HDR video with EDR. Window
   pictures stay SDR.
-- `video.ack` says a frame is queued for display; for `surface` and `motion` streams it is
+- `video.ack` says a frame is queued for display; for `surface` streams it is
   the flow control of the window stream (at most 2 unacknowledged), for `passthrough` it is
   only latency accounting, because the application paces itself. After a
   `video.keyframe` the server sends a keyframe (a passthrough stream is replayed from its
@@ -1138,10 +1116,6 @@ each table, run in the dev container (`guest/display/scripts/dev.sh`).
 - `tiles`: 31 characters typed into Chromium at 1179×2556 take 6 pictures and 470 ms of
   server CPU, against 77 pictures and 1180 ms with `--tile-max-px 0`; the final pictures
   match at 66.6 dB.
-- `motion`: the check's 8 s canvas video in a 1280×720 Chromium window costs 5.1% of a
-  core, against 8.0% with `--no-motion`. The window stream sends about 50 pictures, most
-  of them before the region qualifies; each video frame is then a 480×288 encode instead
-  of a 1280×720 one.
 
 `scripts/profile.py [phone|tv] [type|scroll|caret]`, Chromium maximised on a phone's
 display (1179×2556 at 3×) or a TV's (3840×2160 at 2×), server CPU from process CPU over

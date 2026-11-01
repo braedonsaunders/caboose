@@ -6,7 +6,7 @@ use crate::encode::{align_up, Backend, CpuImage};
 use crate::net::{ConnId, NetEvent};
 use crate::render::{Canvas, Rendered};
 use crate::state::State;
-use crate::stream::{Done, Job, MotionJob, MotionStream};
+use crate::stream::{Done, Job};
 use caboose_display_protocol::{self as proto, ByeReason, Codec, Message, Rect};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -38,7 +38,6 @@ pub struct Session {
     pub webview_grant: Option<String>,
     /// The client renders Vulkan streams, and this instance relays them.
     pub gpu: bool,
-    pub scaled_motion: bool,
     /// The client offers its hardware and this instance accepts it (docs/devices.md).
     pub devices: bool,
     /// The client places pictures by toolkit scroll reports, and this instance takes them.
@@ -310,40 +309,8 @@ impl State {
             Message::ScrollTarget(t) => self.scroll_target(&t),
             Message::ScrollZoom(z) => self.scroll_zoom(&z),
             Message::SceneScroll(scroll) => self.on_scene_scroll(scroll),
-            Message::VideoKeyframe { id } => {
-                let motion = self.windows.iter_mut().find(|w| w.stream.motion.as_ref().is_some_and(|m| m.id == id));
-                if let Some(w) = motion {
-                    w.stream.motion.as_mut().unwrap().need_keyframe = true;
-                    w.stream.dirty = true;
-                } else {
-                    self.video_keyframe(id);
-                }
-            }
-            Message::VideoAck { id, seq } => {
-                let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
-                let mut release_window = None;
-                let mut matched_motion = false;
-                for w in self.windows.iter_mut() {
-                    if w.stream.ack_motion(id, seq) {
-                        matched_motion = true;
-                        let display = w.display;
-                        let paced = self
-                            .session
-                            .as_ref()
-                            .and_then(|s| s.last_vsync.get(&display))
-                            .is_some_and(|t| t.elapsed() < VSYNC_STALE);
-                        if atlas && paced && w.stream.callbacks_pending && w.stream.can_release_callbacks_for(true) {
-                            release_window = Some(w.id);
-                        }
-                        break;
-                    }
-                }
-                if let Some(win_id) = release_window {
-                    self.release_frame_callbacks(win_id);
-                } else if !matched_motion {
-                    tracing::trace!("video {id}: frame {seq} queued for display");
-                }
-            }
+            Message::VideoKeyframe { id } => self.video_keyframe(id),
+            Message::VideoAck { id, seq } => tracing::trace!("video {id}: frame {seq} queued for display"),
             Message::ClientClipboard(c) => self.clipboard_from_phone(c),
             Message::DropEnter(e) => self.drop_enter(e),
             Message::DropMotion { id, x, y } => self.drop_motion(id, x, y),
@@ -470,9 +437,7 @@ impl State {
                 features: {
                     let mut supported = features(
                         self.xwm.is_some() || self.config.x_display.is_some(),
-                        ((self.videos.socket.is_some() || self.config.motion)
-                            && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()))
-                            || (self.config.motion && hello.scaled_motion),
+                        self.videos.socket.is_some() && hello.video_decoders.as_ref().is_some_and(|d| !d.is_empty()),
                         self.audio.is_some(),
                         self.encoders.settings.tile_max_px > 0,
                         wasm,
@@ -528,7 +493,6 @@ impl State {
             webview,
             webview_grant,
             gpu,
-            scaled_motion: hello.scaled_motion,
             devices,
             scroll,
             targets,
@@ -667,7 +631,6 @@ impl State {
         for id in stale {
             self.release_frame_callbacks(id);
         }
-        self.motion_tick();
         self.dnd_tick();
         let session_conn = self.session.as_ref().map(|s| s.conn);
         let timeout = self.config.client_timeout;
@@ -735,8 +698,6 @@ impl State {
                         crop: w.stream.crop,
                         backend: backend.clone(),
                         settings: self.encoders.settings.clone(),
-                        motion: None,
-                        ends_motion: None,
                         input_seq: (w.scroll_seq_committed > 0).then_some(w.scroll_seq_committed),
                     };
                     w.stream.submit(job, &self.done_tx);
@@ -762,25 +723,18 @@ impl State {
             let rect = w.announced.as_ref().map(picture_rect).unwrap();
             let size = (pic_w, pic_h).into();
             // A popup keeps its alpha (window.create `alpha`): composed over transparent
-            // and sent as RGBA tiles, with no motion stream or marker detection.
+            // and sent as RGBA tiles, with no marker detection.
             let alpha = w.kind == proto::WindowKind::Popup;
             let w = self.windows.get_mut(id).unwrap();
             if !w.stream.canvas.as_ref().is_some_and(|c| c.matches(size, scale, alpha)) {
                 w.stream.canvas = Some(Canvas::new(size, scale, alpha));
                 w.stream.need_keyframe = true;
-                // The keyframe repaints everything; a motion region is found afresh.
-                w.stream.tracker = None;
-                w.stream.end_motion();
-            }
-            if w.stream.rect != rect || w.stream.crop != Rect::new(0, 0, pic_w, pic_h) {
-                w.stream.end_motion();
-                w.stream.tracker = None;
             }
             // The client draws this picture from the application's draw list when the
             // recorder presented exactly the buffer the window shows, complete, and the
             // picture is that whole buffer; the batch is left out. A picture that must be a
             // keyframe (a new client, a new size) goes as a batch, which sets its geometry.
-            if draw && !alpha && !w.stream.need_keyframe && w.stream.motion.is_none() {
+            if draw && !alpha && !w.stream.need_keyframe {
                 use smithay::reexports::wayland_server::Resource;
                 let frame = crate::render::direct(&root, local, size, None)
                     .filter(|d| d.whole)
@@ -799,8 +753,6 @@ impl State {
                     continue;
                 }
             }
-            // A motion stream that ends: this picture puts its region back.
-            let ending = w.stream.motion.as_ref().filter(|m| m.ending).map(|m| (m.id, m.rect));
             let (coded_w, coded_h) = (align_up(pic_w as u32, align), align_up(pic_h as u32, align));
             let (mut image, image_id) = w.stream.take_image(coded_w, coded_h);
             let mut canvas = w.stream.canvas.take().unwrap();
@@ -827,7 +779,7 @@ impl State {
                             // In place the picture is the buffer itself; the image is not
                             // kept up to date, so a keyframe of unchanged content (a new
                             // client) must read the buffer too.
-                            if in_place && (!d.damage.is_empty() || w.stream.need_keyframe || ending.is_some()) {
+                            if in_place && (!d.damage.is_empty() || w.stream.need_keyframe) {
                                 shm =
                                     Some(crate::encode::ShmPicture { buffer: d.buffer, x: d.origin.0, y: d.origin.1 });
                             }
@@ -861,13 +813,13 @@ impl State {
                     w.stream.return_image(image);
                     w.stream.dirty = false;
                 }
-                Ok(Rendered::Unchanged) if !w.stream.need_keyframe && ending.is_some() == false => {
+                Ok(Rendered::Unchanged) if !w.stream.need_keyframe => {
                     self.stats.unchanged_renders += 1;
                     w.stream.return_image(image);
                     w.stream.dirty = false;
                 }
                 Ok(rendered) => {
-                    let mut damage = match rendered {
+                    let damage = match rendered {
                         // A new image (or a resize) has nothing to be partial against.
                         Rendered::Picture(d) if !w.stream.need_keyframe => {
                             pad_edges(&mut image, pic_w as u32, pic_h as u32, Some(&d));
@@ -879,9 +831,6 @@ impl State {
                             None
                         }
                     };
-                    if let (Some((_, region)), Some(d)) = (ending, damage.as_mut()) {
-                        d.push(region);
-                    }
                     let picture = pic_w as u64 * pic_h as u64;
                     self.stats.picture_px += picture;
                     self.stats.damaged_px += damage
@@ -912,13 +861,6 @@ impl State {
                         crop: Rect::new(0, 0, pic_w, pic_h),
                         backend: backend.clone(),
                         settings: self.encoders.settings.clone(),
-                        motion: w.stream.motion.as_ref().filter(|m| !m.ending).map(|m| MotionJob {
-                            id: m.id,
-                            rect: m.rect,
-                            keyframe: m.need_keyframe,
-                            scaled: m.scaled,
-                        }),
-                        ends_motion: ending.map(|(id, _)| id),
                         input_seq: (w.scroll_seq_committed > 0).then_some(w.scroll_seq_committed),
                     };
                     w.stream.submit(job, &self.done_tx);
@@ -982,9 +924,7 @@ impl State {
         w.stream.return_image(done.image);
         w.stream.encoding = false;
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
-        let atlas = self.session.as_ref().is_some_and(|s| s.atlas);
         let mut refined = false;
-        let mut frame_sent = atlas && done.surface_batch.is_none() && done.result.is_none();
         let mut sent_bytes = 0;
         if let Some((batch, cpu_us, batch_epoch)) = done.surface_batch {
             let tile_bytes: usize = batch.tiles.iter().map(|t| t.data.len()).sum();
@@ -1012,11 +952,9 @@ impl State {
                 self.stats.bytes += tile_bytes as u64;
                 sent_bytes += tile_bytes as u64;
                 self.stats.encode_cpu_us += cpu_us;
-                frame_sent = true;
             } else {
                 w.stream.need_keyframe = true;
                 w.stream.dirty = true;
-                frame_sent = false;
             }
         }
         match done.result {
@@ -1066,7 +1004,6 @@ impl State {
                     input_seq: done.input_seq,
                 });
                 self.net.send(conn, &message);
-                frame_sent = true;
             }
             Some(Err(e)) => {
                 tracing::warn!("window {}: encode failed: {e}", done.window);
@@ -1085,143 +1022,12 @@ impl State {
                 self.net.send(conn, &Message::Tile(tile));
             }
         }
-        match (done.motion, w.stream.motion.as_mut()) {
-            (Some((id, Ok(encoded))), Some(m)) if m.id == id && encoded.data.len() <= proto::MAX_PAYLOAD - 256 => {
-                let seq = m.next_seq;
-                m.next_seq += 1;
-                m.in_flight.push_back(seq);
-                self.stats.motion_frames += 1;
-                self.stats.bytes += encoded.data.len() as u64;
-                sent_bytes += encoded.data.len() as u64;
-                self.stats.encode_cpu_us += encoded.cpu_us;
-                tracing::trace!(
-                    "motion {id}: {} bytes {} in {} µs ({} µs CPU)",
-                    encoded.data.len(),
-                    if encoded.keyframe { "key" } else { "delta" },
-                    encoded.encode_us,
-                    encoded.cpu_us
-                );
-                let message = Message::VideoFrame(proto::VideoFrame {
-                    id,
-                    seq,
-                    keyframe: encoded.keyframe,
-                    pts_us: Some(done.pts_us),
-                    data: encoded.data,
-                });
-                self.net.send(conn, &message);
-            }
-            (Some((id, result)), Some(m)) if m.id == id => {
-                if let Err(e) = result {
-                    tracing::warn!("motion {id}: encode failed: {e}");
-                } else {
-                    tracing::warn!("motion {id}: picture exceeds the message limit; dropped");
-                }
-                m.need_keyframe = true;
-                w.stream.dirty = true;
-            }
-            _ => {}
-        }
         if sent_bytes > 0 {
             let sent = crate::frame_trace::Sent { at_us: now_us, pts_us: done.pts_us, bytes: sent_bytes, refined };
             w.stream.trace.sent.push(sent);
         }
-        if let Some(id) = done.ends_motion {
-            // After the window picture that repaints its region.
-            if w.stream.motion_repainted(id, frame_sent) {
-                self.net.send(conn, &Message::VideoDestroy { id });
-                tracing::debug!("window {}: motion stream {id} ended", done.window);
-            }
-        }
         if let Some(hits) = &done.hits {
             self.on_video_hits(done.window, hits, done.rect, done.crop, done.pts_us);
-        }
-        if !refined {
-            self.watch_motion(done.window, &done.changed, done.rect, done.crop, now_us / 1000);
-        }
-    }
-
-    /// Whether this window's motion can be its own video stream for the client.
-    fn motion_possible(&self, window: u64) -> bool {
-        let Some(session) = self.session.as_ref().filter(|s| s.ready) else { return false };
-        self.config.motion
-            && self.windows.get(window).is_some_and(|w| w.kind != proto::WindowKind::Popup)
-            && (session.scaled_motion || session.video_decoders.contains(&session.backend.codec()))
-            && !self.videos.streams.by_id.values().any(|s| s.binding.as_ref().is_some_and(|b| b.window == window))
-    }
-
-    /// Feeds a window's changes to its motion tracker, and starts or ends its motion
-    /// stream on what it decides.
-    fn watch_motion(&mut self, window: u64, changed: &[Rect], rect: Rect, crop: Rect, now_ms: u64) {
-        if !self.motion_possible(window) {
-            if let Some(w) = self.windows.get_mut(window) {
-                w.stream.end_motion();
-                w.stream.tracker = None;
-            }
-            return;
-        }
-        let Some(conn) = self.session.as_ref().map(|s| s.conn) else { return };
-        let codec = self.session.as_ref().map(|s| s.backend.codec()).unwrap();
-        let scaled_motion =
-            self.session.as_ref().is_some_and(|s| s.scaled_motion && matches!(s.backend, Backend::Software(_)));
-        let Some(w) = self.windows.get_mut(window) else { return };
-        let Some(image) = w.stream.image.as_ref() else { return };
-        let size = (image.width, image.height);
-        if w.stream.tracker.as_ref().is_none_or(|t| t.detector.size() != size) {
-            w.stream.tracker = Some(crate::motion::Tracker::new(size.0, size.1));
-        }
-        let tracker = w.stream.tracker.as_mut().unwrap();
-        if !changed.is_empty() {
-            tracker.detector.picture(changed, now_ms);
-        }
-        match tracker.update(now_ms) {
-            Some(crate::motion::Change::Start(region)) if w.stream.motion.is_none() => {
-                let id = self.videos.streams.allocate_id();
-                let (video_rect, clip) = motion_to_window(region, rect, crop);
-                let scaled = scaled_motion && region.w % 4 == 0 && region.h % 4 == 0;
-                tracing::info!("window {window}: motion stream {id} for {region:?} (picture pixels)");
-                self.net.send(
-                    conn,
-                    &Message::VideoCreate(proto::VideoCreate {
-                        id,
-                        window,
-                        rect: video_rect,
-                        clip,
-                        z: None,
-                        codec,
-                        source: proto::VideoSource::Motion,
-                        color: None,
-                        extradata: None,
-                        scaled,
-                    }),
-                );
-                w.stream.motion = Some(MotionStream {
-                    id,
-                    rect: region,
-                    next_seq: 0,
-                    in_flight: Default::default(),
-                    need_keyframe: true,
-                    ending: false,
-                    scaled,
-                });
-            }
-            Some(crate::motion::Change::Stop) => {
-                w.stream.end_motion();
-            }
-            _ => {}
-        }
-    }
-
-    /// Ends motion streams whose video has stopped arriving (paused, closed): their
-    /// windows send no pictures that would let the tracker notice.
-    pub fn motion_tick(&mut self) {
-        let now_ms = self.now_us() / 1000;
-        let ids: Vec<u64> = self.windows.iter().filter(|w| w.stream.motion.is_some()).map(|w| w.id).collect();
-        for id in ids {
-            let (rect, crop) = match self.windows.get(id) {
-                Some(w) => (w.stream.rect, w.stream.crop),
-                None => continue,
-            };
-            self.watch_motion(id, &[], Rect::new(0, 0, rect.w, rect.h), crop, now_ms);
         }
     }
 }
@@ -1231,22 +1037,6 @@ impl State {
 fn picture_rect(a: &proto::WindowCreate) -> Rect {
     let over = a.overscan.unwrap_or(proto::Size { w: 0, h: 0 });
     Rect::new(0, 0, a.geometry.w + over.w, a.geometry.h + over.h)
-}
-
-/// A motion region (picture pixels) in window coordinates, and its visible part when
-/// it reaches into the picture's padding.
-fn motion_to_window(region: Rect, rect: Rect, crop: Rect) -> (Rect, Option<Rect>) {
-    let (sx, sy) = (rect.w as f64 / crop.w.max(1) as f64, rect.h as f64 / crop.h.max(1) as f64);
-    let scale = |r: Rect| {
-        let x0 = (r.x as f64 * sx).round() as i32;
-        let y0 = (r.y as f64 * sy).round() as i32;
-        let x1 = ((r.x + r.w) as f64 * sx).round() as i32;
-        let y1 = ((r.y + r.h) as f64 * sy).round() as i32;
-        Rect::new(x0, y0, x1 - x0, y1 - y0)
-    };
-    let whole = scale(region);
-    let visible = crate::motion::intersect(region, crop).map(scale).unwrap_or(whole);
-    (whole, (visible != whole).then_some(visible))
 }
 
 /// Repeats the picture's last column and row into the encoder's padding, so the

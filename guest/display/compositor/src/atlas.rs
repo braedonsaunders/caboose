@@ -5,10 +5,9 @@
 use crate::encode::{Input, Pixels, ShmPicture};
 #[cfg(test)]
 use crate::encode::CpuImage;
-use crate::motion;
 use caboose_display_protocol::atlas::{detect_scroll_copy_hashed, encode_atlas_tile, xxh64};
 use caboose_display_protocol::{
-    AtlasTileFormat, Rect, Size, SurfaceBatch, SurfaceFill, SurfaceTile, SurfaceTileRef,
+    Rect, Size, SurfaceBatch, SurfaceFill, SurfaceTile, SurfaceTileRef,
 };
 use std::collections::{HashMap, VecDeque};
 
@@ -172,9 +171,7 @@ impl AtlasWindowEncoder {
     /// `SurfaceBatch`, updating `self.shadow` while consulting `cache` read-only.
     ///
     /// Callers must invoke [`AtlasCacheTracker::try_record_published_batch`] when the returned
-    /// `SurfaceBatch` is actually sent to the client. The rectangles returned with it are the
-    /// new tiles that look like video, for the motion detector: scroll copies, fills, cached
-    /// tiles and drawn content never start a motion stream.
+    /// `SurfaceBatch` is actually sent to the client.
     #[allow(clippy::too_many_arguments)]
     pub fn encode_input(
         &mut self,
@@ -187,9 +184,8 @@ impl AtlasWindowEncoder {
         alpha: bool,
         keyframe: bool,
         damage: Option<&[Rect]>,
-        excluded: Option<Rect>,
         cache: &AtlasCacheTracker,
-    ) -> Result<(Option<SurfaceBatch>, Vec<Rect>), String> {
+    ) -> Result<Option<SurfaceBatch>, String> {
         match input {
             Input::Cpu(image) => {
                 if image.width < width || image.height < height {
@@ -200,22 +196,12 @@ impl AtlasWindowEncoder {
                 }
                 let pixels = Pixels { data: &image.data, stride: image.stride };
                 Ok(self.encode_pixels(
-                    window_id, pts_us, rect, width, height, &pixels, alpha, keyframe, damage, excluded, cache,
-                ))
-            }
-            Input::CpuAt(image, x, y) => {
-                if x + width > image.width || y + height > image.height {
-                    return Err("atlas input crop outside image".into());
-                }
-                let start = y as usize * image.stride + x as usize * 4;
-                let pixels = Pixels { data: &image.data[start..], stride: image.stride };
-                Ok(self.encode_pixels(
-                    window_id, pts_us, rect, width, height, &pixels, alpha, keyframe, damage, excluded, cache,
+                    window_id, pts_us, rect, width, height, &pixels, alpha, keyframe, damage, cache,
                 ))
             }
             Input::Shm(shm) => {
                 self.encode_shm(
-                    window_id, pts_us, rect, width, height, shm, alpha, keyframe, damage, excluded, cache,
+                    window_id, pts_us, rect, width, height, shm, alpha, keyframe, damage, cache,
                 )
             }
         }
@@ -233,9 +219,8 @@ impl AtlasWindowEncoder {
         alpha: bool,
         keyframe: bool,
         damage: Option<&[Rect]>,
-        excluded: Option<Rect>,
         cache: &AtlasCacheTracker,
-    ) -> Result<(Option<SurfaceBatch>, Vec<Rect>), String> {
+    ) -> Result<Option<SurfaceBatch>, String> {
         smithay::wayland::shm::with_buffer_contents(&shm.buffer, |ptr, len, data| {
             let (w, h) = (width as i32, height as i32);
             if shm.x < 0 || shm.y < 0 || shm.x + w > data.width || shm.y + h > data.height {
@@ -250,7 +235,7 @@ impl AtlasWindowEncoder {
             let pool = unsafe { std::slice::from_raw_parts(ptr, len) };
             let pixels = Pixels { data: &pool[start..], stride };
             Ok(self.encode_pixels(
-                window_id, pts_us, rect, width, height, &pixels, alpha, keyframe, damage, excluded, cache,
+                window_id, pts_us, rect, width, height, &pixels, alpha, keyframe, damage, cache,
             ))
         })
         .map_err(|e| format!("shm buffer: {e:?}"))?
@@ -268,11 +253,10 @@ impl AtlasWindowEncoder {
         alpha: bool,
         keyframe: bool,
         damage: Option<&[Rect]>,
-        excluded: Option<Rect>,
         cache: &AtlasCacheTracker,
-    ) -> (Option<SurfaceBatch>, Vec<Rect>) {
+    ) -> Option<SurfaceBatch> {
         if width == 0 || height == 0 {
-            return (None, Vec::new());
+            return None;
         }
         let w_usize = width as usize;
         let h_usize = height as usize;
@@ -292,18 +276,13 @@ impl AtlasWindowEncoder {
         }
 
         let full = Rect::new(0, 0, width as i32, height as i32);
-        let raw_damage: Vec<Rect> = match damage.filter(|_| !is_keyframe) {
+        let effective_damage: Vec<Rect> = match damage.filter(|_| !is_keyframe) {
             None => vec![full],
-            Some(d) => d.iter().filter_map(|r| motion::intersect(*r, full)).collect(),
-        };
-
-        let effective_damage: Vec<Rect> = match excluded.and_then(|ex| motion::intersect(ex, full)) {
-            None => raw_damage,
-            Some(ex) => raw_damage.into_iter().flat_map(|r| motion::subtract(r, ex)).collect(),
+            Some(d) => d.iter().filter_map(|r| intersect(*r, full)).collect(),
         };
 
         if effective_damage.is_empty() && !is_keyframe {
-            return (None, Vec::new());
+            return None;
         }
 
         let cols = w_usize.div_ceil(TILE_SIZE as usize);
@@ -311,30 +290,8 @@ impl AtlasWindowEncoder {
         let mut dirty_tiles = vec![false; cols * rows];
 
         if is_keyframe {
-            if let Some(ex) = excluded.and_then(|ex| motion::intersect(ex, full)) {
-                for r in &effective_damage {
-                    mark_tiles(&mut dirty_tiles, cols, rows, *r);
-                }
-                convert_bgrx_regions_to_rgba(
-                    src.data,
-                    src.stride,
-                    &mut self.staging,
-                    w_usize * 4,
-                    &effective_damage,
-                    alpha,
-                );
-                let _ = ex;
-            } else {
-                dirty_tiles.fill(true);
-                convert_bgrx_regions_to_rgba(
-                    src.data,
-                    src.stride,
-                    &mut self.staging,
-                    w_usize * 4,
-                    &[full],
-                    alpha,
-                );
-            }
+            dirty_tiles.fill(true);
+            convert_bgrx_regions_to_rgba(src.data, src.stride, &mut self.staging, w_usize * 4, &[full], alpha);
         } else {
             convert_bgrx_regions_to_rgba(
                 src.data,
@@ -353,7 +310,7 @@ impl AtlasWindowEncoder {
         // Only the next picture scanned over the very same region may reuse its row hashes.
         let known_region = self.row_hashes_region.take();
         let known_hashes = std::mem::take(&mut self.row_hashes);
-        if !is_keyframe && excluded.is_none() {
+        if !is_keyframe {
             let scroll_candidates = coalesced_scroll_regions(&effective_damage, width as i32, height as i32);
             for cand in scroll_candidates {
                 if cand.w >= 64 && cand.h >= 64 {
@@ -390,7 +347,6 @@ impl AtlasWindowEncoder {
         let mut fills: Vec<SurfaceFill> = Vec::new();
         let mut refs: Vec<SurfaceTileRef> = Vec::new();
         let mut tiles: Vec<SurfaceTile> = Vec::new();
-        let mut changed_rects: Vec<Rect> = Vec::new();
 
 
         let mut tile_buf = Vec::with_capacity((TILE_SIZE as usize) * (TILE_SIZE as usize) * 4);
@@ -453,9 +409,6 @@ impl AtlasWindowEncoder {
                         refs.push(SurfaceTileRef { x: x0, y: y0, hash });
                     } else {
                         let (format, data) = encode_atlas_tile(&tile_buf, tw as u32, th as u32);
-                        if looks_like_video(format, data.len(), tile_buf.len()) {
-                            changed_rects.push(tile_rect);
-                        }
                         tiles.push(SurfaceTile {
                             rect: tile_rect,
                             hash: Some(hash),
@@ -465,9 +418,6 @@ impl AtlasWindowEncoder {
                     }
                 } else {
                     let (format, data) = encode_atlas_tile(&tile_buf, tw as u32, th as u32);
-                    if looks_like_video(format, data.len(), tile_buf.len()) {
-                        changed_rects.push(tile_rect);
-                    }
                     tiles.push(SurfaceTile {
                         rect: tile_rect,
                         hash: None,
@@ -477,12 +427,11 @@ impl AtlasWindowEncoder {
                 }
             }
         }
-
         // Merge vertically adjacent identical-width/x/color fills
         coalesce_vertical_fills(&mut fills);
 
         if !is_keyframe && copies.is_empty() && fills.is_empty() && refs.is_empty() && tiles.is_empty() {
-            return (None, Vec::new());
+            return None;
         }
 
         let seq = self.seq;
@@ -500,15 +449,8 @@ impl AtlasWindowEncoder {
             refs,
             tiles,
         };
-        (Some(batch), changed_rects)
+        Some(batch)
     }
-}
-
-/// Whether a new tile looks like a picture from a video rather than an application's
-/// drawing: more than 16 colours that LZ4 cannot halve. Text, icons, flat chrome and
-/// gradients compress far better than that; camera and film pictures barely compress.
-fn looks_like_video(format: AtlasTileFormat, encoded: usize, raw: usize) -> bool {
-    format == AtlasTileFormat::RgbaLz4 && encoded * 2 >= raw
 }
 
 fn mark_tiles(dirty: &mut [bool], cols: usize, rows: usize, r: Rect) {
@@ -570,6 +512,13 @@ fn convert_bgrx_regions_to_rgba(
             }
         }
     }
+}
+
+/// The part of `r` inside `area`, if any.
+fn intersect(r: Rect, area: Rect) -> Option<Rect> {
+    let (x0, y0) = (r.x.max(area.x), r.y.max(area.y));
+    let (x1, y1) = ((r.x + r.w).min(area.x + area.w), (r.y + r.h).min(area.y + area.h));
+    (x0 < x1 && y0 < y1).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
 fn coalesced_scroll_regions(damage: &[Rect], width: i32, height: i32) -> Vec<Rect> {
@@ -805,8 +754,8 @@ mod tests {
         let mut cache = AtlasCacheTracker::new();
         let rect = Rect::new(0, 0, w as i32, h as i32);
 
-        let (batch, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img), false, true, None, None, &cache)
+        let batch = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img), false, true, None, &cache)
             .unwrap();
         let batch = batch.expect("keyframe must emit SurfaceBatch");
         assert!(cache.try_record_published_batch(&batch));
@@ -850,47 +799,6 @@ mod tests {
         img
     }
 
-    fn paint_noise_image(w: u32, h: u32, seed: u32) -> CpuImage {
-        let mut img = CpuImage::new(w, h);
-        let mut state = seed.wrapping_mul(2654435761) | 1;
-        for b in img.data.iter_mut() {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            *b = state as u8;
-        }
-        img
-    }
-
-    #[test]
-    fn only_new_tiles_that_look_like_video_feed_the_motion_detector() {
-        let (w, h) = (256u32, 192u32);
-        let rect = Rect::new(0, 0, w as i32, h as i32);
-        let full = [rect];
-        let cache = AtlasCacheTracker::new();
-
-        // Text drawn and then scrolled: a copy and the exposed strip, none of it video.
-        let mut enc = AtlasWindowEncoder::new();
-        let (_, motion) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&paint_text_image(w, h, 0)), false, true, None, None, &cache)
-            .unwrap();
-        assert!(motion.is_empty(), "drawn text is not video: {motion:?}");
-        let (batch, motion) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&paint_text_image(w, h, 40)), false, false, Some(&full), None, &cache)
-            .unwrap();
-        assert_eq!(batch.unwrap().copies.len(), 1, "the scroll must be a copy");
-        assert!(motion.is_empty(), "a scroll is not video: {motion:?}");
-
-        // A film: every tile new and incompressible, every picture.
-        let mut enc = AtlasWindowEncoder::new();
-        enc.encode_input(1, 1000, rect, w, h, Input::Cpu(&paint_noise_image(w, h, 1)), false, true, None, None, &cache)
-            .unwrap();
-        let (_, motion) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&paint_noise_image(w, h, 2)), false, false, Some(&full), None, &cache)
-            .unwrap();
-        assert_eq!(motion.len(), 12, "every 64x64 tile of the film is video");
-    }
-
     /// `cargo test -p caboose-display bench_atlas_scroll -- --ignored --nocapture`: a phone-size
     /// (1179x2556) text picture scrolled 36 rows per picture, damaged whole as Xwayland reports it.
     #[test]
@@ -902,13 +810,13 @@ mod tests {
         let pictures: Vec<CpuImage> = (0..41).map(|i| paint_text_image(w, h, i * 36)).collect();
         let mut enc = AtlasWindowEncoder::new();
         let mut cache = AtlasCacheTracker::new();
-        let (b, _) = enc.encode_input(1, 0, rect, w, h, Input::Cpu(&pictures[0]), false, true, None, None, &cache).unwrap();
+        let b = enc.encode_input(1, 0, rect, w, h, Input::Cpu(&pictures[0]), false, true, None, &cache).unwrap();
         cache.try_record_published_batch(&b.unwrap());
         let start = std::time::Instant::now();
         let mut copies = 0;
         for (i, picture) in pictures.iter().enumerate().skip(1) {
-            let (b, _) = enc
-                .encode_input(1, i as u64, rect, w, h, Input::Cpu(picture), false, false, Some(&full), None, &cache)
+            let b = enc
+                .encode_input(1, i as u64, rect, w, h, Input::Cpu(picture), false, false, Some(&full), &cache)
                 .unwrap();
             let b = b.unwrap();
             copies += b.copies.len();
@@ -926,8 +834,8 @@ mod tests {
         let mut cache = AtlasCacheTracker::new();
         let rect = Rect::new(0, 0, w as i32, h as i32);
 
-        let (batch0, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &cache)
+        let batch0 = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, &cache)
             .unwrap();
         let batch0 = batch0.unwrap();
         assert!(cache.try_record_published_batch(&batch0));
@@ -940,8 +848,8 @@ mod tests {
         // Scroll content up by 32 pixels (y_offset = 10 + 32 = 42, so dy = -32)
         let img1 = paint_test_image(w, h, 42);
         let damage = [Rect::new(0, 0, w as i32, h as i32)];
-        let (batch1, _) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &cache)
+        let batch1 = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), &cache)
             .unwrap();
         let batch1 = batch1.expect("scroll frame must emit SurfaceBatch");
         assert!(cache.try_record_published_batch(&batch1));
@@ -985,16 +893,16 @@ mod tests {
         let mut client_size = (0, 0);
         let mut client_cache = HashMap::new();
 
-        let (b0, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, None, &cache)
+        let b0 = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&img0), false, true, None, &cache)
             .unwrap();
         let b0 = b0.unwrap();
         assert!(cache.try_record_published_batch(&b0));
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b0).unwrap();
 
         let damage = [Rect::new(0, 0, w as i32, h as i32)];
-        let (b1, _) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), None, &cache)
+        let b1 = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&img1), false, false, Some(&damage), &cache)
             .unwrap();
         let b1 = b1.unwrap();
         assert!(cache.try_record_published_batch(&b1));
@@ -1021,8 +929,8 @@ mod tests {
         let mut client_cache = HashMap::new();
 
         // Frame 1: Tab A (4 full 64x64 tiles)
-        let (b1, _) = enc
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&tab_a), false, true, None, None, &cache)
+        let b1 = enc
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&tab_a), false, true, None, &cache)
             .unwrap();
         let b1 = b1.unwrap();
         assert!(cache.try_record_published_batch(&b1));
@@ -1032,8 +940,8 @@ mod tests {
         let expected_tab_a = client_surface.clone();
 
         // Frame 2: Switch to Tab B (4 new 64x64 tiles)
-        let (b2, _) = enc
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&tab_b), false, false, None, None, &cache)
+        let b2 = enc
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&tab_b), false, false, None, &cache)
             .unwrap();
         let b2 = b2.unwrap();
         assert!(cache.try_record_published_batch(&b2));
@@ -1042,8 +950,8 @@ mod tests {
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b2).unwrap();
 
         // Frame 3: Switch back to Tab A -> all 4 tiles are already in `AtlasCacheTracker`, emitted as `refs`!
-        let (b3, _) = enc
-            .encode_input(1, 3000, rect, w, h, Input::Cpu(&tab_a), false, false, None, None, &cache)
+        let b3 = enc
+            .encode_input(1, 3000, rect, w, h, Input::Cpu(&tab_a), false, false, None, &cache)
             .unwrap();
         let b3 = b3.unwrap();
         assert!(cache.try_record_published_batch(&b3));
@@ -1068,15 +976,15 @@ mod tests {
         let mut client_cache = HashMap::new();
 
         // 1. Keyframe on window 1 and window 2
-        let (b1, _) = enc1
-            .encode_input(1, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
+        let b1 = enc1
+            .encode_input(1, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, &cache)
             .unwrap();
         let b1 = b1.unwrap();
         assert!(cache.try_record_published_batch(&b1));
         reconstruct_surface_batch(&mut client_surface, &mut client_size, &mut client_cache, &b1).unwrap();
 
-        let (b2_init, _) = enc2
-            .encode_input(2, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, None, &cache)
+        let b2_init = enc2
+            .encode_input(2, 1000, rect, w, h, Input::Cpu(&initial), false, true, None, &cache)
             .unwrap();
         let b2_init = b2_init.unwrap();
         assert!(cache.try_record_published_batch(&b2_init));
@@ -1096,8 +1004,8 @@ mod tests {
         }
 
         // Encode delta batch on window 1 (without publishing yet)
-        let (delta1, _) = enc1
-            .encode_input(1, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, None, &cache)
+        let delta1 = enc1
+            .encode_input(1, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, &cache)
             .unwrap();
         let delta1 = delta1.unwrap();
         // Because clients apply `refs` before `tiles`, the second 64x64 tile in `delta1` MUST NOT
@@ -1107,8 +1015,8 @@ mod tests {
 
         // Before `delta1` is published to `cache`, window 2 encodes the same `dup_img` concurrently.
         // Because `delta1` is not published yet, window 2 must also emit `tiles` (not `refs`)!
-        let (delta2, _) = enc2
-            .encode_input(2, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, None, &cache)
+        let delta2 = enc2
+            .encode_input(2, 2000, rect, w, h, Input::Cpu(&dup_img), false, false, None, &cache)
             .unwrap();
         let delta2 = delta2.unwrap();
         assert_eq!(delta2.refs.len(), 0, "unpublished worker batch must not pollute shared cache");

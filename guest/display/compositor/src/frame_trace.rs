@@ -35,7 +35,7 @@ impl<T: Copy> Ring<T> {
 }
 
 /// A picture sent to the client: when, the commit time of its content (its pts), its
-/// encoded bytes (frame, tiles and motion region together), and whether it only
+/// encoded bytes (frame or tiles), and whether it only
 /// sharpened content already sent.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sent {

@@ -41,7 +41,7 @@ This directory is a Cargo workspace:
   tooltip) is announced with `alpha: true`, composed on a transparent canvas (never read
   in place from its buffer) and sent only as lossless RGBA PNG tiles from its own tiler
   (`src/encode/alpha.rs`): the whole picture first and on `request_keyframe`, the changed
-  16×16 blocks after that, never a frame, sharpening, motion stream or marker detection.
+  16×16 blocks after that, never a frame, sharpening or marker detection.
 - **Cheap when nothing changes, and when little does.** A window that is one surface with
   one wl_shm buffer (most windows: terminals, Chromium, X11 apps) is not composed at all:
   the encoder reads the client's buffer in place, holding it until it is done, and only the
@@ -132,7 +132,7 @@ property updates are reconciled on notifications, without a polling timer.
   ([guest/vaapi](../vaapi/README.md)), which offers each player's reconstructed bitstream. Every `OPEN` receives local-decode mode, including when no client is
   connected or the client advertises the codec: flattened marker pixels cannot prove
   foreground alpha or occlusion. Applications compose controls and subtitles over real
-  decoded pixels, carried by the ordinary window/motion paths. Marker recognition and
+  decoded pixels, carried by the ordinary window picture. Marker recognition and
   stream machinery remain available as experimental source; no alpha mask is inferred.
   Launched applications get `LIBVA_DRIVER_NAME=caboose` when the driver is installed.
 - **Game handoff** ([docs/game-handoff.md](../../docs/game-handoff.md), `src/game.rs`). The
@@ -159,16 +159,10 @@ property updates are reconciled on notifications, without a polling timer.
   `draw.present` when its recorder presented that very buffer, complete, and the picture is the
   whole buffer; otherwise as a Surface Atlas batch, a keyframe after draw lists. The image
   installs the recorder and the compositor preloads it into the applications it starts.
-- **Detected motion** (`src/motion.rs`). Each window's changed macroblocks feed a tracker.
-  A dense rectangle of at least 192×112 pixels whose blocks change in most pictures at
-  15 fps or more, for a second, becomes a `motion` video stream. With the Surface Atlas
-  only new tiles that look like video (more than 16 colours that LZ4 cannot halve) feed the
-  tracker, never scroll copies, fills, cached tiles or drawn content. The window's encode
-  worker encodes that crop with its own encoder (no sharpening) and leaves it out of the
-  window picture. A client advertising `scaled_motion` receives eligible software-encoded regions at half
-  width and height with placement unchanged. Once the region has stopped looking like video for a second, a window
-  picture repaints it and the stream ends. Only for a client that lists the stream's codec
-  in `video_decoders` or advertising `scaled_motion`; `--no-motion` turns it off.
+- **No video for parts of a window.** Everything a window draws, animation and in-page
+  video included, stays in its own picture: lossless atlas tiles and exact scroll copies
+  for a Surface Atlas client. Video reaches a client as its own stream only through codec
+  passthrough or the GPU path.
 
 Limitations: the renderer is pixman (CPU), so buffers reach the encoders through system
 memory and the compositor offers no YUV formats; tiles of opaque windows come only from
@@ -249,8 +243,6 @@ probe. Every check asserts on what arrived, not on a picture:
 | `clipboard-files` | a file manager's copy (`x-special/gnome-copied-files`) reaches the phone as a `text/uri-list`; a file the phone uploaded to the transfer area pastes as both lists, and a file outside it is refused |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
 | `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
-| `motion` | Chromium plays a 480×270 canvas "video" in a page of text for 8 s: it becomes one `motion` stream at the canvas, every frame decodes with a pts, the window stream sends at most half as many pictures beside it, the stream ends after the video stops, and the final window picture matches the one streamed with `--no-motion` (≥ 40 dB) |
-| `scaled-motion` | Chromium motion decodes at half size and retains its placement when the client advertises `scaled_motion` |
 | `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
@@ -284,12 +276,11 @@ split by thread:
 
     guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
 
-`scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas,
-video decoders for video streams) to LibreOffice Writer, a GTK 3 text view and xterm, on
-Wayland and on X11, and scrolls each as a trackpad does for five seconds. It fails if any
-part of the window became a motion video stream, and prints the picture size, rate,
-bandwidth, latency and server CPU. LibreOffice needs `libreoffice-writer libreoffice-gtk3`
-in the container:
+`scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas)
+to LibreOffice Writer, a GTK 3 text view and xterm, on Wayland and on X11, and scrolls each
+as a trackpad does for five seconds. It fails if the picture came as video, and prints the
+picture size, rate, bandwidth, latency and server CPU. LibreOffice needs
+`libreoffice-writer libreoffice-gtk3` in the container:
 
     guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py [writer|gtk3|xterm|x11|wayland]
 
@@ -362,7 +353,6 @@ summary.
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--renderer KIND` | `pixman` | The renderer (pixman is the only one) |
 | `--always-compose` | | Compose every window instead of reading single-buffer windows in place (for comparisons) |
-| `--no-motion` | | Keep regions that update at video rates in the window picture |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |
 | `--encoder KIND` | `auto` | `auto`, `software` or `nvenc` |
 | `--crf N` | `23` | Encoder quality, lower is better |

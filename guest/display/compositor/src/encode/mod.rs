@@ -34,8 +34,6 @@ impl CpuImage {
 /// What an encoder consumes.
 pub enum Input<'a> {
     Cpu(&'a CpuImage),
-    /// The coded size at (`x`, `y`) of a larger image (a window's motion region).
-    CpuAt(&'a CpuImage, u32, u32),
     /// A client's wl_shm buffer, read in place: the picture is the coded size at
     /// (`x`, `y`) of the buffer. The buffer is not released to the client until the
     /// encoder is done with it.
@@ -85,10 +83,6 @@ impl From<ffmpeg_next::Error> for EncodeError {
 
 /// A video encoder for one stream at one size. A size change makes a new encoder.
 pub trait Encoder: Send {
-    /// Keep this region at its last base-picture pixels, even when an encode reads
-    /// the complete input (a keyframe or a replaced backing buffer). The original
-    /// input remains available to the region's independent video encoder.
-    fn exclude(&mut self, region: Option<Rect>);
     fn codec(&self) -> Codec;
     /// Short name for logs and `--list-encoders`, e.g. `libx264`.
     fn name(&self) -> &'static str;

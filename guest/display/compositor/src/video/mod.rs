@@ -213,13 +213,6 @@ impl Streams {
         self.by_id.keys().copied().collect()
     }
 
-    /// An id for a video stream the compositor makes itself (a `motion` stream), from
-    /// the same namespace as passthrough streams.
-    pub fn allocate_id(&mut self) -> u64 {
-        self.next_id += 1;
-        self.next_id
-    }
-
     /// Whether any passthrough stream could be playing in a window of this lineage.
     pub fn wants_detection(&self, window_lineage: &[u32]) -> bool {
         self.by_id.values().any(|s| s.passthrough && related(window_lineage, &s.lineage))
@@ -238,7 +231,6 @@ pub fn create_message(s: &VideoStream, b: &Binding) -> proto::Message {
         source: proto::VideoSource::Passthrough,
         color: None,
         extradata: None,
-        scaled: false,
     })
 }
 

@@ -142,8 +142,6 @@ pub struct Stats {
     pub picture_px: u64,
     /// Pictures that only sharpened unchanged content.
     pub refines: u64,
-    /// Pictures of motion regions (video.frame).
-    pub motion_frames: u64,
     /// Updates sent as tiles instead of a picture, and the tiles.
     pub tile_pictures: u64,
     pub tiles: u64,
@@ -153,10 +151,9 @@ impl Stats {
     pub fn summary(&self) -> String {
         let per = |v: u64| if self.frames > 0 { v as f64 / self.frames as f64 / 1000.0 } else { 0.0 };
         format!(
-            "{} frames ({} sharpening) + {} motion frames + {} updates as {} tiles + {} drawn by the client, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
+            "{} frames ({} sharpening) + {} updates as {} tiles + {} drawn by the client, {} kB, {} renders ({} direct from shm, {} unchanged), {:.0}% of pixels damaged; per frame: render {:.2} ms, encode {:.2} ms CPU on the worker thread (not counting x264's own threads)",
             self.frames,
             self.refines,
-            self.motion_frames,
             self.tile_pictures,
             self.tiles,
             self.drawn,
@@ -769,11 +766,7 @@ impl State {
         self.targets_window_gone(id);
         if w.announced.is_some() {
             if let Some(s) = &self.session {
-                let conn = s.conn;
-                if let Some(m) = &w.stream.motion {
-                    self.net.send(conn, &proto::Message::VideoDestroy { id: m.id });
-                }
-                self.net.send(conn, &proto::Message::WindowDestroy { id });
+                self.net.send(s.conn, &proto::Message::WindowDestroy { id });
             }
         }
     }
@@ -888,16 +881,11 @@ impl State {
             let parent_announced = w.parent.is_none_or(|p| self.windows.get(p).is_some_and(|p| p.announced.is_some()));
             if !mapped || !parent_announced {
                 if w.announced.is_some() {
-                    if let Some(m) = &w.stream.motion {
-                        self.net.send(conn, &proto::Message::VideoDestroy { id: m.id });
-                    }
                     self.window_withdrawn(id);
                     self.net.send(conn, &proto::Message::WindowDestroy { id });
                     let w = self.windows.get_mut(id).unwrap();
                     w.announced = None;
                     w.stream.in_flight.clear();
-                    w.stream.motion = None;
-                    w.stream.tracker = None;
                 }
                 continue;
             }
