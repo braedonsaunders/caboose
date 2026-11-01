@@ -201,7 +201,8 @@ const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 /// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
 /// "Applications"). GTK 4 and Qt 6 Quick draw with Vulkan; Electron runs as an X11 client,
 /// where its input methods and windows behave as Chromium's do. OpenGL reaches the phone
-/// through Zink, which presents through the driver's X11 windows (Kopper) but, without a DRM
+/// through Zink, which Mesa tries before llvmpipe when no other driver serves the display
+/// (`LIBGL_KOPPER_DRI2`); it presents through the driver's X11 windows (Kopper) but, without a DRM
 /// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games,
 /// Firefox) run as X11 clients. The phone has no geometry shaders or transform feedback, so
 /// Zink would offer only OpenGL 2.1; the version override offers what the computer's own
@@ -214,7 +215,6 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("SDL_VIDEODRIVER", "x11,wayland"),
     ("MOZ_ENABLE_WAYLAND", "0"),
     ("LIBGL_KOPPER_DRI2", "1"),
-    ("MESA_LOADER_DRIVER_OVERRIDE", "zink"),
     ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
     ("MESA_GLSL_VERSION_OVERRIDE", "450"),
 ];
@@ -886,7 +886,8 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
         assert_eq!(get(&env, "LIBGL_KOPPER_DRI2"), Some("1"));
-        assert_eq!(get(&env, "MESA_LOADER_DRIVER_OVERRIDE"), Some("zink"));
+        // Forcing Zink would leave OpenGL without a renderer when no phone is attached.
+        assert_eq!(get(&env, "MESA_LOADER_DRIVER_OVERRIDE"), None);
         assert_eq!(get(&env, "MESA_GL_VERSION_OVERRIDE"), Some("4.5COMPAT"));
         assert_eq!(get(&env, "QT_QPA_PLATFORM"), Some("xcb;wayland"));
         assert_eq!(get(&env, "SDL_VIDEODRIVER"), Some("x11,wayland"));
