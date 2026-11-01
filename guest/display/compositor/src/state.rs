@@ -231,7 +231,6 @@ pub struct State {
     /// Random for this process, sent in every hello: window ids are unique within it.
     pub epoch: String,
     pub gpu_grants: Option<crate::gpu_grant::Grants>,
-    pub gpu_last_bind_request: u64,
     /// The private GPU broker is restarted whenever it ends: a restart is pending, the
     /// delay before the next one (doubling to 30 s, reset by a broker that lasted a
     /// minute), and when the current broker started.
@@ -550,10 +549,9 @@ impl State {
         use crate::gpu_control::{self, Record};
         match record {
             Record::Bind(bind) => {
-                if bind.request <= self.gpu_last_bind_request {
+                if self.gpu_grants.as_mut().is_some_and(|grants| !grants.accept_bind_request(bind.request)) {
                     self.gpu_control_failed(); return;
                 }
-                self.gpu_last_bind_request = bind.request;
                 let mut matches = match bind.space {
                     gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
                     gpu_control::BUFFER_WINDOW => self.buffer_gpu_bind_matches(&bind),

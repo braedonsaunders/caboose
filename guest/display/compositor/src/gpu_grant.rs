@@ -36,13 +36,23 @@ pub struct Grants {
     executor_generation: u64,
     next_surface_generation: u64,
     retirement_received: bool,
+    last_bind_request: u64,
     windows: HashMap<u64, (Grant, GrantPhase)>,
 }
 
 impl Grants {
     pub fn new() -> io::Result<Self> {
         Ok(Self { epoch: random_nonzero()?, phase: Phase::Idle, executor: [0; 16],
-            executor_generation: 0, next_surface_generation: 0, retirement_received: false, windows: HashMap::new() })
+            executor_generation: 0, next_surface_generation: 0, retirement_received: false, last_bind_request: 0,
+            windows: HashMap::new() })
+    }
+
+    /// A broker numbers its bind requests upward from 1. Each broker gets new grants, so
+    /// the requests of a restarted broker start over and are accepted.
+    pub fn accept_bind_request(&mut self, request: u64) -> bool {
+        if request <= self.last_bind_request { return false; }
+        self.last_bind_request = request;
+        true
     }
 
     pub fn epoch_if_ready(&self) -> Option<[u8; 16]> {
@@ -256,6 +266,19 @@ mod tests {
         assert!(grants.bind(1, peer, &[7]).is_err());
         grants.revoke_sent(grant).unwrap();
         assert!(grants.bind(1, peer, &[7]).is_ok());
+    }
+
+    #[test]
+    fn bind_requests_only_increase_within_one_broker() {
+        let mut grants = Grants::new().unwrap();
+        assert!(grants.accept_bind_request(1));
+        assert!(grants.accept_bind_request(2));
+        assert!(!grants.accept_bind_request(2));
+        assert!(!grants.accept_bind_request(1));
+        assert!(grants.accept_bind_request(9));
+        // A restarted broker gets new grants and numbers its requests from 1 again.
+        let mut restarted = Grants::new().unwrap();
+        assert!(restarted.accept_bind_request(1));
     }
 
     #[test]
