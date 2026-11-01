@@ -10,6 +10,10 @@
 #include <vector>
 #endif
 #include <atomic>
+#include <cstdio>
+#include <chrono>
+#include <string>
+#include <thread>
 #include <cerrno>
 #include <cstdint>
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -36,6 +40,7 @@ struct Process {
     std::shared_ptr<caboose::gpuv2::CompletionFeed> completions;
     std::atomic_bool stopped{false};
     std::set<int> sockets;
+    std::map<int, std::shared_ptr<caboose::gpuv2::DecodeProgress>> progress;
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
     caboose::gpuv2::DecodeDiagnosticBudget terminalBudget;
 #endif
@@ -163,6 +168,9 @@ static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
         if (!registry->activeSockets.insert(fd).second) return EBUSY;
         try {
             process->sockets.insert(fd);
+            auto progress = std::make_shared<caboose::gpuv2::DecodeProgress>();
+            process->progress[fd] = progress;
+            caboose::gpuv2::currentDecodeProgress() = progress.get();
             RenderThreadInfo threadInfo;
             threadInfo.m_vkInfo.emplace();
             threadInfo.setPuid(process->context);
@@ -198,12 +206,16 @@ static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
             lock.lock();
             threadInfo.setProcessResources(nullptr);
             threadInfo.setPuid(0);
+            caboose::gpuv2::currentDecodeProgress() = nullptr;
+            process->progress.erase(fd);
             process->sockets.erase(fd);
             registry->activeSockets.erase(fd);
             return result;
         } catch (...) {
             shutdown(fd, SHUT_RDWR);
             if (!lock.owns_lock()) lock.lock();
+            caboose::gpuv2::currentDecodeProgress() = nullptr;
+            process->progress.erase(fd);
             process->sockets.erase(fd);
             registry->activeSockets.erase(fd);
             throw;
@@ -233,6 +245,20 @@ extern "C" int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t
     if (process.completions) process.completions->cancelOrders();
     FrameBuffer::getFB()->signalGuestProcessDead(process.context);
     for (int fd : process.sockets) shutdown(fd, SHUT_RDWR);
+    // A decoder that has not returned 5 s after its stop holds the process's cleanup, and the
+    // single upstream cleanup queue behind it: say what each one is doing.
+    std::shared_ptr<Process> held = it->second;
+    std::thread([registry, held, puid] {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        if (held->sockets.empty()) return;
+        std::string threads;
+        for (const auto& [fd, p] : held->progress)
+            threads += " fd" + std::to_string(fd) + ":op" + std::to_string(p->opcode.load()) +
+                       "/stage" + std::to_string(p->stage.load());
+        std::fprintf(stderr, "CABOOSE_GPU_STUCK token=%llu context=%u streams=%zu%s\n",
+                     (unsigned long long)puid, held->context, held->sockets.size(), threads.c_str());
+    }).detach();
     return 0;
 }
 extern "C" int caboose_gfx_process_wait_order(caboose_gfx_registry* registry, uint64_t puid,

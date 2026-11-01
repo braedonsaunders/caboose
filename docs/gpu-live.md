@@ -721,7 +721,11 @@ ended (a decoder still blocked in the driver), which counts as failed: the app k
 with whatever native state it still holds, for its lifetime, and a new executor with new
 processes and devices takes over. A socket that hears neither a pong nor any message for
 10 s ends its executor (3 s, and a resume, when the session is resumable), so a connection
-that died silently cannot hold the phone's GPU.
+that died silently cannot hold the phone's GPU. A process stop's native retirement runs apart from the
+executor's serial worker, so a process whose decoder does not return holds only its own
+`PROCESS_RETIRED`; when one has not returned 5 s after its stop, the phone prints
+`CABOOSE_GPU_STUCK` with each of its streams' last opcode and stage (1 decoding, 2 writing
+replies, 3 reading input, 4 parked).
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 
