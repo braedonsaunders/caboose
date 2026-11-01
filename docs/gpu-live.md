@@ -299,8 +299,10 @@ the broker sends REVOKE. The phone sends REVOKED only after native cleanup, and 
 broker then releases the lease and closes the transport. A bounded timeout may
 force local cleanup but cannot produce a remote-retirement receipt. On abrupt loss
 the phone drops every object of the lost connection; once the broker has ended every
-local client of that generation it releases the lease, and a reconnect (which may wait
-up to 5 s for that) is admitted as a new generation. Reconnect never replays stale
+local client of that generation it reports the generation retired to the compositor,
+which ends every surface grant the generation held, and then releases the lease. A
+reconnect (which may wait up to 5 s for that) is admitted as a new generation and served
+by the same broker. Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
 as `CABOOSE_GPU_BROKER executor session ended: <reason>`.
 

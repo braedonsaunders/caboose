@@ -100,6 +100,8 @@ impl Grants {
                 self.windows.remove(&grant.window);
                 self.finish_retirement()
             }
+            // Its executor's retirement ended the grant before the send completed.
+            _ if grant.epoch != self.epoch => Ok(()),
             _ => Err(io::Error::other("stale grant revoke")),
         }
     }
@@ -116,9 +118,12 @@ impl Grants {
     }
 
     pub fn surface_retired_by_identity(&mut self, epoch: [u8; 16], token: [u8; 16], generation: u64) -> io::Result<()> {
-        let entry = self.windows.values_mut().find(|(grant, _)|
-            grant.epoch == epoch && grant.token == token && grant.generation == generation)
-            .ok_or_else(|| io::Error::other("unknown surface retirement"))?;
+        let Some(entry) = self.windows.values_mut().find(|(grant, _)|
+            grant.epoch == epoch && grant.token == token && grant.generation == generation) else {
+            // A receipt for a grant its executor's retirement already ended.
+            if epoch != self.epoch { return Ok(()); }
+            return Err(io::Error::other("unknown surface retirement"));
+        };
         let grant = entry.0;
         match entry.1 {
             GrantPhase::RevokeQueued => {
@@ -137,6 +142,9 @@ impl Grants {
             return Err(io::Error::other("invalid executor retirement"));
         }
         self.retirement_received = true;
+        // The executor's surfaces went with it, after an orderly drain or an abrupt loss (the
+        // phone drops every object of a lost connection): none of its grants outlives it.
+        self.windows.clear();
         self.finish_retirement()
     }
 
@@ -199,7 +207,7 @@ impl Grants {
 
 #[cfg(test)]
 mod tests {
-    use super::Grants;
+    use super::{Grant, Grants};
     #[test]
     fn revoke_request_is_idempotent_only_for_the_live_matching_grant() {
         let mut grants = Grants::new().unwrap();
@@ -282,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn lost_epoch_cannot_rotate_without_retirement_and_revocation() {
+    fn lost_epoch_cannot_rotate_without_executor_retirement() {
         let mut grants = Grants::new().unwrap();
         assert!(grants.epoch_if_ready().is_none());
         grants.ready([1; 16], 1).unwrap();
@@ -290,14 +298,43 @@ mod tests {
         let grant = grants.bind(1, (1000, 42, 123, 17), &[7]).unwrap();
         assert_eq!(grants.lost([1; 16], 1).unwrap(), vec![grant]);
         assert!(grants.epoch_if_ready().is_none());
-        grants.retired([1; 16], 1).unwrap();
-        assert!(grants.epoch_if_ready().is_none());
         assert!(grants.ready([2; 16], 2).is_err());
         grants.revoke_sent(grant).unwrap();
-        assert!(grants.ready([2; 16], 2).is_err());
         grants.surface_retired(grant).unwrap();
+        // Every surface is retired, but the executor is not.
+        assert!(grants.ready([2; 16], 2).is_err());
+        assert!(grants.retired([2; 16], 1).is_err());
+        grants.retired([1; 16], 1).unwrap();
+        assert!(grants.retired([1; 16], 1).is_err());
         assert!(grants.ready([2; 16], 1).is_err());
         grants.ready([2; 16], 2).unwrap();
         assert_ne!(grants.epoch_if_ready(), Some(old));
+    }
+
+    #[test]
+    fn executor_retirement_ends_its_grants_and_their_late_callbacks() {
+        // An abrupt loss: the broker reports lost, then retired once the lost generation's
+        // local clients have ended; the compositor's revokes found no surface to retire.
+        let mut grants = Grants::new().unwrap();
+        grants.ready([1; 16], 1).unwrap();
+        let peer = (1000, 42, 123, 17);
+        let sent = grants.bind(1, peer, &[7]).unwrap();
+        let queued = grants.bind(1, (1000, 43, 124, 18), &[8]).unwrap();
+        assert_eq!(grants.lost([1; 16], 1).unwrap().len(), 2);
+        grants.revoke_sent(sent).unwrap();
+        grants.retired([1; 16], 1).unwrap();
+        // The next executor is taken without restarting the broker.
+        grants.ready([2; 16], 2).unwrap();
+        assert!(!grants.active_window(7) && !grants.active_window(8));
+        // Callbacks for the ended grants are not failures.
+        grants.revoke_sent(queued).unwrap();
+        grants.surface_retired_by_identity(sent.epoch, sent.token, sent.generation).unwrap();
+        // The same windows bind again under the new executor.
+        let again = grants.bind(1, peer, &[7]).unwrap();
+        assert_ne!(again.epoch, sent.epoch);
+        assert!(grants.active_window(7));
+        // A grant of the current epoch must still be known.
+        assert!(grants.surface_retired_by_identity(again.epoch, [9; 16], again.generation).is_err());
+        assert!(grants.revoke_sent(Grant { token: [9; 16], ..again }).is_err());
     }
 }
