@@ -1390,9 +1390,8 @@ final class AppModel {
         ]
         var dock: [HostClient.App] = []
         for (ids, category) in wanted {
-            let byID = ids.lazy.compactMap { id in main.first { $0.id.lowercased().hasPrefix(id) } }.first
-            let byCategory = category.isEmpty ? nil : main.first { $0.categories.contains(category) }
-            if let app = byID ?? byCategory, !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
+            if let app = DockSlot.choose(ids: ids, category: category, among: main, id: \.id, categories: \.categories),
+               !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
         }
         // Then every application with a window, however it started, in the order they opened.
         for group in taskbar.groups where !dock.contains(where: { $0.id == group.id }) {

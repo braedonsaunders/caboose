@@ -91,6 +91,34 @@ struct TaskbarTests {
         #expect(Taskbar.steamGame("steam_app_") == nil && Taskbar.steamGame("steam") == nil)
     }
 
+    /// The file manager's dock place on an Xfce computer, whose apps are sorted by name:
+    /// "Bulk Rename" (`thunar-bulk-rename`) comes before "Thunar File Manager" and shares
+    /// its prefix and icon, and tapping it ran `thunar --bulk-rename`.
+    @Test func aDockPlaceTakesItsAppNotOneSharingItsPrefix() {
+        typealias App = (id: String, categories: [String])
+        func choose(_ ids: [String], _ category: String, _ apps: [App]) -> String? {
+            DockSlot.choose(ids: ids, category: category, among: apps, id: \.id, categories: \.categories)?.id
+        }
+        let xfce: [App] = [
+            ("thunar-bulk-rename.desktop", ["Utility", "Core", "GTK", "Filesystem"]),
+            ("com.valvesoftware.Steam.desktop", ["Game"]),
+            ("thunar.desktop", ["System", "Core", "GTK", "Utility", "FileManager"]),
+        ]
+        let managers = ["thunar", "nautilus", "nemo", "pcmanfm"]
+        #expect(choose(managers, "FileManager", xfce) == "thunar.desktop")
+        // Without Thunar itself, Bulk Rename is no file manager: the category decides.
+        #expect(choose(managers, "FileManager", Array(xfce.prefix(2))) == nil)
+        let nautilus: [App] = [("thunar-bulk-rename.desktop", ["Utility"]), ("org.gnome.Nautilus.desktop", ["FileManager"])]
+        #expect(choose(managers, "FileManager", nautilus) == "org.gnome.Nautilus.desktop")
+        // A variant of the wanted app in its own category still takes the place.
+        let browsers: [App] = [("firefox-esr.desktop", ["Network", "WebBrowser"]), ("firefox-profile-manager.desktop", ["Utility"])]
+        #expect(choose(["chromium", "google-chrome", "firefox"], "WebBrowser", browsers) == "firefox-esr.desktop")
+        #expect(choose(["firefox"], "WebBrowser", [("firefox-profile-manager.desktop", ["Utility"])]) == nil)
+        // An exact id wins over an earlier variant, and over the category.
+        let editors: [App] = [("code-url-handler.desktop", ["IDE"]), ("code.desktop", ["IDE", "Development"])]
+        #expect(choose(["code", "vscodium", "zed"], "IDE", editors) == "code.desktop")
+    }
+
     @Test func dockFitNeverDropsARunningApp() {
         let items = Array(1...6)
         #expect(DockFit.visible(items, fit: 10) { _ in false } == items)
