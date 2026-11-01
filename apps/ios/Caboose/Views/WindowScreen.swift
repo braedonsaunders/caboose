@@ -426,7 +426,10 @@ private struct WindowCardViewport<Content: View>: View {
         GeometryReader(content: content)
             .ignoresSafeArea(.container, edges: ignoredEdges)
             .ignoresSafeArea(.keyboard, edges: .bottom)
-            .onAppear { verticalEdge = barEdge }
+            // The card is rebuilt when its window reappears after a display reconnect (each
+            // new GPU executor reconnects); with the controls hidden the bar reports no edge
+            // then, and the sidebar's reveal strip must keep the one it had.
+            .onAppear { if let barEdge { verticalEdge = barEdge } }
             .onChange(of: barEdge) { _, edge in
                 // Keep the reveal edge while hidden; read current placement again
                 // when controls are visible after a fold or orientation change.
