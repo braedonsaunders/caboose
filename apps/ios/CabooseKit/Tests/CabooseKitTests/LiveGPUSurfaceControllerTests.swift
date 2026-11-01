@@ -88,16 +88,21 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
             XCTAssertEqual(output.messages.last?.body, .bound(.init(nativeErrno: EAGAIN, vkResult: nil)))
             XCTAssertEqual(controller.retainedCount, 1)
             XCTAssertThrowsError(try bind(controller, output))
-            XCTAssertThrowsError(try consume(controller, .retire, output: output, process: 2))
+            // Another process's or a stale identity is answered on its own and touches nothing.
+            try consume(controller, .retire, output: output, process: 2)
+            XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: 0, vkResult: nil)))
             let stale = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: identity.grant, generation: 2)
-            XCTAssertThrowsError(try consume(controller, .retire, output: output, identity: stale))
+            try consume(controller, .retire, output: output, identity: stale)
+            XCTAssertEqual(controller.retainedCount, 1)
             XCTAssertThrowsError(try consume(controller, .query(request: 1, physicalDevice: 2), output: output))
             XCTAssertEqual(controller.retainedCount, 1)
             try consume(controller, .retire, output: output)
             XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: 0, vkResult: nil)))
             XCTAssertEqual(controller.retainedCount, 0)
             XCTAssertEqual(backend.resource.retired, 0)
-            XCTAssertThrowsError(try consume(controller, .retire, output: output))
+            // A second retirement of a grant already gone is answered, not fatal.
+            try consume(controller, .retire, output: output)
+            XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: 0, vkResult: nil)))
             backend.bindError = 0; backend.throwsBindError = false
             let fresh = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: 3, count: 16), generation: 2)
             try consume(controller, .bind(window: 7, instance: 8, width: 800, height: 600), output: output, identity: fresh)
@@ -155,9 +160,10 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         let controller = LiveGPUSurfaceController(backend: backend)
         try bind(controller, output)
         XCTAssertEqual(backend.bindings.first?.0, 99)
-        XCTAssertThrowsError(try consume(controller, .query(request: 1, physicalDevice: 2), output: output, process: 2))
+        try consume(controller, .query(request: 1, physicalDevice: 2), output: output, process: 2)
+        XCTAssertEqual(output.messages.last?.body, .capabilities(request: 1, status: .init(nativeErrno: ESTALE, vkResult: nil), value: nil))
         let stale = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: identity.grant, generation: 2)
-        XCTAssertThrowsError(try consume(controller, .retire, output: output, identity: stale))
+        try consume(controller, .retire, output: output, identity: stale)
         XCTAssertThrowsError(try bind(controller, output))
         XCTAssertEqual(controller.retainedCount, 1)
         XCTAssertEqual(backend.resource.retired, 0)
@@ -249,7 +255,9 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         XCTAssertEqual(controller.retainedCount, 0)
         XCTAssertEqual(backend.resource.retired, 1)
         try controller.requestRevocation(identity) { _, _ in XCTFail("retired local view emitted a revoke") }
-        XCTAssertThrowsError(try consume(controller, .retire, output: output)) // Peer duplicates stay strict.
+        // A peer's duplicate retirement is answered (nothing native is left) and ends nothing else.
+        try consume(controller, .retire, output: output)
+        XCTAssertEqual(output.messages.last?.body, .retired(.init(nativeErrno: 0, vkResult: nil)))
     }
 
     func testLocalSurfaceRevokePreservesNativeProcessUntilProcessStop() throws {

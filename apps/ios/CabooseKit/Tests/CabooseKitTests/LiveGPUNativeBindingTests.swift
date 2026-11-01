@@ -265,7 +265,11 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
         try binding.consume(wire(.processOpen, sequence: 2, process: 2))
         try binding.consume(wire(.processStop, sequence: 3, process: 2))
-        XCTAssertThrowsError(try binding.consume(wire(.processOpen, sequence: 4, process: 2)))
+        // A reused identity is not opened again, and nothing else ends.
+        try binding.consume(wire(.processOpen, sequence: 4, process: 2))
+        XCTAssertEqual(runtime.lock.withLock { runtime.next }, 1)
+        try binding.consume(wire(.processOpen, sequence: 5, process: 3))
+        XCTAssertEqual(runtime.lock.withLock { runtime.next }, 2)
         try? binding.finish()
     }
     func testRetiredWaitsForRealBackendCleanupAndCapacityReplenishes() throws {
@@ -288,7 +292,9 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         wait(for: [retired], timeout: 2)
         runtime.cleanupGate = nil
         try binding.consume(wire(.processOpen, sequence: 19, process: 17))
-        XCTAssertThrowsError(try binding.consume(wire(.processOpen, sequence: 20, process: 18)))
+        // Past capacity the opening goes unanswered; the executor stays.
+        try binding.consume(wire(.processOpen, sequence: 20, process: 18))
+        XCTAssertEqual(try output.frames().filter { $0.kind == .processReady }.count, 17)
         try binding.finish()
         XCTAssertEqual(runtime.finishedTokens.count, 17)
     }

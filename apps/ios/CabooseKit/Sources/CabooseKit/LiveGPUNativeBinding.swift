@@ -509,8 +509,10 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             lock.withLock { compressedTransport = true }
             try send(.transportReady, payload: LiveGPUCompression.offer)
         case .processOpen:
+            // An opening the phone cannot honour is left unanswered and logged; the executor and
+            // every other process go on (the broker ends the waiting process).
             guard frame.process > lastProcess, lock.withLock({ processes.count < 16 }) else {
-                throw LiveGPUBindingError.protocolViolation("process identity or capacity")
+                return dropped("process open", frame)
             }
             var token: UInt64 = 0
             let result = backend.open(&token)
@@ -524,13 +526,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         case .streamOpen:
             try openStream(frame)
         case .data, .fin:
-            let process = try process(frame.process)
+            guard let process = lock.withLock({ processes[frame.process] }) else { return dropped("stream data", frame) }
             guard let (stream, ended) = process.lock.withLock({ () -> (LiveGPUDuplex, Bool)? in
                 guard let stream = process.streams[frame.stream], !stream.inboundFinished else { return nil }
                 if frame.kind == .fin { stream.inboundFinished = true }
                 return (stream, stream.nativeEnded)
             }) else {
-                throw LiveGPUBindingError.protocolViolation("unknown or half-closed stream")
+                // Input for a stream that is gone or already ended belongs to nobody.
+                return dropped("stream data", frame)
             }
             if frame.kind == .data { if !ended { try stream.write(frame.payload) } }
             else {
@@ -538,14 +541,23 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             }
         case .surfaceBind, .surfaceQuery, .present, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent, .swapchainPresentOrdered:
             guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
-            let process = try process(frame.process)
             let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)
+            guard let process = lock.withLock({ processes[frame.process] }) else {
+                dropped("surface record", frame)
+                return try surfaces.answerForUnknownProcess(message, process: frame.process) { [self] id, reply in
+                    try send(reply.kind, process: id, payload: reply.encoded())
+                }
+            }
             try surfaces.consume(message, process: frame.process, token: process.token,
                 output: { [self] id, reply in
                     try send(reply.kind, process: id, payload: reply.encoded())
                 }, failed: { [self] in fail($0) })
         case .processStop:
-            let process = try process(frame.process)
+            // A process the phone does not have is already retired.
+            guard let process = lock.withLock({ processes[frame.process] }) else {
+                dropped("process stop", frame)
+                return try send(.processRetired, process: frame.process)
+            }
             try retire(frame.process, process)
             try send(.processRetired, process: frame.process)
         case .revoke:
@@ -564,12 +576,19 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         default: throw LiveGPUBindingError.protocolViolation("unexpected peer message")
         }
     }
+    /// A peer record that names a process or stream this executor does not have.
+    private func dropped(_ what: String, _ frame: LiveGPUEnvelope) {
+        print("CABOOSE_GPU_DROPPED \(what) kind=\(frame.kind.rawValue) process=\(frame.process) stream=\(frame.stream) " +
+              "sequence=\(frame.sequence) last_process=\(lastProcess) last_stream=\(lastStream) " +
+              "processes=\(lock.withLock { processes.count })")
+        fflush(stdout)
+    }
     private func process(_ id: UInt64) throws -> LiveGPUProcess {
         guard let process = lock.withLock({ processes[id] }) else { throw LiveGPUBindingError.protocolViolation("unknown process") }
         return process
     }
     private func openStream(_ frame: LiveGPUEnvelope) throws {
-        let process = try process(frame.process)
+        guard let process = lock.withLock({ processes[frame.process] }) else { return dropped("stream open", frame) }
         // Reclaim only streams with both FIN directions and both workers returned.
         let snapshot = lock.withLock { Array(processes.values) }
         for p in snapshot {
@@ -580,7 +599,14 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             }
         }
         let count = snapshot.reduce(0) { total, p in total + p.lock.withLock { p.streams.count } }
-        guard frame.stream > lastStream, count < 64 else { throw LiveGPUBindingError.protocolViolation("stream identity or capacity") }
+        // A reused identity is dropped; an opening past capacity is refused with FIN, which the
+        // broker reports to that process alone. The executor goes on either way.
+        guard frame.stream > lastStream else { return dropped("stream open", frame) }
+        guard count < 64 else {
+            dropped("stream open over capacity", frame)
+            lastStream = frame.stream
+            return try send(.fin, process: frame.process, stream: frame.stream)
+        }
         let stream = try LiveGPUDuplex()
         // Reserve both workers before publishing the descriptors to concurrent revoke.
         stream.workers.enter(); stream.workers.enter()
