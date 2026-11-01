@@ -54,7 +54,9 @@ try {
   for (const deadline = Date.now() + Number(process.env.CABOOSE_CHECK_SIGN_IN_MS ?? 1_800_000); status.state !== 'running' && Date.now() < deadline;) {
     assert.ok(status.state !== 'error', status.error)
     await new Promise(resolve => setTimeout(resolve, 3000))
+    const link = status.loginUrl
     status = await node.refresh()
+    if (status.loginUrl && status.loginUrl !== link) console.log(`The sign-in link changed: ${status.loginUrl}`)
   }
   assert.equal(status.state, 'running', `The device did not join: ${JSON.stringify(status)}`)
   assert.ok(status.name && status.addresses?.[0], 'The device has no name or address')
