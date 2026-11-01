@@ -294,6 +294,11 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         queue.async { [self] in finish(nil) }
     }
 
+    func close(abnormally error: Error) {
+        budget.revoke()
+        queue.async { [self] in finish(error) }
+    }
+
     func closeSuspended() {
         budget.revoke()
         queue.async { [self] in
