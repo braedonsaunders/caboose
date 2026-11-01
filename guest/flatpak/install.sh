@@ -14,6 +14,7 @@ install -Dm644 "$here/caboose-depot.conf" /etc/flatpak/installations.d/caboose-d
 # outlives the game and is readable from the computer.
 flatpak override --system --filesystem='~/.local/state/caboose/game-diagnostics:create' \
   com.valvesoftware.Steam
+install -Dm755 "$here/caboose-steam-defaults" /usr/local/libexec/caboose-steam-defaults
 if [ -d /etc/systemd/system ]; then
   install -m 0644 "$here/var-lib-caboose-depot.mount" /etc/systemd/system/var-lib-caboose-depot.mount
 fi
