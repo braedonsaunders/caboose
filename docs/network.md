@@ -35,8 +35,8 @@ tailnet is named after the computer (`Dev Box` becomes `dev-box`), so its MagicD
   as its client. Caboose's
   own services, ports 14600–14799, are never forwarded.
 - **IPv6.** The device has a tailnet IPv6 address too, but only IPv4 reaches the computer.
-  The companion refuses IPv6 connections at once (TCP reset, ICMPv6 unreachable), so clients
-  that try IPv6 first fall back to IPv4 without waiting.
+  The companion forwards no IPv6 and listens on none, so its kernel refuses IPv6 at once and clients
+  that try it first fall back to IPv4 without waiting.
 - **Fence.** The computer can answer but can start nothing through the companion: not into
   the tailnet, not to the companion itself, and not on to the uplink. The companion's own
   rules drop everything else, and the computer gains no capability, device or credential.

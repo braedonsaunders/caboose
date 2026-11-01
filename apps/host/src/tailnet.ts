@@ -158,11 +158,17 @@ exec tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/ta
  * Sends everything that arrives on tailscale0 to the computer ($1), as the companion, except
  * Caboose's own services (14600–14799), which only the host may reach. The
  * computer may answer but may not start anything: not to the tailnet, the companion, or past
- * it to the uplink. IPv6 is refused at once, so clients fall back to IPv4 without waiting.
+ * it to the uplink. The companion forwards no IPv6, and has nothing listening on it, so its
+ * kernel refuses IPv6 at once and clients fall back to IPv4 without waiting.
  * Idempotent: every run replaces Caboose's chains.
  */
+/** Kernels without the legacy tables (WSL's) have nftables: the first that works is used. */
+export const PICK_IPTABLES = `if ! { iptables -L -n && ip6tables -L -n; } >/dev/null 2>&1 && { iptables-nft -L -n && ip6tables-nft -L -n; } >/dev/null 2>&1; then
+  iptables() { iptables-nft "$@"; }; ip6tables() { ip6tables-nft "$@"; }
+fi`
 const CABOOSE_RANGE = `${CABOOSE_PORTS.min}:${CABOOSE_PORTS.max}`
 export const ROUTE_SCRIPT = `set -eu
+${PICK_IPTABLES}
 target=$1
 dev=$(ip -4 route get "$target" | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1)
 [ -n "$dev" ] || { echo "No route to the computer at $target" >&2; exit 1; }
@@ -187,14 +193,7 @@ chain filter CABOOSE-CIN
 iptables -A CABOOSE-CIN -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 iptables -A CABOOSE-CIN -j DROP
 for old in $(iptables -S INPUT | sed -n 's/^-A INPUT -i \\([^ ]*\\) -j CABOOSE-CIN$/\\1/p'); do [ "$old" = "$dev" ] || iptables -D INPUT -i "$old" -j CABOOSE-CIN; done
-hook filter INPUT -i "$dev" -j CABOOSE-CIN
-ip6tables -N CABOOSE-IN6 2>/dev/null || ip6tables -F CABOOSE-IN6
-ip6tables -A CABOOSE-IN6 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-ip6tables -A CABOOSE-IN6 -p tcp -j REJECT --reject-with tcp-reset
-ip6tables -A CABOOSE-IN6 -p ipv6-icmp -j ACCEPT
-ip6tables -A CABOOSE-IN6 -j REJECT
-ip6tables -C INPUT -i tailscale0 -j CABOOSE-IN6 2>/dev/null || ip6tables -I INPUT -i tailscale0 -j CABOOSE-IN6
-ip6tables -P FORWARD DROP`
+hook filter INPUT -i "$dev" -j CABOOSE-CIN`
 
 /** Runs docker with the given standard input, so a key never appears in an argument list. */
 export type DockerInput = (args: string[], input: string, timeoutMs?: number) => Promise<string>
@@ -267,7 +266,7 @@ export class TailnetNode {
       '--label', 'caboose.companion=tailnet', '--label', `caboose.computer=${this.options.computer}`,
       '--network', UPLINK_NETWORK, '--cap-drop', 'ALL', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', '--device', '/dev/net/tun',
       '--security-opt', 'no-new-privileges', '--memory', '256m', '--pids-limit', '200',
-      '--sysctl', 'net.ipv4.ip_forward=1', '--sysctl', 'net.ipv6.conf.all.forwarding=1',
+      '--sysctl', 'net.ipv4.ip_forward=1',
       '-e', `CABOOSE_UPLINK_GATEWAY=${gateway}`, '-v', `${name}:/var/lib/tailscale`,
       '--entrypoint', '/bin/sh', config.image, '-c', COMPANION_SCRIPT], 300_000)
     await docker(['network', 'connect', network, name], 30_000)

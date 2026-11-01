@@ -102,7 +102,7 @@ describe('the companion’s routing', () => {
     expect(ROUTE_SCRIPT).toContain('-A CABOOSE-FWD -i "$dev" -o tailscale0 -s "$target" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT')
     expect(ROUTE_SCRIPT.indexOf('-A CABOOSE-FWD -j DROP')).toBeGreaterThan(ROUTE_SCRIPT.indexOf('-A CABOOSE-FWD -i tailscale0'))
     expect(ROUTE_SCRIPT).toContain('-A CABOOSE-CIN -j DROP')
-    expect(ROUTE_SCRIPT).toContain('ip6tables -P FORWARD DROP')
+    expect(ROUTE_SCRIPT).not.toMatch(/ip6tables -[AIP] /)
   })
   it('names the host fence’s one exception so it can be replaced', () => {
     const rule = companionRule('caboose-br3', '172.22.0.3', '172.22.0.2')
