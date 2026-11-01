@@ -48,8 +48,8 @@ inline void hideCpuBesidePhone(std::vector<int>& ranks) {
 // recover from device loss move to the phone when it attaches (the executor switch).
 inline constexpr const char* kNoPhoneName = "Caboose GPU (no phone attached)";
 inline constexpr const char* kNoPhoneDriverName = "Caboose";
-inline bool presentsCpuAsGpu(const std::vector<int>& ranks, bool phoneHidden) {
-    if (phoneHidden) return false;
+inline bool presentsCpuAsGpu(const std::vector<int>& ranks, bool phoneHidden, bool presentedWhenHidden = false) {
+    if (phoneHidden) return presentedWhenHidden;
     return std::find(ranks.begin(), ranks.end(), rank(kPhoneVendor, 0)) == ranks.end();
 }
 
@@ -67,11 +67,21 @@ inline std::vector<size_t> order(const std::vector<int>& ranks) {
 // as many threads as the computer has, for the driver's on-disk cache. The phone's driver
 // keeps no cache on the computer, so on the phone that work would only be sent across the
 // network and thrown away.
+//
+// Steam's update window, which its bootstrap shows from a child process (`-child-update-ui`)
+// that keeps the bootstrap's single-instance pipe open until it exits. On the phone its OpenGL
+// context (Zink) takes seconds to tear down across the network, long enough for the Steam
+// client the bootstrap starts next to find the pipe still held, take it for a running Steam
+// and exit. It draws a progress window on the computer's CPU instead, presented as a GPU as
+// for a process with no phone (Zink refuses CPU devices).
+inline bool keptOnComputer(const std::string& commandLine) {
+    return commandLine.find(" -child-update-ui") != std::string::npos;
+}
 inline bool hidesPhone(const std::string& commandLine) {
     std::string program = commandLine.substr(0, commandLine.find(' '));
     auto slash = program.rfind('/');
     if (slash != std::string::npos) program = program.substr(slash + 1);
-    return program == "fossilize_replay";
+    return program == "fossilize_replay" || keptOnComputer(commandLine);
 }
 
 }  // namespace caboose_routing

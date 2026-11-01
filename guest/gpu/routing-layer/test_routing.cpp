@@ -31,12 +31,18 @@ int main() {
     assert(!hidesPhone("/usr/bin/vkcube"));
     assert(!hidesPhone("/opt/fossilize_replay_wrapper --x"));
     assert(!hidesPhone(""));
+    // Steam's update window stays on the computer, its CPU device presented as a GPU.
+    const std::string updateUi = "/home/u/.local/share/Steam/steamrt64/steam -child-update-ui -child-update-ui-socket 9";
+    assert(hidesPhone(updateUi) && keptOnComputer(updateUi));
+    assert(!keptOnComputer("/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"));
+    assert(!keptOnComputer("fossilize_replay a.foz"));
 
     // Without the phone, lavapipe is presented as a GPU; not with it, nor where the phone is
     // hidden by policy (fossilize_replay compiles for the device it really runs on).
     assert(presentsCpuAsGpu({rank(0x10005, kCpu)}, false));
     assert(!presentsCpuAsGpu({rank(0x10005, kCpu), rank(kPhoneVendor, kIntegrated)}, false));
     assert(!presentsCpuAsGpu({rank(0x10005, kCpu)}, true));
+    assert(presentsCpuAsGpu({rank(0x10005, kCpu), kHidden}, true, true));
 
     std::puts("routing tests passed");
 }
