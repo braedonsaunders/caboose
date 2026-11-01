@@ -72,9 +72,9 @@ def unavailable(message):
     return ApiError(HTTPStatus.SERVICE_UNAVAILABLE, 'phone_unavailable', message, 'service_unavailable')
 
 
-PHONE_AWAY = ('The phone\'s models are not available: Caboose is not open on the owner\'s iPhone, or '
-              'On-Device AI is off in its settings. Open Caboose on the iPhone and try again, or set '
-              'a fallback provider in ~/.config/caboose/ai.json.')
+PHONE_AWAY = ('The phone\'s models are not available: Caboose is not open on the owner\'s iPhone, '
+              'On-Device AI is off in its settings, or Apple Intelligence is off. Open Caboose on the '
+              'iPhone and try again, or set a fallback provider in ~/.config/caboose/ai.json.')
 
 
 # ---------------------------------------------------------------------------------------------
