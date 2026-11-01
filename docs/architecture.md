@@ -2645,7 +2645,10 @@ the app card, and a detached view releases its layers.
   container corner insets, and the floating desktop applies the same leading clearance
   to its control hit tests. Tiles, floating windows and Laptop's windows share one window
   outline: the concentric clip and a fine top-lit bevel. A window that cannot grow to its
-  snap or tile (equal minimum and maximum size) is centred in it. System sheets and navigation keep their native safe areas.
+  snap is centred in it. In Switchyard, a window that cannot fill its tile (a maximum size
+  smaller than the tile, or a size kept well inside it once the tile's size has settled:
+  updaters, splash screens, small dialogs) shows as a compact card of its own size, with
+  the tile's title bar and outline, centred in the tile over the desktop. System sheets and navigation keep their native safe areas.
   Media/fullscreen fitting, monitor DPI and measured hinge divisions remain independent
   of surface decoration.
 - **Switchyard.** Without an external display the Desktop tab tiles the windows on the
