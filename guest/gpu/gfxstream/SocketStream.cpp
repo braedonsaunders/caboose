@@ -231,16 +231,26 @@ void CabooseSocketStream::invalidate() {
     if (fd_ >= 0 && !handshaking) caboose::completion::markExecutorLost();
 }
 int CabooseSocketStream::connect(const char* path) {
+    int result = -1;
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     const char* optOut = std::getenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
     if (!(optOut && std::strcmp(optOut, "0") == 0)) {
         for (uint32_t offer : kOffers) {
-            int result = connectWith(path, helloWith(offer).data(), true);
-            if (result == 0 || errno != EPROTO) return result;
+            result = connectWith(path, helloWith(offer).data(), true);
+            if (result == 0 || errno != EPROTO) break;
         }
     }
+    if (result != 0 && (errno == EPROTO || (optOut && std::strcmp(optOut, "0") == 0)))
 #endif
-    return connectWith(path, kHello, false);
+        result = connectWith(path, kHello, false);
+    // A phone that is there but cannot be reached leaves the process on the computer's
+    // own drivers until it relaunches: say why. No socket at all is just no phone.
+    if (result != 0 && errno != ENOENT) {
+        const int error = errno;
+        std::fprintf(stderr, "CABOOSE_GPU_CONNECT_FAILED errno=%d\n", error);
+        errno = error;
+    }
+    return result;
 }
 int CabooseSocketStream::connectWith(const char* path, const unsigned char* offer, bool guestHandles) {
     // A refused offer ends the connection during the hello: that is no executor loss.
