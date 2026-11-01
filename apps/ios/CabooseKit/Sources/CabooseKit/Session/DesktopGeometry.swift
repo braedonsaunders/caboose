@@ -128,15 +128,19 @@ public enum DesktopGeometry {
     /// A window that cannot fill its tile (a fixed-size updater, splash or dialog: its
     /// maximum size is smaller, or it kept a size well inside the tile once the tile's size
     /// settled) shows as a compact card of its own size, centred in the tile, rather than a
-    /// small picture in a large black frame. Returns the card's content size, at least
-    /// `minimumWidth` wide so its title bar fits, or nil for an ordinary tile.
+    /// small picture in a large black frame. A card larger than the tile shrinks with the
+    /// picture's shape. Returns the card's content size, at least `minimumWidth` wide so its
+    /// title bar fits, or nil for an ordinary tile.
     public static func compactCard(natural: CGSize, maximum: CGSize?, available: CGSize, settling: Bool,
                                    fullscreen: Bool, minimumWidth: CGFloat = 220) -> CGSize? {
         guard !fullscreen, natural.width > 0, natural.height > 0, available.width > 0, available.height > 0 else { return nil }
         let capped = maximum.map { $0.width > 0 && $0.height > 0 && ($0.width < available.width - 1 || $0.height < available.height - 1) } ?? false
         let kept = !settling && natural.width < available.width * 0.9 && natural.height < available.height * 0.9
         guard capped || kept else { return nil }
-        return CGSize(width: min(available.width, max(natural.width, minimumWidth)), height: min(available.height, natural.height))
+        // Larger than the tile on an axis (a dialog held wider by its minimum size): the card
+        // keeps the picture's shape, so the picture fills it rather than leaving a band.
+        let fit = min(1, available.width / natural.width, available.height / natural.height)
+        return CGSize(width: min(available.width, max(natural.width * fit, minimumWidth)), height: natural.height * fit)
     }
 
     /// Local web content reflows at the viewport size; guest pictures keep their coordinate space.
