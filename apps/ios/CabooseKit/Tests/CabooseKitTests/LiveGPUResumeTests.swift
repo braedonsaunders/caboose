@@ -114,6 +114,22 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertEqual(inbox.closes, 0)
     }
 
+    func testUnansweredResumeTriesTheNextSocket() throws {
+        var policy = LiveGPUResumableTransport.Policy()
+        policy.resumeAnswer = 0.05
+        let (transport, factory, inbox) = try resumable(policy: policy)
+        defer { withExtendedLifetime(transport) {} }
+        factory.sockets[0].emit(.closed(LiveGPUError.closed))
+        // A computer that took the socket as a new executor sends ACK(0) and SESSION, never RESUME.
+        factory.sockets[1].emit(.opened)
+        factory.sockets[1].emit(.bytes(ack(0)))
+        let deadline = Date().addingTimeInterval(2)
+        while factory.sockets.count < 3 && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+        XCTAssertEqual(factory.sockets[1].abnormalCloses, 1)
+        XCTAssertEqual(factory.sockets.count, 3)
+        XCTAssertEqual(inbox.closes, 0)
+    }
+
     func testGapAfterResumeAndOutOfRangeAcknowledgementEndTheSession() throws {
         let (transport, factory, inbox) = try resumable()
         factory.sockets[0].emit(.bytes(try data(3)))
@@ -245,5 +261,8 @@ private final class ScriptedSocket: LiveGPUResumeSocket, @unchecked Sendable {
     func send(_ bytes: Data) -> Bool { lock.withLock { messages.append(bytes) }; return true }
     func close() {}
     func closeSuspended() { lock.withLock { suspended += 1 } }
+    private var abnormal = 0
+    var abnormalCloses: Int { lock.withLock { abnormal } }
+    func close(abnormally error: Error) { lock.withLock { abnormal += 1 }; emit(.closed(error)) }
     func emit(_ incoming: LiveGPUTransportEvent) { lock.withLock { event }?(incoming) }
 }

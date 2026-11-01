@@ -10,6 +10,8 @@ protocol LiveGPUResumeSocket: LiveGPUTransport {
     var queuedMessages: Int { get }
     /// Closes with code 4001: the executor is suspended and the host holds it for longer.
     func closeSuspended()
+    /// Ends this socket as lost, reporting `error`.
+    func close(abnormally error: Error)
 }
 
 /// The resume envelopes of docs/gpu-live.md ("Resuming an executor"): ACK and RESUME live
@@ -102,6 +104,8 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         /// How long after a loss the phone keeps trying to resume before the executor ends.
         var holdWindow: TimeInterval = 30
         var retryInterval: TimeInterval = 0.25
+        /// How long a new socket waits for the broker's RESUME before the next attempt.
+        var resumeAnswer: TimeInterval = LiveGPUConnection.resumeTimeout
         var ackBytes = 64 * 1024
         var ackDelay: TimeInterval = 0.05
         /// Retained-envelope window. It leaves room for acknowledgements under the socket's
@@ -268,6 +272,16 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
                 if let identity {
                     _ = source.send(LiveGPUResumeWire.resume(executor: identity.executor, generation: identity.generation,
                                                              received: received, nonce: nonce))
+                }
+                // A computer that never answers (one that took the socket as a new executor)
+                // gets the next attempt instead of this socket forever.
+                timers.asyncAfter(deadline: .now() + policy.resumeAnswer) { [weak self, weak source] in
+                    guard let self, let source else { return }
+                    let stale = self.condition.withLock { () -> Bool in
+                        guard source === self.socket, case .awaitingResume(let pending) = self.link else { return false }
+                        return pending == nonce
+                    }
+                    if stale { source.close(abnormally: LiveGPUError.silent) }
                 }
             } else {
                 link = .live
