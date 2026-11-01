@@ -211,7 +211,12 @@ struct ComputerLifecycleActions: View {
                 if model.runningAppsAvailable {
                     Button("Task Manager", systemImage: "gauge.with.dots.needle.33percent") {
                         selected()
-                        model.taskManagerPresented = true
+                        // The popover or menu this runs from is still dismissing; a sheet asked for
+                        // in the same moment is dropped by UIKit, so ask once it has gone.
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(350))
+                            model.taskManagerPresented = true
+                        }
                     }
                 }
                 if let upgrade = model.computerStatus?.upgrade, let title = HostMessage.upgradeStatus(upgrade.state) {
