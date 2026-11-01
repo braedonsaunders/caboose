@@ -10,23 +10,24 @@ PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a
 PATCHED_DECODER = 'a8618e5b2b2e22be850264e590fee8456367dc39db56d0a71b59ec5e6914cb32'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'ce87220da9bf4e69bd295d8b907f0e6e09b86f52edae91bafbf391597a4f5f98',
-    'host/vulkan/vk_decoder_global_state.h': '9d44c554fae980d64492d28cfa194e774d24a375aea710d25ecb6a7369e8e869',
+    'host/vulkan/vk_decoder_global_state.cpp': 'dde72475843def438e757421b2761228744237cc50bf820987e6d2dd665e02e7',
+    'host/vulkan/vk_decoder_global_state.h': 'ad7c64a4154b1c59819d116c93c16a34a5327bbde19e5fbea9955d8bd1f85025',
     'host/vulkan/vk_decoder_internal_structs.h': 'd08b344afa298426beb7a8ce8ac0c4b2bbfd835b17ccef4c64e966ce463fbc8f',
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }
 AUDIT_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'ce87220da9bf4e69bd295d8b907f0e6e09b86f52edae91bafbf391597a4f5f98',
-    'host/vulkan/vk_decoder_global_state.h': '9d44c554fae980d64492d28cfa194e774d24a375aea710d25ecb6a7369e8e869',
+    'host/vulkan/vk_decoder_global_state.cpp': 'dde72475843def438e757421b2761228744237cc50bf820987e6d2dd665e02e7',
+    'host/vulkan/vk_decoder_global_state.h': 'ad7c64a4154b1c59819d116c93c16a34a5327bbde19e5fbea9955d8bd1f85025',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
 }
 # vk_decoder_global_state.cpp after 0027/0028 (A2), 0029 (resource cache), 0040 (guest-device Metal
-# objects), display timing, the media latch objects, the shader cache (fork shader-cache) and
-# executor suspension (fork executor-suspend).
+# objects), display timing, the media latch objects, the shader cache (fork shader-cache),
+# executor suspension (fork executor-suspend), pipeline stand-ins (fork pipeline-standin) and the
+# queue stall report (fork queue-stall).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'ce87220da9bf4e69bd295d8b907f0e6e09b86f52edae91bafbf391597a4f5f98',
+    'host/vulkan/vk_decoder_global_state.cpp': 'dde72475843def438e757421b2761228744237cc50bf820987e6d2dd665e02e7',
     'host/vulkan/caboose_pipeline_cache.h': '3450de5a914b57557b5df681ec0221386b92c67d7d58f10788dc9470da90aa0c',
 }
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',

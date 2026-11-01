@@ -1,5 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "completion_feed.h"
+
+#include <chrono>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
@@ -73,6 +75,37 @@ bool CompletionFeed::parseFeed(const unsigned char* packet, size_t size) {
            u32(packet + 8) == kFeedVersion && u32(packet + 12) == 0;
 }
 
+int64_t CompletionFeed::nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+CompletionFeed::State CompletionFeed::state() {
+    State s;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        s.watches = watches_;
+        s.unwatched = unwatched_;
+        s.outstanding = markers_.size() + (waiting_.serial ? 1 : 0);
+        const Pending* oldest = waiting_.serial ? &waiting_ : markers_.empty() ? nullptr : &markers_.front();
+        if (oldest) {
+            s.oldestSerial = oldest->serial;
+            s.oldestQueue = oldest->queue;
+            s.oldestWatchedMs = oldest->watchedMs;
+        }
+        s.lastCompletedSerial = lastCompletedSerial_;
+        s.lastStatus = lastStatus_;
+        s.lastCompletedMs = lastCompletedMs_;
+        s.lastWrittenSerial = lastWrittenSerial_;
+        s.lastWrittenMs = lastWrittenMs_;
+        s.unwritten = records_.size();
+        s.feedAttached = attached_;
+    }
+    std::lock_guard<std::mutex> lock(orderMutex_);
+    s.ordered = ordered_;
+    return s;
+}
+
 CompletionFeed::CompletionFeed(Submit submit) : submit_(std::move(submit)) {
     if (pipe(wake_) != 0) throw std::system_error(errno, std::generic_category(), "completion feed pipe");
     for (int fd : wake_) {
@@ -101,7 +134,9 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closing_ || detached_) return;
+        ++watches_;
         if (markers_.size() >= kMaxOutstanding) {
+            ++unwatched_;
             records_.push_back({serial, kUnwatched});
             char one = 1;
             (void)!write(wake_[1], &one, 1);
@@ -111,6 +146,10 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     // The marker submission takes decoder locks: never under this feed's lock.
     Waiter wait = submit_(boxedQueue);
     if (!wait) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ++unwatched_;
+        }
         push(serial, kUnwatched);
         return;
     }
@@ -122,7 +161,7 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
             wait();
             return;
         }
-        markers_.push_back({serial, std::move(wait)});
+        markers_.push_back({serial, std::move(wait), boxedQueue, nowMs()});
     }
     markersChanged_.notify_one();
 }
@@ -137,9 +176,17 @@ void CompletionFeed::watcherLoop() {
             if (markers_.empty()) return;
             next = std::move(markers_.front());
             markers_.pop_front();
+            waiting_ = {next.serial, nullptr, next.queue, next.watchedMs};
         }
         const int32_t result = next.wait();
         next.wait = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            waiting_ = {};
+            lastCompletedSerial_ = next.serial;
+            lastStatus_ = result == 0 ? kCompleted : kDeviceLost;
+            lastCompletedMs_ = nowMs();
+        }
         push(next.serial, result == 0 ? kCompleted : kDeviceLost);
     }
 }
@@ -162,6 +209,7 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
         std::lock_guard<std::mutex> lock(mutex_);
         mine = ++generation_;
         detached_ = false;
+        attached_ = true;
     }
     for (int i = 0; i < 2; ++i) { char one = 1; (void)!write(wake_[1], &one, 1); }
     struct Detach {
@@ -174,6 +222,7 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
             // markers until close(), since each holds its device alive.
             feed->records_.clear();
             feed->detached_ = true;
+            feed->attached_ = false;
         }
     } detach{this, mine};
     std::vector<unsigned char> out;
@@ -191,6 +240,9 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
                 std::memcpy(out.data() + i * kRecordSize + 8, &ready[i].status, 4);
             }
             if (int error = sendAll(fd, out.data(), out.size())) return stop.load() ? 0 : error;
+            std::lock_guard<std::mutex> lock(mutex_);
+            lastWrittenSerial_ = ready.back().serial;
+            lastWrittenMs_ = nowMs();
         }
         if (stop.load()) return 0;
         pollfd fds[2] = {{fd, POLLIN, 0}, {wake_[0], POLLIN, 0}};

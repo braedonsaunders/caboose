@@ -668,6 +668,17 @@ executor's serial worker, so a process whose decoder does not return holds only 
 `PROCESS_RETIRED`; when one has not returned 5 s after its stop, the phone prints
 `CABOOSE_GPU_STUCK` with each of its streams' last opcode and stage (1 decoding, 2 writing
 replies, 3 reading input, 4 parked).
+A guest answers fence and timeline status from the completion feed, so a completion marker
+that never completes (its queue waits on a semaphore nobody signals) leaves it spinning with
+nothing on the wire. Once a second the phone checks every process; when the oldest marker
+has waited 3 s it prints `CABOOSE_GPU_QUEUE_STALL` (outstanding markers, the oldest one's
+serial, queue and age, the last completion and the last record sent, whether the feed stream
+is attached, and each stream's opcode and stage), followed by one `CABOOSE_GPU_QUEUE` line per
+queue: how many submissions it made and how many gfxstream deferred or still holds deferred,
+and its last four submissions with their age, fence status, waits (`t<wanted>/now<current>`
+for a timeline semaphore, `b/signaled|unsignaled` for a binary one) and signals, semaphores
+and fences by their guest handles. While the stall lasts the report repeats every 30 s;
+`CABOOSE_GPU_QUEUE_RECOVERED` follows when the marker completes.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 
