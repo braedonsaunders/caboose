@@ -11,6 +11,10 @@ turns it off.
   lavapipe last, keeping the driver's order among equals. Applications that take the
   first device, and toolkits such as Zink that take the first suitable one, render on
   the phone whenever it is attached.
+- **Pipeline pre-compiling.** Steam's `fossilize_replay`, which compiles a game's recorded
+  pipelines for the driver's disk cache before the game starts, does not see the phone's
+  GPU: the phone's driver keeps no cache on the computer, so that work would only cross the
+  network and be discarded.
 - **Device-loss policy.** The phone's driver reads `CABOOSE_GPU_ON_LOSS`: `restart`
   reports device loss when the phone goes away, `pause` holds the application until it
   returns. The launch environment sets `auto`, which the layer resolves for its process

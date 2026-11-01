@@ -15,6 +15,12 @@ int main() {
     assert((order({2, 1, 2, 1}) == std::vector<size_t>{1, 3, 0, 2}));
     assert(order({}).empty());
 
+    assert(hidesPhone("/home/u/.local/share/Steam/ubuntu12_64/fossilize_replay a.foz --device-index 0"));
+    assert(hidesPhone("fossilize_replay"));
+    assert(!hidesPhone("/usr/bin/vkcube"));
+    assert(!hidesPhone("/opt/fossilize_replay_wrapper --x"));
+    assert(!hidesPhone(""));
+
     const std::vector<std::string> none;
     assert(lossPolicy(nullptr, "vkcube", none).empty());
     assert(lossPolicy("restart", "vkcube", none) == "restart");
