@@ -491,6 +491,10 @@ Two Caboose Display instances run in the computer, both as `caboose`:
 | Launch environment | `/run/caboose/display.env` | `/run/caboose/agent-display.env` |
 | Started | On interactive wake or promotion | On demand: by a desktop tool or a client opening `/v1/display?seat=agent` |
 
+Each display's input system delivers the phone's pointer, touch, Pencil, keys and text to
+its applications as Wayland seat events and, through Xwayland, XInput 2
+([input.md](input.md)).
+
 Agent GUI applications use a separate persistent home and XDG profile directories under
 `~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
 are independent of owner applications. No owner profile snapshot or sign-in import occurs.
@@ -3354,10 +3358,9 @@ and restores its dock.
   content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
   time-based deceleration shared by window swipes, desktop two-finger scrolling and the
   phone trackpad. Direct content pans map local points through the presented surface to
-  guest pixels, then apply a 1/12 reference gain to tracking and inertia. Hardware
-  scrolling and dedicated phone trackpads retain their existing gain. This calibrates
-  the Xwayland/Chromium reference response; other applications retain their own scroll
-  interpretation (see [scroll units](display.md#direct-content-scroll-units)). The phone
+  guest pixels, then apply a 1/12 gain to tracking and inertia; hardware scrolling and
+  dedicated phone trackpads do not. Applications take precise scrolling as a finger's
+  ([input.md](input.md#scrolling)). The phone
   shows only the newest picture the app drew: a pan scrolls the app, and the content moves
   when the app's next picture arrives.
   A new touch, context action, target change, detach or app backgrounding

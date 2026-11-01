@@ -576,8 +576,8 @@ sums/mode and actual `scrollY`. On a fresh private seat for each run, compare
 calibration, then repeat at scales 1 and 3. Subtract the `wheel` snapshot from `precise`
 for both DOM deltas and content displacement. The X11 and native Wayland results are
 reported separately; acceptance requires movement, not a universal pixel gain.
-The [phone unit trace](../../docs/display.md#direct-content-scroll-units) describes
-how to map the measured content distance back through a presented surface. Retain
+[docs/input.md](../../docs/input.md#scrolling) gives the distance each client scrolls
+for precise and wheel input. Retain
 image digest, compositor hash and Chromium version alongside results. This fixture
 uses protocol pointer input; native `wl_touch` scrolling remains a separate device check.
 
