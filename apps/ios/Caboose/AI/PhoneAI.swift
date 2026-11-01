@@ -121,20 +121,19 @@ final class PhoneAI {
         switch message {
         case .cancel(let id):
             tasks.removeValue(forKey: id)?.cancel()
+            running = tasks.count
         case .request(let id, let request):
             guard tasks[id] == nil else { return }
-            running += 1
             tasks[id] = Task { @MainActor [weak self, runner] in
                 await runner.run(id: id, request: request) { [weak self] event in
                     guard let self, self.socket === task else { return }
                     self.send(event, on: task)
                 }
                 guard let self else { return }
-                if self.tasks.removeValue(forKey: id) != nil {
-                    self.running -= 1
-                    self.answered += 1
-                }
+                if self.tasks.removeValue(forKey: id) != nil { self.answered += 1 }
+                self.running = self.tasks.count
             }
+            running = tasks.count
         }
     }
 }

@@ -34,10 +34,10 @@ final class Probe {
         }
     }
 
-    func run(only: Set<String>?) async {
+    func run(only: Set<String>?, mlx: [String] = []) async {
         let probes: [(String, () async throws -> Void)] = [
             ("info", info), ("tokens", tokens), ("throughput", throughput), ("prefill", prefill),
-            ("context", context), ("session", sessionGrowth), ("guided", guided), ("tools", tools),
+            ("context", context), ("session", sessionGrowth), ("guided", guided), ("tools", tools), ("toolReplay", toolReplay),
             ("vision", vision), ("reasoning", reasoning), ("concurrency", concurrency), ("pcc", pcc),
         ]
         emit("start", ["device": UIDevice.current.model, "system": UIDevice.current.systemVersion,
@@ -48,6 +48,7 @@ final class Probe {
             do { try await probe() } catch { emit(name, ["error": Self.describe(error)]) }
             emit("\(name).done", ["seconds": Date().timeIntervalSince(started)])
         }
+        if !mlx.isEmpty { await MLXProbe(probe: self).run(mlx) }
         emit("finished", [:])
     }
 
@@ -181,11 +182,38 @@ final class Probe {
         }
         emit("tools", ["answer": response.content, "calls": calls, "seconds": Date().timeIntervalSince(started), "usage": Self.usage(response.usage),
                        "entries": session.transcript.map { Self.kind($0) }])
-        // Required mode with two tools.
-        let required = LanguageModelSession(model: model, tools: [WeatherTool(), ClockTool()])
+        // Required mode: does the session stop calling tools once it has their results?
+        let counter = CallCounter()
+        let required = LanguageModelSession(model: model, tools: [WeatherTool(counter: counter), ClockTool(counter: counter)])
         let second = Date()
-        let answer = try await required.respond(to: "Is it raining in Paris and what time is it there?", options: GenerationOptions(samplingMode: .greedy, toolCallingMode: .required))
-        emit("tools", ["mode": "required", "answer": answer.content, "entries": required.transcript.map { Self.kind($0) }, "seconds": Date().timeIntervalSince(second)])
+        let task = Task { try await required.respond(to: "Is it raining in Paris and what time is it there?", options: GenerationOptions(samplingMode: .greedy, toolCallingMode: .required)) }
+        let timer = Task { try await Task.sleep(for: .seconds(30)); task.cancel() }
+        var fields: [String: Any] = [:]
+        do { fields["answer"] = try await task.value.content } catch { fields["error"] = Self.describe(error) }
+        timer.cancel()
+        emit("tools", ["mode": "required", "toolCalls": await counter.count, "seconds": Date().timeIntervalSince(second), "entries": required.transcript.map { Self.kind($0) }].merging(fields) { a, _ in a })
+    }
+
+    /// Tool results the program sends in a later request, written into a new session's
+    /// transcript: which prompt makes the model answer from them.
+    func toolReplay() async throws {
+        let call = Transcript.ToolCall(id: "call_1", toolName: "get_weather", arguments: try GeneratedContent(json: #"{"city":"Toronto"}"#))
+        let base: [Transcript.Entry] = [
+            .instructions(Transcript.Instructions(segments: [.text(.init(content: "Use tools to answer questions about the weather."))], toolDefinitions: [Transcript.ToolDefinition(tool: WeatherTool())])),
+            .prompt(Transcript.Prompt(segments: [.text(.init(content: "What's the weather in Toronto right now?"))])),
+            .toolCalls(Transcript.ToolCalls([call])),
+            .toolOutput(Transcript.ToolOutput(id: "call_1", toolName: "get_weather", segments: [.text(.init(content: #"{"city":"Toronto","temperature_c":-4,"conditions":"heavy snow"}"#))])),
+        ]
+        for (label, prompt) in [("empty", ""), ("continue", "Answer using the tool results above."), ("repeat", "What's the weather in Toronto right now?")] {
+            let session = LanguageModelSession(model: model, tools: [WeatherTool()], transcript: Transcript(entries: base))
+            let started = Date()
+            do {
+                let response = try await session.respond(to: prompt, options: GenerationOptions(samplingMode: .greedy))
+                emit("toolReplay", ["prompt": label, "answer": response.content, "seconds": Date().timeIntervalSince(started), "entries": session.transcript.map { Self.kind($0) }])
+            } catch {
+                emit("toolReplay", ["prompt": label, "error": Self.describe(error)])
+            }
+        }
     }
 
     func vision() async throws {
@@ -237,6 +265,9 @@ final class Probe {
         fields["quota"] = String(describing: quota.status)
         emit("pcc", fields)
         guard cloud.isAvailable else { return }
+        let started = Date()
+        let answer = try await LanguageModelSession(model: cloud).respond(to: "In two sentences, what is Private Cloud Compute?", options: GenerationOptions(samplingMode: .greedy))
+        emit("pcc", ["answer": answer.content, "seconds": Date().timeIntervalSince(started), "usage": Self.usage(answer.usage)])
         let session = LanguageModelSession(model: cloud)
         try await stream(session, prompt: "Write a detailed essay of about 700 words about the history of railways in Canada.",
                          options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 900), label: "pcc.throughput", extra: [:])
@@ -377,8 +408,14 @@ final class Probe {
 }
 
 /// A weather tool whose arguments come from a schema built at run time.
+actor CallCounter {
+    var count = 0
+    func add() { count += 1 }
+}
+
 struct WeatherTool: Tool {
     var delay: Duration = .zero
+    var counter: CallCounter?
     let name = "get_weather"
     let description = "Get the current weather for a city."
     var parameters: GenerationSchema {
@@ -387,6 +424,7 @@ struct WeatherTool: Tool {
         ]), dependencies: [])) ?? GenerationSchema(type: GeneratedContent.self, properties: [])
     }
     func call(arguments: GeneratedContent) async throws -> String {
+        await counter?.add()
         if delay > .zero { try await Task.sleep(for: delay) }
         let city = (try? arguments.value(String.self, forProperty: "city")) ?? "unknown"
         return "{\"city\":\"\(city)\",\"temperature_c\":12,\"conditions\":\"light rain\"}"
@@ -394,6 +432,7 @@ struct WeatherTool: Tool {
 }
 
 struct ClockTool: Tool {
+    var counter: CallCounter?
     let name = "get_time"
     let description = "Get the current local time in a city."
     var parameters: GenerationSchema {
@@ -401,5 +440,8 @@ struct ClockTool: Tool {
             .init(name: "city", schema: .init(type: String.self)),
         ]), dependencies: [])) ?? GenerationSchema(type: GeneratedContent.self, properties: [])
     }
-    func call(arguments: GeneratedContent) async throws -> String { "{\"time\":\"21:14\"}" }
+    func call(arguments: GeneratedContent) async throws -> String {
+        await counter?.add()
+        return "{\"time\":\"21:14\"}"
+    }
 }

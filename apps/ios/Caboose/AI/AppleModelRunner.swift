@@ -10,8 +10,8 @@ import ImageIO
 /// transcript and its last user message the prompt. A program's tools are tools of the
 /// session whose answers come from the program: when the model calls one, the request ends
 /// with the call (`tool_calls`), and the session waits for the program's next request, which
-/// carries the result, and continues the same turn. A result that arrives after the session
-/// gave up waiting is replayed into a new session of the same turn.
+/// carries the result, and continues the same turn. Results that arrive after the session
+/// gave up waiting are written into a new session's transcript, which answers from them.
 @MainActor
 final class AppleModelRunner {
     static let modelID = "apple-foundation"
@@ -160,8 +160,9 @@ private final class Turn {
     let schema: GenerationSchema?
     let maxTokens: Int?
     let stops: [String]
-    /// Results the program already sent for calls the model will make again in this session.
-    var replays: [(name: String, arguments: AIJSON?, output: String)]
+    /// A required tool call: the session would call tools again after their results, so the
+    /// turn ends with its calls and the program's next request starts a new one.
+    let forcesTools: Bool
 
     var legEnded: CheckedContinuation<Void, any Error>?
     private var id = ""
@@ -177,11 +178,14 @@ private final class Turn {
     init(runner: AppleModelRunner, request: AIRelay.Request, conversation: AIConversation) async throws {
         self.runner = runner
         let model = runner.model
-        prompt = conversation.prompt
+        // Results for calls of a turn no session waits for any more: the turn is written into
+        // the transcript with them, and the model answers from them to an empty prompt.
+        let continuing = !conversation.results.isEmpty
+        prompt = continuing ? AIRelay.Message(role: .user, parts: []) : conversation.prompt
         maxTokens = request.maxTokens
         stops = request.stop
+        forcesTools = request.toolChoice == .required || { if case .named = request.toolChoice { true } else { false } }()
         text = AIStreamText(stops: request.stop)
-        replays = conversation.results.map { ($0.call.name, try? AIJSON.parse($0.call.arguments), $0.output) }
         if let format = request.responseFormat, let shape = format.schema {
             schema = try AISchema.generationSchema(shape, name: format.name)
         } else {
@@ -214,7 +218,7 @@ private final class Turn {
         let budget = model.contextSize - min(request.maxTokens ?? model.contextSize / 4, model.contextSize / 2)
         if #available(iOS 26.4, *) {
             let fixed = entries
-            let prompt = conversation.prompt.text
+            let prompt = conversation.prompt.text + conversation.results.map(\.output).joined(separator: "\n")
             let used = try await history.fit(budget: budget) { conversation in
                 let transcript = fixed + Self.entries(conversation.history)
                 return try await model.tokenCount(for: transcript) + model.tokenCount(for: prompt)
@@ -225,6 +229,10 @@ private final class Turn {
             }
         }
         entries += Self.entries(history.history)
+        if continuing {
+            entries += Self.entries([.user(conversation.prompt), .assistant(text: "", toolCalls: conversation.results.map(\.call))]
+                                    + conversation.results.map { .toolOutput(callId: $0.call.id, name: $0.call.name, text: $0.output) })
+        }
         session = LanguageModelSession(model: model, tools: tools, transcript: Transcript(entries: entries))
         box.turn = self
     }
@@ -331,10 +339,6 @@ private final class Turn {
 
     /// A tool of this turn was called. Calls made together go to the program together.
     func called(name: String, arguments: GeneratedContent) async throws -> String {
-        let parsed = try? AIJSON.parse(arguments.jsonString)
-        if let index = replays.firstIndex(where: { $0.name == name && $0.arguments == parsed }) {
-            return replays.remove(at: index).output
-        }
         let callID = "call_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { result in
@@ -358,6 +362,11 @@ private final class Turn {
         }))
         let usage = session.transcriptUsage
         send(AIRelay.done(id, finish: .toolCalls, usage: usage))
+        if forcesTools {
+            end(throwing: nil)
+            cancel()
+            return
+        }
         waitingFor = Set(calls.map(\.id))
         runner.wait(self, for: waitingFor)
         end(throwing: nil)

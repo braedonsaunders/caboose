@@ -41,6 +41,7 @@ Each component has its own README with how to build, run and test it.
                                                 │ │  │   agent seat, Xwayland :101       │   │
                                                 │ │  ├ caboose-files          :14700     │   │
                                                 │ │  ├ caboose-terminal       :14701     │   │
+                                                │ │  ├ caboose-ai :14702, localhost:11434│   │
                                                 │ │  ├ caboose-agentd (ACP runner)       │   │
                                                 │ │  ├ notifications, phone, media       │   │
                                                 │ │  └ apps: Chromium, VS Code, terminal,│   │
@@ -204,7 +205,7 @@ same installer to update computers whose disks predate the host:
 - A container created without the port 14700 mapping cannot reach the file service; the
   management status warns that it must be recreated (keep its home volume). One created
   without the 14701 mapping needs nothing: the host reaches its terminal service on the
-  container's address on its bridge network.
+  container's address on its bridge network, as it always reaches Caboose AI's 14702.
 
 The runner and its pinned runtime dependencies install at `/opt/caboose/agentd`; an upgrade
 replaces its script atomically and reuses dependencies whose exact versions already match.
@@ -383,7 +384,8 @@ The container is created with `--init`, `--restart no`, `--shm-size 2g`, the com
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
 default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601, 14700
-and 14701 on `127.0.0.1` only. Its session script provides:
+and 14701 on `127.0.0.1` only; the host reaches Caboose AI's 14702 on the container's
+bridge address. Its session script provides:
 
 ```
 caboose-session start        # CUPS and the print queue, the owner's session bus,
@@ -613,11 +615,18 @@ environment, and answers `{ session }` for a client to attach to; the agent runn
 for a terminal sign-in on the phone ([Signing in](#signing-in)). The protocol is in
 [Terminal](#terminal).
 
+**Caboose AI.** `guest/ai/caboose-ai.py` (`/opt/caboose/ai/`, `caboose-ai.service` in the
+microVM, `caboose-components-services` in the container) runs as `caboose`: the phone's
+language models for the computer's programs at `localhost:11434` (the OpenAI and Ollama
+APIs), relayed through the host's WebSocket on TCP 14702 (display token). Without the phone a
+request fails at once with 503, or goes to the owner's fallback provider. The contract is
+[ai.md](ai.md).
+
 **Loopback forwarder.** `guest/ports/caboose-ports.py` (`/opt/caboose/ports/`, started by
 `caboose-components-services` in the container) runs as `caboose` and holds no port of its
 own. While `/run/caboose/ports.json`, written by the host, is `{"forward": true}`, it
 listens on the computer's own IPv4 addresses for each TCP port that only loopback listens on
-(except 14600–14799 and the ephemeral range), and pipes each connection to the loopback
+(except 14600–14799, Caboose AI's 11434 and the ephemeral range), and pipes each connection to the loopback
 server. HTTP requests arrive with `Host`, and a same-host `Origin` and `Referer`, set to
 `localhost:<port>`. The host writes `true` while the computer has an address of its own and
 its `forwardLoopback` setting is not `false` ([network](network.md)). When the file also
@@ -2009,6 +2018,13 @@ from `position`, then `POST …/control { action: "pause" }`; when the phone sto
 File and scan requests from the computer's portal and `caboose-scan`, the phone's
 appearance and location, and the computer's Now Playing, relayed with the routes
 `/v1/bridge/*` and `/v1/now-playing*` and the control events above. The contract is [native-bridge.md](native-bridge.md#host).
+
+### Caboose AI
+
+`GET /v1/ai` (WebSocket) is the phone serving its language models to the computer's
+programs. It never wakes the computer or holds a lease; while the computer runs and a phone
+offers models, the host joins it to the guest's caboose-ai on port 14702, checking every
+message field by field. The contract is [ai.md](ai.md#host).
 
 ### Desktop notifications
 
@@ -3716,6 +3732,13 @@ app group and a Keychain access group.
   `GET /v1/phone/files/:id` (behind the `PhoneFileDownloading` protocol), then presents the
   share sheet or the AirPrint dialog, and deletes its temporary copy when the sheet
   finishes.
+
+### On-device AI
+
+While Caboose is open and connected, Apple's on-device model answers the computer's programs
+at `localhost:11434` (Computer settings > On-Device AI for Apps, on by default). Each request
+is one turn of a Foundation Models session; tool calls go back to the program and the turn
+continues when their results arrive. See [ai.md](ai.md#phone).
 
 ### Native bridge on the phone
 
