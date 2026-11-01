@@ -501,19 +501,66 @@ static void surface_size(cairo_surface_t *surface, int *w, int *h) {
     }
 }
 
-/* Declares a surface to the stream the first time it is drawn into or drawn from. */
+static uint64_t put_image(cairo_surface_t *surface, surf_t *s);
+
+/* Declares a surface to the stream the first time it is drawn into or drawn from. A surface
+ * whose content predates this recording (a toolkit keeps its window buffers) is sent once as
+ * its pixels, painted onto it, and is a recorded surface from then on. */
 static void surf_declare(cairo_surface_t *surface, surf_t *s) {
     if (s->declared == generation) return;
     int w, h;
     surface_size(surface, &w, &h);
+    uint64_t snapshot = 0;
+    if (s->gen != generation && w > 0 && h > 0) {
+        s->image = 0;
+        snapshot = put_image(surface, NULL);
+    }
+    int known = s->gen == generation || snapshot;
     size_t at = cdl_begin(&out, CDL_SURFACE);
     cdl_u32(&out, s->id);
     cdl_u32(&out, (uint32_t)w);
     cdl_u32(&out, (uint32_t)h);
-    int known = s->gen == generation;
-    cdl_u8(&out, !known ? CDL_SURFACE_UNKNOWN : s->window ? CDL_SURFACE_WINDOW : s->clear ? CDL_SURFACE_CLEAR : CDL_SURFACE_UNKNOWN);
+    cdl_u8(&out, !known ? CDL_SURFACE_UNKNOWN : s->window ? CDL_SURFACE_WINDOW
+                 : (s->clear || snapshot) ? CDL_SURFACE_CLEAR : CDL_SURFACE_UNKNOWN);
     cdl_end(&out, at);
     s->declared = generation;
+    if (!snapshot) return;
+    static const float identity[6] = {1, 0, 0, 1, 0, 0};
+    at = cdl_begin(&out, CDL_TARGET);
+    cdl_u32(&out, s->id);
+    cdl_end(&out, at);
+    at = cdl_begin(&out, CDL_PAINT);
+    cdl_u8(&out, CAIRO_OPERATOR_SOURCE);
+    cdl_f32(&out, 1);
+    for (int i = 0; i < 6; i++) cdl_f32(&out, identity[i]);
+    cdl_u8(&out, CDL_SOURCE_IMAGE);
+    cdl_u64(&out, snapshot);
+    cdl_u8(&out, CAIRO_EXTEND_NONE);
+    cdl_u8(&out, CAIRO_FILTER_NEAREST);
+    for (int i = 0; i < 6; i++) cdl_f32(&out, identity[i]);
+    cdl_end(&out, at);
+    current_target = s->id;
+    current_clip = 1;
+    s->gen = generation;
+    s->clear = 1;
+    s->pixels = 0;
+}
+
+/* A number in `base` (10 or 16) at `at`, its end in `end` (== `at` when there is none). Not
+ * strtoull: with _GNU_SOURCE glibc maps that to a C23 symbol newer than Flatpak runtimes. */
+static unsigned long long parse_number(const char *at, char **end, int base) {
+    unsigned long long v = 0;
+    const char *p = at;
+    for (;; p++) {
+        int d;
+        if (*p >= '0' && *p <= '9') d = *p - '0';
+        else if (base == 16 && *p >= 'a' && *p <= 'f') d = *p - 'a' + 10;
+        else if (base == 16 && *p >= 'A' && *p <= 'F') d = *p - 'A' + 10;
+        else break;
+        v = v * (unsigned)base + (unsigned)d;
+    }
+    *end = (char *)p;
+    return v;
 }
 
 /* The memfd or shm file and offset behind `data`, from /proc/self/maps; 0 when private. */
@@ -524,13 +571,24 @@ static int shared_mapping(const void *data, uint64_t *ino, uint64_t *off) {
     int found = 0;
     uintptr_t p = (uintptr_t)data;
     while (fgets(line, sizeof line, maps)) {
-        uintptr_t start, end;
-        char perms[8];
-        unsigned long long file_off, inode;
-        unsigned int major, minor;
-        if (sscanf(line, "%" SCNxPTR "-%" SCNxPTR " %7s %llx %x:%x %llu", &start, &end, perms, &file_off, &major,
-                   &minor, &inode) != 7)
-            continue;
+        /* "start-end perms offset major:minor inode path", parsed by hand: sscanf binds to a
+         * newer glibc than the Flatpak runtimes carry. */
+        char *at = line, *next;
+        uintptr_t start = (uintptr_t)parse_number(at, &next, 16);
+        if (next == at || *next != '-') continue;
+        at = next + 1;
+        uintptr_t end = (uintptr_t)parse_number(at, &next, 16);
+        if (next == at || *next != ' ') continue;
+        const char *perms = next + 1;
+        if (strlen(perms) < 5) continue;
+        at = (char *)perms + 5; /* "rw-s " */
+        unsigned long long file_off = parse_number(at, &next, 16);
+        if (next == at) continue;
+        at = strchr(next + 1, ' ');
+        if (!at) continue;
+        at++;
+        unsigned long long inode = parse_number(at, &next, 10);
+        if (next == at) continue;
         if (p < start || p >= end) continue;
         if (perms[3] == 's' && inode != 0) {
             *ino = inode;
@@ -925,6 +983,7 @@ static int put_source(cdl_buf *b, cairo_pattern_t *p) {
         cairo_matrix_t pm;
         to_pixels(surface, &m, &pm);
         surf_t *s = surf_get(surface);
+        if (s && s->gen != generation) surf_declare(surface, s); /* made known by its pixels */
         if (s && s->clear && !s->pixels && s->gen == generation) {
             surf_declare(surface, s);
             cdl_u8(b, CDL_SOURCE_SURFACE);
@@ -1556,9 +1615,14 @@ static void present(struct wl_proxy *surface, struct wl_proxy *buffer) {
     for (surf_t *s = windows; s; s = s->next_window) {
         if (s->shm_ino != b->ino || s->shm_off != b->off) continue;
         surf_declare(s->surface, s);
+        /* Complete: created in this recording and drawn only by recorded ops (no op went
+         * unrecorded and no pixels were written directly), so the stream holds all of it. */
+        int complete = s->gen == generation && s->declared == generation && !s->pixels;
         size_t at = cdl_begin(&out, CDL_PRESENT);
         cdl_u32(&out, s->id);
         cdl_u32(&out, real_wl_proxy_get_id ? real_wl_proxy_get_id(surface) : 0);
+        cdl_u32(&out, real_wl_proxy_get_id ? real_wl_proxy_get_id(buffer) : 0);
+        cdl_u8(&out, (uint8_t)complete);
         cdl_end(&out, at);
         if (capture_pixels) {
             int w, h;

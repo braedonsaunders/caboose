@@ -38,7 +38,8 @@ the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
 ([`guest/terminal`](../terminal/README.md)), notifications
 ([`guest/notifications`](../notifications/README.md)), phone handoff and the `iPhone` printer
 ([`guest/phone`](../phone/README.md)), media handoff
-([`guest/media-handoff`](../media-handoff/README.md)), `caboose-game-run` and the shipped game
+([`guest/media-handoff`](../media-handoff/README.md)), the cairo draw-list recorder that
+caboose-display preloads ([`guest/draw`](../draw/README.md)), `caboose-game-run` and the shipped game
 bundles ([`guest/game`](../game/README.md)), and the WhiteSur theme. Its
 environment switches on apps' accessibility trees (`ACCESSIBILITY_ENABLED`,
 `GNOME_ACCESSIBILITY`, `QT_LINUX_ACCESSIBILITY_ALWAYS_ON`). The container's command is

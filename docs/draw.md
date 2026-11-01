@@ -70,7 +70,7 @@ the source's pixels for surfaces and images. `extend` is `0` none, `1` repeat, `
 | `0x0A` | `unsupported` | `reason: u32` (`1` a source pattern with no encoding, `2` a source surface whose pixels could not be read, `3` glyphs without outlines), `x, y, w, h`: the target's pixels drawn without a record |
 | `0x20` | `image` | `hash: u64`, `w: u32`, `h: u32`, `format: u8` (`0`: premultiplied RGBA8), pixels |
 | `0x21` | `glyph` | `font: u64`, `glyph: u32`, path in em units, y down |
-| `0x30` | `present` | `surface: u32`, `wl_surface: u32`: the window buffer `surface` was committed to the Wayland surface with this protocol id |
+| `0x30` | `present` | `surface: u32`, `wl_surface: u32`, `wl_buffer: u32`, `complete: u8`: the window buffer `surface`, the Wayland buffer with that protocol id, was committed to the Wayland surface with that protocol id. `complete` is `1` when the stream holds all of the buffer's content: it was created in this recording and drawn only by recorded ops (no `unsupported` op, no pixels written directly) |
 | `0x31` | `pixels` | `surface: u32`, `w: u32`, `h: u32`, premultiplied RGBA8: what the application really drew, for checking |
 | `0x32` | `begin` | `generation: u32`: a fresh recording; nothing before it is referred to after it |
 
