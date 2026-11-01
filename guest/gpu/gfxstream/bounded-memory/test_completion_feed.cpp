@@ -166,6 +166,8 @@ int main() {
     assert(!lossPolicyPauses("restart", "vkcube", none));
     assert(lossPolicyPauses("auto", "vkcube --wsi xcb", none));
     assert(!lossPolicyPauses("auto", "/usr/lib/chromium/chromium --type=gpu-process --x", none));
+    assert(!lossPolicyPauses("auto", "steamwebhelper --type=zygote --no-zygote-sandbox", none));
+    assert(lossPolicyPauses("pause", "steamwebhelper --type=zygote", none));
     assert(!lossPolicyPauses("auto", "qml6 t.qml", qt));
     assert(!lossPolicyPauses("auto", "kp", {"libQt5Gui.so.5"}));
     assert(!lossPolicyPauses("bogus", "vkcube", none));

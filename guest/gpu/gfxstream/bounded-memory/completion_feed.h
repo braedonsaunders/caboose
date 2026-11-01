@@ -365,13 +365,16 @@ inline void executorConnected() {
 // "auto", the launch environment's value, is resolved for the process here, where only the
 // driver reads it (the environment is never changed: some applications trap setenv):
 // restart for a Chromium-family GPU process and for Qt, which recover from device loss,
-// pause for everything else.
+// pause for everything else. A GPU process forked from a Chromium zygote (Steam's web views)
+// keeps the zygote's command line, `--type=zygote`; of a zygote's children only the GPU
+// process creates Vulkan devices.
 inline bool lossPolicyPauses(const char* mode, const std::string& commandLine,
                              const std::vector<std::string>& libraries) {
     if (!mode) return false;
     if (std::strcmp(mode, "pause") == 0) return true;
     if (std::strcmp(mode, "auto") != 0) return false;
     if (commandLine.find("--type=gpu-process") != std::string::npos) return false;
+    if (commandLine.find("--type=zygote") != std::string::npos) return false;
     for (const auto& library : libraries) {
         const auto slash = library.rfind('/');
         const std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
