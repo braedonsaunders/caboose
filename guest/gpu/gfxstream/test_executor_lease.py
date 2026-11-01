@@ -30,6 +30,18 @@ class LeaseTests(unittest.TestCase):
         self.assertFalse(gate.abandoned(ident,generation))
         self.assertGreater(gate.admit(ident),generation)
 
+    def test_held_until_the_generation_is_released(self):
+        gate=lease.ExecutorLease(); ident=b'a'*16
+        self.assertFalse(gate.held(ident,1))
+        generation=gate.admit(ident)
+        self.assertTrue(gate.held(ident,generation))
+        self.assertFalse(gate.held(b'b'*16,generation))
+        self.assertFalse(gate.held(ident,generation+1))
+        gate.ready(ident,generation)
+        self.assertTrue(gate.held(ident,generation))
+        self.assertTrue(gate.abandoned(ident,generation))
+        self.assertFalse(gate.held(ident,generation))
+
     def test_direction_queue_limits_and_recovery(self):
         q=lease.BoundedQueue()
         for _ in range(64): q.put(b'x')

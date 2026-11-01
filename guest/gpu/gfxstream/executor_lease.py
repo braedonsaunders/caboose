@@ -75,6 +75,11 @@ class ExecutorLease:
             self._identity = None
             self._state = 'idle'
 
+    def held(self, executor, generation):
+        """Whether this generation of the executor still holds the lease."""
+        with self._lock:
+            return self._identity == executor and self._generation == generation and self._state != 'idle'
+
     def abandoned(self, executor, generation):
         """The executor's connection was lost and the broker has ended every local client of
         the generation: nothing of it remains to finish, so a reconnect may be admitted."""

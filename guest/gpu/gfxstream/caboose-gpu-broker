@@ -367,6 +367,7 @@ class Session:
         self.draining = False
         self.ready_reported = False
         self.lost_reported = False
+        self.retired_reported = False
         self.drain_requested = asyncio.Event()
         self.local_tasks = set()
         self.lifecycle_tasks = set()
@@ -1194,6 +1195,7 @@ class Broker:
         await self.send_control(data)
         if kind == 4: session.ready_reported = True
         if kind == 5: session.lost_reported = True
+        if kind == 6: session.retired_reported = True
 
     async def surface_client(self, session, sock):
         """Forward one authenticated surface's actual native controls and replies."""
@@ -1573,6 +1575,13 @@ class Broker:
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
                 # The phone dropped this generation's objects with its connection, and every
                 # local client of it has ended: release the lease so the executor can return.
+                # Its objects went with its connection and its local clients have ended: the
+                # generation is retired, and with it every surface grant it held, so the
+                # compositor takes the next executor without restarting the broker. Reported
+                # before the release, which a reconnect waits for, so it precedes the next ready.
+                if session.lost_reported and not session.retired_reported and self.lease.held(executor.bytes, generation):
+                    with contextlib.suppress(OSError, asyncio.TimeoutError, ValueError):
+                        await self.report_lifecycle(session, 6)
                 if self.lease.abandoned(executor.bytes, generation):
                     print('CABOOSE_GPU_BROKER lost executor generation released', file=sys.stderr, flush=True)
             if server:

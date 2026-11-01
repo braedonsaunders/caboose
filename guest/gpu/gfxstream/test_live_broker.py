@@ -1084,5 +1084,53 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                 finally:
                     task.cancel(); await asyncio.gather(task,return_exceptions=True)
 
+    async def test_abrupt_executor_end_retires_its_generation_before_the_lease_is_released(self):
+        import uuid
+        ready_reported=asyncio.Event()
+        class TestSession(broker.Session):
+            async def read_loop(self):
+                await self.message(Envelope(Kind.SESSION_READY,self.executor,1,0,0,1,self.hello))
+                await ready_reported.wait()
+                raise ConnectionError('executor disconnected')
+        class Server:
+            def close(self): pass
+            async def wait_closed(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); root.chmod(0o700); token=root/'token'; token.write_text('test')
+            async def start_server(_callback, path):
+                Path(path).touch(); return Server()
+            instance=object.__new__(broker.Broker)
+            instance.token_file=token; instance.indexed=False; instance.lease=broker.ExecutorLease()
+            instance.session=None; instance.socket_path=root/'gpu.sock'; instance.surface_path=None
+            instance.closing=asyncio.Event()
+            reported=[]
+            async def report(session, kind):
+                # Retirement must reach the compositor while the generation still holds the
+                # lease: a reconnect waits for its release and then reports ready.
+                reported.append((kind, instance.lease.held(session.executor, session.generation)))
+                if kind == 4: session.ready_reported = True; ready_reported.set()
+                if kind == 5: session.lost_reported = True
+                if kind == 6: session.retired_reported = True
+            instance.report_lifecycle=report
+            reader=asyncio.StreamReader(); reader.feed_data(b'GET / HTTP/1.1\r\n\r\n')
+            with mock.patch.object(broker,'Session',TestSession), mock.patch.object(broker,'admit',return_value=(None,uuid.UUID(bytes=b'a'*16),b'upgrade')), mock.patch.object(asyncio,'open_connection',return_value=(reader,Writer())), mock.patch.object(asyncio,'start_unix_server',side_effect=start_server):
+                await asyncio.wait_for(instance.remote(None),5)
+            self.assertEqual(reported,[(4,True),(5,True),(6,True)])
+            self.assertTrue(instance.lease.idle)
+            self.assertIsNone(instance.session)
+
+    async def test_orderly_retirement_is_not_reported_twice(self):
+        session=object.__new__(broker.Session)
+        session.executor=b'a'*16; session.generation=1
+        session.ready_reported=True; session.lost_reported=True; session.retired_reported=False
+        instance=object.__new__(broker.Broker)
+        sent=[]
+        async def send_control(data): sent.append(data)
+        instance.send_control=send_control
+        await instance.report_lifecycle(session,6)
+        self.assertTrue(session.retired_reported)
+        self.assertEqual(len(sent),1)
+        self.assertEqual(struct.unpack_from('<H',sent[0],6)[0],6)
+
 
 if __name__ == '__main__': unittest.main()
