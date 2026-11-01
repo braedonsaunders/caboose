@@ -32,15 +32,15 @@ Linux apps (a terminal and a browser), present the terminal as a card and show t
    line may name only the phone's own dead connection, and the phone never shows On
    Another Device).
 7. Monitor sleep. Let the monitor sleep with the desktop on it, wake it: the stream
-   continues; Pictures per second rises again when it shows the desktop.
+   continues; Frames presented rises again when it shows the desktop.
 8. Another device. Open the display on a second device: the phone shows On Another
    Device and never reconnects on its own; Show Here takes it back.
 9. Cold boot. Restart the computer from Computer settings, or restart caboose-display.
    The reconnect keeps nothing: windows from before are gone and new windows never show a
    stale picture. With an older guest that sends no epoch the same is true of every
-   reconnect: the windows are removed and repainted by the new keyframes.
+   reconnect: the windows are removed and show again when their GPU layers present.
 10. Diagnostics. While dragging a window and typing, Display shows Round trip, Receiving,
-   Pictures, Decode and Waiting to decode with figures; Waiting to send stays near
+   Frames presented and Typing echo with figures; Waiting to send stays near
    Nothing on Wi-Fi and grows on a throttled link (Settings > Developer > Network Link
    Conditioner, "Very Bad Network"). With no samples a figure shows a dash, never zero.
 CHECK
