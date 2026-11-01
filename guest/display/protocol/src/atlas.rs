@@ -613,7 +613,22 @@ pub fn detect_scroll_copy(
     }
 
     if best_dy == 0 {
-        return None;
+        // No shift explains most of the region: a scrolling view beside content that stays
+        // (a toolbar, a progress bar), all damaged together. Copy the longest band of rows that
+        // the best shifts explain.
+        if !precomputed_info {
+            return None;
+        }
+        return scroll_band(&prev_hashes, &curr_hashes, &curr_informative, &info_hits, max_dy, |c_idx, p_idx| {
+            let c_off = ((damage.y as usize) + c_idx) * stride_bytes + hash_x_bytes;
+            let p_off = ((damage.y as usize) + p_idx) * stride_bytes + hash_x_bytes;
+            curr_rgba[c_off..c_off + hash_w_bytes] == prev_rgba[p_off..p_off + hash_w_bytes]
+        })
+        .map(|(dy, start, len)| SurfaceCopy {
+            dx: 0,
+            dy,
+            rect: Rect::new(damage.x, damage.y + start as i32, damage.w, len as i32),
+        });
     }
 
     let rect = if best_dy < 0 {
@@ -631,9 +646,95 @@ pub fn detect_scroll_copy(
     })
 }
 
+/// The least rows a scrolled band is copied for, and the least distinct rows it must hold.
+const BAND_MIN_ROWS: usize = 64;
+const BAND_MIN_INFORMATIVE: usize = 4;
+
+/// The longest run of rows that equal the previous picture's rows `dy` above or below, over
+/// the shifts with the most matching distinct rows: `(dy, first current row, rows)`. Copying
+/// rows that already equal the picture is exact, whatever else in the region did not move.
+/// `same(c, p)` compares current row `c` with previous row `p` byte for byte.
+fn scroll_band(
+    prev: &[u64],
+    curr: &[u64],
+    informative: &[bool],
+    info_hits: &[usize],
+    max_dy: i32,
+    same: impl Fn(usize, usize) -> bool,
+) -> Option<(i32, usize, usize)> {
+    let h = curr.len();
+    let mut shifts: Vec<(usize, i32)> = info_hits
+        .iter()
+        .enumerate()
+        .filter(|&(i, &hits)| hits >= BAND_MIN_INFORMATIVE && i as i32 != max_dy)
+        .map(|(i, &hits)| (hits, i as i32 - max_dy))
+        .collect();
+    shifts.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.abs().cmp(&b.1.abs())));
+    let mut best: Option<(i32, usize, usize)> = None;
+    for &(_, dy) in shifts.iter().take(8) {
+        let (mut run_start, mut run_info) = (None::<usize>, 0usize);
+        for c_idx in 0..=h {
+            let p_idx = c_idx as i64 - dy as i64;
+            let matched = c_idx < h && (0..h as i64).contains(&p_idx) && curr[c_idx] == prev[p_idx as usize];
+            if matched {
+                if run_start.is_none() {
+                    run_start = Some(c_idx);
+                    run_info = 0;
+                }
+                if informative[c_idx] {
+                    run_info += 1;
+                }
+                continue;
+            }
+            if let Some(start) = run_start.take() {
+                let len = c_idx - start;
+                if len >= BAND_MIN_ROWS
+                    && run_info >= BAND_MIN_INFORMATIVE
+                    && best.is_none_or(|(_, _, l)| len > l)
+                    && (start..c_idx).step_by((len / 8).max(1)).all(|c| same(c, (c as i64 - dy as i64) as usize))
+                {
+                    best = Some((dy, start, len));
+                }
+            }
+        }
+    }
+    best
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_view_scrolling_beside_content_that_stays_is_copied() {
+        // A 128-wide region: rows 0..96 a header that does not move, rows 96..256 text
+        // scrolled up by 21 rows, and the newly exposed rows at the bottom.
+        let (w, h) = (128u32, 256u32);
+        let row = |seed: u32| -> Vec<u8> {
+            let k = xxh64(&seed.to_le_bytes(), 0);
+            (0..w).flat_map(|x| {
+                let v = (k >> ((x / 8) % 8 * 8)) as u8;
+                [v, v ^ 0x5a, 255 - v, 255]
+            }).collect()
+        };
+        let mut prev = Vec::new();
+        let mut curr = Vec::new();
+        for y in 0..h {
+            // The header's content is a function of y alone; the text's of its content line.
+            let header = y < 96;
+            prev.extend(if header { row(1000 + y) } else { row(y) });
+            curr.extend(if header { row(1000 + y) } else { row(y + 21) });
+        }
+        let copy = detect_scroll_copy(&prev, &curr, w, Rect::new(0, 0, w as i32, h as i32)).expect("a band copy");
+        assert_eq!(copy.dy, -21);
+        // Every copied row equals the current picture, and the band covers the text view.
+        assert!(copy.rect.y <= 96 && copy.rect.y + copy.rect.h >= 256 - 21 - 1, "{copy:?}");
+        let stride = w as usize * 4;
+        for y in copy.rect.y..copy.rect.y + copy.rect.h {
+            let src = (y - copy.dy) as usize;
+            assert_eq!(&prev[src * stride..(src + 1) * stride], &curr[y as usize * stride..(y as usize + 1) * stride]);
+        }
+    }
 
     #[test]
     fn xxh64_matches_reference_vectors() {
