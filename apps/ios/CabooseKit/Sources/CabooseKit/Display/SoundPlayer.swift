@@ -56,8 +56,7 @@ public final class OpusDecoder {
 
 /// The computer's sound on Caboose Display: each 20 ms Opus packet decoded and handed to an
 /// `AVSampleBufferAudioRenderer` on the session's `MediaClock`, at its own time, so the
-/// system routes it like any app's sound (speaker, AirPods, AirPlay) and the video layers on
-/// the same clock stay in step with it.
+/// system routes it like any app's sound (speaker, AirPods, AirPlay).
 final class SoundPlayer: @unchecked Sendable {
     let renderer = AVSampleBufferAudioRenderer()
     private let clock: MediaClock

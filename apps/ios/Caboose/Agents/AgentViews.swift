@@ -645,7 +645,7 @@ struct AskAboutWindowSheet: View {
         }
         .onAppear {
             focused = true
-            snapshot = window.surface.snapshot().map { UIImage(cgImage: $0) }
+            snapshot = window.snapshot.snapshot().map { UIImage(cgImage: $0) }
         }
     }
 

@@ -21,17 +21,9 @@ public final class RemoteWindow: Identifiable {
     public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
     /// Position and size in the server's pixel space. Position may follow an in-flight
-    /// placement request; size remains the size reported by the server.
+    /// placement request; size remains the size reported by the server. The window's GPU
+    /// layer is fitted to it.
     public internal(set) var frame: CGRect
-    /// The last drawable's coordinate space, independent of configure metadata.
-    /// Observed by content, drop targets and popup roots as one presentation size.
-    private var retainedPictureSize: CGSize?
-    public var presentationSize: CGSize { retainedPictureSize ?? frame.size }
-
-    func adoptPictureSize(_ size: CGSize) {
-        guard size.width > 0, size.height > 0, retainedPictureSize != size else { return }
-        retainedPictureSize = size
-    }
 
     public internal(set) var minimumSize: CGSize?
     public internal(set) var maximumSize: CGSize?
@@ -54,34 +46,22 @@ public final class RemoteWindow: Identifiable {
     }
     /// The window takes Apple Pencil as a tablet, with pressure and tilt.
     public internal(set) var acceptsPencil = false
-    /// Videos playing in the window, lowest `z` first, drawn over its picture.
-    public internal(set) var videos: [RemoteVideo] = []
-    /// Bumped whenever a video comes, goes or moves, so a view knows to lay them out again.
-    public internal(set) var videoLayout = 0
-    /// Ended videos whose region the window's own picture has not repainted on screen yet, by
-    /// their container: the surface generation that repaints it. A view keeps showing each
-    /// such video until it has presented that generation, so the stale pixels under it never show.
-    public internal(set) var retiringVideos: [ObjectIdentifier: UInt64] = [:]
     /// The game this device runs in the window instead of showing the computer's picture
     /// (docs/game-handoff.md); nil for every other window.
     public internal(set) var game: RemoteGame?
-    /// The GPU stream this device draws the window from instead of the computer's picture
-    /// (docs/gpu-stream.md); nil for every other window.
-    public internal(set) var gpuStream: RemoteGPUStream?
     #if canImport(UIKit)
-    /// Set only by the explicit owner executor, never by ordinary/agent session creation.
+    /// Where the window's GPU layer is placed: set by the owner's GPU executor
+    /// (`LiveGPUOwnerSession`), never by an agent or thumbnail session.
     @ObservationIgnored weak var liveGPUPresentation: LiveGPUPresentationOwners?
     #endif
-    public nonisolated let surface: WindowSurface
+    /// The window's last picture held on the phone, for thumbnails and Home.
+    public nonisolated let snapshot: WindowSnapshot
 
-    init(id: Int, frame: CGRect, overrideRedirect: Bool, surface: WindowSurface) {
+    init(id: Int, frame: CGRect, overrideRedirect: Bool, snapshot: WindowSnapshot = WindowSnapshot()) {
         self.id = id
         self.frame = frame
         self.isOverrideRedirect = overrideRedirect
-        self.surface = surface
-        if let texture = surface.texture {
-            retainedPictureSize = CGSize(width: texture.width, height: texture.height)
-        }
+        self.snapshot = snapshot
     }
 
     /// Popups, menus, tooltips and dialogs belong to a parent window rather than standing alone.
@@ -98,7 +78,7 @@ public struct RemoteNotification: Sendable, Identifiable {
     public var body: String
 }
 
-/// Times key presses to the next draw of the same window, from any thread.
+/// Times key presses to the next present of the same window's GPU layer, from any thread.
 final class EchoMeter: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: (wid: Int, at: UInt64)?

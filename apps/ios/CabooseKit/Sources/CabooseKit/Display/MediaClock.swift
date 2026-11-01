@@ -2,12 +2,10 @@ import AVFoundation
 import CoreMedia
 import Foundation
 
-/// A session's one playback clock: an `AVSampleBufferRenderSynchronizer` whose timeline is the
-/// server's `CLOCK_MONOTONIC` in microseconds, the clock every `audio.pts_us`, `frame.pts_us`
-/// and `video.present.pts_us` is on. The computer's sound starts it, a little behind the
-/// first packet so network jitter does not starve the speaker; video layers on the same
-/// synchronizer then show each picture at its own time, in step with the sound. With no
-/// sound playing the clock is stopped and pictures are shown as they come.
+/// A session's sound clock: an `AVSampleBufferRenderSynchronizer` whose timeline is the
+/// server's `CLOCK_MONOTONIC` in microseconds, the clock every `audio.pts_us` is on. The
+/// computer's sound starts it, a little behind the first packet so network jitter does not
+/// starve the speaker. With no sound playing the clock is stopped.
 public final class MediaClock: @unchecked Sendable {
     public let synchronizer = AVSampleBufferRenderSynchronizer()
     private let lock = NSLock()
@@ -30,8 +28,8 @@ public final class MediaClock: @unchecked Sendable {
     init(hostTime: @escaping () -> CMTime, rateWriter: ((Float, CMTime, CMTime?) -> Void)? = nil) {
         self.hostTime = hostTime
         self.rateWriter = rateWriter
-        // Live packets already have a bounded jitter buffer. Waiting for every video
-        // renderer to preroll can hold sound indefinitely behind an idle video stream.
+        // Live packets already have a bounded jitter buffer: the sound starts on time
+        // rather than waiting for the renderer to preroll.
         synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         let observedSynchronizer = synchronizer
         let trace = rateTrace
@@ -91,7 +89,7 @@ public final class MediaClock: @unchecked Sendable {
         else { synchronizer.setRate(rate, time: time) }
     }
 
-    /// Puts a renderer (the sound, or a video layer's) on this clock.
+    /// Puts a renderer (the sound's) on this clock.
     public func add(_ renderer: some AVQueuedSampleBufferRendering) {
         synchronizer.addRenderer(renderer)
     }
@@ -152,14 +150,7 @@ public final class MediaClock: @unchecked Sendable {
         }
     }
 
-    /// When a picture stamped `pts` should be shown, or nil to show it at once: the clock is
-    /// stopped (no sound), or the picture is already late.
-    func time(for pts: Int64) -> CMTime? {
-        guard let now, pts >= now else { return nil }
-        return CMTime(value: pts, timescale: 1_000_000)
-    }
-
-    /// The sound stopped (a failed renderer, a closed session): pictures go back to showing at once.
+    /// The sound stopped (a failed renderer, a closed session).
     func stop(reason: AudioRateStopCaller = .unspecified) {
         lock.lock()
         defer { lock.unlock() }

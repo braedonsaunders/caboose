@@ -6,9 +6,12 @@ import UIKit
 
 /// Shows one remote window and turns touch, trackpad and keyboard into its input.
 ///
-/// The layer's drawable is the window's own pixel size and the view's bounds are that
-/// size divided by `pixelsPerPoint`, so pixels land 1:1 on a scale that matches it.
-/// Presentation copies the window texture into the drawable only when a draw changed it.
+/// The window's picture is its GPU layer, which `LiveGPUPresentationOwners` places in the
+/// one live view showing the window, fitted to its bounds; popups and override-redirect
+/// windows are windows of their own, each with its own layer in its own view. Until the
+/// layer's first present the view is blank: black, or clear for a window with alpha.
+/// A view that never hosts the layer (a thumbnail, a preview) shows the window's snapshot
+/// (`WindowSnapshot`) instead, copied into its own drawable when a new one arrives.
 @MainActor
 public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDelegate {
     public override static var layerClass: AnyClass { CAMetalLayer.self }
@@ -17,32 +20,27 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         willSet { if session !== newValue { cancelTouches() } }
         didSet { layoutLiveGPU() }
     }
-    /// The session whose pictures this view shows, told of each refresh of the screen it is
+    /// The session whose windows this view shows, told of each refresh of the screen it is
     /// on so the server paces the window to it. Set it on display-only views too; it is
     /// `session` when nil.
     public weak var pacer: (any DisplaySession)?
     /// Explicit output for pacing, or nil for the session's primary output. Only an
     /// unselected bootstrap session resolves nil from the retained server hello.
     public var displayID: Int?
-    /// Whether this view plays the window's videos. A video plays in one view at a time, so
-    /// thumbnails leave it to the window's main view.
-    public var showsVideo = true {
+    /// Whether this view may run the window's live content: its GPU layer and its game. Each
+    /// runs in one view at a time, so thumbnails leave it to the window's main view.
+    public var showsLiveContent = true {
         didSet {
-            guard showsVideo != oldValue else { return }
-            laidOutVideos = nil
-            if !showsVideo { releaseVideos() }
+            guard showsLiveContent != oldValue else { return }
+            layoutGame()
             layoutLiveGPU()
         }
     }
-    private var laidOutVideos: (window: ObjectIdentifier, layout: Int, size: CGSize, bounds: CGRect)?
-    private var hostedVideos: [CALayer] = []
     /// Covers the window controls the application draws itself (`RemoteWindow.drawnControls`).
     private let drawnCover = DrawnControlsCover()
     private var laidOutDrawnControls: (controls: [CGRect], frame: CGSize, bounds: CGSize)?
     public private(set) var remoteWindow: RemoteWindow?
     public var pixelsPerPoint: CGFloat = 2
-    /// The containing slot adopts the drawable's size before it is presented.
-    public var onPictureSizeChanged: ((CGSize) -> Void)?
     /// When false the view only displays (thumbnails, previews).
     public var isInteractive = true {
         didSet {
@@ -57,16 +55,11 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// The desktop routes input separately but owns live game/GPU content, unlike a thumbnail.
     public var hostsGame = false { didSet { layoutLiveGPU() } }
     private weak var liveGPUOwners: LiveGPUPresentationOwners?
-    #if canImport(CabooseGPUStream)
-    /// The GPU stream this view shows over the window's picture (see `layoutGPUStream()`).
-    private weak var gpuStreamView: GPUStreamView?
-    #endif
     /// The window is a game: its input goes to the game, not to the computer.
     private var holdsGameInput = false
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
-    private var presentedPictureSize: CGSize = .zero
     private var presentedGeneration: UInt64 = .max
     private var lastPointer = CGPoint.zero
     private var directDrag = DirectPointerDrag()
@@ -92,7 +85,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public init(session: (any DisplaySession)?, window: RemoteWindow?) {
         self.session = session
         super.init(frame: .zero)
-        metalLayer.device = SurfaceRenderer.shared.device
+        metalLayer.device = SharedMetal.shared.device
         metalLayer.pixelFormat = .bgra8Unorm
         metalLayer.framebufferOnly = false
         metalLayer.isOpaque = true
@@ -126,12 +119,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if window !== remoteWindow {
             liveGPUOwners?.withdraw(self)
             liveGPUOwners = nil
-            presentedPictureSize = .zero
-            releaseVideos()
             focusCheck = nil
             resetTyping()
             cancelTouches()
-            laidOutVideos = nil
             drawnCover.removeAll()
             laidOutDrawnControls = nil
         }
@@ -149,7 +139,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if self.window == nil {
             cancelTouches()
             focusCheck = nil
-            releaseVideos()
         }
         displayLink?.invalidate()
         displayLink = nil
@@ -165,11 +154,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     public override func layoutSubviews() {
         super.layoutSubviews()
-        laidOutVideos = nil
         metalLayer.contentsScale = pixelsPerPoint
         presentedGeneration = .max
         layoutGame()
-        layoutGPUStream()
         layoutLiveGPU()
         layoutDrawnControls()
     }
@@ -184,7 +171,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         drawnCover.layout(in: layer, controls: now.controls, frame: now.frame)
     }
 
-    /// Reads the colour beside the application's own window controls from a picture.
+    /// Reads the colour beside the application's own window controls from the window's snapshot.
     private func sampleDrawnControls(_ texture: MTLTexture) {
         guard let window = remoteWindow, !window.drawnControls.isEmpty else { return }
         drawnCover.sample(texture, frame: window.frame.size) { [weak self] in self?.layoutDrawnControls(force: true) }
@@ -202,8 +189,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     // MARK: Games
 
     /// Lays the window's game (`RemoteWindow.game`) over its picture when this view runs it:
-    /// an interactive or desktop view on screen with a connection that plays its media. Thumbnail
-    /// views show the window's picture, which is the game's last snapshot. One web view runs
+    /// an interactive or desktop view on screen with a connection that runs live content.
+    /// Thumbnail views show the window's snapshot, which is the game's last. One web view runs
     /// each game, so a view takes it only from a view that is not on screen. Touch, the pointer
     /// and keys of a game window never go to the computer.
     func layoutGame() {
@@ -218,7 +205,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             updateGestures()
         }
         let runs = game.map { !$0.isEnded } == true && GamePresentation.hosts(
-            interactive: isInteractive, desktop: hostsGame, contentEnabled: showsVideo,
+            interactive: isInteractive, desktop: hostsGame, contentEnabled: showsLiveContent,
             hasConnection: (session ?? pacer) != nil, onScreen: window != nil)
         if let surface = gameSurface, !runs || surface.game !== game || surface.superview !== self {
             if surface.superview === self { surface.removeFromSuperview() }
@@ -236,28 +223,6 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if let surface = gameSurface, surface.frame != bounds { surface.frame = bounds }
     }
 
-    /// Lays the window's GPU stream over its picture in its interactive or desktop view. Touches
-    /// pass through to this view: the application runs on the computer and takes its input there.
-    func layoutGPUStream() {
-        #if canImport(CabooseGPUStream)
-        let hosts = GamePresentation.hosts(interactive: isInteractive, desktop: hostsGame,
-            contentEnabled: showsVideo, hasConnection: (session ?? pacer) != nil, onScreen: window != nil)
-        let shown = remoteWindow?.gpuStream.flatMap { hosts ? $0.view : nil }
-        if let current = gpuStreamView, current !== shown {
-            if current.superview === self { current.removeFromSuperview() }
-            gpuStreamView = nil
-        }
-        guard let shown else { return }
-        if gpuStreamView == nil {
-            if shown.superview != nil, shown.superview !== self, shown.window != nil { return }
-            shown.isUserInteractionEnabled = false
-            insertSubview(shown, at: 0)
-            gpuStreamView = shown
-        }
-        if shown.frame != bounds { shown.frame = bounds }
-        #endif
-    }
-
     private func updateGestures() {
         let enabled = isInteractive && !holdsGameInput
         gestureRecognizers?.forEach { $0.isEnabled = enabled }
@@ -270,94 +235,53 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return super.becomeFirstResponder()
     }
 
-    /// Puts each of the window's videos over its picture: the stream's layer at its `rect`,
-    /// inside a container cut to its `clip`, in `z` order. Runs only when one of them changed.
-    func layoutVideos() {
-        let window = showsVideo ? remoteWindow : nil
-        let key = window.map { (ObjectIdentifier($0), $0.videoLayout, $0.surface.pixelSize, bounds) }
-        if let key, let laid = laidOutVideos, laid == key { return }
-        if key == nil, hostedVideos.isEmpty { return }
-        laidOutVideos = key
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let videos = window?.videos ?? []
-        // An ended video stays over its region until this view has shown the window picture
-        // that repaints it; until then the layout is looked at again every refresh.
-        var retiring: [CALayer] = []
-        for container in hostedVideos where container.superlayer === layer && !videos.contains(where: { $0.container === container }) {
-            if let repaint = window?.retiringVideos[ObjectIdentifier(container)],
-               presentedGeneration == .max || presentedGeneration < repaint {
-                retiring.append(container)
-            } else {
-                container.removeFromSuperlayer()
-            }
-        }
-        if !retiring.isEmpty { laidOutVideos = nil }
-        for (index, video) in videos.enumerated() {
-            let geometry = VideoLayerGeometry(rect: video.rect, clip: video.clip,
-                                              surfaceSize: window?.surface.pixelSize ?? .zero, bounds: bounds)
-            if video.container.superlayer !== layer { layer.addSublayer(video.container) }
-            video.container.isHidden = geometry == nil
-            if let geometry {
-                video.container.frame = geometry.container
-                video.layer.frame = geometry.picture
-            }
-            // Negative protocol z values still play above the window's own picture.
-            video.container.zPosition = CGFloat(index + 1)
-        }
-        hostedVideos = videos.map(\.container) + retiring
-        CATransaction.commit()
-    }
+    /// Whether this view shows the window's snapshot: it is not a live view, so the window's
+    /// GPU layer and game run elsewhere.
+    var showsSnapshot: Bool { !((isInteractive || hostsGame) && showsLiveContent) }
 
-    private func releaseVideos() {
-        for container in hostedVideos where container.superlayer === layer {
-            container.removeFromSuperlayer()
-        }
-        hostedVideos.removeAll()
-        laidOutVideos = nil
-    }
-
-    /// One display refresh: shows the window's newest picture when it changed.
+    /// One display refresh. A live view draws nothing of its own: the GPU layer is the picture,
+    /// and until it presents the view stays blank. A snapshot view shows the window's newest
+    /// snapshot when it changed, and asks for fresh ones while it shows them.
     fileprivate func present() {
         followAlpha()
         layoutDrawnControls()
-        // Under a translucent live GPU layer the window's own picture would show through it:
-        // the view shows nothing of its own until the layer leaves or turns opaque.
-        if liveGPUOwners?.presentsTranslucent(in: self) ?? false {
-            if !clearedForLiveGPU, clearPicture() { clearedForLiveGPU = true }
+        guard let window = remoteWindow else { return }
+        // Covers read their colour, and aiming its shapes, from the snapshot.
+        if !window.drawnControls.isEmpty || (isInteractive && window.touchTargets.isEmpty) { window.snapshot.want() }
+        if let texture = window.snapshot.texture { sampleDrawnControls(texture) }
+        guard showsSnapshot else {
+            if presentedGeneration != Self.cleared, clearPicture() { presentedGeneration = Self.cleared }
             return
         }
-        if clearedForLiveGPU { clearedForLiveGPU = false; presentedGeneration = .max }
-        guard let picture = remoteWindow?.surface.presentation() else { return }
+        window.snapshot.want()
+        guard let picture = window.snapshot.presentation() else {
+            if presentedGeneration != Self.cleared, clearPicture() { presentedGeneration = Self.cleared }
+            return
+        }
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
-        // A picture of an older, larger size shows cut to the window's shape.
-        let excess = pictureExcess(CGSize(width: texture.width, height: texture.height))
-        let size = CGSize(width: CGFloat(texture.width) - excess.width, height: CGFloat(texture.height) - excess.height)
+        let size = CGSize(width: texture.width, height: texture.height)
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
         guard let drawable = metalLayer.nextDrawable(),
-              let commands = SurfaceRenderer.shared.queue.makeCommandBuffer(),
+              let commands = SharedMetal.shared.queue.makeCommandBuffer(),
               let blit = commands.makeBlitCommandEncoder() else { return }
-        adoptPictureSize(size)
         let target = drawable.texture
-        let width = min(texture.width, target.width, Int(size.width)), height = min(texture.height, target.height, Int(size.height))
         blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                  sourceSize: MTLSize(width: width, height: height, depth: 1),
+                  sourceSize: MTLSize(width: min(texture.width, target.width), height: min(texture.height, target.height), depth: 1),
                   to: target, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
         blit.endEncoding()
         commands.present(drawable)
         commands.commit()
         presentedGeneration = generation
-        sampleDrawnControls(texture)
     }
 
-    /// Whether the view's own picture is cleared under a translucent live GPU layer.
-    private var clearedForLiveGPU = false
+    /// `presentedGeneration` once the view's own drawable is cleared.
+    private static let cleared: UInt64 = .max - 1
 
     private func clearPicture() -> Bool {
         let pass = MTLRenderPassDescriptor()
         guard let drawable = metalLayer.nextDrawable(),
-              let commands = SurfaceRenderer.shared.queue.makeCommandBuffer() else { return false }
+              let commands = SharedMetal.shared.queue.makeCommandBuffer() else { return false }
         pass.colorAttachments[0].texture = drawable.texture
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
@@ -372,35 +296,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// A live GPU layer in this view turned translucent or opaque, arrived or left.
     func liveGPUTranslucencyChanged() { present() }
 
-    /// Called after acquiring a drawable. Adoption belongs to the attached window,
-    /// even when its first picture has the same dimensions as the preceding window.
-    func adoptPictureSize(_ size: CGSize) {
-        guard presentedPictureSize != size else { return }
-        presentedPictureSize = size
-        remoteWindow?.adoptPictureSize(size)
-        // Guest picture replacement is atomic; slot geometry keeps its animation.
-        UIView.performWithoutAnimation { onPictureSizeChanged?(size) }
-    }
-
     // MARK: Pointer mapping
 
     func pixelPoint(_ point: CGPoint) -> CGPoint {
         guard let remoteWindow, bounds.width > 0, bounds.height > 0 else { return .zero }
         return CGPoint(x: point.x * remoteWindow.frame.width / bounds.width,
                        y: point.y * remoteWindow.frame.height / bounds.height)
-    }
-
-    /// How much of `picture` lies past the window's shape, right and below: a picture of an
-    /// older, larger size (a fold, a resize) whose excess the app has not redrawn. Shown
-    /// pictures cut it off rather than squash it into the window.
-    func pictureExcess(_ picture: CGSize) -> CGSize {
-        guard let window = remoteWindow, picture.width > 0, picture.height > 0,
-              window.frame.width > 0, window.frame.height > 0 else { return .zero }
-        let tall = picture.height - picture.width * window.frame.height / window.frame.width
-        let wide = picture.width - picture.height * window.frame.width / window.frame.height
-        if tall > 2 { return CGSize(width: 0, height: tall.rounded()) }
-        if wide > 2 { return CGSize(width: wide.rounded(), height: 0) }
-        return .zero
     }
 
     private func move(to point: CGPoint) {
@@ -425,16 +326,16 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         return TouchAim.choose(pixel, spread: spread, among: targets)?.point ?? pixel
     }
 
-    /// For a window whose accessibility tree lists nothing: the shapes in its picture
-    /// around `pixel` (`PictureTargets`), in window pixels. None for a picture this view does
-    /// not hold (one the phone's GPU draws).
+    /// For a window whose accessibility tree lists nothing: the shapes in its snapshot
+    /// around `pixel` (`PictureTargets`), in window pixels.
     private func pictureTargets(around pixel: CGPoint, spread: CGFloat) -> [TouchTarget] {
-        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0,
-              let texture = window.surface.texture, !(liveGPUOwners?.presents(in: self) ?? false) else { return [] }
-        let sx = CGFloat(texture.width) / window.frame.width, sy = CGFloat(texture.height) / window.frame.height
+        guard let window = remoteWindow, window.frame.width > 0, window.frame.height > 0 else { return [] }
+        let size = window.snapshot.pixelSize
+        guard size.width > 0, size.height > 0 else { return [] }
+        let sx = size.width / window.frame.width, sy = size.height / window.frame.height
         let radius = Int((3 * spread + 4) * max(sx, sy))
         let center = CGPoint(x: pixel.x * sx, y: pixel.y * sy)
-        guard let region = window.surface.pixels(x: Int(center.x) - radius, y: Int(center.y) - radius,
+        guard let region = window.snapshot.pixels(x: Int(center.x) - radius, y: Int(center.y) - radius,
                                                  width: 2 * radius, height: 2 * radius) else { return [] }
         let found = region.bytes.withUnsafeBytes {
             PictureTargets.find(in: $0, width: region.width, height: region.height, bytesPerRow: region.width * 4,
@@ -1308,10 +1209,8 @@ private final class DisplayLinkTarget: NSObject {
         view.followFieldPurpose()
         view.adoptSurroundingText()
         view.layoutGame()
-        view.layoutGPUStream()
         view.layoutLiveGPU()
         view.present()
-        view.layoutVideos()
     }
 }
 #endif

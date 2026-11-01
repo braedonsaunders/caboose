@@ -91,7 +91,6 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
             }
             return .init(status: .init(nativeErrno: attached, vkResult: nil), resource: nil)
         }
-        resource.startCapture()
         return .init(status: .init(nativeErrno: 0, vkResult: nil), resource: resource)
     }
 }
@@ -106,32 +105,55 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
     private var nativeLifetime: LinkedLiveGPUSurface?
     private let callbackLock = NSLock()
     private var callbacks: [UInt64: @Sendable (LiveGPUSurfaceMessage.Body) -> Void] = [:]
-    /// Guards capture releases against retirement; native captures stop before retire.
+    /// Guards capture changes and releases against retirement; native captures stop before retire.
     private let captureLock = NSLock()
     private var capturing = false
+    /// A present was captured for the window's snapshot and its copy has not arrived yet.
+    private var snapshotPending = false
     init(pointer: OpaquePointer, bind: caboose_gpu_surface_bind_info,
          lease: LiveGPULayerLease, owners: LiveGPUPresentationOwners) {
         self.pointer = pointer; self.bind = bind; self.lease = lease; self.owners = owners
         nativeLifetime = self
     }
 
-    /// Presented pictures go to frame lab (`FrameLabPictures`) when it is enabled.
-    func startCapture() {
-        guard FrameLabPictures.enabled, let pointer else { return }
+    /// Before each present: counts it for the window, and captures it when the window's
+    /// snapshot is due a copy (`WindowSnapshot.capturesPresent`) or frame lab is enabled
+    /// (`FrameLabPictures`). Captures stay on only until the copy arrives, so a window is not
+    /// copied every frame, and its capture images are freed between copies.
+    func prepareCapture() {
+        lease.snapshot.onPresent?()
         captureLock.withLock {
-            let code = caboose_gpu_surface_set_capture(pointer, { context, serial, token, texture in
-                guard let context, let texture else { return }
-                Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
-                    .captured(serial: serial, token: token, texture: texture)
-            }, Unmanaged.passUnretained(self).toOpaque())
-            capturing = code == 0
+            guard let pointer else { return }
+            if !snapshotPending, lease.snapshot.capturesPresent() { snapshotPending = true }
+            let wanted = FrameLabPictures.enabled || snapshotPending
+            guard wanted != capturing else { return }
+            if wanted {
+                let code = caboose_gpu_surface_set_capture(pointer, { context, serial, token, texture in
+                    guard let context, let texture else { return }
+                    Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
+                        .captured(serial: serial, token: token, texture: texture)
+                }, Unmanaged.passUnretained(self).toOpaque())
+                capturing = code == 0
+                // A device that cannot capture presents without: no copy is coming.
+                if !capturing { snapshotPending = false }
+            } else {
+                _ = caboose_gpu_surface_set_capture(pointer, nil, nil)
+                capturing = false
+            }
         }
     }
 
     /// Frame worker: the picture is lent until `releaseCapture(token)`.
     private func captured(serial: UInt64, token: UInt32, texture: UnsafeMutableRawPointer) {
         if let metal = Unmanaged<AnyObject>.fromOpaque(texture).takeUnretainedValue() as? MTLTexture {
-            FrameLabPictures.shared.consider(window: bind.identity.window_id, serial: serial, texture: metal)
+            if FrameLabPictures.enabled {
+                FrameLabPictures.shared.consider(window: bind.identity.window_id, serial: serial, texture: metal)
+            }
+            let take = captureLock.withLock { () -> Bool in
+                defer { snapshotPending = false }
+                return snapshotPending
+            }
+            if take { lease.snapshot.store(copyOf: metal) }
         }
         releaseCapture(token)
     }
@@ -242,6 +264,7 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         guard lease.isValid, let pointer else {
             return .init(status: .init(nativeErrno: ECANCELED, vkResult: nil), disposition: .rejected)
         }
+        prepareCapture()
         var info = caboose_gpu_present_info()
         info.identity = bind.identity
         info.present_serial = request.serial; info.boxed_device = request.device
@@ -347,6 +370,7 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
     func present(_ request: LiveGPUIndexedPresent,
                  event: @escaping @Sendable (LiveGPUSurfaceMessage.Body) -> Void) -> LiveGPUSurfaceSubmission {
         guard let pointer else { return .init(status: .init(nativeErrno: ESTALE, vkResult: nil), disposition: .rejected) }
+        parent.prepareCapture()
         var info = caboose_gpu_mapped_present_info()
         info.identity = identity; info.present_serial = request.serial; info.boxed_queue = request.queue
         info.queue_family = request.family; info.image_index = request.index; info.vk_image_layout = request.layout

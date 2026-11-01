@@ -7,69 +7,11 @@ import QuartzCore
 
 @MainActor
 final class DesktopSurfaceLayoutTests: XCTestCase {
-    func testReattachedWindowAdoptsSameSizePictureAndNotifiesContainer() {
-        let picture = CGSize(width: 1600, height: 1000)
-        let first = RemoteWindow(id: 1, frame: CGRect(origin: .zero, size: picture),
-                                 overrideRedirect: false, surface: WindowSurface())
-        let second = RemoteWindow(id: 2, frame: CGRect(x: 0, y: 0, width: 1600, height: 520),
-                                  overrideRedirect: false, surface: WindowSurface())
-        let content = RemoteWindowView(session: nil, window: first)
-        var notifications: [CGSize] = []
-        content.onPictureSizeChanged = { notifications.append($0) }
-        // Exercise the same adoption entry point present() calls after nextDrawable.
-        content.adoptPictureSize(picture)
-        content.adoptPictureSize(picture)
-        XCTAssertEqual(notifications, [picture])
-        content.attach(second)
-        XCTAssertEqual(second.presentationSize.height, 520)
-        content.adoptPictureSize(picture)
-        XCTAssertEqual(second.presentationSize, picture)
-        XCTAssertEqual(notifications, [picture, picture])
-        // Updating the same identity keeps the per-view size deduplication.
-        content.attach(second)
-        content.adoptPictureSize(picture)
-        XCTAssertEqual(notifications, [picture, picture])
-        content.attach(nil)
-    }
-
-    func testKeyboardSlotFitsRetainedPictureBeforeMetadataAndDecodeCatchUp() {
-        let surface = WindowSurface()
-        surface.resize(width: 1600, height: 1000)
-        let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1600, height: 1000),
-                                  overrideRedirect: false, surface: surface)
-        let content = RemoteWindowView(session: nil, window: remote)
-        content.pixelsPerPoint = 2
-        let tile = YardSurfaceView(content: content)
-        tile.natural = CGSize(width: 800, height: 500)
-        tile.stretch = true
-        // Metadata arrives ahead of the replacement picture, as FramePipeline permits.
-        remote.frame.size = CGSize(width: 1600, height: 520)
-        XCTAssertEqual(remote.presentationSize, CGSize(width: 1600, height: 1000))
-        for height in [500, 400, 300, 260, 300, 400, 500] {
-            tile.frame = CGRect(x: 0, y: 0, width: 800, height: height)
-            tile.setNeedsLayout()
-            tile.layoutIfNeeded()
-            XCTAssertEqual(content.frame.width / content.frame.height, 1.6, accuracy: 0.000001)
-            XCTAssertEqual(content.transform.a, content.transform.d, accuracy: 0.000001)
-            let localCenter = content.convert(CGPoint(x: content.frame.midX, y: content.frame.midY), from: tile)
-            XCTAssertEqual(content.pixelPoint(localCenter).x, 800, accuracy: 0.000001)
-            XCTAssertEqual(content.pixelPoint(localCenter).y, 260, accuracy: 0.000001)
-            XCTAssertEqual(content.layer.contentsGravity, .resizeAspect)
-        }
-        // The same callback used immediately before Metal presents the new drawable.
-        remote.adoptPictureSize(CGSize(width: 1600, height: 520))
-        content.onPictureSizeChanged?(remote.presentationSize)
-        tile.layoutIfNeeded()
-        XCTAssertEqual(content.bounds.size, CGSize(width: 800, height: 260))
-        XCTAssertEqual(content.frame.width / content.frame.height, 1600.0 / 520, accuracy: 0.000001)
-        content.attach(nil)
-    }
-
     func testHostedCardAndYardPropagateFullscreenCentering() throws {
         let model = AppModel(collection: .init(), startsConnections: false)
         let pixels = model.pixelsPerPoint
         let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1200 * pixels, height: 800 * pixels),
-                                  overrideRedirect: false, surface: WindowSurface())
+                                  overrideRedirect: false)
         remote.isFullscreen = true
         let host = UIHostingController(rootView: AnyView(EmptyView()))
         host.safeAreaRegions = []
@@ -97,7 +39,7 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
 
     func testFullscreenSurfaceCentersAndInvertsTouchWhileTileIsSettling() throws {
         let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1200, height: 800),
-                                  overrideRedirect: false, surface: WindowSurface())
+                                  overrideRedirect: false)
         let content = RemoteWindowView(session: nil, window: remote)
         let tile = YardSurfaceView(content: content)
         tile.natural = remote.frame.size
@@ -133,7 +75,7 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
         let viewport = CGSize(width: 500, height: 800)
         let committed = try XCTUnwrap(WindowSizePolicy.fitting(CGRect(origin: .zero, size: viewport),
             minimum: CGSize(width: 862, height: 600), maximum: nil, fullscreen: false))
-        let remote = RemoteWindow(id: 1, frame: committed, overrideRedirect: false, surface: WindowSurface())
+        let remote = RemoteWindow(id: 1, frame: committed, overrideRedirect: false)
         let content = RemoteWindowView(session: nil, window: remote)
         let tile = YardSurfaceView(content: content)
         tile.natural = committed.size
@@ -155,10 +97,10 @@ final class DesktopSurfaceLayoutTests: XCTestCase {
     /// A newer remote aspect ratio must not refit inside the previous parent rectangle.
     func testStaleParentBoundsAndNewCommittedSizeHaveNoSecondFit() throws {
         let remote = RemoteWindow(id: 1, frame: CGRect(x: 0, y: 0, width: 1680, height: 1060),
-                                  overrideRedirect: false, surface: WindowSurface())
+                                  overrideRedirect: false)
         var shown = CGSize(width: 840, height: 530)
         func content() -> AnyView {
-            AnyView(RemoteWindowSurface(window: remote, pixelsPerPoint: 2, pacer: nil, showsVideo: false)
+            AnyView(RemoteWindowSurface(window: remote, pixelsPerPoint: 2, pacer: nil, showsLiveContent: false)
                 .frame(width: shown.width, height: shown.height))
         }
         let host = UIHostingController(rootView: content())

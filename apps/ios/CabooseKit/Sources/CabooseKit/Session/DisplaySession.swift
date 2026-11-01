@@ -44,7 +44,8 @@ public protocol DisplaySession: AnyObject {
     var onBell: (() -> Void)? { get set }
     var onRaise: ((Int) -> Void)? { get set }
     var onOpenURL: ((URL) -> Void)? { get set }
-    /// A cached last frame for a window id, shown until the server's first picture arrives.
+    /// A frame kept from before for a window id: its picture in thumbnails until its GPU
+    /// layer presents.
     var cachedFrame: ((Int) -> CGImage?)? { get set }
     var playsAudio: Bool { get set }
 
@@ -60,8 +61,6 @@ public protocol DisplaySession: AnyObject {
     func configure(_ window: RemoteWindow, frame: CGRect, state: [String: Bool])
     func focus(_ window: RemoteWindow?)
     func close(_ window: RemoteWindow)
-    /// Asks for a full repaint.
-    func refresh(_ window: RemoteWindow)
     /// Changes the screen the server lays windows out for, on the live connection.
     func reconfigure(_ capabilities: ClientCapabilities)
     /// Puts a copy made on the phone on the computer's clipboard; the same copy again,

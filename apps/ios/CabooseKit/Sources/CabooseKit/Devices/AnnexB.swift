@@ -1,7 +1,7 @@
 import Foundation
 
-/// H.264 as the computer reads it: Annex-B, NAL units behind start codes.
-extension AnnexB {
+/// H.264 as the computer reads it from the phone's camera: Annex-B, NAL units behind start codes.
+public enum AnnexB {
     static let startCode = Data([0, 0, 0, 1])
 
     /// VideoToolbox's output (NAL units behind big-endian `lengthSize`-byte lengths) as
