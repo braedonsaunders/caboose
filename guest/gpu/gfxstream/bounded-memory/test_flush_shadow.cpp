@@ -58,15 +58,39 @@ int main() {
     assert(remote.sends[1] == std::make_pair(uint64_t(12288), uint64_t(256)));
     assert(remote.bytes == local);
 
-    // A partial page is sent within the chunk bounds and never trusted later.
+    // A partial block is sent within the chunk bounds and never trusted later.
     remote.sends.clear();
     std::vector<uint8_t> other(size, 7);
     Remote fresh{size};
-    assert(shadow.emitChanged(2, other.data(), size, 100, 200, fresh.sender(other)) == success);
-    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(100), uint64_t(200)));
+    assert(shadow.emitChanged(2, other.data(), size, 100, 100, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(100), uint64_t(100)));
     fresh.sends.clear();
-    assert(shadow.emitChanged(2, other.data(), size, 0, 4096, fresh.sender(other)) == success);
-    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(0), uint64_t(4096)));
+    assert(shadow.emitChanged(2, other.data(), size, 0, 256, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(0), uint64_t(256)));
+
+    // Whole blocks are trusted though their page was never sent whole: small ranges of a
+    // large allocation, flushed again unchanged, send nothing.
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192 + 512, 1024, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(8192 + 512), uint64_t(1024)));
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192 + 512, 1024, fresh.sender(other)) == success);
+    assert(fresh.sends.empty());
+    other[8192 + 700] ^= 1;
+    assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 2);
+    assert(fresh.sends[0] == std::make_pair(uint64_t(8192), uint64_t(768)));  // unknown, then the edit
+    assert(fresh.sends[1] == std::make_pair(uint64_t(8192 + 1536), uint64_t(4096 - 1536)));
+    fresh.sends.clear();
+    assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
+    assert(fresh.sends.empty());
+
+    // An invalidate's refreshed bytes are known in whole blocks only.
+    fresh.sends.clear();
+    other[20000] = 1;
+    shadow.noteRefreshed(2, other.data(), size, 19968, 300);
+    assert(shadow.emitChanged(2, other.data(), size, 19968, 512, fresh.sender(other)) == success);
+    assert(fresh.sends.size() == 1 && fresh.sends[0] == std::make_pair(uint64_t(19968 + 256), uint64_t(256)));
 
     // Forgetting resends in full; a failed send forgets too.
     remote.sends.clear();

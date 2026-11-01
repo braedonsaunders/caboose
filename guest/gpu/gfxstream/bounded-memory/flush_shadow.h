@@ -11,16 +11,18 @@
 
 namespace caboose::memory {
 
-inline constexpr uint64_t shadowPageBytes = 4096;
 inline constexpr uint64_t shadowBlockBytes = 256;
 inline constexpr uint64_t shadowMaxAllocationBytes = 32 * 1024 * 1024;
 // Shadows share processBudget with command-buffer staging; keep them to a slice of it.
 inline constexpr size_t shadowMaxTotalBytes = 48 * 1024 * 1024;
 
 // Last bytes the host received for each flushed allocation. The host's copy is
-// known per page; within a known page a flush sends only the blocks that differ,
-// and a page never sent in full is sent whole. Unmap and free drop knowledge of
-// the host's copy, while a successful invalidate updates the known host baseline
+// known per 256-byte block: a flush sends only the known blocks that differ and
+// every block it does not know, and a block becomes known once it was sent or
+// refreshed whole. Applications flush small ranges (ANGLE and Zink a few hundred
+// bytes to a few KiB of a large allocation), so knowledge kept per page would never
+// form and every range would be sent again in full. Unmap and free drop knowledge
+// of the host's copy, while a successful invalidate updates the known host baseline
 // with the refreshed bytes. Allocations the budget cannot shadow are always sent
 // in full.
 class FlushShadow {
@@ -40,30 +42,25 @@ public:
         const uint64_t end = offset + size;
         uint64_t runBegin = 0;
         bool inRun = false;
-        for (uint64_t page = offset - offset % shadowPageBytes; page < end; page += shadowPageBytes) {
-            const uint64_t begin = page < offset ? offset : page;
-            const uint64_t stop = page + shadowPageBytes < end ? page + shadowPageBytes : end;
-            const size_t index = size_t(page / shadowPageBytes);
-            const uint64_t pageEnd = page + shadowPageBytes < allocation ? page + shadowPageBytes : allocation;
-            const bool whole = begin == page && stop == pageEnd;
+        for (uint64_t block = offset; block < end;) {
+            const uint64_t first = block - block % shadowBlockBytes;
+            const uint64_t next = first + shadowBlockBytes;
+            const uint64_t blockStop = next < end ? next : end;
+            const size_t index = size_t(first / shadowBlockBytes);
             const bool known = entry->valid[index];
-            for (uint64_t block = begin; block < stop;) {
-                const uint64_t next = block - block % shadowBlockBytes + shadowBlockBytes;
-                const uint64_t blockStop = next < stop ? next : stop;
-                const bool changed = !known ||
-                    std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
-                if (changed) {
-                    std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
-                    if (!inRun) { runBegin = block; inRun = true; }
-                } else if (inRun) {
-                    const int result = emit(runBegin, block - runBegin);
-                    if (result != success) { forgetLocked(key); return result; }
-                    inRun = false;
-                }
-                block = blockStop;
+            const bool changed = !known ||
+                std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
+            if (changed) {
+                std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
+                if (!inRun) { runBegin = block; inRun = true; }
+            } else if (inRun) {
+                const int result = emit(runBegin, block - runBegin);
+                if (result != success) { forgetLocked(key); return result; }
+                inRun = false;
             }
-            // A partially sent page is only known on the host where it was sent.
-            entry->valid[index] = whole || known;
+            // A partially sent block is only known on the host where it was sent.
+            entry->valid[index] = known || (block == first && blockStop == blockEnd(first, allocation));
+            block = blockStop;
         }
         if (inRun) {
             const int result = emit(runBegin, end - runBegin);
@@ -82,13 +79,12 @@ public:
         Entry* entry = entryLocked(key, allocation);
         if (!entry) return;
         std::memcpy(entry->bytes.get() + offset, base + offset, size_t(end - offset));
-        for (uint64_t page = offset - offset % shadowPageBytes; page < end; page += shadowPageBytes) {
-            const uint64_t begin = page < offset ? offset : page;
-            const uint64_t stop = page + shadowPageBytes < end ? page + shadowPageBytes : end;
-            const size_t index = size_t(page / shadowPageBytes);
-            const uint64_t pageEnd = page + shadowPageBytes < allocation ? page + shadowPageBytes : allocation;
-            const bool whole = begin == page && stop == pageEnd;
-            entry->valid[index] = whole || entry->valid[index];
+        for (uint64_t block = offset; block < end;) {
+            const uint64_t first = block - block % shadowBlockBytes;
+            const uint64_t blockStop = first + shadowBlockBytes < end ? first + shadowBlockBytes : end;
+            const size_t index = size_t(first / shadowBlockBytes);
+            entry->valid[index] = entry->valid[index] || (block == first && blockStop == blockEnd(first, allocation));
+            block = blockStop;
         }
     }
 
@@ -104,6 +100,10 @@ private:
         size_t charged = 0;
     };
 
+    static uint64_t blockEnd(uint64_t first, uint64_t allocation) {
+        return first + shadowBlockBytes < allocation ? first + shadowBlockBytes : allocation;
+    }
+
     Entry* entryLocked(uint64_t key, uint64_t allocation) {
         auto found = entries_.find(key);
         if (found != entries_.end()) {
@@ -111,14 +111,14 @@ private:
             forgetLocked(key);
         }
         if (!allocation || allocation > shadowMaxAllocationBytes) return nullptr;
-        const size_t pages = size_t((allocation + shadowPageBytes - 1) / shadowPageBytes);
-        const size_t charged = size_t(allocation) + pages / 8 + sizeof(Entry);
+        const size_t blocks = size_t((allocation + shadowBlockBytes - 1) / shadowBlockBytes);
+        const size_t charged = size_t(allocation) + blocks / 8 + sizeof(Entry);
         if (charged > shadowMaxTotalBytes - used_ || !budget_.acquire(charged)) return nullptr;
         Entry entry;
         entry.bytes.reset(new (std::nothrow) uint8_t[size_t(allocation)]);
         if (!entry.bytes) { budget_.release(charged); return nullptr; }
         try {
-            entry.valid.assign(pages, false);
+            entry.valid.assign(blocks, false);
             entry.charged = charged;
             Entry* stored = &entries_.emplace(key, std::move(entry)).first->second;
             used_ += charged;
